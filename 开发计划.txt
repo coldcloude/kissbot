@@ -1,0 +1,36 @@
+项目名称：Keep It Simple Stupid BOT
+
+项目目标：实现一个分布式的智能机器人框架
+
+模块命名规则：kissbot-模块名称-子模块名称-……
+
+顶层模块：智能体（agent）、消息通道（channel）、记忆（memory）
+memory模块的子模块：记忆存储（memory-store）、记忆结构（memory-struct）
+UI模块：智能体配置UI（agent-config）、记忆管理UI（memory-manage）
+channel模块负责提供框架，实际的channel由单独的模块实现，如channel-web、channel-qq、channel-matrix等，各channel实现可以自带管理web界面
+memory-struct模块负责提供框架，实际的memory-struct由单独的模块实现，如memory-struct-mempalace，各memory-struct实现可以自带管理web界面
+
+整体框架：模块间作为独立进程运行，模块间使用WSS、HTTPS或者文件进行通信
+
+模块的责任和联系：
+（1）channel连接外部系统，如web界面、QQ、Matrix等，向agent输入消息，并接收agent的输出消息
+（2）agent负责将消息加工为LLM可用的消息，通过agentic loop调用LLM执行操作，返回消息
+（3）memory-store负责收集agent接收和产生的消息，作为一切agent活动的记录
+（4）memory-struct负责将memory-store存储的记忆构造成特定的索引结构，可以查询记忆，并对外提供记忆搜索工具
+（5）agent-config提供WebUI界面负责配置agent使用的LLM API、tool、skill，以及channel、memory、memory-search的地址
+（6）memory-manage提供WebUI界面负责查看和管理memory-store存储的文件，以及配置memory-store向memory-struct的消息推送
+
+通信方式：
+（1）agent作为wss客户端连接channel
+（2）agent作为https客户端连接memory-store
+（3）memory-store和memory-struct共同读写一个文件系统，同时memory-store有新数据时，要通过HTTPS通知注册的各memory-struct
+（4）agent作为https客户端连接memory-struct（通过memory-struct提供的tool）
+（5）agent-config从web前端通过HTTPS访问agent后端
+（6）memory-manage从web前端通过HTTPS访问memory-store后端
+（7）各WebUI的前端通过HTTPS访问后端
+
+channel的实现模块：
+（1）web：通过web页面和用户通信，通过web后台和agent通信
+
+memory-struct的实现：
+（1）abstrct：对于每个会话，提取其摘要用于搜索，需要配置摘要用LLM API
