@@ -1,0 +1,2 @@
+开发的环境为Windows系统，最终产物应为exe文件
+开发的命令行环境为PowerShell，执行命令时使用PowerShell的语法
