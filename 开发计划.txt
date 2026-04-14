@@ -34,3 +34,5 @@ channel的实现模块：
 
 memory-struct的实现：
 （1）memory-struct-abstrct：对于每个会话，提取其摘要用于搜索，需要配置摘要用LLM API
+
+所有后台服务都应具备配置可信证书文件的机制，以便使用自签名的证书密钥进行wss、https通信
