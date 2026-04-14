@@ -8,7 +8,7 @@
 memory模块的子模块：记忆存储（memory-store）、记忆结构（memory-struct）
 UI模块：智能体配置UI（agent-config）、记忆管理UI（memory-manage）
 channel模块负责提供框架，实际的channel由单独的模块实现，如channel-web、channel-qq、channel-matrix等，各channel实现可以自带管理web界面
-memory-struct模块负责提供框架，实际的memory-struct由单独的模块实现，如memory-struct-mempalace，各memory-struct实现可以自带管理web界面
+memory-struct模块负责提供框架，实际的memory-struct由单独的模块实现，如memory-struct-abstrct、memory-struct-mempalace，各memory-struct实现可以自带管理web界面
 
 整体框架：模块间作为独立进程运行，模块间使用WSS、HTTPS或者文件进行通信
 
@@ -30,7 +30,7 @@ memory-struct模块负责提供框架，实际的memory-struct由单独的模块
 （7）各WebUI的前端通过HTTPS访问后端
 
 channel的实现模块：
-（1）web：通过web页面和用户通信，通过web后台和agent通信
+（1）channel-web：通过web页面和用户通信，通过web后台和agent通信
 
 memory-struct的实现：
-（1）abstrct：对于每个会话，提取其摘要用于搜索，需要配置摘要用LLM API
+（1）memory-struct-abstrct：对于每个会话，提取其摘要用于搜索，需要配置摘要用LLM API
