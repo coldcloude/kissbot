@@ -1,7 +1,6 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -11,18 +10,19 @@ use crate::path;
 pub struct AgentMetadata {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub created_at: String,
 }
 
 impl AgentMetadata {
     pub fn created_at_datetime(&self) -> Result<DateTime<Utc>> {
-        Ok(DateTime::parse_from_rfc3339(&self.created_at)?.with_timezone(&Utc))
+        let naive = NaiveDateTime::parse_from_str(&self.created_at, "%Y-%m-%d %H:%M:%S")?;
+        Ok(DateTime::from_naive_utc_and_offset(naive, Utc))
     }
 }
 
 pub struct AgentManager {
     pool: SqlitePool,
-    root_dir: PathBuf,
 }
 
 impl AgentManager {
@@ -35,7 +35,7 @@ impl AgentManager {
 
         Self::initialize_database(&pool).await?;
 
-        Ok(Self { pool, root_dir })
+        Ok(Self { pool })
     }
 
     async fn initialize_database(pool: &SqlitePool) -> Result<()> {
@@ -44,6 +44,7 @@ impl AgentManager {
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                description TEXT,
                 created_at TEXT NOT NULL
             )
             "#,
@@ -54,29 +55,30 @@ impl AgentManager {
         Ok(())
     }
 
-    pub async fn create_agent(&self, name: String) -> Result<AgentMetadata> {
+    pub async fn create_agent(&self, name: String, description: Option<String>) -> Result<AgentMetadata> {
         let id = Uuid::new_v4().to_string();
-        let created_at = Utc::now().to_rfc3339();
+        let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         sqlx::query(
             r#"
-            INSERT INTO agents (id, name, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO agents (id, name, description, created_at)
+            VALUES (?, ?, ?, ?)
             "#,
         )
         .bind(&id)
         .bind(&name)
+        .bind(&description)
         .bind(&created_at)
         .execute(&self.pool)
         .await?;
 
-        Ok(AgentMetadata { id, name, created_at })
+        Ok(AgentMetadata { id, name, description, created_at })
     }
 
     pub async fn get_agent(&self, agent_id: &str) -> Result<AgentMetadata> {
         let agent = sqlx::query_as::<_, AgentMetadata>(
             r#"
-            SELECT id, name, created_at
+            SELECT id, name, description, created_at
             FROM agents
             WHERE id = ?
             "#,
@@ -91,7 +93,7 @@ impl AgentManager {
     pub async fn list_agents(&self) -> Result<Vec<AgentMetadata>> {
         let agents = sqlx::query_as::<_, AgentMetadata>(
             r#"
-            SELECT id, name, created_at
+            SELECT id, name, description, created_at
             FROM agents
             ORDER BY created_at DESC
             "#,
@@ -102,7 +104,35 @@ impl AgentManager {
         Ok(agents)
     }
 
-    pub fn root_dir(&self) -> &std::path::PathBuf {
-        &self.root_dir
+    pub async fn update_agent_name(&self, agent_id: &str, name: String) -> Result<AgentMetadata> {
+        sqlx::query(
+            r#"
+            UPDATE agents
+            SET name = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&name)
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_agent(agent_id).await
+    }
+
+    pub async fn update_agent_description(&self, agent_id: &str, description: Option<String>) -> Result<AgentMetadata> {
+        sqlx::query(
+            r#"
+            UPDATE agents
+            SET description = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&description)
+        .bind(agent_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_agent(agent_id).await
     }
 }

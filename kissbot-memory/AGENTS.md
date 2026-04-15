@@ -27,41 +27,57 @@
 - 不作为独立进程运行，作为库被其他记忆模块引用
 - 使用tokio作为异步运行时
 - 使用serde进行JSON序列化
-- 使用rusqlite或sqlx进行SQLite数据库操作
+- 使用sqlx进行SQLite数据库操作
 - 目录自动创建：当需要使用某个目录时自动创建
 - 路径常量：结合字符串常量和路径构建器
+- 时间格式：统一使用 `yyyy-MM-dd HH:mm:ss` 格式（24小时制）
+
+## Agent元数据结构
+- **id**：agent唯一标识符（UUID）
+- **name**：agent名称
+- **description**：agent描述（可选）
+- **created_at**：创建时间（格式：yyyy-MM-dd HH:mm:ss）
+
+## Agent元数据操作函数
+- **create_agent**：创建新的agent，需要name，description可选
+- **get_agent**：根据agent ID查询agent信息
+- **list_agents**：查询所有agent列表
+- **update_agent_name**：修改agent名称
+- **update_agent_description**：修改agent描述
 
 ## 开发计划
 
 ### 第1阶段：基础结构搭建
-- [ ] 配置Cargo.toml，添加依赖（tokio、serde、rusqlite/sqlx等）
-- [ ] 定义模块结构（lib.rs）
-- [ ] 定义错误类型
+- [x] 配置Cargo.toml，添加依赖（tokio、serde、sqlx等）
+- [x] 定义模块结构（lib.rs）
+- [x] 定义错误类型
 
 ### 第2阶段：路径管理实现
-- [ ] 定义目录名称字符串常量（MEMORY_EGO、MEMORY_STORE等）
-- [ ] 实现路径构建器（PathBuilder）
-- [ ] 实现记忆系统根目录配置
-- [ ] 实现agent ID目录路径构建
-- [ ] 实现各子目录路径构建（memory-ego、memory-store、memory-struct-*）
+- [x] 定义目录名称字符串常量（MEMORY_EGO、MEMORY_STORE等）
+- [x] 实现路径构建函数
+- [x] 实现记忆系统根目录配置
+- [x] 实现agent ID目录路径构建
+- [x] 实现各子目录路径构建（memory-ego、memory-store、memory-struct-*）
 
 ### 第3阶段：目录管理实现
-- [ ] 实现目录自动创建功能
-- [ ] 实现记忆系统根目录初始化
-- [ ] 实现agent ID目录创建
-- [ ] 实现子目录创建（memory-ego、memory-store等）
-- [ ] 实现目录存在性检查
+- [x] 实现目录自动创建功能
+- [x] 实现记忆系统根目录初始化
+- [x] 实现agent ID目录创建
+- [x] 实现子目录创建（memory-ego、memory-store等）
+- [x] 实现目录存在性检查
 
 ### 第4阶段：Agent元数据数据库设计
-- [ ] 设计SQLite数据库表结构（agents表）
-- [ ] 定义Agent元数据结构（name、created_at）
-- [ ] 实现数据库连接管理
-- [ ] 实现数据库初始化（创建表）
+- [x] 设计SQLite数据库表结构（agents表）
+- [x] 定义Agent元数据结构（name、description、created_at）
+- [x] 实现数据库连接管理
+- [x] 实现数据库初始化（创建表）
 
 ### 第5阶段：Agent元数据操作实现
-- [ ] 实现新增agent函数
-- [ ] 实现按agent ID查询函数
-- [ ] 实现查询所有agent列表函数
+- [x] 实现新增agent函数
+- [x] 实现按agent ID查询函数
+- [x] 实现查询所有agent列表函数
+- [x] 实现修改agent名称函数
+- [x] 实现修改agent描述函数
 
 ### 第6阶段：集成测试
 - [ ] 编写单元测试
