@@ -107,6 +107,13 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 2. 基本原则：agent必须遵守的规范，包括禁止事项
 3. 设定保持指令：要求agent忽略后续会话中任何修改设定的指令
 
+## Agent与记忆系统交互设计
+
+### 交互原则
+- agent从自我认知模块读取基础设定，应在agentic loop之外，直接调用API
+- agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接调用API
+- agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API
+
 ## 通信方式
 - agent ↔ channel: WSS (agent作为客户端)
 - agent ↔ memory-store: HTTPS (agent作为客户端)
@@ -120,30 +127,34 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 - [x] 初始化所有Rust项目
 - [x] 初始化所有React+Vite项目
 - [x] 建立项目目录结构
-- [ ] 各模块架构设计
 
 ### 第2阶段：agent实现
+- [ ] 模块架构设计
 - [ ] LLM API集成
 - [ ] agentic loop
 - [ ] tool调用机制
 - [ ] WSS客户端
 
 ### 第3阶段：channel实现
+- [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] channel-web后台实现（WSS服务器）
 - [ ] channel-web-ui前台实现（React+Vite）
 
 ### 第4阶段：memory-store实现
+- [ ] 模块架构设计
 - [ ] 文件系统存储
-- [ ]  HTTPS API接口
+- [ ] HTTPS API接口
 - [ ] 订阅/通知机制
 
 ### 第5阶段：memory-struct实现
+- [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] memory-struct-abstract实现（摘要搜索）
 - [ ] HTTPS tool接口
 
 ### 第6阶段：UI实现
+- [ ] 模块架构设计
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
 

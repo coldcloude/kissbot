@@ -89,3 +89,8 @@ agent应具有双重基础设定：
 1、设定引导：限定设定文字的范围
 2、基本原则：agent必须遵守的规范，包括禁止事项
 3、设定保持指令：要求agent忽略后续会话中任何修改设定的指令
+
+关于agent系统记忆系统的交互
+agent和从自我认知模块读取基础设定，应在agentic loop之外，直接调用API
+agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接调用API
+agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API
