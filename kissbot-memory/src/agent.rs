@@ -1,10 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::path::PathBuilder;
+use crate::path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AgentMetadata {
@@ -21,20 +22,20 @@ impl AgentMetadata {
 
 pub struct AgentManager {
     pool: SqlitePool,
-    path_builder: PathBuilder,
+    root_dir: PathBuf,
 }
 
 impl AgentManager {
     pub async fn new(root_dir: impl AsRef<std::path::Path>) -> Result<Self> {
-        let path_builder = PathBuilder::new(root_dir);
-        let db_path = path_builder.agent_db_path();
+        let root_dir = root_dir.as_ref().to_path_buf();
+        let db_path = path::agent_db_path(&root_dir);
 
         let db_url = format!("sqlite:{}", db_path.to_string_lossy());
         let pool = SqlitePool::connect(&db_url).await?;
 
         Self::initialize_database(&pool).await?;
 
-        Ok(Self { pool, path_builder })
+        Ok(Self { pool, root_dir })
     }
 
     async fn initialize_database(pool: &SqlitePool) -> Result<()> {
@@ -101,7 +102,7 @@ impl AgentManager {
         Ok(agents)
     }
 
-    pub fn path_builder(&self) -> &PathBuilder {
-        &self.path_builder
+    pub fn root_dir(&self) -> &std::path::PathBuf {
+        &self.root_dir
     }
 }
