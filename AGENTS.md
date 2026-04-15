@@ -237,3 +237,7 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 | axum | 0.8 | HTTPS服务器 |
 | serde | 1.0 | JSON序列化 |
 | serde_json | 1.0 | JSON序列化 |
+| sqlx | 0.8 | SQLite数据库操作 |
+| chrono | 0.4 | 日期时间处理 |
+| thiserror | 2.0 | 错误类型定义 |
+| uuid | 1.0 | UUID生成 |
