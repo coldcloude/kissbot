@@ -56,7 +56,7 @@ Keep It Simple Stupid BOT - kissbot
   - **agent ID 1目录**
     - **memory-ego**：memory-ego模块的设定信息单独存放
     - **memory-store**：memory-store收集的原始记忆片段单独存放
-    - **memory-struct-、***：memory-struct-abstract实现产生的数据
+    - **memory-struct-\***：memory-struct-*实现产生的数据
   - **agent ID 2目录**
     - ...（结构同上）
 
@@ -148,11 +148,13 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 ### 第2阶段：memory基础模块实现
 - [ ] 模块架构设计
 - [ ] 定义记忆存储目录结构
-- [ ] 实现记忆文件读写方法
+- [ ] 实现agent元数据SQLite数据库管理
 - [ ] 提供基础库供其他记忆模块使用
 
 ### 第3阶段：memory-ego实现（基础模式）
 - [ ] 模块架构设计
+- [ ] 调用memory基础模块库
+- [ ] agent元数据管理API（新增agent、查询agent元数据）
 - [ ] MD文件基础模式实现（直接手动放置MD文件）
 - [ ] HTTPS API接口
 - [ ] 客观设定和角色设定的读取API

@@ -82,7 +82,7 @@ agent应具有双重基础设定：
 设计一个新模块，自我认知模块（memory-ego），和其他记忆模读写同一个文件系统
 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的基础信息
 每个agent ID对应一个客观设定，对应多个角色设定
-该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要，在agent内封装为tool
+该模块仅使用API，本身不封装为tool。agent一般使用API查询自我认知，如有自动化必要，在agent内封装为tool
 memory-ego模块的身份标识信息来源于agent元数据
 memory-ego模块提供管理agent元数据的HTTPS API
 
