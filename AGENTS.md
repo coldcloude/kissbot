@@ -128,35 +128,46 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 - [x] 初始化所有React+Vite项目
 - [x] 建立项目目录结构
 
-### 第2阶段：agent实现
+### 第2阶段：memory-ego实现（基础模式）
+- [ ] 模块架构设计
+- [ ] MD文件基础模式实现（直接手动放置MD文件）
+- [ ] HTTPS API接口
+- [ ] 客观设定和角色设定的读取API
+
+### 第3阶段：agent实现
 - [ ] 模块架构设计
 - [ ] LLM API集成
 - [ ] agentic loop
 - [ ] tool调用机制
 - [ ] WSS客户端
 
-### 第3阶段：channel实现
+### 第4阶段：channel实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] channel-web后台实现（WSS服务器）
 - [ ] channel-web-ui前台实现（React+Vite）
 
-### 第4阶段：memory-store实现
+### 第5阶段：memory-store实现
 - [ ] 模块架构设计
 - [ ] 文件系统存储
 - [ ] HTTPS API接口
 - [ ] 订阅/通知机制
 
-### 第5阶段：memory-struct实现
+### 第6阶段：memory-struct实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] memory-struct-abstract实现（摘要搜索）
 - [ ] HTTPS tool接口
 
-### 第6阶段：UI实现
+### 第7阶段：UI实现
 - [ ] 模块架构设计
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
+
+### 第8阶段：memory-ego进阶模式改造
+- [ ] 记忆提取器实现
+- [ ] 配置信息与记忆提取结合生成MD文件
+- [ ] 进阶模式API
 
 ## 技术栈
 - 后端: Rust + Cargo
