@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use crate::error::{Result};
 
@@ -7,6 +8,8 @@ use crate::error::{Result};
 pub struct Config {
     pub root_dir: PathBuf,
 }
+
+static CONFIG_INSTANCE: OnceLock<Config> = OnceLock::new();
 
 impl Config {
     pub fn load() -> Result<Self> {
@@ -26,5 +29,11 @@ impl Config {
         Self {
             root_dir: root_dir.into(),
         }
+    }
+
+    pub fn get() -> &'static Self {
+        CONFIG_INSTANCE.get_or_init(|| {
+            Config::load().expect("Failed to load config from file")
+        })
     }
 }

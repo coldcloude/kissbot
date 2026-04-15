@@ -1,12 +1,17 @@
-use chrono::{DateTime, Utc, NaiveDateTime};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::Arc;
+use parking_lot::RwLock;
 use uuid::Uuid;
 
 use crate::error::Result;
 use crate::path;
+use crate::config::Config;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMetadata {
     pub id: String,
     pub name: String,
@@ -14,125 +19,178 @@ pub struct AgentMetadata {
     pub created_at: String,
 }
 
-impl AgentMetadata {
-    pub fn created_at_datetime(&self) -> Result<DateTime<Utc>> {
-        let naive = NaiveDateTime::parse_from_str(&self.created_at, "%Y-%m-%d %H:%M:%S")?;
-        Ok(DateTime::from_naive_utc_and_offset(naive, Utc))
-    }
+pub struct AgentManager {
+    root_dir: PathBuf,
+    file_locks: Arc<RwLock<HashMap<String, Arc<RwLock<()>>>>>,
 }
 
-pub struct AgentManager {
-    pool: SqlitePool,
-}
+static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
 
 impl AgentManager {
-    pub async fn new(root_dir: impl AsRef<std::path::Path>) -> Result<Self> {
-        let root_dir = root_dir.as_ref().to_path_buf();
-        let db_path = path::agent_db_path(&root_dir);
-
-        let db_url = format!("sqlite:{}", db_path.to_string_lossy());
-        let pool = SqlitePool::connect(&db_url).await?;
-
-        Self::initialize_database(&pool).await?;
-
-        Ok(Self { pool })
+    pub fn new(root_dir: impl AsRef<Path>) -> Self {
+        Self {
+            root_dir: root_dir.as_ref().to_path_buf(),
+            file_locks: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
-    async fn initialize_database(pool: &SqlitePool) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS agents (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                created_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await?;
+    pub fn get() -> &'static Self {
+        AGENT_MANAGER_INSTANCE.get_or_init(|| {
+            let config = Config::get();
+            AgentManager::new(&config.root_dir)
+        })
+    }
 
+    fn get_or_create_lock(&self, agent_id: &str) -> Arc<RwLock<()>> {
+        {
+            let locks = self.file_locks.read();
+            if let Some(lock) = locks.get(agent_id) {
+                return lock.clone();
+            }
+        }
+        
+        let mut locks = self.file_locks.write();
+        locks.entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(())))
+            .clone()
+    }
+
+    fn dir_exists(&self, path: impl AsRef<Path>) -> bool {
+        path.as_ref().exists() && path.as_ref().is_dir()
+    }
+
+    async fn ensure_dir_exists(&self, path: PathBuf) -> Result<PathBuf> {
+        if !self.dir_exists(&path) {
+            tokio::fs::create_dir_all(&path).await?;
+        }
+        Ok(path)
+    }
+
+    pub async fn ensure_root_dir(&self) -> Result<PathBuf> {
+        let path = self.root_dir.clone();
+        self.ensure_dir_exists(path).await
+    }
+
+    pub async fn ensure_agent_dir(&self, agent_id: &str) -> Result<PathBuf> {
+        let path = path::agent_dir(&self.root_dir, agent_id);
+        self.ensure_dir_exists(path).await
+    }
+
+    pub async fn ensure_agent_ego_dir(&self, agent_id: &str) -> Result<PathBuf> {
+        let path = path::agent_ego_dir(&self.root_dir, agent_id);
+        self.ensure_dir_exists(path).await
+    }
+
+    pub async fn ensure_agent_store_dir(&self, agent_id: &str) -> Result<PathBuf> {
+        let path = path::agent_store_dir(&self.root_dir, agent_id);
+        self.ensure_dir_exists(path).await
+    }
+
+    pub async fn ensure_agent_struct_dir(&self, agent_id: &str, struct_name: &str) -> Result<PathBuf> {
+        let path = path::agent_struct_dir(&self.root_dir, agent_id, struct_name);
+        self.ensure_dir_exists(path).await
+    }
+
+    async fn read_agent_metadata(&self, agent_id: &str) -> Result<AgentMetadata> {
+        let metadata_path = path::agent_metadata_path(&self.root_dir, agent_id);
+        
+        if !metadata_path.exists() {
+            return Err(crate::error::Error::AgentNotFound(agent_id.to_string()));
+        }
+        
+        let content = tokio::fs::read_to_string(metadata_path).await?;
+        let metadata = serde_json::from_str(&content)?;
+        Ok(metadata)
+    }
+
+    async fn write_agent_metadata(&self, metadata: &AgentMetadata) -> Result<()> {
+        self.ensure_agent_dir(&metadata.id).await?;
+        let metadata_path = path::agent_metadata_path(&self.root_dir, &metadata.id);
+        
+        let content = serde_json::to_string_pretty(metadata)?;
+        tokio::fs::write(metadata_path, content).await?;
         Ok(())
     }
 
     pub async fn create_agent(&self, name: String, description: Option<String>) -> Result<AgentMetadata> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-        sqlx::query(
-            r#"
-            INSERT INTO agents (id, name, description, created_at)
-            VALUES (?, ?, ?, ?)
-            "#,
-        )
-        .bind(&id)
-        .bind(&name)
-        .bind(&description)
-        .bind(&created_at)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(AgentMetadata { id, name, description, created_at })
+        
+        let metadata = AgentMetadata {
+            id,
+            name,
+            description,
+            created_at,
+        };
+        
+        let lock = self.get_or_create_lock(&metadata.id);
+        let _guard = lock.write();
+        
+        self.write_agent_metadata(&metadata).await?;
+        
+        self.ensure_agent_ego_dir(&metadata.id).await?;
+        self.ensure_agent_store_dir(&metadata.id).await?;
+        
+        Ok(metadata)
     }
 
     pub async fn get_agent(&self, agent_id: &str) -> Result<AgentMetadata> {
-        let agent = sqlx::query_as::<_, AgentMetadata>(
-            r#"
-            SELECT id, name, description, created_at
-            FROM agents
-            WHERE id = ?
-            "#,
-        )
-        .bind(agent_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(agent)
+        let lock = self.get_or_create_lock(agent_id);
+        let _guard = lock.read();
+        
+        self.read_agent_metadata(agent_id).await
     }
 
     pub async fn list_agents(&self) -> Result<Vec<AgentMetadata>> {
-        let agents = sqlx::query_as::<_, AgentMetadata>(
-            r#"
-            SELECT id, name, description, created_at
-            FROM agents
-            ORDER BY created_at DESC
-            "#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let mut agents = Vec::new();
+        
+        let root_dir = self.ensure_root_dir().await?;
+        
+        let mut entries = tokio::fs::read_dir(root_dir).await?;
+        
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(agent_id) = path.file_name().and_then(|n| n.to_str()) {
+                    let lock = self.get_or_create_lock(agent_id);
+                    let _guard = lock.read();
 
+                    match self.read_agent_metadata(agent_id).await {
+                        Ok(metadata) => {
+                            agents.push(metadata);
+                        }
+                        Err(_e) => {
+                            //ignore
+                        }
+                    }
+                }
+            }
+        }
+        
+        agents.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        
         Ok(agents)
     }
 
     pub async fn update_agent_name(&self, agent_id: &str, name: String) -> Result<AgentMetadata> {
-        sqlx::query(
-            r#"
-            UPDATE agents
-            SET name = ?
-            WHERE id = ?
-            "#,
-        )
-        .bind(&name)
-        .bind(agent_id)
-        .execute(&self.pool)
-        .await?;
-
-        self.get_agent(agent_id).await
+        let lock = self.get_or_create_lock(agent_id);
+        let _guard = lock.write();
+        
+        let mut metadata = self.read_agent_metadata(agent_id).await?;
+        metadata.name = name;
+        self.write_agent_metadata(&metadata).await?;
+        
+        Ok(metadata)
     }
 
     pub async fn update_agent_description(&self, agent_id: &str, description: Option<String>) -> Result<AgentMetadata> {
-        sqlx::query(
-            r#"
-            UPDATE agents
-            SET description = ?
-            WHERE id = ?
-            "#,
-        )
-        .bind(&description)
-        .bind(agent_id)
-        .execute(&self.pool)
-        .await?;
-
-        self.get_agent(agent_id).await
+        let lock = self.get_or_create_lock(agent_id);
+        let _guard = lock.write();
+        
+        let mut metadata = self.read_agent_metadata(agent_id).await?;
+        metadata.description = description;
+        self.write_agent_metadata(&metadata).await?;
+        
+        Ok(metadata)
     }
 }

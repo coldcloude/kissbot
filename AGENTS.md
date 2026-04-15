@@ -53,8 +53,8 @@ Keep It Simple Stupid BOT - kissbot
 ### 文件存储目录结构
 根据记忆系统的文件存储目录设计：
 - **记忆系统根目录**
-  - **memory-agent.db**：记忆系统中的agent元数据使用SQLite数据库管理
   - **agent ID 1目录**
+    - **memory-agent.json**：agent的元数据使用JSON文件存储
     - **memory-ego**：memory-ego模块的设定信息单独存放
     - **memory-store**：memory-store收集的原始记忆片段单独存放
     - **memory-struct-\***：memory-struct-*实现产生的数据
@@ -149,7 +149,7 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 ### 第2阶段：memory基础模块实现
 - [ ] 模块架构设计
 - [ ] 定义记忆存储目录结构
-- [ ] 实现agent元数据SQLite数据库管理
+- [ ] 实现agent元数据JSON文件存储（带读写锁）
 - [ ] 提供基础库供其他记忆模块使用
 
 ### 第3阶段：memory-ego实现（基础模式）
@@ -199,7 +199,6 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 - 后端: Rust + Cargo
 - 前端: TypeScript + React + Vite
 - 配置文件：JSON格式
-- 数据库：SQLite
 
 ## 安全要求
 - 所有后台服务（agent、channel、memory-store、memory-struct及其实现）都应具备配置可信证书文件的机制
@@ -237,7 +236,6 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 | axum | 0.8 | HTTPS服务器 |
 | serde | 1.0 | JSON序列化 |
 | serde_json | 1.0 | JSON序列化 |
-| sqlx | 0.8 | SQLite数据库操作 |
 | chrono | 0.4 | 日期时间处理 |
 | thiserror | 2.0 | 错误类型定义 |
 | uuid | 1.0 | UUID生成 |
