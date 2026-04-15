@@ -49,40 +49,41 @@ Keep It Simple Stupid BOT - kissbot
 
 ## 实现步骤
 
-### 第一阶段：核心模块初始化
+### 第1阶段：核心模块初始化
 - [x] 初始化所有Rust项目
 - [x] 初始化所有React+Vite项目
 - [x] 建立项目目录结构
 - [ ] 各模块架构设计
 
-### 第二阶段：memory-store实现
-- [ ] 文件系统存储
-- [ ]  HTTPS API接口
-- [ ] 订阅/通知机制
-
-### 第三阶段：memory-struct实现
-- [ ] 框架trait定义
-- [ ] memory-struct-abstract实现（摘要搜索）
-- [ ] HTTPS tool接口
-
-### 第四阶段：channel实现
-- [ ] 框架trait定义
-- [ ] channel-web后台实现（WSS服务器）
-- [ ] channel-web-ui前台实现（React+Vite）
-
-### 第五阶段：agent实现
+### 第2阶段：agent实现
 - [ ] LLM API集成
 - [ ] agentic loop
 - [ ] tool调用机制
 - [ ] WSS客户端
 
-### 第六阶段：UI实现
+### 第3阶段：channel实现
+- [ ] 框架trait定义
+- [ ] channel-web后台实现（WSS服务器）
+- [ ] channel-web-ui前台实现（React+Vite）
+
+### 第4阶段：memory-store实现
+- [ ] 文件系统存储
+- [ ]  HTTPS API接口
+- [ ] 订阅/通知机制
+
+### 第5阶段：memory-struct实现
+- [ ] 框架trait定义
+- [ ] memory-struct-abstract实现（摘要搜索）
+- [ ] HTTPS tool接口
+
+### 第6阶段：UI实现
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
 
 ## 技术栈
 - 后端: Rust + Cargo
 - 前端: TypeScript + React + Vite
+- 配置文件：JSON格式
 - 数据库：SQLite
 
 ## 安全要求
@@ -111,3 +112,13 @@ Keep It Simple Stupid BOT - kissbot
 | 配置项 | 版本 |
 |--------|------|
 | Rust edition | 2024 |
+
+### 后端依赖（所有后端项目通用）
+| 依赖包 | 版本 | 用途 |
+|--------|------|------|
+| tokio | 1.51 | 异步运行时 |
+| tokio-tungstenite | 0.29 | WSS客户端 |
+| reqwest | 0.13 | HTTPS客户端 |
+| axum | 0.8 | HTTPS服务器 |
+| serde | 1.0 | JSON序列化 |
+| serde_json | 1.0 | JSON序列化 |
