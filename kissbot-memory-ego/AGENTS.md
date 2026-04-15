@@ -1,7 +1,7 @@
-# kissbot-memory-struct-ego 模块设计
+# kissbot-memory-ego 模块设计
 
 ## 模块概述
-自我认知模块，特殊的memory-struct模块，负责管理agent的基础信息。
+自我认知模块，独立的记忆系统模块，和其他记忆模块读写同一个文件系统，负责管理agent的基础信息。
 
 ## 职责
 - 通过配置文件读取agent的基础信息
@@ -29,10 +29,10 @@
 - 输入：通过HTTPS API接收agent的查询请求
 - 输入：通过HTTPS API接收agent的更新请求
 - 输出：通过HTTPS API返回agent的基础信息
-- 文件系统：读取配置文件
+- 文件系统：读取配置文件，与其他记忆模块共享文件系统
 
 ## 实现决策
-- 继承kissbot-memory-struct的trait实现
+- 不作为memory-struct的子模块，不实现memory-struct的接口
 - 使用tokio作为异步运行时
 - 使用axum实现HTTPS服务器
 - 使用serde进行JSON序列化

@@ -37,7 +37,7 @@ Keep It Simple Stupid BOT - kissbot
 | kissbot-channel-web | Rust | Web消息通道后台（WSS服务器） |
 | kissbot-channel-web-ui | React + Vite | Web消息通道前台（用户界面） |
 | kissbot-memory-struct-abstract | Rust | 记忆结构实现（摘要搜索，纯后台） |
-| kissbot-memory-struct-ego | Rust | 自我认知模块（agent基础信息管理） |
+| kissbot-memory-ego | Rust | 自我认知模块（agent基础信息管理） |
 | kissbot-agent-config | React + Vite | 智能体配置UI |
 | kissbot-memory-manage | React + Vite | 记忆管理UI |
 
@@ -70,11 +70,11 @@ Keep It Simple Stupid BOT - kissbot
   - 工具调用结果：单独记录工具调用的结果，使用工具调用记录的记录ID作为key。如果结果过长可以进一步压缩，不保留原文
   - 二进制数据：实际的图片、文件等，使用对应的记录ID作为key
 
-### 自我认知模块（memory-struct-ego）
-- 特殊的memory-struct模块，自我认知模块
+### 自我认知模块（memory-ego）
+- 独立的记忆系统模块，和其他记忆模块读写同一个文件系统
 - 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的基础信息
 - 每个agent ID对应一个客观设定，对应多个角色设定
-- 该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要可在agent内建tool，而非使用memory-struct的tool
+- 该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要，在agent内封装为tool
 
 ## Agent系统设计
 

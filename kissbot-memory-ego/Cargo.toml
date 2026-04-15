@@ -1,5 +1,5 @@
 [package]
-name = "kissbot-memory-struct-ego"
+name = "kissbot-memory-ego"
 version = "0.1.0"
 edition = "2024"
 

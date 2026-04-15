@@ -79,10 +79,10 @@ agent应具有双重基础设定：
 5、角色扮演关系：各个用户在本次对话中的角色，agent在本次对话中对用户角色的称呼，以及agent在本次对话中
 
 记忆系统的额外作用：
-设计一个特殊的memory-struct模块，自我认知模块（memory-struct-ego）
+设计一个新模块，自我认知模块（memory-ego），和其他记忆模读写同一个文件系统
 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的基础信息
 每个agent ID对应一个客观设定，对应多个角色设定
-该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要可在agent内建tool，而非使用memory-struct的tool
+该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要，在agent内封装为tool
 
 关于系统提示词的设计
 除包含agent基础设定外，agent的系统提示词还应包含：
