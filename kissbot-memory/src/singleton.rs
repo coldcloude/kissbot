@@ -10,7 +10,7 @@ static AGENT_MANAGER: tokio::sync::OnceCell<AgentManager> = tokio::sync::OnceCel
 
 pub fn get_config() -> &'static Config {
     CONFIG.get_or_init(|| {
-        Config::load().expect("Failed to load config from environment variables")
+        Config::load().expect("Failed to load config from file")
     })
 }
 

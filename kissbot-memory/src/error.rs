@@ -11,11 +11,11 @@ pub enum Error {
     #[error("Parse error: {0}")]
     Parse(#[from] chrono::ParseError),
 
+    #[error("Config error: {0}")]
+    Config(#[from] config::ConfigError),
+
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
-
-    #[error("Invalid path: {0}")]
-    InvalidPath(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

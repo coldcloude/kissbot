@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-use crate::error::{Error, Result};
+use crate::error::{Result};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -10,11 +10,15 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
+        let config_path = std::env::var("KISSBOT_MEMORY_CONFIG")
+            .map(|p| PathBuf::from(p))
+            .unwrap_or_else(|_| PathBuf::from("config.json"));
+
         let config = config::Config::builder()
-            .add_source(config::Environment::with_prefix("KISSBOT_MEMORY"))
+            .add_source(config::File::from(config_path))
             .build()?;
 
-        let config: Config = config.try_deserialize()?;
+        let config = config.try_deserialize()?;
         Ok(config)
     }
 
@@ -22,11 +26,5 @@ impl Config {
         Self {
             root_dir: root_dir.into(),
         }
-    }
-}
-
-impl From<config::ConfigError> for Error {
-    fn from(err: config::ConfigError) -> Self {
-        Error::InvalidPath(err.to_string())
     }
 }
