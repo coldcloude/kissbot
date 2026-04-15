@@ -4,8 +4,7 @@
 自我认知模块，独立的记忆系统模块，和其他记忆模块读写同一个文件系统，负责管理agent的基础信息。
 
 ## 职责
-- 直接管理agent元数据
-- 身份标识信息直接来源于agent元数据
+- 身份标识信息来源于agent元数据库
 - 通过配置文件读取agent的基础信息
 - 通过记忆提取的方式生成agent的基础信息
 - 保存agent的基础信息
@@ -49,19 +48,19 @@
 
 ## 文件存储目录结构
 根据记忆系统的文件存储目录设计：
-- **memory-agent**：记忆系统中的agent元数据单独存放
-- **memory-ego**：memory-ego模块的其他设定信息单独存放
-- **memory-store**：memory-store收集的原始日志单独存放
+- **记忆系统根目录**
+  - **agent ID目录**
+    - **memory-ego**：memory-ego模块的设定信息单独存放
 
 ## MD文件结构
 
 ### 客观设定
-每个agent ID对应2个MD文件（存放在memory-ego目录）：
-1. **身份标识**：关于agent身份的客观事实，比如名称、创建时间（信息来源于memory-agent目录中的agent元数据）
+每个agent ID对应2个MD文件（存放在agent ID目录下的memory-ego子目录）：
+1. **身份标识**：关于agent身份的客观事实，比如名称、创建时间（信息来源于memory-agent.db）
 2. **用户识别信息**：agent和各个用户的客观关系，各个用户间的客观关系
 
 ### 角色设定
-每个agent ID + 角色ID对应2个MD文件（存放在memory-ego目录）：
+每个agent ID + 角色ID对应2个MD文件（存放在agent ID目录下的memory-ego子目录）：
 1. **角色扮演**：本次会话中对外展现的角色，包括agent对自己的称呼，用户可能对agent的各种称呼，对话采用的语气、用词风格
 2. **角色扮演关系**：各个用户在本次对话中的角色，agent在本次对话中对用户角色的称呼
 

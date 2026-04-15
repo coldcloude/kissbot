@@ -51,10 +51,14 @@ Keep It Simple Stupid BOT - kissbot
 
 ### 文件存储目录结构
 根据记忆系统的文件存储目录设计：
-- **memory-agent**：记忆系统中的agent元数据单独存放
-- **memory-ego**：memory-ego模块的其他设定信息单独存放
-- **memory-store**：memory-store收集的原始日志单独存放
-- **memory-struct-abstract**：memory-struct-abstract实现产生的数据
+- **记忆系统根目录**
+  - **memory-agent.db**：记忆系统中的agent元数据使用SQLite数据库管理
+  - **agent ID 1目录**
+    - **memory-ego**：memory-ego模块的设定信息单独存放
+    - **memory-store**：memory-store收集的原始记忆片段单独存放
+    - **memory-struct-、***：memory-struct-abstract实现产生的数据
+  - **agent ID 2目录**
+    - ...（结构同上）
 
 ### 记忆系统概述
 - 记忆系统负责管理多个agent的记忆，每个agent分配唯一ID
