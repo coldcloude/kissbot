@@ -15,7 +15,7 @@ use crate::config::Config;
 pub struct AgentMetadata {
     pub id: String,
     pub name: String,
-    pub description: Option<String>,
+    pub description: String,
     pub created_at: String,
 }
 
@@ -112,7 +112,7 @@ impl AgentManager {
         Ok(())
     }
 
-    pub async fn create_agent(&self, name: String, description: Option<String>) -> Result<AgentMetadata> {
+    pub async fn create_agent(&self, name: String, description: String) -> Result<AgentMetadata> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         
@@ -183,7 +183,7 @@ impl AgentManager {
         Ok(metadata)
     }
 
-    pub async fn update_agent_description(&self, agent_id: &str, description: Option<String>) -> Result<AgentMetadata> {
+    pub async fn update_agent_description(&self, agent_id: &str, description: String) -> Result<AgentMetadata> {
         let lock = self.get_or_create_lock(agent_id);
         let _guard = lock.write();
         
