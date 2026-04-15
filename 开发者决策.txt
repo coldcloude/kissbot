@@ -83,6 +83,7 @@ agent应具有双重基础设定：
 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的基础信息
 每个agent ID对应一个客观设定，对应多个角色设定
 该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要，在agent内封装为tool
+memory-ego模块直接管理agent元数据，身份标识信息直接来源于agent元数据
 
 关于系统提示词的设计
 除包含agent基础设定外，agent的系统提示词还应包含：
@@ -94,3 +95,9 @@ agent应具有双重基础设定：
 agent和从自我认知模块读取基础设定，应在agentic loop之外，直接调用API
 agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接调用API
 agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API
+
+关于记忆系统的文件存储目录设计
+记忆系统中的agent元数据单独存放在一个目录下，比如叫做memory-agent
+memory-ego模块的其他设定信息单独存放在一个目录下，比如叫做memory-ego
+memory-store收集的原始日志单独存放在一个目录下，比如叫做memory-store
+每个memory-struct的实现均可以读取memory-store目录中的原始数据，但是自身产生的数据要写到每个实现独立的目录下，目录名可以使用实现名

@@ -28,6 +28,7 @@ Keep It Simple Stupid BOT - kissbot
 |---------|------|------|
 | kissbot-agent | Rust | 智能体核心，处理LLM调用和agentic loop |
 | kissbot-channel | Rust | 消息通道框架 |
+| kissbot-memory | Rust | 记忆基础模块（存储组织结构） |
 | kissbot-memory-store | Rust | 记忆存储模块 |
 | kissbot-memory-struct | Rust | 记忆结构框架 |
 
@@ -42,6 +43,18 @@ Keep It Simple Stupid BOT - kissbot
 | kissbot-memory-manage | React + Vite | 记忆管理UI |
 
 ## 记忆系统设计
+
+### 记忆基础模块（kissbot-memory）
+- 记忆基础模块，实现记忆存储的组织结构
+- 定义记忆文件的存储目录规划和读写方法
+- 为其他记忆模块提供基础库支持
+
+### 文件存储目录结构
+根据记忆系统的文件存储目录设计：
+- **memory-agent**：记忆系统中的agent元数据单独存放
+- **memory-ego**：memory-ego模块的其他设定信息单独存放
+- **memory-store**：memory-store收集的原始日志单独存放
+- **memory-struct-abstract**：memory-struct-abstract实现产生的数据
 
 ### 记忆系统概述
 - 记忆系统负责管理多个agent的记忆，每个agent分配唯一ID
@@ -128,43 +141,49 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 - [x] 初始化所有React+Vite项目
 - [x] 建立项目目录结构
 
-### 第2阶段：memory-ego实现（基础模式）
+### 第2阶段：memory基础模块实现
+- [ ] 模块架构设计
+- [ ] 定义记忆存储目录结构
+- [ ] 实现记忆文件读写方法
+- [ ] 提供基础库供其他记忆模块使用
+
+### 第3阶段：memory-ego实现（基础模式）
 - [ ] 模块架构设计
 - [ ] MD文件基础模式实现（直接手动放置MD文件）
 - [ ] HTTPS API接口
 - [ ] 客观设定和角色设定的读取API
 
-### 第3阶段：agent实现
+### 第4阶段：agent实现
 - [ ] 模块架构设计
 - [ ] LLM API集成
 - [ ] agentic loop
 - [ ] tool调用机制
 - [ ] WSS客户端
 
-### 第4阶段：channel实现
+### 第5阶段：channel实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] channel-web后台实现（WSS服务器）
 - [ ] channel-web-ui前台实现（React+Vite）
 
-### 第5阶段：memory-store实现
+### 第6阶段：memory-store实现
 - [ ] 模块架构设计
 - [ ] 文件系统存储
 - [ ] HTTPS API接口
 - [ ] 订阅/通知机制
 
-### 第6阶段：memory-struct实现
+### 第7阶段：memory-struct实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] memory-struct-abstract实现（摘要搜索）
 - [ ] HTTPS tool接口
 
-### 第7阶段：UI实现
+### 第8阶段：UI实现
 - [ ] 模块架构设计
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
 
-### 第8阶段：memory-ego进阶模式改造
+### 第9阶段：memory-ego进阶模式改造
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成MD文件
 - [ ] 进阶模式API
