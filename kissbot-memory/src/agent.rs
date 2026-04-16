@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::sync::OnceLock;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -9,8 +9,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
-use crate::path;
-use crate::config::Config;
+use crate::{DirectoryManager, path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMetadata {
@@ -24,25 +23,30 @@ type AgentLock = Arc<RwLock<Option<AgentMetadata>>>;
 type ManagerLock = Arc<RwLock<HashMap<String, AgentLock>>>;
 
 pub struct AgentManager {
-    root_dir: PathBuf,
     manager_lock: ManagerLock,
 }
 
 static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
 
 impl AgentManager {
-    pub fn new(root_dir: impl AsRef<Path>) -> Self {
+    pub fn new() -> Self {
         Self {
-            root_dir: root_dir.as_ref().to_path_buf(),
             manager_lock: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub fn get() -> &'static Self {
         AGENT_MANAGER_INSTANCE.get_or_init(|| {
-            let config = Config::get();
-            AgentManager::new(&config.root_dir)
+            AgentManager::new()
         })
+    }
+
+    pub async fn ensure_agent_ego_dir(&self, agent_id: &str) -> Result<PathBuf> {
+        DirectoryManager::get().ensure_agent_ego_dir(agent_id).await
+    }
+
+    pub async fn list_agents(&self) -> Result<Vec<String>> {
+        DirectoryManager::get().list_agents().await
     }
 
     async fn get_or_create_lock(&self, agent_id: &str) -> AgentLock {
@@ -59,159 +63,158 @@ impl AgentManager {
         locks.entry(agent_id.to_string()).or_insert_with(|| Arc::new(RwLock::new(None))).clone()
     }
 
-    async fn ensure_dir_exists(&self, path: PathBuf) -> Result<PathBuf> {
-        if !(path.exists() && path.is_dir()) {
-            tokio::fs::create_dir_all(&path).await?;
-        }
-        Ok(path)
+    async fn agent_metadata_path(&self, agent_id: &str) -> Result<PathBuf> {
+        let agent_path = DirectoryManager::get().ensure_agent_dir(agent_id).await?;
+        let metadata_path = path::agent_metadata_path(agent_path);
+        Ok(metadata_path)
     }
 
-    pub async fn ensure_root_dir(&self) -> Result<PathBuf> {
-        let path = self.root_dir.clone();
-        self.ensure_dir_exists(path).await
-    }
+    async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
+        let lock = self.get_or_create_lock(agent_id).await;
 
-    pub async fn ensure_agent_dir(&self, agent_id: &str) -> Result<PathBuf> {
-        let path = path::agent_dir(&self.root_dir, agent_id);
-        self.ensure_dir_exists(path).await
-    }
-
-    pub async fn ensure_agent_ego_dir(&self, agent_id: &str) -> Result<PathBuf> {
-        let path = path::agent_ego_dir(&self.root_dir, agent_id);
-        self.ensure_dir_exists(path).await
-    }
-
-    pub async fn ensure_agent_store_dir(&self, agent_id: &str) -> Result<PathBuf> {
-        let path = path::agent_store_dir(&self.root_dir, agent_id);
-        self.ensure_dir_exists(path).await
-    }
-
-    pub async fn ensure_agent_struct_dir(&self, agent_id: &str, struct_name: &str) -> Result<PathBuf> {
-        let path = path::agent_struct_dir(&self.root_dir, agent_id, struct_name);
-        self.ensure_dir_exists(path).await
-    }
-
-    async fn read_agent_metadata(&self, agent_id: &str) -> Result<AgentMetadata> {
         //先尝试读内存
         {
-            let lock = self.get_or_create_lock(agent_id).await;
             let guard = lock.read().await;
-            if let Some(metadata) = guard.clone() {
-                return Ok(metadata);
+            if let Some(metadata) = guard.as_ref() {
+                return op(metadata);
             }
         }
 
         //无数据，从文件读取
+        {
+            let mut guard = lock.write().await;
+
+            //双重锁定
+            if let Some(metadata) = guard.as_ref() {
+                return op(metadata);
+            }
+
+            //从文件读取
+            let metadata_path = self.agent_metadata_path(agent_id).await?;
+
+            if !metadata_path.exists() {
+                return Err(Error::AgentNotFound(agent_id.to_string()));
+            }
+            
+            let content = tokio::fs::read_to_string(metadata_path).await?;
+            let metadata: AgentMetadata = serde_json::from_str(&content)?;
+            *guard = Some(metadata);
+        }
+
+        //读文件写入后重新读取
+        let guard = lock.read().await;
+        match guard.as_ref() {
+            Some(metadata) => return op(metadata),
+            None => return Err(Error::AgentNotFound(agent_id.to_string())),
+        }
+    }
+
+    async fn write_agent_metadata_ref(&self, agent_id: &str, op: impl FnOnce(Option<AgentMetadata>) -> Option<AgentMetadata>) -> Result<()> {
+        let metadata_path = self.agent_metadata_path(agent_id).await?;
+
         let lock = self.get_or_create_lock(agent_id).await;
         let mut guard = lock.write().await;
 
-        let metadata_path = path::agent_metadata_path(&self.root_dir, agent_id);
-
-        if !metadata_path.exists() {
-            return Err(Error::AgentNotFound(agent_id.to_string()));
-        }
+        //更新
+        *guard = op(guard.take());
         
-        let content = tokio::fs::read_to_string(metadata_path).await?;
-        let metadata: AgentMetadata = serde_json::from_str(&content)?;
-        *guard = Some(metadata.clone());
-        Ok(metadata)
+        //写入文件
+        match guard.as_ref() {
+            Some(metadata) => {
+                let content = serde_json::to_string_pretty(metadata)?;
+                tokio::fs::write(metadata_path, content).await?;
+                Ok(())
+            }
+            None => {
+                Err(Error::AgentNotFound(agent_id.to_string()))
+            }
+        }
     }
 
-    async fn write_agent_metadata(&self, metadata: &AgentMetadata) -> Result<()> {
+    async fn write_agent_metadata(&self, metadata: AgentMetadata) -> Result<()> {
         let lock = self.get_or_create_lock(&metadata.id).await;
         let mut guard = lock.write().await;
 
-        self.ensure_agent_dir(&metadata.id).await?;
-        let metadata_path = path::agent_metadata_path(&self.root_dir, &metadata.id);
-        
-        let content = serde_json::to_string_pretty(metadata)?;
+        let metadata_path = self.agent_metadata_path(&metadata.id).await?;
+
+        let content = serde_json::to_string_pretty(&metadata)?;
         tokio::fs::write(metadata_path, content).await?;
-        *guard = Some(metadata.clone());
+        *guard = Some(metadata);
         Ok(())
     }
 
-    pub async fn create_agent(&self, name: String, description: String) -> Result<AgentMetadata> {
+    pub async fn create_agent(&self, name: String, description: String) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        
+
         let metadata = AgentMetadata {
             id,
             name,
             description,
             created_at,
         };
-        
-        self.write_agent_metadata(&metadata).await?;
-        
-        Ok(metadata)
+
+        self.write_agent_metadata(metadata).await
     }
 
-    pub async fn get_agent(&self, agent_id: &str) -> Result<AgentMetadata> {
-        self.read_agent_metadata(agent_id).await
-    }
-
-    pub async fn list_agents(&self) -> Result<Vec<AgentMetadata>> {
-        let mut agents = Vec::new();
+    pub async fn get_metadata_clone(&self, agent_id: &str) -> Result<AgentMetadata> {
+        let mut metadata_option: Option<AgentMetadata> = None;
         
-        let root_dir = self.ensure_root_dir().await?;
+        self.read_agent_metadata_ref(agent_id, |metadata| {
+            metadata_option = Some(metadata.clone());
+            Ok(())
+        }).await?;
         
-        let mut entries = tokio::fs::read_dir(root_dir).await?;
-        
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(agent_id) = path.file_name().and_then(|n| n.to_str()) {
-                    match self.read_agent_metadata(agent_id).await {
-                        Ok(metadata) => {
-                            agents.push(metadata);
-                        }
-                        Err(_e) => {
-                        }
-                    }
-                }
-            }
+        match metadata_option {
+            Some(metadata) => Ok(metadata),
+            None => Err(Error::AgentNotFound(agent_id.to_string()))
         }
-
-        Ok(agents)
     }
 
-    pub async fn update_agent_name(&self, agent_id: &str, name: String) -> Result<AgentMetadata> {
-        let metadata = self.read_agent_metadata(agent_id).await?;
-
-        let new_metadata = AgentMetadata {
-            name: name,
-            ..metadata
-        };
-
-        self.write_agent_metadata(&new_metadata).await?;
-
-        Ok(new_metadata)
+    pub async fn get_metadata(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
+        self.read_agent_metadata_ref(agent_id, op).await
     }
 
-    pub async fn update_agent_description(&self, agent_id: &str, description: String) -> Result<AgentMetadata> {
-        let metadata = self.read_agent_metadata(agent_id).await?;
-
-        let new_metadata = AgentMetadata {
-            description: description,
-            ..metadata
-        };
-
-        self.write_agent_metadata(&new_metadata).await?;
-
-        Ok(new_metadata)
+    pub async fn update_agent_name(&self, agent_id: &str, name: String) -> Result<()> {
+        self.write_agent_metadata_ref(agent_id, |metadata| {
+            match metadata {
+                Some(metadata) => {
+                    Some(AgentMetadata {
+                        name: name,
+                        ..metadata
+                    })
+                }
+                None => None
+            }
+        }).await
     }
 
-    pub async fn update_agent_name_description(&self, agent_id: &str, name: String, description: String) -> Result<AgentMetadata> {
-        let metadata = self.read_agent_metadata(agent_id).await?;
+    pub async fn update_agent_description(&self, agent_id: &str, description: String) -> Result<()> {
+        self.write_agent_metadata_ref(agent_id, |metadata| {
+            match metadata {
+                Some(metadata) => {
+                    Some(AgentMetadata {
+                        description,
+                        ..metadata
+                    })
+                }
+                None => None
+            }
+        }).await
+    }
 
-        let new_metadata = AgentMetadata {
-            name: name,
-            description: description,
-            ..metadata
-        };
-
-        self.write_agent_metadata(&new_metadata).await?;
-
-        Ok(new_metadata)
+    pub async fn update_agent_name_description(&self, agent_id: &str, name: String, description: String) -> Result<()> {
+        self.write_agent_metadata_ref(agent_id, |metadata| {
+            match metadata {
+                Some(metadata) => {
+                    Some(AgentMetadata {
+                        name,
+                        description,
+                        ..metadata
+                    })
+                }
+                None => None
+            }
+        }).await
     }
 }

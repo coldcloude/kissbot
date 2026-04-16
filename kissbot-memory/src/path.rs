@@ -8,8 +8,8 @@ pub fn agent_dir(root_dir: impl AsRef<Path>, agent_id: &str) -> PathBuf {
     root_dir.as_ref().join(agent_id)
 }
 
-pub fn agent_metadata_path(root_dir: impl AsRef<Path>, agent_id: &str) -> PathBuf {
-    agent_dir(root_dir, agent_id).join(MEMORY_AGENT_JSON)
+pub fn agent_metadata_path(agent_dir: impl AsRef<Path>) -> PathBuf {
+    agent_dir.as_ref().to_path_buf().join(MEMORY_AGENT_JSON)
 }
 
 pub fn agent_ego_dir(root_dir: impl AsRef<Path>, agent_id: &str) -> PathBuf {

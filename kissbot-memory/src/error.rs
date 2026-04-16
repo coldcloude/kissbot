@@ -14,6 +14,9 @@ pub enum Error {
     #[error("Config error: {0}")]
     Config(#[from] config::ConfigError),
 
+    #[error("Directory not exist: {0}")]
+    DirectoryNotExist(String),
+
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
 }
