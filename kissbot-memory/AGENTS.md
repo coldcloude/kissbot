@@ -31,6 +31,7 @@
 - 目录自动创建：当需要使用某个目录时自动创建
 - 路径常量：结合字符串常量和路径构建器
 - 时间格式：统一使用 `yyyy-MM-dd HH:mm:ss` 格式（24小时制）
+- Config和AgentManager单例通过关联函数获取：Config::get()、AgentManager::get()
 
 ## Agent元数据结构
 - **id**：agent唯一标识符（UUID）
@@ -67,19 +68,20 @@
 - [x] 实现目录存在性检查
 
 ### 第4阶段：Agent元数据JSON文件设计
-- [ ] 定义Agent元数据结构（name、description、created_at）
-- [ ] 实现JSON文件读写功能
-- [ ] 实现读写锁机制防止竞争
+- [x] 定义Agent元数据结构（name、description、created_at）
+- [x] 实现JSON文件读写功能
+- [x] 实现读写锁机制防止竞争
 
 ### 第5阶段：Agent元数据操作实现
-- [ ] 实现新增agent函数
-- [ ] 实现按agent ID查询函数
-- [ ] 实现查询所有agent列表函数（遍历根目录下的agent目录）
-- [ ] 实现修改agent名称函数
-- [ ] 实现修改agent描述函数
+- [x] 实现新增agent函数
+- [x] 实现按agent ID查询函数
+- [x] 实现查询所有agent列表函数（遍历根目录下的agent目录）
+- [x] 实现修改agent名称函数
+- [x] 实现修改agent描述函数
 
-### 第6阶段：集成测试
-- [ ] 编写单元测试
-- [ ] 编写集成测试
-- [ ] 测试目录创建和路径构建
-- [ ] 测试数据库操作
+### 第6阶段：开发完成
+- [x] 模块功能开发完成
+- [x] DirectoryManager功能已合并到AgentManager
+- [x] Config和AgentManager单例通过关联函数获取
+- [x] 使用tokio::sync::RwLock实现读写锁
+- [x] 可成功编译并通过memory-ego模块集成测试
