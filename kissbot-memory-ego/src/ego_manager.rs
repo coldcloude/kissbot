@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
+use dashmap::DashSet;
 use kissbot_memory::DirectoryManager;
 
 use crate::error::Result;
@@ -18,23 +19,27 @@ pub fn ego_user_recognition_md_path(ego_dir: impl AsRef<Path>) -> PathBuf {
 }
 
 pub struct EgoManager {
-    identity_dirty: AtomicBool,
+    identity_dirty: DashSet<String>,
     agent_manager: &'static AgentManager,
 }
+
+static EGO_MANAGER_INSTANCE: OnceLock<EgoManager> = OnceLock::new();
 
 impl EgoManager {
     pub fn new() -> Self {
         Self {
-            identity_dirty: AtomicBool::new(true),
+            identity_dirty: DashSet::new(),
             agent_manager: AgentManager::get(),
         }
     }
 
+    pub fn get() -> &'static Self {
+        EGO_MANAGER_INSTANCE.get_or_init(|| Self::new())
+    }
+
     pub async fn sync_identity_md(&self, agent_id: &str) -> Result<()> {
-        match self.identity_dirty.compare_exchange_weak(
-            true, false, Ordering::Relaxed, Ordering::Relaxed
-        ) {
-            Ok(_) => {
+        match self.identity_dirty.remove(&agent_id.to_string()) {
+            Some(_) => {
                 let mut content = String::from("# Agent Identity\n\n");
                 self.agent_manager.get_metadata(agent_id, |metadata| {
                     content += & format!(
@@ -45,7 +50,7 @@ impl EgoManager {
                 }).await?;
                 Ok(())
             },
-            _ => {
+            None => {
                 Ok(())
             }
         }
@@ -71,5 +76,13 @@ impl EgoManager {
 
         let content = tokio::fs::read_to_string(user_recognition_path).await?;
         Ok(content)
+    }
+
+    pub async fn search_by_name(&self, name: &str) -> Result<Vec<String>> {
+        Err(crate::error::Error::AgentNotFound(name.to_string().to_string()))
+    }
+
+    pub async fn search_by_description(&self, description: &str) -> Result<Vec<String>> {
+        Err(crate::error::Error::AgentNotFound(description.to_string().to_string()))
     }
 }

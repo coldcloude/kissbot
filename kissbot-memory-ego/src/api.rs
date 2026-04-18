@@ -7,8 +7,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{AgentManager, AgentMetadata};
 use crate::ego_manager::EgoManager;
-use kissbot_memory::{AgentManager, AgentMetadata};
+use crate::error::Error;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateAgentRequest {
@@ -24,6 +25,11 @@ pub struct UpdateAgentNameRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentDescriptionRequest {
     pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchRequest {
+    pub keyword: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,6 +64,8 @@ pub fn create_router() -> Router {
         .route("/agents/:agent_id", get(get_agent))
         .route("/agents/:agent_id/name", put(update_agent_name))
         .route("/agents/:agent_id/description", put(update_agent_description))
+        .route("/agents/search/name", post(search_by_name))
+        .route("/agents/search/description", post(search_by_description))
         .route("/agents/:agent_id/identity", get(get_identity))
         .route("/agents/:agent_id/user-recognition", get(get_user_recognition))
 }
@@ -69,23 +77,32 @@ async fn create_agent(Json(req): Json<CreateAgentRequest>) -> impl IntoResponse 
     };
     
     match result {
-        Ok(agent) => {
-            let ego_manager = EgoManager::new();
-            let _ = ego_manager.ensure_identity_md(&agent.id).await;
-            (StatusCode::OK, Json(ApiResponse::success(agent)))
+        Ok(()) => {
+            (StatusCode::OK, Json(ApiResponse::<()>::success(())))
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<AgentMetadata>::error(e.to_string())),
+            Json(ApiResponse::<()>::error(e.to_string())),
         ),
     }
 }
 
 async fn list_agents() -> impl IntoResponse {
-    let result = {
+    let result = async {
+        let directory_manager = kissbot_memory::DirectoryManager::get();
+        let agent_ids = directory_manager.list_agents().await?;
+        
         let agent_manager = AgentManager::get();
-        agent_manager.list_agents().await
-    };
+        let mut agents = Vec::new();
+        
+        for agent_id in agent_ids {
+            if let Ok(metadata) = agent_manager.get_metadata_clone(&agent_id).await {
+                agents.push(metadata);
+            }
+        }
+        
+        Ok::<_, Error>(agents)
+    }.await;
     
     match result {
         Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
@@ -99,12 +116,12 @@ async fn list_agents() -> impl IntoResponse {
 async fn get_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.get_agent(&agent_id).await
+        agent_manager.get_metadata_clone(&agent_id).await
     };
     
     match result {
         Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
-        Err(kissbot_memory::Error::AgentNotFound(_)) => (
+        Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ApiResponse::<AgentMetadata>::error(format!("Agent {} not found", agent_id))),
         ),
@@ -125,14 +142,14 @@ async fn update_agent_name(
     };
     
     match result {
-        Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
-        Err(kissbot_memory::Error::AgentNotFound(_)) => (
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
+        Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<AgentMetadata>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<AgentMetadata>::error(e.to_string())),
+            Json(ApiResponse::<()>::error(e.to_string())),
         ),
     }
 }
@@ -147,14 +164,42 @@ async fn update_agent_description(
     };
     
     match result {
-        Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
-        Err(kissbot_memory::Error::AgentNotFound(_)) => (
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
+        Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<AgentMetadata>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<AgentMetadata>::error(e.to_string())),
+            Json(ApiResponse::<()>::error(e.to_string())),
+        ),
+    }
+}
+
+async fn search_by_name(Json(req): Json<SearchRequest>) -> impl IntoResponse {
+    let result = {
+        EgoManager::get().search_by_name(&req.keyword).await
+    };
+    
+    match result {
+        Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<Vec<String>>::error(e.to_string())),
+        ),
+    }
+}
+
+async fn search_by_description(Json(req): Json<SearchRequest>) -> impl IntoResponse {
+    let result = {
+        EgoManager::get().search_by_description(&req.keyword).await
+    };
+    
+    match result {
+        Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<Vec<String>>::error(e.to_string())),
         ),
     }
 }
@@ -167,7 +212,7 @@ async fn get_identity(Path(agent_id): Path<String>) -> impl IntoResponse {
     
     match result {
         Ok(content) => (StatusCode::OK, Json(ApiResponse::success(content))),
-        Err(crate::error::Error::Memory(kissbot_memory::Error::AgentNotFound(_))) => (
+        Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ApiResponse::<String>::error(format!("Agent {} not found", agent_id))),
         ),
@@ -186,11 +231,11 @@ async fn get_user_recognition(Path(agent_id): Path<String>) -> impl IntoResponse
     
     match result {
         Ok(content) => (StatusCode::OK, Json(ApiResponse::success(content))),
-        Err(crate::error::Error::Memory(kissbot_memory::Error::AgentNotFound(_))) => (
+        Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ApiResponse::<String>::error(format!("Agent {} not found", agent_id))),
         ),
-        Err(crate::error::Error::SettingNotFound(_)) => (
+        Err(Error::SettingNotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ApiResponse::<String>::error("user-recognition.md not found".to_string())),
         ),

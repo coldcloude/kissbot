@@ -1,6 +1,6 @@
 use chrono::Utc;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::Arc;
@@ -28,10 +28,9 @@ pub struct AgentMetadata {
 }
 
 type AgentLock = Arc<RwLock<Option<AgentMetadata>>>;
-type ManagerLock = Arc<RwLock<HashMap<String, AgentLock>>>;
 
 pub struct AgentManager {
-    manager_lock: ManagerLock,
+    manager_lock: DashMap<String, AgentLock>,
 }
 
 static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
@@ -39,7 +38,7 @@ static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
 impl AgentManager {
     pub fn new() -> Self {
         Self {
-            manager_lock: Arc::new(RwLock::new(HashMap::new())),
+            manager_lock: DashMap::new(),
         }
     }
 
@@ -50,17 +49,10 @@ impl AgentManager {
     }
 
     async fn get_or_create_lock(&self, agent_id: &str) -> AgentLock {
-        //先尝试读取已存在的锁
-        {
-            let locks = self.manager_lock.read().await;
-            if let Some(lock) = locks.get(agent_id) {
-                return lock.clone();
-            }
-        }
-        
-        //否则新建锁
-        let mut locks = self.manager_lock.write().await;
-        locks.entry(agent_id.to_string()).or_insert_with(|| Arc::new(RwLock::new(None))).clone()
+        self.manager_lock
+        .entry(agent_id.to_string())
+        .or_insert_with(|| Arc::new(RwLock::new(None)))
+        .clone()
     }
 
     async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
