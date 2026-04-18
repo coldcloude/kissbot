@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -9,7 +9,15 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
-use crate::{DirectoryManager, path};
+use kissbot_memory::{DirectoryManager};
+
+pub const AGENT_METADATA_JSON: &str = "metadata.json";
+
+async fn agent_metadata_path(agent_id: &str) -> Result<PathBuf> {
+    let agent_dir = DirectoryManager::get().ensure_agent_dir(agent_id).await?;
+    let metadata_path = agent_dir.join(AGENT_METADATA_JSON);
+    Ok(metadata_path)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMetadata {
@@ -41,14 +49,6 @@ impl AgentManager {
         })
     }
 
-    pub async fn ensure_agent_ego_dir(&self, agent_id: &str) -> Result<PathBuf> {
-        DirectoryManager::get().ensure_agent_ego_dir(agent_id).await
-    }
-
-    pub async fn list_agents(&self) -> Result<Vec<String>> {
-        DirectoryManager::get().list_agents().await
-    }
-
     async fn get_or_create_lock(&self, agent_id: &str) -> AgentLock {
         //先尝试读取已存在的锁
         {
@@ -61,12 +61,6 @@ impl AgentManager {
         //否则新建锁
         let mut locks = self.manager_lock.write().await;
         locks.entry(agent_id.to_string()).or_insert_with(|| Arc::new(RwLock::new(None))).clone()
-    }
-
-    async fn agent_metadata_path(&self, agent_id: &str) -> Result<PathBuf> {
-        let agent_path = DirectoryManager::get().ensure_agent_dir(agent_id).await?;
-        let metadata_path = path::agent_metadata_path(agent_path);
-        Ok(metadata_path)
     }
 
     async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
@@ -90,7 +84,7 @@ impl AgentManager {
             }
 
             //从文件读取
-            let metadata_path = self.agent_metadata_path(agent_id).await?;
+            let metadata_path = agent_metadata_path(agent_id).await?;
 
             if !metadata_path.exists() {
                 return Err(Error::AgentNotFound(agent_id.to_string()));
@@ -110,7 +104,7 @@ impl AgentManager {
     }
 
     async fn write_agent_metadata_ref(&self, agent_id: &str, op: impl FnOnce(Option<AgentMetadata>) -> Option<AgentMetadata>) -> Result<()> {
-        let metadata_path = self.agent_metadata_path(agent_id).await?;
+        let metadata_path = agent_metadata_path(agent_id).await?;
 
         let lock = self.get_or_create_lock(agent_id).await;
         let mut guard = lock.write().await;
@@ -135,7 +129,7 @@ impl AgentManager {
         let lock = self.get_or_create_lock(&metadata.id).await;
         let mut guard = lock.write().await;
 
-        let metadata_path = self.agent_metadata_path(&metadata.id).await?;
+        let metadata_path = agent_metadata_path(&metadata.id).await?;
 
         let content = serde_json::to_string_pretty(&metadata)?;
         tokio::fs::write(metadata_path, content).await?;
@@ -171,7 +165,7 @@ impl AgentManager {
         }
     }
 
-    pub async fn get_metadata(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
+    pub async fn get_metadata(&self, agent_id: &str, op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
         self.read_agent_metadata_ref(agent_id, op).await
     }
 

@@ -12,7 +12,7 @@ pub enum Error {
     Config(#[from] config::ConfigError),
 
     #[error("Memory error: {0}")]
-    Memory(#[from] kissbot_memory::Error),
+    KissbotMemory(#[from] kissbot_memory::Error),
 
     #[error("Agent not found: {0}")]
     AgentNotFound(String),

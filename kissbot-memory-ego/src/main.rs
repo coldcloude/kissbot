@@ -1,6 +1,6 @@
 mod error;
 mod config;
-mod path;
+mod agent;
 mod ego_manager;
 mod api;
 
