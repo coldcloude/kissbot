@@ -84,7 +84,7 @@ agent应具有双重基础设定：
 每个agent ID对应一个客观设定，对应多个角色设定
 该模块仅使用API，本身不封装为tool。agent一般使用API查询自我认知，如有自动化必要，在agent内封装为tool
 memory-ego模块的身份标识信息来源于agent元数据
-memory-ego模块提供管理agent元数据的HTTPS API
+memory-ego模块提供管理agent元数据功能（包括HTTPS API）
 
 关于系统提示词的设计
 除包含agent基础设定外，agent的系统提示词还应包含：
@@ -98,7 +98,6 @@ agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接
 agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API
 
 关于记忆系统的文件存储目录设计
-记忆系统中的agent元数据使用一个sqlite数据库管理，放在记忆系统根目录，比如叫做memory-agent.md
 记忆系统设计为每个agent一个目录的组织形式，目录名为agent ID。
 每个agent ID目录下有结构相同的文件和子目录：
 （1）memory-agent.json文件，记录agent的元数据。
