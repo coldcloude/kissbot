@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     extract::Path,
     http::StatusCode,
@@ -5,6 +7,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use futures::future;
+use kissbot_memory::DirectoryManager;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentManager, AgentMetadata};
@@ -24,6 +28,12 @@ pub struct UpdateAgentNameRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentDescriptionRequest {
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentNameDescriptionRequest {
+    pub name: String,
     pub description: String,
 }
 
@@ -64,6 +74,7 @@ pub fn create_router() -> Router {
         .route("/agents/:agent_id", get(get_agent))
         .route("/agents/:agent_id/name", put(update_agent_name))
         .route("/agents/:agent_id/description", put(update_agent_description))
+        .route("/agents/:agent_id/name-description", put(update_agent_name_description))
         .route("/agents/search/name", post(search_by_name))
         .route("/agents/search/description", post(search_by_description))
         .route("/agents/:agent_id/identity", get(get_identity))
@@ -88,46 +99,41 @@ async fn create_agent(Json(req): Json<CreateAgentRequest>) -> impl IntoResponse 
 }
 
 async fn list_agents() -> impl IntoResponse {
-    let result = async {
-        let directory_manager = kissbot_memory::DirectoryManager::get();
-        let agent_ids = directory_manager.list_agents().await?;
-        
-        let agent_manager = AgentManager::get();
-        let mut agents = Vec::new();
-        
-        for agent_id in agent_ids {
-            if let Ok(metadata) = agent_manager.get_metadata_clone(&agent_id).await {
-                agents.push(metadata);
-            }
+    //先获取所有agent id
+    let agent_ids = {
+        match DirectoryManager::get().list_agents().await {
+            Ok(agent_ids) => agent_ids,
+            Err(_) => Vec::new(),
         }
-        
-        Ok::<_, Error>(agents)
-    }.await;
+    };
     
-    match result {
-        Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<AgentMetadata>>::error(e.to_string())),
-        ),
+    //并发获取所有agent metadata
+    let agent_manager = AgentManager::get();
+    let mut agents = Vec::new();
+    let mut futs = Vec::new();
+    agent_ids.iter().for_each(|agent_id| {
+        futs.push(agent_manager.get_metadata(&agent_id));
+    });
+    let results = future::join_all(futs).await;
+    for result in results {
+        if let Ok(metadata) = result {
+            agents.push(metadata);
+        }
     }
+    
+    (StatusCode::OK, Json(ApiResponse::success(agents)))
 }
 
 async fn get_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
-    let result = {
-        let agent_manager = AgentManager::get();
-        agent_manager.get_metadata_clone(&agent_id).await
-    };
-    
-    match result {
+    match AgentManager::get().get_metadata(&agent_id).await {
         Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<AgentMetadata>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<AgentMetadata>::error(e.to_string())),
+            Json(ApiResponse::<Arc<AgentMetadata>>::error(e.to_string())),
         ),
     }
 }
@@ -176,31 +182,45 @@ async fn update_agent_description(
     }
 }
 
-async fn search_by_name(Json(req): Json<SearchRequest>) -> impl IntoResponse {
+async fn update_agent_name_description(
+    Path(agent_id): Path<String>,
+    Json(req): Json<UpdateAgentNameDescriptionRequest>,
+) -> impl IntoResponse {
     let result = {
-        EgoManager::get().search_by_name(&req.keyword).await
+        let agent_manager = AgentManager::get();
+        agent_manager.update_agent_name_description(&agent_id, req.name, req.description).await
     };
     
     match result {
-        Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
+        Err(Error::AgentNotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+        ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<String>>::error(e.to_string())),
+            Json(ApiResponse::<()>::error(e.to_string())),
         ),
     }
 }
 
+async fn search_by_name(Json(req): Json<SearchRequest>) -> impl IntoResponse {
+    match EgoManager::get().await {
+        Ok(ego_manager) => {
+            let agents = ego_manager.search_by_name(&req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(agents)))
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+    }
+}
+
 async fn search_by_description(Json(req): Json<SearchRequest>) -> impl IntoResponse {
-    let result = {
-        EgoManager::get().search_by_description(&req.keyword).await
-    };
-    
-    match result {
-        Ok(agents) => (StatusCode::OK, Json(ApiResponse::success(agents))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<String>>::error(e.to_string())),
-        ),
+    match EgoManager::get().await {
+        Ok(ego_manager) => {
+            let agents = ego_manager.search_by_description(&req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(agents)))
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
     }
 }
 

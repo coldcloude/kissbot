@@ -32,10 +32,7 @@ fn agent_struct_dir(agent_dir: impl AsRef<Path>, struct_name: &str) -> PathBuf {
 async fn ensure_dir_exists(path: impl AsRef<Path>) -> Result<PathBuf> {
     let p = path.as_ref();
     if !(p.exists() && p.is_dir()) {
-        match tokio::fs::create_dir_all(p).await {
-            Ok(_) => {},
-            Err(_) => {},
-        }
+        let _ = tokio::fs::create_dir_all(p).await;
     }
     if !p.exists() {
         return Err(Error::PathNotExist(p.to_string_lossy().to_string()));
@@ -90,10 +87,7 @@ impl DirectoryManager {
         ensure_dir_exists(&path).await?;
         let uuid_file = agent_uuid_file(&path, agent_id);
         if !uuid_file.exists() {
-            match tokio::fs::File::create(&uuid_file).await {
-                Ok(_) => {},
-                Err(_) => {},
-            }
+            let _ = tokio::fs::File::create(&uuid_file).await;
         }
         if !uuid_file.exists() {
             return Err(Error::PathNotExist(uuid_file.to_string_lossy().to_string()));

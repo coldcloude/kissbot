@@ -153,11 +153,8 @@ impl EgoManager {
             futs.push(fut);
         });
         for result in future::join_all(futs).await {
-            match result {
-                Ok(metadata) => {
-                    results.push(metadata);
-                },
-                Err(_) => {}
+            if let Ok(metadata) = result {
+                results.push(metadata);
             }
         }
         results
