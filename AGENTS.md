@@ -231,6 +231,8 @@ agent基础信息使用纯文本（可用MD），应包括以下几个部分：
 |--------|------|------|
 | tokio | 1.51 | 异步运行时 |
 | tokio-tungstenite | 0.29 | WSS客户端 |
+| futures | 0.3 | 异步任务 |
+| dashmap | 6.1 | 并发安全的哈希表 |
 | reqwest | 0.13 | HTTPS客户端 |
 | axum | 0.8 | HTTPS服务器 |
 | serde | 1.0 | JSON序列化 |

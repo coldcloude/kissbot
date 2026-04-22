@@ -37,8 +37,7 @@
 
 ## Agent元数据操作函数
 - create_agent：创建新的agent，需要name和description
-- get_metadata_clone：获取agent元数据的克隆副本
-- get_metadata：通过回调函数读取agent元数据
+- get_metadata：获取agent元数据（返回Arc<AgentMetadata>）
 - update_agent_name：修改agent名称
 - update_agent_description：修改agent描述
 - update_agent_name_description：同时修改agent名称和描述
@@ -58,7 +57,7 @@
 
 #### 查询所有agent列表接口
 - **接口**：查询所有agent
-- **返回内容**：agent元数据列表
+- **返回内容**：agent元数据列表（并发获取）
 
 #### 修改agent名称接口
 - **接口**：修改agent名称
@@ -69,6 +68,21 @@
 - **接口**：修改agent描述
 - **输入**：agent ID、新描述
 - **返回**：成功或失败状态
+
+#### 同时修改名称和描述接口
+- **接口**：同时修改agent名称和描述
+- **输入**：agent ID、新名称、新描述
+- **返回**：成功或失败状态
+
+#### 按名称搜索agent接口
+- **接口**：按名称搜索agent
+- **输入**：搜索关键词
+- **返回**：匹配的agent元数据列表
+
+#### 按描述搜索agent接口
+- **接口**：按描述搜索agent
+- **输入**：搜索关键词
+- **返回**：匹配的agent元数据列表
 
 ### 客观设定查询接口
 - **接口**：按agent ID查询
@@ -94,13 +108,15 @@
     - **agent-{agent-id}**：agent存在标识文件（由memory模块管理）
     - **metadata.json**：agent元数据JSON文件
     - **memory-ego**：memory-ego模块的设定信息单独存放
+      - **identity.md**：自动生成的身份标识MD文件
+      - **user-recognition.md**：用户识别信息MD文件（手动放置）
 
 ## MD文件结构
 
 ### 客观设定
 每个agent ID对应2个MD文件（存放在agent ID目录下的memory-ego子目录）：
-1. **身份标识**：关于agent身份的客观事实，比如名称、创建时间（信息来源于metadata.json）
-2. **用户识别信息**：agent和各个用户的客观关系，各个用户间的客观关系
+1. **身份标识**：关于agent身份的客观事实，比如名称、创建时间（信息来源于metadata.json，自动生成）
+2. **用户识别信息**：agent和各个用户的客观关系，各个用户间的客观关系（手动放置）
 
 ### 角色设定
 每个agent ID + 角色ID对应2个MD文件（存放在agent ID目录下的memory-ego子目录）：
@@ -119,10 +135,35 @@
 
 ## AgentManager实现
 - 实现agent元数据的JSON文件存储（metadata.json）
+- 使用DashMap实现高并发的manager_lock
+- 使用Arc<AgentMetadata>共享元数据
 - 使用tokio::sync::RwLock实现读写锁防止竞争
 - 使用内存缓存，首次读取后缓存到内存
 - 双重锁定机制确保数据一致性
 - 单例通过关联函数获取：AgentManager::get()
+
+## EgoManager实现
+- 使用indicium库的SearchIndex实现全文搜索
+- 使用DashMap和DashSet实现高并发数据结构
+- 使用Arc共享数据，避免克隆
+- 脏标记机制（identity_dirty）：延迟更新identity.md和搜索索引
+- force_sync_identity_md：强制同步，更新搜索索引并生成identity.md
+- sync_identity_md：检查脏标记，仅在需要时同步
+- search_by_name/search_by_description：先同步脏数据再搜索
+- 启动时自动加载：get()初始化时加载所有agent到搜索索引
+- 单例通过tokio::sync::OnceCell实现异步初始化
+
+## 实现决策
+- 不作为memory-struct的子模块，不实现memory-struct的接口
+- 使用tokio作为异步运行时
+- 使用axum实现HTTPS服务器
+- 使用serde进行JSON序列化
+- 支持从配置文件加载证书
+- AgentManager在本模块实现，管理agent元数据的JSON文件存储
+- 使用dashmap实现高并发数据结构
+- 使用indicium库实现全文搜索
+- 使用futures实现并发操作
+- 使用Arc共享数据，减少克隆开销
 
 ## 开发计划
 
@@ -134,15 +175,15 @@
 - [x] HTTPS API接口
 - [x] 客观设定和角色设定的读取API
 
-### 第2阶段：进阶模式改造
+### 第2阶段：全文搜索实现
+- [x] 使用indicium库实现全文搜索
+- [x] 使用dashmap实现高并发数据结构
+- [x] 实现脏标记机制延迟更新
+- [x] 实现name和description字段的全文搜索
+- [x] 添加搜索API接口
+- [x] 启动时自动加载所有agent到索引
+
+### 第3阶段：进阶模式改造
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成MD文件
 - [ ] 进阶模式API
-
-## 实现决策
-- 不作为memory-struct的子模块，不实现memory-struct的接口
-- 使用tokio作为异步运行时
-- 使用axum实现HTTPS服务器
-- 使用serde进行JSON序列化
-- 支持从配置文件加载证书
-- AgentManager在本模块实现，管理agent元数据的JSON文件存储
