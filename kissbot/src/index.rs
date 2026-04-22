@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash, rc::Rc};
+use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash};
 
 use crate::{Document, Error, document::Tokenizer, error::Result};
 
