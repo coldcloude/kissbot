@@ -26,6 +26,7 @@ Keep It Simple Stupid BOT - kissbot
 ### 顶层模块
 | 模块名称 | 类型 | 说明 |
 |---------|------|------|
+| kissbot | Rust | 基础工具模块（倒排索引等） |
 | kissbot-agent | Rust | 智能体核心，处理LLM调用和agentic loop |
 | kissbot-channel | Rust | 消息通道框架 |
 | kissbot-memory | Rust | 记忆基础模块（存储组织结构） |
