@@ -1,24 +1,38 @@
-use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash, sync::Arc};
+use std::{collections::{HashMap, LinkedList, hash_map::Entry}, hash::Hash, sync::Arc};
 
 use parking_lot::RwLock;
 
-use crate::{Document, Error, document::Tokenizer, error::Result};
+use crate::{Error, document::Tokenizer, error::Result};
 
 type TokenNodeRef<T,K> = Arc<RwLock<TokenNode<T,K>>>;
 
+struct Split {
+    index: usize,
+    start: usize,
+}
+
+impl Split {
+    pub fn new(index: usize, start: usize) -> Self {
+        Self {
+            index,
+            start,
+        }
+    }
+}
+
 struct TokenNode<T,K>
 where
-    T: Eq + Hash + Clone + Send + Sync + 'static,
-    K: Eq + Hash + Clone + ToString + Send + Sync + 'static,
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
 {
     sub_tree_map: Option<Arc<RwLock<HashMap<T,TokenNodeRef<T,K>>>>>,
-    leaf_set: Option<Arc<RwLock<HashSet<K>>>>,
+    leaf_set: Option<Arc<RwLock<HashMap<K,Vec<Split>>>>>,
 }
 
 impl<T,K> TokenNode<T,K>
 where
-    T: Eq + Hash + Clone + Send + Sync + 'static,
-    K: Eq + Hash + Clone + ToString + Send + Sync + 'static,
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
 {
     pub fn new() -> Self {
         Self {
@@ -28,10 +42,10 @@ where
     }
 }
 
-pub struct Index<T,K,TKNZ>
+pub struct AtomicIndex<T,K,TKNZ>
 where
-    T: Eq + Hash + Clone + Send + Sync + 'static,
-    K: Eq + Hash + Clone + ToString + Send + Sync + 'static,
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
     TKNZ: Tokenizer<T>,
 {
     tree: TokenNodeRef<T,K>,
@@ -41,10 +55,10 @@ where
     max_depth: usize,
 }
 
-impl<T,K,TKNZ> Index<T,K,TKNZ>
+impl<T,K,TKNZ> AtomicIndex<T,K,TKNZ>
 where
-    T: Eq + Hash + Clone + Send + Sync + 'static,
-    K: Eq + Hash + Clone + ToString + Send + Sync + 'static,
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
     TKNZ: Tokenizer<T>,
 {
     pub fn new(tokenizer: TKNZ, max_depth: usize) -> Self {
@@ -57,7 +71,7 @@ where
         }
     }
     
-    pub fn insert<D: Document>(&mut self, key: &K, document: &D) -> Result<()> {
+    pub fn insert(&mut self, key: &K, contents: &Vec<String>) -> Result<()> {
         let mut documents_guard = self.documents.write();
         match documents_guard.entry(key.clone()) {
             Entry::Occupied(_) => {
@@ -65,7 +79,7 @@ where
             }
             Entry::Vacant(entry) => {
                 let mut tokens_list = Vec::new();
-                for content in document.contents() {
+                for (index, content) in contents.iter().enumerate() {
                     let tokens = self.tokenizer.tokenize(content.as_str());
                     //取所有长度不超过max_depth的子串进行索引
                     for start in 0..tokens.len() {
@@ -89,11 +103,11 @@ where
                         }
                         //在叶子节点记录文档id
                         let mut tree_guard = current_tree.write();
-                        let leaf_set = tree_guard.leaf_set.get_or_insert_with(|| Arc::new(RwLock::new(HashSet::new())));
+                        let leaf_set = tree_guard.leaf_set.get_or_insert_with(|| Arc::new(RwLock::new(HashMap::new())));
                         let mut leaf_set_guard = leaf_set.write();
-                        leaf_set_guard.insert(key.clone());
+                        leaf_set_guard.entry(key.clone()).or_insert_with(|| Vec::new()).push(Split::new(index, start));
                     }
-                    //保存文档内容用于移除
+                    //保存文档内容
                     tokens_list.push(tokens);
                 }
                 entry.insert(tokens_list);

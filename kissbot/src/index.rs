@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash};
 
-use crate::{Document, Error, document::Tokenizer, error::Result};
+use crate::{Error, document::Tokenizer, error::Result};
 
 struct TokenNode<T,K>
 where
@@ -94,14 +94,14 @@ where
         }
     }
     
-    pub fn insert<D: Document>(&mut self, key: &K, document: &D) -> Result<()> {
+    pub fn insert(&mut self, key: &K, contents: &Vec<String>) -> Result<()> {
         match self.documents.entry(key.clone()) {
             Entry::Occupied(_) => {
                 Err(Error::DuplicatedDocumentKey(key.to_string()))
             }
             Entry::Vacant(entry) => {
                 let mut tokens_list = Vec::new();
-                for content in document.contents() {
+                for content in contents {
                     let tokens = self.tokenizer.tokenize(content.as_str());
                     //取所有长度不超过max_depth的子串进行索引
                     for start in 0..tokens.len() {
