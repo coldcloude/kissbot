@@ -7,7 +7,7 @@ use crate::{Error, error::Result};
 
 type TokenNodeRef<T,K> = Arc<RwLock<TokenNode<T,K>>>;
 
-struct Split {
+pub struct Split {
     index: usize,
     start: usize,
 }
@@ -192,7 +192,59 @@ where
 
     /// 查找文档
     /// 只做完全匹配，部分匹配由调用方自行处理
-    pub fn find(&self) {
-
+    pub fn find(&self, query: &[T], prefix_only: bool) -> HashMap<K,Vec<Split>> {
+        let mut result: HashMap<K,Vec<Split>> = HashMap::new();
+        let mut trees: Vec<TokenNodeRef<T,K>> = Vec::new();
+        trees.push(self.tree.clone());
+        if prefix_only {
+            trees.push(self.prefix_tree.clone());
+        }
+        for tree in trees {
+            let mut matched = true;
+            //遍历所有token
+            let mut current_tree = tree.clone();
+            for token in query {
+                //获取当前token对应的子树
+                let current_tree_ref = current_tree.clone();
+                let tree_guard = current_tree_ref.read();
+                if let Some(sub_tree_map) = tree_guard.sub_tree_map.as_ref() {
+                    if let Some(sub_tree) = sub_tree_map.get(token) {
+                        current_tree = sub_tree.clone();
+                    }
+                    else {
+                        matched = false;
+                        break;
+                    }
+                }
+                else {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                //遍历所有叶子节点
+                let mut nodes: LinkedList<TokenNodeRef<T,K>> = LinkedList::new();
+                nodes.push_back(current_tree.clone());
+                while let Some(node) = nodes.pop_back() {
+                    let tree_guard = node.read();
+                    //将叶子节点内容加入结果集
+                    if let Some(leaf_set) = tree_guard.leaf_set.as_ref() {
+                        for entry in leaf_set.iter() {
+                            let splits = result.entry(entry.key().clone()).or_insert_with(|| Vec::new());
+                            for split in entry.value().iter() {
+                                splits.push(Split { index: split.index, start: split.start });
+                            }
+                        }
+                    }
+                    //将子树加入队列
+                    if let Some(sub_tree_map) = tree_guard.sub_tree_map.as_ref() {
+                        for entry in sub_tree_map.iter() {
+                            nodes.push_back(entry.value().clone());
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 }
