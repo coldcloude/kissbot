@@ -1,6 +1,11 @@
-use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash};
+use std::{collections::{HashMap, LinkedList, hash_map::Entry}, hash::Hash};
 
-use crate::{Error, document::Tokenizer, error::Result};
+use crate::{Error, error::Result};
+
+struct Split {
+    index: usize,
+    start: usize,
+}
 
 struct TokenNode<T,K>
 where
@@ -8,7 +13,7 @@ where
     K: Eq + Hash + Clone + ToString + 'static,
 {
     sub_tree_map: Option<HashMap<T,TokenNode<T,K>>>,
-    leaf_set: Option<HashSet<K>>,
+    leaf_set: Option<HashMap<K,Vec<Split>>>,
 }
 
 impl<T,K> TokenNode<T,K>
@@ -27,8 +32,8 @@ where
         self.sub_tree_map.get_or_insert_with(|| HashMap::new()).entry(token).or_insert_with(|| Self::new())
     }
 
-    pub fn insert_leaf(&mut self, key: K) {
-        self.leaf_set.get_or_insert_with(|| HashSet::new()).insert(key);
+    pub fn insert_leaf(&mut self, key: K, index: usize, start: usize) {
+        self.leaf_set.get_or_insert_with(|| HashMap::new()).entry(key).or_insert_with(|| Vec::new()).push(Split {index, start});
     }
 
     pub fn remove(&mut self, key: &K, tokens: &mut LinkedList<T>) {
@@ -65,49 +70,44 @@ where
         }
     }
 }
-pub struct Index<T,K,TKNZ>
+pub struct Index<T,K>
 where
     T: Eq + Hash + Clone + 'static,
     K: Eq + Hash + Clone + ToString + 'static,
-    TKNZ: Tokenizer<T>,
 {
     tree: TokenNode<T,K>,
     prefix_tree: TokenNode<T,K>,
     documents: HashMap<K,Vec<Vec<T>>>,
-    tokenizer: TKNZ,
     max_depth: usize,
 }
 
-impl<T,K,TKNZ> Index<T,K,TKNZ>
+impl<T,K> Index<T,K>
 where
     T: Eq + Hash + Clone + 'static,
     K: Eq + Hash + Clone + ToString + 'static,
-    TKNZ: Tokenizer<T>,
 {
-    pub fn new(tokenizer: TKNZ, max_depth: usize) -> Self {
+    pub fn new(max_depth: usize) -> Self {
         Self {
             tree: TokenNode::new(),
             prefix_tree: TokenNode::new(),
             documents: HashMap::new(),
-            tokenizer,
             max_depth,
         }
     }
     
-    pub fn insert(&mut self, key: &K, contents: &Vec<String>) -> Result<()> {
+    pub fn insert(&mut self, key: &K, contents: impl IntoIterator<Item = Vec<T>>) -> Result<()> {
         match self.documents.entry(key.clone()) {
             Entry::Occupied(_) => {
                 Err(Error::DuplicatedDocumentKey(key.to_string()))
             }
             Entry::Vacant(entry) => {
                 let mut tokens_list = Vec::new();
-                for content in contents {
-                    let tokens = self.tokenizer.tokenize(content.as_str());
+                for (index, content) in contents.into_iter().enumerate() {
                     //取所有长度不超过max_depth的子串进行索引
-                    for start in 0..tokens.len() {
+                    for start in 0..content.len() {
                         let mut valid_tokens = LinkedList::new();
-                        for curr in start..std::cmp::min(start + self.max_depth, tokens.len()) {
-                            valid_tokens.push_back(tokens[curr].clone());
+                        for curr in start..std::cmp::min(start + self.max_depth, content.len()) {
+                            valid_tokens.push_back(content[curr].clone());
                         }
                         //前缀子串单独存
                         let mut current_tree = if start == 0 {
@@ -120,10 +120,10 @@ where
                             current_tree = current_tree.get_sub_tree(token);
                         }
                         //在叶子节点记录文档id
-                        current_tree.insert_leaf(key.clone());
+                        current_tree.insert_leaf(key.clone(), index, start);
                     }
                     //保存文档内容用于移除
-                    tokens_list.push(tokens);
+                    tokens_list.push(content);
                 }
                 entry.insert(tokens_list);
                 Ok(())

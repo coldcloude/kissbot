@@ -1,8 +1,9 @@
 use std::{collections::{HashMap, LinkedList, hash_map::Entry}, hash::Hash, sync::Arc};
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
 
-use crate::{Error, document::Tokenizer, error::Result};
+use crate::{Error, error::Result};
 
 type TokenNodeRef<T,K> = Arc<RwLock<TokenNode<T,K>>>;
 
@@ -11,22 +12,13 @@ struct Split {
     start: usize,
 }
 
-impl Split {
-    pub fn new(index: usize, start: usize) -> Self {
-        Self {
-            index,
-            start,
-        }
-    }
-}
-
 struct TokenNode<T,K>
 where
     T: Eq + Hash + Clone + 'static,
     K: Eq + Hash + Clone + ToString + 'static,
 {
-    sub_tree_map: Option<Arc<RwLock<HashMap<T,TokenNodeRef<T,K>>>>>,
-    leaf_set: Option<Arc<RwLock<HashMap<K,Vec<Split>>>>>,
+    sub_tree_map: Option<Arc<DashMap<T,TokenNodeRef<T,K>>>>,
+    leaf_set: Option<Arc<DashMap<K,Vec<Split>>>>,
 }
 
 impl<T,K> TokenNode<T,K>
@@ -42,36 +34,32 @@ where
     }
 }
 
-pub struct AtomicIndex<T,K,TKNZ>
+pub struct AtomicIndex<T,K>
 where
     T: Eq + Hash + Clone + 'static,
     K: Eq + Hash + Clone + ToString + 'static,
-    TKNZ: Tokenizer<T>,
 {
     tree: TokenNodeRef<T,K>,
     prefix_tree: TokenNodeRef<T,K>,
     documents: Arc<RwLock<HashMap<K,Vec<Vec<T>>>>>,
-    tokenizer: TKNZ,
     max_depth: usize,
 }
 
-impl<T,K,TKNZ> AtomicIndex<T,K,TKNZ>
+impl<T,K> AtomicIndex<T,K>
 where
     T: Eq + Hash + Clone + 'static,
     K: Eq + Hash + Clone + ToString + 'static,
-    TKNZ: Tokenizer<T>,
 {
-    pub fn new(tokenizer: TKNZ, max_depth: usize) -> Self {
+    pub fn new(max_depth: usize) -> Self {
         Self {
             tree: Arc::new(RwLock::new(TokenNode::new())),
             prefix_tree: Arc::new(RwLock::new(TokenNode::new())),
             documents: Arc::new(RwLock::new(HashMap::new())),
-            tokenizer,
             max_depth,
         }
     }
     
-    pub fn insert(&mut self, key: &K, contents: &Vec<String>) -> Result<()> {
+    pub fn insert(&mut self, key: &K, contents: impl IntoIterator<Item = Vec<T>>) -> Result<()> {
         let mut documents_guard = self.documents.write();
         match documents_guard.entry(key.clone()) {
             Entry::Occupied(_) => {
@@ -79,13 +67,12 @@ where
             }
             Entry::Vacant(entry) => {
                 let mut tokens_list = Vec::new();
-                for (index, content) in contents.iter().enumerate() {
-                    let tokens = self.tokenizer.tokenize(content.as_str());
+                for (index, content) in contents.into_iter().enumerate() {
                     //取所有长度不超过max_depth的子串进行索引
-                    for start in 0..tokens.len() {
+                    for start in 0..content.len() {
                         let mut valid_tokens = LinkedList::new();
-                        for curr in start..std::cmp::min(start + self.max_depth, tokens.len()) {
-                            valid_tokens.push_back(tokens[curr].clone());
+                        for curr in start..std::cmp::min(start + self.max_depth, content.len()) {
+                            valid_tokens.push_back(content[curr].clone());
                         }
                         //前缀子串单独存
                         let mut current_tree = if start == 0 {
@@ -97,18 +84,16 @@ where
                         while let Some(token) = valid_tokens.pop_front() {
                             let current_tree_ref = current_tree.clone();
                             let mut tree_guard = current_tree_ref.write();
-                            let sub_tree_map = tree_guard.sub_tree_map.get_or_insert_with(|| Arc::new(RwLock::new(HashMap::new())));
-                            let mut sub_tree_map_guard = sub_tree_map.write();
-                            current_tree = sub_tree_map_guard.entry(token).or_insert_with(|| Arc::new(RwLock::new(TokenNode::new()))).clone();
+                            let sub_tree_map = tree_guard.sub_tree_map.get_or_insert_with(|| Arc::new(DashMap::new()));
+                            current_tree = sub_tree_map.entry(token).or_insert_with(|| Arc::new(RwLock::new(TokenNode::new()))).clone();
                         }
                         //在叶子节点记录文档id
                         let mut tree_guard = current_tree.write();
-                        let leaf_set = tree_guard.leaf_set.get_or_insert_with(|| Arc::new(RwLock::new(HashMap::new())));
-                        let mut leaf_set_guard = leaf_set.write();
-                        leaf_set_guard.entry(key.clone()).or_insert_with(|| Vec::new()).push(Split::new(index, start));
+                        let leaf_set = tree_guard.leaf_set.get_or_insert_with(|| Arc::new(DashMap::new()));
+                        leaf_set.entry(key.clone()).or_insert_with(|| Vec::new()).push(Split {index, start});
                     }
                     //保存文档内容
-                    tokens_list.push(tokens);
+                    tokens_list.push(content);
                 }
                 entry.insert(tokens_list);
                 Ok(())
@@ -143,8 +128,7 @@ where
                         let current_tree_ref = current_tree.clone();
                         let tree_guard = current_tree_ref.read();
                         if let Some(sub_tree_map) = tree_guard.sub_tree_map.as_ref() {
-                            let sub_tree_map_guard = sub_tree_map.read();
-                            if let Some(sub_tree) = sub_tree_map_guard.get(&token) {
+                            if let Some(sub_tree) = sub_tree_map.get(&token) {
                                 current_tree = sub_tree.clone();
                             } else {
                                 break;
@@ -158,9 +142,8 @@ where
                         let mut tree_guard = current_tree.write();
                         if let Some(leaf_set) = tree_guard.leaf_set.as_mut() {
                             //是叶子节点
-                            let mut leaf_set_guard = leaf_set.write();
-                            leaf_set_guard.remove(&key);
-                            empty = leaf_set_guard.is_empty();
+                            leaf_set.remove(&key);
+                            empty = leaf_set.is_empty();
                         }
                         //移除空叶子节点
                         if empty {
@@ -169,8 +152,7 @@ where
                         //保险起见，也检查子树是否为空
                         empty = false;
                         if let Some(sub_tree_map) = tree_guard.sub_tree_map.as_ref() {
-                            let sub_tree_map_guard = sub_tree_map.read();
-                            empty = sub_tree_map_guard.is_empty();
+                            empty = sub_tree_map.is_empty();
                         }
                         //移除空子树
                         if empty {
@@ -183,10 +165,9 @@ where
                     while empty && let Some((token, current_tree)) = tree_list.pop_back() {
                         let mut tree_guard = current_tree.write();
                         if let Some(sub_tree_map) = tree_guard.sub_tree_map.as_mut() {
-                            let mut sub_tree_map_guard = sub_tree_map.write();
                             //进入这里时已经判断过空了，直接删除
-                            sub_tree_map_guard.remove(&token);
-                            empty = sub_tree_map_guard.is_empty();
+                            sub_tree_map.remove(&token);
+                            empty = sub_tree_map.is_empty();
                         }
                         //移除空子树
                         if empty {
@@ -195,8 +176,7 @@ where
                         //保险起见，也检查叶子是否为空
                         empty = false;
                         if let Some(leaf_set) = tree_guard.leaf_set.as_ref() {
-                            let leaf_set_guard = leaf_set.read();
-                            empty = leaf_set_guard.is_empty();
+                            empty = leaf_set.is_empty();
                         }
                         //移除空叶子节点
                         if empty {
@@ -208,5 +188,11 @@ where
                 }
             }
         }
+    }
+
+    /// 查找文档
+    /// 只做完全匹配，部分匹配由调用方自行处理
+    pub fn find(&self) {
+
     }
 }
