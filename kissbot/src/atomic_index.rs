@@ -3,14 +3,9 @@ use std::{collections::{HashMap, LinkedList, hash_map::Entry}, hash::Hash, sync:
 use dashmap::DashMap;
 use parking_lot::RwLock;
 
-use crate::{Error, error::Result};
+use crate::{Error, error::Result, index::{Index, Split}};
 
 type TokenNodeRef<T,K> = Arc<RwLock<TokenNode<T,K>>>;
-
-pub struct Split {
-    index: usize,
-    start: usize,
-}
 
 struct TokenNode<T,K>
 where
@@ -58,8 +53,13 @@ where
             max_depth,
         }
     }
-    
-    pub fn insert(&mut self, key: &K, contents: impl IntoIterator<Item = Vec<T>>) -> Result<()> {
+}
+impl<T,K> Index<T,K> for AtomicIndex<T,K>
+where
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
+{
+    fn insert(&mut self, key: &K, contents: impl IntoIterator<Item = Vec<T>>) -> Result<()> {
         let mut documents_guard = self.documents.write();
         match documents_guard.entry(key.clone()) {
             Entry::Occupied(_) => {
@@ -101,7 +101,7 @@ where
         }
     }
 
-    pub fn remove(&mut self, key: &K) {
+    fn remove(&mut self, key: &K) {
         let mut documents_guard = self.documents.write();
         let tokens_list = documents_guard.remove(key);
         if let Some(tokens_list) = tokens_list {
@@ -192,7 +192,7 @@ where
 
     /// 查找文档
     /// 只做完全匹配，部分匹配由调用方自行处理
-    pub fn find(&self, query: &[T], prefix_only: bool) -> HashMap<K,Vec<Split>> {
+    fn find(&self, query: &[T], prefix_only: bool) -> HashMap<K,Vec<Split>> {
         let mut result: HashMap<K,Vec<Split>> = HashMap::new();
         let mut trees: Vec<TokenNodeRef<T,K>> = Vec::new();
         trees.push(self.tree.clone());
