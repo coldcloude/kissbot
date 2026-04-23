@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("Duplicated document key: {0}")]
     DuplicatedDocumentKey(String),
+    #[error("Document content not found: {0} {1}")]
+    DocumentContentNotFound(String, usize),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

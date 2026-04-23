@@ -247,4 +247,14 @@ where
         }
         result
     }
+
+    fn retrieve(&self, key: &K, index: usize) -> Result<Vec<T>> {
+        let guard = self.documents.read();
+        if let Some(tokens_list) = guard.get(key) {
+            if let Some(content) = tokens_list.get(index) {
+                return Ok(content.clone());
+            }
+        }
+        Err(Error::DocumentContentNotFound(key.to_string(), index))
+    }
 }
