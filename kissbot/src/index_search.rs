@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash, marker::PhantomData, ops::Range};
+use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash, marker::PhantomData, ops::Range, rc::Rc};
 
 use crate::{Document, error::Result, index::{Index, Split}, tokenizer::Tokenizer};
 
@@ -114,7 +114,7 @@ pub enum SearchMode {
     Split,
 }
 
-type TokenSplitMap<T> = HashMap<Vec<T>,HashMap<Range<usize>,usize>>;
+type TokenSplitMap<T> = HashMap<Rc<Vec<T>>,HashMap<Range<usize>,usize>>;
 
 pub struct IndexSearchContext<T>
 where
@@ -135,9 +135,9 @@ where
         }
     }
     
-    pub fn add_to_split(&mut self, tokens: &Vec<T>, range: Range<usize>) {
+    pub fn add_to_split(&mut self, tokens: Rc<Vec<T>>, range: Range<usize>) {
         let current_split = self.current_split_or_none.get_or_insert(HashMap::new());
-        match current_split.get_mut(tokens) {
+        match current_split.get_mut(tokens.as_ref()) {
             Some(map) => {
                 match map.entry(range) {
                     Entry::Occupied(mut entry) => {
@@ -277,17 +277,18 @@ where
             SearchMode::Full => {
                 let mut context = IndexSearchContext::new();
                 for part in parts {
-                    let tokens = self.tokenizer.tokenize(part);
-                    context.add_to_split(&tokens,0..tokens.len());
+                    let tokens = Rc::new(self.tokenizer.tokenize(part));
+                    let len = tokens.len();
+                    context.add_to_split(tokens,0..len);
                 }
                 context.end_split();
                 context.find(&mut priority_result, &self.index);
             },
             SearchMode::Split => {
-                let mut tokens_list: Vec<Vec<T>> = Vec::new();
+                let mut tokens_list: Vec<Rc<Vec<T>>> = Vec::new();
                 let mut part_splits_list: Vec<Vec<Vec<Range<usize>>>> = Vec::new();
                 for part in parts {
-                    let tokens = self.tokenizer.tokenize(part);
+                    let tokens = Rc::new(self.tokenizer.tokenize(part));
                     let splits = split(&tokens);
                     tokens_list.push(tokens);
                     part_splits_list.push(splits);
@@ -309,7 +310,7 @@ where
                         if i < splits_list.len() {
                             let splits = &splits_list[i];
                             for split in splits {
-                                context.add_to_split(&tokens, split.clone());
+                                context.add_to_split(tokens.clone(), split.clone());
                             }
                         }
                     }
