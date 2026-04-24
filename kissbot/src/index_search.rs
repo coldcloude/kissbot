@@ -260,7 +260,7 @@ where
         self.index.remove(key);
     }
 
-    fn find_index_maps(&self, query: &str, mode: SearchMode, split_mode: Option<SearchMode>) -> CombinedPriorityResult<K> {
+    fn find_index_maps(&self, query: &str, mode: SearchMode) -> CombinedPriorityResult<K> {
         let parts = query.split_whitespace();
         let mut priority_result: CombinedPriorityResult<K> = HashMap::new();
         match mode {
@@ -284,16 +284,80 @@ where
                 context.find(&mut priority_result, &self.index);
             },
             SearchMode::Split => {
-                let mut part_splits: Vec<Vec<Vec<Range<usize>>>> = Vec::new();
+                let mut tokens_list: Vec<Vec<T>> = Vec::new();
+                let mut part_splits_list: Vec<Vec<Vec<Range<usize>>>> = Vec::new();
                 for part in parts {
                     let tokens = self.tokenizer.tokenize(part);
                     let splits = split(&tokens);
-                    part_splits.push(splits);
+                    tokens_list.push(tokens);
+                    part_splits_list.push(splits);
                 }
-                let mut iss: Vec<usize> = vec![0; part_splits.len()];
+                let part_num = part_splits_list.len();
+                let mut pis: Vec<usize> = Vec::with_capacity(part_num);
                 let mut context: IndexSearchContext<T> = IndexSearchContext::new();
+                pis.push(0);
+                while pis.len() > 0 {
+                    //前一part变更，下一part从0开始
+                    while pis.len() < part_num {
+                        pis.push(0);
+                    }
+                    //遍历所有part当前索引，添加到context，作为一个split
+                    for p in 0..part_num {
+                        let tokens = &tokens_list[p];
+                        let splits_list = &part_splits_list[p];
+                        let i = pis[p];
+                        if i < splits_list.len() {
+                            let splits = &splits_list[i];
+                            for split in splits {
+                                context.add_to_split(&tokens, split.clone());
+                            }
+                        }
+                    }
+                    context.end_split();
+                    //递归去除已遍历结束的part
+                    let mut p = (pis.len() - 1) as i32;
+                    while p >= 0 && pis[p as usize] >= part_splits_list[p as usize].len() {
+                        pis.pop();
+                        p -= 1;
+                        if p >= 0 {
+                            pis[p as usize] += 1;
+                        }
+                    }
+                }
+                //查找所有split组合
+                context.find(&mut priority_result, &self.index);
             },
         }
         priority_result
+    }
+
+    pub fn find_all_keys(&self, query: &str, split: bool) -> Vec<K> {
+        //找到所有结果
+        let mut priority_result = self.find_index_maps(query, if split { SearchMode::Split } else { SearchMode::Full });
+        let mut result = Vec::new();
+        for (key, (priority,_)) in priority_result.drain() {
+            result.push((key,priority));
+        }
+        //按优先级排序
+        result.sort_by(|(_, p1), (_, p2)| p1.cmp(&p2));
+        //去掉priority字段，只按顺序返回key
+        result
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<K>>()
+    }
+
+    pub fn find_prefix(&self, query: &str) -> Vec<String> {
+        let mut priority_result = self.find_index_maps(query, SearchMode::Prefix);
+        let mut result = Vec::new();
+        for (key, (_,mut index_map)) in priority_result.drain() {
+            for (index, _) in index_map.drain() {
+                if let Ok(tokens) = self.index.retrieve(&key, index) {
+                    let content = self.tokenizer.untokenize(tokens.as_slice());
+                    result.push(content);
+                }
+            }
+        }
+        result
     }
 }

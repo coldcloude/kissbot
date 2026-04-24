@@ -187,7 +187,7 @@ where
         for tree in trees {
             let mut matched = true;
             //遍历所有token
-            let mut current_tree = tree.clone();
+            let mut current_tree = tree;
             for token in query {
                 //获取当前token对应的子树
                 if let Some(sub_tree_map) = current_tree.sub_tree_map.as_ref() {
