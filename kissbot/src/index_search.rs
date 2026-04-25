@@ -261,20 +261,17 @@ where
     }
 
     fn find_index_maps(&self, query: &str, mode: SearchMode) -> CombinedPriorityResult<K> {
-        let parts = query.split_whitespace();
         let mut priority_result: CombinedPriorityResult<K> = HashMap::new();
         match mode {
             SearchMode::Prefix => {
-                let mut tokens: Vec<T> = Vec::new();
-                for part in parts {
-                    tokens.extend(self.tokenizer.tokenize(part));
-                }
+                let tokens = self.tokenizer.tokenize(query);
                 let mut raw_results = self.index.find(&tokens, true);
                 let mut results = HashMap::new();
                 combine_raw_result(&mut results, &mut raw_results, tokens.len(), false);
                 combine_priority_result(&mut priority_result, &mut results, 0);
             },
             SearchMode::Full => {
+                let parts = query.split_whitespace();
                 let mut context = IndexSearchContext::new();
                 for part in parts {
                     let tokens = Rc::new(self.tokenizer.tokenize(part));
@@ -285,45 +282,14 @@ where
                 context.find(&mut priority_result, &self.index);
             },
             SearchMode::Split => {
-                let mut tokens_list: Vec<Rc<Vec<T>>> = Vec::new();
-                let mut part_splits_list: Vec<Vec<Vec<Range<usize>>>> = Vec::new();
-                for part in parts {
-                    let tokens = Rc::new(self.tokenizer.tokenize(part));
-                    let splits = split(&tokens);
-                    tokens_list.push(tokens);
-                    part_splits_list.push(splits);
-                }
-                let part_num = part_splits_list.len();
-                let mut pis: Vec<usize> = Vec::with_capacity(part_num);
-                let mut context: IndexSearchContext<T> = IndexSearchContext::new();
-                pis.push(0);
-                while pis.len() > 0 {
-                    //前一part变更，下一part从0开始
-                    while pis.len() < part_num {
-                        pis.push(0);
-                    }
-                    //遍历所有part当前索引，添加到context，作为一个split
-                    for p in 0..part_num {
-                        let tokens = &tokens_list[p];
-                        let splits_list = &part_splits_list[p];
-                        let i = pis[p];
-                        if i < splits_list.len() {
-                            let splits = &splits_list[i];
-                            for split in splits {
-                                context.add_to_split(tokens.clone(), split.clone());
-                            }
-                        }
+                let tokens = Rc::new(self.tokenizer.tokenize(query));
+                let splits = split(&tokens);
+                let mut context = IndexSearchContext::new();
+                for split in splits {
+                    for range in split {
+                        context.add_to_split(tokens.clone(), range.clone());
                     }
                     context.end_split();
-                    //递归去除已遍历结束的part
-                    let mut p = (pis.len() - 1) as i32;
-                    while p >= 0 && pis[p as usize] >= part_splits_list[p as usize].len() {
-                        pis.pop();
-                        p -= 1;
-                        if p >= 0 {
-                            pis[p as usize] += 1;
-                        }
-                    }
                 }
                 //查找所有split组合
                 context.find(&mut priority_result, &self.index);
