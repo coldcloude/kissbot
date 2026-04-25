@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::tokenizer::Tokenizer;
+use crate::{error::Result, tokenizer::Tokenizer};
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum SubstringType {
@@ -113,7 +113,7 @@ impl Tokenizer<SubstringToken> for SubstringTokenizer {
         tokens_parser.tokens
     }
 
-    fn untokenize(&self, tokens: &[SubstringToken]) -> String {
+    fn untokenize(&self, tokens: &[SubstringToken]) -> Result<String> {
         let mut result = String::new();
         let mut last_token_type = SubstringType::OTHER;
         for token in tokens {
@@ -134,6 +134,6 @@ impl Tokenizer<SubstringToken> for SubstringTokenizer {
             result.push_str(&token.token);
             last_token_type = token.token_type.clone();
         }
-        result
+        Ok(result)
     }
 }

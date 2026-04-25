@@ -320,8 +320,9 @@ where
         for (key, (_,mut index_map)) in priority_result.drain() {
             for (index, _) in index_map.drain() {
                 if let Ok(tokens) = self.index.retrieve(&key, index) {
-                    let content = self.tokenizer.untokenize(tokens.as_slice());
-                    result.push(content);
+                    if let Ok(content) = self.tokenizer.untokenize(tokens.as_slice()) {
+                        result.push(content);
+                    }
                 }
             }
         }
