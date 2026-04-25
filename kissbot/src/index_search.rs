@@ -240,7 +240,7 @@ where
         }
     }
 
-    pub fn insert<D>(&mut self, key: &K, document: D) -> Result<()>
+    pub fn insert<D>(&mut self, key: &K, document: &D) -> Result<()>
     where
         D: Document,
     {
@@ -348,8 +348,8 @@ where
             .collect::<Vec<K>>()
     }
 
-    pub fn find_prefix(&self, query: &str) -> Vec<String> {
-        let mut priority_result = self.find_index_maps(query, SearchMode::Prefix);
+    pub fn find_by_prefix(&self, prefix: &str) -> Vec<String> {
+        let mut priority_result = self.find_index_maps(prefix, SearchMode::Prefix);
         let mut result = Vec::new();
         for (key, (_,mut index_map)) in priority_result.drain() {
             for (index, _) in index_map.drain() {

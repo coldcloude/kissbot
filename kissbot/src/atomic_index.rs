@@ -9,8 +9,8 @@ type TokenNodeRef<T,K> = Arc<RwLock<TokenNode<T,K>>>;
 
 struct TokenNode<T,K>
 where
-    T: Eq + Hash + Clone + 'static,
-    K: Eq + Hash + Clone + ToString + 'static,
+    T: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Eq + Hash + Clone + Send + Sync + ToString + 'static,
 {
     sub_tree_map: Option<Arc<DashMap<T,TokenNodeRef<T,K>>>>,
     leaf_set: Option<Arc<DashMap<K,Vec<Split>>>>,
@@ -18,8 +18,8 @@ where
 
 impl<T,K> TokenNode<T,K>
 where
-    T: Eq + Hash + Clone + 'static,
-    K: Eq + Hash + Clone + ToString + 'static,
+    T: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Eq + Hash + Clone + Send + Sync + ToString + 'static,
 {
     pub fn new() -> Self {
         Self {
@@ -31,8 +31,8 @@ where
 
 pub struct AtomicIndex<T,K>
 where
-    T: Eq + Hash + Clone + 'static,
-    K: Eq + Hash + Clone + ToString + 'static,
+    T: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Eq + Hash + Clone + Send + Sync + ToString + 'static,
 {
     tree: TokenNodeRef<T,K>,
     prefix_tree: TokenNodeRef<T,K>,
@@ -42,8 +42,8 @@ where
 
 impl<T,K> AtomicIndex<T,K>
 where
-    T: Eq + Hash + Clone + 'static,
-    K: Eq + Hash + Clone + ToString + 'static,
+    T: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Eq + Hash + Clone + Send + Sync + ToString + 'static,
 {
     pub fn new(max_depth: usize) -> Self {
         Self {
@@ -56,8 +56,8 @@ where
 }
 impl<T,K> Index<T,K> for AtomicIndex<T,K>
 where
-    T: Eq + Hash + Clone + 'static,
-    K: Eq + Hash + Clone + ToString + 'static,
+    T: Eq + Hash + Clone + Send + Sync + 'static,
+    K: Eq + Hash + Clone + Send + Sync + ToString + 'static,
 {
     fn insert(&mut self, key: &K, contents: impl IntoIterator<Item = Vec<T>>) -> Result<()> {
         let mut documents_guard = self.documents.write();
