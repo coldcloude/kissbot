@@ -3,7 +3,7 @@ pub mod document;
 pub mod tokenizer;
 pub mod index;
 
-pub mod single_index;
+pub mod distinct_index;
 pub mod simple_index;
 pub mod atomic_index;
 pub mod index_search;

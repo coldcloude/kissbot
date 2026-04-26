@@ -1,13 +1,13 @@
 use std::{collections::{HashMap, LinkedList}, hash::Hash};
 
-pub struct SingleIndex<T>
+pub struct DistinctIndex<T>
 where
     T: Eq + Hash + Clone + 'static,
 {
-    sub_tree_map: Option<HashMap<T,SingleIndex<T>>>,
+    sub_tree_map: Option<HashMap<T,DistinctIndex<T>>>,
 }
 
-impl<T> SingleIndex<T>
+impl<T> DistinctIndex<T>
 where
     T: Eq + Hash + Clone + 'static,
 {
