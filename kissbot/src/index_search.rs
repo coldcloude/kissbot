@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash, marker::PhantomData, ops::Range, rc::Rc};
 
-use crate::{Document, error::Result, index::{Index, Split}, tokenizer::Tokenizer};
+use crate::{Document, error::Result, index::{Index, IndexRemovable, IndexWithDetail, Split}, tokenizer::Tokenizer};
 
 pub fn split<T>(tokens: &Vec<T>) -> Vec<Vec<Range<usize>>> {
     let mut result_splits: Vec<Vec<Range<usize>>> = Vec::new();
@@ -108,10 +108,22 @@ where
     }
 }
 
-pub enum SearchMode {
-    Prefix,
-    Full,
-    Split,
+fn combine_priority_key_map<K>(priority_result: &mut HashMap<K,usize>, result: &mut HashSet<K>, priority: usize)
+where
+    K: Eq + Hash + Clone + ToString + 'static,
+{
+    for key in result.drain() {
+        match priority_result.entry(key) {
+            Entry::Occupied(mut entry) => {
+                if priority < *entry.get() {
+                    *entry.get_mut() = priority;
+                }
+            },
+            Entry::Vacant(entry) => {
+                entry.insert(priority);
+            },
+        }
+    }
 }
 
 type TokenSplitMap<T> = HashMap<Rc<Vec<T>>,HashMap<Range<usize>,usize>>;
@@ -164,7 +176,7 @@ where
         }
     }
 
-    pub fn find<K,IDX>(&self, priority_result: &mut CombinedPriorityResult<K>, index: &IDX)
+    pub fn find<K,IDX>(&self, priority_result: &mut HashMap<K,usize>, index: &IDX)
     where
         K: Eq + Hash + Clone + ToString + 'static,
         IDX: Index<T,K>,
@@ -179,16 +191,16 @@ where
             }
         }
         //匹配去重后的每组tokens
-        let mut raw_result_map: HashMap<&[T],RawResult<K>> = HashMap::new();
+        let mut raw_result_map: HashMap<&[T],HashSet<K>> = HashMap::new();
         for tokens in tokens_set {
-            let raw_result = index.find(tokens, false);
+            let raw_result = index.find(tokens);
             raw_result_map.insert(tokens, raw_result);
         }
         //合并结果
         for split_tokens in &self.split_tokens_list {
             //对每一种拆分方式提取结果，要求拆分出的每个tokens都能匹配到
             let mut priority: usize = 0;
-            let mut combine_result = HashMap::new();
+            let mut combine_result = HashSet::new();
             for (tokens, range_map) in split_tokens {
                 for (range, count) in range_map {
                     priority += count;
@@ -200,14 +212,14 @@ where
                         },
                         Some(raw_result) => {
                             //合并结果，取交集
-                            combine_raw_result(&mut combine_result, raw_result, tokens.len(), true);
+                            combine_result.retain(|k| raw_result.contains(k));
                         },
                     }
                 }
             }
             //保存到最终结果
             if !combine_result.is_empty() {
-                combine_priority_result(priority_result, &mut combine_result, priority);
+                combine_priority_key_map(priority_result, &mut combine_result, priority);
             }
         }
     }
@@ -256,53 +268,36 @@ where
         self.index.insert(key, tokens_list.into_iter())
     }
 
-    pub fn remove(&mut self, key: &K) {
-        self.index.remove(key);
-    }
-
-    fn find_index_maps(&self, query: &str, mode: SearchMode) -> CombinedPriorityResult<K> {
-        let mut priority_result: CombinedPriorityResult<K> = HashMap::new();
-        match mode {
-            SearchMode::Prefix => {
-                let tokens = self.tokenizer.tokenize(query);
-                let mut raw_results = self.index.find(&tokens, true);
-                let mut results = HashMap::new();
-                combine_raw_result(&mut results, &mut raw_results, tokens.len(), false);
-                combine_priority_result(&mut priority_result, &mut results, 0);
-            },
-            SearchMode::Full => {
-                let parts = query.split_whitespace();
-                let mut context = IndexSearchContext::new();
-                for part in parts {
-                    let tokens = Rc::new(self.tokenizer.tokenize(part));
-                    let len = tokens.len();
-                    context.add_to_split(tokens,0..len);
+    pub fn find_all_keys(&self, query: &str, splitable: bool) -> Vec<K> {
+        //找到所有结果
+        let mut priority_result = HashMap::new();
+        if splitable {
+            let tokens = Rc::new(self.tokenizer.tokenize(query));
+            let mut context = IndexSearchContext::new();
+            let splits = split(&tokens);
+            for split in splits {
+                for range in split {
+                    context.add_to_split(tokens.clone(), range.clone());
                 }
                 context.end_split();
-                context.find(&mut priority_result, &self.index);
-            },
-            SearchMode::Split => {
-                let tokens = Rc::new(self.tokenizer.tokenize(query));
-                let splits = split(&tokens);
-                let mut context = IndexSearchContext::new();
-                for split in splits {
-                    for range in split {
-                        context.add_to_split(tokens.clone(), range.clone());
-                    }
-                    context.end_split();
-                }
-                //查找所有split组合
-                context.find(&mut priority_result, &self.index);
-            },
+            }
+            //查找所有split组合
+            context.find(&mut priority_result, &self.index);
         }
-        priority_result
-    }
+        else {
+            let parts = query.split_whitespace();
+            let mut context = IndexSearchContext::new();
+            for part in parts {
+                let tokens = Rc::new(self.tokenizer.tokenize(part));
+                let len = tokens.len();
+                context.add_to_split(tokens,0..len);
+            }
+            context.end_split();
+            context.find(&mut priority_result, &self.index);
+        }
 
-    pub fn find_all_keys(&self, query: &str, split: bool) -> Vec<K> {
-        //找到所有结果
-        let mut priority_result = self.find_index_maps(query, if split { SearchMode::Split } else { SearchMode::Full });
         let mut result = Vec::new();
-        for (key, (priority,_)) in priority_result.drain() {
+        for (key, priority) in priority_result.drain() {
             result.push((key,priority));
         }
         //按优先级排序
@@ -313,9 +308,42 @@ where
             .map(|(key, _)| key)
             .collect::<Vec<K>>()
     }
+}
+
+impl<T,K,TKNZ,IDX> IndexSearch<T,K,TKNZ,IDX>
+where
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
+    TKNZ: Tokenizer<T>,
+    IDX: IndexRemovable<T,K>,
+{
+    pub fn remove_content<D:Document>(&mut self, key: &K, document: &D) {
+        let contents = document.contents();
+        self.index.remove(key, contents.into_iter().map(|content| self.tokenizer.tokenize(content.as_str())));
+    }
+}
+
+impl<T,K,TKNZ,IDX> IndexSearch<T,K,TKNZ,IDX>
+where
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
+    TKNZ: Tokenizer<T>,
+    IDX: IndexWithDetail<T,K>,
+{
+
+    pub fn remove(&mut self, key: &K) {
+        self.index.remove(key);
+    }
 
     pub fn find_by_prefix(&self, prefix: &str) -> Vec<String> {
-        let mut priority_result = self.find_index_maps(prefix, SearchMode::Prefix);
+        //找到前缀的所有结果和优先级
+        let tokens = self.tokenizer.tokenize(prefix);
+        let mut raw_result = self.index.find_detail(&tokens, true);
+        let mut combined_result = HashMap::new();
+        combine_raw_result(&mut combined_result, &mut raw_result, tokens.len(), false);
+        let mut priority_result = HashMap::new();
+        combine_priority_result(&mut priority_result, &mut combined_result, 0);
+        //取出结果原文并按优先级排序
         let mut result = Vec::new();
         for (key, (_,mut index_map)) in priority_result.drain() {
             for (index, _) in index_map.drain() {

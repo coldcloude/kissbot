@@ -1,6 +1,6 @@
-use std::{collections::{HashMap, LinkedList, hash_map::Entry}, hash::Hash};
+use std::{collections::{HashMap, HashSet, LinkedList, hash_map::Entry}, hash::Hash};
 
-use crate::{Error, error::Result, index::{Index, Split}};
+use crate::{Error, error::Result, index::{Index, IndexWithDetail, Split}};
 
 struct TokenNode<T,K>
 where
@@ -87,6 +87,7 @@ where
         }
     }
 }
+
 pub struct SimpleIndex<T,K>
 where
     T: Eq + Hash + Clone + 'static,
@@ -154,6 +155,16 @@ where
         }
     }
 
+    fn find(&self, query: &[T]) -> HashSet<K> {
+        IndexWithDetail::find(self, query)
+    }
+}
+
+impl<T,K> IndexWithDetail<T,K> for SimpleIndex<T,K>
+where
+    T: Eq + Hash + Clone + 'static,
+    K: Eq + Hash + Clone + ToString + 'static,
+{
     fn remove(&mut self, key: &K) {
         if let Some(tokens_list) = self.documents.remove(key) {
             //找到对应的文档，并移除其中所有token序列
@@ -175,9 +186,7 @@ where
         }
     }
 
-    /// 查找文档
-    /// 只做完全匹配，部分匹配由调用方自行处理
-    fn find(&self, query: &[T], prefix_only: bool) -> HashMap<K,Vec<Split>> {
+    fn find_detail(&self, query: &[T], prefix_only: bool) -> HashMap<K,Vec<Split>> {
         let mut result: HashMap<K,Vec<Split>> = HashMap::new();
         let mut trees: Vec<&TokenNode<T,K>> = Vec::new();
         trees.push(&self.tree);
