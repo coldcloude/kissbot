@@ -13,6 +13,7 @@
 - **记忆系统根目录**
   - **agent ID 1目录**
     - **agent-{agent-id}**：agent存在标识文件
+    - **metadata.json**：agent元数据JSON文件
     - **memory-ego**：memory-ego模块的设定信息单独存放
     - **memory-store**：memory-store收集的原始记忆片段单独存放
     - **memory-struct-\***：memory-struct-*实现产生的数据

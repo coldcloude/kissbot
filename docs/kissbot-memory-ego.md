@@ -7,27 +7,28 @@
 - 调用memory基础模块的DirectoryManager进行目录管理
 - 实现agent元数据管理（AgentManager）
 - 提供管理agent元数据的HTTPS API（如新增agent接口）
-- 通过配置文件读取agent的基础信息
-- 通过记忆提取的方式生成agent的基础信息
-- 保存agent的基础信息
+- 通过agent元数据生成agent的基础信息中的身份标识（MD文件）
 - 每个agent ID对应一个客观设定，对应多个角色设定
-- 仅使用API，本身不封装为tool
-- 支持配置可信证书文件
+- 通过MD文件读取agent的基础信息
+- 通过记忆提取的方式生成agent的基础信息（第二阶段）
+- 仅提供API，本身不封装为tool
 
 ## 架构设计
 ### 核心组件
-- 配置文件读取器
-- 记忆提取器
+- agent元数据管理器（AgentManager）
 - 基础信息管理器（EgoManager）
-- agent元数据管理器（AgentManager，本模块实现）
 - HTTPS API服务器
-- 配置管理器（包含证书配置）
+- 记忆提取器
 
 ## 数据结构
 ### Agent基础信息
 - agent ID（唯一标识）
-- 客观设定（纯文本，可用MD）
-- 多个角色设定（纯文本，可用MD）
+- 客观设定
+  - 身份标识（纯文本，可用MD）
+  - 用户识别信息（纯文本，可用MD）
+- 多个角色设定
+  - 角色扮演（纯文本，可用MD）
+  - 角色扮演关系（纯文本，可用MD）
 
 ### Agent元数据结构
 - id：agent唯一标识符（UUID）
@@ -37,7 +38,7 @@
 
 ## Agent元数据操作函数
 - create_agent：创建新的agent，需要name和description
-- get_metadata：获取agent元数据（返回Arc<AgentMetadata>）
+- get_metadata：获取agent元数据
 - update_agent_name：修改agent名称
 - update_agent_description：修改agent描述
 - update_agent_name_description：同时修改agent名称和描述
@@ -109,7 +110,7 @@
     - **metadata.json**：agent元数据JSON文件
     - **memory-ego**：memory-ego模块的设定信息单独存放
       - **identity.md**：自动生成的身份标识MD文件
-      - **user-recognition.md**：用户识别信息MD文件（手动放置）
+      - **user-recognition.md**：用户识别信息MD文件（第一阶段手动放置）
 
 ## MD文件结构
 
@@ -123,11 +124,13 @@
 1. **角色扮演**：本次会话中对外展现的角色，包括agent对自己的称呼，用户可能对agent的各种称呼，对话采用的语气、用词风格
 2. **角色扮演关系**：各个用户在本次对话中的角色，agent在本次对话中对用户角色的称呼
 
-## MD文件来源模式
+## MD文件来源
 
-### 基础模式
+### 身份识别信息
+- 从metadata.json中提取agent名称、创建时间等信息，生成动生成身份标识MD文件（identity.md）
+
+### 其他信息（第一阶段）
 - 直接手动放置MD文件
-- 每个设定内容对应一个文本MD文件
 
 ### 进阶模式
 - 结合配置信息和从记忆中提取的信息生成MD文件
@@ -143,7 +146,7 @@
 - 单例通过关联函数获取：AgentManager::get()
 
 ## EgoManager实现
-- 使用indicium库的SearchIndex实现全文搜索
+- 使用kai-index库的DistinctIndex实现全文搜索
 - 使用DashMap和DashSet实现高并发数据结构
 - 使用Arc共享数据，避免克隆
 - 脏标记机制（identity_dirty）：延迟更新identity.md和搜索索引
@@ -161,7 +164,7 @@
 - 支持从配置文件加载证书
 - AgentManager在本模块实现，管理agent元数据的JSON文件存储
 - 使用dashmap实现高并发数据结构
-- 使用indicium库实现全文搜索
+- 使用kai-index库实现全文搜索
 - 使用futures实现并发操作
 - 使用Arc共享数据，减少克隆开销
 
@@ -173,10 +176,11 @@
 - [x] agent元数据管理API（新增agent、查询agent元数据、修改agent名称描述）
 - [x] MD文件基础模式实现（身份标识MD文件自动生成，其他MD文件手动放置）
 - [x] HTTPS API接口
-- [x] 客观设定和角色设定的读取API
+- [x] 客观设定的读取API
+- [ ] 角色设定的读取API
 
 ### 第2阶段：全文搜索实现
-- [x] 使用indicium库实现全文搜索
+- [x] 使用kai-index库实现全文搜索
 - [x] 使用dashmap实现高并发数据结构
 - [x] 实现脏标记机制延迟更新
 - [x] 实现name和description字段的全文搜索
