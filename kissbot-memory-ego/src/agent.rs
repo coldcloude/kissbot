@@ -21,13 +21,13 @@ async fn agent_metadata_path(agent_id: &str) -> Result<PathBuf> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMetadata {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub created_at: String,
+    pub id: Arc<String>,
+    pub name: Arc<String>,
+    pub description: Arc<String>,
+    pub created_at: Arc<String>,
 }
 
-type AgentLock = Arc<RwLock<Option<Arc<AgentMetadata>>>>;
+type AgentLock = Arc<RwLock<Option<AgentMetadata>>>;
 
 pub struct AgentManager {
     manager_lock: DashMap<String, AgentLock>,
@@ -55,14 +55,14 @@ impl AgentManager {
         .clone()
     }
 
-    async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(Arc<AgentMetadata>) -> Result<()>) -> Result<()> {
+    async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(&AgentMetadata) -> Result<()>) -> Result<()> {
         let lock = self.get_or_create_lock(agent_id).await;
 
         //先尝试读内存
         {
             let guard = lock.read().await;
             if let Some(metadata) = guard.as_ref() {
-                return op(metadata.clone());
+                return op(metadata);
             }
         }
 
@@ -72,7 +72,7 @@ impl AgentManager {
 
             //双重锁定
             if let Some(metadata) = guard.as_ref() {
-                return op(metadata.clone());
+                return op(metadata);
             }
 
             //从文件读取
@@ -84,18 +84,18 @@ impl AgentManager {
             
             let content = tokio::fs::read_to_string(metadata_path).await?;
             let metadata: AgentMetadata = serde_json::from_str(&content)?;
-            *guard = Some(Arc::new(metadata));
+            *guard = Some(metadata);
         }
 
         //读文件写入后重新读取
         let guard = lock.read().await;
         match guard.as_ref() {
-            Some(metadata) => return op(metadata.clone()),
+            Some(metadata) => return op(metadata),
             None => return Err(Error::AgentNotFound(agent_id.to_string())),
         }
     }
 
-    async fn write_agent_metadata_ref(&self, agent_id: &str, op: impl FnOnce(Option<Arc<AgentMetadata>>) -> Option<Arc<AgentMetadata>>) -> Result<()> {
+    async fn write_agent_metadata_ref(&self, agent_id: &str, op: impl FnOnce(Option<AgentMetadata>) -> Option<AgentMetadata>) -> Result<()> {
         let metadata_path = agent_metadata_path(agent_id).await?;
 
         let lock = self.get_or_create_lock(agent_id).await;
@@ -107,7 +107,7 @@ impl AgentManager {
         //写入文件
         match guard.as_ref() {
             Some(metadata) => {
-                let content = serde_json::to_string_pretty(metadata.as_ref())?;
+                let content = serde_json::to_string_pretty(metadata)?;
                 tokio::fs::write(metadata_path, content).await?;
                 Ok(())
             }
@@ -121,19 +121,19 @@ impl AgentManager {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let metadata = Arc::new(AgentMetadata {
-            id,
-            name,
-            description,
-            created_at,
-        });
+        let metadata = AgentMetadata {
+            id: Arc::new(id),
+            name: Arc::new(name),
+            description: Arc::new(description),
+            created_at: Arc::new(created_at),
+        };
 
-        self.write_agent_metadata_ref(&metadata.id.as_str(), |_| {
-            Some(metadata.clone())
+        self.write_agent_metadata_ref(metadata.id.clone().as_str(), |_| {
+            Some(metadata)
         }).await
     }
 
-    pub async fn get_metadata(&self, agent_id: &str) -> Result<Arc<AgentMetadata>> {
+    pub async fn get_metadata(&self, agent_id: &str) -> Result<AgentMetadata> {
         let mut result = Err(Error::AgentNotFound(agent_id.to_string()));
         self.read_agent_metadata_ref(agent_id, |metadata| {
             result = Ok(metadata.clone());
@@ -146,12 +146,12 @@ impl AgentManager {
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
-                    Some(Arc::new(AgentMetadata {
+                    Some(AgentMetadata {
                         id: metadata.id.clone(),
-                        name: name,
+                        name: Arc::new(name),
                         description: metadata.description.clone(),
                         created_at: metadata.created_at.clone(),
-                    }))
+                    })
                 }
                 None => None
             }
@@ -162,12 +162,12 @@ impl AgentManager {
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
-                    Some(Arc::new(AgentMetadata {
+                    Some(AgentMetadata {
                         id: metadata.id.clone(),
                         name: metadata.name.clone(),
-                        description: description,
+                        description: Arc::new(description),
                         created_at: metadata.created_at.clone(),
-                    }))
+                    })
                 }
                 None => None
             }
@@ -178,12 +178,12 @@ impl AgentManager {
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
-                    Some(Arc::new(AgentMetadata {
+                    Some(AgentMetadata {
                         id: metadata.id.clone(),
-                        name: name,
-                        description: description,
+                        name: Arc::new(name),
+                        description: Arc::new(description),
                         created_at: metadata.created_at.clone(),
-                    }))
+                    })  
                 }
                 None => None
             }

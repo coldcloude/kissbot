@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use dashmap::{DashMap, DashSet, Entry};
+use dashmap::{DashMap, DashSet};
 use futures::future;
-use indicium::simple::{Indexable, SearchIndex};
+use kai_index::document::to_document;
+use kai_index::{Document, SubstringIndex};
 use kissbot_memory::DirectoryManager;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -11,15 +12,20 @@ use crate::error::Result;
 use crate::agent::{AgentManager, AgentMetadata};
 
 struct SearchMetadata {
-    metadata: Arc<AgentMetadata>,
+    value: Vec<Arc<String>>,
 }
 
-impl Indexable for SearchMetadata {
-    fn strings(&self) -> Vec<String> {
-        vec![
-            self.metadata.name.clone(),
-            self.metadata.description.clone()
-        ]
+impl SearchMetadata {
+    pub fn new(metadata: &AgentMetadata) -> Self {
+        Self {
+            value: vec![metadata.name.clone(), metadata.description.clone()],
+        }
+    }
+}
+
+impl Document<Arc<String>> for SearchMetadata {
+    fn contents(&self) -> &Vec<Arc<String>> {
+        &self.value
     }
 }
 
@@ -36,7 +42,8 @@ pub fn ego_user_recognition_md_path(ego_dir: impl AsRef<Path>) -> PathBuf {
 
 pub struct EgoManager {
     identity_dirty: DashSet<String>,
-    search_index: Arc<RwLock<SearchIndex<String>>>,
+    name_index: Arc<RwLock<SubstringIndex<String>>>,
+    name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
     search_metadata: DashMap<String, SearchMetadata>,
 }
 
@@ -46,7 +53,8 @@ impl EgoManager {
     pub fn new() -> Self {
         Self {
             identity_dirty: DashSet::new(),
-            search_index: Arc::new(RwLock::new(SearchIndex::default())),
+            name_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
+            name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             search_metadata: DashMap::new(),
         }
     }
@@ -64,26 +72,55 @@ impl EgoManager {
 
     pub async fn force_sync_identity_md(&self, agent_id: &str) -> Result<()> {
         let metadata = AgentManager::get().get_metadata(agent_id).await?;
-        //索引
-        let search_metadata = SearchMetadata {
-            metadata: metadata.clone(),
-        };
-        {
-            let mut guard = self.search_index.write().await;
-            match self.search_metadata.entry(agent_id.to_string()) {
-                Entry::Occupied(mut entry) => {
-                    guard.replace(&agent_id.to_string(), entry.get(), &search_metadata);
-                    entry.insert(search_metadata);
-                },
-                Entry::Vacant(entry) => {
-                    guard.insert(&agent_id.to_string(), &search_metadata);
-                    entry.insert(search_metadata);
-                }
+        //变更索引
+        let new_search_metadata = SearchMetadata::new(&metadata);
+        let new_name = metadata.name.clone();
+        let new_descr = metadata.description.clone();
+        let mut name_obsolute = true;
+        let mut old_name_or_none = None;
+        let mut descr_obsolute = true;
+        //没旧值，或新旧值不同，则需要变更索引
+        let old_search_metadata_or_none = self.search_metadata.remove(agent_id);
+        if let Some((_,old_search_metadata)) = old_search_metadata_or_none.as_ref() {
+            //检查name是否变化
+            let old_name = old_search_metadata.value[0].clone();
+            if old_name == new_name {
+                name_obsolute = false;
+            }
+            else {
+                old_name_or_none = Some(old_name);
+            }
+            //检查description是否变化
+            let old_descr = old_search_metadata.value[1].clone();
+            if old_descr == new_descr {
+                descr_obsolute = false;
             }
         }
+        //name变更
+        if name_obsolute {
+            let mut guard = self.name_index.write().await;
+            //有旧值，先移除
+            if let Some(old_name) = old_name_or_none {
+                guard.remove(&agent_id.to_string(), &to_document(old_name));
+            }
+            //插入新值
+            guard.insert(&agent_id.to_string(), &to_document(new_name));
+        }
+        //name或description变更
+        if name_obsolute || descr_obsolute {
+            let mut guard = self.name_descr_index.write().await;
+            //有旧值，先移除
+            if let Some((_,old_metadata)) = old_search_metadata_or_none {
+                guard.remove(&agent_id.to_string(), &old_metadata);
+            }
+            //插入新值
+            guard.insert(&agent_id.to_string(), &new_search_metadata);
+        }
+        //保存search_metadata
+        self.search_metadata.insert(agent_id.to_string(), new_search_metadata);
         //构造MD
         let content = format!(
-            "- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
+            "# Agent Identity\n\n- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
             metadata.name, metadata.created_at, metadata.description
         );
         let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;        
@@ -101,6 +138,33 @@ impl EgoManager {
                 Ok(())
             }
         }
+    }
+
+    pub async fn sync_all_identity_md(&self) {
+        while !self.identity_dirty.is_empty() {
+            let agent_ids: Vec<String> = self.identity_dirty.iter().map(|id| id.clone()).collect();
+            let mut futs = Vec::new();
+            agent_ids.iter().for_each(|id| {
+                let fut = self.sync_identity_md(id.as_str());
+                futs.push(fut);
+            });
+            future::join_all(futs).await;
+        }
+    }
+
+    pub async fn retrieve_agents(&self, agent_ids: Vec<String>) -> Vec<AgentMetadata> {
+        let mut results = Vec::new();
+        let mut futs = Vec::new();
+        agent_ids.iter().for_each(|id| {
+            let fut = AgentManager::get().get_metadata(id.as_str());
+            futs.push(fut);
+        });
+        for result in future::join_all(futs).await {
+            if let Ok(metadata) = result {
+                results.push(metadata);
+            }
+        }
+        results
     }
 
     pub async fn get_identity_md(&self, agent_id: &str) -> Result<String> {
@@ -125,38 +189,27 @@ impl EgoManager {
         Ok(content)
     }
 
-    pub async fn search_by_name(&self, name: &str) -> Vec<Arc<AgentMetadata>> {
-        self.search_by_description(name).await
-    }
-
-    pub async fn search_by_description(&self, description: &str) -> Vec<Arc<AgentMetadata>> {
+    pub async fn search_by_name(&self, query: &str) -> Vec<AgentMetadata> {
         //先同步脏数据
-        while !self.identity_dirty.is_empty() {
-            let agent_ids: Vec<String> = self.identity_dirty.iter().map(|id| id.clone()).collect();
-            let mut futs = Vec::new();
-            agent_ids.iter().for_each(|id| {
-                let fut = self.sync_identity_md(id.as_str());
-                futs.push(fut);
-            });
-            future::join_all(futs).await;
-        }
+        self.sync_all_identity_md().await;
         //搜索
         let agent_ids: Vec<String> = {
-            let guard = self.search_index.read().await;
-            guard.search(description).iter().map(|id| id.to_string()).collect()
+            let guard = self.name_index.read().await;
+            guard.find_all_keys(query, false).iter().map(|id| id.to_string()).collect()
         };
         //反查结果
-        let mut results = Vec::new();
-        let mut futs = Vec::new();
-        agent_ids.iter().for_each(|id| {
-            let fut = AgentManager::get().get_metadata(id.as_str());
-            futs.push(fut);
-        });
-        for result in future::join_all(futs).await {
-            if let Ok(metadata) = result {
-                results.push(metadata);
-            }
-        }
-        results
+        self.retrieve_agents(agent_ids).await
+    }
+
+    pub async fn search_by_description(&self, query: &str) -> Vec<AgentMetadata> {
+        //先同步脏数据
+        self.sync_all_identity_md().await;
+        //搜索
+        let agent_ids: Vec<String> = {
+            let guard = self.name_descr_index.read().await;
+            guard.find_all_keys(query, true).iter().map(|id| id.to_string()).collect()
+        };
+        //反查结果
+        self.retrieve_agents(agent_ids).await
     }
 }

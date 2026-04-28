@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     extract::Path,
     http::StatusCode,
@@ -129,11 +127,11 @@ async fn get_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
         Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<AgentMetadata>::error(format!("Agent {} not found", agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Arc<AgentMetadata>>::error(e.to_string())),
+            Json(ApiResponse::<AgentMetadata>::error(e.to_string())),
         ),
     }
 }
@@ -210,7 +208,7 @@ async fn search_by_name(Json(req): Json<SearchRequest>) -> impl IntoResponse {
             let agents = ego_manager.search_by_name(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<AgentMetadata>>::error(e.to_string()))),
     }
 }
 
@@ -220,7 +218,7 @@ async fn search_by_description(Json(req): Json<SearchRequest>) -> impl IntoRespo
             let agents = ego_manager.search_by_description(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<AgentMetadata>>::error(e.to_string()))),
     }
 }
 
