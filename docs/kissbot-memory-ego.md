@@ -8,9 +8,7 @@
 - 实现agent元数据管理（AgentManager）
 - 提供管理agent元数据的HTTPS API（如新增agent接口）
 - 每个agent ID对应一个客观设定，对应多个角色设定
-- 实现用户识别信息管理、角色扮演管理、角色扮演关系管理，并提供HTTPS API
-- 通过agent元数据生成agent的自我认知信息中的身份标识（MD文件）
-- 实现agent自我认知信息管理（EgoManager），管理自我认知MD文件
+- 实现用户识别信息管理、角色设定管理，并提供HTTPS API
 - 通过记忆提取的方式生成agent的自我认知信息（第二阶段）
 - 仅提供API，本身不封装为tool
 
@@ -19,8 +17,7 @@
 - agent元数据管理器（AgentManager）
 - 自我认知信息管理器（EgoManager）
 - 用户识别信息管理器（UserRecognitionManager）
-- 角色扮演管理器（RolePlayManager）
-- 角色扮演关系管理器（RolePlayRelationManager）
+- 角色设定管理器（RolePlayManager）
 - HTTPS API服务器
 - 记忆提取器
 
@@ -28,11 +25,10 @@
 ### Agent自我认知信息
 - agent ID（唯一标识）
 - 客观设定
-  - 身份标识（JSON结构存储，可生成MD）
-  - 用户识别信息（JSON结构存储，可生成MD）
+  - 身份标识（JSON结构存储）
+  - 用户识别信息（JSON结构存储）
 - 多个角色设定
-  - 角色扮演（JSON结构存储，可生成MD）
-  - 角色扮演关系（JSON结构存储，可生成MD）
+  - 角色扮演和角色扮演关系（JSON结构存储）
 
 ### Agent元数据结构
 - id：agent唯一标识符（UUID）
@@ -56,11 +52,10 @@
 除agent元数据管理模块外，用户识别信息、角色扮演信息、角色扮演关系信息也增加对应的管理模块，包括增加和修改功能。
 
 ### 存储机制
-- 所有内容在内部使用JSON文件存储，只有要求生成MD时才生成MD
-- 所有JSON转MD采用dirty机制，JSON更新时只标记，需要生成MD时再同步
+所有内容使用JSON文件存储
 
 ### 对外接口设计
-查询数据（JSON格式返回）和查询MD文件分开为两个接口。
+查询数据JSON格式返回
 
 ### 用户识别信息结构
 用户识别信息应为一个列表，列表每项为一个用户，至少包括：
@@ -128,75 +123,11 @@
 
 ### 用户识别信息管理接口
 
-#### 查询用户识别信息（JSON格式）
-- **接口**：按agent ID查询用户识别信息JSON
-- **返回内容**：用户识别信息列表（JSON格式）
-
-#### 查询用户识别信息（MD格式）
-- **接口**：按agent ID查询用户识别信息MD
-- **返回内容**：用户识别信息内容（MD格式）
-
-#### 增加用户
-- **接口**：增加用户
-- **输入**：用户信息（名称、身份、关联的用户标识等）
-- **返回**：成功或失败状态
-
-#### 修改用户
-- **接口**：修改用户
-- **输入**：用户信息
-- **返回**：成功或失败状态
-
-### 角色扮演信息管理接口
-
-#### 查询角色扮演信息列表
-- **接口**：按agent ID查询所有角色列表
-- **返回内容**：角色名称列表
-
-#### 查询角色扮演信息（JSON格式）
-- **接口**：按agent ID + 角色名称查询角色扮演JSON
-- **返回内容**：角色扮演信息（JSON格式）
-
-#### 查询角色扮演信息（MD格式）
-- **接口**：按agent ID + 角色名称查询角色扮演MD
-- **返回内容**：角色扮演信息内容（MD格式）
-
-#### 增加角色
-- **接口**：增加角色
-- **输入**：角色信息（名称、描述等）
-- **返回**：成功或失败状态
-
-#### 修改角色
-- **接口**：修改角色
-- **输入**：角色信息
-- **返回**：成功或失败状态
-
-### 角色扮演关系信息管理接口
-
-#### 查询角色扮演关系信息列表
-- **接口**：按agent ID + 角色名称查询所有角色关系列表
-- **返回内容**：角色关系列表
-
-#### 查询角色扮演关系信息（JSON格式）
-- **接口**：按agent ID + 角色名称查询角色扮演关系JSON
-- **返回内容**：角色扮演关系信息（JSON格式）
-
-#### 查询角色扮演关系信息（MD格式）
-- **接口**：按agent ID + 角色名称查询角色扮演关系MD
-- **返回内容**：角色扮演关系信息内容（MD格式）
-
-#### 增加角色关系
-- **接口**：增加角色关系
-- **输入**：角色关系信息
-- **返回**：成功或失败状态
-
-#### 修改角色关系
-- **接口**：修改角色关系
-- **输入**：角色关系信息
-- **返回**：成功或失败状态
+### 角色设定管理接口
 
 ## 通信接口
 - 输入：通过HTTPS API接收agent的查询请求
-- 输出：通过HTTPS API返回agent的自我认知信息（JSON格式或MD格式分开接口）
+- 输出：通过HTTPS API返回agent的自我认知信息（JSON格式）
 - 文件系统：读取配置文件，与其他记忆模块共享文件系统
 
 ## 文件存储目录结构
@@ -206,24 +137,14 @@
     - **agent-{agent-id}**：agent存在标识文件（由memory模块管理）
     - **metadata.json**：agent元数据JSON文件
     - **memory-ego**：memory-ego模块的设定信息单独存放
-      - **identity.md**：自动生成的身份标识MD文件
       - **user-recognition.json**：用户识别信息JSON文件
-      - **user-recognition.md**：用户识别信息MD文件（按需生成）
-      - **role-play-{role-id}.json**：角色扮演JSON文件
-      - **role-play-{role-id}.md**：角色扮演MD文件（按需生成）
-      - **role-play-relation-{role-id}.json**：角色扮演关系JSON文件
-      - **role-play-relation-{role-id}.md**：角色扮演关系MD文件（按需生成）
+      - **role-play-{role-id}.json**：角色设定JSON文件
 
 ## 文件生成机制
 
 ### JSON文件来源
-- 身份识别信息：来源于metadata.json
-- 用户识别信息、角色扮演信息、角色扮演关系信息：外部填写或从记忆提取
-
-### MD文件生成
-- 所有JSON转MD采用dirty机制，JSON更新时只标记，需要生成MD时再同步
-- 身份识别信息：从metadata.json中提取agent名称、创建时间等信息，自动生成identity.md
-- 其他信息：根据对应的JSON文件按需生成MD文件
+- 身份识别信息：填写metadata.json
+- 用户识别信息、角色设定信息：外部填写或从记忆提取
 
 ### 进阶模式
 - 结合配置信息和从记忆中提取的信息生成JSON文件
@@ -242,9 +163,9 @@
 - 使用本地kai-index库的DistinctIndex实现全文搜索
 - 使用DashMap和DashSet实现高并发数据结构
 - 使用Arc共享数据，避免克隆
-- 脏标记机制（identity_dirty）：延迟更新identity.md和搜索索引
-- force_sync_identity_md：强制同步，更新搜索索引并生成identity.md
-- sync_identity_md：检查脏标记，仅在需要时同步
+- 脏标记机制（identity_dirty）：延迟更新搜索索引
+- force_sync_identity：强制同步，更新搜索索引
+- sync_identity：检查脏标记，仅在需要时同步
 - search_by_name/search_by_description：先同步脏数据再搜索
 - 启动时自动加载：get()初始化时加载所有agent到搜索索引
 - 单例通过tokio::sync::OnceCell实现异步初始化
@@ -268,8 +189,6 @@
 - [x] 调用memory基础模块库（DirectoryManager）
 - [x] 实现AgentManager管理agent元数据
 - [x] agent元数据管理API（新增agent、查询agent元数据、修改agent名称描述）
-- [x] 通过agent元数据生成身份识别MD文件
-- [x] agent身份识别MD的读取API
 - [x] HTTPS API接口
 
 ### 第2阶段：全文搜索实现
