@@ -7,9 +7,10 @@
 - 调用memory基础模块的DirectoryManager进行目录管理
 - 实现agent元数据管理（AgentManager）
 - 提供管理agent元数据的HTTPS API（如新增agent接口）
-- 通过agent元数据生成agent的自我认知信息中的身份标识（MD文件）
 - 每个agent ID对应一个客观设定，对应多个角色设定
-- 通过MD文件读取agent的自我认知信息
+- 实现用户识别信息管理、角色扮演管理、角色扮演关系管理，并提供HTTPS API
+- 通过agent元数据生成agent的自我认知信息中的身份标识（MD文件）
+- 实现agent自我认知信息管理（EgoManager），管理自我认知MD文件
 - 通过记忆提取的方式生成agent的自我认知信息（第二阶段）
 - 仅提供API，本身不封装为tool
 
@@ -17,6 +18,9 @@
 ### 核心组件
 - agent元数据管理器（AgentManager）
 - 自我认知信息管理器（EgoManager）
+- 用户识别信息管理器（UserRecognitionManager）
+- 角色扮演管理器（RolePlayManager）
+- 角色扮演关系管理器（RolePlayRelationManager）
 - HTTPS API服务器
 - 记忆提取器
 
@@ -146,20 +150,20 @@
 
 #### 查询角色扮演信息列表
 - **接口**：按agent ID查询所有角色列表
-- **返回内容**：角色ID和名称列表
+- **返回内容**：角色名称列表
 
 #### 查询角色扮演信息（JSON格式）
-- **接口**：按agent ID + 角色ID查询角色扮演JSON
+- **接口**：按agent ID + 角色名称查询角色扮演JSON
 - **返回内容**：角色扮演信息（JSON格式）
 
 #### 查询角色扮演信息（MD格式）
-- **接口**：按agent ID + 角色ID查询角色扮演MD
+- **接口**：按agent ID + 角色名称查询角色扮演MD
 - **返回内容**：角色扮演信息内容（MD格式）
 
 #### 增加角色
 - **接口**：增加角色
 - **输入**：角色信息（名称、描述等）
-- **返回**：成功或失败状态，包含新角色ID
+- **返回**：成功或失败状态
 
 #### 修改角色
 - **接口**：修改角色
@@ -169,15 +173,15 @@
 ### 角色扮演关系信息管理接口
 
 #### 查询角色扮演关系信息列表
-- **接口**：按agent ID + 角色ID查询所有角色关系列表
+- **接口**：按agent ID + 角色名称查询所有角色关系列表
 - **返回内容**：角色关系列表
 
 #### 查询角色扮演关系信息（JSON格式）
-- **接口**：按agent ID + 角色ID查询角色扮演关系JSON
+- **接口**：按agent ID + 角色名称查询角色扮演关系JSON
 - **返回内容**：角色扮演关系信息（JSON格式）
 
 #### 查询角色扮演关系信息（MD格式）
-- **接口**：按agent ID + 角色ID查询角色扮演关系MD
+- **接口**：按agent ID + 角色名称查询角色扮演关系MD
 - **返回内容**：角色扮演关系信息内容（MD格式）
 
 #### 增加角色关系
@@ -228,14 +232,14 @@
 ## AgentManager实现
 - 实现agent元数据的JSON文件存储（metadata.json）
 - 使用DashMap实现高并发的manager_lock
-- 使用Arc<AgentMetadata>共享元数据
+- AgentMetadata共享元数据，内部使用Arc<String>减少复制开销
 - 使用tokio::sync::RwLock实现读写锁防止竞争
 - 使用内存缓存，首次读取后缓存到内存
 - 双重锁定机制确保数据一致性
 - 单例通过关联函数获取：AgentManager::get()
 
 ## EgoManager实现
-- 使用kai-index库的DistinctIndex实现全文搜索
+- 使用本地kai-index库的DistinctIndex实现全文搜索
 - 使用DashMap和DashSet实现高并发数据结构
 - 使用Arc共享数据，避免克隆
 - 脏标记机制（identity_dirty）：延迟更新identity.md和搜索索引
@@ -252,8 +256,9 @@
 - 使用serde进行JSON序列化
 - 支持从配置文件加载证书
 - AgentManager在本模块实现，管理agent元数据的JSON文件存储
+- AgentMetadata内部使用Arc<String>减少复制开销
 - 使用dashmap实现高并发数据结构
-- 使用kai-index库实现全文搜索
+- 使用本地kai-index库实现全文搜索
 - 使用futures实现并发操作
 - 使用Arc共享数据，减少克隆开销
 
@@ -268,7 +273,7 @@
 - [x] HTTPS API接口
 
 ### 第2阶段：全文搜索实现
-- [x] 使用kai-index库实现全文搜索
+- [x] 使用本地kai-index库实现全文搜索
 - [x] 使用dashmap实现高并发数据结构
 - [x] 实现脏标记机制延迟更新
 - [x] 实现name和description字段的全文搜索
