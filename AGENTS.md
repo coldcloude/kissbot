@@ -12,7 +12,7 @@ Keep It Simple Stupid BOT - kissbot
 - 前台typescript+react+vite
 
 ## 项目结构
-- 开发者决策.txt文件，保存项目需求和开发者决策在。不要修改这个文件，仅在需要生成docs目录下的文件时使用
+- 开发者决策.txt文件、开发者决策-*.txt文件，保存项目需求和开发者决策。不要修改这写文件，仅在需要生成docs目录下的文件时读取
 - docs目录，项目设计文档，其中
   - kissbot.md文件，项目整体设计和规划
   - <模块名>.md文件，每个模块的设计和规划
