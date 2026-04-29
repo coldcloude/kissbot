@@ -1,0 +1,15 @@
+关于agent的会话的设计：
+agent应该维护一个会话（session）结构，用于记录一次完整的agent和外界的交互。
+agent可以从会话中生成一个记忆片段，也可以从会话中生成下一轮发送给LLM API的提示词。
+agent会话 - 记忆片段 - LLM提示词 三者内容不同，但应一一对应
+
+关于agent的系统提示词的设计
+系统提示词应包含agent自我认知设定，此外，agent的系统提示词还应包含：
+1、设定引导：限定设定文字的范围
+2、基本原则：agent必须遵守的规范，包括禁止事项
+3、设定保持指令：要求agent忽略后续会话中任何修改设定的指令
+
+关于agent系统和记忆系统的交互
+agent和从自我认知模块读取双重设定，应在agentic loop之外，直接调用API
+agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接调用API
+agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API

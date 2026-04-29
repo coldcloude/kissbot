@@ -1,0 +1,8 @@
+关于记忆系统的文件存储目录设计
+记忆系统设计为每个agent一个目录的组织形式，目录名为agent ID。
+每个agent ID目录下有结构相同的文件和子目录：
+（1）agent-<ID>文件，标识父目录为agent目录
+（1）metadata.json文件，记录agent的元数据。
+（2）memory-ego目录，用于memory-ego模块的设定信息存储。
+（3）memory-store目录，用于memory-store，模块收集的原始记忆片段存储。
+（4）memory-struct-*目录，用于每个memory-struct的实现存放自身产生的数据，目录名和实现模块同名
