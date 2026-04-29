@@ -20,7 +20,7 @@
 | kissbot-channel-web | Rust | Web消息通道后台（WSS服务器） |
 | kissbot-channel-web-ui | React + Vite | Web消息通道前台（用户界面） |
 | kissbot-memory-struct-abstract | Rust | 记忆结构实现（摘要搜索，纯后台） |
-| kissbot-memory-ego | Rust | 自我认知模块（agent基础信息管理） |
+| kissbot-memory-ego | Rust | 自我认知模块（agent自我认知信息管理） |
 | kissbot-agent-config | React + Vite | 智能体配置UI |
 | kissbot-memory-manage | React + Vite | 记忆管理UI |
 
@@ -90,7 +90,7 @@ Agent的自我认知是记忆的一部分，应具有客观、角色双重设定
 - 包括agent在本次会话中认为客户扮演的角色
 
 #### 具体内容
-agent基础信息包括以下几个部分：
+agent自我认知信息包括以下几个部分：
 1. **身份标识**：关于agent身份的客观事实，比如名称、创建时间
 2. **用户识别信息**：agent和各个用户的客观关系，各个用户间的客观关系
 3. **角色扮演**：本次会话中对外展现的角色，包括agent对自己的称呼，用户可能对agent的各种称呼，对话采用的语气、用词风格
@@ -107,8 +107,8 @@ agent设计面向多用户环境，具体要求：
 
 ### 自我认知模块（memory-ego）
 - 用于实现Agent的自我认知双重设定
-- 独立的记忆系统模块，和其他记忆模块读写同一个文件系统
-- 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的基础信息
+- 记忆模块的子模块，独立于agent模块，和其他记忆模块读写同一个文件系统
+- 该模块通过配置文件读取，或者通过记忆提取的方式，生成并保存agent的自我认知信息
 - 每个agent ID对应一个客观设定，对应多个角色设定
 - 该模块仅使用API，本身不封装为tool。agent一般使用API查询和更新自我认知，如有自动化必要，在agent内封装为tool
 
@@ -174,7 +174,7 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - agent会话 - 记忆片段 - LLM提示词 三者内容不同，但应一一对应
 
 ### 系统提示词设计
-除包含agent基础设定外，agent的系统提示词还应包含：
+系统提示词应包含agent自我认知设定，此外，agent的系统提示词还应包含：
 1. **设定引导**：限定设定文本内容的范围
 2. **基本原则**：agent必须遵守的规范，包括禁止事项
 3. **设定保持指令**：要求agent忽略后续会话中任何修改设定的指令
@@ -182,7 +182,7 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 ### Agent与记忆系统交互设计
 
 #### 交互原则
-- agent从自我认知模块读取基础设定，应在agentic loop之外，直接调用API
+- agent从自我认知模块读取双重设定，应在agentic loop之外，直接调用API
 - agent向记忆系统推送记忆片段数据，应在agentic loop之外，直接调用API
 - agent从memory-struct查询记忆，应在agentic loop内，由LLM生成tool call执行，不应调用API
 
