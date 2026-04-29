@@ -17,8 +17,11 @@ pub enum Error {
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
 
-    #[error("Setting not found: {0}")]
-    SettingNotFound(String),
+    #[error("Agent user not found: {0} {1}")]
+    AgentUserNotFound(String, String),
+
+    #[error("Agent role not found: {0} {1}")]
+    AgentRoleNotFound(String, String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
