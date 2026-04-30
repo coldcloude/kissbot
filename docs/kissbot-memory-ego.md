@@ -121,6 +121,11 @@
 - **输入**：搜索关键词
 - **返回**：匹配的agent元数据列表
 
+#### 复制agent接口
+- **接口**：复制agent
+- **路径**：POST /agent/:agent_id/copy
+- **返回**：成功或失败状态
+
 ### 用户识别信息管理接口
 
 #### 获取用户识别信息接口
@@ -209,6 +214,11 @@
 - **路径**：PUT /agent/:agent_id/roles/:role_name/description
 - **输入**：新描述
 - **返回**：成功或失败状态
+
+#### 获取单个其他角色接口
+- **接口**：获取单个其他角色信息
+- **路径**：GET /agent/:agent_id/roles/:role_name/other_roles/:other_role_name
+- **返回内容**：其他角色信息JSON
 
 #### 替换其他角色接口
 - **接口**：替换角色中的其他角色

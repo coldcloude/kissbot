@@ -192,6 +192,7 @@ pub fn create_router() -> Router {
         .route("/agent/:agent_id", get(get_agent))
         .route("/agent/:agent_id/name", put(update_agent_name))
         .route("/agent/:agent_id/description", put(update_agent_description))
+        .route("/agent/:agent_id/copy", post(copy_agent))
         .route("/agent/search/name", post(search_by_name))
         .route("/agent/search/description", post(search_by_description))
         // 用户识别信息API
@@ -228,6 +229,10 @@ pub fn create_router() -> Router {
         .route(
             "/agent/:agent_id/roles/:role_name/description",
             put(update_role_description),
+        )
+        .route(
+            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name",
+            get(get_other_role),
         )
         .route(
             "/agent/:agent_id/roles/:role_name/other_roles",
@@ -339,6 +344,25 @@ async fn update_agent_description(
     let result = {
         let agent_manager = AgentManager::get();
         agent_manager.update_agent_description(&agent_id, Arc::new(req.description)).await
+    };
+
+    match result {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
+        Err(Error::AgentNotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<()>::error(e.to_string())),
+        ),
+    }
+}
+
+async fn copy_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
+    let result = {
+        let agent_manager = AgentManager::get();
+        agent_manager.copy_agent(&agent_id).await
     };
 
     match result {
@@ -615,6 +639,24 @@ async fn get_role(Path((agent_id, role_name)): Path<(String, String)>) -> impl I
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::<Arc<RolePlay>>::error(e.to_string())),
+        ),
+    }
+}
+
+async fn get_other_role(Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>) -> impl IntoResponse {
+    match RolePlayManager::get().get_other_role(&agent_id, &role_name, &other_role_name).await {
+        Ok(other_role) => (StatusCode::OK, Json(ApiResponse::success(other_role))),
+        Err(Error::AgentRoleNotFound(_, _)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Role {} not found", role_name))),
+        ),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Other role {} not found", other_role_name))),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<Arc<OtherRole>>::error(e.to_string())),
         ),
     }
 }

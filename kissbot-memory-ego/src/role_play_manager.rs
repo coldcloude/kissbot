@@ -130,7 +130,7 @@ impl RolePlayManager {
     {
         self.read_role_play_ref(agent_id, role_name, |role| {
             if let Some(other_role) = role.other_roles.get(other_role_name) {
-                op(other_role.clone());
+                op(other_role.clone())?;
             }
             Ok(())
         }).await
