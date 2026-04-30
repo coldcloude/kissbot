@@ -1,23 +1,6 @@
-use std::{collections::HashSet, path::{Path, PathBuf}};
+use std::{collections::HashSet};
 
-use crate::{agent::AgentMetadata, role_play_manager::{EGO_ROLE_PLAY_PREFIX, RolePlay}, user_recognition_manager::{EGO_USER_RECOGNITION_PREFIX, UserRecognition}};
-
-pub const EGO_IDENTITY_MD: &str = "identity.md";
-
-pub fn ego_identity_md_path(ego_dir: impl AsRef<Path>) -> PathBuf {
-    ego_dir.as_ref().to_path_buf().join(EGO_IDENTITY_MD)
-}
-
-pub fn ego_user_recognition_md_path(ego_dir: impl AsRef<std::path::Path>) -> PathBuf {
-    ego_dir.as_ref().to_path_buf().join(format!("{}.md", EGO_USER_RECOGNITION_PREFIX))
-}
-
-pub fn ego_role_play_md_path(ego_dir: impl AsRef<std::path::Path>, role_name: &str) -> PathBuf {
-    ego_dir
-        .as_ref()
-        .to_path_buf()
-        .join(format!("{}{}.md", EGO_ROLE_PLAY_PREFIX, role_name))
-}
+use crate::{agent::AgentMetadata, role_play_manager::RolePlay, user_recognition_manager::UserRecognition};
 
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     format!(
@@ -63,7 +46,7 @@ pub fn build_role_play_md(role: &RolePlay, user_names: &HashSet<String>) -> Stri
     content.push_str(&format!("- **Self Role**: {}\n\n", role.name));
     content.push_str(&format!("- **Self Description**: {}\n", role.description));
 
-    for relation in role.relations.iter() {
+    for relation in role.other_roles.iter() {
         if user_names.contains(relation.user_name.as_str()) {
             content.push_str(&format!("## Known role: {}\n\n", relation.key()));
             content.push_str(&format!("- **Belong to**: {}\n", relation.user_name));

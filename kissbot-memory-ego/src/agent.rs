@@ -104,9 +104,25 @@ impl AgentManager {
         let lock = self.get_or_create_lock(agent_id).await;
         let mut guard = lock.write().await;
 
+        //如果内存中没有，先尝试读取
+        if guard.is_none() && metadata_path.exists() {
+            let content = tokio::fs::read_to_string(&metadata_path).await?;
+            let entity = serde_json::from_str(&content)?;
+            *guard = Some(Arc::new(entity));
+        }
+
         //更新
-        let new_metadata = op(guard.take())?;
-        *guard = Some(new_metadata);
+        let metadata = guard.take();
+        match op(metadata.clone()) {
+            Ok(new_metadata) => {
+                *guard = Some(new_metadata);
+            }
+            Err(e) => {
+                //失败时要先把原来的放回内存
+                *guard = metadata;
+                return Err(e);
+            }
+        }
         
         //写入文件
         match guard.as_ref() {
@@ -144,6 +160,11 @@ impl AgentManager {
             Ok(())
         }).await?;
         result
+    }
+
+    pub async fn copy_agent(&self, agent_id: &str) -> Result<()> {
+        let metadata = self.get_agent(agent_id).await?;
+        self.create_agent(metadata.name.clone(), metadata.description.clone()).await
     }
 
     pub async fn update_agent_name(&self, agent_id: &str, name: Arc<String>) -> Result<()> {

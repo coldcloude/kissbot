@@ -20,8 +20,20 @@ pub enum Error {
     #[error("Agent user not found: {0} {1}")]
     AgentUserNotFound(String, String),
 
+    #[error("Agent user already exists: {0} {1}")]
+    AgentUserAlreadyExists(String, String),
+
     #[error("Agent role not found: {0} {1}")]
     AgentRoleNotFound(String, String),
+
+    #[error("Agent role already exists: {0} {1}")]
+    AgentRoleAlreadyExists(String, String),
+
+    #[error("Agent role other role not found: {0} {1} {2}")]
+    AgentRoleOtherRoleNotFound(String, String, String),
+
+    #[error("Agent role other role already exists: {0} {1} {2}")]
+    AgentRoleOtherRoleAlreadyExists(String, String, String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

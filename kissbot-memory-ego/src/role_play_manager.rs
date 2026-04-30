@@ -14,17 +14,17 @@ use crate::error::Error;
 
 // 角色关系
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OtherRoleRelation {
+pub struct RoleRelation {
     pub relation: Arc<String>,
     pub description: Arc<String>,
 }
 
 // 角色扮演关系信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolePlayRelation {
+pub struct OtherRole {
     pub user_name: Arc<String>,
-    pub role_relation: Arc<OtherRoleRelation>,
-    pub other_role_relations: Arc<DashMap<String, Arc<OtherRoleRelation>>>,
+    pub role_relation: Arc<RoleRelation>,
+    pub other_role_relations: Arc<DashMap<String, Arc<RoleRelation>>>,
     pub description: Arc<String>,
 }
 
@@ -34,18 +34,19 @@ pub struct RolePlay {
     pub id: Arc<String>,
     pub name: Arc<String>,
     pub description: Arc<String>,
-    pub relations: Arc<DashMap<String, Arc<RolePlayRelation>>>,
+    pub other_roles: Arc<DashMap<String, Arc<OtherRole>>>,
 }
 
 // 文件路径常量
 pub const EGO_ROLE_PLAY_PREFIX: &str = "role-play-";
+pub const JSON_SUFFIX: &str = ".json";
 
 // 路径辅助函数
 pub fn ego_role_play_path(ego_dir: impl AsRef<std::path::Path>, role_name: &str) -> PathBuf {
     ego_dir
         .as_ref()
         .to_path_buf()
-        .join(format!("{}{}.json", EGO_ROLE_PLAY_PREFIX, role_name))
+        .join(format!("{}{}{}", EGO_ROLE_PLAY_PREFIX, role_name, JSON_SUFFIX))
 }
 
 // 角色扮演管理器
@@ -123,6 +124,18 @@ impl RolePlayManager {
         }
     }
 
+    async fn read_role_play_other_role_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut op: F) -> Result<()>
+    where
+        F: FnMut(Arc<OtherRole>) -> Result<()>,
+    {
+        self.read_role_play_ref(agent_id, role_name, |role| {
+            if let Some(other_role) = role.other_roles.get(other_role_name) {
+                op(other_role.clone());
+            }
+            Ok(())
+        }).await
+    }
+
     async fn remove_role_play_ref(&self, agent_id: &str, role_name: &str) -> Result<()> {
         let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
         let json_path = ego_role_play_path(&ego_dir, role_name);
@@ -151,9 +164,25 @@ impl RolePlayManager {
         let lock = self.get_or_create_lock(agent_id, role_name).await;
         let mut guard = lock.write().await;
 
+        //如果内存中没有，先尝试读取
+        if guard.is_none() && json_path.exists() {
+            let content = tokio::fs::read_to_string(&json_path).await?;
+            let entity = serde_json::from_str(&content)?;
+            *guard = Some(Arc::new(entity));
+        }
+
         //更新
-        let new_role = op(guard.take())?;
-        *guard = Some(new_role);
+        let role = guard.take();
+        match op(role.clone()) {
+            Ok(new_role) => {
+                *guard = Some(new_role);
+            }
+            Err(e) => {
+                //失败时要先把原来的放回内存
+                *guard = role;
+                return Err(e);
+            }
+        }
 
         //写入文件
         match guard.as_ref() {
@@ -168,21 +197,44 @@ impl RolePlayManager {
         }
     }
 
-    async fn write_role_play_relation_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, op: F) -> Result<()>
+    async fn write_role_play_other_role_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, op: F) -> Result<()>
     where
-        F: FnOnce(Arc<RolePlayRelation>) -> Result<Arc<RolePlayRelation>>,
+        F: FnOnce(Arc<OtherRole>) -> Result<Arc<OtherRole>>,
     {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
-                    if let Some(mut relation) = role.relations.get_mut(other_role_name) {
-                        *relation = op(relation.clone())?;
+                    if let Some(mut other_role) = role.other_roles.get_mut(other_role_name) {
+                        *other_role = op(other_role.clone())?;
                     }
                     Ok(role)
                 },
                 None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
             }
         }).await
+    }
+
+    pub async fn list_roles(&self, agent_id: &str) -> Result<Vec<String>> {
+        let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
+
+        let mut roles = Vec::new();
+        
+        let mut entries = tokio::fs::read_dir(&ego_dir).await?;
+        
+        while let Some(entry) = entries.next_entry().await? {
+            let role_file = entry.path();
+            if role_file.is_file() {
+                if let Some(role_file_name) = role_file.file_name().and_then(|n| n.to_str()) {
+                    if role_file_name.starts_with(EGO_ROLE_PLAY_PREFIX) && role_file_name.ends_with(JSON_SUFFIX) {
+                        if let Some(role_name) = role_file_name.get(EGO_ROLE_PLAY_PREFIX.len() .. role_file_name.len() - JSON_SUFFIX.len()) {
+                            roles.push(role_name.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(roles)
     }
 
     pub async fn get_role(&self, agent_id: &str, role_name: &str) -> Result<Arc<RolePlay>> {
@@ -195,14 +247,26 @@ impl RolePlayManager {
     }
 
     pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
-        self.write_role_play_ref(agent_id, role_name.clone().as_str(), |_| {
-            Ok(Arc::new(RolePlay {
-                id: Arc::new(agent_id.to_string()),
-                name: role_name,
-                relations: Arc::new(DashMap::new()),
-                description: description,
-            }))
+        self.write_role_play_ref(agent_id, role_name.clone().as_str(), |old| {
+            match old {
+                Some(_) => {
+                    Err(Error::AgentRoleAlreadyExists(agent_id.to_string(), role_name.to_string()))
+                }
+                None => {
+                    Ok(Arc::new(RolePlay {
+                        id: Arc::new(agent_id.to_string()),
+                        name: role_name,
+                        other_roles: Arc::new(DashMap::new()),
+                        description: description,
+                    }))
+                }
+            }
         }).await
+    }
+
+    pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+        let role = self.get_role(agent_id, role_name).await?;
+        self.create_role(agent_id, new_name, role.description.clone()).await
     }
 
     pub async fn remove_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
@@ -211,20 +275,23 @@ impl RolePlayManager {
 
     pub async fn rename_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
         let role = self.get_role(agent_id, role_name).await?;
-        self.remove_role(agent_id, role_name).await?;
-        self.write_role_play_ref(agent_id, new_name.as_str(), |_| {
-            Ok(Arc::new(RolePlay {
-                id: role.id.clone(),
-                name: new_name.clone(),
-                description: role.description.clone(),
-                relations: role.relations.clone()
-            }))
-        }).await
-    }
-
-    pub async fn copy_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
-        let role = self.get_role(agent_id, role_name).await?;
-        self.create_role(agent_id, new_name, role.description.clone()).await
+        //先进行浅复制，以防因为重复key导致失败
+        self.write_role_play_ref(agent_id, new_name.as_str(), |old| {
+            match old {
+                Some(_) => {
+                    Err(Error::AgentRoleAlreadyExists(agent_id.to_string(), new_name.to_string()))
+                }
+                None => {
+                    Ok(Arc::new(RolePlay {
+                        id: role.id.clone(),
+                        name: new_name.clone(),
+                        description: role.description.clone(),
+                        other_roles: role.other_roles.clone()
+                    }))
+                }
+            }
+        }).await?;
+        self.remove_role(agent_id, role_name).await
     }
 
     pub async fn update_role_description(&self, agent_id: &str, role_name: &str, description: Arc<String>) -> Result<()> {
@@ -235,7 +302,7 @@ impl RolePlayManager {
                         id: role.id.clone(),
                         name: role.name.clone(),
                         description: description,
-                        relations: role.relations.clone()
+                        other_roles: role.other_roles.clone()
                     }))
                 },
                 None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
@@ -243,20 +310,87 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn update_role_relations(&self, agent_id: &str, role_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String,Arc<RolePlayRelation>>) -> Result<()> {
+    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: HashSet<String>, mut insert_other_roles: HashMap<String,Arc<OtherRole>>) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
-            match role_or_none {
-                Some(role) => {
-                    for identifier in remove_relations.drain() {
-                        role.relations.remove(&identifier);
-                    }
-                    for (identifier, relation) in insert_relations.drain() {
-                        role.relations.insert(identifier, relation);
-                    }
-                    Ok(role)
-                },
-                None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+            if let Some(role) = role_or_none {
+                for other_role_name in remove_other_roles.drain() {
+                    role.other_roles.remove(&other_role_name);
+                }
+                for (other_role_name, other_role) in insert_other_roles.drain() {
+                    role.other_roles.insert(other_role_name, other_role);
+                }
+                Ok(role)
             }
+            else {
+                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+            }
+        }).await
+    }
+
+    pub async fn rename_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_name: &str) -> Result<()> {
+        self.write_role_play_ref(agent_id, role_name, |role_or_none| {
+            if let Some(role) = role_or_none {
+                if role.other_roles.contains_key(new_name) {
+                    Err(Error::AgentRoleOtherRoleAlreadyExists(agent_id.to_string(), role_name.to_string(), new_name.to_string()))
+                }
+                else {
+                    if let Some((_,other_role)) = role.other_roles.remove(other_role_name) {
+                        role.other_roles.insert(new_name.to_string(), other_role);
+                        Ok(role)
+                    }
+                    else {
+                        Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()))
+                    }
+                }
+            }
+            else {
+                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+            }
+        }).await
+    }
+
+    pub async fn update_other_role_user_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_user_name: Arc<String>) -> Result<()> {
+        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            Ok(Arc::new(OtherRole {
+                user_name: new_user_name,
+                description: other_role.description.clone(),
+                role_relation: other_role.role_relation.clone(),
+                other_role_relations: other_role.other_role_relations.clone(),
+            }))
+        }).await
+    }
+
+    pub async fn update_other_role_description(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_description: Arc<String>) -> Result<()> {
+        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            Ok(Arc::new(OtherRole {
+                user_name: other_role.user_name.clone(),
+                description: new_description,
+                role_relation: other_role.role_relation.clone(),
+                other_role_relations: other_role.other_role_relations.clone(),
+            }))
+        }).await
+    }
+
+    pub async fn update_other_role_relation(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_relation: Arc<RoleRelation>) -> Result<()> {
+        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            Ok(Arc::new(OtherRole {
+                user_name: other_role.user_name.clone(),
+                description: other_role.description.clone(),
+                role_relation: new_relation,
+                other_role_relations: other_role.other_role_relations.clone(),
+            }))
+        }).await
+    }
+
+    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String,Arc<RoleRelation>>) -> Result<()> {
+        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            for relation_name in remove_relations.drain() {
+                other_role.other_role_relations.remove(&relation_name);
+            }
+            for (relation_name, relation) in insert_relations.drain() {
+                other_role.other_role_relations.insert(relation_name, relation);
+            }
+            Ok(other_role)
         }).await
     }
 }

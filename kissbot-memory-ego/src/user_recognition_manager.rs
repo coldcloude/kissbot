@@ -28,7 +28,7 @@ pub struct UserIdentifier {
 
 // 用户关系
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OtherUserRelation {
+pub struct UserRelation {
     pub relation: Arc<String>,
     pub description: Arc<String>,
 }
@@ -38,7 +38,7 @@ pub struct OtherUserRelation {
 pub struct User {
     pub privilege: Arc<UserPrivilege>,
     pub identifiers: Arc<DashSet<UserIdentifier>>,
-    pub relations: Arc<DashMap<String, Arc<OtherUserRelation>>>,
+    pub relations: Arc<DashMap<String, Arc<UserRelation>>>,
     pub description: Arc<String>,
 }
 
@@ -107,11 +107,11 @@ impl UserRecognitionManager {
                 return op(users.clone());
             }
 
-            //从文件读取
+            //准备从文件读取
             let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
             let json_path = ego_user_recognition_path(&ego_dir);
 
-            //新建空用户列表
+            //文件不存在，新建空用户列表，并写入文件
             if !json_path.exists() {
                 let users = UserRecognition {
                     id: Arc::new(agent_id.to_string()),
@@ -121,6 +121,7 @@ impl UserRecognitionManager {
                 tokio::fs::write(&json_path, content).await?;
             }
 
+            //重新读取文件
             if !json_path.exists() {
                 return Err(Error::AgentNotFound(agent_id.to_string()));
             }
@@ -148,9 +149,25 @@ impl UserRecognitionManager {
         let lock = self.get_or_create_lock(agent_id).await;
         let mut guard = lock.write().await;
 
+        //如果内存中没有，先尝试读取
+        if guard.is_none() && json_path.exists() {
+            let content = tokio::fs::read_to_string(&json_path).await?;
+            let entity = serde_json::from_str(&content)?;
+            *guard = Some(Arc::new(entity));
+        }
+
         //更新
-        let new_users = op(guard.take())?;
-        *guard = Some(new_users);
+        let users = guard.take();
+        match op(users.clone()) {
+            Ok(new_users) => {
+                *guard = Some(new_users);
+            }
+            Err(e) => {
+                //失败时要先把原来的放回内存
+                *guard = users;
+                return Err(e);
+            }
+        }
 
         //写入文件
         match guard.as_ref() {
@@ -204,17 +221,39 @@ impl UserRecognitionManager {
 
     pub async fn replace_users(&self, agent_id: &str, mut remove_user_name_set: HashSet<String>, mut insert_user_map: HashMap<String, Arc<User>>) -> Result<()> {
         self.write_user_recognition_ref(agent_id, |users_or_none| {
-            match users_or_none {
-                Some(users) => {
-                    for user_name in remove_user_name_set.drain() {
-                        users.user_map.remove(&user_name);
+            if let Some(users) = users_or_none {
+                for user_name in remove_user_name_set.drain() {
+                    users.user_map.remove(&user_name);
+                }
+                for (user_name, user) in insert_user_map.drain() {
+                    users.user_map.insert(user_name, user);
+                }
+                Ok(users)
+            }
+            else {
+                Err(Error::AgentNotFound(agent_id.to_string()))
+            }
+        }).await
+    }
+
+    pub async fn rename_user(&self, agent_id: &str, user_name: &str, new_name: &str) -> Result<()> {
+        self.write_user_recognition_ref(agent_id, |users_or_none| {
+            if let Some(users) = users_or_none {
+                if users.user_map.contains_key(new_name) {
+                    if let Some((_,user)) = users.user_map.remove(user_name) {
+                        users.user_map.insert(new_name.to_string(), user);
+                        Ok(users)
                     }
-                    for (user_name, user) in insert_user_map.drain() {
-                        users.user_map.insert(user_name, user);
+                    else {
+                        Err(Error::AgentUserNotFound(agent_id.to_string(), user_name.to_string()))
                     }
-                    Ok(users)
-                },
-                None => Err(Error::AgentNotFound(agent_id.to_string())),
+                }
+                else {
+                    Err(Error::AgentUserAlreadyExists(agent_id.to_string(), new_name.to_string()))
+                }
+            }
+            else {
+                Err(Error::AgentNotFound(agent_id.to_string()))
             }
         }).await
     }
@@ -241,7 +280,7 @@ impl UserRecognitionManager {
         }).await
     }
 
-    pub async fn update_user_identifiers(&self, agent_id: &str, user_name: &str, mut remove_identifiers: HashSet<UserIdentifier>, mut insert_identifiers: HashSet<UserIdentifier>) -> Result<()> {
+    pub async fn replace_user_identifiers(&self, agent_id: &str, user_name: &str, mut remove_identifiers: HashSet<UserIdentifier>, mut insert_identifiers: HashSet<UserIdentifier>) -> Result<()> {
         self.write_user_ref(agent_id, user_name, |user| {
             for identifier in remove_identifiers.drain() {
                 user.identifiers.remove(&identifier);
@@ -253,7 +292,7 @@ impl UserRecognitionManager {
         }).await
     }
 
-    pub async fn update_user_relations(&self, agent_id: &str, user_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String,Arc<OtherUserRelation>>) -> Result<()> {
+    pub async fn replace_user_relations(&self, agent_id: &str, user_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String,Arc<UserRelation>>) -> Result<()> {
         self.write_user_ref(agent_id, user_name, |user| {
             for identifier in remove_relations.drain() {
                 user.relations.remove(&identifier);
