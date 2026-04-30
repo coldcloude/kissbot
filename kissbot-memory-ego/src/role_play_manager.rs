@@ -310,6 +310,15 @@ impl RolePlayManager {
         }).await
     }
 
+    pub async fn get_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
+        let mut result = Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()));
+        self.read_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            result = Ok(other_role.clone());
+            Ok(())
+        }).await?;
+        result
+    }
+
     pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: HashSet<String>, mut insert_other_roles: HashMap<String,Arc<OtherRole>>) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {

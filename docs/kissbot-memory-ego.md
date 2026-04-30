@@ -139,6 +139,12 @@
 - **输入**：要删除的用户名列表和要新增的用户映射
 - **返回**：成功或失败状态
 
+#### 重命名用户接口
+- **接口**：重命名用户
+- **路径**：PUT /agent/:agent_id/users/:user_name/name
+- **输入**：新用户名
+- **返回**：成功或失败状态
+
 #### 更新用户权限接口
 - **接口**：更新用户权限
 - **路径**：PUT /agent/:agent_id/users/:user_name/privilege
@@ -151,19 +157,24 @@
 - **输入**：用户描述
 - **返回**：成功或失败状态
 
-#### 更新用户标识接口
-- **接口**：更新用户标识
+#### 替换用户标识接口
+- **接口**：替换用户标识
 - **路径**：PUT /agent/:agent_id/users/:user_name/identifiers
 - **输入**：要删除和新增的用户标识
 - **返回**：成功或失败状态
 
-#### 更新用户关系接口
-- **接口**：更新用户关系
+#### 替换用户关系接口
+- **接口**：替换用户关系
 - **路径**：PUT /agent/:agent_id/users/:user_name/relations
 - **输入**：要删除和新增的用户关系
 - **返回**：成功或失败状态
 
 ### 角色设定管理接口
+
+#### 列出所有角色接口
+- **接口**：列出所有角色
+- **路径**：GET /agent/:agent_id/roles
+- **返回内容**：角色名称列表JSON
 
 #### 获取角色信息接口
 - **接口**：获取角色信息
@@ -174,6 +185,12 @@
 - **接口**：创建新角色
 - **路径**：POST /agent/:agent_id/roles
 - **输入**：角色名称和描述
+- **返回**：成功或失败状态
+
+#### 从现有角色创建角色接口
+- **接口**：从现有角色创建新角色
+- **路径**：POST /agent/:agent_id/roles/:role_name/create_from
+- **输入**：新角色名
 - **返回**：成功或失败状态
 
 #### 删除角色接口
@@ -187,22 +204,46 @@
 - **输入**：新角色名
 - **返回**：成功或失败状态
 
-#### 复制角色接口
-- **接口**：复制角色
-- **路径**：POST /agent/:agent_id/roles/:role_name/copy
-- **输入**：新角色名
-- **返回**：成功或失败状态
-
 #### 更新角色描述接口
 - **接口**：更新角色描述
 - **路径**：PUT /agent/:agent_id/roles/:role_name/description
 - **输入**：新描述
 - **返回**：成功或失败状态
 
-#### 更新角色关系接口
-- **接口**：更新角色关系
-- **路径**：PUT /agent/:agent_id/roles/:role_name/relations
-- **输入**：要删除和新增的角色关系
+#### 替换其他角色接口
+- **接口**：替换角色中的其他角色
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles
+- **输入**：要删除和新增的其他角色
+- **返回**：成功或失败状态
+
+#### 重命名其他角色接口
+- **接口**：重命名其他角色
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/name
+- **输入**：新名称
+- **返回**：成功或失败状态
+
+#### 更新其他角色用户名接口
+- **接口**：更新其他角色关联的用户名
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/user_name
+- **输入**：新用户名
+- **返回**：成功或失败状态
+
+#### 更新其他角色描述接口
+- **接口**：更新其他角色描述
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/description
+- **输入**：新描述
+- **返回**：成功或失败状态
+
+#### 更新其他角色关系接口
+- **接口**：更新其他角色的主要关系
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relation
+- **输入**：新关系（关系名称和描述）
+- **返回**：成功或失败状态
+
+#### 替换其他角色的关系列表接口
+- **接口**：替换其他角色的关系列表
+- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relations
+- **输入**：要删除和新增的关系列表
 - **返回**：成功或失败状态
 
 ## 通信接口
