@@ -1,5 +1,4 @@
 use axum::{
-    extract::Path,
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
@@ -29,13 +28,25 @@ pub struct CreateAgentRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GetAgentRequest {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateAgentNameRequest {
+    pub agent_id: String,
     pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateAgentDescriptionRequest {
+    pub agent_id: String,
     pub description: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CopyAgentRequest {
+    pub agent_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,7 +56,19 @@ pub struct SearchRequest {
 
 // 用户识别信息请求结构体
 #[derive(Debug, Deserialize)]
+pub struct GetUsersRequest {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetUserRequest {
+    pub agent_id: String,
+    pub user_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ReplaceUsersRequest {
+    pub agent_id: String,
     pub remove_user_names: Vec<String>,
     pub insert_users: HashMap<String, UserRequest>,
 }
@@ -66,55 +89,98 @@ pub struct UserRelationRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct RenameUserRequest {
+    pub agent_id: String,
+    pub user_name: String,
     pub new_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateUserPrivilegeRequest {
+    pub agent_id: String,
+    pub user_name: String,
     pub privilege: UserPrivilege,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateUserDescriptionRequest {
+    pub agent_id: String,
+    pub user_name: String,
     pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReplaceUserIdentifiersRequest {
+    pub agent_id: String,
+    pub user_name: String,
     pub remove_identifiers: Vec<UserIdentifier>,
     pub insert_identifiers: Vec<UserIdentifier>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReplaceUserRelationsRequest {
+    pub agent_id: String,
+    pub user_name: String,
     pub remove_relations: Vec<String>,
     pub insert_relations: HashMap<String, UserRelationRequest>,
 }
 
 // 角色设定请求结构体
 #[derive(Debug, Deserialize)]
+pub struct ListRolesRequest {
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetRoleRequest {
+    pub agent_id: String,
+    pub role_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CreateRoleRequest {
+    pub agent_id: String,
     pub name: String,
     pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRoleFromRequest {
+    pub agent_id: String,
+    pub role_name: String,
     pub new_name: String,
 }
 
 #[derive(Debug, Deserialize)]
+pub struct RemoveRoleRequest {
+    pub agent_id: String,
+    pub role_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RenameRoleRequest {
+    pub agent_id: String,
+    pub role_name: String,
     pub new_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRoleDescriptionRequest {
+    pub agent_id: String,
+    pub role_name: String,
     pub description: String,
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GetOtherRoleRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ReplaceOtherRolesRequest {
+    pub agent_id: String,
+    pub role_name: String,
     pub remove_other_roles: Vec<String>,
     pub insert_other_roles: HashMap<String, OtherRoleRequest>,
 }
@@ -135,26 +201,41 @@ pub struct RoleRelationRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct RenameOtherRoleRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
     pub new_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateOtherRoleUserNameRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
     pub new_user_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateOtherRoleDescriptionRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
     pub new_description: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateOtherRoleRelationRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
     pub new_relation: RoleRelationRequest,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReplaceOtherRoleRelationsRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub other_role_name: String,
     pub remove_relations: Vec<String>,
     pub insert_relations: HashMap<String, RoleRelationRequest>,
 }
@@ -187,77 +268,38 @@ impl<T> ApiResponse<T> {
 pub fn create_router() -> Router {
     Router::new()
         // Agent管理API
-        .route("/agent", post(create_agent))
-        .route("/agent", get(list_agents))
-        .route("/agent/:agent_id", get(get_agent))
-        .route("/agent/:agent_id/name", put(update_agent_name))
-        .route("/agent/:agent_id/description", put(update_agent_description))
-        .route("/agent/:agent_id/copy", post(copy_agent))
-        .route("/agent/search/name", post(search_by_name))
-        .route("/agent/search/description", post(search_by_description))
+        .route("/agent/create", post(create_agent))
+        .route("/agent/list", get(list_agents))
+        .route("/agent/get", post(get_agent))
+        .route("/agent/update-name", put(update_agent_name))
+        .route("/agent/update-description", put(update_agent_description))
+        .route("/agent/copy", post(copy_agent))
+        .route("/agent/search-name", post(search_by_name))
+        .route("/agent/search-description", post(search_by_description))
         // 用户识别信息API
-        .route("/agent/:agent_id/users", get(get_users))
-        .route("/agent/:agent_id/users/:user_name", get(get_user))
-        .route("/agent/:agent_id/users", put(replace_users))
-        .route("/agent/:agent_id/users/:user_name/name", put(rename_user))
-        .route(
-            "/agent/:agent_id/users/:user_name/privilege",
-            put(update_user_privilege),
-        )
-        .route(
-            "/agent/:agent_id/users/:user_name/description",
-            put(update_user_description),
-        )
-        .route(
-            "/agent/:agent_id/users/:user_name/identifiers",
-            put(replace_user_identifiers),
-        )
-        .route(
-            "/agent/:agent_id/users/:user_name/relations",
-            put(replace_user_relations),
-        )
+        .route("/user/get-all", post(get_users))
+        .route("/user/get", post(get_user))
+        .route("/user/replace", put(replace_users))
+        .route("/user/rename", put(rename_user))
+        .route("/user/update-privilege", put(update_user_privilege))
+        .route("/user/update-description", put(update_user_description))
+        .route("/user/replace-identifiers", put(replace_user_identifiers))
+        .route("/user/replace-relations", put(replace_user_relations))
         // 角色设定API
-        .route("/agent/:agent_id/roles", get(list_roles))
-        .route("/agent/:agent_id/roles/:role_name", get(get_role))
-        .route("/agent/:agent_id/roles", post(create_role))
-        .route(
-            "/agent/:agent_id/roles/:role_name/create_from",
-            post(create_role_from),
-        )
-        .route("/agent/:agent_id/roles/:role_name", delete(remove_role))
-        .route("/agent/:agent_id/roles/:role_name/name", put(rename_role))
-        .route(
-            "/agent/:agent_id/roles/:role_name/description",
-            put(update_role_description),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name",
-            get(get_other_role),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles",
-            put(replace_other_roles),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name/name",
-            put(rename_other_role),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name/user_name",
-            put(update_other_role_user_name),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name/description",
-            put(update_other_role_description),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relation",
-            put(update_other_role_relation),
-        )
-        .route(
-            "/agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relations",
-            put(replace_other_role_relations),
-        )
+        .route("/role/list", post(list_roles))
+        .route("/role/get", post(get_role))
+        .route("/role/create", post(create_role))
+        .route("/role/create-from", post(create_role_from))
+        .route("/role/remove", delete(remove_role))
+        .route("/role/rename", put(rename_role))
+        .route("/role/update-description", put(update_role_description))
+        .route("/role/other/get", post(get_other_role))
+        .route("/role/other/replace", put(replace_other_roles))
+        .route("/role/other/rename", put(rename_other_role))
+        .route("/role/other/update-user-name", put(update_other_role_user_name))
+        .route("/role/other/update-description", put(update_other_role_description))
+        .route("/role/other/update-relation", put(update_other_role_relation))
+        .route("/role/other/replace-relations", put(replace_other_role_relations))
 }
 
 async fn create_agent(Json(req): Json<CreateAgentRequest>) -> impl IntoResponse {
@@ -301,12 +343,12 @@ async fn list_agents() -> impl IntoResponse {
     (StatusCode::OK, Json(ApiResponse::success(agents)))
 }
 
-async fn get_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
-    match AgentManager::get().get_agent(&agent_id).await {
+async fn get_agent(Json(req): Json<GetAgentRequest>) -> impl IntoResponse {
+    match AgentManager::get().get_agent(&req.agent_id).await {
         Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -315,20 +357,17 @@ async fn get_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn update_agent_name(
-    Path(agent_id): Path<String>,
-    Json(req): Json<UpdateAgentNameRequest>,
-) -> impl IntoResponse {
+async fn update_agent_name(Json(req): Json<UpdateAgentNameRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.update_agent_name(&agent_id, Arc::new(req.name)).await
+        agent_manager.update_agent_name(&req.agent_id, Arc::new(req.name)).await
     };
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -337,20 +376,17 @@ async fn update_agent_name(
     }
 }
 
-async fn update_agent_description(
-    Path(agent_id): Path<String>,
-    Json(req): Json<UpdateAgentDescriptionRequest>,
-) -> impl IntoResponse {
+async fn update_agent_description(Json(req): Json<UpdateAgentDescriptionRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.update_agent_description(&agent_id, Arc::new(req.description)).await
+        agent_manager.update_agent_description(&req.agent_id, Arc::new(req.description)).await
     };
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -359,17 +395,17 @@ async fn update_agent_description(
     }
 }
 
-async fn copy_agent(Path(agent_id): Path<String>) -> impl IntoResponse {
+async fn copy_agent(Json(req): Json<CopyAgentRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.copy_agent(&agent_id).await
+        agent_manager.copy_agent(&req.agent_id).await
     };
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -409,12 +445,12 @@ async fn search_by_description(Json(req): Json<SearchRequest>) -> impl IntoRespo
 }
 
 // 用户识别信息API实现
-async fn get_users(Path(agent_id): Path<String>) -> impl IntoResponse {
-    match UserRecognitionManager::get().get_users(&agent_id).await {
+async fn get_users(Json(req): Json<GetUsersRequest>) -> impl IntoResponse {
+    match UserRecognitionManager::get().get_users(&req.agent_id).await {
         Ok(users) => (StatusCode::OK, Json(ApiResponse::success(users))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<UserRecognition>>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<Arc<UserRecognition>>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -423,12 +459,12 @@ async fn get_users(Path(agent_id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn get_user(Path((agent_id, user_name)): Path<(String, String)>) -> impl IntoResponse {
-    match UserRecognitionManager::get().get_user(&agent_id, &user_name).await {
+async fn get_user(Json(req): Json<GetUserRequest>) -> impl IntoResponse {
+    match UserRecognitionManager::get().get_user(&req.agent_id, &req.user_name).await {
         Ok(user) => (StatusCode::OK, Json(ApiResponse::success(user))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<User>>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<Arc<User>>::error(format!("User {} not found", req.user_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -437,10 +473,7 @@ async fn get_user(Path((agent_id, user_name)): Path<(String, String)>) -> impl I
     }
 }
 
-async fn replace_users(
-    Path(agent_id): Path<String>,
-    Json(req): Json<ReplaceUsersRequest>,
-) -> impl IntoResponse {
+async fn replace_users(Json(req): Json<ReplaceUsersRequest>) -> impl IntoResponse {
     let remove_user_names: HashSet<String> = req.remove_user_names.into_iter().collect();
 
     let mut insert_users = HashMap::new();
@@ -475,14 +508,14 @@ async fn replace_users(
     }
 
     let result = UserRecognitionManager::get()
-        .replace_users(&agent_id, remove_user_names, insert_users)
+        .replace_users(&req.agent_id, remove_user_names, insert_users)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<()>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -491,19 +524,16 @@ async fn replace_users(
     }
 }
 
-async fn rename_user(
-    Path((agent_id, user_name)): Path<(String, String)>,
-    Json(req): Json<RenameUserRequest>,
-) -> impl IntoResponse {
+async fn rename_user(Json(req): Json<RenameUserRequest>) -> impl IntoResponse {
     let result = UserRecognitionManager::get()
-        .rename_user(&agent_id, &user_name, &req.new_name)
+        .rename_user(&req.agent_id, &req.user_name, &req.new_name)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<()>::error(format!("User {} not found", req.user_name))),
         ),
         Err(Error::AgentUserAlreadyExists(_, _)) => (
             StatusCode::CONFLICT,
@@ -516,19 +546,16 @@ async fn rename_user(
     }
 }
 
-async fn update_user_privilege(
-    Path((agent_id, user_name)): Path<(String, String)>,
-    Json(req): Json<UpdateUserPrivilegeRequest>,
-) -> impl IntoResponse {
+async fn update_user_privilege(Json(req): Json<UpdateUserPrivilegeRequest>) -> impl IntoResponse {
     let result = UserRecognitionManager::get()
-        .update_user_privilege(&agent_id, &user_name, Arc::new(req.privilege))
+        .update_user_privilege(&req.agent_id, &req.user_name, Arc::new(req.privilege))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<()>::error(format!("User {} not found", req.user_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -537,19 +564,16 @@ async fn update_user_privilege(
     }
 }
 
-async fn update_user_description(
-    Path((agent_id, user_name)): Path<(String, String)>,
-    Json(req): Json<UpdateUserDescriptionRequest>,
-) -> impl IntoResponse {
+async fn update_user_description(Json(req): Json<UpdateUserDescriptionRequest>) -> impl IntoResponse {
     let result = UserRecognitionManager::get()
-        .update_user_description(&agent_id, &user_name, Arc::new(req.description))
+        .update_user_description(&req.agent_id, &req.user_name, Arc::new(req.description))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<()>::error(format!("User {} not found", req.user_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -558,22 +582,19 @@ async fn update_user_description(
     }
 }
 
-async fn replace_user_identifiers(
-    Path((agent_id, user_name)): Path<(String, String)>,
-    Json(req): Json<ReplaceUserIdentifiersRequest>,
-) -> impl IntoResponse {
+async fn replace_user_identifiers(Json(req): Json<ReplaceUserIdentifiersRequest>) -> impl IntoResponse {
     let remove_identifiers: HashSet<UserIdentifier> = req.remove_identifiers.into_iter().collect();
     let insert_identifiers: HashSet<UserIdentifier> = req.insert_identifiers.into_iter().collect();
 
     let result = UserRecognitionManager::get()
-        .replace_user_identifiers(&agent_id, &user_name, remove_identifiers, insert_identifiers)
+        .replace_user_identifiers(&req.agent_id, &req.user_name, remove_identifiers, insert_identifiers)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<()>::error(format!("User {} not found", req.user_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -582,10 +603,7 @@ async fn replace_user_identifiers(
     }
 }
 
-async fn replace_user_relations(
-    Path((agent_id, user_name)): Path<(String, String)>,
-    Json(req): Json<ReplaceUserRelationsRequest>,
-) -> impl IntoResponse {
+async fn replace_user_relations(Json(req): Json<ReplaceUserRelationsRequest>) -> impl IntoResponse {
     let remove_relations: HashSet<String> = req.remove_relations.into_iter().collect();
     let mut insert_relations = HashMap::new();
 
@@ -598,14 +616,14 @@ async fn replace_user_relations(
     }
 
     let result = UserRecognitionManager::get()
-        .replace_user_relations(&agent_id, &user_name, remove_relations, insert_relations)
+        .replace_user_relations(&req.agent_id, &req.user_name, remove_relations, insert_relations)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentUserNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("User {} not found", user_name))),
+            Json(ApiResponse::<()>::error(format!("User {} not found", req.user_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -615,12 +633,12 @@ async fn replace_user_relations(
 }
 
 // 角色设定API实现
-async fn list_roles(Path(agent_id): Path<String>) -> impl IntoResponse {
-    match RolePlayManager::get().list_roles(&agent_id).await {
+async fn list_roles(Json(req): Json<ListRolesRequest>) -> impl IntoResponse {
+    match RolePlayManager::get().list_roles(&req.agent_id).await {
         Ok(roles) => (StatusCode::OK, Json(ApiResponse::success(roles))),
         Err(Error::AgentNotFound(_)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Vec<String>>::error(format!("Agent {} not found", agent_id))),
+            Json(ApiResponse::<Vec<String>>::error(format!("Agent {} not found", req.agent_id))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -629,12 +647,12 @@ async fn list_roles(Path(agent_id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn get_role(Path((agent_id, role_name)): Path<(String, String)>) -> impl IntoResponse {
-    match RolePlayManager::get().get_role(&agent_id, &role_name).await {
+async fn get_role(Json(req): Json<GetRoleRequest>) -> impl IntoResponse {
+    match RolePlayManager::get().get_role(&req.agent_id, &req.role_name).await {
         Ok(role) => (StatusCode::OK, Json(ApiResponse::success(role))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<RolePlay>>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<Arc<RolePlay>>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -643,16 +661,16 @@ async fn get_role(Path((agent_id, role_name)): Path<(String, String)>) -> impl I
     }
 }
 
-async fn get_other_role(Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>) -> impl IntoResponse {
-    match RolePlayManager::get().get_other_role(&agent_id, &role_name, &other_role_name).await {
+async fn get_other_role(Json(req): Json<GetOtherRoleRequest>) -> impl IntoResponse {
+    match RolePlayManager::get().get_other_role(&req.agent_id, &req.role_name, &req.other_role_name).await {
         Ok(other_role) => (StatusCode::OK, Json(ApiResponse::success(other_role))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<Arc<OtherRole>>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -661,13 +679,10 @@ async fn get_other_role(Path((agent_id, role_name, other_role_name)): Path<(Stri
     }
 }
 
-async fn create_role(
-    Path(agent_id): Path<String>,
-    Json(req): Json<CreateRoleRequest>,
-) -> impl IntoResponse {
+async fn create_role(Json(req): Json<CreateRoleRequest>) -> impl IntoResponse {
     let name = req.name.clone();
     let result = RolePlayManager::get()
-        .create_role(&agent_id, Arc::new(req.name), Arc::new(req.description))
+        .create_role(&req.agent_id, Arc::new(req.name), Arc::new(req.description))
         .await;
 
     match result {
@@ -683,20 +698,17 @@ async fn create_role(
     }
 }
 
-async fn create_role_from(
-    Path((agent_id, role_name)): Path<(String, String)>,
-    Json(req): Json<CreateRoleFromRequest>,
-) -> impl IntoResponse {
+async fn create_role_from(Json(req): Json<CreateRoleFromRequest>) -> impl IntoResponse {
     let new_name = req.new_name.clone();
     let result = RolePlayManager::get()
-        .create_role_from(&agent_id, &role_name, Arc::new(req.new_name))
+        .create_role_from(&req.agent_id, &req.role_name, Arc::new(req.new_name))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleAlreadyExists(_, _)) => (
             StatusCode::CONFLICT,
@@ -709,14 +721,14 @@ async fn create_role_from(
     }
 }
 
-async fn remove_role(Path((agent_id, role_name)): Path<(String, String)>) -> impl IntoResponse {
-    let result = RolePlayManager::get().remove_role(&agent_id, &role_name).await;
+async fn remove_role(Json(req): Json<RemoveRoleRequest>) -> impl IntoResponse {
+    let result = RolePlayManager::get().remove_role(&req.agent_id, &req.role_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -725,20 +737,17 @@ async fn remove_role(Path((agent_id, role_name)): Path<(String, String)>) -> imp
     }
 }
 
-async fn rename_role(
-    Path((agent_id, role_name)): Path<(String, String)>,
-    Json(req): Json<RenameRoleRequest>,
-) -> impl IntoResponse {
+async fn rename_role(Json(req): Json<RenameRoleRequest>) -> impl IntoResponse {
     let new_name = req.new_name.clone();
     let result = RolePlayManager::get()
-        .rename_role(&agent_id, &role_name, Arc::new(req.new_name))
+        .rename_role(&req.agent_id, &req.role_name, Arc::new(req.new_name))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleAlreadyExists(_, _)) => (
             StatusCode::CONFLICT,
@@ -751,19 +760,16 @@ async fn rename_role(
     }
 }
 
-async fn update_role_description(
-    Path((agent_id, role_name)): Path<(String, String)>,
-    Json(req): Json<UpdateRoleDescriptionRequest>,
-) -> impl IntoResponse {
+async fn update_role_description(Json(req): Json<UpdateRoleDescriptionRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get()
-        .update_role_description(&agent_id, &role_name, Arc::new(req.description))
+        .update_role_description(&req.agent_id, &req.role_name, Arc::new(req.description))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -772,10 +778,7 @@ async fn update_role_description(
     }
 }
 
-async fn replace_other_roles(
-    Path((agent_id, role_name)): Path<(String, String)>,
-    Json(req): Json<ReplaceOtherRolesRequest>,
-) -> impl IntoResponse {
+async fn replace_other_roles(Json(req): Json<ReplaceOtherRolesRequest>) -> impl IntoResponse {
     let remove_other_roles: HashSet<String> = req.remove_other_roles.into_iter().collect();
     let mut insert_other_roles = HashMap::new();
 
@@ -808,14 +811,14 @@ async fn replace_other_roles(
     }
 
     let result = RolePlayManager::get()
-        .replace_other_roles(&agent_id, &role_name, remove_other_roles, insert_other_roles)
+        .replace_other_roles(&req.agent_id, &req.role_name, remove_other_roles, insert_other_roles)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -824,23 +827,20 @@ async fn replace_other_roles(
     }
 }
 
-async fn rename_other_role(
-    Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>,
-    Json(req): Json<RenameOtherRoleRequest>,
-) -> impl IntoResponse {
+async fn rename_other_role(Json(req): Json<RenameOtherRoleRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get()
-        .rename_other_role(&agent_id, &role_name, &other_role_name, &req.new_name)
+        .rename_other_role(&req.agent_id, &req.role_name, &req.other_role_name, &req.new_name)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<()>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(Error::AgentRoleOtherRoleAlreadyExists(_, _, _)) => (
             StatusCode::CONFLICT,
@@ -853,23 +853,20 @@ async fn rename_other_role(
     }
 }
 
-async fn update_other_role_user_name(
-    Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>,
-    Json(req): Json<UpdateOtherRoleUserNameRequest>,
-) -> impl IntoResponse {
+async fn update_other_role_user_name(Json(req): Json<UpdateOtherRoleUserNameRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get()
-        .update_other_role_user_name(&agent_id, &role_name, &other_role_name, Arc::new(req.new_user_name))
+        .update_other_role_user_name(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_user_name))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<()>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -878,23 +875,20 @@ async fn update_other_role_user_name(
     }
 }
 
-async fn update_other_role_description(
-    Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>,
-    Json(req): Json<UpdateOtherRoleDescriptionRequest>,
-) -> impl IntoResponse {
+async fn update_other_role_description(Json(req): Json<UpdateOtherRoleDescriptionRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get()
-        .update_other_role_description(&agent_id, &role_name, &other_role_name, Arc::new(req.new_description))
+        .update_other_role_description(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_description))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<()>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -903,28 +897,25 @@ async fn update_other_role_description(
     }
 }
 
-async fn update_other_role_relation(
-    Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>,
-    Json(req): Json<UpdateOtherRoleRelationRequest>,
-) -> impl IntoResponse {
+async fn update_other_role_relation(Json(req): Json<UpdateOtherRoleRelationRequest>) -> impl IntoResponse {
     let new_relation = RoleRelation {
         relation: Arc::new(req.new_relation.relation),
         description: Arc::new(req.new_relation.description),
     };
 
     let result = RolePlayManager::get()
-        .update_other_role_relation(&agent_id, &role_name, &other_role_name, Arc::new(new_relation))
+        .update_other_role_relation(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(new_relation))
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<()>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -933,10 +924,7 @@ async fn update_other_role_relation(
     }
 }
 
-async fn replace_other_role_relations(
-    Path((agent_id, role_name, other_role_name)): Path<(String, String, String)>,
-    Json(req): Json<ReplaceOtherRoleRelationsRequest>,
-) -> impl IntoResponse {
+async fn replace_other_role_relations(Json(req): Json<ReplaceOtherRoleRelationsRequest>) -> impl IntoResponse {
     let remove_relations: HashSet<String> = req.remove_relations.into_iter().collect();
     let mut insert_relations = HashMap::new();
 
@@ -949,18 +937,18 @@ async fn replace_other_role_relations(
     }
 
     let result = RolePlayManager::get()
-        .replace_other_role_relations(&agent_id, &role_name, &other_role_name, remove_relations, insert_relations)
+        .replace_other_role_relations(&req.agent_id, &req.role_name, &req.other_role_name, remove_relations, insert_relations)
         .await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::<()>::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Role {} not found", role_name))),
+            Json(ApiResponse::<()>::error(format!("Role {} not found", req.role_name))),
         ),
         Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (
             StatusCode::NOT_FOUND,
-            Json(ApiResponse::<()>::error(format!("Other role {} not found", other_role_name))),
+            Json(ApiResponse::<()>::error(format!("Other role {} not found", req.other_role_name))),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
