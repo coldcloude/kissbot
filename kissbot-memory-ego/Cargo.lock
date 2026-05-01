@@ -776,6 +776,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kissbot-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "kissbot-memory"
 version = "0.1.0"
 dependencies = [
@@ -796,6 +803,7 @@ dependencies = [
  "dashmap",
  "futures",
  "kai-index",
+ "kissbot-api",
  "kissbot-memory",
  "serde",
  "serde_json",

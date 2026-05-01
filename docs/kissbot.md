@@ -8,11 +8,12 @@
 ### 顶层模块
 | 模块名称 | 类型 | 说明 |
 |---------|------|------|
-| kissbot-agent | Rust | 智能体核心，处理LLM调用和agentic loop |
+| kissbot-agent | Rust | 智能体核心，处理 LLM 调用和 agentic loop |
 | kissbot-channel | Rust | 消息通道框架 |
 | kissbot-memory | Rust | 记忆基础模块（存储组织结构） |
 | kissbot-memory-store | Rust | 记忆存储模块 |
 | kissbot-memory-struct | Rust | 记忆结构框架 |
+| kissbot-api | Rust | API 定义模块，各模块间通信的标准数据结构 |
 
 ### 子模块/实现模块
 | 模块名称 | 类型 | 说明 |
@@ -287,3 +288,18 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
 - [ ] 进阶模式API
+
+## API 约定
+### 通用 API 设计原则
+1. **路径无参数**：HTTP API 路径仅用于确定调用哪个处理函数，不包含任何动态参数
+2. **参数全 JSON**：所有输入参数都通过请求体的 JSON 格式传递
+3. **统一响应格式**：所有 API 响应都采用统一的 `ApiResponse` 格式，包含 success、data、error 字段
+4. **数据结构分离**：
+   - 模块内部使用优化的数据结构（可能包含 Arc、DashMap 等）
+   - API 通信使用简化的标准数据结构（无 Arc，使用 HashMap，与 kissbot-api 模块保持一致）
+
+### kissbot-api 模块
+- 作为所有模块间通信的标准数据结构定义模块
+- 提供各模块 API 的输入（Request）和输出（Response）数据结构
+- 所有其他模块都应依赖 kissbot-api 模块来使用标准化的数据结构
+- 避免不同模块间的数据结构不匹配问题
