@@ -28,16 +28,16 @@ impl Document<Arc<String>> for SearchMetadata {
     }
 }
 
-pub struct EgoManager {
+pub struct SearchManager {
     identity_dirty: DashSet<String>,
     name_index: Arc<RwLock<SubstringIndex<String>>>,
     name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
     search_metadata: DashMap<String, SearchMetadata>,
 }
 
-static EGO_MANAGER_INSTANCE: OnceCell<EgoManager> = OnceCell::const_new();
+static SEARCH_MANAGER_INSTANCE: OnceCell<SearchManager> = OnceCell::const_new();
 
-impl EgoManager {
+impl SearchManager {
     pub fn new() -> Self {
         Self {
             identity_dirty: DashSet::new(),
@@ -48,8 +48,8 @@ impl EgoManager {
     }
 
     pub async fn get() -> Result<&'static Self> {
-        EGO_MANAGER_INSTANCE.get_or_try_init(|| async {
-            let instance = EgoManager::new();
+        SEARCH_MANAGER_INSTANCE.get_or_try_init(|| async {
+            let instance = SearchManager::new();
             let agents = DirectoryManager::get().list_agents().await?;
             for agent_id in agents {
                 instance.force_sync_identity(&agent_id).await?;

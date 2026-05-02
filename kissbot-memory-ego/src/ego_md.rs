@@ -1,6 +1,6 @@
 use std::{collections::HashSet};
 
-use crate::{agent::AgentMetadata, role_play_manager::RolePlay, user_recognition_manager::UserRecognition};
+use crate::{agent::AgentMetadata, role_play::RolePlay, user_recognition::UserRecognition};
 
 #[allow(dead_code)]
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {

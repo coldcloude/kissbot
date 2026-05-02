@@ -294,7 +294,7 @@
 - 双重锁定机制确保数据一致性
 - 单例通过关联函数获取：AgentManager::get()
 
-## EgoManager实现
+## SearchManager实现
 - 使用本地kai-index库的DistinctIndex实现全文搜索
 - 使用DashMap和DashSet实现高并发数据结构
 - 使用Arc共享数据，避免克隆
@@ -304,7 +304,6 @@
 - search_by_name/search_by_description：先同步脏数据再搜索
 - 启动时自动加载：get()初始化时加载所有agent到搜索索引
 - 单例通过tokio::sync::OnceCell实现异步初始化
-- MD文件生成功能作为备用，暂不启用
 
 ## 实现决策
 - 不作为memory-struct的子模块，不实现memory-struct的接口
@@ -318,6 +317,7 @@
 - 使用本地kai-index库实现全文搜索
 - 使用futures实现并发操作
 - 使用Arc共享数据，减少克隆开销
+- MD文件生成功能作为备用，暂不启用
 
 ## 开发计划
 
@@ -334,11 +334,12 @@
 - [x] 实现name和description字段的全文搜索
 - [x] 添加搜索API接口
 - [x] 启动时自动加载所有agent到索引
+- [x] 身份标识MD文件生成（备用）
 
 ### 第3阶段：用户识别信息、角色扮演、角色扮演关系管理
 - [x] 用户识别信息、角色扮演、角色扮演关系的JSON管理模块
 - [x] 用户识别信息、角色扮演、角色扮演关系的API接口
-- [ ] 用户识别信息、角色扮演、角色扮演关系MD文件生成的dirty机制（备用）
+- [x] 用户识别信息、角色扮演、角色扮演关系MD文件生成（备用）
 - [x] JSON查询API
 
 ### 第4阶段：进阶模式改造

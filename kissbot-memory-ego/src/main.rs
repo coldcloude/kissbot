@@ -1,10 +1,10 @@
 mod error;
 mod config;
 mod agent;
-mod ego;
-mod ego_manager;
-mod user_recognition_manager;
-mod role_play_manager;
+mod ego_md;
+mod search;
+mod user_recognition;
+mod role_play;
 mod api;
 
 use tokio::net::TcpListener;

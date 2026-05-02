@@ -10,11 +10,11 @@ use kissbot_memory::DirectoryManager;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::{agent::{AgentManager, AgentMetadata}, role_play_manager::{OtherRole, RolePlay, RoleRelation}, user_recognition_manager::{User, UserRecognition, UserRelation}};
-use crate::ego_manager::EgoManager;
+use crate::{agent::{AgentManager, AgentMetadata}, role_play::{OtherRole, RolePlay, RoleRelation}, user_recognition::{User, UserRecognition, UserRelation}};
+use crate::search::SearchManager;
 use crate::error::Error;
-use crate::role_play_manager::RolePlayManager;
-use crate::user_recognition_manager::UserRecognitionManager;
+use crate::role_play::RolePlayManager;
+use crate::user_recognition::UserRecognitionManager;
 
 use kissbot_api::*;
 
@@ -141,7 +141,7 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
 }
 
 async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
-    match EgoManager::get().await {
+    match SearchManager::get().await {
         Ok(ego_manager) => {
             let agents = ego_manager.search_by_name(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
@@ -151,7 +151,7 @@ async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoRespons
 }
 
 async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
-    match EgoManager::get().await {
+    match SearchManager::get().await {
         Ok(ego_manager) => {
             let agents = ego_manager.search_by_description(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
