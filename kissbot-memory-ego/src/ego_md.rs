@@ -46,16 +46,16 @@ pub fn build_ego_user_recognition_md(users: &UserRecognition, channel_ids: &Hash
 #[allow(dead_code)]
 pub fn build_role_play_md(role: &RolePlay, user_names: &HashSet<String>) -> String {
     let mut content = String::from("# Role Play\n\n");
-    content.push_str(&format!("- **Self Role**: {}\n\n", role.name));
-    content.push_str(&format!("- **Self Description**: {}\n", role.description));
+    content.push_str(&format!("- **Self Role**: {}\n\n", role.role.name));
+    content.push_str(&format!("- **Self Description**: {}\n", role.role.description));
 
     for relation in role.other_roles.iter() {
         if user_names.contains(relation.user_name.as_str()) {
             content.push_str(&format!("## Known role: {}\n\n", relation.key()));
             content.push_str(&format!("- **Belong to**: {}\n", relation.user_name));
             content.push_str(&format!("- **Description**: {}\n", relation.description));
-            content.push_str(&format!("- **Relation with {}**: {}\n", role.name, relation.role_relation.relation));
-            content.push_str(&format!("- **Relation with {} Description**: {}\n", role.name, relation.role_relation.description));
+            content.push_str(&format!("- **Relation with {}**: {}\n", role.role.name, relation.role_relation.relation));
+            content.push_str(&format!("- **Relation with {} Description**: {}\n", role.role.name, relation.role_relation.description));
 
             content.push_str(&format!("### {}'s relation with Others\n", relation.key()));
             for rel in relation.other_role_relations.iter() {

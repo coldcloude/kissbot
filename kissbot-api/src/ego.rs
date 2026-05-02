@@ -168,22 +168,48 @@ impl OtherRoleKind<LocalString, LocalMap, LocalRoleRelation> for LocalOtherRole 
     type Type = OtherRoleEntity;
 }
 
-// ========== RolePlay - Generic with trait bounds ==========
+// ========== Role - Generic with trait bounds ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolePlayGeneric<S, M, RR, OR>
+pub struct RoleGeneric<S>
 where
     S: StringKind,
-    M: MapKind,
-    RR: RoleRelationKind<S>,
-    OR: OtherRoleKind<S, M, RR>,
 {
     pub id: S::Type,
     pub name: S::Type,
     pub description: S::Type,
+}
+
+pub trait RoleKind<S>
+where
+    S: StringKind,
+{
+    type Type: Clone;
+}
+
+pub type RoleEntity = RoleGeneric<LocalString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalRole;
+
+impl RoleKind<LocalString> for LocalRole {
+    type Type = RoleEntity;
+}
+
+// ========== RolePlay - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolePlayGeneric<S, M, R, RR, OR>
+where
+    S: StringKind,
+    M: MapKind,
+    R: RoleKind<S>,
+    RR: RoleRelationKind<S>,
+    OR: OtherRoleKind<S, M, RR>,
+{
+    pub role: R::Type,
     pub other_roles: M::Map<String, OR::Type>,
 }
 
-pub type RolePlayEntity = RolePlayGeneric<LocalString, LocalMap, LocalRoleRelation, LocalOtherRole>;
+pub type RolePlayEntity = RolePlayGeneric<LocalString, LocalMap, LocalRole, LocalRoleRelation, LocalOtherRole>;
 
 // ========== Request Structures (simple, no generics) ==========
 

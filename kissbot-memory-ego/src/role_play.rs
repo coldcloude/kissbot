@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use kissbot_api::{OtherRoleGeneric, OtherRoleKind, RolePlayGeneric, RoleRelationGeneric, RoleRelationKind, SyncMap, SyncString};
+use kissbot_api::{OtherRoleGeneric, OtherRoleKind, RoleGeneric, RoleKind, RolePlayGeneric, RoleRelationGeneric, RoleRelationKind, SyncMap, SyncString};
 use kissbot_memory::DirectoryManager;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -39,7 +39,16 @@ impl OtherRoleKind<SyncString, SyncMap, SyncRoleRelation> for SyncOtherRole {
     type Type = Arc<OtherRole>;
 }
 
-pub type RolePlay = RolePlayGeneric<SyncString, SyncMap, SyncRoleRelation, SyncOtherRole>;
+pub type Role = RoleGeneric<SyncString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRole;
+
+impl RoleKind<SyncString> for SyncRole {
+    type Type = Arc<Role>;
+}
+
+pub type RolePlay = RolePlayGeneric<SyncString, SyncMap, SyncRole, SyncRoleRelation, SyncOtherRole>;
 
 type RolePlayLock = Arc<RwLock<Option<Arc<RolePlay>>>>;
 
@@ -234,10 +243,12 @@ impl RolePlayManager {
                 }
                 None => {
                     Ok(Arc::new(RolePlay {
-                        id: Arc::new(agent_id.to_string()),
-                        name: role_name,
+                        role: Arc::new(Role {
+                            id: Arc::new(agent_id.to_string()),
+                            name: role_name,
+                            description,
+                        }),
                         other_roles: Arc::new(dashmap::DashMap::new()),
-                        description,
                     }))
                 }
             }
@@ -246,7 +257,7 @@ impl RolePlayManager {
 
     pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
         let role = self.get_role(agent_id, role_name).await?;
-        self.create_role(agent_id, new_name, role.description.clone()).await
+        self.create_role(agent_id, new_name, role.role.description.clone()).await
     }
 
     pub async fn remove_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
@@ -262,9 +273,11 @@ impl RolePlayManager {
                 }
                 None => {
                     Ok(Arc::new(RolePlay {
-                        id: role.id.clone(),
-                        name: new_name.clone(),
-                        description: role.description.clone(),
+                        role: Arc::new(Role {
+                            id: role.role.id.clone(),
+                            name: new_name.clone(),
+                            description: role.role.description.clone(),
+                        }),
                         other_roles: role.other_roles.clone()
                     }))
                 }
@@ -278,9 +291,11 @@ impl RolePlayManager {
             match role_or_none {
                 Some(role) => {
                     Ok(Arc::new(RolePlay {
-                        id: role.id.clone(),
-                        name: role.name.clone(),
-                        description,
+                        role: Arc::new(Role {
+                            id: role.role.id.clone(),
+                            name: role.role.name.clone(),
+                            description,
+                        }),
                         other_roles: role.other_roles.clone()
                     }))
                 },
