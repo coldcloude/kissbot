@@ -1,6 +1,6 @@
 use chrono::Utc;
-use dashmap::DashMap;
-use serde::{Deserialize, Serialize};
+use kissbot_api::AgentMetadataGeneric;
+use kissbot_api::SyncString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
-use kissbot_memory::{DirectoryManager};
+use kissbot_memory::DirectoryManager;
 
 pub const AGENT_METADATA_JSON: &str = "metadata.json";
 
@@ -19,18 +19,12 @@ async fn agent_metadata_path(agent_id: &str) -> Result<PathBuf> {
     Ok(metadata_path)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentMetadata {
-    pub id: Arc<String>,
-    pub name: Arc<String>,
-    pub description: Arc<String>,
-    pub created_at: Arc<String>,
-}
+pub type AgentMetadata = AgentMetadataGeneric<SyncString>;
 
 type AgentLock = Arc<RwLock<Option<Arc<AgentMetadata>>>>;
 
 pub struct AgentManager {
-    manager_lock: DashMap<String, AgentLock>,
+    manager_lock: dashmap::DashMap<String, AgentLock>,
 }
 
 static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
@@ -38,7 +32,7 @@ static AGENT_MANAGER_INSTANCE: OnceLock<AgentManager> = OnceLock::new();
 impl AgentManager {
     pub fn new() -> Self {
         Self {
-            manager_lock: DashMap::new(),
+            manager_lock: dashmap::DashMap::new(),
         }
     }
 
@@ -50,15 +44,14 @@ impl AgentManager {
 
     async fn get_or_create_lock(&self, agent_id: &str) -> AgentLock {
         self.manager_lock
-        .entry(agent_id.to_string())
-        .or_insert_with(|| Arc::new(RwLock::new(None)))
-        .clone()
+            .entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(None)))
+            .clone()
     }
 
     async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(Arc<AgentMetadata>) -> Result<()>) -> Result<()> {
         let lock = self.get_or_create_lock(agent_id).await;
 
-        //先尝试读内存
         {
             let guard = lock.read().await;
             if let Some(metadata) = guard.as_ref() {
@@ -66,16 +59,13 @@ impl AgentManager {
             }
         }
 
-        //无数据，从文件读取
         {
             let mut guard = lock.write().await;
 
-            //双重锁定
             if let Some(metadata) = guard.as_ref() {
                 return op(metadata.clone());
             }
 
-            //从文件读取
             let metadata_path = agent_metadata_path(agent_id).await?;
 
             if !metadata_path.exists() {
@@ -87,7 +77,6 @@ impl AgentManager {
             *guard = Some(Arc::new(metadata));
         }
 
-        //读文件写入后重新读取
         let guard = lock.read().await;
         match guard.as_ref() {
             Some(metadata) => return op(metadata.clone()),
@@ -104,27 +93,23 @@ impl AgentManager {
         let lock = self.get_or_create_lock(agent_id).await;
         let mut guard = lock.write().await;
 
-        //如果内存中没有，先尝试读取
         if guard.is_none() && metadata_path.exists() {
             let content = tokio::fs::read_to_string(&metadata_path).await?;
             let entity = serde_json::from_str(&content)?;
             *guard = Some(Arc::new(entity));
         }
 
-        //更新
         let metadata = guard.take();
         match op(metadata.clone()) {
             Ok(new_metadata) => {
                 *guard = Some(new_metadata);
             }
             Err(e) => {
-                //失败时要先把原来的放回内存
                 *guard = metadata;
                 return Err(e);
             }
         }
         
-        //写入文件
         match guard.as_ref() {
             Some(metadata) => {
                 let content = serde_json::to_string_pretty(metadata)?;
@@ -173,7 +158,7 @@ impl AgentManager {
                 Some(metadata) => {
                     Ok(Arc::new(AgentMetadata {
                         id: metadata.id.clone(),
-                        name: name,
+                        name,
                         description: metadata.description.clone(),
                         created_at: metadata.created_at.clone(),
                     }))
@@ -190,7 +175,7 @@ impl AgentManager {
                     Ok(Arc::new(AgentMetadata {
                         id: metadata.id.clone(),
                         name: metadata.name.clone(),
-                        description: description,
+                        description,
                         created_at: metadata.created_at.clone(),
                     }))
                 }

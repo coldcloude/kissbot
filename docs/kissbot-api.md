@@ -12,11 +12,64 @@ kissbot-api/
 ├── Cargo.toml
 └── src/
     ├── lib.rs          # 模块入口，导出公共 API
+    ├── kinds.rs        # 基础 trait 定义
     ├── common.rs       # 通用类型定义
     └── ego.rs          # ego 模块相关 API
 ```
 
+## 核心设计理念
+
+### 数据结构一致性检查
+通过 trait 来确保两种数据结构在编译时一致：
+- **泛型类型**：使用 `XxxGeneric` 命名，定义数据结构的字段和类型约束
+- **trait（类型约束）**：使用 `XxxKind` 命名，定义数据结构的字段和类型约束
+- **内部类型**：使用 `Xxx` 命名，内部模块使用，包含 `Arc`、`DashMap`、`DashSet` 优化。内部类型由各实现模块内部定义
+- **内部类型约束**：使用 `SyncXxx` 明明，实现 `XxxKind`，用于内部模块的类型检查。内部类型约束由各实现模块内部定义
+- **API 类型**：使用 `XxxEntity` 命名，与内部类型结构完全一致但使用标准类型
+- **API 类型约束**：使用 `LocalXxx` 明明，实现 `XxxKind`，用于 API 模块的类型检查
+
+### 直接序列化方案
+`Arc`、`DashMap`、`DashSet` 都可以被 `serde` 直接序列化和反序列化，因此：
+- API 直接返回内部类型，无需转换
+- 零复制开销，性能最优
+- 保持数据结构一致性检查
+
+## 基础 Trait 定义
+
+### StringKind - 字符串类型抽象
+```rust
+trait StringKind {
+    type Type: Clone + Sized;
+}
+```
+- `SyncString`：使用 `Arc<String>`
+- `LocalString`：使用 `String`
+
+### MapKind - 映射类型抽象
+```rust
+trait MapKind {
+    type Map<K, V>: where K: Eq + Hash;
+}
+```
+- `SyncMap`：使用 `DashMap<K, V>`
+- `LocalMap`：使用 `HashMap<K, V>`
+
+### SetKind - 集合类型抽象
+```rust
+trait SetKind {
+    type Set<T>: where T: Eq + Hash;
+}
+```
+- `SyncSet`：使用 `DashSet<T>`
+- `LocalSet`：使用 `HashSet<T>`
+
 ## 模块分类
+
+### kinds 模块
+包含所有基础 trait 定义：
+- `StringKind`、`SyncString`、`LocalString`
+- `MapKind`、`SyncMap`、`LocalMap`
+- `SetKind`、`SyncSet`、`LocalSet`
 
 ### common 模块
 包含通用的 API 相关类型：
@@ -31,28 +84,12 @@ kissbot-api/
 - 用户识别信息管理相关请求
 - 角色设定管理相关请求
 
-#### 输出响应结构体（Response）
-用于服务端返回数据：
-- 简化版的数据结构，去除 Arc、DashMap 等优化
-- 使用 HashMap 替代 DashMap，便于序列化和跨语言兼容
-
-## 设计原则
-
-### 数据结构分离原则
-1. **内部优化结构**：各模块内部使用优化的数据结构，可能包含：
-   - `Arc<T>`：用于共享所有权，减少克隆开销
-   - `DashMap`：并发安全的哈希表，支持多线程访问
-   - `DashSet`：并发安全的集合
-
-2. **API 通信结构**：API 层使用标准化的简化结构：
-   - 不使用 `Arc<T>`，直接使用值类型
-   - 使用 `HashMap` 替代 `DashMap`
-   - 使用 `Vec` 替代 `DashSet`
-   - 确保可跨语言序列化和反序列化
-
-### 类型转换职责
-- 各模块内部负责在「优化结构」和「API 结构」之间转换
-- kissbot-api 模块只提供标准的 API 数据结构，不负责转换逻辑
+#### 数据结构和类型
+通过泛型 trait 实现，包含两种类型别名：
+- `XxxGeneric`：定义数据结构的字段和类型约束
+- `XxxEntity`（API 类型）：使用 `LocalString`、`LocalMap`、`LocalSet`
+- `XxxKind`：对应的 trait（类型约束）
+- `LocalXxx`：API 类型约束（`String`、`HashMap`、`HashSet`）
 
 ## memory-ego API 详细说明
 

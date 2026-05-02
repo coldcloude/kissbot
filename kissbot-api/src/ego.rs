@@ -1,23 +1,193 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// ========== 用户权限 ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use crate::kinds::*;
+
+// ========== UserPrivilege (simple enum, no generics) ==========
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UserPrivilege {
     Owner,
     Admin,
     Normal,
 }
 
-// ========== 用户标识 ==========
+// ========== UserIdentifier (simple struct, no generics) ==========
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserIdentifier {
     pub channel_id: String,
     pub user_id: String,
 }
 
-// ========== 请求结构体（输入） ==========
-// Agent 管理
+// ========== UserRelation - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRelationGeneric<S>
+where
+    S: StringKind,
+{
+    pub relation: S::Type,
+    pub description: S::Type,
+}
+
+// SetKind trait for set type abstraction
+pub trait UserRelationKind<S>
+where
+    S: StringKind,
+{
+    type Type: Clone;
+}
+
+// Aliases for internal use and API use
+pub type UserRelationEntity = UserRelationGeneric<LocalString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUserRelation;
+
+impl UserRelationKind<LocalString> for LocalUserRelation {
+    type Type = UserRelationEntity;
+}
+
+// ========== User - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserGeneric<S,M,T,UR>
+where
+    S: StringKind,
+    M: MapKind,
+    T: SetKind,
+    UR: UserRelationKind<S>,
+{
+    pub privilege: UserPrivilege,
+    pub identifiers: T::Set<UserIdentifier>,
+    pub relations: M::Map<String, UR::Type>,
+    pub description: S::Type,
+}
+
+pub trait UserKind<S, M, T, UR>
+where
+    S: StringKind,
+    M: MapKind,
+    T: SetKind,
+    UR: UserRelationKind<S>,
+{
+    type Type: Clone;
+}
+
+pub type UserEntity = UserGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUser;
+
+impl UserKind<LocalString, LocalMap, LocalSet, LocalUserRelation> for LocalUser {
+    type Type = UserEntity;
+}
+
+// ========== UserRecognition - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRecognitionGeneric<S,M,T,UR,U>
+where
+    S: StringKind,
+    M: MapKind,
+    T: SetKind,
+    UR: UserRelationKind<S>,
+    U: UserKind<S, M, T, UR>,
+{
+    pub id: S::Type,
+    pub user_map: M::Map<String, U::Type>,
+}
+
+pub type UserRecognitionEntity = UserRecognitionGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation, LocalUser>;
+
+// ========== AgentMetadata - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMetadataGeneric<S>
+where
+    S: StringKind,
+{
+    pub id: S::Type,
+    pub name: S::Type,
+    pub description: S::Type,
+    pub created_at: S::Type,
+}
+
+pub type AgentMetadataEntity = AgentMetadataGeneric<LocalString>;
+
+// ========== RoleRelation - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleRelationGeneric<S>
+where
+    S: StringKind,
+{
+    pub relation: S::Type,
+    pub description: S::Type,
+}
+
+pub type RoleRelationEntity = RoleRelationGeneric<LocalString>;
+
+pub trait RoleRelationKind<S>
+where
+    S: StringKind,
+{
+    type Type: Clone;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalRoleRelation;
+
+impl RoleRelationKind<LocalString> for LocalRoleRelation {
+    type Type = RoleRelationEntity;
+}
+
+// ========== OtherRole - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtherRoleGeneric<S, M, RR>
+where
+    S: StringKind,
+    M: MapKind,
+    RR: RoleRelationKind<S>,
+{
+    pub user_name: S::Type,
+    pub role_relation: RR::Type,
+    pub other_role_relations: M::Map<String, RR::Type>,
+    pub description: S::Type,
+}
+
+pub trait OtherRoleKind<S, M, RR>
+where
+    S: StringKind,
+    M: MapKind,
+    RR: RoleRelationKind<S>,
+{
+    type Type: Clone;
+}
+
+pub type OtherRoleEntity = OtherRoleGeneric<LocalString, LocalMap, LocalRoleRelation>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalOtherRole;
+
+impl OtherRoleKind<LocalString, LocalMap, LocalRoleRelation> for LocalOtherRole {
+    type Type = OtherRoleEntity;
+}
+
+// ========== RolePlay - Generic with trait bounds ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolePlayGeneric<S, M, RR, OR>
+where
+    S: StringKind,
+    M: MapKind,
+    RR: RoleRelationKind<S>,
+    OR: OtherRoleKind<S, M, RR>,
+{
+    pub id: S::Type,
+    pub name: S::Type,
+    pub description: S::Type,
+    pub other_roles: M::Map<String, OR::Type>,
+}
+
+pub type RolePlayEntity = RolePlayGeneric<LocalString, LocalMap, LocalRoleRelation, LocalOtherRole>;
+
+// ========== Request Structures (simple, no generics) ==========
+
+// Agent Management Requests
 #[derive(Debug, Deserialize)]
 pub struct CreateAgentRequest {
     pub name: String,
@@ -51,7 +221,7 @@ pub struct SearchRequest {
     pub keyword: String,
 }
 
-// 用户识别信息
+// User Recognition Requests
 #[derive(Debug, Deserialize)]
 pub struct GetUsersRequest {
     pub agent_id: String,
@@ -121,7 +291,7 @@ pub struct ReplaceUserRelationsRequest {
     pub insert_relations: HashMap<String, UserRelationRequest>,
 }
 
-// 角色设定
+// Role Play Requests
 #[derive(Debug, Deserialize)]
 pub struct ListRolesRequest {
     pub agent_id: String,
@@ -235,62 +405,4 @@ pub struct ReplaceOtherRoleRelationsRequest {
     pub other_role_name: String,
     pub remove_relations: Vec<String>,
     pub insert_relations: HashMap<String, RoleRelationRequest>,
-}
-
-// ========== 响应结构体（输出 - 简化版） ==========
-// 用户关系
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRelation {
-    pub relation: String,
-    pub description: String,
-}
-
-// 用户信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct User {
-    pub privilege: UserPrivilege,
-    pub identifiers: Vec<UserIdentifier>,
-    pub relations: HashMap<String, UserRelation>,
-    pub description: String,
-}
-
-// 用户识别信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRecognition {
-    pub id: String,
-    pub user_map: HashMap<String, User>,
-}
-
-// Agent 元数据
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentMetadata {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub created_at: String,
-}
-
-// 角色关系
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleRelation {
-    pub relation: String,
-    pub description: String,
-}
-
-// 其他角色信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OtherRole {
-    pub user_name: String,
-    pub role_relation: RoleRelation,
-    pub other_role_relations: HashMap<String, RoleRelation>,
-    pub description: String,
-}
-
-// 角色设定信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolePlay {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub other_roles: HashMap<String, OtherRole>,
 }

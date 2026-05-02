@@ -10,118 +10,13 @@ use kissbot_memory::DirectoryManager;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::agent::AgentManager;
+use crate::{agent::{AgentManager, AgentMetadata}, role_play_manager::{OtherRole, RolePlay, RoleRelation}, user_recognition_manager::{User, UserRecognition, UserRelation}};
 use crate::ego_manager::EgoManager;
 use crate::error::Error;
-use crate::role_play_manager::{OtherRole as InternalOtherRole, RolePlay as InternalRolePlay, RolePlayManager, RoleRelation as InternalRoleRelation};
-use crate::user_recognition_manager::{User as InternalUser, UserIdentifier as InternalUserIdentifier, UserPrivilege as InternalUserPrivilege, UserRecognition as InternalUserRecognition, UserRecognitionManager, UserRelation as InternalUserRelation};
+use crate::role_play_manager::RolePlayManager;
+use crate::user_recognition_manager::UserRecognitionManager;
 
 use kissbot_api::*;
-
-// ========== 转换函数 ==========
-
-// AgentMetadata 转换
-fn convert_agent_metadata(internal: &crate::agent::AgentMetadata) -> kissbot_api::ego::AgentMetadata {
-    kissbot_api::ego::AgentMetadata {
-        id: internal.id.as_ref().clone(),
-        name: internal.name.as_ref().clone(),
-        description: internal.description.as_ref().clone(),
-        created_at: internal.created_at.as_ref().clone(),
-    }
-}
-
-// UserPrivilege 转换
-fn convert_user_privilege(internal: &InternalUserPrivilege) -> kissbot_api::ego::UserPrivilege {
-    match internal {
-        InternalUserPrivilege::Owner => kissbot_api::ego::UserPrivilege::Owner,
-        InternalUserPrivilege::Admin => kissbot_api::ego::UserPrivilege::Admin,
-        InternalUserPrivilege::Normal => kissbot_api::ego::UserPrivilege::Normal,
-    }
-}
-
-// UserIdentifier 转换
-fn convert_user_identifier(internal: &InternalUserIdentifier) -> kissbot_api::ego::UserIdentifier {
-    kissbot_api::ego::UserIdentifier {
-        channel_id: internal.channel_id.clone(),
-        user_id: internal.user_id.clone(),
-    }
-}
-
-// UserRelation 转换
-fn convert_user_relation(internal: &InternalUserRelation) -> kissbot_api::ego::UserRelation {
-    kissbot_api::ego::UserRelation {
-        relation: internal.relation.as_ref().clone(),
-        description: internal.description.as_ref().clone(),
-    }
-}
-
-// User 转换
-fn convert_user(internal: &InternalUser) -> kissbot_api::ego::User {
-    let identifiers: Vec<_> = internal.identifiers.iter().map(|id| convert_user_identifier(&id)).collect();
-    
-    let mut relations = HashMap::new();
-    for item in internal.relations.iter() {
-        relations.insert(item.key().clone(), convert_user_relation(item.value()));
-    }
-    
-    kissbot_api::ego::User {
-        privilege: convert_user_privilege(&internal.privilege),
-        identifiers,
-        relations,
-        description: internal.description.as_ref().clone(),
-    }
-}
-
-// UserRecognition 转换
-fn convert_user_recognition(internal: &InternalUserRecognition) -> kissbot_api::ego::UserRecognition {
-    let mut user_map = HashMap::new();
-    for item in internal.user_map.iter() {
-        user_map.insert(item.key().clone(), convert_user(item.value()));
-    }
-    
-    kissbot_api::ego::UserRecognition {
-        id: internal.id.as_ref().clone(),
-        user_map,
-    }
-}
-
-// RoleRelation 转换
-fn convert_role_relation(internal: &InternalRoleRelation) -> kissbot_api::ego::RoleRelation {
-    kissbot_api::ego::RoleRelation {
-        relation: internal.relation.as_ref().clone(),
-        description: internal.description.as_ref().clone(),
-    }
-}
-
-// OtherRole 转换
-fn convert_other_role(internal: &InternalOtherRole) -> kissbot_api::ego::OtherRole {
-    let mut other_role_relations = HashMap::new();
-    for item in internal.other_role_relations.iter() {
-        other_role_relations.insert(item.key().clone(), convert_role_relation(item.value()));
-    }
-    
-    kissbot_api::ego::OtherRole {
-        user_name: internal.user_name.as_ref().clone(),
-        role_relation: convert_role_relation(&internal.role_relation),
-        other_role_relations,
-        description: internal.description.as_ref().clone(),
-    }
-}
-
-// RolePlay 转换
-fn convert_role_play(internal: &InternalRolePlay) -> kissbot_api::ego::RolePlay {
-    let mut other_roles = HashMap::new();
-    for item in internal.other_roles.iter() {
-        other_roles.insert(item.key().clone(), convert_other_role(item.value()));
-    }
-    
-    kissbot_api::ego::RolePlay {
-        id: internal.id.as_ref().clone(),
-        name: internal.name.as_ref().clone(),
-        description: internal.description.as_ref().clone(),
-        other_roles,
-    }
-}
 
 // ========== 路由定义 ==========
 pub fn create_router() -> Router {
@@ -191,7 +86,7 @@ async fn list_agents() -> impl IntoResponse {
     let results = future::join_all(futs).await;
     for result in results {
         if let Ok(metadata) = result {
-            agents.push(convert_agent_metadata(&metadata));
+            agents.push(metadata);
         }
     }
 
@@ -200,9 +95,9 @@ async fn list_agents() -> impl IntoResponse {
 
 async fn get_agent(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
     match AgentManager::get().get_agent(&req.agent_id).await {
-        Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(convert_agent_metadata(&agent)))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::AgentMetadata>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<ego::AgentMetadata>::error(e.to_string()))),
+        Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", req.agent_id)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<AgentMetadata>>::error(e.to_string()))),
     }
 }
 
@@ -249,10 +144,9 @@ async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoRespons
     match EgoManager::get().await {
         Ok(ego_manager) => {
             let agents = ego_manager.search_by_name(&req.keyword).await;
-            let converted: Vec<_> = agents.iter().map(|m| convert_agent_metadata(m)).collect();
-            (StatusCode::OK, Json(ApiResponse::success(converted)))
+            (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::AgentMetadata>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
     }
 }
 
@@ -260,27 +154,26 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
     match EgoManager::get().await {
         Ok(ego_manager) => {
             let agents = ego_manager.search_by_description(&req.keyword).await;
-            let converted: Vec<_> = agents.iter().map(|m| convert_agent_metadata(m)).collect();
-            (StatusCode::OK, Json(ApiResponse::success(converted)))
+            (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::AgentMetadata>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
     }
 }
 
 // ========== 用户识别信息 API ==========
 async fn get_users(Json(req): Json<ego::GetUsersRequest>) -> impl IntoResponse {
     match UserRecognitionManager::get().get_users(&req.agent_id).await {
-        Ok(users) => (StatusCode::OK, Json(ApiResponse::success(convert_user_recognition(&users)))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::UserRecognition>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<ego::UserRecognition>::error(e.to_string()))),
+        Ok(users) => (StatusCode::OK, Json(ApiResponse::success(users))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<UserRecognition>>::error(format!("Agent {} not found", req.agent_id)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<UserRecognition>>::error(e.to_string()))),
     }
 }
 
 async fn get_user(Json(req): Json<ego::GetUserRequest>) -> impl IntoResponse {
     match UserRecognitionManager::get().get_user(&req.agent_id, &req.user_name).await {
-        Ok(user) => (StatusCode::OK, Json(ApiResponse::success(convert_user(&user)))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::User>::error(format!("User {} not found", req.user_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<ego::User>::error(e.to_string()))),
+        Ok(user) => (StatusCode::OK, Json(ApiResponse::success(user))),
+        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<User>>::error(format!("User {} not found", req.user_name)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<User>>::error(e.to_string()))),
     }
 }
 
@@ -292,7 +185,7 @@ async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoRe
         let relations = {
             let map = DashMap::new();
             for (other_user, rel_req) in user_req.relations {
-                let relation = InternalUserRelation {
+                let relation = UserRelation {
                     relation: Arc::new(rel_req.relation),
                     description: Arc::new(rel_req.description),
                 };
@@ -304,19 +197,19 @@ async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoRe
         let identifiers = {
             let set = DashSet::new();
             for id in user_req.identifiers {
-                set.insert(InternalUserIdentifier { channel_id: id.channel_id, user_id: id.user_id });
+                set.insert(UserIdentifier { channel_id: id.channel_id, user_id: id.user_id });
             }
             Arc::new(set)
         };
 
         let privilege = match user_req.privilege {
-            ego::UserPrivilege::Owner => InternalUserPrivilege::Owner,
-            ego::UserPrivilege::Admin => InternalUserPrivilege::Admin,
-            ego::UserPrivilege::Normal => InternalUserPrivilege::Normal,
+            ego::UserPrivilege::Owner => UserPrivilege::Owner,
+            ego::UserPrivilege::Admin => UserPrivilege::Admin,
+            ego::UserPrivilege::Normal => UserPrivilege::Normal,
         };
 
-        let user = InternalUser {
-            privilege: Arc::new(privilege),
+        let user = User {
+            privilege,
             identifiers,
             relations,
             description: Arc::new(user_req.description),
@@ -346,12 +239,12 @@ async fn rename_user(Json(req): Json<ego::RenameUserRequest>) -> impl IntoRespon
 
 async fn update_user_privilege(Json(req): Json<ego::UpdateUserPrivilegeRequest>) -> impl IntoResponse {
     let privilege = match req.privilege {
-        ego::UserPrivilege::Owner => InternalUserPrivilege::Owner,
-        ego::UserPrivilege::Admin => InternalUserPrivilege::Admin,
-        ego::UserPrivilege::Normal => InternalUserPrivilege::Normal,
+        ego::UserPrivilege::Owner => UserPrivilege::Owner,
+        ego::UserPrivilege::Admin => UserPrivilege::Admin,
+        ego::UserPrivilege::Normal => UserPrivilege::Normal,
     };
 
-    let result = UserRecognitionManager::get().update_user_privilege(&req.agent_id, &req.user_name, Arc::new(privilege)).await;
+    let result = UserRecognitionManager::get().update_user_privilege(&req.agent_id, &req.user_name, privilege).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -371,8 +264,8 @@ async fn update_user_description(Json(req): Json<ego::UpdateUserDescriptionReque
 }
 
 async fn replace_user_identifiers(Json(req): Json<ego::ReplaceUserIdentifiersRequest>) -> impl IntoResponse {
-    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| InternalUserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
-    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| InternalUserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
+    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| UserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
+    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| UserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
 
     let result = UserRecognitionManager::get().replace_user_identifiers(&req.agent_id, &req.user_name, remove_identifiers, insert_identifiers).await;
 
@@ -388,7 +281,7 @@ async fn replace_user_relations(Json(req): Json<ego::ReplaceUserRelationsRequest
     let mut insert_relations = HashMap::new();
 
     for (other_user, rel_req) in req.insert_relations {
-        let relation = InternalUserRelation {
+        let relation = UserRelation {
             relation: Arc::new(rel_req.relation),
             description: Arc::new(rel_req.description),
         };
@@ -415,18 +308,18 @@ async fn list_roles(Json(req): Json<ego::ListRolesRequest>) -> impl IntoResponse
 
 async fn get_role(Json(req): Json<ego::GetRoleRequest>) -> impl IntoResponse {
     match RolePlayManager::get().get_role(&req.agent_id, &req.role_name).await {
-        Ok(role) => (StatusCode::OK, Json(ApiResponse::success(convert_role_play(&role)))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::RolePlay>::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<ego::RolePlay>::error(e.to_string()))),
+        Ok(role) => (StatusCode::OK, Json(ApiResponse::success(role))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<RolePlay>>::error(format!("Role {} not found", req.role_name)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<RolePlay>>::error(e.to_string()))),
     }
 }
 
 async fn get_other_role(Json(req): Json<ego::GetOtherRoleRequest>) -> impl IntoResponse {
     match RolePlayManager::get().get_other_role(&req.agent_id, &req.role_name, &req.other_role_name).await {
-        Ok(other_role) => (StatusCode::OK, Json(ApiResponse::success(convert_other_role(&other_role)))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::OtherRole>::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<ego::OtherRole>::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<ego::OtherRole>::error(e.to_string()))),
+        Ok(other_role) => (StatusCode::OK, Json(ApiResponse::success(other_role))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(format!("Role {} not found", req.role_name)))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(format!("Other role {} not found", req.other_role_name)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<OtherRole>>::error(e.to_string()))),
     }
 }
 
@@ -490,7 +383,7 @@ async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> 
     let mut insert_other_roles = HashMap::new();
 
     for (other_role_name, other_role_req) in req.insert_other_roles {
-        let role_relation = InternalRoleRelation {
+        let role_relation = RoleRelation {
             relation: Arc::new(other_role_req.role_relation.relation),
             description: Arc::new(other_role_req.role_relation.description),
         };
@@ -498,7 +391,7 @@ async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> 
         let other_role_relations = {
             let map = DashMap::new();
             for (rel_name, rel_req) in other_role_req.other_role_relations {
-                let relation = InternalRoleRelation {
+                let relation = RoleRelation {
                     relation: Arc::new(rel_req.relation),
                     description: Arc::new(rel_req.description),
                 };
@@ -507,7 +400,7 @@ async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> 
             Arc::new(map)
         };
 
-        let other_role = InternalOtherRole {
+        let other_role = OtherRole {
             user_name: Arc::new(other_role_req.user_name),
             role_relation: Arc::new(role_relation),
             other_role_relations,
@@ -551,7 +444,6 @@ async fn update_other_role_user_name(Json(req): Json<ego::UpdateOtherRoleUserNam
 
 async fn update_other_role_description(Json(req): Json<ego::UpdateOtherRoleDescriptionRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get().update_other_role_description(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_description)).await;
-
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
@@ -561,7 +453,7 @@ async fn update_other_role_description(Json(req): Json<ego::UpdateOtherRoleDescr
 }
 
 async fn update_other_role_relation(Json(req): Json<ego::UpdateOtherRoleRelationRequest>) -> impl IntoResponse {
-    let new_relation = InternalRoleRelation {
+    let new_relation = RoleRelation {
         relation: Arc::new(req.new_relation.relation),
         description: Arc::new(req.new_relation.description),
     };
@@ -581,7 +473,7 @@ async fn replace_other_role_relations(Json(req): Json<ego::ReplaceOtherRoleRelat
     let mut insert_relations = HashMap::new();
 
     for (rel_name, rel_req) in req.insert_relations {
-        let relation = InternalRoleRelation {
+        let relation = RoleRelation {
             relation: Arc::new(rel_req.relation),
             description: Arc::new(rel_req.description),
         };
