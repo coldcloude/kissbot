@@ -249,7 +249,7 @@ pub struct SearchRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchRoleRequest {
-    pub agent_id: String,
+    pub agent_id: Option<String>,
     pub keyword: String,
 }
 

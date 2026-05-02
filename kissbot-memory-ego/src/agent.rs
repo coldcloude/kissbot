@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
+use crate::search::SearchManager;
 use kissbot_memory::DirectoryManager;
 
 pub const AGENT_METADATA_JSON: &str = "metadata.json";
@@ -153,6 +154,7 @@ impl AgentManager {
     }
 
     pub async fn update_agent_name(&self, agent_id: &str, name: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
@@ -165,10 +167,13 @@ impl AgentManager {
                 }
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }
-        }).await
+        }).await?;
+        search_manager.mark_identity_dirty(agent_id);
+        Ok(())
     }
 
     pub async fn update_agent_description(&self, agent_id: &str, description: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
@@ -181,6 +186,8 @@ impl AgentManager {
                 }
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }
-        }).await
+        }).await?;
+        search_manager.mark_identity_dirty(agent_id);
+        Ok(())
     }
 }

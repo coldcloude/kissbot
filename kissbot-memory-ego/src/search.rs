@@ -154,13 +154,11 @@ impl SearchManager {
     }
 
     pub async fn sync_identity(&self, agent_id: &str) -> Result<()> {
-        match self.identity_dirty.remove(&agent_id.to_string()) {
-            Some(_) => {
-                self.force_sync_identity(agent_id).await
-            },
-            None => {
-                Ok(())
-            }
+        if self.identity_dirty.remove(&agent_id.to_string()).is_some() {
+            self.force_sync_identity(agent_id).await
+        }
+        else {
+            Ok(())
         }
     }
 
@@ -189,6 +187,10 @@ impl SearchManager {
             }
         }
         results
+    }
+
+    pub fn mark_identity_dirty(&self, agent_id: &str) {
+        self.identity_dirty.insert(agent_id.to_string());
     }
 
     pub async fn search_by_name(&self, query: &str) -> Vec<Arc<AgentMetadata>> {
@@ -220,54 +222,72 @@ impl SearchManager {
             id: agent_id.to_string(),
             name: role_name.to_string(),
         };
-        let role_play = RolePlayManager::get().get_role(agent_id, role_name).await?;
-        let role = role_play.role.clone();
-        //变更索引
-        let new_search_metadata = RoleSearchMetadata::new(&role);
-        let new_name = role.name.clone();
-        let new_descr = role.description.clone();
-        let mut name_obsolute = true;
-        let mut old_name_or_none = None;
-        let mut descr_obsolute = true;
-            
-        //没旧值，或新旧值不同，则需要变更索引
+        //取得旧索引值
         let old_search_metadata_or_none = self.role_search_metadata.remove(&role_key);
-        if let Some((_, old_search_metadata)) = old_search_metadata_or_none.as_ref() {
-            //检查name是否变化
-            let old_name = old_search_metadata.value[0].clone();
-            if old_name == new_name {
-                name_obsolute = false;
-            } else {
-                old_name_or_none = Some(old_name);
+        let old_name_or_none = match old_search_metadata_or_none.as_ref() {
+            Some((_, old_search_metadata)) => Some(old_search_metadata.value[0].clone()),
+            None => None,
+        };
+        if let Ok(role_play) = RolePlayManager::get().get_role(agent_id, role_name).await {
+            //存在角色，更新索引
+            let role = role_play.role.clone();
+            //变更索引
+            let new_search_metadata = RoleSearchMetadata::new(&role);
+            let new_name = role.name.clone();
+            let new_descr = role.description.clone();
+            let mut name_obsolute = true;
+            let mut descr_obsolute = true;
+                
+            //没旧值，或新旧值不同，则需要变更索引
+            if let Some(old_name) = old_name_or_none.as_ref() {
+                //检查name是否变化
+                if old_name.as_str() == new_name.as_str() {
+                    name_obsolute = false;
+                }
             }
-            //检查description是否变化
-            let old_descr = old_search_metadata.value[1].clone();
-            if old_descr == new_descr {
-                descr_obsolute = false;
+            if let Some((_, old_search_metadata)) = old_search_metadata_or_none.as_ref() {
+                //检查description是否变化
+                if old_search_metadata.value[1].as_str() == new_descr.as_str() {
+                    descr_obsolute = false;
+                }
             }
+            //name变更
+            if name_obsolute {
+                let mut guard = self.role_name_index.write().await;
+                //有旧值，先移除
+                if let Some(old_name) = old_name_or_none {
+                    guard.remove(&role_key, &to_document(old_name));
+                }
+                //插入新值
+                guard.insert(&role_key, &to_document(new_name));
+            }
+            //name或description变更
+            if name_obsolute || descr_obsolute {
+                let mut guard = self.role_name_descr_index.write().await;
+                //有旧值，先移除
+                if let Some((_, old_metadata)) = old_search_metadata_or_none {
+                    guard.remove(&role_key, &old_metadata);
+                }
+                //插入新值
+                guard.insert(&role_key, &new_search_metadata);
+            }
+            //保存search_metadata
+            self.role_search_metadata.insert(role_key, new_search_metadata);
         }
-        //name变更
-        if name_obsolute {
-            let mut guard = self.role_name_index.write().await;
-            //有旧值，先移除
+        else {
+            //移除旧名称索引
             if let Some(old_name) = old_name_or_none {
+                let mut guard = self.role_name_index.write().await;
                 guard.remove(&role_key, &to_document(old_name));
             }
-            //插入新值
-            guard.insert(&role_key, &to_document(new_name));
-        }
-        //name或description变更
-        if name_obsolute || descr_obsolute {
-            let mut guard = self.role_name_descr_index.write().await;
-            //有旧值，先移除
+            //移除旧全文索引
             if let Some((_, old_metadata)) = old_search_metadata_or_none {
+                let mut guard = self.role_name_descr_index.write().await;
                 guard.remove(&role_key, &old_metadata);
             }
-            //插入新值
-            guard.insert(&role_key, &new_search_metadata);
+            //移除保存的search_metadata
+            self.role_search_metadata.remove(&role_key);
         }
-        //保存search_metadata
-        self.role_search_metadata.insert(role_key, new_search_metadata);
         Ok(())
     }
 
@@ -310,18 +330,7 @@ impl SearchManager {
         self.role_dirty.insert(role_key);
     }
 
-    pub fn remove_role_from_index(&self, agent_id: &str, role_name: &str) {
-        let role_key = RoleKey {
-            id: agent_id.to_string(),
-            name: role_name.to_string(),
-        };
-        // 从 role_search_metadata 中移除
-        self.role_search_metadata.remove(&role_key);
-        // 从 role_dirty 中移除
-        self.role_dirty.remove(&role_key);
-    }
-
-    pub async fn search_role_by_name(&self, agent_id: &str, query: &str) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_name(&self, agent_id: Option<&str>, query: &str) -> Vec<Arc<Role>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
@@ -329,7 +338,13 @@ impl SearchManager {
             let guard = self.role_name_index.read().await;
             guard.find_all_keys(query, false)
                 .iter()
-                .filter(|&key| key.id == agent_id)
+                .filter(|&key| {
+                    if let Some(id) = agent_id {
+                        key.id == id
+                    } else {
+                        true
+                    }
+                })
                 .cloned()
                 .collect()
         };
@@ -337,7 +352,7 @@ impl SearchManager {
         self.retrieve_roles(keys).await
     }
 
-    pub async fn search_role_by_description(&self, agent_id: &str, query: &str) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_description(&self, agent_id: Option<&str>, query: &str) -> Vec<Arc<Role>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
@@ -345,7 +360,13 @@ impl SearchManager {
             let guard = self.role_name_descr_index.read().await;
             guard.find_all_keys(query, true)
                 .iter()
-                .filter(|&key| key.id == agent_id)
+                .filter(|&key| {
+                    if let Some(id) = agent_id {
+                        key.id == id
+                    } else {
+                        true
+                    }
+                })
                 .cloned()
                 .collect()
         };

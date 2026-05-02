@@ -165,7 +165,8 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
 async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_name(&req.agent_id, &req.keyword).await;
+            let agent_id_ref = req.agent_id.as_deref();
+            let roles = ego_manager.search_role_by_name(agent_id_ref, &req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),
@@ -175,7 +176,8 @@ async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl In
 async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_description(&req.agent_id, &req.keyword).await;
+            let agent_id_ref = req.agent_id.as_deref();
+            let roles = ego_manager.search_role_by_description(agent_id_ref, &req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),

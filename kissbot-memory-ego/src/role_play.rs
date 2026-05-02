@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::error::Error;
+use crate::search::SearchManager;
 
 pub const EGO_ROLE_PLAY_PREFIX: &str = "role-play-";
 pub const JSON_SUFFIX: &str = ".json";
@@ -236,6 +237,7 @@ impl RolePlayManager {
     }
 
     pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         self.write_role_play_ref(agent_id, role_name.clone().as_str(), |old| {
             match old {
                 Some(_) => {
@@ -245,26 +247,35 @@ impl RolePlayManager {
                     Ok(Arc::new(RolePlay {
                         role: Arc::new(Role {
                             id: Arc::new(agent_id.to_string()),
-                            name: role_name,
+                            name: role_name.clone(),
                             description,
                         }),
                         other_roles: Arc::new(dashmap::DashMap::new()),
                     }))
                 }
             }
-        }).await
+        }).await?;
+        search_manager.mark_role_dirty(agent_id, role_name.as_str());
+        Ok(())
     }
 
     pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         let role = self.get_role(agent_id, role_name).await?;
-        self.create_role(agent_id, new_name, role.role.description.clone()).await
+        self.create_role(agent_id, new_name.clone(), role.role.description.clone()).await?;
+        search_manager.mark_role_dirty(agent_id, new_name.as_str());
+        Ok(())
     }
 
     pub async fn remove_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
-        self.remove_role_play_ref(agent_id, role_name).await
+        let search_manager = SearchManager::get().await?;
+        self.remove_role_play_ref(agent_id, role_name).await?;
+        search_manager.mark_role_dirty(agent_id, role_name);
+        Ok(())
     }
 
     pub async fn rename_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         let role = self.get_role(agent_id, role_name).await?;
         self.write_role_play_ref(agent_id, new_name.as_str(), |old| {
             match old {
@@ -283,10 +294,14 @@ impl RolePlayManager {
                 }
             }
         }).await?;
-        self.remove_role(agent_id, role_name).await
+        search_manager.mark_role_dirty(agent_id, new_name.as_str());
+        self.remove_role(agent_id, role_name).await?;
+        search_manager.mark_role_dirty(agent_id, role_name);
+        Ok(())
     }
 
     pub async fn update_role_description(&self, agent_id: &str, role_name: &str, description: Arc<String>) -> Result<()> {
+        let search_manager = SearchManager::get().await?;
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
@@ -301,7 +316,9 @@ impl RolePlayManager {
                 },
                 None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
             }
-        }).await
+        }).await?;
+        search_manager.mark_role_dirty(agent_id, role_name);
+        Ok(())
     }
 
     pub async fn get_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
