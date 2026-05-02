@@ -247,6 +247,12 @@ pub struct SearchRequest {
     pub keyword: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchRoleRequest {
+    pub agent_id: String,
+    pub keyword: String,
+}
+
 // User Recognition Requests
 #[derive(Debug, Deserialize)]
 pub struct GetUsersRequest {

@@ -47,6 +47,8 @@ pub fn create_router() -> Router {
         .route("/role/remove", delete(remove_role))
         .route("/role/rename", put(rename_role))
         .route("/role/update-description", put(update_role_description))
+        .route("/role/search-name", post(search_role_by_name))
+        .route("/role/search-description", post(search_role_by_description))
         .route("/role/other/get", post(get_other_role))
         .route("/role/other/replace", put(replace_other_roles))
         .route("/role/other/rename", put(rename_other_role))
@@ -157,6 +159,26 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+    }
+}
+
+async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let roles = ego_manager.search_role_by_name(&req.agent_id, &req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(roles)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),
+    }
+}
+
+async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let roles = ego_manager.search_role_by_description(&req.agent_id, &req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(roles)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),
     }
 }
 
