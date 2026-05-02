@@ -2,6 +2,7 @@ use std::{collections::HashSet};
 
 use crate::{agent::AgentMetadata, role_play_manager::RolePlay, user_recognition_manager::UserRecognition};
 
+#[allow(dead_code)]
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     format!(
         "# Agent Identity\n\n- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
@@ -9,6 +10,7 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     )
 }
 
+#[allow(dead_code)]
 pub fn build_ego_user_recognition_md(users: &UserRecognition, channel_ids: &HashSet<String>) -> String {
     let mut content = String::from("# User Recognition\n\n");
     for user in users.user_map.iter() {
@@ -41,6 +43,7 @@ pub fn build_ego_user_recognition_md(users: &UserRecognition, channel_ids: &Hash
     content    
 }
 
+#[allow(dead_code)]
 pub fn build_role_play_md(role: &RolePlay, user_names: &HashSet<String>) -> String {
     let mut content = String::from("# Role Play\n\n");
     content.push_str(&format!("- **Self Role**: {}\n\n", role.name));
