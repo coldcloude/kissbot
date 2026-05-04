@@ -60,15 +60,15 @@ impl ToString for RoleKey {
 }
 
 pub struct SearchManager {
-        identity_dirty: DashSet<String>,
-        name_index: Arc<RwLock<SubstringIndex<String>>>,
-        name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
-        search_metadata: DashMap<String, SearchMetadata>,
-        role_dirty: DashSet<RoleKey>,
-        role_name_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
-        role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
-        role_search_metadata: DashMap<RoleKey, RoleSearchMetadata>,
-    }
+    identity_dirty: DashSet<String>,
+    name_index: Arc<RwLock<SubstringIndex<String>>>,
+    name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
+    search_metadata: DashMap<String, SearchMetadata>,
+    role_dirty: DashSet<RoleKey>,
+    role_name_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
+    role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
+    role_search_metadata: DashMap<RoleKey, RoleSearchMetadata>,
+}
 
 static SEARCH_MANAGER_INSTANCE: OnceCell<SearchManager> = OnceCell::const_new();
 
@@ -330,7 +330,7 @@ impl SearchManager {
         self.role_dirty.insert(role_key);
     }
 
-    pub async fn search_role_by_name(&self, agent_id: Option<&str>, query: &str) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_name(&self, query: &str, agent_id: Option<&str>) -> Vec<Arc<Role>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
@@ -352,7 +352,7 @@ impl SearchManager {
         self.retrieve_roles(keys).await
     }
 
-    pub async fn search_role_by_description(&self, agent_id: Option<&str>, query: &str) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<Arc<Role>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
