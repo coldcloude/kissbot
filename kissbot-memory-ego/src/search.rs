@@ -49,6 +49,43 @@ impl Document<Arc<String>> for RoleSearchMetadata {
     }
 }
 
+trait AsRoleKey {
+    fn as_role_key(&self) -> &RoleKey;
+}
+
+impl AsRoleKey for RoleKey {
+    fn as_role_key(&self) -> &RoleKey {
+        self
+    }
+}
+
+impl AsRoleKey for &RoleKey {
+    fn as_role_key(&self) -> &RoleKey {
+        self
+    }
+}
+
+impl AsRoleKey for CompletionResult<RoleKey> {
+    fn as_role_key(&self) -> &RoleKey {
+        &self.key
+    }
+}
+
+fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> Vec<R> {
+    if let Some(agent_id) = agent_id {
+        let mut filtered_results = Vec::new();
+        for result in results.drain(0..results.len()) {
+            if result.as_role_key().id == agent_id {
+                filtered_results.push(result);
+            }
+        }
+        filtered_results
+    }
+    else {
+        results
+    }
+}
+
 pub struct SearchManager {
     identity_dirty: DashSet<String>,
     name_index: Arc<RwLock<SubstringIndex<String>>>,
@@ -338,17 +375,8 @@ impl SearchManager {
         self.sync_all_roles().await;
         //搜索
         let guard = self.role_name_index.read().await;
-        guard.find_all_keys(query, false)
-        .iter()
-        .filter(|&key| {
-            if let Some(id) = agent_id {
-                key.id == id
-            } else {
-                true
-            }
-        })
-        .cloned()
-        .collect()
+        let results = guard.find_all_keys(query, false);
+        filter_results(results, agent_id)
     }
 
     pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
@@ -356,23 +384,15 @@ impl SearchManager {
         self.sync_all_roles().await;
         //搜索
         let guard = self.role_name_descr_index.read().await;
-        guard.find_all_keys(query, true)
-        .iter()
-        .filter(|&key| {
-            if let Some(id) = agent_id {
-                key.id == id
-            } else {
-                true
-            }
-        })
-        .cloned()
-        .collect()
+        let results = guard.find_all_keys(query, true);
+        filter_results(results, agent_id)
     }
 
-    pub async fn role_name_completion(&self, query: &str) -> Vec<CompletionResult<RoleKey>> {
+    pub async fn role_name_completion(&self, query: &str, agent_id: Option<&str>) -> Vec<CompletionResult<RoleKey>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
-        self.role_name_completion.complete(query)
+        let results = self.role_name_completion.complete(query);
+        filter_results(results, agent_id)
     }
 }

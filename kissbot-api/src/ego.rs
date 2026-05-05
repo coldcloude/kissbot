@@ -226,80 +226,86 @@ pub type RolePlayEntity = RolePlayGeneric<LocalString, LocalMap, LocalRole, Loca
 // ========== Request Structures (simple, no generics) ==========
 
 // Agent Management Requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateAgentRequest {
     pub name: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetAgentRequest {
     pub agent_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAgentNameRequest {
     pub agent_id: String,
     pub name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAgentDescriptionRequest {
     pub agent_id: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CopyAgentRequest {
     pub agent_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub keyword: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SearchRoleRequest {
     pub agent_id: Option<String>,
     pub keyword: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RetrieveAgentsRequest {
     pub agent_ids: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RetrieveRolesRequest {
     pub role_keys: Vec<RoleKey>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CompletionRequest {
-    pub keyword: String,
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NameCompletionRequest {
+    pub prefix: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RoleNameCompletionRequest {
+    pub agent_id: Option<String>,
+    pub prefix: String,
 }
 
 // User Recognition Requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetUsersRequest {
     pub agent_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetUserRequest {
     pub agent_id: String,
     pub user_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceUsersRequest {
     pub agent_id: String,
     pub remove_user_names: Vec<String>,
     pub insert_users: HashMap<String, UserRequest>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UserRequest {
     pub privilege: UserPrivilege,
     pub identifiers: Vec<UserIdentifier>,
@@ -307,34 +313,34 @@ pub struct UserRequest {
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UserRelationRequest {
     pub relation: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RenameUserRequest {
     pub agent_id: String,
     pub user_name: String,
     pub new_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateUserPrivilegeRequest {
     pub agent_id: String,
     pub user_name: String,
     pub privilege: UserPrivilege,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateUserDescriptionRequest {
     pub agent_id: String,
     pub user_name: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceUserIdentifiersRequest {
     pub agent_id: String,
     pub user_name: String,
@@ -342,7 +348,7 @@ pub struct ReplaceUserIdentifiersRequest {
     pub insert_identifiers: Vec<UserIdentifier>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceUserRelationsRequest {
     pub agent_id: String,
     pub user_name: String,
@@ -351,59 +357,59 @@ pub struct ReplaceUserRelationsRequest {
 }
 
 // Role Play Requests
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListRolesRequest {
     pub agent_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetRoleRequest {
     pub agent_id: String,
     pub role_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateRoleRequest {
     pub agent_id: String,
     pub name: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateRoleFromRequest {
     pub agent_id: String,
     pub role_name: String,
     pub new_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RemoveRoleRequest {
     pub agent_id: String,
     pub role_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RenameRoleRequest {
     pub agent_id: String,
     pub role_name: String,
     pub new_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateRoleDescriptionRequest {
     pub agent_id: String,
     pub role_name: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetOtherRoleRequest {
     pub agent_id: String,
     pub role_name: String,
     pub other_role_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRolesRequest {
     pub agent_id: String,
     pub role_name: String,
@@ -411,7 +417,7 @@ pub struct ReplaceOtherRolesRequest {
     pub insert_other_roles: HashMap<String, OtherRoleRequest>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OtherRoleRequest {
     pub user_name: String,
     pub role_relation: RoleRelationRequest,
@@ -419,13 +425,13 @@ pub struct OtherRoleRequest {
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RoleRelationRequest {
     pub relation: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RenameOtherRoleRequest {
     pub agent_id: String,
     pub role_name: String,
@@ -433,7 +439,7 @@ pub struct RenameOtherRoleRequest {
     pub new_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleUserNameRequest {
     pub agent_id: String,
     pub role_name: String,
@@ -441,7 +447,7 @@ pub struct UpdateOtherRoleUserNameRequest {
     pub new_user_name: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleDescriptionRequest {
     pub agent_id: String,
     pub role_name: String,
@@ -449,7 +455,7 @@ pub struct UpdateOtherRoleDescriptionRequest {
     pub new_description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleRelationRequest {
     pub agent_id: String,
     pub role_name: String,
@@ -457,7 +463,7 @@ pub struct UpdateOtherRoleRelationRequest {
     pub new_relation: RoleRelationRequest,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRoleRelationsRequest {
     pub agent_id: String,
     pub role_name: String,

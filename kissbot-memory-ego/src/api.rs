@@ -177,10 +177,10 @@ async fn retrieve_agents(Json(req): Json<ego::RetrieveAgentsRequest>) -> impl In
     }
 }
 
-async fn agent_name_completion(Json(req): Json<ego::CompletionRequest>) -> impl IntoResponse {
+async fn agent_name_completion(Json(req): Json<ego::NameCompletionRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let results = ego_manager.name_completion(&req.keyword).await;
+            let results = ego_manager.name_completion(&req.prefix).await;
             (StatusCode::OK, Json(ApiResponse::success(results)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<String>>>::error(e.to_string())))
@@ -217,10 +217,10 @@ async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl Into
     }
 }
 
-async fn role_name_completion(Json(req): Json<ego::CompletionRequest>) -> impl IntoResponse {
+async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let results = ego_manager.role_name_completion(&req.keyword).await;
+            let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref()).await;
             (StatusCode::OK, Json(ApiResponse::success(results)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<ego::RoleKey>>>::error(e.to_string())))
