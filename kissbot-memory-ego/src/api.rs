@@ -6,6 +6,7 @@ use axum::{
 };
 use dashmap::{DashMap, DashSet};
 use futures::future;
+use kai_index::CompletionResult;
 use kissbot_memory::DirectoryManager;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,6 +31,8 @@ pub fn create_router() -> Router {
         .route("/agent/copy", post(copy_agent))
         .route("/agent/search-name", post(search_by_name))
         .route("/agent/search-description", post(search_by_description))
+        .route("/agent/retrieve", post(retrieve_agents))
+        .route("/agent/name-completion", post(agent_name_completion))
         // 用户识别信息 API
         .route("/user/get-all", post(get_users))
         .route("/user/get", post(get_user))
@@ -49,6 +52,8 @@ pub fn create_router() -> Router {
         .route("/role/update-description", put(update_role_description))
         .route("/role/search-name", post(search_role_by_name))
         .route("/role/search-description", post(search_role_by_description))
+        .route("/role/retrieve", post(retrieve_roles))
+        .route("/role/name-completion", post(role_name_completion))
         .route("/role/other/get", post(get_other_role))
         .route("/role/other/replace", put(replace_other_roles))
         .route("/role/other/rename", put(rename_other_role))
@@ -148,7 +153,7 @@ async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoRespons
             let agents = ego_manager.search_by_name(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<String>>::error(e.to_string())))
     }
 }
 
@@ -158,7 +163,27 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
             let agents = ego_manager.search_by_description(&req.keyword).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<String>>::error(e.to_string())))
+    }
+}
+
+async fn retrieve_agents(Json(req): Json<ego::RetrieveAgentsRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let agents = ego_manager.retrieve_agents(req.agent_ids).await;
+            (StatusCode::OK, Json(ApiResponse::success(agents)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string())))
+    }
+}
+
+async fn agent_name_completion(Json(req): Json<ego::CompletionRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let results = ego_manager.name_completion(&req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(results)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<String>>>::error(e.to_string())))
     }
 }
 
@@ -168,7 +193,7 @@ async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl In
             let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref()).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
     }
 }
 
@@ -178,7 +203,27 @@ async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> 
             let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref()).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
+    }
+}
+
+async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let roles = ego_manager.retrieve_roles(req.role_keys).await;
+            (StatusCode::OK, Json(ApiResponse::success(roles)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string())))
+    }
+}
+
+async fn role_name_completion(Json(req): Json<ego::CompletionRequest>) -> impl IntoResponse {
+    match SearchManager::get().await {
+        Ok(ego_manager) => {
+            let results = ego_manager.role_name_completion(&req.keyword).await;
+            (StatusCode::OK, Json(ApiResponse::success(results)))
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<ego::RoleKey>>>::error(e.to_string())))
     }
 }
 

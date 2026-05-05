@@ -3,7 +3,9 @@ use std::sync::Arc;
 use dashmap::{DashMap, DashSet};
 use futures::future;
 use kai_index::document::to_document;
+use kai_index::prefix_completion::{SimplePrefixCompletion, CompletionResult, PrefixCompletion};
 use kai_index::{Document, SubstringIndex};
+use kissbot_api::RoleKey;
 use kissbot_memory::DirectoryManager;
 use tokio::sync::{OnceCell, RwLock};
 
@@ -47,26 +49,16 @@ impl Document<Arc<String>> for RoleSearchMetadata {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RoleKey {
-    pub id: String,
-    pub name: String,
-}
-
-impl ToString for RoleKey {
-    fn to_string(&self) -> String {
-        format!("{}:{}", self.id, self.name)
-    }
-}
-
 pub struct SearchManager {
     identity_dirty: DashSet<String>,
     name_index: Arc<RwLock<SubstringIndex<String>>>,
     name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
+    name_completion: SimplePrefixCompletion<String>,
     search_metadata: DashMap<String, SearchMetadata>,
     role_dirty: DashSet<RoleKey>,
     role_name_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
     role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
+    role_name_completion: SimplePrefixCompletion<RoleKey>,
     role_search_metadata: DashMap<RoleKey, RoleSearchMetadata>,
 }
 
@@ -78,10 +70,12 @@ impl SearchManager {
             identity_dirty: DashSet::new(),
             name_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
+            name_completion: SimplePrefixCompletion::new(),
             search_metadata: DashMap::new(),
             role_dirty: DashSet::new(),
             role_name_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             role_name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
+            role_name_completion: SimplePrefixCompletion::new(),
             role_search_metadata: DashMap::new(),
         }
     }
@@ -133,10 +127,14 @@ impl SearchManager {
             let mut guard = self.name_index.write().await;
             //有旧值，先移除
             if let Some(old_name) = old_name_or_none {
-                guard.remove(&agent_id.to_string(), &to_document(old_name));
+                let old_name_document = to_document(old_name);
+                guard.remove(&agent_id.to_string(), &old_name_document);
+                self.name_completion.remove(&agent_id.to_string(), &old_name_document);
             }
             //插入新值
-            guard.insert(&agent_id.to_string(), &to_document(new_name));
+            let new_name_document = to_document(new_name);
+            guard.insert(&agent_id.to_string(), &new_name_document);
+            self.name_completion.insert(&agent_id.to_string(), &new_name_document);
         }
         //name或description变更
         if name_obsolute || descr_obsolute {
@@ -193,28 +191,27 @@ impl SearchManager {
         self.identity_dirty.insert(agent_id.to_string());
     }
 
-    pub async fn search_by_name(&self, query: &str) -> Vec<Arc<AgentMetadata>> {
+    pub async fn search_by_name(&self, query: &str) -> Vec<String> {
         //先同步脏数据
         self.sync_all_identity().await;
         //搜索
-        let agent_ids: Vec<String> = {
-            let guard = self.name_index.read().await;
-            guard.find_all_keys(query, false).iter().map(|id| id.to_string()).collect()
-        };
-        //反查结果
-        self.retrieve_agents(agent_ids).await
+        let guard = self.name_index.read().await;
+        guard.find_all_keys(query, false).iter().map(|id| id.to_string()).collect()
     }
 
-    pub async fn search_by_description(&self, query: &str) -> Vec<Arc<AgentMetadata>> {
+    pub async fn search_by_description(&self, query: &str) -> Vec<String> {
         //先同步脏数据
         self.sync_all_identity().await;
         //搜索
-        let agent_ids: Vec<String> = {
-            let guard = self.name_descr_index.read().await;
-            guard.find_all_keys(query, true).iter().map(|id| id.to_string()).collect()
-        };
-        //反查结果
-        self.retrieve_agents(agent_ids).await
+        let guard = self.name_descr_index.read().await;
+        guard.find_all_keys(query, true).iter().map(|id| id.to_string()).collect()
+    }
+
+    pub async fn name_completion(&self, query: &str) -> Vec<CompletionResult<String>> {
+        //先同步脏数据
+        self.sync_all_identity().await;
+        //搜索
+        self.name_completion.complete(query)
     }
 
     pub async fn force_sync_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
@@ -256,10 +253,14 @@ impl SearchManager {
                 let mut guard = self.role_name_index.write().await;
                 //有旧值，先移除
                 if let Some(old_name) = old_name_or_none {
-                    guard.remove(&role_key, &to_document(old_name));
+                    let old_name_document = to_document(old_name);
+                    guard.remove(&role_key, &old_name_document);
+                    self.role_name_completion.remove(&role_key, &old_name_document);
                 }
                 //插入新值
-                guard.insert(&role_key, &to_document(new_name));
+                let new_name_document = to_document(new_name);
+                guard.insert(&role_key, &new_name_document);
+                self.role_name_completion.insert(&role_key, &new_name_document);
             }
             //name或description变更
             if name_obsolute || descr_obsolute {
@@ -277,8 +278,10 @@ impl SearchManager {
         else {
             //移除旧名称索引
             if let Some(old_name) = old_name_or_none {
+                let old_name_document = to_document(old_name);
                 let mut guard = self.role_name_index.write().await;
-                guard.remove(&role_key, &to_document(old_name));
+                guard.remove(&role_key, &old_name_document);
+                self.role_name_completion.remove(&role_key, &old_name_document);
             }
             //移除旧全文索引
             if let Some((_, old_metadata)) = old_search_metadata_or_none {
@@ -330,47 +333,46 @@ impl SearchManager {
         self.role_dirty.insert(role_key);
     }
 
-    pub async fn search_role_by_name(&self, query: &str, agent_id: Option<&str>) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_name(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
-        let keys: Vec<RoleKey> = {
-            let guard = self.role_name_index.read().await;
-            guard.find_all_keys(query, false)
-                .iter()
-                .filter(|&key| {
-                    if let Some(id) = agent_id {
-                        key.id == id
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect()
-        };
-        //反查结果
-        self.retrieve_roles(keys).await
+        let guard = self.role_name_index.read().await;
+        guard.find_all_keys(query, false)
+        .iter()
+        .filter(|&key| {
+            if let Some(id) = agent_id {
+                key.id == id
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect()
     }
 
-    pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<Arc<Role>> {
+    pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
-        let keys: Vec<RoleKey> = {
-            let guard = self.role_name_descr_index.read().await;
-            guard.find_all_keys(query, true)
-                .iter()
-                .filter(|&key| {
-                    if let Some(id) = agent_id {
-                        key.id == id
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect()
-        };
-        //反查结果
-        self.retrieve_roles(keys).await
+        let guard = self.role_name_descr_index.read().await;
+        guard.find_all_keys(query, true)
+        .iter()
+        .filter(|&key| {
+            if let Some(id) = agent_id {
+                key.id == id
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect()
+    }
+
+    pub async fn role_name_completion(&self, query: &str) -> Vec<CompletionResult<RoleKey>> {
+        //先同步脏数据
+        self.sync_all_roles().await;
+        //搜索
+        self.role_name_completion.complete(query)
     }
 }

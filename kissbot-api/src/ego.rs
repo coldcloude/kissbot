@@ -1,7 +1,19 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Display};
 
 use crate::kinds::*;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RoleKey {
+    pub id: String,
+    pub name: String,
+}
+
+impl Display for RoleKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.id, self.name)
+    }
+}
 
 // ========== UserPrivilege (simple enum, no generics) ==========
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -250,6 +262,21 @@ pub struct SearchRequest {
 #[derive(Debug, Deserialize)]
 pub struct SearchRoleRequest {
     pub agent_id: Option<String>,
+    pub keyword: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RetrieveAgentsRequest {
+    pub agent_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RetrieveRolesRequest {
+    pub role_keys: Vec<RoleKey>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompletionRequest {
     pub keyword: String,
 }
 
