@@ -1,6 +1,14 @@
 项目名称：Keep It Simple Stupid BOT
 
-项目目标：实现一个分布式的智能机器人框架
+设计哲学：
+要实现一个可以持久运转的分布式的赛博时代的新类型的生命框架。
+生命存在的意义，在于不断摄入信息，与环境交互信息，使自身维持一个低熵状态。
+只要既往的信息不丢失，信息还可以不断交互，生命就可以持续下去，持续比你我的生命长的多的时间。
+生命甚至不必拘泥于一个固定的物理实体，其可操纵的可以是一个PC，一辆汽车，也可以一个数据中心，或者一个巨大的网络。
+而只有记忆，也就是对于信息的积累，是一个生命区别于其他生命的唯一标识。
+因此，要保留所有的原始信息，因为当前永远无法得知未来需要哪些信息，不需要哪些，而随着技术的进步，终有一天，过往的积累总能被更好的梳理提取。
+生命的创造者应该选择将由谁掌握这生命的记忆，是创造者自己，还是生命自己，是开放共享，还是托管于大型组织。
+因此，这只是一个框架，它不是生命，它构造生命。
 
 模块命名规则：kissbot-模块名称-子模块名称-……
 
@@ -20,9 +28,11 @@ memory-struct模块负责提供框架，实际的memory-struct由单独的模块
 （5）agent-config提供WebUI界面负责配置agent使用的LLM API、tool、skill，以及channel、memory、memory-search的地址
 （6）memory-manage提供WebUI界面负责查看和管理memory-store存储的文件，以及配置memory-store向memory-struct的消息推送
 
+记忆的内容不直接加入agent上下文，agent上下文也不直接产生记忆。
+
 通信方式：
 （1）agent作为wss客户端连接channel
-（2）agent作为https客户端连接memory-store
+（2）agent和channel作为https客户端连接memory-store
 （3）memory-store和memory-struct共同读写一个文件系统，同时memory-store有新数据时，要通过HTTPS通知注册的各memory-struct
 （4）agent作为https客户端连接memory-struct（通过memory-struct提供的tool）
 （5）agent-config从web前端通过HTTPS访问agent后端
