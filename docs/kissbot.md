@@ -320,7 +320,9 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 ## 模块设计文档索引
 各模块详细设计请参考以下文档：
 
-- [kissbot-agent.md](./kissbot-agent.md) - 智能体核心模块设计
+- [kissbot-agent-autonomous.md](./kissbot-agent-autonomous.md) - 智能体核心模块设计（自主模式，包含公共内容）
+- [kissbot-agent-qa.md](./kissbot-agent-qa.md) - 智能体核心模块设计（问答模式）
+- [kissbot-agent-engineering.md](./kissbot-agent-engineering.md) - 智能体核心模块设计（工程模式）
 - [kissbot-channel.md](./kissbot-channel.md) - 消息通道框架设计
 - [kissbot-memory-store.md](./kissbot-memory-store.md) - 记忆存储模块设计
 - [kissbot-project.md](./kissbot-project.md) - 工程模块设计

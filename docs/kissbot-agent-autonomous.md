@@ -1,4 +1,4 @@
-# kissbot-agent 模块设计
+# kissbot-agent 模块设计 - 自主模式
 
 ## 模块概述
 智能体核心模块，负责将消息加工为LLM可用的消息，通过agentic loop调用LLM执行操作，返回消息。
@@ -15,53 +15,13 @@
 - 支持上下文压缩（LLM压缩或从memory-struct重新读取）
 - 在自主模式下长时间空闲时主动进行信息收集或输出
 
-## Agent三种模式
-
-### 1. 问答模式
-- 问答的过程就是全部内容
-- 没有工作区
-- 不加载ego模块
-- 不使用agent-id
-
-#### 问答模式上下文
-- **会话**：只有一个会话
-- **系统消息**：将Agent设定为通用助手
-- **Tool**：仅加载用于获取信息的固定skill（如web-search）
-- **对话消息**：所有的用户消息、agent消息（包括工具调用和结果），不压缩
-
-### 2. 工程模式
-- 做一件事的持续过程
-- 不加载ego模块
-- 不使用agent-id
-- 每个工程绑定一个本地目录作为工作区
-- 工作区内包含工程职位的配置文件
-- agent每次选择一个职位，按照职位设定读写笔记并完成工作
-- 工程管理模块负责配置工作区目录、读写角色设定、提供tool
-
-#### 工程模式上下文
-- **会话**：手动新建和切换会话
-- **系统消息**：
-  - agent必须遵守的规范，包括禁止事项（由工程管理模块提供）
-  - agent的职位设定（由工程管理模块提供）
-  - 从工作区内加载自定义指导文件AGENTS.md等
-- **Tool**：
-  - 文件操作类（Read、Write、Edit）
-  - 命令执行类（Bash）
-  - 扩展类（Skill）
-- **记忆模块**（可选）：加载一个memory-struct模块读取同一工程或同一会话的记忆
-- **对话消息**：
-  - 手动新建和切换会话，只包含会话内的用户消息、agent消息（包括工具调用和结果）
-  - 可选两种压缩方式：
-    1. **LLM压缩**：当上下文空间不足时，或手动指定时，提取历史消息摘要，生成墓碑消息替换历史消息
-    2. **记忆丢弃**：如果加载了memory-struct，当上下文空间不足时，自动丢弃已推送至记忆模块的对话，然后重新通过memory-struct读取记忆
-
-### 3. 自主模式
+## 自主模式
 - 持续收集信息，并与其他人或agent交换信息的持续过程
 - 加载ego模块
 - 固定使用一个agent-id
 - 没有工作区
 
-#### 自主模式上下文
+### 自主模式上下文
 - **会话**：没有会话概念，对话消息从记忆系统加载
 - **系统消息**：
   - agent必须遵守的规范，包括禁止事项（由memory-ego的agent元数据模块管理）
@@ -292,7 +252,7 @@ struct AutonomousConfig {
 ### agent配置文件示例
 ```json
 {
-    "mode": "qa",
+    "mode": "autonomous",
     "llm_api": {
         "base_url": "https://api.example.com",
         "api_key": "your-api-key",
@@ -312,7 +272,15 @@ struct AutonomousConfig {
         "url": "https://memory-ego.example.com"
     },
     "engineering_config": null,
-    "autonomous_config": null
+    "autonomous_config": {
+        "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+        "load_role": null,
+        "include_channels": null,
+        "exclude_channels": null,
+        "load_message_count": 100,
+        "idle_timeout_seconds": 3600,
+        "reset_timeout_seconds": 86400
+    }
 }
 ```
 
@@ -340,31 +308,25 @@ struct AutonomousConfig {
 - [ ] 实现与channel的通信
 - [ ] 实现与memory-store的通信
 
-### 第3阶段：模式和会话管理
+### 第3阶段：自主模式实现
 - [ ] 实现ModeManager
-- [ ] 实现SessionManager
-- [ ] 实现问答模式基础
-- [ ] 实现工程模式基础
+- [ ] 实现SessionManager（自主模式不使用会话）
 - [ ] 实现自主模式基础
+- [ ] 实现与memory-ego的集成（读取禁止事项和自主运行目标）
 
 ### 第4阶段：Agentic Loop实现
 - [ ] 实现ContextBuilder
 - [ ] 实现LLM API集成
 - [ ] 实现ToolManager
 - [ ] 实现完整的Agentic Loop
+- [ ] 实现上下文重置功能
 
-### 第5阶段：记忆交互实现
-- [ ] 实现MemoryPushManager
-- [ ] 实现与memory-ego的交互
-- [ ] 实现与memory-struct的tool交互
-
-### 第6阶段：高级功能
-- [ ] 实现上下文压缩（LLM压缩）
-- [ ] 实现上下文压缩（记忆丢弃）
-- [ ] 实现上下文重置（自主模式）
+### 第5阶段：自主模式高级功能
 - [ ] 实现自主模式主动行为
+- [ ] 实现空闲检测
+- [ ] 实现自主运行目标触发机制
 
-### 第7阶段：测试和完善
+### 第6阶段：测试和完善
 - [ ] 单元测试
 - [ ] 集成测试
 - [ ] 性能优化
