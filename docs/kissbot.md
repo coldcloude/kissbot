@@ -348,22 +348,30 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [x] 用户识别信息、角色设定的JSON管理模块
 - [x] 用户识别信息、角色设定的查询API
 
-### 第4阶段：memory-store实现
+### 第4阶段：memory-ego必须遵守事项和自主运行目标实现
+- [ ] 在AgentMetadata中增加forbidden_items和autonomous_goals字段
+- [ ] 在role-play数据结构中增加autonomous_goals字段
+- [ ] 实现更新禁止事项和自主运行目标的功能和API
+- [ ] 完善metadata.json和role-play-{role-id}.json的读写
+
+### 第5阶段：agent实现（自主模式）
+- [ ] 模块架构设计
+- [ ] 自主模式支持
+- [ ] LLM API集成
+- [ ] agentic loop实现
+- [ ] tool调用机制
+- [ ] WSS客户端
+- [ ] 与memory-ego和memory-store的集成
+- [ ] 上下文重置功能
+- [ ] 自主运行目标触发机制
+
+### 第6阶段：memory-store实现
 - [ ] 模块架构设计
 - [ ] 三种记录类型的存储（JSON Lines格式）
 - [ ] HTTPS API接口（推送、查询）
 - [ ] 订阅/通知机制
 
-### 第5阶段：agent实现
-- [ ] 模块架构设计
-- [ ] 三种模式支持（问答、工程、自主）
-- [ ] LLM API集成
-- [ ] agentic loop实现
-- [ ] tool调用机制
-- [ ] WSS客户端
-- [ ] 上下文压缩功能
-
-### 第6阶段：channel实现
+### 第7阶段：channel实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] 附件存储管理
@@ -372,23 +380,38 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [ ] channel-web后台实现
 - [ ] channel-web-ui前台实现
 
-### 第7阶段：memory-struct实现
+### 第8阶段：memory-struct实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] memory-struct-abstract实现（摘要搜索）
 - [ ] HTTPS tool接口
 
-### 第8阶段：UI实现
+### 第9阶段：agent实现（问答模式）
+- [ ] 问答模式支持
+- [ ] 固定skill集成（如web-search）
+- [ ] 不压缩对话历史
+
+### 第10阶段：UI实现
 - [ ] 模块架构设计
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
 
-### 第9阶段：project模块设计（Rust库）
+### 第11阶段：project模块实现（Rust库）
 - [ ] 模块架构设计
 - [ ] 职位管理功能
-- [ ] Tool提供者实现
+- [ ] Tool提供者实现（文件操作、命令执行、Skill）
+- [ ] 笔记管理功能
+- [ ] 指导文件加载器
 
-### 第10阶段：memory-ego进阶模式改造
+### 第12阶段：agent实现（工程模式）
+- [ ] 工程模式支持
+- [ ] 与project模块集成
+- [ ] 职位切换功能
+- [ ] 工作区目录绑定
+- [ ] 自定义指导文件加载
+- [ ] LLM压缩和记忆丢弃两种上下文压缩方式
+
+### 第13阶段：memory-ego进阶模式改造
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
 - [ ] 进阶模式API
