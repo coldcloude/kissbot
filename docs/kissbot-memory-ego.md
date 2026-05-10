@@ -35,13 +35,17 @@
 - name：agent名称
 - description：agent描述
 - created_at：创建时间（格式：yyyy-MM-dd HH:mm:ss）
+- force_items：agent必须遵守的事项列表（字符串数组）
+- autonomous_goals：agent自主运行目标（字符串）
 
 ## Agent元数据操作函数
-- create_agent：创建新的agent，需要name和description
+- create_agent：创建新的agent，需要name和description，forbidden_items可为空列表，autonomous_goals可为空字符串
 - get_metadata：获取agent元数据
 - update_agent_name：修改agent名称
 - update_agent_description：修改agent描述
 - update_agent_name_description：同时修改agent名称和描述
+- update_force_items：更新agent事项列表
+- update_autonomous_goals：更新agent自主运行目标
 
 ## 结构化设计
 
@@ -72,7 +76,8 @@
 ### 角色扮演信息结构
 角色扮演信息为agent在本次会话中扮演的角色，至少包括：
 - **名称**：角色名称（外部填写，无自动生成）
-- **描述字段**：可以自由填写任意文本
+- **描述**：可以自由填写任意文本
+- **自主运行目标**：该角色的自主运行目标（字符串，可为空字符串，可以自由填写）
 - 单独存放一个JSON文件
 
 ### 角色扮演关系信息结构
@@ -89,12 +94,12 @@
 
 #### 新增agent接口
 - **接口**：新增agent
-- **输入**：agent元数据（名称、描述）
+- **输入**：agent元数据（名称、描述必填，force_items可为空列表，autonomous_goals可为空字符串）
 - **返回**：成功或失败状态
 
 #### 查询agent元数据接口
 - **接口**：按agent ID查询
-- **返回内容**：agent元数据（名称、描述、创建时间等）
+- **返回内容**：agent元数据（名称、描述、创建时间、force_items、autonomous_goals等）
 
 #### 查询所有agent列表接口
 - **接口**：查询所有agent
@@ -138,6 +143,18 @@
 #### 复制agent接口
 - **接口**：复制agent
 - **路径**：POST /agent/:agent_id/copy
+- **返回**：成功或失败状态
+
+#### 更新agent必须遵守事项列表接口
+- **接口**：更新agent必须遵守事项列表
+- **路径**：PUT /agent/:agent_id/force-items
+- **输入**：必须遵守的事项字符串数组
+- **返回**：成功或失败状态
+
+#### 更新agent自主运行目标接口
+- **接口**：更新agent自主运行目标
+- **路径**：PUT /agent/:agent_id/autonomous-goals
+- **输入**：自主运行目标字符串（可为空字符串）
 - **返回**：成功或失败状态
 
 ### 用户识别信息管理接口
@@ -198,12 +215,12 @@
 #### 获取角色信息接口
 - **接口**：获取角色信息
 - **路径**：GET /agent/:agent_id/roles/:role_name
-- **返回内容**：角色信息JSON
+- **返回内容**：角色信息JSON（包含autonomous_goals）
 
 #### 创建角色接口
 - **接口**：创建新角色
 - **路径**：POST /agent/:agent_id/roles
-- **输入**：角色名称和描述
+- **输入**：角色名称、描述必填，autonomous_goals可为空字符串
 - **返回**：成功或失败状态
 
 #### 从现有角色创建角色接口
@@ -227,6 +244,12 @@
 - **接口**：更新角色描述
 - **路径**：PUT /agent/:agent_id/roles/:role_name/description
 - **输入**：新描述
+- **返回**：成功或失败状态
+
+#### 更新角色自主运行目标接口
+- **接口**：更新角色自主运行目标
+- **路径**：PUT /agent/:agent_id/roles/:role_name/autonomous-goals
+- **输入**：自主运行目标字符串（可为空字符串）
 - **返回**：成功或失败状态
 
 #### 按名称搜索角色接口
@@ -304,6 +327,33 @@
     - **memory-ego**：memory-ego模块的设定信息单独存放
       - **user-recognition.json**：用户识别信息JSON文件
       - **role-play-{role-id}.json**：角色设定JSON文件
+
+### JSON文件格式示例
+
+#### metadata.json 示例
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "智能助手",
+  "description": "负责处理用户查询的智能agent",
+  "created_at": "2024-01-01 12:00:00",
+  "force_items": [
+    "不要泄露用户隐私信息",
+    "不要执行危险命令",
+    "不要生成违法内容"
+  ],
+  "autonomous_goals": "定期收集最新技术资讯，整理成报告"
+}
+```
+
+#### role-play-{role-id}.json 示例
+```json
+{
+  "name": "技术顾问",
+  "description": "提供专业技术建议的角色",
+  "autonomous_goals": "每日分析技术趋势，给出投资建议"
+}
+```
 
 ## 文件生成机制
 
