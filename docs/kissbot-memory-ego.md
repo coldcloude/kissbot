@@ -423,7 +423,15 @@
 - [x] 用户识别信息、角色扮演、角色扮演关系MD文件生成（备用）
 - [x] JSON查询API
 
-### 第4阶段：进阶模式改造
+### 第4阶段：必须遵守事项和自主运行目标管理
+- [ ] 在AgentMetadata数据结构中增加force_items和autonomous_goals字段
+- [ ] 在role-play数据结构中增加autonomous_goals字段
+- [ ] 实现更新agent必须遵守事项的功能和API
+- [ ] 实现更新agent自主运行目标的功能和API
+- [ ] 实现更新角色自主运行目标的功能和API
+- [ ] 完善metadata.json和role-play-{role-id}.json的读写
+
+### 第5阶段：进阶模式改造
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
 - [ ] 进阶模式API

@@ -348,13 +348,13 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [x] 用户识别信息、角色设定的JSON管理模块
 - [ ] 用户识别信息、角色设定的查询API
 
-### 第5阶段：memory-store实现
+### 第4阶段：memory-store实现
 - [ ] 模块架构设计
 - [ ] 三种记录类型的存储（JSON Lines格式）
 - [ ] HTTPS API接口（推送、查询）
 - [ ] 订阅/通知机制
 
-### 第6阶段：agent实现
+### 第5阶段：agent实现
 - [ ] 模块架构设计
 - [ ] 三种模式支持（问答、工程、自主）
 - [ ] LLM API集成
@@ -363,7 +363,7 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [ ] WSS客户端
 - [ ] 上下文压缩功能
 
-### 第7阶段：channel实现
+### 第6阶段：channel实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] 附件存储管理
@@ -372,23 +372,23 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 - [ ] channel-web后台实现
 - [ ] channel-web-ui前台实现
 
-### 第8阶段：memory-struct实现
+### 第7阶段：memory-struct实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
 - [ ] memory-struct-abstract实现（摘要搜索）
 - [ ] HTTPS tool接口
 
-### 第9阶段：UI实现
+### 第8阶段：UI实现
 - [ ] 模块架构设计
 - [ ] agent-config（配置agent）
 - [ ] memory-manage（管理记忆）
 
-### 第10阶段：memory-ego进阶模式改造
+### 第9阶段：memory-ego进阶模式改造
 - [ ] 记忆提取器实现
 - [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
 - [ ] 进阶模式API
 
-### 第4阶段：project模块设计（Rust库）
+### 第10阶段：project模块设计（Rust库）
 - [ ] 模块架构设计
 - [ ] 职位管理功能
 - [ ] Tool提供者实现
