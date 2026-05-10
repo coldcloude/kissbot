@@ -308,11 +308,12 @@
 ## 文件生成机制
 
 ### JSON文件来源
-- 身份识别信息：填写metadata.json
-- 用户识别信息、角色设定信息：外部填写或从记忆提取
+- 身份识别信息：通过API填写metadata.json
+- 用户识别信息：通过API从外部填写user-recognition.json
+- 角色设定信息：通过API从外部填写role-play-{role-id}.json
 
 ### 进阶模式
-- 结合配置信息和从记忆中提取的信息生成JSON文件
+- 结合配置信息和从记忆中提取的信息，生成JSON文件
 - 支持自动化生成设定内容
 
 ## AgentManager实现

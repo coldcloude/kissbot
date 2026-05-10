@@ -28,8 +28,6 @@ memory-struct模块负责提供框架，实际的memory-struct由单独的模块
 （5）agent-config提供WebUI界面负责配置agent使用的LLM API、tool、skill，以及channel、memory、memory-search的地址
 （6）memory-manage提供WebUI界面负责查看和管理memory-store存储的文件，以及配置memory-store向memory-struct的消息推送
 
-记忆的内容不直接加入agent上下文，agent上下文也不直接产生记忆。
-
 通信方式：
 （1）agent作为wss客户端连接channel
 （2）agent和channel作为https客户端连接memory-store
