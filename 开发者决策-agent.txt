@@ -28,7 +28,7 @@ agent上下文的内容：
 2、系统消息：
 （1）agent必须遵守的规范，包括禁止事项（由memory-ego的agent元数据模块管理）；
 （2）memory-ego模块读取的内容。可以选择加载一个角色，也可以不选择，只加载客观部分。
-（3）agent自主运行时的目标（由memory-ego的agent元数据模块管理）
+（3）agent自主运行时的目标（由memory-ego模块管理）
 3、tool：
 （1）记忆模块：选择加载一个memory-struct，用于agent自主提取记忆
 （2）扩展模块：仅加载API、MCP，或使用MCP封装的其他tool
