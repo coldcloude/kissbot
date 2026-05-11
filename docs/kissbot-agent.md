@@ -190,22 +190,6 @@ struct AutonomousConfig {
 11. 等待下一条消息或自主触发
 ```
 
-## 上下文压缩策略
-
-### 1. LLM压缩
-- 触发条件：上下文空间不足或手动指定
-- 执行：调用LLM提取历史消息摘要
-- 结果：生成Tombstone消息替换历史消息
-
-### 2. 记忆丢弃（仅工程模式且加载memory-struct时）
-- 触发条件：上下文空间不足
-- 执行：丢弃已推送至记忆模块的对话
-- 结果：重新通过memory-struct读取记忆
-
-### 3. 上下文重置（仅自主模式）
-- 触发条件：上下文超长、长时间无消息、长时间未重置
-- 执行：将所有消息存入记忆，重新从memory-struct读取近期记忆
-
 ## 配置文件
 
 ### agent配置文件示例
@@ -245,26 +229,26 @@ struct AutonomousConfig {
 - 支持从配置文件加载证书
 - 单例通过关联函数获取
 
-## 开发计划
+## 基础和公共部分开发计划
 
 ### 第1阶段：基础结构搭建
 - [ ] 配置Cargo.toml，添加依赖
 - [ ] 定义模块结构
 - [ ] 定义错误类型
-- [ ] 定义核心数据结构
+- [ ] 定义核心数据结构（AgentMode、Session、Message、配置等）
 
 ### 第2阶段：通信组件实现
-- [ ] 实现WSS客户端
-- [ ] 实现HTTPS客户端
+- [ ] 实现WSSClient
+- [ ] 实现HTTPSClient
 - [ ] 实现与channel的通信
 - [ ] 实现与memory-store的通信
+- [ ] 实现与memory-ego的通信
+- [ ] 实现与memory-struct的通信
 
 ### 第3阶段：模式和会话管理
 - [ ] 实现ModeManager
 - [ ] 实现SessionManager
-- [ ] 实现问答模式基础
-- [ ] 实现工程模式基础
-- [ ] 实现自主模式基础
+- [ ] 实现配置加载和管理
 
 ### 第4阶段：Agentic Loop实现
 - [ ] 实现ContextBuilder
@@ -274,16 +258,17 @@ struct AutonomousConfig {
 
 ### 第5阶段：记忆交互实现
 - [ ] 实现MemoryPushManager
-- [ ] 实现与memory-ego的交互
-- [ ] 实现与memory-struct的tool交互
+- [ ] 实现系统提示词构建
+- [ ] 实现消息处理和状态管理
 
-### 第6阶段：高级功能
-- [ ] 实现上下文压缩（LLM压缩）
-- [ ] 实现上下文压缩（记忆丢弃）
-- [ ] 实现上下文重置（自主模式）
-- [ ] 实现自主模式主动行为
-
-### 第7阶段：测试和完善
+### 第6阶段：测试和完善
 - [ ] 单元测试
 - [ ] 集成测试
 - [ ] 性能优化
+
+---
+
+**注意**：三种模式的具体实现请参考对应文档：
+- [问答模式开发计划](./kissbot-agent-qa.md)
+- [工程模式开发计划](./kissbot-agent-engineering.md)
+- [自主模式开发计划](./kissbot-agent-autonomous.md)
