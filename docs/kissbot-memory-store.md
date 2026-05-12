@@ -8,8 +8,9 @@
 - 按统一方式管理三种agent模式下的记忆
 - 将记忆结构化存储为三个记忆存储文件
 - 提供HTTPS API接口供其他模块推送记忆
-- 当有新数据时，通过HTTPS通知注册的memory-struct模块
+- 当有新数据时，通过WSS通知各已连接的memory-struct模块
 - 调用memory基础模块的DirectoryManager进行目录管理
+- 与memory-struct共同读写一个文件系统
 
 ## 记忆来源
 
@@ -47,7 +48,7 @@
 存储channel内的文本内容，每个channel单独文件，每条记录包含：
 - `user_id`：用户标识（自己发送的消息留空字符串）
 - `time`：时间戳（格式：yyyy-MM-dd HH:mm:ss）
-- `typo`：记录类型（channel/thinking/tool/binary）
+- `msg_type`：记录类型（text/think/tool-call/tool-result/binary）
 - `content`：原文（非文本内容或思考内容为反查用的key，由推送方生成，记忆系统处理无区别）
 - `sn`：序号（文件内唯一）
 
@@ -96,14 +97,14 @@
 - 提供追加记录、按时间范围查询等功能
 - 支持JSON Lines格式的高效读写
 
-### 2. SubscriptionManager - 订阅管理器
-- 管理memory-struct-*模块的订阅
-- 当有新数据时，通过HTTPS通知所有订阅者
-- 支持订阅注册、取消、心跳检测
+### 2. WSSNotificationServer - WSS通知服务器
+- 作为WSS服务器，接受memory-struct的连接
+- 维护已连接的memory-struct客户端列表
+- 当有新数据时，通过WSS通知所有已连接的客户端
+- 支持连接管理、心跳检测、断开重连
 
 ### 3. HTTPS API服务器
 - 提供记忆推送API
-- 提供订阅管理API
 
 ## API设计
 
@@ -115,35 +116,55 @@
 - **输出**：ApiResponse&lt;()&gt;
 
 #### 推送思考内容记录
-- **路径**：POST /store/thinking-record
+- **路径**：POST /store/think-record
 - **输入**：ThinkingRecord
 - **输出**：ApiResponse&lt;String&gt;（返回生成的key）
 
-#### 推送工具调用记录
+#### 推送工具调用和或结果记录
 - **路径**：POST /store/tool-record
-- **输入**：ToolRecord
+- **输入**：ToolCallRecord
 - **输出**：ApiResponse&lt;String&gt;（返回生成的key）
 
-### 订阅管理API
+### WSS通知协议
 
-#### 注册订阅
-- **路径**：POST /store/subscribe
-- **输入**：SubscribeRequest（包含回调URL、订阅类型）
-- **输出**：ApiResponse&lt;()&gt;
+#### 连接建立
+- memory-struct作为WSS客户端连接到memory-store
+- 连接时携带struct_name标识自身
 
-#### 取消订阅
-- **路径**：POST /store/unsubscribe
-- **输入**：UnsubscribeRequest（包含回调URL）
-- **输出**：ApiResponse&lt;()&gt;
+#### 通知消息格式
+```json
+{
+  "type": "new-record",
+  "record_type": "channel|think|tool",
+  "agent_id": "agent-id",
+  "role_id": "role-id",
+  "channel_id": "channel-id",
+  "time": "2025-05-09 10:30:00",
+  "sn": 1,
+}
+```
+
+#### 心跳检测
+- 定期发送心跳消息维持连接
+- 心跳消息格式：
+```json
+{
+  "type": "heartbeat",
+  "time": "2025-05-09 10:30:00"
+}
+```
 
 ## 数据结构定义
 
 ### ChannelRecord
 ```rust
 struct ChannelRecord {
+    agent_id: String,
+    role_id: String,
+    channel_id: String,
     user_id: String,
     time: String,      // yyyy-MM-dd HH:mm:ss
-    typo: String,
+    msg_type: String,
     content: String,
 }
 ```
@@ -151,6 +172,8 @@ struct ChannelRecord {
 ### ThinkingRecord
 ```rust
 struct ThinkingRecord {
+    agent_id: String,
+    role_id: String,
     content: String,
     key: String,
     time: String,      // yyyy-MM-dd HH:mm:ss
@@ -160,6 +183,8 @@ struct ThinkingRecord {
 ### ToolRecord
 ```rust
 struct ToolRecord {
+    agent_id: String,
+    role_id: String,
     tool_name: String,
     tool_params: serde_json::Value,
     tool_result: serde_json::Value,
@@ -168,35 +193,39 @@ struct ToolRecord {
 }
 ```
 
-### SubscribeRequest
+### WSSNotification
 ```rust
-struct SubscribeRequest {
-    struct_name: String,
-    callback_url: String,
-}
-```
-
-### UnsubscribeRequest
-```rust
-struct UnsubscribeRequest {
-    struct_name: String,
+enum WSSNotification {
+    NewRecord {
+        record_type: String,  // channel|thinking|tool
+        agent_id: String,
+        role_id: String,
+        channel_id: String,
+        time: String,
+        sn: u64,
+    },
+    Heartbeat {
+        time: String,
+    },
 }
 ```
 
 ## 通信接口
 - **输入**：通过HTTPS API接收agent和channel推送的记忆
-- **输出**：通过HTTPS API返回查询结果，通过HTTPS通知订阅者
-- **文件系统**：与其他记忆模块共享文件系统，调用DirectoryManager进行目录管理
+- **输出**：通过HTTPS API返回查询结果，通过WSS通知已连接的memory-struct
+- **文件系统**：与memory-struct共享文件系统，调用DirectoryManager进行目录管理
 
 ## 实现决策
 - 使用tokio作为异步运行时
 - 使用axum实现HTTPS服务器
+- 使用tokio-tungstenite实现WSS服务器
 - 使用serde进行JSON序列化
 - 使用JSON Lines格式存储记录，便于追加和流式读取
 - 使用DashMap实现高并发数据结构
 - 支持从配置文件加载证书
 - 单例通过关联函数获取
 - 目录自动创建：当需要使用某个日期目录时自动创建
+- WSS连接管理：维护客户端连接状态，支持断线重连
 
 ## 开发计划
 
@@ -212,15 +241,16 @@ struct UnsubscribeRequest {
 - [ ] 实现JSON Lines格式读写
 - [ ] 实现追加记录功能
 
-### 第3阶段：订阅管理
-- [ ] 实现SubscriptionManager
-- [ ] 实现订阅注册和取消
-- [ ] 实现新数据通知机制
-
-### 第4阶段：API实现
+### 第3阶段：API实现
 - [ ] 实现记忆推送API
-- [ ] 实现订阅管理API
 - [ ] HTTPS服务器启动
+
+### 第4阶段：WSS通知服务
+- [ ] 实现WSSNotificationServer
+- [ ] 实现WSS服务器和客户端连接管理
+- [ ] 实现新数据通知机制
+- [ ] 实现心跳检测
+- [ ] WSS服务器启动
 
 ### 第5阶段：测试和完善
 - [ ] 单元测试
