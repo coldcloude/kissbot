@@ -88,8 +88,9 @@
 │   │   │   ├── channel-{channel1-id}-records-{date}.jsonl       # channel1文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
 │   │   │   ├── channel-{channel2-id}-records-{date}.jsonl       # channel2文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
 │   │   │   ├── channel-{channel3-id}-records-{date}.jsonl       # channel3文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
-│   │   │   ├── thinking-records-{date}.jsonl      # 思考内容记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
-│   │   │   └── tool-records-{date}.jsonl          # 工具调用记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   ├── think-records-{date}.jsonl      # 思考内容记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   ├── tool-call-records-{date}.jsonl          # 工具调用记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   └── tool-result-records-{date}.jsonl          # 工具调用结果记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
 │   │   └── ...
 │   └── memory-struct-*/                    # memory-struct-*实现产生的数据
 └── ...
@@ -122,8 +123,8 @@
 - **输出**：ApiResponse&lt;()&gt;
 
 #### 推送思考内容记录
-- **路径**：POST /store/reasoning
-- **输入**：ReasoningRequest
+- **路径**：POST /store/think
+- **输入**：ThinkRequest
 - **输出**：ApiResponse&lt;()&gt;
 
 #### 推送工具调用记录
@@ -151,9 +152,9 @@ struct ChannelRequest {
 }
 ```
 
-### ReasoningRequest
+### ThinkRequest
 ```rust
-struct ReasoningRequest {
+struct ThinkRequest {
     agent_id: String,
     role_id: String,
     content: String,
@@ -189,7 +190,7 @@ struct ToolResultRequest {
 ```rust
 enum WSSNotification {
     NewRecord {
-        record_type: String,  // channel|reasoning|tool-call|tool-result
+        record_type: String,  // channel|think|tool-call|tool-result
         agent_id: String,
         role_id: String,
         channel_id: String,
@@ -212,7 +213,7 @@ enum WSSNotification {
 ```json
 {
   "type": "new-record",
-  "record_type": "channel|reasoning|tool-call|tool-result",
+  "record_type": "channel|think|tool-call|tool-result",
   "agent_id": "agent-id",
   "role_id": "role-id",
   "channel_id": "channel-id",
