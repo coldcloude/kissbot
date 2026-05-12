@@ -41,7 +41,7 @@
 ## 工程模式配置文件示例
 ```json
 {
-    "mode": "engineering",
+    "mode": "project",
     "llm_api": {
         "base_url": "https://api.example.com",
         "api_key": "your-api-key",
@@ -58,7 +58,7 @@
         "url": "https://memory-struct.example.com"
     },
     "memory_ego_https": null,
-    "engineering_config": {
+    "project_config": {
         "workspace_path": "/path/to/workspace",
         "role_setting": "developer",
         "agents_md_path": "/path/to/workspace/AGENTS.md"
@@ -69,7 +69,7 @@
 
 ## 工程模式核心组件
 
-### EngineeringManager - 工程管理器
+### ProjectManager - 工程管理器
 - 与project模块交互
 - 管理工作区目录
 - 读取和应用职位设定
@@ -92,7 +92,7 @@
 - [ ] 实现多个会话的SessionManager
 
 ### 第2阶段：project模块集成
-- [ ] 实现EngineeringManager
+- [ ] 实现ProjectManager
 - [ ] 与project模块集成
 - [ ] 实现工作区目录绑定
 - [ ] 实现职位切换功能

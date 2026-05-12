@@ -16,8 +16,8 @@
 
 ## Agent三种模式
 
-- [问答模式](./kissbot-agent-qa.md) - 问答的过程就是全部内容
-- [工程模式](./kissbot-agent-engineering.md) - 做一件事的持续过程
+- [问答模式](./kissbot-agent-chat.md) - 问答的过程就是全部内容
+- [工程模式](./kissbot-agent-project.md) - 做一件事的持续过程
 - [自主模式](./kissbot-agent-autonomous.md) - 持续收集信息，并与其他人或agent交换信息的持续过程
 
 ## Agent与记忆系统交互设计
@@ -75,8 +75,8 @@
 ### AgentMode
 ```rust
 enum AgentMode {
-    Qa,           // 问答模式
-    Engineering,  // 工程模式
+    Chat,         // 问答模式
+    Project,      // 工程模式
     Autonomous,   // 自主模式
 }
 ```
@@ -135,9 +135,9 @@ struct SystemPromptConfig {
 }
 ```
 
-### EngineeringConfig
+### ProjectConfig
 ```rust
-struct EngineeringConfig {
+struct ProjectConfig {
     workspace_path: String,
     role_setting: String,
     agents_md_path: Option<String>,
@@ -195,7 +195,7 @@ struct AutonomousConfig {
 ### agent配置文件示例
 ```json
 {
-    "mode": "qa",
+    "mode": "chat",
     "llm_api": {
         "base_url": "https://api.example.com",
         "api_key": "your-api-key",
@@ -214,7 +214,7 @@ struct AutonomousConfig {
     "memory_ego_https": {
         "url": "https://memory-ego.example.com"
     },
-    "engineering_config": null,
+    "project_config": null,
     "autonomous_config": null
 }
 ```
@@ -269,6 +269,6 @@ struct AutonomousConfig {
 ---
 
 **注意**：三种模式的具体实现请参考对应文档：
-- [问答模式开发计划](./kissbot-agent-qa.md)
-- [工程模式开发计划](./kissbot-agent-engineering.md)
+- [问答模式开发计划](./kissbot-agent-chat.md)
+- [工程模式开发计划](./kissbot-agent-project.md)
 - [自主模式开发计划](./kissbot-agent-autonomous.md)
