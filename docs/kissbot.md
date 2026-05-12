@@ -141,7 +141,7 @@
 - 记忆不按照channel区分，所有channel的记忆按时间顺序混合存储
 - 问答模式：每个问答会话存一个记忆
 - 工程模式：切分多个会话时，每个会话一个记忆
-- 自主模式：每个agent-id一个记忆
+- 自主模式：每个agent-id有一个无role的记忆，和每个role一个记忆
 - 实现上，一个记忆按日期拆分多个文件存储，按年分多个目录存储
 
 #### 结构化存储文件
@@ -239,8 +239,10 @@ agent元数据有独立的管理模块，用户识别信息、角色扮演信息
 │   ├── metadata.json              # agent元数据
 │   ├── memory-ego/                # memory-ego模块设定信息
 │   ├── memory-store/              # memory-store原始记忆
-│   │   └── {year}/                # 按日期分组
-│   │       ├── channel-records-{date}.jsonl
+│   │   └── {year}-{role-id}/                # 按年和角色分组
+│   │       ├── channel-{channel1}-records-{date}.jsonl
+│   │       ├── channel-{channel2}-records-{date}.jsonl
+│   │       ├── channel-{channel3}-records-{date}.jsonl
 │   │       ├── thinking-records-{date}.jsonl
 │   │       └── tool-records-{date}.jsonl
 │   └── memory-struct-*/           # memory-struct实现数据

@@ -31,7 +31,7 @@ memory-struct模块负责提供框架，实际的memory-struct由单独的模块
 通信方式：
 （1）agent作为wss客户端连接channel
 （2）agent和channel作为https客户端连接memory-store
-（3）memory-store和memory-struct共同读写一个文件系统，同时memory-store有新数据时，要通过HTTPS通知注册的各memory-struct
+（3）memory-store和memory-struct共同读写一个文件系统，同时memory-store有新数据时，要通过WSS通知各已连接的memory-struct
 （4）agent作为https客户端连接memory-struct（通过memory-struct提供的tool）
 （5）agent-config从web前端通过HTTPS访问agent后端
 （6）memory-manage从web前端通过HTTPS访问memory-store后端

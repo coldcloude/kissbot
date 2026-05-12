@@ -7,7 +7,7 @@
 - 收集agent和channel的全部原始消息
 - 按统一方式管理三种agent模式下的记忆
 - 将记忆结构化存储为三个记忆存储文件
-- 提供HTTPS API接口供其他模块查询和推送记忆
+- 提供HTTPS API接口供其他模块推送记忆
 - 当有新数据时，通过HTTPS通知注册的memory-struct模块
 - 调用memory基础模块的DirectoryManager进行目录管理
 
@@ -15,8 +15,8 @@
 
 ### 1. Channel消息
 - 包含channel中的全部文本内容
-- 非文本内容（图片、音频、视频、二进制文件等）以附件形式存储在channel本地
-- 记忆中仅存储用于反查非文本内容的key
+- 非文本内容（图片、音频、视频、二进制文件等）以附件形式存储在channel本地，文本为用于反查的key
+- 非文本内容在channel推送给记忆系统前做上述转换，记忆系统对其采用和普通文本相同的处理方式
 - 由channel发送给记忆系统
 
 ### 2. 大模型输出
@@ -26,7 +26,7 @@
 - **生成的非文本内容**：全文发送至channel，由channel发送至记忆系统
 
 ### 3. 工具输出
-- 仅包含工具API直接返回的内容，不包含副产物（如工具写入的文件等）
+- 仅包含tool call直接返回的内容，不包含副产物（如工具写入的文件等）
 - 全文发送至记忆系统，将摘要信息和调用指令的key发送至channel
 - 特殊情况：由记忆工具输出的内容不再发送记忆系统
 - 工具输出没有独立的key，应和工具调用指令（含key）一并存储
@@ -35,28 +35,28 @@
 
 ### 存储组织
 - 记忆不按照channel区分，所有channel的记忆按时间顺序混合存储
-- **问答模式**：每个问答会话存一个记忆
+- **问答模式**：每个问答一个会话，存一个记忆
 - **工程模式**：切分多个会话时，每个会话一个记忆
-- **自主模式**：每个agent-id一个记忆
+- **自主模式**：每个agent-id有一个无role的记忆，和每个role一个记忆
 - 实现上，一个记忆按日期拆分多个文件或目录存储
 
 ### 结构化存储文件
-根据记忆来源，每个记忆形成3个记忆存储文件，文件内按时间顺序存储一条条记录：
+根据记忆来源，每个记忆形成多个记忆存储文件，文件内按时间顺序存储一条条记录：
 
 #### 1. channel文本记录文件
-存储channel内的文本内容，每条记录包含：
-- `channel_id`：channel标识
-- `user_id`：用户标识
-- `is_agent_self`：是否为agent自己
-- `timestamp`：时间戳（格式：yyyy-MM-dd HH:mm:ss）
-- `sequence`：序号
-- `content`：原文（非文本内容或思考内容为反查用的key）
+存储channel内的文本内容，每个channel单独文件，每条记录包含：
+- `user_id`：用户标识（自己发送的消息留空字符串）
+- `time`：时间戳（格式：yyyy-MM-dd HH:mm:ss）
+- `typo`：记录类型（channel/thinking/tool/binary）
+- `content`：原文（非文本内容或思考内容为反查用的key，由推送方生成，记忆系统处理无区别）
+- `sn`：序号（文件内唯一）
 
 #### 2. 思考内容记录文件
 存储思考内容原文，每条记录包含：
 - `content`：原文
 - `key`：反查用的key
-- `timestamp`：时间戳
+- `time`：时间戳（格式：yyyy-MM-dd HH:mm:ss）
+- `sn`：序号（文件内唯一）
 
 #### 3. 工具调用记录文件
 存储工具调用和返回信息，每条记录包含：
@@ -64,7 +64,8 @@
 - `tool_params`：工具参数
 - `tool_result`：工具返回结果
 - `key`：反查用的key
-- `timestamp`：时间戳
+- `time`：时间戳（格式：yyyy-MM-dd HH:mm:ss）
+- `sn`：序号（文件内唯一）
 
 ## 文件存储目录结构
 根据记忆系统的文件存储目录设计：
@@ -76,10 +77,12 @@
 │   ├── metadata.json                       # agent元数据JSON文件
 │   ├── memory-ego/                         # memory-ego模块的设定信息
 │   ├── memory-store/                       # memory-store收集的原始记忆
-│   │   ├── {date}/                         # 按日期分组（格式：yyyy-MM-dd）
-│   │   │   ├── channel-records.jsonl       # channel文本记录（JSON Lines格式）
-│   │   │   ├── thinking-records.jsonl      # 思考内容记录（JSON Lines格式）
-│   │   │   └── tool-records.jsonl          # 工具调用记录（JSON Lines格式）
+│   │   ├── {year}-{role-id}/                         # 按年和角色分组（年格式：yyyy）
+│   │   │   ├── channel-{channel1-id}-records-{date}.jsonl       # channel1文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   ├── channel-{channel2-id}-records-{date}.jsonl       # channel2文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   ├── channel-{channel3-id}-records-{date}.jsonl       # channel3文本记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   ├── thinking-records-{date}.jsonl      # 思考内容记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
+│   │   │   └── tool-records-{date}.jsonl          # 工具调用记录（JSON Lines格式）（日期格式：yyyy-MM-dd）
 │   │   └── ...
 │   └── memory-struct-*/                    # memory-struct-*实现产生的数据
 └── ...
@@ -93,18 +96,13 @@
 - 提供追加记录、按时间范围查询等功能
 - 支持JSON Lines格式的高效读写
 
-### 2. KeyGenerator - Key生成器
-- 生成唯一的key用于反查
-- key格式：`{type}-{timestamp}-{uuid}`（type: thinking/tool）
-
-### 3. SubscriptionManager - 订阅管理器
-- 管理memory-struct模块的订阅
+### 2. SubscriptionManager - 订阅管理器
+- 管理memory-struct-*模块的订阅
 - 当有新数据时，通过HTTPS通知所有订阅者
 - 支持订阅注册、取消、心跳检测
 
-### 4. HTTPS API服务器
+### 3. HTTPS API服务器
 - 提供记忆推送API
-- 提供记忆查询API
 - 提供订阅管理API
 
 ## API设计
@@ -126,23 +124,6 @@
 - **输入**：ToolRecord
 - **输出**：ApiResponse&lt;String&gt;（返回生成的key）
 
-### 记忆查询API
-
-#### 查询Channel文本记录
-- **路径**：POST /store/query-channel
-- **输入**：QueryChannelRequest（包含时间范围、channel_id等过滤条件）
-- **输出**：ApiResponse&lt;Vec&lt;ChannelRecord&gt;&gt;
-
-#### 查询思考内容记录
-- **路径**：POST /store/query-thinking
-- **输入**：QueryThinkingRequest（包含key、时间范围等过滤条件）
-- **输出**：ApiResponse&lt;Vec&lt;ThinkingRecord&gt;&gt;
-
-#### 查询工具调用记录
-- **路径**：POST /store/query-tool
-- **输入**：QueryToolRequest（包含key、时间范围等过滤条件）
-- **输出**：ApiResponse&lt;Vec&lt;ToolRecord&gt;&gt;
-
 ### 订阅管理API
 
 #### 注册订阅
@@ -155,21 +136,14 @@
 - **输入**：UnsubscribeRequest（包含回调URL）
 - **输出**：ApiResponse&lt;()&gt;
 
-#### 列出订阅
-- **路径**：GET /store/subscriptions
-- **输入**：无
-- **输出**：ApiResponse&lt;Vec&lt;Subscription&gt;&gt;
-
 ## 数据结构定义
 
 ### ChannelRecord
 ```rust
 struct ChannelRecord {
-    channel_id: String,
     user_id: String,
-    is_agent_self: bool,
-    timestamp: String,      // yyyy-MM-dd HH:mm:ss
-    sequence: u64,
+    time: String,      // yyyy-MM-dd HH:mm:ss
+    typo: String,
     content: String,
 }
 ```
@@ -179,7 +153,7 @@ struct ChannelRecord {
 struct ThinkingRecord {
     content: String,
     key: String,
-    timestamp: String,      // yyyy-MM-dd HH:mm:ss
+    time: String,      // yyyy-MM-dd HH:mm:ss
 }
 ```
 
@@ -190,58 +164,22 @@ struct ToolRecord {
     tool_params: serde_json::Value,
     tool_result: serde_json::Value,
     key: String,
-    timestamp: String,      // yyyy-MM-dd HH:mm:ss
-}
-```
-
-### QueryChannelRequest
-```rust
-struct QueryChannelRequest {
-    agent_id: String,
-    start_time: Option&lt;String&gt;,    // yyyy-MM-dd HH:mm:ss
-    end_time: Option&lt;String&gt;,      // yyyy-MM-dd HH:mm:ss
-    channel_ids: Option&lt;Vec&lt;String&gt;&gt;,
-    limit: Option&lt;usize&gt;,
-}
-```
-
-### QueryThinkingRequest
-```rust
-struct QueryThinkingRequest {
-    agent_id: String,
-    keys: Option&lt;Vec&lt;String&gt;&gt;,
-    start_time: Option&lt;String&gt;,
-    end_time: Option&lt;String&gt;,
-    limit: Option&lt;usize&gt;,
-}
-```
-
-### QueryToolRequest
-```rust
-struct QueryToolRequest {
-    agent_id: String,
-    keys: Option&lt;Vec&lt;String&gt;&gt;,
-    start_time: Option&lt;String&gt;,
-    end_time: Option&lt;String&gt;,
-    limit: Option&lt;usize&gt;,
+    time: String,      // yyyy-MM-dd HH:mm:ss
 }
 ```
 
 ### SubscribeRequest
 ```rust
 struct SubscribeRequest {
+    struct_name: String,
     callback_url: String,
-    subscribe_types: Vec&lt;SubscribeType&gt;,  // Channel/Thinking/Tool
 }
 ```
 
-### Subscription
+### UnsubscribeRequest
 ```rust
-struct Subscription {
-    callback_url: String,
-    subscribe_types: Vec&lt;SubscribeType&gt;,
-    registered_at: String,
-    last_heartbeat: Option&lt;String&gt;,
+struct UnsubscribeRequest {
+    struct_name: String,
 }
 ```
 
@@ -273,17 +211,14 @@ struct Subscription {
 - [ ] 按日期自动创建目录和文件
 - [ ] 实现JSON Lines格式读写
 - [ ] 实现追加记录功能
-- [ ] 实现按时间范围查询功能
 
-### 第3阶段：Key生成和订阅管理
-- [ ] 实现KeyGenerator
+### 第3阶段：订阅管理
 - [ ] 实现SubscriptionManager
 - [ ] 实现订阅注册和取消
 - [ ] 实现新数据通知机制
 
 ### 第4阶段：API实现
 - [ ] 实现记忆推送API
-- [ ] 实现记忆查询API
 - [ ] 实现订阅管理API
 - [ ] HTTPS服务器启动
 
