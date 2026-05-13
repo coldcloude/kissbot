@@ -2,6 +2,7 @@ mod error;
 mod config;
 mod record;
 mod api;
+mod data;
 
 use tokio::net::TcpListener;
 

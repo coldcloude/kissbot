@@ -1,4 +1,4 @@
-use dashmap::DashMap;
+﻿use dashmap::DashMap;
 use kissbot_memory::DirectoryManager;
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
@@ -7,80 +7,9 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
+use crate::data::{ChannelRecord, ThinkRecord, ToolCallRecord, ToolResultRecord};
 use crate::error::Result;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub channel_id: String,
-    pub user_id: String,
-    pub time: String,
-    pub msg_type: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRecord {
-    pub user_id: Arc<String>,
-    pub time: Arc<String>,
-    pub msg_type: Arc<String>,
-    pub content: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkingRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub content: String,
-    pub key: String,
-    pub time: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkingRecord {
-    pub content: Arc<String>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub tool_name: String,
-    pub tool_params: serde_json::Value,
-    pub key: String,
-    pub time: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRecord {
-    pub tool_name: Arc<String>,
-    pub tool_params: Arc<serde_json::Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub tool_result: serde_json::Value,
-    pub key: String,
-    pub time: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRecord {
-    pub tool_result: Arc<serde_json::Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
+use kissbot_api::store::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ChannelRecordKey {
@@ -151,7 +80,7 @@ async fn load_existing_sn(file_path: &PathBuf) -> Result<u64> {
 
 pub struct RecordManager {
     channel_states: DashMap<ChannelRecordKey, FileState>,
-    thinking_states: DashMap<RecordKey, FileState>,
+    think_states: DashMap<RecordKey, FileState>,
     tool_call_states: DashMap<RecordKey, FileState>,
     tool_result_states: DashMap<RecordKey, FileState>,
 }
@@ -162,7 +91,7 @@ impl RecordManager {
     pub fn new() -> Self {
         Self {
             channel_states: DashMap::new(),
-            thinking_states: DashMap::new(),
+            think_states: DashMap::new(),
             tool_call_states: DashMap::new(),
             tool_result_states: DashMap::new(),
         }
@@ -214,17 +143,17 @@ impl RecordManager {
         Ok(sn)
     }
 
-    pub async fn append_thinking_record(&self, record: ThinkingRequest) -> Result<u64> {
+    pub async fn append_think_record(&self, record: ThinkRequest) -> Result<u64> {
         let year_role_dir = ensure_year_role_dir(&record.agent_id, &record.role_name, &record.time).await?;
         let date = parse_date_from_time(&record.time);
-        let file_path = year_role_dir.join(format!("thinking-records-{}.jsonl", date));
+        let file_path = year_role_dir.join(format!("think-records-{}.jsonl", date));
         let key = RecordKey {
             agent_id: Arc::new(record.agent_id),
             role_id: Arc::new(record.role_name),
             date: Arc::new(date),
         };
 
-        let lock = get_lock(&self.thinking_states, &key).await;
+        let lock = get_lock(&self.think_states, &key).await;
         let mut gaurd = lock.lock().await;
 
         let sn = if let Some(old_sn) = *gaurd {
@@ -233,7 +162,7 @@ impl RecordManager {
             load_existing_sn(&file_path).await?
         };
 
-        let record = ThinkingRecord {
+        let record = ThinkRecord {
             content: Arc::new(record.content),
             key: Arc::new(record.key),
             time: Arc::new(record.time),
