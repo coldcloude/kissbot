@@ -144,7 +144,7 @@ struct OutgoingMessage {
     target_user_id: Option<String>,  // None表示广播
     content: String,
     attachments: Vec<AttachmentRef>,
-    thinking_key: Option<String>,
+    think_key: Option<String>,
     tool_call_keys: Vec<String>,
 }
 ```
@@ -374,7 +374,7 @@ struct AttachmentKeyRequest {
                 "storage_path": "/path/to/file"
             }
         ],
-        "thinking_key": "thinking-20240101-123456",
+        "think_key": "think-20240101-123456",
         "tool_call_keys": ["tool-20240101-789012"]
     }
 }

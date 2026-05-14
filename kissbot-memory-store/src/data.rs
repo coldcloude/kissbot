@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use std::{cmp::Ordering, sync::Arc};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kissbot_api::*;
 
@@ -37,6 +37,43 @@ pub struct ToolResultRecord {
     pub time: Arc<String>,
     pub sn: u64,
 }
+
+pub trait Record: Serialize + DeserializeOwned {
+    fn sn(&self) -> u64;
+    fn set_sn(&mut self, sn: u64);
+    fn time(&self) -> Arc<String>;
+    fn cmp(&self, other: &Self) -> Ordering {
+        let sign = self.time().as_str().cmp(other.time().as_str());
+        if sign == Ordering::Equal {
+            self.sn().cmp(&other.sn())
+        } else {
+            sign
+        }
+    }
+}
+
+macro_rules! impl_record {
+    ($($t:ty),*) => {
+        $(impl Record for $t {
+            fn sn(&self) -> u64 {
+                self.sn
+            }
+            fn set_sn(&mut self, sn: u64) {
+                self.sn = sn;
+            }
+            fn time(&self) -> Arc<String> {
+                self.time.clone()
+            }
+        })*
+    };
+}
+
+impl_record!(
+    ChannelRecord,
+    ThinkRecord,
+    ToolCallRecord,
+    ToolResultRecord
+);
 
 pub type ChannelRecordResult = ChannelRecordGeneric<SyncString>;
 

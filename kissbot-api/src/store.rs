@@ -16,12 +16,24 @@ pub struct ChannelRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelRequests {
+    pub requests: Vec<ChannelRequest>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
     pub agent_id: String,
     pub role_name: String,
     pub content: String,
     pub key: String,
     pub time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkRequests {
+    pub requests: Vec<ThinkRequest>,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,12 +47,24 @@ pub struct ToolCallRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRequests {
+    pub requests: Vec<ToolCallRequest>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRequest {
     pub agent_id: String,
     pub role_name: String,
     pub tool_result: serde_json::Value,
     pub key: String,
     pub time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResultRequests {
+    pub requests: Vec<ToolResultRequest>,
+    pub force: bool,
 }
 
 // ========== ValueKind trait for serde_json::Value abstraction ==========

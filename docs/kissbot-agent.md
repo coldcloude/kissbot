@@ -101,7 +101,7 @@ enum Message {
     },
     Assistant {
         content: String,
-        thinking_key: Option<String>,
+        think_key: Option<String>,
         tool_call_keys: Vec<String>,
         timestamp: String,
     },

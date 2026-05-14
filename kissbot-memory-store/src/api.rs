@@ -17,10 +17,10 @@ pub fn create_router() -> Router {
         .route("/store/tool-result", post(append_tool_result_record))
 }
 
-async fn append_channel_record(Json(req): Json<store::ChannelRequest>) -> impl IntoResponse {
+async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_channel_record(req).await
+        record_manager.append_channel_record(req.requests, req.force).await
     };
 
     match result {
@@ -29,10 +29,10 @@ async fn append_channel_record(Json(req): Json<store::ChannelRequest>) -> impl I
     }
 }
 
-async fn append_think_record(Json(req): Json<store::ThinkRequest>) -> impl IntoResponse {
+async fn append_think_record(Json(req): Json<store::ThinkRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_think_record(req).await
+        record_manager.append_think_record(req.requests, req.force).await
     };
 
     match result {
@@ -41,10 +41,10 @@ async fn append_think_record(Json(req): Json<store::ThinkRequest>) -> impl IntoR
     }
 }
 
-async fn append_tool_call_record(Json(req): Json<store::ToolCallRequest>) -> impl IntoResponse {
+async fn append_tool_call_record(Json(req): Json<store::ToolCallRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_tool_call_record(req).await
+        record_manager.append_tool_call_record(req.requests, req.force).await
     };
 
     match result {
@@ -53,10 +53,10 @@ async fn append_tool_call_record(Json(req): Json<store::ToolCallRequest>) -> imp
     }
 }
 
-async fn append_tool_result_record(Json(req): Json<store::ToolResultRequest>) -> impl IntoResponse {
+async fn append_tool_result_record(Json(req): Json<store::ToolResultRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_tool_result_record(req).await
+        record_manager.append_tool_result_record(req.requests, req.force).await
     };
 
     match result {
