@@ -67,7 +67,27 @@ pub struct ToolResultRequests {
     pub force: bool,
 }
 
+// ========== Query requests ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryChannelRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub channel_id: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryRequest {
+    pub agent_id: String,
+    pub role_name: String,
+    pub start_time: String,
+    pub end_time: String,
+}
+
 // ========== ValueKind trait for serde_json::Value abstraction ==========
+
 pub trait ValueKind: Clone {
     type Type: Clone;
 }
@@ -87,6 +107,7 @@ impl ValueKind for LocalValue {
 }
 
 // ========== ChannelRecord - Generic with trait bounds ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecordGeneric<S>
 where
@@ -102,23 +123,10 @@ where
     pub sn: u64,
 }
 
-pub trait ChannelRecordKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone;
-}
-
 pub type ChannelRecordEntity = ChannelRecordGeneric<LocalString>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalChannelRecord;
-
-impl ChannelRecordKind<LocalString> for LocalChannelRecord {
-    type Type = ChannelRecordEntity;
-}
-
 // ========== ThinkRecord - Generic with trait bounds ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRecordGeneric<S>
 where
@@ -132,23 +140,10 @@ where
     pub sn: u64,
 }
 
-pub trait ThinkRecordKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone;
-}
-
 pub type ThinkRecordEntity = ThinkRecordGeneric<LocalString>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalThinkRecord;
-
-impl ThinkRecordKind<LocalString> for LocalThinkRecord {
-    type Type = ThinkRecordEntity;
-}
-
 // ========== ToolCallRecord - Generic with trait bounds ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecordGeneric<S, V>
 where
@@ -164,24 +159,10 @@ where
     pub sn: u64,
 }
 
-pub trait ToolCallRecordKind<S, V>
-where
-    S: StringKind,
-    V: ValueKind,
-{
-    type Type: Clone;
-}
-
 pub type ToolCallRecordEntity = ToolCallRecordGeneric<LocalString, LocalValue>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalToolCallRecord;
-
-impl ToolCallRecordKind<LocalString, LocalValue> for LocalToolCallRecord {
-    type Type = ToolCallRecordEntity;
-}
-
 // ========== ToolResultRecord - Generic with trait bounds ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecordGeneric<S, V>
 where
@@ -196,19 +177,4 @@ where
     pub sn: u64,
 }
 
-pub trait ToolResultRecordKind<S, V>
-where
-    S: StringKind,
-    V: ValueKind,
-{
-    type Type: Clone;
-}
-
 pub type ToolResultRecordEntity = ToolResultRecordGeneric<LocalString, LocalValue>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalToolResultRecord;
-
-impl ToolResultRecordKind<LocalString, LocalValue> for LocalToolResultRecord {
-    type Type = ToolResultRecordEntity;
-}

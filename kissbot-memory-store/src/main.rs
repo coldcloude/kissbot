@@ -3,6 +3,7 @@ mod config;
 mod record;
 mod api;
 mod data;
+mod index;
 
 use tokio::net::TcpListener;
 
