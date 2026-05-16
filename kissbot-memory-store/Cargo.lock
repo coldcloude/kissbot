@@ -625,7 +625,11 @@ dependencies = [
 name = "kissbot-memory"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "config",
+ "dashmap",
+ "kai-file",
+ "kissbot-api",
  "serde",
  "serde_json",
  "thiserror",

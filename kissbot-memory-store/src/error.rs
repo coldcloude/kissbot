@@ -20,9 +20,6 @@ pub enum Error {
     #[error("UTF8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
 
-    #[error("Parse date error: {0}")]
-    ParseDate(#[from] chrono::ParseError),
-
     #[error("Record not in order: latest='{0}' new='{1}'")]
     RecordNotInOrder(String, String),
 }

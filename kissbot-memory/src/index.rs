@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use std::collections::{BTreeMap, LinkedList};
 
-use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, FilePathGenerator, QueryParser, Record, RecordCombiner, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult};
+use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, FileKey, FilePathGenerator, QueryParser, Record, RecordCombiner, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult};
 use crate::error::Result;
 use kai_file::ReverseLineReader;
 
@@ -23,7 +23,7 @@ type FileIndexLock = Arc<RwLock<BTreeMap<String, FilePosition>>>;
 
 struct FileIndexContext<Q,K,R,RR,P>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Eq + Hash + Clone + FileKey + Send + Sync,
     R: Record,
     RR: Serialize,
     P: FilePathGenerator<K> + QueryParser<Q,K>,
@@ -37,7 +37,7 @@ where
 
 impl<Q,K,R,RR,P> FileIndexContext<Q,K,R,RR,P>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Eq + Hash + Clone + FileKey + Send + Sync,
     R: Record,
     RR: Serialize,
     P: FilePathGenerator<K> + QueryParser<Q,K> + RecordCombiner<K,R,RR>,

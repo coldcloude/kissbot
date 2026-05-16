@@ -766,6 +766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kai-file"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "kai-index"
 version = "0.1.0"
 dependencies = [
@@ -789,7 +797,11 @@ dependencies = [
 name = "kissbot-memory"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "config",
+ "dashmap",
+ "kai-file",
+ "kissbot-api",
  "serde",
  "serde_json",
  "thiserror",

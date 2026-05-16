@@ -1,14 +1,14 @@
 use std::{cmp::Ordering, path::PathBuf, sync::Arc};
 
 use chrono::{Duration, NaiveDate};
-use kissbot_memory::DirectoryManager;
+use crate::DirectoryManager;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kissbot_api::*;
 
 use crate::error::Result;
 
-pub(crate) trait FileHook<K> {
+pub trait FileHook<K> {
     fn on_append(&self, key: &K);
     fn on_force_append(&self, key: &K);
 }
@@ -16,7 +16,7 @@ pub(crate) trait FileHook<K> {
 //===================== Record in file ======================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ChannelRecord {
+pub struct ChannelRecord {
     pub user_id: Arc<String>,
     pub time: Arc<String>,
     pub msg_type: Arc<String>,
@@ -25,7 +25,7 @@ pub(crate) struct ChannelRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ThinkRecord {
+pub struct ThinkRecord {
     pub content: Arc<String>,
     pub key: Arc<String>,
     pub time: Arc<String>,
@@ -33,7 +33,7 @@ pub(crate) struct ThinkRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ToolCallRecord {
+pub struct ToolCallRecord {
     pub tool_name: Arc<String>,
     pub tool_params: Arc<serde_json::Value>,
     pub key: Arc<String>,
@@ -42,14 +42,14 @@ pub(crate) struct ToolCallRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ToolResultRecord {
+pub struct ToolResultRecord {
     pub tool_result: Arc<serde_json::Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
 }
 
-pub(crate) trait Record: Serialize + DeserializeOwned {
+pub trait Record: Serialize + DeserializeOwned {
     fn sn(&self) -> u64;
     fn set_sn(&mut self, sn: u64);
     fn time(&self) -> Arc<String>;
@@ -89,7 +89,7 @@ impl_record!(
 //===================== Record file key ======================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) struct ChannelRecordKey {
+pub struct ChannelRecordKey {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub channel_id: Arc<String>,
@@ -97,11 +97,38 @@ pub(crate) struct ChannelRecordKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub(crate) struct RecordKey {
+pub struct RecordKey {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub date: Arc<String>,
 }
+
+pub trait FileKey {
+    fn agent_id(&self) -> &str;
+    fn role_name(&self) -> &str;
+    fn date(&self) -> &str;
+}
+
+macro_rules! impl_file_key {
+    ($($t:ty),*) => {
+        $(impl FileKey for $t {
+            fn agent_id(&self) -> &str {
+                self.agent_id.as_str()
+            }
+            fn role_name(&self) -> &str {
+                self.role_name.as_str()
+            }
+            fn date(&self) -> &str {
+                self.date.as_str()
+            }
+        })*
+    };
+}
+
+impl_file_key!(
+    ChannelRecordKey,
+    RecordKey
+);
 
 //===================== Record result ======================
 
@@ -115,11 +142,11 @@ pub type ToolResultRecordResult = ToolResultRecordGeneric<SyncString, SyncValue>
 
 //===================== functions ======================
 
-fn parse_date_from_time(time: &str) -> String {
+pub fn parse_date_from_time(time: &str) -> String {
     time[0..10].to_string()
 }
 
-fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
+pub fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")?;
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")?;
 
@@ -132,7 +159,7 @@ fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
     Ok(dates)
 }
 
-fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)>> {
+pub fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)>> {
     let start_date = parse_date_from_time(start);
     let end_date = parse_date_from_time(end);
     let internal_dates = get_internal_dates(start, end)?;
@@ -146,7 +173,7 @@ fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)
     Ok(segments)
 }
 
-async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> Result<PathBuf> {
+pub async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> Result<PathBuf> {
     let year = &date[0..4];
     let store_dir = DirectoryManager::get().ensure_agent_store_dir(agent_id).await?;
     let year_role_dir = if role_name.is_empty() {
@@ -162,26 +189,35 @@ async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> Re
     Ok(year_role_dir)
 }
 
-pub(crate) trait FilePathGenerator<K> {
-    async fn ensure_file_path(&self, key: &K) -> Result<PathBuf>;
+pub trait FilePathGenerator<K>
+where
+    K: FileKey,
+{
+    fn get_file_name(&self, key: &K) -> String;
+    async fn ensure_file_path(&self, key: &K) -> Result<PathBuf> {
+        let year_role_dir = ensure_year_role_dir(key.agent_id(), key.role_name(), key.date()).await?;
+        let file_name = self.get_file_name(key);
+        let file_path = year_role_dir.join(file_name);
+        Ok(file_path)
+    }
 }
 
-pub(crate) trait RequestParser<Q,K,R>
+pub trait RequestParser<Q,K,R>
 where
     R: Record,
 {
     fn parse_request(&self, request: Q) -> (K, R);
 }
 
-pub(crate) trait QueryParser<Q,K> {
+pub trait QueryParser<Q,K> {
     fn parse_query(&self, query: Q) -> Vec<(K, (String, String))>;
 }
 
-pub(crate) trait RecordCombiner<K,R,RR> {
+pub trait RecordCombiner<K,R,RR> {
     fn combine_record(&self, key: &K, record: &R) -> RR;
 }
 
-fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
     let mut results = Vec::new();
     if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
         for time in date_times {
@@ -196,13 +232,11 @@ fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
     results
 }
 
-pub(crate) struct ChannelParser;
+pub struct ChannelParser;
 
 impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
-    async fn ensure_file_path(&self, key: &ChannelRecordKey) -> Result<PathBuf> {
-        let year_role_dir = ensure_year_role_dir(&key.agent_id, &key.role_name, &key.date).await?;
-        let file_path = year_role_dir.join(format!("channel-{}-records-{}.jsonl", &key.channel_id, &key.date));
-        Ok(file_path)
+    fn get_file_name(&self, key: &ChannelRecordKey) -> String {
+        format!("channel-{}-records-{}.jsonl", &key.channel_id, &key.date)
     }
 }
 
@@ -261,13 +295,11 @@ impl RecordCombiner<ChannelRecordKey, ChannelRecord, ChannelRecordResult> for Ch
     }
 }
 
-pub(crate) struct ThinkParser;
+pub struct ThinkParser;
 
 impl FilePathGenerator<RecordKey> for ThinkParser {
-    async fn ensure_file_path(&self, key: &RecordKey) -> Result<PathBuf> {
-        let year_role_dir = ensure_year_role_dir(&key.agent_id, &key.role_name, &key.date).await?;
-        let file_path = year_role_dir.join(format!("think-records-{}.jsonl", key.date));
-        Ok(file_path)
+    fn get_file_name(&self, key: &RecordKey) -> String {
+        format!("think-records-{}.jsonl", key.date)
     }
 }
 
@@ -307,13 +339,11 @@ impl RecordCombiner<RecordKey, ThinkRecord, ThinkRecordResult> for ThinkParser {
     }
 }
 
-pub(crate) struct ToolCallParser;
+pub struct ToolCallParser;
 
 impl FilePathGenerator<RecordKey> for ToolCallParser {
-    async fn ensure_file_path(&self, key: &RecordKey) -> Result<PathBuf> {
-        let year_role_dir = ensure_year_role_dir(&key.agent_id, &key.role_name, &key.date).await?;
-        let file_path = year_role_dir.join(format!("tool-call-records-{}.jsonl", key.date));
-        Ok(file_path)
+    fn get_file_name(&self, key: &RecordKey) -> String {
+        format!("tool-call-records-{}.jsonl", key.date)
     }
 }
 
@@ -355,13 +385,11 @@ impl RecordCombiner<RecordKey, ToolCallRecord, ToolCallRecordResult> for ToolCal
     }
 }
 
-pub(crate) struct ToolResultParser;
+pub struct ToolResultParser;
 
 impl FilePathGenerator<RecordKey> for ToolResultParser {
-    async fn ensure_file_path(&self, key: &RecordKey) -> Result<PathBuf> {
-        let year_role_dir = ensure_year_role_dir(&key.agent_id, &key.role_name, &key.date).await?;
-        let file_path = year_role_dir.join(format!("tool-result-records-{}.jsonl", key.date));
-        Ok(file_path)
+    fn get_file_name(&self, key: &RecordKey) -> String {
+        format!("tool-result-records-{}.jsonl", key.date)
     }
 }
 

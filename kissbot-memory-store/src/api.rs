@@ -8,7 +8,7 @@
 
 use kissbot_api::*;
 use crate::record::RecordManager;
-use crate::index::MemoryIndexer;
+use kissbot_memory::index::MemoryIndexer;
 
 pub fn create_router() -> Router {
     Router::new()

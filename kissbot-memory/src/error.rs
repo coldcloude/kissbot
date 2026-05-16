@@ -11,6 +11,12 @@ pub enum Error {
     #[error("Config error: {0}")]
     Config(#[from] config::ConfigError),
 
+    #[error("Parse date error: {0}")]
+    ParseDate(#[from] chrono::ParseError),
+
+    #[error("File error: {0}")]
+    File(#[from] kai_file::Error),
+
     #[error("Path not exist: {0}")]
     PathNotExist(String),
 }

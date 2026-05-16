@@ -7,10 +7,10 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, FilePathGenerator, Record, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord};
-use crate::error::{Error, Result};
-use crate::index::MemoryIndexer;
+use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, FileKey, FilePathGenerator, Record, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord};
+use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::store::*;
+use crate::error::{Error, Result};
 use kai_file::ReverseLineReader;
 
 struct FileState {
@@ -70,7 +70,7 @@ async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
 
 struct RecordContext<Q,K,R,P>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Eq + Hash + Clone + FileKey + Send + Sync,
     R: Record,
     P: RequestParser<Q,K,R> + FilePathGenerator<K>,
 {
@@ -81,7 +81,7 @@ where
 
 impl<Q,K,R,P> RecordContext<Q,K,R,P>
 where
-    K: Eq + Hash + Clone + Send + Sync,
+    K: Eq + Hash + Clone + FileKey + Send + Sync,
     R: Record,
     P: RequestParser<Q,K,R> + FilePathGenerator<K>,
 {
