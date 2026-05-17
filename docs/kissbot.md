@@ -116,12 +116,12 @@
 - [x] 模块架构设计
 - [x] 定义记忆存储目录结构
 - [x] 提供基础库供其他记忆模块使用
+- [x] 实现记忆原文按时间索引搜索
 
 ### 第3阶段：memory-store实现
-- [ ] 模块架构设计
-- [ ] 三种记录类型的存储（JSON Lines格式）
-- [ ] HTTPS API接口（推送、查询）
-- [ ] 订阅/通知机制
+- [x] 模块架构设计
+- [x] 三种记录类型的存储（JSON Lines格式）
+- [x] 记忆推送HTTPS API接口
 
 ### 第4阶段：channel实现
 - [ ] 模块架构设计
@@ -132,11 +132,12 @@
 - [ ] channel-web后台实现
 - [ ] channel-web-ui前台实现
 
-### 第5阶段：agent实现（自主模式）
+### 第5阶段：agent基础实现
 - [ ] 模块架构设计
-- [ ] 自主模式支持
 - [ ] LLM API集成
 - [ ] WSS客户端与channel集成
+- [ ] agent问答模式实现
+- [ ] agent自主模式实现
 - [ ] 与memory-store的集成
 
 ### 第6阶段：memory-ego实现（基础模式）
@@ -149,30 +150,31 @@
 - [ ] 在AgentMetadata中增加forbidden_items和autonomous_goals字段
 - [ ] 在role-play数据结构中增加autonomous_goals字段
 - [ ] 实现更新禁止事项和自主运行目标的功能和API
-- [ ] 完善metadata.json和role-play-{role-id}.json的读写
 
 ### 第7阶段：memory-struct实现
 - [ ] 模块架构设计
 - [ ] 框架trait定义
-- [ ] memory-struct-recent实现（最近记忆）
-- [ ] 最近记忆HTTPS API和tool
+- [ ] memory-store实现向memory-struct的WSS通知机制
+- [ ] memory-struct-abstract实现（摘要搜索）
+- [ ] 摘要搜索记忆HTTPS API和tool
 
-### 第8阶段：agent实现（自主模式step2）
+### 第8阶段：agent自主模式进阶实现
 - [ ] 与memory-ego的集成
-- [ ] 与memory-struct-recent实现的集成
+- [ ] 与memory-struct-*的集成（非tool）
+- [ ] agent tool call实现
+- [ ] agentic loop实现
 - [ ] 上下文重置功能
 - [ ] 自主运行目标触发机制
 
-### 第9阶段：agent摘要记忆
-- [ ] memory-struct-abstract实现（摘要搜索）
-- [ ] 摘要搜索记忆HTTPS API和tool
-- [ ] agent tool call实现
-- [ ] agentic loop实现
+### 第9阶段：agent skill实现
+- [ ] 渐进披露（Skill）tool实现
+- [ ] 问答模式固定skill集成
+- [ ] 自主模式固定skill集成
 
-### 第10阶段：agent实现（问答模式）
-- [ ] 问答模式支持
-- [ ] 固定skill集成（如web-search）
-- [ ] 不压缩对话历史
+### 第10阶段：memory-ego进阶模式改造
+- [ ] 记忆提取器实现
+- [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
+- [ ] 进阶模式API
 
 ### 第11阶段：UI实现
 - [ ] 模块架构设计
@@ -193,11 +195,6 @@
 - [ ] 工作区目录绑定
 - [ ] 自定义指导文件加载
 - [ ] LLM压缩和记忆丢弃两种上下文压缩方式
-
-### 第14阶段：memory-ego进阶模式改造
-- [ ] 记忆提取器实现
-- [ ] 配置信息与记忆提取结合生成客观设定、角色设定JSON文件
-- [ ] 进阶模式API
 
 ## API 约定
 
