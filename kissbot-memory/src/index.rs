@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use std::collections::{BTreeMap, LinkedList};
 
-use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, FileKey, FilePathGenerator, QueryParser, Record, RecordCombiner, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult};
+use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, FileKey, FilePathGenerator, QueryParser, Record, RecordCombiner, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult, ensure_file_path};
 use crate::error::Result;
 use kai_file::ReverseLineReader;
 
@@ -89,7 +89,7 @@ where
     async fn update_index(&self, key: &K) -> Result<()> {
         let position_map = self.position_map_map.entry(key.clone()).or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())));
         let guard = position_map.write().await;
-        let file_path = self.parser.ensure_file_path(key).await?;
+        let file_path = ensure_file_path(key, &self.parser).await?;
         Self::update(guard, file_path).await
     }
 
@@ -97,7 +97,7 @@ where
         let position_map = self.position_map_map.entry(key.clone()).or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new())));
         let mut guard = position_map.write().await;
         guard.clear();
-        let file_path = self.parser.ensure_file_path(key).await?;
+        let file_path = ensure_file_path(key, &self.parser).await?;
         Self::update(guard, file_path).await
     }
 
@@ -128,7 +128,7 @@ where
             end_pos = Some(position.end_pos);
         }
         if start_pos.is_some() && end_pos.is_some() {
-            let file_path = self.parser.ensure_file_path(key).await?;
+            let file_path = ensure_file_path(key, &self.parser).await?;
             let mut reader = ReverseLineReader::new(file_path, start_pos, end_pos).await?;
             while let Some(line_with_pos) = reader.next_line().await? {
                 let record = serde_json::from_str::<R>(line_with_pos.line.as_str())?;

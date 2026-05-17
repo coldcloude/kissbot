@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, FileKey, FilePathGenerator, Record, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord};
+use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, FileKey, FilePathGenerator, Record, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord, ensure_file_path};
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::store::*;
 use crate::error::{Error, Result};
@@ -107,7 +107,7 @@ where
             let lock = get_lock(&self.states, &key).await;
             let mut gaurd = lock.lock().await;
 
-            let file_path = self.parser.ensure_file_path(&key).await?;
+            let file_path = ensure_file_path(&key, &self.parser).await?;
 
             let mut state = if let Some(old_state) = gaurd.take() {
                 old_state

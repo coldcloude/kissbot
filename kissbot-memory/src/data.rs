@@ -194,12 +194,6 @@ where
     K: FileKey,
 {
     fn get_file_name(&self, key: &K) -> String;
-    async fn ensure_file_path(&self, key: &K) -> Result<PathBuf> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id(), key.role_name(), key.date()).await?;
-        let file_name = self.get_file_name(key);
-        let file_path = year_role_dir.join(file_name);
-        Ok(file_path)
-    }
 }
 
 pub trait RequestParser<Q,K,R>
@@ -215,6 +209,17 @@ pub trait QueryParser<Q,K> {
 
 pub trait RecordCombiner<K,R,RR> {
     fn combine_record(&self, key: &K, record: &R) -> RR;
+}
+
+pub async fn ensure_file_path<K,P>(key: &K, parser: &P) -> Result<PathBuf>
+where
+    K: FileKey,
+    P: FilePathGenerator<K>,
+{
+    let year_role_dir = ensure_year_role_dir(key.agent_id(), key.role_name(), key.date()).await?;
+    let file_name = parser.get_file_name(key);
+    let file_path = year_role_dir.join(file_name);
+    Ok(file_path)
 }
 
 pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
