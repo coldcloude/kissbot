@@ -6,6 +6,7 @@
 ## 职责
 - 定义记忆系统的文件存储目录结构
 - 提供目录管理功能（DirectoryManager）
+- 提供记忆索引和查询功能（MemoryIndexer）
 - 通过程序库方式供其他记忆模块（memory-store、memory-struct-*、memory-ego）使用
 
 ## 文件存储目录结构
@@ -39,6 +40,12 @@
 - ensure_agent_store_dir：确保agent的memory-store目录存在
 - ensure_agent_struct_dir：确保agent的memory-struct-*目录存在
 
+## MemoryIndexer功能
+- 记忆索引管理：为记忆记录构建和维护索引，记录在文件中的位置
+- 索引过期处理：区分小过期（新记录追加）和大过期（文件重写）
+- 记忆查询：支持按时间范围快速查询记忆记录
+- 自动索引重建：当索引过期或不存在时，自动重新构建索引
+
 ## 开发计划
 
 ### 第1阶段：基础结构搭建
@@ -61,7 +68,13 @@
 - [x] 实现目录存在性检查
 - [x] 实现agent列表查询（通过agent-{agent-id}标识文件）
 
-### 第4阶段：开发完成
+### 第4阶段：索引和查询功能实现
+- [x] 实现索引结构（IndexEntry、FileIndex、MemoryIndexer）
+- [x] 实现索引过期管理（小过期、大过期）
+- [x] 实现索引查询功能
+- [x] 实现倒序读行支持位置记录
+
+### 第5阶段：开发完成
 - [x] 模块功能开发完成
-- [x] DirectoryManager单例通过关联函数获取
+- [x] DirectoryManager和MemoryIndexer单例通过关联函数获取
 - [x] 可成功编译

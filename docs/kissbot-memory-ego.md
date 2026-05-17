@@ -44,7 +44,6 @@ agent设计面向多用户环境，具体要求：
 ## 架构设计
 ### 核心组件
 - agent元数据管理器（AgentManager）
-- 自我认知信息管理器（EgoManager）
 - 用户识别信息管理器（UserRecognitionManager）
 - 角色设定管理器（RolePlayManager）
 - HTTPS API服务器
@@ -66,33 +65,6 @@ agent设计面向多用户环境，具体要求：
 - created_at：创建时间（格式：yyyy-MM-dd HH:mm:ss）
 - force_items：agent必须遵守的事项列表（字符串数组）
 - autonomous_goals：agent自主运行目标（字符串）
-
-## Agent元数据操作函数
-- create_agent：创建新的agent，需要name和description，forbidden_items可为空列表，autonomous_goals可为空字符串
-- get_metadata：获取agent元数据
-- update_agent_name：修改agent名称
-- update_agent_description：修改agent描述
-- update_agent_name_description：同时修改agent名称和描述
-- update_force_items：更新agent事项列表
-- update_autonomous_goals：更新agent自主运行目标
-
-## 结构化设计
-
-### 数据结构设计
-除身份识别信息来源于agent元数据（JSON存储）外，用户识别信息、角色扮演、角色扮演关系也采用结构化设计。
-
-### 数据结构实现
-- `Xxx`：内部类型，是 `XxxGeneric` 的实现，包含 `Arc`、`DashMap`、`DashSet` 优化
-- `SyncXxx`：内部类型约束，是 `XxxKind` 的实现，包含 `SyncString`、`SyncMap`、`SyncSet` 优化
-
-### 管理模块设计
-除agent元数据管理模块外，用户识别信息、角色扮演信息、角色扮演关系信息也增加对应的管理模块，包括增加和修改功能。
-
-### 存储机制
-所有内容使用JSON文件存储
-
-### 对外接口设计
-查询数据JSON格式返回
 
 ### 用户识别信息结构
 用户识别信息应为一个列表，列表每项为一个用户，至少包括：
@@ -117,234 +89,42 @@ agent设计面向多用户环境，具体要求：
 - **和其他角色的关系**：一个列表，每项是一个关系，至少包括对方角色名，关系字段
 - **描述字段**（可选）：可以自由填写任意文本
 
+## 结构化设计
+
+### 数据结构设计
+身份识别信息来源于agent元数据，用户识别信息、角色扮演、角色扮演关系采用结构化设计存储与memory-ego目录。
+
+### 数据结构实现
+- `Xxx`：内部类型，是 `XxxGeneric` 的实现，包含 `Arc`、`DashMap`、`DashSet` 优化
+- `SyncXxx`：内部类型约束，是 `XxxKind` 的实现，包含 `SyncString`、`SyncMap`、`SyncSet` 优化
+
+### 管理模块设计
+- agent元数据管理模块
+- 用户识别信息管理模块
+- 角色设定管理模块
+
+### 存储机制
+所有内容使用JSON文件存储
+
+### 对外接口设计
+查询数据JSON格式返回
+
 ## API设计
 
 ### Agent元数据管理接口
-
-#### 新增agent接口
-- **接口**：新增agent
-- **输入**：agent元数据（名称、描述必填，force_items可为空列表，autonomous_goals可为空字符串）
-- **返回**：成功或失败状态
-
-#### 查询agent元数据接口
-- **接口**：按agent ID查询
-- **返回内容**：agent元数据（名称、描述、创建时间、force_items、autonomous_goals等）
-
-#### 查询所有agent列表接口
-- **接口**：查询所有agent
-- **返回内容**：agent元数据列表（并发获取）
-
-#### 修改agent名称接口
-- **接口**：修改agent名称
-- **输入**：agent ID、新名称
-- **返回**：成功或失败状态
-
-#### 修改agent描述接口
-- **接口**：修改agent描述
-- **输入**：agent ID、新描述
-- **返回**：成功或失败状态
-
-#### 同时修改名称和描述接口
-- **接口**：同时修改agent名称和描述
-- **输入**：agent ID、新名称、新描述
-- **返回**：成功或失败状态
-
-#### 按名称搜索agent接口
-- **接口**：按名称搜索agent
-- **输入**：搜索关键词
-- **返回**：匹配的agent ID列表
-
-#### 按描述搜索agent接口
-- **接口**：按描述搜索agent
-- **输入**：搜索关键词
-- **返回**：匹配的agent ID列表
-
-#### 检索agent接口
-- **接口**：根据ID列表检索agent
-- **输入**：agent ID列表
-- **返回**：agent元数据列表
-
-#### agent名称补全接口
-- **接口**：agent名称补全
-- **输入**：前缀关键词
-- **返回**：补全结果列表（包含key和匹配的文本）
-
-#### 复制agent接口
-- **接口**：复制agent
-- **路径**：POST /agent/:agent_id/copy
-- **返回**：成功或失败状态
-
-#### 更新agent必须遵守事项列表接口
-- **接口**：更新agent必须遵守事项列表
-- **路径**：PUT /agent/:agent_id/force-items
-- **输入**：必须遵守的事项字符串数组
-- **返回**：成功或失败状态
-
-#### 更新agent自主运行目标接口
-- **接口**：更新agent自主运行目标
-- **路径**：PUT /agent/:agent_id/autonomous-goals
-- **输入**：自主运行目标字符串（可为空字符串）
-- **返回**：成功或失败状态
+- 提供创建、查询、更新、搜索、复制等管理功能的请求结构
+- 输出统一 ApiResponse 格式
 
 ### 用户识别信息管理接口
-
-#### 获取用户识别信息接口
-- **接口**：获取agent用户识别信息
-- **路径**：GET /agent/:agent_id/users
-- **返回内容**：用户识别信息JSON
-
-#### 获取单个用户信息接口
-- **接口**：获取单个用户信息
-- **路径**：GET /agent/:agent_id/users/:user_name
-- **返回内容**：用户信息JSON
-
-#### 更新用户识别信息接口
-- **接口**：替换用户列表
-- **路径**：PUT /agent/:agent_id/users
-- **输入**：要删除的用户名列表和要新增的用户映射
-- **返回**：成功或失败状态
-
-#### 重命名用户接口
-- **接口**：重命名用户
-- **路径**：PUT /agent/:agent_id/users/:user_name/name
-- **输入**：新用户名
-- **返回**：成功或失败状态
-
-#### 更新用户权限接口
-- **接口**：更新用户权限
-- **路径**：PUT /agent/:agent_id/users/:user_name/privilege
-- **输入**：用户权限
-- **返回**：成功或失败状态
-
-#### 更新用户描述接口
-- **接口**：更新用户描述
-- **路径**：PUT /agent/:agent_id/users/:user_name/description
-- **输入**：用户描述
-- **返回**：成功或失败状态
-
-#### 替换用户标识接口
-- **接口**：替换用户标识
-- **路径**：PUT /agent/:agent_id/users/:user_name/identifiers
-- **输入**：要删除和新增的用户标识
-- **返回**：成功或失败状态
-
-#### 替换用户关系接口
-- **接口**：替换用户关系
-- **路径**：PUT /agent/:agent_id/users/:user_name/relations
-- **输入**：要删除和新增的用户关系
-- **返回**：成功或失败状态
+- 提供用户信息获取、更新、重命名、标识管理等功能的请求结构
+- 输出 UserRecognitionEntity 或 UserEntity 等实体结构
 
 ### 角色设定管理接口
-
-#### 列出所有角色接口
-- **接口**：列出所有角色
-- **路径**：GET /agent/:agent_id/roles
-- **返回内容**：角色名称列表JSON
-
-#### 获取角色信息接口
-- **接口**：获取角色信息
-- **路径**：GET /agent/:agent_id/roles/:role_name
-- **返回内容**：角色信息JSON（包含autonomous_goals）
-
-#### 创建角色接口
-- **接口**：创建新角色
-- **路径**：POST /agent/:agent_id/roles
-- **输入**：角色名称、描述必填，autonomous_goals可为空字符串
-- **返回**：成功或失败状态
-
-#### 从现有角色创建角色接口
-- **接口**：从现有角色创建新角色
-- **路径**：POST /agent/:agent_id/roles/:role_name/create_from
-- **输入**：新角色名
-- **返回**：成功或失败状态
-
-#### 删除角色接口
-- **接口**：删除角色
-- **路径**：DELETE /agent/:agent_id/roles/:role_name
-- **返回**：成功或失败状态
-
-#### 重命名角色接口
-- **接口**：重命名角色
-- **路径**：PUT /agent/:agent_id/roles/:role_name/name
-- **输入**：新角色名
-- **返回**：成功或失败状态
-
-#### 更新角色描述接口
-- **接口**：更新角色描述
-- **路径**：PUT /agent/:agent_id/roles/:role_name/description
-- **输入**：新描述
-- **返回**：成功或失败状态
-
-#### 更新角色自主运行目标接口
-- **接口**：更新角色自主运行目标
-- **路径**：PUT /agent/:agent_id/roles/:role_name/autonomous-goals
-- **输入**：自主运行目标字符串（可为空字符串）
-- **返回**：成功或失败状态
-
-#### 按名称搜索角色接口
-- **接口**：按名称搜索角色
-- **输入**：搜索关键词、可选agent ID（可选）
-- **返回**：匹配的角色key列表
-
-#### 按描述搜索角色接口
-- **接口**：按描述搜索角色
-- **输入**：搜索关键词、可选agent ID（可选）
-- **返回**：匹配的角色key列表
-
-#### 检索角色接口
-- **接口**：根据key列表检索角色
-- **输入**：角色key列表
-- **返回**：角色信息列表
-
-#### 角色名称补全接口
-- **接口**：角色名称补全
-- **输入**：前缀关键词
-- **返回**：补全结果列表（包含key和匹配的文本）
-
-#### 获取单个其他角色接口
-- **接口**：获取单个其他角色信息
-- **路径**：GET /agent/:agent_id/roles/:role_name/other_roles/:other_role_name
-- **返回内容**：其他角色信息JSON
-
-#### 替换其他角色接口
-- **接口**：替换角色中的其他角色
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles
-- **输入**：要删除和新增的其他角色
-- **返回**：成功或失败状态
-
-#### 重命名其他角色接口
-- **接口**：重命名其他角色
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/name
-- **输入**：新名称
-- **返回**：成功或失败状态
-
-#### 更新其他角色用户名接口
-- **接口**：更新其他角色关联的用户名
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/user_name
-- **输入**：新用户名
-- **返回**：成功或失败状态
-
-#### 更新其他角色描述接口
-- **接口**：更新其他角色描述
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/description
-- **输入**：新描述
-- **返回**：成功或失败状态
-
-#### 更新其他角色关系接口
-- **接口**：更新其他角色的主要关系
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relation
-- **输入**：新关系（关系名称和描述）
-- **返回**：成功或失败状态
-
-#### 替换其他角色的关系列表接口
-- **接口**：替换其他角色的关系列表
-- **路径**：PUT /agent/:agent_id/roles/:role_name/other_roles/:other_role_name/relations
-- **输入**：要删除和新增的关系列表
-- **返回**：成功或失败状态
+- 提供角色创建、查询、更新、搜索、关系管理等功能的请求结构
+- 输出 RolePlayEntity、OtherRoleEntity 等实体结构
 
 ## 通信接口
-- 输入：通过HTTPS API接收agent的查询请求
-- 输出：通过HTTPS API返回agent的自我认知信息（JSON格式）
+- 管理API：通过HTTPS API接收agent、user、role相关的管理请求
 - 文件系统：读取配置文件，与其他记忆模块共享文件系统
 
 ## 文件存储目录结构
@@ -388,8 +168,8 @@ agent设计面向多用户环境，具体要求：
 
 ### JSON文件来源
 - 身份识别信息：通过API填写metadata.json
-- 用户识别信息：通过API从外部填写user-recognition.json
-- 角色设定信息：通过API从外部填写role-play-{role-id}.json
+- 用户识别信息：通过API填写user-recognition.json
+- 角色设定信息：通过API填写role-play-{role-id}.json
 
 ### 进阶模式
 - 结合配置信息和从记忆中提取的信息，生成JSON文件

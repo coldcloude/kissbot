@@ -116,92 +116,12 @@
 ## API设计
 
 ### 记忆推送API
+- 提供 ChannelRequests、ThinkRequests、ToolCallRequests、ToolResultRequests 等输入结构
+- 输出统一 ApiResponse 格式
 
-#### 推送Channel文本记录
-- **路径**：POST /store/channel
-- **输入**：ChannelRequest
-- **输出**：ApiResponse&lt;()&gt;
-
-#### 推送思考内容记录
-- **路径**：POST /store/think
-- **输入**：ThinkRequest
-- **输出**：ApiResponse&lt;()&gt;
-
-#### 推送工具调用记录
-- **路径**：POST /store/tool-call
-- **输入**：ToolCallRequest
-- **输出**：ApiResponse&lt;()&gt;
-
-#### 推送工具调用结果记录
-- **路径**：POST /store/tool-result
-- **输入**：ToolResultRequest
-- **输出**：ApiResponse&lt;()&gt;
-
-### API数据结构定义
-
-### ChannelRequest
-```rust
-struct ChannelRequest {
-    agent_id: String,
-    role_id: String,
-    channel_id: String,
-    user_id: String,
-    time: String,      // yyyy-MM-dd HH:mm:ss
-    msg_type: String,
-    content: String,
-}
-```
-
-### ThinkRequest
-```rust
-struct ThinkRequest {
-    agent_id: String,
-    role_id: String,
-    content: String,
-    key: String,
-    time: String,      // yyyy-MM-dd HH:mm:ss
-}
-```
-
-### ToolCallRequest
-```rust
-struct ToolCallRequest {
-    agent_id: String,
-    role_id: String,
-    tool_name: String,
-    tool_params: serde_json::Value,
-    key: String,
-    time: String,      // yyyy-MM-dd HH:mm:ss
-}
-```
-
-### ToolResultRequest
-```rust
-struct ToolResultRequest {
-    agent_id: String,
-    role_id: String,
-    tool_result: serde_json::Value,
-    key: String,
-    time: String,      // yyyy-MM-dd HH:mm:ss
-}
-```
-
-### WSSNotification
-```rust
-enum WSSNotification {
-    NewRecord {
-        record_type: String,  // channel|think|tool-call|tool-result
-        agent_id: String,
-        role_id: String,
-        channel_id: String,
-        time: String,
-        sn: u64,
-    },
-    Heartbeat {
-        time: String,
-    },
-}
-```
+### 记忆查询API
+- 提供 QueryChannelRequest、QueryRequest 等查询输入结构
+- 输出相应的记录实体列表
 
 ### WSS通知协议
 
@@ -210,27 +130,10 @@ enum WSSNotification {
 - 连接时携带struct_name标识自身
 
 #### 通知消息格式
-```json
-{
-  "type": "new-record",
-  "record_type": "channel|think|tool-call|tool-result",
-  "agent_id": "agent-id",
-  "role_id": "role-id",
-  "channel_id": "channel-id",
-  "time": "2025-05-09 10:30:00",
-  "sn": 1,
-}
-```
+通知消息包含类型字段标识消息类型，以及相应的数据字段。
 
 #### 心跳检测
 - 定期发送心跳消息维持连接
-- 心跳消息格式：
-```json
-{
-  "type": "heartbeat",
-  "time": "2025-05-09 10:30:00"
-}
-```
 
 ## 通信接口
 - **输入**：通过HTTPS API接收agent和channel推送的记忆
