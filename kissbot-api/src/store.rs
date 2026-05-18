@@ -10,15 +10,16 @@ pub struct ChannelRequest {
     pub role_name: String,
     pub channel_id: String,
     pub user_id: String,
-    pub time: String,
+    pub is_self: usize,
     pub msg_type: String,
     pub content: String,
+    pub time: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRequests {
     pub requests: Vec<ChannelRequest>,
-    pub force: bool,
+    pub force: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,7 +34,7 @@ pub struct ThinkRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequests {
     pub requests: Vec<ThinkRequest>,
-    pub force: bool,
+    pub force: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +50,7 @@ pub struct ToolCallRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequests {
     pub requests: Vec<ToolCallRequest>,
-    pub force: bool,
+    pub force: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +65,7 @@ pub struct ToolResultRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRequests {
     pub requests: Vec<ToolResultRequest>,
-    pub force: bool,
+    pub force: usize,
 }
 
 // ========== Query requests ==========
@@ -117,9 +118,10 @@ where
     pub role_name: S::Type,
     pub channel_id: S::Type,
     pub user_id: S::Type,
-    pub time: S::Type,
+    pub is_self: usize,
     pub msg_type: S::Type,
     pub content: S::Type,
+    pub time: S::Type,
     pub sn: u64,
 }
 

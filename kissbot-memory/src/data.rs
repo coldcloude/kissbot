@@ -18,9 +18,10 @@ pub trait FileHook<K> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
     pub user_id: Arc<String>,
-    pub time: Arc<String>,
+    pub is_self: usize,
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
+    pub time: Arc<String>,
     pub sn: u64,
 }
 
@@ -255,9 +256,10 @@ impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelP
         };
         let record = ChannelRecord {
             user_id: Arc::new(request.user_id),
-            time: Arc::new(request.time),
+            is_self: request.is_self,
             msg_type: Arc::new(request.msg_type),
             content: Arc::new(request.content),
+            time: Arc::new(request.time),
             sn: 0,
         };
         (key, record)
@@ -292,9 +294,10 @@ impl RecordCombiner<ChannelRecordKey, ChannelRecord, ChannelRecordResult> for Ch
             role_name: key.role_name.clone(),
             channel_id: key.channel_id.clone(),
             user_id: record.user_id.clone(),
-            time: record.time.clone(),
+            is_self: record.is_self,
             msg_type: record.msg_type.clone(),
             content: record.content.clone(),
+            time: record.time.clone(),
             sn: record.sn,
         }
     }

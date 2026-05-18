@@ -25,7 +25,7 @@ pub fn create_router() -> Router {
 async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_channel_record(req.requests, req.force).await
+        record_manager.append_channel_record(req.requests, req.force > 0).await
     };
 
     match result {
@@ -37,7 +37,7 @@ async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl 
 async fn append_think_record(Json(req): Json<store::ThinkRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_think_record(req.requests, req.force).await
+        record_manager.append_think_record(req.requests, req.force > 0).await
     };
 
     match result {
@@ -49,7 +49,7 @@ async fn append_think_record(Json(req): Json<store::ThinkRequests>) -> impl Into
 async fn append_tool_call_record(Json(req): Json<store::ToolCallRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_tool_call_record(req.requests, req.force).await
+        record_manager.append_tool_call_record(req.requests, req.force > 0).await
     };
 
     match result {
@@ -61,7 +61,7 @@ async fn append_tool_call_record(Json(req): Json<store::ToolCallRequests>) -> im
 async fn append_tool_result_record(Json(req): Json<store::ToolResultRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
-        record_manager.append_tool_result_record(req.requests, req.force).await
+        record_manager.append_tool_result_record(req.requests, req.force > 0).await
     };
 
     match result {
