@@ -71,109 +71,49 @@ ChannelManager注册多个Messenger，通过Messenger和Channel的抽象函数�
 ## Messenger Trait设计
 
 ### Messenger trait
-```rust
-/// 外部消息到达时的回调函数类型，由ChannelManager注册
-type OnMessageReceived = Arc<dyn Fn(MessageRecord) -> Result<(), ChannelError> + Send + Sync>;
 
-/// 用户加入或离开group的事件回调，由ChannelManager注册
-type OnGroupChange = Arc<dyn Fn(GroupChangeEvent) -> Result<(), ChannelError> + Send + Sync>;
+Messenger trait 定义通讯应用接入的标准接口，由各 kissbot-channel-xxx 模块实现。
 
-trait Messenger: Send + Sync + 'static {
-    /// 获取messenger的唯一标识（如 "qq", "web", "matrix"）
-    fn messenger_id(&self) -> &str;
+**回调函数类型（由 ChannelManager 注册）：**
 
-    /// 获取该messenger中可用的用户列表
-    async fn get_available_users(&self) -> Result<Vec<UserInfo>, ChannelError>;
+- `OnMessageReceived`：外部消息到达时的回调函数，接收 `MessageRecord`，由 ChannelManager 注册。
+- `OnGroupChange`：用户加入或离开 group 的事件回调，接收 `GroupChangeEvent`，由 ChannelManager 注册。
 
-    /// 获取指定用户可用的群组列表
-    async fn get_user_groups(&self, user_id: &str) -> Result<Vec<GroupInfo>, ChannelError>;
+**Messenger trait 方法：**
 
-    /// 为指定的agent、user、group创建channel实例
-    /// 返回Channel trait实现类的实例（由kissbot-channel-xxx模块实现）
-    async fn create_channel(
-        &self,
-        agent_id: &str,
-        user_id: &str,
-        group_id: &str,
-    ) -> Result<Arc<dyn Channel>, ChannelError>;
+- `messenger_id`：返回 messenger 的唯一标识（如 "qq"、"web"、"matrix"）。
+- `get_available_users`：获取该 messenger 中可用的用户列表，返回 `UserInfo` 列表。
+- `get_user_groups`：根据 user_id 获取指定用户可用的群组列表，返回 `GroupInfo` 列表。
+- `create_channel`：为指定的 agent、user、group 创建 Channel trait 实现类的实例，返回 Channel 实例。
+- `register_on_group_change`：注册 group 变化事件回调，由 ChannelManager 调用。
+- `get_attachment_metadata`：通过 key 获取附件元数据（供 ChannelManager 调用）。
+- `get_attachment_data`：通过 key 获取附件数据（供 ChannelManager 调用）。
 
-    /// 注册group变化事件回调（由ChannelManager调用）
-    async fn register_on_group_change(&self, callback: OnGroupChange) -> Result<(), ChannelError>;
+**相关数据结构：**
 
-    // ---- 附件查询接口（供ChannelManager调用） ----
-    /// 通过key获取附件元数据
-    async fn get_attachment_metadata(&self, key: &str) -> Result<AttachmentMetadata, ChannelError>;
-
-    /// 通过key获取附件数据
-    async fn get_attachment_data(&self, key: &str) -> Result<Vec<u8>, ChannelError>;
-}
-
-struct UserInfo {
-    user_id: String,
-    user_name: String,
-    avatar: Option<String>,
-}
-
-struct GroupInfo {
-    group_id: String,
-    group_name: String,
-    group_type: GroupType,  // 如群聊、私聊、频道等
-}
-
-enum GroupType {
-    Group,      // 群组
-    Private,    // 私聊
-    Channel,    // 频道/讨论组
-}
-
-struct GroupChangeEvent {
-    messenger_id: String,
-    user_id: String,
-    group_id: String,
-    group_name: String,
-    change_type: GroupChangeType,
-    timestamp: String,
-}
-
-enum GroupChangeType {
-    Joined,     // 用户加入群组
-    Left,       // 用户离开群组
-}
-```
+- `UserInfo`：用户信息，包含 user_id（用户标识）、user_name（用户名）、avatar（头像，可选）。
+- `GroupInfo`：群组信息，包含 group_id（群组标识）、group_name（群组名称）、group_type（群组类型，如群组/私聊/频道）。
+- `GroupChangeEvent`：群组变化事件，包含 messenger_id、user_id、group_id、group_name、change_type（变化类型）、timestamp（时间戳）。
+- `GroupChangeType`：变化类型枚举，包含 Joined（用户加入）和 Left（用户离开）。
 
 Messenger的实现由具体的kissbot-channel-xxx模块完成，自主管理附件存储，维护自身状态，销毁即停止。
 
 ## Channel Trait设计
 
 ### Channel trait
-```rust
-trait Channel: Send + Sync + 'static {
-    /// 获取channel的唯一标识（格式："{messenger_id}:{group_id}:{user_id}"）
-    fn channel_id(&self) -> &str;
 
-    /// 获取所属messenger的ID
-    fn messenger_id(&self) -> &str;
+Channel trait 表示一个（messenger, group, user）组合的消息收发通道，由各 kissbot-channel-xxx 模块实现。
 
-    /// 获取绑定的agent ID
-    fn agent_id(&self) -> &str;
+**Channel trait 方法：**
 
-    /// 获取群组ID
-    fn group_id(&self) -> &str;
-
-    /// 获取用户ID
-    fn user_id(&self) -> &str;
-
-    /// 注册外部消息到达回调（由ChannelManager在创建channel时调用）
-    async fn register_on_message_received(&self, callback: OnMessageReceived) -> Result<(), ChannelError>;
-
-    /// 发送消息到外部系统（由ChannelManager调用）
-    /// 消息中的attachments包含附件原始数据（Attachment）
-    async fn send_message(&self, message: OutgoingMessage) -> Result<(), ChannelError>;
-
-    /// 获取channel状态
-    async fn get_status(&self) -> Result<ChannelStatus, ChannelError>;
-}
-```
+- `channel_id`：返回 channel 的唯一标识（格式："{messenger_id}:{group_id}:{user_id}"）。
+- `messenger_id`：返回所属 messenger 的标识。
+- `agent_id`：返回绑定的 agent 标识。
+- `group_id`：返回所属群组标识。
+- `user_id`：返回所属用户标识。
+- `register_on_message_received`：注册外部消息到达回调，由 ChannelManager 在创建 channel 时调用。
+- `send_message`：发送消息到外部系统，由 ChannelManager 调用。消息中的附件携带原始数据。
+- `get_status`：获取 channel 状态，返回 `ChannelStatus`。
 
 Channel实例由具体的kissbot-channel-xxx模块实现。Channel不维护消息列表，不存储消息历史。外部消息通过Messenger或Channel注册的回调通知ChannelManager，agent消息通过send_message发送到外部系统。
 
@@ -184,52 +124,27 @@ Channel实例由具体的kissbot-channel-xxx模块实现。Channel不维护消�
 ## 核心组件设计
 
 ### 1. ChannelManager - 统筹管理器
-ChannelManager是kissbot-channel模块的核心统筹层，以Messenger为构造入参，通过调用Messenger和Channel的抽象函数完成各项功能。
+ChannelManager 是 kissbot-channel 模块的核心统筹层，通过调用 Messenger 和 Channel 的抽象方法完成各项功能。
 
-```rust
-struct ChannelManager {
-    messengers: HashMap<String, Arc<dyn Messenger>>,  // messenger_id -> Messenger
-    channels: HashMap<String, Arc<dyn Channel>>,  // channel_id -> Channel
-    wss_server: Arc<WssServer>,
-    memory_store: Arc<dyn MemoryStoreClient>,
-    message_queue: Vec<MessageRecord>,  // 消息队列，暂存待推送的消息
-}
+**ChannelManager 内部持有：**
+- `messengers`：已注册的 Messenger 实例集合（按 messenger_id 索引）。
+- `channels`：已创建的 Channel 实例集合（按 channel_id 索引）。
+- `wss_server`：WSS Server 实例。
+- `memory_store`：MemoryStoreClient 实例。
+- `message_queue`：消息队列，暂存待推送的消息。
 
-impl ChannelManager {
-    /// 注册Messenger实例
-    async fn register_messenger(&self, messenger: Arc<dyn Messenger>) -> Result<(), ChannelError>;
+**ChannelManager 方法：**
 
-    /// 获取已注册的Messenger
-    async fn get_messenger(&self, messenger_id: &str) -> Option<Arc<dyn Messenger>>;
-
-    /// 处理agent绑定请求：指定messenger_id和多个user_id，
-    /// 由messenger决定每个user加入的group，为每个(user,group)组合创建Channel实例
-    async fn handle_agent_bind(&self, agent_id: &str, messenger_id: &str, user_ids: Vec<String>) -> Result<Vec<ChannelInfo>, ChannelError>;
-
-    /// 获取指定agent在指定messenger下的所有channel实例的信息
-    /// messenger_id为None时返回所有messenger下的channel
-    async fn get_all_channels(&self, agent_id: &str, messenger_id: Option<&str>) -> Result<Vec<ChannelInfo>, ChannelError>;
-
-    /// 处理来自agent的消息（通过WSS）
-    async fn handle_agent_message(&self, message: AgentMessage) -> Result<(), ChannelError>;
-
-    /// 处理agent的附件下载请求
-    async fn handle_attachment_download(&self, messenger_id: &str, key: &str) -> Result<Vec<u8>, ChannelError>;
-
-    /// 消息入队：将指定channel的消息加入消息队列
-    async fn enqueue_message(&self, channel_id: &str, record: MessageRecord) -> Result<(), ChannelError>;
-
-    /// 处理消息队列：将指定channel的队列中的消息依次推送给agent和memory-store
-    /// channel_id为None时处理所有channel的队列
-    async fn process_message_queue(&self, channel_id: Option<&str>) -> Result<(), ChannelError>;
-
-    /// 启动WSS Server
-    async fn start(&self) -> Result<(), ChannelError>;
-
-    /// 停止所有组件
-    async fn stop(&self) -> Result<(), ChannelError>;
-}
-```
+- `register_messenger`：注册一个 Messenger 实例。
+- `get_messenger`：根据 messenger_id 获取已注册的 Messenger 实例。
+- `handle_agent_bind`：处理 agent 绑定请求，传入 agent_id、messenger_id 和多个 user_id，由 Messenger 决定每个 user 加入的 group，为每个 (user, group) 组合创建 Channel 实例，返回 Channel 信息列表。
+- `get_all_channels`：获取指定 agent 在指定 messenger（可选，不传则返回所有）下的所有 channel 实例信息，返回 Channel 信息列表。
+- `handle_agent_message`：处理来自 agent 的消息（通过 WSS 接收）。
+- `handle_attachment_download`：处理 agent 的附件下载请求，根据 messenger_id 和 key 查找附件数据并返回。
+- `enqueue_message`：将消息加入消息队列，按 channel_id 区分。
+- `process_message_queue`：处理消息队列，将指定 channel（可选，不传则处理所有）的队列中消息依次推送给 agent（WSS）和 memory-store。
+- `start`：启动 WSS Server 等组件。
+- `stop`：停止所有组件。
 
 **职责：**
 - **Messenger管理**：注册多个Messenger实例；根据messenger_id查找已注册的Messenger
@@ -277,96 +192,72 @@ impl ChannelManager {
 ## 数据结构定义
 
 ### MessageRecord（消息队列中的记录）
-消息队列中的记录，用于暂存待推送给agent或memory-store的消息。
-```rust
-struct MessageRecord {
-    record_id: String,
-    channel_id: String,
-    direction: MessageDirection,
-    sender_type: SenderType,
-    sender_id: String,
-    content: String,          // 文本全文，或非文本内容的反查key
-    attachment_keys: Vec<String>,  // 附件key列表（附件数据已由Messenger/Channel保存）
-    think_key: Option<String>,
-    tool_call_keys: Vec<String>,
-    timestamp: String,
-    sequence: u64,
-}
+消息队列中的记录，用于暂存待推送给 agent 或 memory-store 的消息。
 
-enum MessageDirection {
-    Incoming,   // 从外部系统接收的消息
-    Outgoing,   // 发送到外部系统的消息
-}
+- `channel_id`：所属 channel 标识。
+- `user_id`：发送者用户标识。外部用户消息为对应用户的 user_id，agent 发出的消息为 agent 标识。
+- `is_self`：是否为自己（agent）发送的消息。1 表示 agent 自己发的，0 表示外部用户发的。
+- `msg_type`：消息类型，可填任意字符串。内置默认类型为 `text`（纯文本）和 `file`（文件/附件），后续可扩展 `image`、`audio`、`video` 等。agent 也可自定义类型（如 `think`、`tool_call`），channel 可选择识别，也可透传不识别。
+- `content`：
+  - 当 `msg_type` 为 `text` 时，content 为纯文本字符串。
+  - 当 `msg_type` 为其他类型时，content 为 JSON 字符串，包含该类型所需的结构化信息。
+- `attachments`：附件原始数据列表（仅 `file` 类型消息携带，需要 channel 保存处理后发送）。每个附件包含 filename、mime_type、size_bytes、data。
+- `timestamp`：时间戳。
 
-enum SenderType {
-    User,       // 外部用户
-    Agent,      // agent自己
-}
-```
+**content 非 text 类型时的 JSON 结构说明：**
+
+当 `msg_type` 不为 `text` 时，content 为 JSON 字符串，由 `msg_type` 的值决定内容结构。channel 仅需识别 `file` 类型（处理附件），其余类型可透传。
+
+- **file 类型消息**：content 中包含附件 key 列表（附件数据已由 Messenger/Channel 保存），channel 需要识别并处理。
+- **agent 自定义类型**（如 `think`、`tool_call` 等）：content 格式由 agent 自行定义，channel 不解析，仅透传。
 
 ### OutgoingMessage（发送到外部系统的消息）
-```rust
-struct OutgoingMessage {
-    channel_id: String,
-    target_user_id: Option<String>,  // None表示广播给group中所有可见成员
-    content: String,
-    attachments: Vec<Attachment>,    // 附件原始数据（由agent发送时携带）
-    think_key: Option<String>,
-    tool_call_keys: Vec<String>,
-}
-```
+
+每条 OutgoingMessage 表示一条独立的消息，`msg_type` 决定其类型，不会混杂多种类型。
+
+- `channel_id`：目标 channel 标识。
+- `target_user_id`：目标用户标识（可选，不传表示广播给 group 中所有可见成员）。
+- `msg_type`：消息类型，可填任意字符串（与 MessageRecord 一致）。
+- `content`：
+  - 当 `msg_type` 为 `text` 时，content 为纯文本字符串。
+  - 当 `msg_type` 为其他类型时，content 为 JSON 字符串（与 MessageRecord 一致）。
+- `attachments`：附件原始数据。非text消息可以选择携带一条或多条attachment，channel能识别对应 `msg_type` 时，可以根据content的JSON解析原始数据，比如保存文件等。
 
 ### Attachment（附件原始数据）
-```rust
-struct Attachment {
-    filename: String,
-    mime_type: String,
-    size_bytes: u64,
-    data: Vec<u8>,
-}
-```
 
-### AttachmentRef（附件引用 - 存储后的引用信息）
-```rust
-struct AttachmentRef {
-    key: String,
-    filename: String,
-    mime_type: String,
-    size_bytes: u64,
-    storage_path: String,
-}
-```
+- `name`：文件名。
+- `mime_type`：MIME 类型。
+- `size_bytes`：文件大小（字节）。
+- `data`：附件原始数据。
+
+### AttachmentRef（附件引用，存储后的引用信息）
+
+- `key`：附件 key。
+- `name`：文件名。
+- `mime_type`：MIME 类型。
+- `size_bytes`：文件大小（字节）。
 
 ### ChannelStatus
-```rust
-struct ChannelStatus {
-    channel_id: String,
-    messenger_id: String,
-    group_id: String,
-    user_id: String,
-    agent_id: String,
-    is_running: bool,
-    last_message_time: Option<String>,
-    uptime_seconds: u64,
-}
-```
 
-### ChannelInfo（用于返回给agent的channel信息）
-```rust
-struct ChannelInfo {
-    channel_id: String,
-    messenger_id: String,
-    group_id: String,
-    group_name: String,
-    user_id: String,
-}
-```
+- `channel_id`：channel 标识。
+- `messenger_id`：所属 messenger 标识。
+- `group_id`：所属群组标识。
+- `user_id`：所属用户标识。
+- `agent_id`：绑定的 agent 标识。
+- `is_running`：是否正在运行。
+
+### ChannelInfo（用于返回给 agent 的 channel 信息）
+
+- `channel_id`：channel 标识。
+- `messenger_id`：messenger 标识。
+- `group_id`：群组标识。
+- `group_name`：群组名称。
+- `user_id`：用户标识。
 
 ## 消息流程
 
 ### 外部系统 → Agent 流程
 ```
-1.  ```
 1. 外部系统发送消息到messenger（如QQ收到群消息）
    ↓
 2. Messenger收到消息，保存附件（如果有），构建MessageRecord
@@ -452,8 +343,10 @@ struct ChannelInfo {
 - **agent不能通过channel查询历史消息**，但可以通过key下载附件文件
 - **回调机制**：ChannelManager向Messenger注册`on_message_received`和`on_group_change`回调
 - **附件随消息走**：外部消息的附件由Messenger保存；agent发送的附件携带原始数据，由Channel在send_message时保存
-- agent的思考内容key和工具调用key对channel来说是普通文本内容，直接放入消息记录的content字段
-- agent将思考内容全文和工具调用详细记录直接发送至memory-store，channel只需处理key的流转
+- **消息类型统一**：所有消息统一通过 `msg_type` + `content` 表示，不再使用独立的附件字段。`msg_type` 可填任意字符串，内置默认类型为 `text`（纯文本）和 `file`（文件/附件）。非 text 类型的 content 为 JSON 字符串，由 `msg_type` 决定其结构
+- **agent 处理思考与工具调用**：agent 可自定义 msg_type（如 `think`、`tool_call`），将相关内容写入 content（JSON 格式），channel 可以解析，不能解析也可透传或丢弃
+- **channel 的职责边界**：channel 仅需识别 `text` 和 `file` 两种消息类型，对 `file` 或其他类型的消息，可以识别处理，也可以透传或丢弃。
+- 消息发送者采用 `user_id` + `is_self` 标识，与 memory-store 的 API 数据结构保持一致
 
 ## 附件存储设计
 
@@ -494,203 +387,92 @@ ChannelManager持有MemoryStoreClient，在处理消息队列时驱动推送：
 
 ### 推送内容
 
-消息队列中的每条MessageRecord记录推送至memory-store，包含：
+消息队列中的每条 MessageRecord 记录推送至 memory-store，包含：
 
-1. **channel内的文本**：content字段（文本全文，或非文本内容的反查key）
-2. **附件key列表**：attachment_keys字段
-3. **思考内容key**：think_key字段（agent通过WSS发来的key，对channel透明）
-4. **工具调用key列表**：tool_call_keys字段（agent通过WSS发来的key，对channel透明）
+1. **msg_type 和 content**：text 类型推送纯文本内容；其他类型推送 content 中的 JSON 结构化信息。
 
 ### 记忆结构
 
-根据记录的类型，每条MessageRecord在memory-store中形成结构化存储：
-1. 消息文本记录：包括channel-id、方向、发送者类型、发送者ID、时间、序号、原文（非文本内容为反查key）
-2. 思考内容原文：通过key关联，原文由agent直接发送至memory-store
-3. 工具调用记录：通过key关联，工具的name、parameter、返回信息由agent直接发送至memory-store
+根据记录的类型，每条 MessageRecord 在 memory-store 中形成结构化存储： agent_id、role_name、channel_id、user_id、is_self、msg_type、content、时间等字段一一对应。
 
 ### MemoryStoreClient接口
 
-```rust
-trait MemoryStoreClient: Send + Sync + 'static {
-    /// 推送单条消息记录到记忆系统
-    async fn push_message_record(&self, record: MessageRecord) -> Result<(), MemoryError>;
-
-    /// 批量推送消息记录
-    async fn push_message_records(&self, records: Vec<MessageRecord>) -> Result<(), MemoryError>;
-}
-```
+MemoryStoreClient 负责将消息推送至记忆系统，由 ChannelManager 驱动调用。一次可推送多条
 
 ## WSS消息协议
 
 每个agent对应唯一的WSS连接，所有channel实例共享此连接与agent通信。
 消息中通过`channel_id`字段区分消息属于哪个channel实例。
 
-### Agent → Channel消息
-agent发送消息时，attachments中携带附件原始数据（base64编码）。
-```json
-{
-    "type": "message",
-    "data": {
-        "channel_id": "qq:交流群:id123456",
-        "target_user_id": "user-abc",
-        "content": "你好！",
-        "attachments": [
-            {
-                "filename": "image.png",
-                "mime_type": "image/png",
-                "size_bytes": 102400,
-                "data": "<base64编码的附件数据>"
-            }
-        ],
-        "think_key": "think-20240101-123456",
-        "tool_call_keys": ["tool-20240101-789012"]
-    }
-}
-```
+### Agent → Channel 消息（type: "message"）
 
-### Channel → Agent消息
-```json
-{
-    "type": "user_message",
-    "data": {
-        "channel_id": "qq:交流群:id123456",
-        "user_id": "user-abc",
-        "user_name": "张三",
-        "content": "你好！",
-        "attachments": [
-            {
-                "key": "qq:交流群:id123456-20240101-abc123",
-                "filename": "image.png",
-                "mime_type": "image/png",
-                "size_bytes": 102400
-            }
-        ],
-        "timestamp": "2024-01-01 12:00:00",
-        "sequence": 1
-    }
-}
-```
+agent 发送消息时，每条消息为独立类型，通过 `msg_type` 区分。消息类型为 `message`，data 中携带：
+- `channel_id`：目标 channel 标识。
+- `target_user_id`：目标用户标识（可选）。
+- `msg_type`：消息类型，可填任意字符串（与 MessageRecord 一致）。内置默认类型为 `text` 和 `file`。
+- `content`：
+  - `text` 类型：纯文本字符串。
+  - 其他类型：JSON 字符串，由 `msg_type` 决定其结构。
+- `attachments`：附件原始数据列表（仅 `file` 类型消息携带，每个附件包含 filename、mime_type、size_bytes、data）。其他类型不携带此字段。
 
-### Agent绑定消息
-agent接入时，指定messenger_id和多个user_id，由messenger决定每个user的group列表。
-```json
-{
-    "type": "bind",
-    "data": {
-        "agent_id": "agent-001",
-        "messenger_id": "qq",
-        "user_ids": ["id123456", "id789012"]
-    }
-}
-```
+### Channel → Agent 消息（type: "user_message"）
 
-### 绑定确认
-```json
-{
-    "type": "bind_ack",
-    "data": {
-        "agent_id": "agent-001",
-        "channels": [
-            {
-                "channel_id": "qq:交流群:id123456",
-                "messenger_id": "qq",
-                "group_id": "交流群",
-                "group_name": "交流群",
-                "user_id": "id123456"
-            },
-            {
-                "channel_id": "qq:工作群:id123456",
-                "messenger_id": "qq",
-                "group_id": "工作群",
-                "group_name": "工作群",
-                "user_id": "id123456"
-            },
-            {
-                "channel_id": "qq:项目群:id789012",
-                "messenger_id": "qq",
-                "group_id": "项目群",
-                "group_name": "项目群",
-                "user_id": "id789012"
-            }
-        ]
-    }
-}
-```
+channel 转发外部消息给 agent 时，消息类型为 `user_message`，data 中携带：
+- `channel_id`：来源 channel 标识。
+- `user_id`：发送者用户标识。
+- `user_name`：发送者用户名。
+- `is_self`：0（外部用户消息，始终为 0）。
+- `msg_type`：消息类型，可填任意字符串（与 MessageRecord 一致）。
+- `content`：
+  - `text` 类型：纯文本字符串。
+  - 其他类型：JSON 字符串，由 `msg_type` 决定其结构。
+- `timestamp`：消息时间戳。
+- `sequence`：消息序号。
 
-### 获取全部channel
-```json
-{
-    "type": "get_channels"
-}
-```
+### Agent 绑定消息（type: "bind"）
 
-```json
-{
-    "type": "channels",
-    "data": {
-        "channels": [
-            {
-                "channel_id": "qq:交流群:id123456",
-                "messenger_id": "qq",
-                "group_id": "交流群",
-                "group_name": "交流群",
-                "user_id": "id123456"
-            }
-        ]
-    }
-}
-```
+agent 接入时发送绑定请求，消息类型为 `bind`，data 中携带：
+- `agent_id`：agent 标识。
+- `messenger_id`：目标 messenger 标识。
+- `user_ids`：要绑定的用户标识列表（多个）。由 Messenger 决定每个 user 的 group 列表。
 
-### Group变化通知
-```json
-{
-    "type": "group_change",
-    "data": {
-        "messenger_id": "qq",
-        "user_id": "id123456",
-        "group_id": "新群组",
-        "group_name": "新群组",
-        "change_type": "joined",
-        "timestamp": "2024-01-01 12:00:00"
-    }
-}
-```
+### 绑定确认（type: "bind_ack"）
 
-### Agent附件下载请求
-```json
-{
-    "type": "attachment_download",
-    "data": {
-        "key": "qq:交流群:id123456-20240101-abc123"
-    }
-}
-```
+ChannelManager 完成绑定后返回确认，消息类型为 `bind_ack`，data 中携带：
+- `agent_id`：agent 标识。
+- `channels`：创建的 channel 信息列表，每个元素包含 channel_id、messenger_id、group_id、group_name、user_id。
 
-### 附件下载响应
-```json
-{
-    "type": "attachment_data",
-    "data": {
-        "key": "qq:交流群:id123456-20240101-abc123",
-        "filename": "image.png",
-        "mime_type": "image/png",
-        "data": "<base64编码的附件数据>"
-    }
-}
-```
+### 获取全部 channel（type: "get_channels" / "channels"）
 
-### 心跳消息
-```json
-{
-    "type": "ping"
-}
-```
+agent 请求获取当前所有 channel，发送 type 为 `get_channels` 的消息（无额外参数）。
+ChannelManager 返回 type 为 `channels` 的消息，data 中携带 channels 列表（每个元素同上）。
 
-```json
-{
-    "type": "pong"
-}
-```
+### Group 变化通知（type: "group_change"）
+
+Messenger 检测到 group 变化后，ChannelManager 向 agent 推送通知，消息类型为 `group_change`，data 中携带：
+- `messenger_id`：messenger 标识。
+- `user_id`：用户标识。
+- `group_id`：群组标识。
+- `group_name`：群组名称。
+- `change_type`：变化类型（"joined" 或 "left"）。
+- `timestamp`：时间戳。
+
+### Agent 附件下载请求（type: "attachment_download"）
+
+agent 请求下载附件，消息类型为 `attachment_download`，data 中携带：
+- `key`：附件 key。
+
+### 附件下载响应（type: "attachment_data"）
+
+ChannelManager 返回附件数据，消息类型为 `attachment_data`，data 中携带：
+- `key`：附件 key。
+- `filename`：文件名。
+- `mime_type`：MIME 类型。
+- `data`：base64 编码的附件数据。
+
+### 心跳消息（type: "ping" / "pong"）
+
+agent 发送 `ping`，ChannelManager 回复 `pong`，均无额外 data 字段。
 
 ## 实现决策
 

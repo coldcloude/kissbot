@@ -600,7 +600,7 @@ trait SetKind {
       "content": "你好"
     }
   ],
-  "force": false
+  "force": 0
 }
 ```
 
@@ -616,7 +616,7 @@ trait SetKind {
       "time": "2025-05-17 10:30:01"
     }
   ],
-  "force": false
+  "force": 0
 }
 ```
 
@@ -633,7 +633,7 @@ trait SetKind {
       "time": "2025-05-17 10:30:02"
     }
   ],
-  "force": false
+  "force": 0
 }
 ```
 
@@ -649,7 +649,7 @@ trait SetKind {
       "time": "2025-05-17 10:30:03"
     }
   ],
-  "force": false
+  "force": 0
 }
 ```
 
@@ -688,9 +688,10 @@ trait SetKind {
       "role_name": "role-001",
       "channel_id": "channel-001",
       "user_id": "user-001",
-      "time": "2025-05-17 10:30:00",
+      "is_self": 1,
       "msg_type": "text",
       "content": "你好",
+      "time": "2025-05-17 10:30:00",
       "sn": 1
     }
   ],
