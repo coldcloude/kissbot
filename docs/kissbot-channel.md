@@ -404,30 +404,27 @@ MemoryStoreClient 负责将消息推送至记忆系统，由 ChannelManager 驱�
 每个agent对应唯一的WSS连接，所有channel实例共享此连接与agent通信。
 消息中通过`channel_id`字段区分消息属于哪个channel实例。
 
-### Agent → Channel 消息（type: "message"）
+### Agent → Channel 消息（type: "outgoing_message"）
 
-agent 发送消息时，每条消息为独立类型，通过 `msg_type` 区分。消息类型为 `message`，data 中携带：
+agent 发送消息时，每条消息为独立类型，通过 `msg_type` 区分。消息类型为 `outgoing_message`，data 中携带：
 - `channel_id`：目标 channel 标识。
-- `target_user_id`：目标用户标识（可选）。
 - `msg_type`：消息类型，可填任意字符串（与 MessageRecord 一致）。内置默认类型为 `text` 和 `file`。
 - `content`：
   - `text` 类型：纯文本字符串。
   - 其他类型：JSON 字符串，由 `msg_type` 决定其结构。
-- `attachments`：附件原始数据列表（仅 `file` 类型消息携带，每个附件包含 filename、mime_type、size_bytes、data）。其他类型不携带此字段。
+- `attachments`：附件原始数据列表。
 
-### Channel → Agent 消息（type: "user_message"）
+### Channel → Agent 消息（type: "incoming_message"）
 
-channel 转发外部消息给 agent 时，消息类型为 `user_message`，data 中携带：
+channel 转发外部消息给 agent 时，消息类型为 `incoming_message`，data 中携带：
 - `channel_id`：来源 channel 标识。
 - `user_id`：发送者用户标识。
-- `user_name`：发送者用户名。
 - `is_self`：0（外部用户消息，始终为 0）。
 - `msg_type`：消息类型，可填任意字符串（与 MessageRecord 一致）。
 - `content`：
   - `text` 类型：纯文本字符串。
   - 其他类型：JSON 字符串，由 `msg_type` 决定其结构。
-- `timestamp`：消息时间戳。
-- `sequence`：消息序号。
+- `timestamp`：消息时间。
 
 ### Agent 绑定消息（type: "bind"）
 
