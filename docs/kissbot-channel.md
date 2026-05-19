@@ -9,13 +9,13 @@
 
 **Channel实例**：一个agent绑定的一个user加入的一个group，构成一个消息收发单元，即一个channel实例。channel-id唯一标识一个messenger+group+user的组合，例如`channel_id = "qq:交流群:id123456"`。Channel实例是Channel trait实现类的实例，由具体的kissbot-channel-xxx模块实现。
 
-**ChannelManager**：模块的核心统筹协调层，以Messenger为构造入参（一个ChannelManager对应一个Messenger），管理Channel实例的生命周期，协调WSS连接与Channel之间的消息路由，维护消息队列驱动推送至agent和memory-store。
+**ChannelManager**：模块的核心统筹协调层，可以注册多个Messenger实例，管理Channel实例的生命周期，协调WSS连接与Channel之间的消息路由，维护消息队列驱动推送至agent和memory-store。
 
 ## 职责
 - 定义Messenger trait，便于实现不同的通讯应用接入（web、QQ、Matrix等）
 - 定义Channel trait，表示messenger+group+user组合的消息收发通道
 - **ChannelManager统筹管理**：
-  - 以Messenger为构造入参，一个ChannelManager对应一个Messenger
+  - 管理多个Messenger实例的注册
   - 管理Channel实例的创建和查询（提供获取全部channel的方法）
   - 管理WSS Server（每个agent一个连接）
   - 协调WSS连接与Channel实例之间的消息路由
@@ -36,8 +36,8 @@
 │  ┌──────────────────────────────────────────────────────────────┐    │
 │  │                      ChannelManager                          │    │
 │  │  ┌──────────────┐  ┌──────────┐  ┌──────────┐               │    │
-│  │  │  Messenger   │  │ 消息队列  │  │ WSS      │               │    │
-│  │  │  (构造入参)   │  │ (待推送)  │  │ Server   │               │    │
+│  │  │  Messengers  │  │ 消息队列  │  │ WSS      │               │    │
+│  │  │  (注册管理)   │  │ (待推送)  │  │ Server   │               │    │
 │  │  └──────┬───────┘  │ agent/   │  │ 管理     │               │    │
 │  │         │          │ memory   │  └──────────┘               │    │
 │  │         │          └──────────┘                              │    │
@@ -64,7 +64,7 @@
                                   │   Agent(WSS)   │
                                   └────────────────┘
 
-ChannelManager以Messenger为构造入参，通过Messenger和Channel的抽象函数完成各项功能的协调。
+ChannelManager注册多个Messenger，通过Messenger和Channel的抽象函数完成各项功能的协调。
 各具体kissbot-channel-xxx模块同时实现Messenger trait和Channel trait，
 ```
 
@@ -188,7 +188,7 @@ ChannelManager是kissbot-channel模块的核心统筹层，以Messenger为构造
 
 ```rust
 struct ChannelManager {
-    messenger: Arc<dyn Messenger>,
+    messengers: HashMap<String, Arc<dyn Messenger>>,  // messenger_id -> Messenger
     channels: HashMap<String, Arc<dyn Channel>>,  // channel_id -> Channel
     wss_server: Arc<WssServer>,
     memory_store: Arc<dyn MemoryStoreClient>,
@@ -196,27 +196,32 @@ struct ChannelManager {
 }
 
 impl ChannelManager {
-    /// 创建ChannelManager，绑定指定的Messenger
-    async fn new(messenger: Arc<dyn Messenger>, wss_server: Arc<WssServer>, memory_store: Arc<dyn MemoryStoreClient>) -> Self;
+    /// 注册Messenger实例
+    async fn register_messenger(&self, messenger: Arc<dyn Messenger>) -> Result<(), ChannelError>;
+
+    /// 获取已注册的Messenger
+    async fn get_messenger(&self, messenger_id: &str) -> Option<Arc<dyn Messenger>>;
 
     /// 处理agent绑定请求：指定messenger_id和多个user_id，
     /// 由messenger决定每个user加入的group，为每个(user,group)组合创建Channel实例
     async fn handle_agent_bind(&self, agent_id: &str, messenger_id: &str, user_ids: Vec<String>) -> Result<Vec<ChannelInfo>, ChannelError>;
 
-    /// 获取当前所有channel实例的信息
-    async fn get_all_channels(&self) -> Result<Vec<ChannelInfo>, ChannelError>;
+    /// 获取指定agent在指定messenger下的所有channel实例的信息
+    /// messenger_id为None时返回所有messenger下的channel
+    async fn get_all_channels(&self, agent_id: &str, messenger_id: Option<&str>) -> Result<Vec<ChannelInfo>, ChannelError>;
 
     /// 处理来自agent的消息（通过WSS）
     async fn handle_agent_message(&self, message: AgentMessage) -> Result<(), ChannelError>;
 
     /// 处理agent的附件下载请求
-    async fn handle_attachment_download(&self, key: &str) -> Result<Vec<u8>, ChannelError>;
+    async fn handle_attachment_download(&self, messenger_id: &str, key: &str) -> Result<Vec<u8>, ChannelError>;
 
-    /// 消息入队：外部消息或agent消息进入消息队列
-    async fn enqueue_message(&self, record: MessageRecord) -> Result<(), ChannelError>;
+    /// 消息入队：将指定channel的消息加入消息队列
+    async fn enqueue_message(&self, channel_id: &str, record: MessageRecord) -> Result<(), ChannelError>;
 
-    /// 处理消息队列：将队列中的消息依次推送给agent和memory-store
-    async fn process_message_queue(&self) -> Result<(), ChannelError>;
+    /// 处理消息队列：将指定channel的队列中的消息依次推送给agent和memory-store
+    /// channel_id为None时处理所有channel的队列
+    async fn process_message_queue(&self, channel_id: Option<&str>) -> Result<(), ChannelError>;
 
     /// 启动WSS Server
     async fn start(&self) -> Result<(), ChannelError>;
@@ -227,8 +232,8 @@ impl ChannelManager {
 ```
 
 **职责：**
-- **构造时绑定Messenger**：一个ChannelManager对应一个Messenger
-- **Channel管理**：通过Messenger创建Channel实例；根据channel_id查找Channel实例；维护Channel实例的全局索引；提供`get_all_channels`方法
+- **Messenger管理**：注册多个Messenger实例；根据messenger_id查找已注册的Messenger
+- **Channel管理**：通过Messenger创建Channel实例；根据channel_id查找Channel实例；维护Channel实例的全局索引；提供`get_all_channels`方法（按agent_id和messenger_id筛选）
 - **Agent绑定**：处理agent的bind请求（指定多个user_id），由Messenger决定每个user的group列表，为每个(user,group)组合创建Channel实例，注册回调，返回绑定结果
 - **注册回调**：向Messenger注册`on_message_received`和`on_group_change`回调
 - **消息队列**：维护消息队列暂存待推送的消息，依次推送给agent（WSS）和memory-store
@@ -237,7 +242,7 @@ impl ChannelManager {
   - 外部消息处理链路：Messenger收到外部消息 → 调用`on_message_received`回调（ChannelManager注册）→ 回调将消息入队 → 处理队列：推送memory-store、通过WSS发给agent
   - agent消息处理链路：WSS收到agent消息 → ChannelManager → 消息入队 → 处理队列：推送memory-store、调用channel.send_message发到外部系统
 - **Group变化事件**：Messenger检测到user加入或离开group → 调用`on_group_change`回调 → ChannelManager通过WSS通知agent
-- **附件下载**：收到agent的附件下载请求，调用Messenger的`get_attachment_data`获取附件数据并返回
+- **附件下载**：收到agent的附件下载请求，根据messenger_id查找对应的Messenger，调用其`get_attachment_data`获取附件数据并返回
 
 ### 2. Messenger实现 - 通讯应用接入
 - 每个具体的kissbot-channel-xxx模块实现Messenger trait，负责：
@@ -692,7 +697,7 @@ agent接入时，指定messenger_id和多个user_id，由messenger决定每个us
 ### 框架实现
 - 定义Messenger trait，便于实现不同的通讯应用接入
 - 定义Channel trait，表示一个（messenger, group, user）组合的消息通道
-- **ChannelManager作为核心统筹层**，以Messenger为构造入参，一个ChannelManager对应一个Messenger
+- **ChannelManager作为核心统筹层**，可以注册多个Messenger实例
 - 提供channel-web作为参考实现（同时实现Messenger trait和Channel trait）
 - 使用tokio作为异步运行时
 - 使用tokio-tungstenite实现WSS服务器
@@ -717,12 +722,12 @@ agent接入时，指定messenger_id和多个user_id，由messenger决定每个us
 
 ### ChannelManager的定位
 - ChannelManager是模块的入口和核心统筹层，对外提供统一的操作接口
-- ChannelManager以Messenger为构造入参，一个ChannelManager对应一个Messenger
+- ChannelManager注册多个Messenger实例，通过messenger_id进行查找和路由
 - ChannelManager调用Messenger的抽象函数管理通讯应用接入、回调注册和附件操作
 - ChannelManager调用Channel的抽象函数管理消息发送
 - ChannelManager持有WSS Server、MemoryStoreClient，维护消息队列协调消息推送
 - ChannelManager处理agent绑定（传多个user_id，group由Messenger决定）
-- ChannelManager向agent传递group变化事件，提供获取全部channel的方法
+- ChannelManager向agent传递group变化事件，提供获取全部channel的方法（按agent_id和messenger_id筛选）
 
 ## 开发计划
 
@@ -734,7 +739,7 @@ agent接入时，指定messenger_id和多个user_id，由messenger决定每个us
 - [ ] 定义错误类型和事件类型
 
 ### 第2阶段：核心组件实现
-- [ ] 实现ChannelManager（以Messenger为构造入参，消息队列，回调注册，agent绑定，group变化通知）
+- [ ] 实现ChannelManager（注册多个Messenger，消息队列，回调注册，agent绑定，group变化通知）
 - [ ] 实现WSS Server（每agent一个连接，支持附件下载协议）
 - [ ] 实现MemoryStoreClient（对接消息队列统一推送）
 
