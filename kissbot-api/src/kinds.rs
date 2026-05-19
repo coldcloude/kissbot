@@ -81,3 +81,23 @@ impl SetKind for LocalSet {
     where
         T: Eq + Hash + Clone;
 }
+
+// ========== ValueKind trait for serde_json::Value abstraction ==========
+
+pub trait ValueKind: Clone {
+    type Type: Clone;
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SyncValue;
+
+impl ValueKind for SyncValue {
+    type Type = Arc<serde_json::Value>;
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LocalValue;
+
+impl ValueKind for LocalValue {
+    type Type = serde_json::Value;
+}

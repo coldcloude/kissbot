@@ -1,26 +1,50 @@
-﻿use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+﻿use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::kinds::*;
 
 // ========== Request structures (simple, no generics) ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub channel_id: String,
-    pub user_id: String,
+pub struct ChannelRequestGeneric<S>
+where
+    S: StringKind,
+{
+    pub agent_id: S::Type,
+    pub role_name: S::Type,
+    pub channel_id: S::Type,
+    pub user_id: S::Type,
     pub is_self: usize,
-    pub msg_type: String,
-    pub content: String,
-    pub time: String,
+    pub msg_type: S::Type,
+    pub content: S::Type,
+    pub time: S::Type,
+}
+
+pub trait ChannelRequestKind<S>
+where
+    S: StringKind,
+{
+    type Type: Clone + Serialize + DeserializeOwned;
+}
+
+pub type ChannelRequestEntity = ChannelRequestGeneric<LocalString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalChannelRequest;
+
+impl ChannelRequestKind<LocalString> for LocalChannelRequest {
+    type Type = ChannelRequestEntity;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRequests {
-    pub requests: Vec<ChannelRequest>,
+pub struct ChannelRequestsGeneric<S,CR>
+where
+    S: StringKind,
+    CR: ChannelRequestKind<S>,
+{
+    pub requests: Vec<CR::Type>,
     pub force: usize,
 }
+
+pub type ChannelRequestsEntity = ChannelRequestsGeneric<LocalString, LocalChannelRequest>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
@@ -85,26 +109,6 @@ pub struct QueryRequest {
     pub role_name: String,
     pub start_time: String,
     pub end_time: String,
-}
-
-// ========== ValueKind trait for serde_json::Value abstraction ==========
-
-pub trait ValueKind: Clone {
-    type Type: Clone;
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct SyncValue;
-
-impl ValueKind for SyncValue {
-    type Type = Arc<serde_json::Value>;
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct LocalValue;
-
-impl ValueKind for LocalValue {
-    type Type = serde_json::Value;
 }
 
 // ========== ChannelRecord - Generic with trait bounds ==========
