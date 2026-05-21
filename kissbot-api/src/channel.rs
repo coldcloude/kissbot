@@ -1,27 +1,20 @@
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use kai_ws::{LEN_PAYLOAD_TYPE, OFFSET_PAYLOAD_TYPE};
+use serde::{Deserialize, Serialize};
 
-use crate::{MapKind, StringKind, error::Result, ws::{LEN_TYPE, OFFSET_TYPE}};
+use crate::{MapKind, StringKind, error::Result};
 
 //========================= Attachment ==========================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentGeneric<S>
-where
-    S: StringKind,
-{
-    pub mime_type: S::Type,
+pub struct AttachmentMetadata{
+    pub mime_type: String,
     pub size_bytes: u64,
 }
 
-pub trait AttachmentKind {
-    type Type: Clone + Serialize + DeserializeOwned;
-}
-
-pub struct OutgoingMessageGeneric<S, M, A>
+pub struct OutgoingMessageGeneric<S, M>
 where
     S: StringKind,
     M: MapKind,
-    A: AttachmentKind,
 {
     pub channel_id: S::Type,
     pub user_id: S::Type,
@@ -29,10 +22,10 @@ where
     pub msg_type: S::Type,
     pub content: S::Type,
     pub time: S::Type,
-    pub attachment_map: M::Map<String, A::Type>,
+    pub attachment_map: M::Map<String, AttachmentMetadata>,
 }
 
-pub struct OutgoingMessageResponse<S, M>
+pub struct OutgoingMessageResponseGeneric<S, M>
 where
     S: StringKind,
     M: MapKind,
@@ -41,11 +34,26 @@ where
     pub attachment_upload_id_map: M::Map<String, u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentDownloadRequestGeneric<S>
+where
+    S: StringKind,
+{
+    pub key: S::Type,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentDownloadResponseHeader
+{
+    pub download_id: u32,
+    pub metadata: AttachmentMetadata,
+}
+
 //========================= Attachment Binary ==========================
 
 pub const BIN_TYPE_ATTACHMENT: u16 = 0x0001;
 
-const OFFSET_ATT_ID: usize = OFFSET_TYPE + LEN_TYPE;
+const OFFSET_ATT_ID: usize = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE;
 const LEN_ATT_ID: usize = 4;
 const OFFSET_ATT_SIZE: usize = OFFSET_ATT_ID + LEN_ATT_ID;
 const LEN_ATT_SIZE: usize = 4;

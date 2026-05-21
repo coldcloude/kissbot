@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use tokio::io::AsyncReadExt;
 
 // ========== User and Group Info ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,44 +36,16 @@ pub enum GroupChangeType {
     Left,
 }
 
-// ========== Attachment ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Attachment {
-    pub name: String,
-    pub mime_type: String,
-    pub size_bytes: u64,
-    #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentRef {
-    pub key: String,
-    pub name: String,
-    pub mime_type: String,
-    pub size_bytes: u64,
-}
-
 // ========== Message Record ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageRecord {
-    pub channel_id: String,
-    pub user_id: String,
+    pub msg_id: Arc<String>,
+    pub channel_id: Arc<String>,
+    pub user_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: String,
-    pub content: String,
-    pub attachments: Vec<Attachment>,
-    pub timestamp: DateTime<Utc>,
-}
-
-// ========== Outgoing Message ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutgoingMessage {
-    pub channel_id: String,
-    pub target_user_id: Option<String>,
-    pub msg_type: String,
-    pub content: String,
-    pub attachments: Vec<Attachment>,
+    pub msg_type: Arc<String>,
+    pub content: Arc<String>,
+    pub time: Arc<String>,
 }
 
 // ========== Channel Status ==========
@@ -99,15 +74,6 @@ pub struct ChannelInfo {
 pub struct WssMessage {
     pub r#type: String,
     pub data: serde_json::Value,
-}
-
-// Agent -> Channel messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutgoingMessageData {
-    pub channel_id: String,
-    pub msg_type: String,
-    pub content: String,
-    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,14 +118,6 @@ pub struct GroupChangeData {
     pub group_name: String,
     pub change_type: String,
     pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentData {
-    pub key: String,
-    pub filename: String,
-    pub mime_type: String,
-    pub data: String, // base64 encoded
 }
 
 // Helper functions
