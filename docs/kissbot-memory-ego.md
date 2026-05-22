@@ -117,11 +117,11 @@ agent设计面向多用户环境，具体要求：
 
 ### 用户识别信息管理接口
 - 提供用户信息获取、更新、重命名、标识管理等功能的请求结构
-- 输出 UserRecognitionEntity 或 UserEntity 等实体结构
+- 输出 UserRecognitionDTO 或 UserDTO 等实体结构
 
 ### 角色设定管理接口
 - 提供角色创建、查询、更新、搜索、关系管理等功能的请求结构
-- 输出 RolePlayEntity、OtherRoleEntity 等实体结构
+- 输出 RolePlayDTO、OtherRoleDTO 等实体结构
 
 ## 通信接口
 - 管理API：通过HTTPS API接收agent、user、role相关的管理请求

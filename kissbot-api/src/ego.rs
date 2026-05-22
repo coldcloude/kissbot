@@ -49,13 +49,13 @@ where
 }
 
 // Aliases for internal use and API use
-pub type UserRelationEntity = UserRelationGeneric<LocalString>;
+pub type UserRelationDTO = UserRelationGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalUserRelation;
 
 impl UserRelationKind<LocalString> for LocalUserRelation {
-    type Type = UserRelationEntity;
+    type Type = UserRelationDTO;
 }
 
 // ========== User - Generic with trait bounds ==========
@@ -83,13 +83,13 @@ where
     type Type: Clone;
 }
 
-pub type UserEntity = UserGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation>;
+pub type UserDTO = UserGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalUser;
 
 impl UserKind<LocalString, LocalMap, LocalSet, LocalUserRelation> for LocalUser {
-    type Type = UserEntity;
+    type Type = UserDTO;
 }
 
 // ========== UserRecognition - Generic with trait bounds ==========
@@ -106,7 +106,7 @@ where
     pub user_map: M::Map<String, U::Type>,
 }
 
-pub type UserRecognitionEntity = UserRecognitionGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation, LocalUser>;
+pub type UserRecognitionDTO = UserRecognitionGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation, LocalUser>;
 
 // ========== AgentMetadata - Generic with trait bounds ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +120,7 @@ where
     pub created_at: S::Type,
 }
 
-pub type AgentMetadataEntity = AgentMetadataGeneric<LocalString>;
+pub type AgentMetadataDTO = AgentMetadataGeneric<LocalString>;
 
 // ========== RoleRelation - Generic with trait bounds ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ where
     pub description: S::Type,
 }
 
-pub type RoleRelationEntity = RoleRelationGeneric<LocalString>;
+pub type RoleRelationDTO = RoleRelationGeneric<LocalString>;
 
 pub trait RoleRelationKind<S>
 where
@@ -145,7 +145,7 @@ where
 pub struct LocalRoleRelation;
 
 impl RoleRelationKind<LocalString> for LocalRoleRelation {
-    type Type = RoleRelationEntity;
+    type Type = RoleRelationDTO;
 }
 
 // ========== OtherRole - Generic with trait bounds ==========
@@ -171,13 +171,13 @@ where
     type Type: Clone;
 }
 
-pub type OtherRoleEntity = OtherRoleGeneric<LocalString, LocalMap, LocalRoleRelation>;
+pub type OtherRoleDTO = OtherRoleGeneric<LocalString, LocalMap, LocalRoleRelation>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalOtherRole;
 
 impl OtherRoleKind<LocalString, LocalMap, LocalRoleRelation> for LocalOtherRole {
-    type Type = OtherRoleEntity;
+    type Type = OtherRoleDTO;
 }
 
 // ========== Role - Generic with trait bounds ==========
@@ -198,13 +198,13 @@ where
     type Type: Clone;
 }
 
-pub type RoleEntity = RoleGeneric<LocalString>;
+pub type RoleDTO = RoleGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalRole;
 
 impl RoleKind<LocalString> for LocalRole {
-    type Type = RoleEntity;
+    type Type = RoleDTO;
 }
 
 // ========== RolePlay - Generic with trait bounds ==========
@@ -221,7 +221,7 @@ where
     pub other_roles: M::Map<String, OR::Type>,
 }
 
-pub type RolePlayEntity = RolePlayGeneric<LocalString, LocalMap, LocalRole, LocalRoleRelation, LocalOtherRole>;
+pub type RolePlayDTO = RolePlayGeneric<LocalString, LocalMap, LocalRole, LocalRoleRelation, LocalOtherRole>;
 
 // ========== Request Structures (simple, no generics) ==========
 

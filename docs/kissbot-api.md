@@ -26,7 +26,7 @@ kissbot-api/
 - **trait（类型约束）**：使用 `XxxKind` 命名，定义数据结构的字段和类型约束
 - **内部类型**：使用 `Xxx` 或 `XxxResult` 命名，内部模块使用，包含 `Arc`、`DashMap`、`DashSet` 优化。内部类型由各实现模块内部定义
 - **内部类型约束**：使用 `SyncXxx` 命名，实现 `XxxKind`，用于内部模块的类型检查。内部类型约束由各实现模块内部定义
-- **API 类型**：使用 `XxxEntity` 命名，与内部类型结构完全一致但使用标准类型
+- **API 类型**：使用 `XxxDTO` 命名，与内部类型结构完全一致但使用标准类型
 - **API 类型约束**：使用 `LocalXxx` 明明，实现 `XxxKind`，用于 API 模块的类型检查
 
 ### 直接序列化方案
@@ -81,14 +81,14 @@ trait SetKind {
 - Agent 管理相关请求
 - 用户识别信息管理相关请求
 - 角色设定管理相关请求
-- 数据结构和类型：通过泛型 trait 实现，包含 `XxxEntity`（API 类型）
+- 数据结构和类型：通过泛型 trait 实现，包含 `XxxDTO`（API 类型）
 
 ### store 模块
 包含 kissbot-memory-store 模块的所有 API 定义，分为：
 - 输入请求结构体（Request）：用于客户端发送请求
 - 查询请求结构体（Query Request）：用于查询记忆
 - 查询响应结构体（Query Response）：用于返回查询结果
-- 数据结构和类型：通过泛型 trait 实现，包含 `XxxEntity`（API 类型）
+- 数据结构和类型：通过泛型 trait 实现，包含 `XxxDTO`（API 类型）
 
 ## memory-ego API 详细说明
 

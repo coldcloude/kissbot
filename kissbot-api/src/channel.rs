@@ -21,13 +21,13 @@ pub trait ChannelInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type ChannelInfoEntity = ChannelInfoGeneric<LocalString>;
+pub type ChannelInfoDTO = ChannelInfoGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalChannelInfo;
 
 impl ChannelInfoKind for LocalChannelInfo {
-    type Type = ChannelInfoEntity;
+    type Type = ChannelInfoDTO;
 }
 
 // ========== Group Info ==========
@@ -46,13 +46,13 @@ pub trait GroupInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type GroupInfoEntity = GroupInfoGeneric<LocalString, LocalChannelInfo>;
+pub type GroupInfoDTO = GroupInfoGeneric<LocalString, LocalChannelInfo>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalGroupInfo;
 
 impl GroupInfoKind for LocalGroupInfo {
-    type Type = GroupInfoEntity;
+    type Type = GroupInfoDTO;
 }
 
 // ========== User Info ==========
@@ -72,13 +72,13 @@ pub trait UserInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type UserInfoEntity = UserInfoGeneric<LocalString, LocalMap, LocalGroupInfo>;
+pub type UserInfoDTO = UserInfoGeneric<LocalString, LocalMap, LocalGroupInfo>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalUserInfo;
 
 impl UserInfoKind for LocalUserInfo {
-    type Type = UserInfoEntity;
+    type Type = UserInfoDTO;
 }
 
 // ========== Messenger Info ==========
@@ -98,13 +98,13 @@ pub trait MessengerInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type MessengerInfoEntity = MessengerInfoGeneric<LocalString, LocalMap, LocalUserInfo>;
+pub type MessengerInfoDTO = MessengerInfoGeneric<LocalString, LocalMap, LocalUserInfo>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalMessengerInfo;
 
 impl MessengerInfoKind for LocalMessengerInfo {
-    type Type = MessengerInfoEntity;
+    type Type = MessengerInfoDTO;
 }
 
 // ========================= Message & Attachment ==========================
@@ -124,13 +124,13 @@ pub trait AttachmentInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type AttachmentInfoEntity = AttachmentInfoGeneric<LocalString>;
+pub type AttachmentInfoDTO = AttachmentInfoGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalAttachmentInfo;
 
 impl AttachmentInfoKind for LocalAttachmentInfo {
-    type Type = AttachmentInfoEntity;
+    type Type = AttachmentInfoDTO;
 }
 
 // ========== Outgoing Message ==========
@@ -150,7 +150,7 @@ where
     pub attachment_map: M::Map<String, A::Type>,
 }
 
-pub type OutgoingMessageGenericEntity = OutgoingMessageGeneric<LocalString, LocalMap, LocalAttachmentInfo>;
+pub type OutgoingMessageDTO = OutgoingMessageGeneric<LocalString, LocalMap, LocalAttachmentInfo>;
 
 // ========== Outgoing Message Response ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,7 +163,7 @@ where
     pub attachment_upload_id_map: M::Map<String, u32>,
 }
 
-pub type OutgoingMessageResponseEntity = OutgoingMessageResponseGeneric<LocalString, LocalMap>;
+pub type OutgoingMessageResponseDTO = OutgoingMessageResponseGeneric<LocalString, LocalMap>;
 
 // ========== Attachment Download Request ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +175,7 @@ where
     pub key: S::Type,
 }
 
-pub type AttachmentDownloadRequestEntity = AttachmentDownloadRequestGeneric<LocalString>;
+pub type AttachmentDownloadRequestDTO = AttachmentDownloadRequestGeneric<LocalString>;
 
 // ========== Attachment Download Response Header ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,7 +187,7 @@ where
     pub metadata: A::Type,
 }
 
-pub type AttachmentDownloadResponseHeaderEntity = AttachmentDownloadResponseHeaderGeneric<LocalAttachmentInfo>;
+pub type AttachmentDownloadResponseHeaderDTO = AttachmentDownloadResponseHeaderGeneric<LocalAttachmentInfo>;
 
 //========================= Attachment Binary ==========================
 

@@ -246,8 +246,8 @@ impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
     }
 }
 
-impl RequestParser<ChannelRequestEntity, ChannelRecordKey, ChannelRecord> for ChannelParser {
-    fn parse_request(&self, request: ChannelRequestEntity) -> (ChannelRecordKey, ChannelRecord) {
+impl RequestParser<ChannelRequestDTO, ChannelRecordKey, ChannelRecord> for ChannelParser {
+    fn parse_request(&self, request: ChannelRequestDTO) -> (ChannelRecordKey, ChannelRecord) {
         let key = ChannelRecordKey {
             agent_id: Arc::new(request.agent_id),
             role_name: Arc::new(request.role_name),

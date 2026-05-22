@@ -25,13 +25,13 @@ where
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type ChannelRequestEntity = ChannelRequestGeneric<LocalString>;
+pub type ChannelRequestDTO = ChannelRequestGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalChannelRequest;
 
 impl ChannelRequestKind<LocalString> for LocalChannelRequest {
-    type Type = ChannelRequestEntity;
+    type Type = ChannelRequestDTO;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ where
     pub force: usize,
 }
 
-pub type ChannelRequestsEntity = ChannelRequestsGeneric<LocalString, LocalChannelRequest>;
+pub type ChannelRequestsDTO = ChannelRequestsGeneric<LocalString, LocalChannelRequest>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
@@ -129,7 +129,7 @@ where
     pub sn: u64,
 }
 
-pub type ChannelRecordEntity = ChannelRecordGeneric<LocalString>;
+pub type ChannelRecordDTO = ChannelRecordGeneric<LocalString>;
 
 // ========== ThinkRecord - Generic with trait bounds ==========
 
@@ -146,7 +146,7 @@ where
     pub sn: u64,
 }
 
-pub type ThinkRecordEntity = ThinkRecordGeneric<LocalString>;
+pub type ThinkRecordDTO = ThinkRecordGeneric<LocalString>;
 
 // ========== ToolCallRecord - Generic with trait bounds ==========
 
@@ -165,7 +165,7 @@ where
     pub sn: u64,
 }
 
-pub type ToolCallRecordEntity = ToolCallRecordGeneric<LocalString, LocalValue>;
+pub type ToolCallRecordDTO = ToolCallRecordGeneric<LocalString, LocalValue>;
 
 // ========== ToolResultRecord - Generic with trait bounds ==========
 
@@ -183,4 +183,4 @@ where
     pub sn: u64,
 }
 
-pub type ToolResultRecordEntity = ToolResultRecordGeneric<LocalString, LocalValue>;
+pub type ToolResultRecordDTO = ToolResultRecordGeneric<LocalString, LocalValue>;
