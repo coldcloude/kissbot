@@ -9,7 +9,7 @@ pub mod channel_manager;
 pub use error::{ChannelError, Result};
 pub use data::*;
 pub use messenger::{Messenger, MessengerRegistry, OnMessageReceived, OnGroupChange};
-pub use channel::{Channel, ChannelRegistry};
+pub use channel::{Channel};
 pub use memory_store_client::MemoryStoreClient;
 pub use wss_server::{WssServer, AgentConnection, WssOnMessageReceived};
 pub use channel_manager::ChannelManager;

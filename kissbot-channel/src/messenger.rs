@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::types::*;
+use crate::data::*;
 use crate::channel::Channel;
 use std::sync::Arc;
 

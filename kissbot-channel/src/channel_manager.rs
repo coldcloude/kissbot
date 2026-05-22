@@ -1,32 +1,46 @@
 use crate::error::Result;
 use crate::messenger::{Messenger, MessengerRegistry, OnMessageReceived, OnGroupChange};
-use crate::channel::ChannelRegistry;
-use crate::types::*;
+use crate::channel::Channel;
+use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use crate::wss_server::{WssServer, WssOnMessageReceived};
 use dashmap::DashMap;
+use flume::{Receiver, Sender};
 use std::sync::Arc;
 use chrono::Utc;
 use base64::Engine;
 
+struct MessengerContext {
+    pub info: Arc<MessengerInfo>,
+    pub messenger: Arc<dyn Messenger>,
+}
+
+struct ChannelContext {
+    pub info: Arc<ChannelInfo>,
+    pub channel: Arc<dyn Channel>,
+    pub memory_store_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
+    pub agent_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
+}
+
+struct AgentContext {
+    messenger_info_map: DashMap<String, Arc<MessengerInfo>>,
+    channel_map: DashMap<String, ChannelContext>,
+}
+
 pub struct ChannelManager {
-    messenger_registry: MessengerRegistry,
-    channel_registry: ChannelRegistry,
+    messenger_map: DashMap<String, MessengerContext>,
+    agent_map: DashMap<String, AgentContext>,
     wss_server: Arc<WssServer>,
-    memory_store_client: Option<MemoryStoreClient>,
-    message_queues: DashMap<String, Vec<MessageRecord>>,
-    agent_channel_map: DashMap<String, Vec<String>>, // agent_id -> channel_ids
+    memory_store_client: Arc<MemoryStoreClient>,
 }
 
 impl ChannelManager {
-    pub fn new(wss_server: Arc<WssServer>, memory_store_client: Option<MemoryStoreClient>) -> Self {
+    pub fn new(wss_server: Arc<WssServer>, memory_store_client: Arc<MemoryStoreClient>) -> Self {
         Self {
-            messenger_registry: MessengerRegistry::new(),
-            channel_registry: ChannelRegistry::new(),
+            messenger_map: DashMap::new(),
+            agent_map: DashMap::new(),
             wss_server: wss_server.clone(),
-            memory_store_client,
-            message_queues: DashMap::new(),
-            agent_channel_map: DashMap::new(),
+            memory_store_client: memory_store_client.clone(),
         }
     }
     
@@ -52,11 +66,11 @@ impl ChannelManager {
         });
         
         messenger.register_on_group_change(callback);
-        self.messenger_registry.register(messenger);
+        self.messenger_map.register(messenger);
     }
     
     pub fn get_messenger(&self, messenger_id: &str) -> Option<Arc<dyn Messenger>> {
-        self.messenger_registry.get(messenger_id)
+        self.messenger_map.get(messenger_id)
     }
     
     pub async fn handle_agent_bind(
@@ -214,7 +228,7 @@ impl ChannelManager {
             }
             "attachment_download" => {
                 let download_data: AttachmentDownloadData = serde_json::from_value(wss_msg.data)?;
-                for messenger in self.messenger_registry.list() {
+                for messenger in self.messenger_map.list() {
                     if let Ok(attachment) = messenger.get_attachment_data(&download_data.key).await {
                         let attachment_data = AttachmentData {
                             key: download_data.key.clone(),

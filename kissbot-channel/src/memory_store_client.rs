@@ -1,5 +1,4 @@
-use crate::error::Result;
-use crate::types::*;
+use crate::{IncomingMessage, error::Result};
 use kissbot_api::{SyncString, store::*};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -16,21 +15,20 @@ impl ChannelRequestKind<SyncString> for SyncChannelRequest {
 
 pub type ChannelRequests = ChannelRequestsGeneric<SyncString, SyncChannelRequest>;
 
-#[derive(Clone)]
 pub struct MemoryStoreClient {
-    client: Arc<Client>,
+    client: Client,
     base_url: String,
 }
 
 impl MemoryStoreClient {
     pub fn new(base_url: String) -> Self {
         Self {
-            client: Arc::new(Client::new()),
+            client: Client::new(),
             base_url,
         }
     }
     
-    pub async fn push_message_records(&self, agent_id: &str, role_name: &str, records: &[MessageRecord]) -> Result<()> {
+    pub async fn push_message_records(&self, agent_id: &str, role_name: &str, records: &[IncomingMessage]) -> Result<()> {
         let channel_requests: Vec<ChannelRequest> = records
             .iter()
             .map(|record| ChannelRequest {

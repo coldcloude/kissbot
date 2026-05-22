@@ -58,6 +58,19 @@ pub trait AttachmentDownloadResponsePayloadSender: Send + Sync {
     async fn send_attachment_payload(&self, data: &[u8]) -> Result<()>;
 }
 
+// ========== Receiving Message ==========
+pub type IncomingMessage = IncomingMessageGeneric<SyncString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingMessageEvent {
+    pub messages: Vec<IncomingMessage>,
+}
+
+#[async_trait]
+pub trait IncomingMessageSender: Send + Sync {
+    async fn send_incoming_messages(&self, event: Arc<IncomingMessageEvent>) -> Result<()>;
+}
+
 // ========== Group Change ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupChangeEvent {
@@ -72,25 +85,6 @@ pub struct GroupChangeEvent {
 pub enum GroupChangeType {
     Joined,
     Left,
-}
-
-// ========== Message Record ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageRecord {
-    pub msg_id: Arc<String>,
-    pub channel_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub is_self: usize,
-    pub msg_type: Arc<String>,
-    pub content: Arc<String>,
-    pub time: Arc<String>,
-}
-
-// ========== WSS Messages ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WssMessage {
-    pub r#type: String,
-    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

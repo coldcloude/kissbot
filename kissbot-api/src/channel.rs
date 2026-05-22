@@ -216,3 +216,22 @@ pub fn process_attachment<P: AttachmentProcessor>(data: &[u8], processor: &mut P
     processor.process_attachment(id, size, pos, data)?;
     Ok(())
 }
+
+// ================= Receiving Message ==========================
+
+// ========== Message Record ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingMessageGeneric<S>
+where
+    S: StringKind,
+{
+    pub msg_id: S::Type,
+    pub channel_id: S::Type,
+    pub user_id: S::Type,
+    pub is_self: usize,
+    pub msg_type: S::Type,
+    pub content: S::Type,
+    pub time: S::Type,
+}
+
+pub type IncomingMessageDTO = IncomingMessageGeneric<LocalString>;
