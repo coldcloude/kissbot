@@ -1,22 +1,61 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use kissbot_api::{SyncMap, SyncString, channel::*};
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use tokio::io::AsyncReadExt;
 
-// ========== User and Group Info ==========
+use crate::Result;
+
+// ========== Messenger -> User -> Group -> Channel ==========
+
+pub type ChannelInfo = ChannelInfoGeneric<SyncString>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInfo {
-    pub user_id: String,
-    pub user_name: String,
-    pub avatar: Option<String>,
+pub struct SyncChannelInfo;
+
+impl ChannelInfoKind for SyncChannelInfo {
+    type Type = Arc<ChannelInfo>;
 }
 
+pub type GroupInfo = GroupInfoGeneric<SyncString, SyncChannelInfo>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupInfo {
-    pub group_id: String,
-    pub group_name: String,
-    pub group_type: String,
+pub struct SyncGroupInfo;
+
+impl GroupInfoKind for SyncGroupInfo {
+    type Type = Arc<GroupInfo>;
+}
+
+pub type UserInfo = UserInfoGeneric<SyncString, SyncMap, SyncGroupInfo>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncUserInfo;
+
+impl UserInfoKind for SyncUserInfo {
+    type Type = Arc<UserInfo>;
+}
+
+pub type MessengerInfo = MessengerInfoGeneric<SyncString, SyncMap, SyncUserInfo>;
+
+// ========== Message & Attachment ==========
+
+pub type AttachmentInfo = AttachmentInfoGeneric<SyncString>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncAttachmentInfo;
+
+impl AttachmentInfoKind for SyncAttachmentInfo {
+    type Type = Arc<AttachmentInfo>;
+}
+
+pub type OutgoingMessageResponse = OutgoingMessageResponseGeneric<SyncString, SyncMap>;
+
+pub type AttachmentDownloadResponseHeader = AttachmentDownloadResponseHeaderGeneric<SyncAttachmentInfo>;
+
+#[async_trait]
+pub trait AttachmentDownloadResponsePayloadSender: Send + Sync {
+    async fn send_attachment_payload(&self, data: &[u8]) -> Result<()>;
 }
 
 // ========== Group Change ==========
@@ -25,9 +64,8 @@ pub struct GroupChangeEvent {
     pub messenger_id: String,
     pub user_id: String,
     pub group_id: String,
-    pub group_name: String,
     pub change_type: GroupChangeType,
-    pub timestamp: DateTime<Utc>,
+    pub time: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,27 +84,6 @@ pub struct MessageRecord {
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
     pub time: Arc<String>,
-}
-
-// ========== Channel Status ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelStatus {
-    pub channel_id: String,
-    pub messenger_id: String,
-    pub group_id: String,
-    pub user_id: String,
-    pub agent_id: String,
-    pub is_running: bool,
-}
-
-// ========== Channel Info ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelInfo {
-    pub channel_id: String,
-    pub messenger_id: String,
-    pub group_id: String,
-    pub group_name: String,
-    pub user_id: String,
 }
 
 // ========== WSS Messages ==========
