@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ChannelError {
+pub enum Error {
     #[error("Messenger not found: {0}")]
     MessengerNotFound(String),
     
@@ -34,12 +34,9 @@ pub enum ChannelError {
     
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-    
-    #[error("Send error: {0}")]
-    SendError(String),
-    
-    #[error("Other error: {0}")]
-    Other(String),
+
+    #[error("Request error: {0}")]
+    RequestError(String),
 }
 
-pub type Result<T> = std::result::Result<T, ChannelError>;
+pub type Result<T> = std::result::Result<T, Error>;

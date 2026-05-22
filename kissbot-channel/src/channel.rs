@@ -22,5 +22,5 @@ pub trait Channel: Send + Sync {
 
     async fn download_attachment_payload(&self, sender: Arc<dyn AttachmentDownloadResponsePayloadSender>) -> Result<()>;
 
-    fn register_on_incoming_messages(&self, callback: Arc<dyn IncomingMessageSender>) -> Result<()>;
+    fn register_on_incoming_messages(&self, callback: Arc<dyn IncomingMessageHandler>);
 }

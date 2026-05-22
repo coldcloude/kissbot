@@ -1,7 +1,7 @@
 use kai_ws::{LEN_PAYLOAD_TYPE, OFFSET_PAYLOAD_TYPE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
+use crate::{LocalMap, LocalString, MapKind, SetKind, StringKind, error::Result};
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -235,3 +235,66 @@ where
 }
 
 pub type IncomingMessageDTO = IncomingMessageGeneric<LocalString>;
+
+// ========== Query & Bind ==========
+
+// ========== Query Messenger Name Response ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryMessengerNamesResponseGeneric<S, M>
+where
+    S: StringKind,
+    M: MapKind,
+{
+    pub messenger_map: M::Map<String, S::Type>,
+}
+
+pub type QueryMessengerNamesResponseDTO = QueryMessengerNamesResponseGeneric<LocalString, LocalMap>;
+
+// ========== Query User Name Request ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryUserNamesRequestGeneric<S>
+where
+    S: StringKind,
+{
+    pub messenger_id: S::Type,
+}
+
+pub type QueryUserNamesRequestDTO = QueryUserNamesRequestGeneric<LocalString>;
+
+// ========== Query User Name Response ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryUserNamesResponseGeneric<S, M>
+where
+    S: StringKind,
+    M: MapKind,
+{
+    pub messenger_id: S::Type,
+    pub user_map: M::Map<String, S::Type>,
+}
+
+pub type QueryUserNamesResponseDTO = QueryUserNamesResponseGeneric<LocalString, LocalMap>;
+
+// ========== Bind Request ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BindRequestGeneric<S,T>
+where
+    S: StringKind,
+    T: SetKind,
+{
+    pub agent_id: S::Type,
+    pub messenger_id: S::Type,
+    pub user_ids: T::Set<String>,
+}
+
+// ========== Bind Response ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BindResponseGeneric<S, M, U>
+where
+    S: StringKind,
+    M: MapKind,
+    U: UserInfoKind,
+{
+    pub agent_id: S::Type,
+    pub messenger_id: S::Type,
+    pub user_map: M::Map<String, U::Type>,
+}

@@ -61,7 +61,7 @@ impl ChannelManager {
     pub fn register_messenger(&self, messenger: Arc<dyn Messenger>) {
         // Register on_group_change callback
         let _wss_server = self.wss_server.clone();
-        let callback: OnGroupChange = Arc::new(move |_event: GroupChangeEvent| {
+        let callback: GroupChangeHandler = Arc::new(move |_event: GroupChangeEvent| {
             // In a real implementation, we'd track which agents are interested
         });
         

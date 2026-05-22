@@ -1,4 +1,4 @@
-use crate::{IncomingMessage, error::Result};
+use crate::{Error, IncomingMessage, error::Result};
 use kissbot_api::{SyncString, store::*};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -52,9 +52,8 @@ impl MemoryStoreClient {
         let response = self.client.post(&url).json(&req).send().await?;
         
         if !response.status().is_success() {
-            return Err(crate::error::ChannelError::Other(
-                format!("Failed to push message records: {}", response.status())
-            ));
+            let err_msg = format!("Failed to push message records: [{}] {}", response.status(), response.text().await?);
+            return Err(Error::RequestError(err_msg));
         }
         
         Ok(())

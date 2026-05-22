@@ -3,9 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use kissbot_api::{SyncMap, SyncString, channel::*};
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
 
-use crate::Result;
+use crate::error::Result;
 
 // ========== Messenger -> User -> Group -> Channel ==========
 
@@ -67,8 +66,8 @@ pub struct IncomingMessageEvent {
 }
 
 #[async_trait]
-pub trait IncomingMessageSender: Send + Sync {
-    async fn send_incoming_messages(&self, event: Arc<IncomingMessageEvent>) -> Result<()>;
+pub trait IncomingMessageHandler: Send + Sync {
+    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) -> Result<()>;
 }
 
 // ========== Group Change ==========
@@ -87,48 +86,9 @@ pub enum GroupChangeType {
     Left,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindData {
-    pub agent_id: String,
-    pub messenger_id: String,
-    pub user_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentDownloadData {
-    pub key: String,
-}
-
-// Channel -> Agent messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncomingMessageData {
-    pub channel_id: String,
-    pub user_id: String,
-    pub is_self: usize,
-    pub msg_type: String,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindAckData {
-    pub agent_id: String,
-    pub channels: Vec<ChannelInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelsData {
-    pub channels: Vec<ChannelInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupChangeData {
-    pub messenger_id: String,
-    pub user_id: String,
-    pub group_id: String,
-    pub group_name: String,
-    pub change_type: String,
-    pub timestamp: DateTime<Utc>,
+#[async_trait]
+pub trait GroupChangeHandler: Send + Sync {
+    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) -> Result<()>;
 }
 
 // Helper functions
