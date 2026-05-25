@@ -31,7 +31,7 @@ impl WsProcessorInitializer<Arc<ConnectContext>> for WssServer {
             ws_context,
             heartbeat_handler: heartbeat_handler.clone(),
         });
-        heartbeat_handler.start();
+        tokio::spawn(async move { heartbeat_handler.start().await });
         Ok(connect_context)
     }
 }
