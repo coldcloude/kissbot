@@ -1,124 +1,61 @@
 use crate::error::Result;
-use crate::data::*;
+use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
+use kai_ws::{WsContext, WsHeartbeatHandler, WsProcessorInitializer, ws_handle_connection};
+use tracing::{Level, info, span};
+use std::{sync::{Arc, atomic::{AtomicU32, Ordering}}};
+use tokio::{net::TcpListener, time::{Duration}};
 
-// Agent connection
-#[derive(Clone)]
-pub struct AgentConnection {
-    pub agent_id: String,
-    pub sender: mpsc::UnboundedSender<WssMessage>,
+const MSG_QUEUE_SIZE: usize = 100;
+
+static INTERVAL: Duration = Duration::from_secs(10);
+
+pub struct ConnectContext {
+    pub connect_id: u32,
+    pub ws_context: Arc<WsContext>,
+    pub heartbeat_handler: Arc<WsHeartbeatHandler>,
 }
 
-pub type WssOnMessageReceived = Arc<dyn Fn(String, WssMessage) + Send + Sync>;
-
 pub struct WssServer {
-    agent_connections: DashMap<String, AgentConnection>,
-    on_message_received: Option<WssOnMessageReceived>,
+    global_connect_id: AtomicU32,
+    connect_map: DashMap<u32, Arc<ConnectContext>>,
+}
+
+#[async_trait]
+impl WsProcessorInitializer<Arc<ConnectContext>> for WssServer {
+    async fn init(&mut self, ws_context: Arc<WsContext>) -> std::result::Result<Arc<ConnectContext>, kai_ws::Error> {
+        let connect_id = self.global_connect_id.fetch_add(1, Ordering::Relaxed);
+        let heartbeat_handler = Arc::new(WsHeartbeatHandler::new(INTERVAL, ws_context.clone()));
+        let connect_context = Arc::new(ConnectContext {
+            connect_id,
+            ws_context,
+            heartbeat_handler: heartbeat_handler.clone(),
+        });
+        heartbeat_handler.start();
+        Ok(connect_context)
+    }
 }
 
 impl WssServer {
     pub fn new() -> Self {
         Self {
-            agent_connections: DashMap::new(),
-            on_message_received: None,
+            global_connect_id: AtomicU32::new(0),
+            connect_map: DashMap::new(),
         }
     }
     
-    pub fn register_on_message_received(&mut self, callback: WssOnMessageReceived) {
-        self.on_message_received = Some(callback);
-    }
-    
-    pub async fn start(&self, addr: &str) -> Result<()> {
+    pub async fn start(&mut self, addr: &str) -> Result<()> {
+        let span = span!(Level::INFO, "wss serverstart");
+        let _enter = span.enter();
         let listener = TcpListener::bind(addr).await?;
-        println!("WSS Server listening on: {}", addr);
+        info!("WSS Server listening on: {}", addr);
         
         while let Ok((stream, _)) = listener.accept().await {
-            let ws_stream = accept_async(stream).await?;
-            let (ws_sender, mut ws_receiver) = ws_stream.split();
-            let (tx, mut rx) = mpsc::unbounded_channel();
-            
-            // Spawn task to receive messages from agent
-            let agent_connections = self.agent_connections.clone();
-            let on_message_received = self.on_message_received.clone();
-            
-            tokio::spawn(async move {
-                let mut agent_id: Option<String> = None;
-                
-                // Handle outgoing messages to agent
-                let mut ws_sender = ws_sender;
-                tokio::spawn(async move {
-                    while let Some(msg) = rx.recv().await {
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            let _ = ws_sender.send(Message::Text(json.into())).await;
-                        }
-                    }
-                });
-                
-                // Handle incoming messages from agent
-                while let Some(Ok(msg)) = ws_receiver.next().await {
-                    if let Message::Text(text) = msg {
-                        if let Ok(wss_msg) = serde_json::from_str::<WssMessage>(&text) {
-                            match wss_msg.r#type.as_str() {
-                                "bind" => {
-                                    if let Ok(bind_data) = serde_json::from_value::<BindData>(wss_msg.data.clone()) {
-                                        agent_id = Some(bind_data.agent_id.clone());
-                                        agent_connections.insert(
-                                            bind_data.agent_id.clone(),
-                                            AgentConnection {
-                                                agent_id: bind_data.agent_id.clone(),
-                                                sender: tx.clone(),
-                                            }
-                                        );
-                                    }
-                                }
-                                "ping" => {
-                                    let pong = WssMessage {
-                                        r#type: "pong".to_string(),
-                                        data: serde_json::Value::Null,
-                                    };
-                                    let _ = tx.send(pong);
-                                }
-                                _ => {
-                                    if let (Some(aid), Some(cb)) = (&agent_id, &on_message_received) {
-                                        cb(aid.clone(), wss_msg);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Clean up when connection closes
-                if let Some(aid) = agent_id {
-                    agent_connections.remove(&aid);
-                }
-            });
+            let connect_id = self.global_connect_id.fetch_add(1, Ordering::Relaxed);
+            let ws_context = ws_handle_connection(stream, self, MSG_QUEUE_SIZE).await?;
+            self.connect_map.insert(connect_id, ws_context);
         }
         
         Ok(())
-    }
-    
-    pub fn send_to_agent(&self, agent_id: &str, message: WssMessage) -> Result<()> {
-        if let Some(conn) = self.agent_connections.get(agent_id) {
-            conn.sender.send(message).map_err(|e| crate::error::ChannelError::SendError(e.to_string()))?;
-            Ok(())
-        } else {
-            Err(crate::error::ChannelError::AgentNotConnected(agent_id.to_string()))
-        }
-    }
-    
-    pub fn is_agent_connected(&self, agent_id: &str) -> bool {
-        self.agent_connections.contains_key(agent_id)
-    }
-}
-
-impl Default for WssServer {
-    fn default() -> Self {
-        Self::new()
     }
 }

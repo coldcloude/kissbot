@@ -11,5 +11,5 @@ pub use data::*;
 pub use messenger::Messenger;
 pub use channel::Channel;
 pub use memory_store_client::MemoryStoreClient;
-pub use wss_server::{WssServer, AgentConnection, WssOnMessageReceived};
+pub use wss_server::WssServer;
 pub use channel_manager::ChannelManager;

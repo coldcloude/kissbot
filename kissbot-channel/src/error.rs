@@ -35,6 +35,9 @@ pub enum Error {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
+    #[error("WS error: {0}")]
+    WsError(#[from] kai_ws::Error),
+
     #[error("Request error: {0}")]
     RequestError(String),
 }
