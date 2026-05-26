@@ -17,7 +17,9 @@ impl ChannelInfoKind for SyncChannelInfo {
     type Type = Arc<ChannelInfo>;
 }
 
-pub type GroupInfo = GroupInfoGeneric<SyncString, SyncChannelInfo>;
+pub type UserChannelMap = UserChannelMapGeneric<SyncMap, SyncChannelInfo>;
+
+pub type GroupInfo = GroupInfoGeneric<SyncString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncGroupInfo;
@@ -92,6 +94,6 @@ pub trait GroupChangeHandler: Send + Sync {
 }
 
 // Helper functions
-pub fn format_channel_id(messenger_id: &str, group_id: &str, user_id: &str) -> String {
-    format!("{}:{}:{}", messenger_id, group_id, user_id)
+pub fn format_channel_id(messenger_id: &str, user_id: &str, group_id: &str) -> String {
+    format!("{}:{}:{}", messenger_id, user_id, group_id)
 }

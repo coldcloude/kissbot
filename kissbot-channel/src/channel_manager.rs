@@ -1,13 +1,14 @@
-use crate::error::Result;
+use crate::{Error, error::Result};
 use crate::messenger::Messenger;
 use crate::channel::Channel;
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use crate::wss_server::WssServer;
 use async_trait::async_trait;
-use dashmap::{DashMap, Entry};
-use flume::{Receiver, Sender};
+use dashmap::{DashMap, DashSet, Entry};
+use flume::{Receiver, Sender, bounded};
 use kai_ws::{TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsProcessorInitializer, ws_handle_connection};
+use kissbot_api::channel::BindRequestDTO;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use base64::Engine;
@@ -19,33 +20,34 @@ const MSG_QUEUE_SIZE: usize = 100;
 static INTERVAL: Duration = Duration::from_secs(10);
 
 struct MessengerContext {
-    pub info: Arc<MessengerInfo>,
+    pub messenger_id: Arc<String>,
     pub messenger: Arc<dyn Messenger>,
+    pub bound_map: DashMap<String, Arc<String>>,
 }
 
 struct ChannelContext {
-    pub info: Arc<ChannelInfo>,
-    pub channel: Arc<dyn Channel>,
-    pub memory_store_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
-    pub agent_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
+    channel_info: Arc<ChannelInfo>,
+    channel: Arc<dyn Channel>,
+    memory_store_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
+    agent_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
 }
 
 struct AgentContext {
     agent_id: Arc<String>,
     messenger_info_map: DashMap<String, Arc<MessengerInfo>>,
-    channel_map: DashMap<String, Arc<ChannelContext>>,
+    channel_map: DashMap<String, ChannelContext>,
 }
 
-pub struct ConnectContext {
-    pub connect_id: u32,
-    pub ws_context: Arc<WsContext>,
-    agent_map: DashMap<String, Arc<AgentContext>>,
+struct ConnectContext {
+    connect_id: u32,
+    ws_context: Arc<WsContext>,
+    agent_map: DashMap<String, AgentContext>,
 }
 
 pub struct ChannelManager {
     global_connect_id: AtomicU32,
-    connect_map: DashMap<u32, Arc<ConnectContext>>,
-    messenger_map: DashMap<String, Arc<MessengerContext>>,
+    connect_map: DashMap<u32, ConnectContext>,
+    messenger_map: DashMap<String, MessengerContext>,
     memory_store_client: MemoryStoreClient,
 }
 
@@ -72,11 +74,11 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
     async fn init(&self, ws_context: Arc<WsContext>, manager: Arc<ChannelManager>) -> std::result::Result<(), kai_ws::Error> {
         //保存context
         let connect_id = manager.global_connect_id.fetch_add(1, Ordering::Relaxed);
-        manager.connect_map.insert(connect_id, Arc::new(ConnectContext {
+        manager.connect_map.insert(connect_id, ConnectContext {
             connect_id,
             ws_context: ws_context.clone(),
             agent_map: DashMap::new(),
-        }));
+        });
         //处理心跳
         let heartbeat_handler = Arc::new(WsHeartbeatHandler::new(INTERVAL, ws_context.clone()));
         ws_context.set_bin_processor(TYPE_HEARTBEAT, heartbeat_handler.clone());
@@ -125,7 +127,7 @@ impl ChannelManager {
                     if let Some(messenger_context) = self.messenger_map.get(&messenger_id) {
                         for user_info in messenger_info.user_map.iter() {
                             let user_id = user_info.user_id.as_str().to_string();
-                            messenger_context.info.user_map.insert(user_id, user_info.clone());
+                            messenger_context.bound_map.remove(user_id.as_str());
                         }
                     }
                     else {
@@ -136,142 +138,81 @@ impl ChannelManager {
         }
     }
     
-    pub fn setup_wss_callback(self: &Arc<Self>) {
-        let manager_clone = self.clone();
-        let _callback: WssOnMessageReceived = Arc::new(move |agent_id: String, msg: WssMessage| {
-            let manager = manager_clone.clone();
-            tokio::spawn(async move {
-                let _ = manager.handle_agent_message(&agent_id, msg).await;
-            });
-        });
-        
-        // We need to use unsafe or interior mutability here
-        // For simplicity, let's create a new WssServer with the callback
-        // But this is just a demonstration
-    }
-    
-    pub fn register_messenger(&self, messenger: Arc<dyn Messenger>) {
-        // Register on_group_change callback
-        let _wss_server = self.wss_server.clone();
-        let callback: GroupChangeHandler = Arc::new(move |_event: GroupChangeEvent| {
-            // In a real implementation, we'd track which agents are interested
-        });
-        
-        messenger.register_on_group_change(callback);
-        self.messenger_map.register(messenger);
-    }
-    
-    pub fn get_messenger(&self, messenger_id: &str) -> Option<Arc<dyn Messenger>> {
-        self.messenger_map.get(messenger_id)
-    }
-    
-    pub async fn handle_agent_bind(
-        &self,
-        agent_id: String,
-        messenger_id: String,
-        user_ids: Vec<String>,
-    ) -> Result<Vec<ChannelInfo>> {
-        let messenger = self.get_messenger(&messenger_id)
-            .ok_or_else(|| crate::error::ChannelError::MessengerNotFound(messenger_id.clone()))?;
-        
-        let mut channel_infos = Vec::new();
-        let mut channel_ids = Vec::new();
-        
-        for user_id in user_ids {
-            let groups = messenger.get_user_groups(&user_id).await?;
-            
-            for group in groups {
-                let channel_id = format_channel_id(&messenger_id, &group.group_id, &user_id);
-                
-                // Create on_message_received callback
-                let wss_server = self.wss_server.clone();
-                let memory_store_client = self.memory_store_client.clone();
-                let agent_id_clone = agent_id.clone();
-                
-                let on_msg_received: OnMessageReceived = Arc::new(move |record: MessageRecord| {
-                    let wss_server_clone = wss_server.clone();
-                    let memory_store_clone = memory_store_client.clone();
-                    let agent_id_clone2 = agent_id_clone.clone();
-                    let record_clone = record.clone();
-                    
-                    tokio::spawn(async move {
-                        // Send to agent via WSS
-                        let incoming_data = IncomingMessageData {
-                            channel_id: record_clone.channel_id.clone(),
-                            user_id: record_clone.user_id.clone(),
-                            is_self: record_clone.is_self,
-                            msg_type: record_clone.msg_type.clone(),
-                            content: record_clone.content.clone(),
-                            timestamp: record_clone.timestamp,
-                        };
-                        
-                        let wss_msg = WssMessage {
-                            r#type: "incoming_message".to_string(),
-                            data: serde_json::to_value(incoming_data).unwrap(),
-                        };
-                        
-                        let _ = wss_server_clone.send_to_agent(&agent_id_clone2, wss_msg);
-                        
-                        // Push to memory store
-                        if let Some(store) = memory_store_clone {
-                            let _ = store.push_message_records(&agent_id_clone2, "default", &[record_clone]).await;
-                        }
-                    });
+    pub fn register_messenger(&self, messenger_id: &str, messenger: Arc<dyn Messenger>) -> Result<()> {
+        match self.messenger_map.entry(messenger_id.to_string()) {
+            Entry::Vacant(entry) => {
+                entry.insert(MessengerContext {
+                    messenger_id: Arc::new(messenger_id.to_string()),
+                    messenger: messenger,
+                    bound_map: DashMap::new(),
                 });
-                
-                let channel = messenger.create_channel(
-                    agent_id.clone(),
-                    user_id.clone(),
-                    group.group_id.clone(),
-                    on_msg_received,
-                ).await?;
-                
-                let channel_info = ChannelInfo {
-                    channel_id: channel_id.clone(),
-                    messenger_id: messenger_id.clone(),
-                    group_id: group.group_id.clone(),
-                    group_name: group.group_name.clone(),
-                    user_id: user_id.clone(),
-                };
-                
-                self.channel_registry.register(channel);
-                channel_infos.push(channel_info);
-                channel_ids.push(channel_id);
+                Ok(())
+            }
+            Entry::Occupied(entry) => {
+                Err(Error::MessengerAlreadyRegistered(entry.key().to_string()))
             }
         }
-        
-        self.agent_channel_map.insert(agent_id.clone(), channel_ids);
-        
-        // Send bind ack to agent
-        let bind_ack_data = BindAckData {
-            agent_id: agent_id.clone(),
-            channels: channel_infos.clone(),
-        };
-        
-        let wss_msg = WssMessage {
-            r#type: "bind_ack".to_string(),
-            data: serde_json::to_value(bind_ack_data).unwrap(),
-        };
-        
-        self.wss_server.send_to_agent(&agent_id, wss_msg)?;
-        
-        Ok(channel_infos)
     }
-    
-    pub fn get_all_channels(&self, agent_id: &str, _messenger_id: Option<&str>) -> Vec<ChannelInfo> {
+
+    pub async fn bind_agent_user(&self, connect_id: u32, bind_request: BindRequestDTO) -> Result<Vec<Arc<ChannelInfo>>> {
+        let connect_context = self.connect_map.get(&connect_id)
+            .ok_or_else(|| Error::ConnectNotFound(connect_id.to_string()))?;
+
+        let agent_context = connect_context.agent_map.entry(bind_request.agent_id.as_str().to_string()).or_insert_with(|| AgentContext {
+            agent_id: Arc::new(bind_request.agent_id),
+            channel_map: DashMap::new(),
+            messenger_info_map: DashMap::new(),
+        });
+
+        let messenger_context = self.messenger_map.get(bind_request.messenger_id.as_str())
+            .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
+        
+        let messenger_info = messenger_context.messenger.get_info().await?;
+
+        let user_info = messenger_info.user_map.get(bind_request.user_id.as_str())
+            .ok_or_else(|| Error::UserNotFound(bind_request.user_id.to_string()))?;
+
         let mut channel_infos = Vec::new();
         
-        for channel in self.channel_registry.list_by_agent(agent_id) {
-            channel_infos.push(ChannelInfo {
-                channel_id: channel.channel_id().to_string(),
-                messenger_id: channel.messenger_id().to_string(),
-                group_id: channel.group_id().to_string(),
-                group_name: "".to_string(),
-                user_id: channel.user_id().to_string(),
+        let curr_agent_id = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| agent_context.agent_id.clone());
+        if curr_agent_id.as_str() == agent_context.agent_id.as_str() {
+            //成功绑定到自身
+            let target_messenger_info = agent_context.messenger_info_map.entry(bind_request.messenger_id.as_str().to_string()).or_insert_with(|| Arc::new(MessengerInfo {
+                messenger_id: messenger_info.messenger_id.clone(),
+                messenger_name: messenger_info.messenger_name.clone(),
+                user_map: Arc::new(DashMap::new()),
+            }));
+            let mut inserted = false;
+            target_messenger_info.user_map.entry(user_info.user_id.as_str().to_string()).or_insert_with(|| {
+                inserted = true;
+                user_info.clone()
             });
+            if inserted {
+                //是新绑定的user，创建channels
+                for group_info in user_info.group_map.iter() {
+                    //新建channel
+                    let channel_id = Arc::new(format_channel_id(&messenger_info.messenger_id, &user_info.user_id, &group_info.group_id));
+                    let channel = messenger_context.messenger.create_channel(&user_info.user_id, &group_info.group_id).await?;
+                    let channel_info = Arc::new(ChannelInfo {
+                        channel_id: channel_id.clone(),
+                        messenger_id: messenger_info.messenger_id.clone(),
+                        user_id: user_info.user_id.clone(),
+                        group_id: group_info.group_id.clone(),
+                    });
+                    //放入返回值
+                    channel_infos.push(channel_info.clone());
+                    //记录context
+                    agent_context.channel_map.insert(channel_id.as_str().to_string(), ChannelContext {
+                        channel,
+                        channel_info,
+                        agent_queue: bounded(MSG_QUEUE_SIZE),
+                        memory_store_queue: bounded(MSG_QUEUE_SIZE),
+                    });
+                }
+            }
         }
-        
-        channel_infos
+
+        Ok(channel_infos)
     }
     
     pub async fn handle_agent_message(&self, agent_id: &str, wss_msg: WssMessage) -> Result<()> {

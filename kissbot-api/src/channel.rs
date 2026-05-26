@@ -1,7 +1,7 @@
 use kai_ws::{LEN_PAYLOAD_TYPE, OFFSET_PAYLOAD_TYPE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{LocalMap, LocalString, MapKind, SetKind, StringKind, error::Result};
+use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -30,23 +30,33 @@ impl ChannelInfoKind for LocalChannelInfo {
     type Type = ChannelInfoDTO;
 }
 
+// ========== User Channel Map ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserChannelMapGeneric<M, C>
+where
+    M: MapKind,
+    C: ChannelInfoKind,
+{
+    pub group_channel_map: M::Map<String, C::Type>,
+}
+
+pub type UserChannelMapDTO = UserChannelMapGeneric<LocalMap, LocalChannelInfo>;
+
 // ========== Group Info ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupInfoGeneric<S, C>
+pub struct GroupInfoGeneric<S>
 where
     S: StringKind,
-    C: ChannelInfoKind,
 {
     pub group_id: S::Type,
     pub group_name: S::Type,
-    pub channel: Option<C::Type>,
 }
 
 pub trait GroupInfoKind {
     type Type: Clone + Serialize + DeserializeOwned;
 }
 
-pub type GroupInfoDTO = GroupInfoGeneric<LocalString, LocalChannelInfo>;
+pub type GroupInfoDTO = GroupInfoGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalGroupInfo;
@@ -94,18 +104,7 @@ where
     pub user_map: M::Map<String, U::Type>,
 }
 
-pub trait MessengerInfoKind {
-    type Type: Clone + Serialize + DeserializeOwned;
-}
-
 pub type MessengerInfoDTO = MessengerInfoGeneric<LocalString, LocalMap, LocalUserInfo>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalMessengerInfo;
-
-impl MessengerInfoKind for LocalMessengerInfo {
-    type Type = MessengerInfoDTO;
-}
 
 // ========================= Message & Attachment ==========================
 
@@ -276,25 +275,13 @@ pub type QueryUserNamesResponseDTO = QueryUserNamesResponseGeneric<LocalString, 
 
 // ========== Bind Request ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindRequestGeneric<S,T>
+pub struct BindRequestGeneric<S>
 where
     S: StringKind,
-    T: SetKind,
 {
     pub agent_id: S::Type,
     pub messenger_id: S::Type,
-    pub user_ids: T::Set<String>,
+    pub user_id: S::Type,
 }
 
-// ========== Bind Response ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BindResponseGeneric<S, M, U>
-where
-    S: StringKind,
-    M: MapKind,
-    U: UserInfoKind,
-{
-    pub agent_id: S::Type,
-    pub messenger_id: S::Type,
-    pub user_map: M::Map<String, U::Type>,
-}
+pub type BindRequestDTO = BindRequestGeneric<LocalString>;
