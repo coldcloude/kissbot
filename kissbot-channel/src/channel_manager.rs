@@ -1,14 +1,22 @@
 use crate::error::Result;
-use crate::messenger::{Messenger, MessengerRegistry, OnMessageReceived, OnGroupChange};
+use crate::messenger::Messenger;
 use crate::channel::Channel;
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
-use crate::wss_server::{WssServer, WssOnMessageReceived};
-use dashmap::DashMap;
+use crate::wss_server::WssServer;
+use async_trait::async_trait;
+use dashmap::{DashMap, Entry};
 use flume::{Receiver, Sender};
-use std::sync::Arc;
-use chrono::Utc;
+use kai_ws::{TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsProcessorInitializer, ws_handle_connection};
+use tracing::{Level, error, info, span};
+use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use base64::Engine;
+use tokio::{net::TcpListener, time::{Duration}};
+
+
+const MSG_QUEUE_SIZE: usize = 100;
+
+static INTERVAL: Duration = Duration::from_secs(10);
 
 struct MessengerContext {
     pub info: Arc<MessengerInfo>,
@@ -23,24 +31,108 @@ struct ChannelContext {
 }
 
 struct AgentContext {
+    agent_id: Arc<String>,
     messenger_info_map: DashMap<String, Arc<MessengerInfo>>,
-    channel_map: DashMap<String, ChannelContext>,
+    channel_map: DashMap<String, Arc<ChannelContext>>,
+}
+
+pub struct ConnectContext {
+    pub connect_id: u32,
+    pub ws_context: Arc<WsContext>,
+    agent_map: DashMap<String, Arc<AgentContext>>,
 }
 
 pub struct ChannelManager {
-    messenger_map: DashMap<String, MessengerContext>,
-    agent_map: DashMap<String, AgentContext>,
-    wss_server: Arc<WssServer>,
-    memory_store_client: Arc<MemoryStoreClient>,
+    global_connect_id: AtomicU32,
+    connect_map: DashMap<u32, Arc<ConnectContext>>,
+    messenger_map: DashMap<String, Arc<MessengerContext>>,
+    memory_store_client: MemoryStoreClient,
+}
+
+struct ConnectCloseHandler {
+    manager: Weak<ChannelManager>,
+    connect_id: u32,
+}
+
+#[async_trait]
+impl WsCloseProcessor for ConnectCloseHandler {
+    async fn process_close(&self, _: Arc<WsContext>) -> std::result::Result<(), kai_ws::Error> {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.close_connect(self.connect_id);
+        }
+        Ok(())
+    }
+}
+
+struct ChannelManagerInitializer;
+
+
+#[async_trait]
+impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
+    async fn init(&self, ws_context: Arc<WsContext>, manager: Arc<ChannelManager>) -> std::result::Result<(), kai_ws::Error> {
+        //保存context
+        let connect_id = manager.global_connect_id.fetch_add(1, Ordering::Relaxed);
+        manager.connect_map.insert(connect_id, Arc::new(ConnectContext {
+            connect_id,
+            ws_context: ws_context.clone(),
+            agent_map: DashMap::new(),
+        }));
+        //处理心跳
+        let heartbeat_handler = Arc::new(WsHeartbeatHandler::new(INTERVAL, ws_context.clone()));
+        ws_context.set_bin_processor(TYPE_HEARTBEAT, heartbeat_handler.clone());
+        tokio::spawn(async move { heartbeat_handler.start().await });
+        //处理关闭
+        let close_handler = Arc::new(ConnectCloseHandler {
+            manager: Arc::downgrade(&manager),
+            connect_id,
+        });
+        ws_context.set_close_processor(close_handler);
+        Ok(())
+    }
 }
 
 impl ChannelManager {
-    pub fn new(wss_server: Arc<WssServer>, memory_store_client: Arc<MemoryStoreClient>) -> Self {
+    pub fn new(memory_store_base_url: &str) -> Self {
         Self {
+            global_connect_id: AtomicU32::new(0),
+            connect_map: DashMap::new(),
             messenger_map: DashMap::new(),
-            agent_map: DashMap::new(),
-            wss_server: wss_server.clone(),
-            memory_store_client: memory_store_client.clone(),
+            memory_store_client: MemoryStoreClient::new(memory_store_base_url),
+        }
+    }
+
+    pub async fn start(manager: Arc<Self>, addr: &str) -> Result<()> {
+        let span = span!(Level::INFO, "wss serverstart");
+        let _enter = span.enter();
+        let listener = TcpListener::bind(addr).await?;
+        info!("WSS Server listening on: {}", addr);
+        let initializer = ChannelManagerInitializer {};
+        while let Ok((stream, _)) = listener.accept().await {
+            ws_handle_connection(stream, MSG_QUEUE_SIZE, manager.clone(), &initializer).await?;
+        }
+        Ok(())
+    }
+
+    pub fn close_connect(&self, connect_id: u32) {
+        let span = span!(Level::INFO, "channel_manager close_connect");
+        let _enter = span.enter();
+        if let Some((_,connect_context)) = self.connect_map.remove(&connect_id) {
+            for agent_context in connect_context.agent_map.iter() {
+                //把agent绑定的用户移回到Messenger控制
+                for messenger_info in agent_context.messenger_info_map.iter() {
+                    let messenger_id = messenger_info.messenger_id.as_str().to_string();
+                    //要求messenger必须存在
+                    if let Some(messenger_context) = self.messenger_map.get(&messenger_id) {
+                        for user_info in messenger_info.user_map.iter() {
+                            let user_id = user_info.user_id.as_str().to_string();
+                            messenger_context.info.user_map.insert(user_id, user_info.clone());
+                        }
+                    }
+                    else {
+                        error!("Messenger not found: connect_id {}, messenger_id {}", connect_id, messenger_id);
+                    }
+                }
+            }
         }
     }
     

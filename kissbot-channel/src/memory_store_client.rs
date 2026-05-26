@@ -21,10 +21,10 @@ pub struct MemoryStoreClient {
 }
 
 impl MemoryStoreClient {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: &str) -> Self {
         Self {
             client: Client::new(),
-            base_url,
+            base_url: base_url.to_string(),
         }
     }
     
