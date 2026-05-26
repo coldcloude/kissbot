@@ -2,11 +2,11 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Connect not found: {0}")]
-    ConnectNotFound(String),
+    #[error("Agent not bound: {0}")]
+    AgentNotBound(String),
 
-    #[error("Agent not found: {0}")]
-    AgentNotFound(String),
+    #[error("Agent already bound: {0}")]
+    AgentAlreadyBound(String),
 
     #[error("Messenger not found: {0}")]
     MessengerNotFound(String),
@@ -16,9 +16,6 @@ pub enum Error {
     
     #[error("Channel not found: {0}")]
     ChannelNotFound(String),
-    
-    #[error("Agent not connected: {0}")]
-    AgentNotConnected(String),
     
     #[error("User not found: {0}")]
     UserNotFound(String),

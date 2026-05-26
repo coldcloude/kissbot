@@ -8,11 +8,9 @@ use crate::data::*;
 // Channel trait
 #[async_trait::async_trait]
 pub trait Channel: Send + Sync {
-    fn channel_id(&self) -> &str;
-    fn messenger_id(&self) -> &str;
-    fn user_id(&self) -> &str;
-    fn group_id(&self) -> &str;
-    fn agent_id(&self) -> &str;
+    async fn get_info(&self) -> Result<Arc<ChannelInfo>>;
+
+    async fn forward_group_message(&self, message: &GroupChangeEvent) -> Result<()>;
     
     async fn send_message(&self, message: OutgoingMessageDTO) -> Result<Arc<OutgoingMessageResponse>>;
 

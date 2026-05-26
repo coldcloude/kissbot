@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
 
+pub const TYPE_JOIN_GROUP: u32 = 0x01000001;
+
+pub const TYPE_LEAVE_GROUP: u32 = 0x01000002;
+
 // ========== Messenger -> User -> Group-> Channel ==========
 
 // ========== Channel Info ==========
