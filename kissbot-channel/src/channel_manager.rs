@@ -22,7 +22,6 @@ struct MessengerContext {
 
 struct ChannelContext {
     channel: Arc<dyn Channel>,
-    user_id: Arc<String>,
     messenger_context: Weak<MessengerContext>,
     ws_context: Weak<WsContext>,
     memory_store_client: Weak<MemoryStoreClient>,
@@ -47,8 +46,10 @@ impl ChannelContext {
         .ok_or_else(|| Error::InternalError("memory_store_client is None".to_string()))?;
         let messenger_context = self.messenger_context.upgrade()
         .ok_or_else(|| Error::InternalError("messenger_context is None".to_string()))?;
-        let agent_role = messenger_context.bound_map.get(self.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(format!("User not bound: user_id {}", self.user_id)))?;
+        
+        let channel_info = self.channel.get_info();
+        let agent_role = messenger_context.bound_map.get(channel_info.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(format!("User not bound: user_id {}", channel_info.user_id)))?;
         memory_store_client.push_messages(agent_role.0.clone(), agent_role.1.clone(), event.messages.clone()).await?;
         Ok(())
     }
@@ -387,7 +388,6 @@ impl ChannelManager {
         //记录context
         let channel_context = Arc::new(ChannelContext {
             channel: channel.clone(),
-            user_id: user_id.clone(),
             messenger_context: Arc::downgrade(&messenger_context),
             ws_context: Arc::downgrade(&ws_context),
             memory_store_client: Arc::downgrade(&self.memory_store_client),
