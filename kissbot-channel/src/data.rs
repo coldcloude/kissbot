@@ -71,7 +71,7 @@ pub struct IncomingMessageEvent {
 
 #[async_trait]
 pub trait IncomingMessageHandler: Send + Sync {
-    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) -> Result<()>;
+    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>);
 }
 
 // ========== Group Change ==========
@@ -92,7 +92,7 @@ pub enum GroupChangeType {
 
 #[async_trait]
 pub trait GroupChangeHandler: Send + Sync {
-    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) -> Result<()>;
+    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>);
 }
 
 // Helper functions

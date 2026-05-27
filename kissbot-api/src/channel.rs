@@ -1,4 +1,4 @@
-use kai_ws::{LEN_PAYLOAD_TYPE, OFFSET_PAYLOAD_TYPE};
+use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
@@ -10,6 +10,10 @@ pub const TYPE_LEAVE_GROUP: u32 = 0x00010002;
 pub const TYPE_INCOMING_MESSAGE: u32 = 0x00020003;
 
 pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00020004;
+
+pub const TYPE_BIND_AGENT_USER: u32 = 0x00030001;
+
+pub const TYPE_UNBIND_AGENT_USER: u32 = 0x00030002;
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -200,7 +204,7 @@ pub type AttachmentDownloadResponseHeaderDTO = AttachmentDownloadResponseHeaderG
 
 pub const BIN_TYPE_ATTACHMENT: u16 = 0x0001;
 
-const OFFSET_ATT_ID: usize = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE;
+const OFFSET_ATT_ID: usize = OFFSET_STATUS_CODE + LEN_STATUS_CODE;
 const LEN_ATT_ID: usize = 4;
 const OFFSET_ATT_SIZE: usize = OFFSET_ATT_ID + LEN_ATT_ID;
 const LEN_ATT_SIZE: usize = 4;

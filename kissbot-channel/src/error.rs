@@ -10,6 +10,12 @@ pub enum Error {
     #[error("Agent already bound: {0}")]
     AgentAlreadyBound(String),
 
+    #[error("Agent not found: {0}")]
+    AgentNotFound(String),
+
+    #[error("Connect not found: {0}")]
+    ConnectNotFound(String),
+
     #[error("Messenger not found: {0}")]
     MessengerNotFound(String),
 
@@ -18,6 +24,9 @@ pub enum Error {
     
     #[error("Channel not found: {0}")]
     ChannelNotFound(String),
+
+    #[error("Group not found: {0}")]
+    GroupNotFound(String),
     
     #[error("User not found: {0}")]
     UserNotFound(String),
@@ -25,17 +34,14 @@ pub enum Error {
     #[error("User already bound: {0}")]
     UserAlreadyBound(String),
     
-    #[error("Group not found: {0}")]
-    GroupNotFound(String),
-    
     #[error("Attachment not found: {0}")]
     AttachmentNotFound(String),
     
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
     
-    #[error("WSS error: {0}")]
-    WssError(#[from] tokio_tungstenite::tungstenite::Error),
+    #[error("Tungstenite error: {0}")]
+    TungsteniteError(#[from] tokio_tungstenite::tungstenite::Error),
     
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
@@ -57,6 +63,10 @@ pub enum Error {
 
     #[error("Request error: {0}")]
     RequestError(String),
+
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
