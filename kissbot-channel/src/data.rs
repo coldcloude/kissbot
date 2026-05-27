@@ -62,9 +62,11 @@ pub trait AttachmentDownloadResponsePayloadSender: Send + Sync {
 // ========== Receiving Message ==========
 pub type IncomingMessage = IncomingMessageGeneric<SyncString>;
 
+pub type IncomingMessages = Vec<Arc<IncomingMessage>>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingMessageEvent {
-    pub messages: Vec<IncomingMessage>,
+    pub messages: Arc<IncomingMessages>,
 }
 
 #[async_trait]
@@ -75,11 +77,11 @@ pub trait IncomingMessageHandler: Send + Sync {
 // ========== Group Change ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupChangeEvent {
-    pub messenger_id: String,
-    pub user_id: String,
-    pub group_id: String,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub change_type: GroupChangeType,
-    pub time: String,
+    pub time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -3,9 +3,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
 
-pub const TYPE_JOIN_GROUP: u32 = 0x01000001;
+pub const TYPE_JOIN_GROUP: u32 = 0x00010001;
 
-pub const TYPE_LEAVE_GROUP: u32 = 0x01000002;
+pub const TYPE_LEAVE_GROUP: u32 = 0x00010002;
+
+pub const TYPE_INCOMING_MESSAGE: u32 = 0x00020003;
+
+pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00020004;
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -239,6 +243,8 @@ where
 
 pub type IncomingMessageDTO = IncomingMessageGeneric<LocalString>;
 
+pub type IncomingMessagesDTO = Vec<IncomingMessageDTO>;
+
 // ========== Query & Bind ==========
 
 // ========== Query Messenger Name Response ==========
@@ -284,6 +290,7 @@ where
     S: StringKind,
 {
     pub agent_id: S::Type,
+    pub role_name: S::Type,
     pub messenger_id: S::Type,
     pub user_id: S::Type,
 }

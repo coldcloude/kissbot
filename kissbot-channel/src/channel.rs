@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use kissbot_api::channel::{AttachmentDownloadRequestDTO, OutgoingMessageDTO};
 
@@ -10,7 +10,7 @@ use crate::data::*;
 pub trait Channel: Send + Sync {
     async fn get_info(&self) -> Result<Arc<ChannelInfo>>;
 
-    async fn forward_group_message(&self, message: &GroupChangeEvent) -> Result<()>;
+    async fn group_change_to_incoming_message(&self, message: Arc<GroupChangeEvent>) -> Result<Arc<IncomingMessageEvent>>;
     
     async fn send_message(&self, message: OutgoingMessageDTO) -> Result<Arc<OutgoingMessageResponse>>;
 
@@ -20,5 +20,5 @@ pub trait Channel: Send + Sync {
 
     async fn download_attachment_payload(&self, sender: Arc<dyn AttachmentDownloadResponsePayloadSender>) -> Result<()>;
 
-    fn register_on_incoming_messages(&self, callback: Arc<dyn IncomingMessageHandler>);
+    fn register_on_incoming_messages(&self, callback: Weak<dyn IncomingMessageHandler>);
 }

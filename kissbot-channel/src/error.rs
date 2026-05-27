@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::{memory_store_client::MessagesRecord};
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Agent not bound: {0}")]
@@ -46,6 +48,12 @@ pub enum Error {
 
     #[error("WS error: {0}")]
     WsError(#[from] kai_ws::Error),
+
+    #[error("Send error: {0}")]
+    SendError(#[from] flume::SendError<MessagesRecord>),
+
+    #[error("Recv error: {0}")]
+    RecvError(#[from] flume::RecvError),
 
     #[error("Request error: {0}")]
     RequestError(String),

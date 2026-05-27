@@ -5,10 +5,10 @@ use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
-use flume::{Receiver, Sender, bounded};
 use kai_ws::{TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsMessage, WsProcessorInitializer, ws_handle_connection};
-use kissbot_api::channel::{BindRequestDTO, TYPE_JOINT_GROUP};
+use kissbot_api::channel::{BindRequestDTO, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP};
 use tracing::{Level, error, info, span};
+use std::fmt::Display;
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use base64::Engine;
 use tokio::{net::TcpListener, time::{Duration}};
@@ -20,19 +20,61 @@ static INTERVAL: Duration = Duration::from_secs(10);
 struct MessengerContext {
     pub messenger_id: Arc<String>,
     pub messenger: Arc<dyn Messenger>,
-    pub bound_map: DashMap<String, Arc<String>>,
+    pub bound_map: DashMap<String, (Arc<String>, Arc<String>)>,
 }
 
 struct ChannelContext {
     channel: Arc<dyn Channel>,
-    memory_store_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
-    agent_queue: (Sender<Vec<IncomingMessage>>, Receiver<Vec<IncomingMessage>>),
+    user_id: Arc<String>,
+    messenger_context: Weak<MessengerContext>,
+    ws_context: Weak<WsContext>,
+    memory_store_client: Weak<MemoryStoreClient>,
+}
+
+#[async_trait]
+impl IncomingMessageHandler for ChannelContext {
+    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+        let mut err_msgs = Vec::new();
+        //发送给agent
+        if let Some(ws_context) = self.ws_context.upgrade() {
+            match serde_json::to_value(event.messages.clone()){
+                Ok(payload) => {
+                    if let Err(e) = ws_context.send_json(WsMessage {
+                        sn: ws_context.next_request_sn(),
+                        payload_type: TYPE_INCOMING_MESSAGE,
+                        payload,
+                    }).await {
+                        err_msgs.push(e.to_string());
+                    }
+                },
+                Err(e) => {
+                    err_msgs.push(e.to_string());
+                }
+            }
+        }
+        //发送到记忆存储
+        if let Some(memory_store_client) = self.memory_store_client.upgrade() {
+            //发送到记忆存储
+            if let Some(messenger_context) = self.messenger_context.upgrade() {
+                if let Some(agent_role) = messenger_context.bound_map.get(self.user_id.as_str()) {
+                    if let Err(e) = memory_store_client.push_messages(agent_role.0.clone(), agent_role.1.clone(), event.messages.clone()).await {
+                        err_msgs.push(e.to_string());
+                    }
+                }
+            }
+        }
+        if err_msgs.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::RequestError(err_msgs.join("\n")))
+        }
+    }
 }
 
 struct AgentContext {
     connect_id: u32,
     agent_id: Arc<String>,
-    messenger_user_group_channel_map: DashMap<String, DashMap<String, DashMap<String, ChannelContext>>>,
+    messenger_user_group_channel_map: DashMap<String, DashMap<String, DashMap<String, Arc<ChannelContext>>>>,
 }
 
 struct ConnectContext {
@@ -45,8 +87,8 @@ pub struct ChannelManager {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     agent_map: DashMap<String, Arc<AgentContext>>,
-    messenger_map: DashMap<String, MessengerContext>,
-    memory_store_client: MemoryStoreClient,
+    messenger_map: DashMap<String, Arc<MessengerContext>>,
+    memory_store_client: Arc<MemoryStoreClient>,
 }
 
 struct ConnectCloseHandler {
@@ -65,7 +107,6 @@ impl WsCloseProcessor for ConnectCloseHandler {
 }
 
 struct ChannelManagerInitializer;
-
 
 #[async_trait]
 impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
@@ -92,19 +133,6 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
     }
 }
 
-async fn create_channel(messenger: &dyn Messenger, user_id: &str, group_id: &str, group_map: &DashMap<String, ChannelContext>) -> Result<Arc<dyn Channel>> {
-    //新建channel
-    let channel = messenger.create_channel(user_id, group_id).await?;
-    //记录context
-    group_map.insert(group_id.to_string(), ChannelContext {
-        channel: channel.clone(),
-        agent_queue: bounded(MSG_QUEUE_SIZE),
-        memory_store_queue: bounded(MSG_QUEUE_SIZE),
-    });
-    //返回
-    Ok(channel)
-}
-
 impl ChannelManager {
     pub fn new(memory_store_base_url: &str) -> Self {
         Self {
@@ -112,11 +140,17 @@ impl ChannelManager {
             connect_map: DashMap::new(),
             agent_map: DashMap::new(),
             messenger_map: DashMap::new(),
-            memory_store_client: MemoryStoreClient::new(memory_store_base_url),
+            memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url)),
         }
     }
 
     pub async fn start(manager: Arc<Self>, addr: &str) -> Result<()> {
+        //start memory store client
+        let manager_for_memory_store = manager.clone();
+        tokio::spawn(async move {
+            manager_for_memory_store.memory_store_client.start_send_messages().await
+        });
+        //start wss server
         let span = span!(Level::INFO, "wss serverstart");
         let _enter = span.enter();
         let listener = TcpListener::bind(addr).await?;
@@ -152,14 +186,17 @@ impl ChannelManager {
         }
     }
     
-    pub fn register_messenger(&self, messenger_id: &str, messenger: Arc<dyn Messenger>) -> Result<()> {
-        match self.messenger_map.entry(messenger_id.to_string()) {
+    pub fn register_messenger(manager: Arc<Self>, messenger_id: &str, messenger: Arc<dyn Messenger>) -> Result<()> {
+        match manager.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
-                entry.insert(MessengerContext {
+                let messenger_context = Arc::new(MessengerContext {
                     messenger_id: Arc::new(messenger_id.to_string()),
-                    messenger: messenger,
+                    messenger: messenger.clone(),
                     bound_map: DashMap::new(),
                 });
+                entry.insert(messenger_context);
+                let manager_weak = Arc::downgrade(&manager);
+                messenger.register_on_group_change(manager_weak);
                 Ok(())
             }
             Entry::Occupied(entry) => {
@@ -168,8 +205,27 @@ impl ChannelManager {
         }
     }
 
+    async fn create_channel(&self, messenger_context: Arc<MessengerContext>, user_id: Arc<String>, group_id: Arc<String>, ws_context: Arc<WsContext>) -> Result<Arc<ChannelContext>> {
+        //新建channel
+        let channel = messenger_context.messenger.create_channel(user_id.as_str(), group_id.as_str()).await?;
+        //记录context
+        let channel_context = Arc::new(ChannelContext {
+            channel: channel.clone(),
+            user_id: user_id.clone(),
+            messenger_context: Arc::downgrade(&messenger_context),
+            ws_context: Arc::downgrade(&ws_context),
+            memory_store_client: Arc::downgrade(&self.memory_store_client),
+        });
+        //绑定消息事件
+        let channel_context_weak = Arc::downgrade(&channel_context);
+        channel.register_on_incoming_messages(channel_context_weak);
+        //返回
+        Ok(channel_context)
+    }
+
     pub async fn bind_agent_user(&self, connect_context: &ConnectContext, bind_request: BindRequestDTO) -> Result<Vec<Arc<ChannelInfo>>> {
         let agent_id = Arc::new(bind_request.agent_id);
+        let role_name = Arc::new(bind_request.role_name);
 
         //检查agent是否已绑定
         let agent_context = match self.agent_map.entry(agent_id.as_str().to_string()) {
@@ -211,9 +267,9 @@ impl ChannelManager {
         let mut channel_infos = Vec::new();
         
         //绑定用户
-        let curr_agent_id = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| agent_context.agent_id.clone());
-
-        if curr_agent_id.as_str() == agent_context.agent_id.as_str() {
+        let bound_info = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| (agent_context.agent_id.clone(), role_name.clone()));
+        
+        if bound_info.0.as_str() == agent_context.agent_id.as_str() {
             //成功绑定到自身
             let mut inserted = false;
             let user_map = agent_context.messenger_user_group_channel_map.entry(messenger_info.messenger_id.as_str().to_string()).or_insert_with(|| DashMap::new());
@@ -224,8 +280,9 @@ impl ChannelManager {
             if inserted {
                 //是新绑定的user，为每个group创建channel
                 for group_info in user_info.group_map.iter() {
-                    let channel = create_channel(messenger_context.messenger.as_ref(), user_info.user_id.as_str(), group_info.group_id.as_str(), group_map.value()).await?;
-                    let channel_info = channel.get_info().await?;
+                    let channel_context = self.create_channel(messenger_context.clone(), user_info.user_id.clone(), group_info.group_id.clone(), connect_context.ws_context.clone()).await?;
+                    let channel_info = channel_context.channel.get_info().await?;
+                    group_map.insert(group_info.group_id.as_str().to_string(), channel_context);
                     channel_infos.push(channel_info);
                 }
             }
@@ -246,50 +303,6 @@ impl ChannelManager {
         if let Some(messenger_context) = self.messenger_map.get(bind_request.messenger_id.as_str()) {
             messenger_context.bound_map.remove(bind_request.user_id.as_str());
         }
-    }
-
-    pub async fn handle_group_change(&self, event: &GroupChangeEvent) -> Result<()> {
-        if let Some(messenger_context) = self.messenger_map.get(&event.messenger_id) {
-            if let Some(agent_id) = messenger_context.bound_map.get(event.user_id.as_str()) {
-                if let Some(agent_context) = self.agent_map.get(agent_id.as_str()){
-                    if let Some(connect_context) = self.connect_map.get(&agent_context.connect_id){
-                        if let Some(user_map) = agent_context.messenger_user_group_channel_map.get(event.messenger_id.as_str()){
-                            if let Some(group_map) = user_map.get(event.user_id.as_str()){
-                                match event.change_type {
-                                    GroupChangeType::Joined => {
-                                        //新建channel
-                                        let channel = create_channel(messenger_context.messenger.as_ref(), event.user_id.as_str(), event.group_id.as_str(), group_map.value()).await?;
-                                        let channel_info = channel.get_info().await?;
-                                        //给agent发消息
-                                        connect_context.ws_context.send_json(WsMessage {
-                                            sn: connect_context.ws_context.next_request_sn(),
-                                            payload_type: TYPE_JOINT_GROUP,
-                                            payload: serde_json::to_value(channel_info)?,
-                                        });
-                                        //传递消息到channel
-                                        channel.forward_group_message(event).await?;
-                                    }
-                                    GroupChangeType::Left => {
-                                        //退出group
-                                        if let Some((_,channel)) = group_map.remove(&event.group_id) {
-                                            //传递消息到channel
-                                            channel.channel.forward_group_message(event).await?;
-                                            //给agent发消息
-                                            connect_context.ws_context.send_json(WsMessage {
-                                                sn: connect_context.ws_context.next_request_sn(),
-                                                payload_type: TYPE_LEFT_GROUP,
-                                                payload: serde_json::to_value(channel_info)?,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
     }
     
     pub async fn handle_agent_message(&self, agent_id: &str, wss_msg: WssMessage) -> Result<()> {
@@ -409,6 +422,58 @@ impl ChannelManager {
             }
         }
         
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl GroupChangeHandler for ChannelManager {
+    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
+        if let Some(messenger_context) = self.messenger_map.get(event.messenger_id.as_str()) {
+            if let Some(agent_role) = messenger_context.bound_map.get(event.user_id.as_str()) {
+                if let Some(agent_context) = self.agent_map.get(agent_role.0.as_str()){
+                    if let Some(connect_context) = self.connect_map.get(&agent_context.connect_id){
+                        if let Some(user_map) = agent_context.messenger_user_group_channel_map.get(event.messenger_id.as_str()){
+                            if let Some(group_map) = user_map.get(event.user_id.as_str()){
+                                //转换为incoming message
+                                match event.change_type {
+                                    GroupChangeType::Joined => {
+                                        //新建channel
+                                        let channel_context = self.create_channel(messenger_context.clone(), event.user_id.clone(), event.group_id.clone(), connect_context.ws_context.clone()).await?;
+                                        group_map.insert(event.group_id.as_str().to_string(), channel_context.clone());
+                                        let channel_info = channel_context.channel.get_info().await?;
+                                        //通知agent新建channel
+                                        connect_context.ws_context.send_json(WsMessage {
+                                            sn: connect_context.ws_context.next_request_sn(),
+                                            payload_type: TYPE_JOIN_GROUP,
+                                            payload: serde_json::to_value(channel_info)?,
+                                        });
+                                        //给agent发channel变更消息
+                                        let msg_event = channel_context.channel.group_change_to_incoming_message(event.clone()).await?;
+                                        channel_context.handle_incoming_message(msg_event);
+                                    }
+                                    GroupChangeType::Left => {
+                                        //退出group
+                                        if let Some((_,channel_context)) = group_map.remove(event.group_id.as_str()) {
+                                            //给agent发channel变更消息
+                                            let msg_event = channel_context.channel.group_change_to_incoming_message(event.clone()).await?;
+                                            channel_context.handle_incoming_message(msg_event);
+                                            //通知agent退出channel
+                                            let channel_info = channel_context.channel.get_info().await?;
+                                            connect_context.ws_context.send_json(WsMessage {
+                                                sn: connect_context.ws_context.next_request_sn(),
+                                                payload_type: TYPE_LEAVE_GROUP,
+                                                payload: serde_json::to_value(channel_info)?,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
