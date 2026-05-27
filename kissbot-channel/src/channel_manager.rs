@@ -6,7 +6,7 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, ws_handle_connection};
-use kissbot_api::channel::{BindRequestDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_UNBIND_AGENT_USER};
+use kissbot_api::channel::{BindRequestDTO, MessengerInfoRequestDTO, OutgoingMessageDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -90,12 +90,12 @@ pub struct ChannelManager {
     memory_store_client: Arc<MemoryStoreClient>,
 }
 
-struct ConnectCloseHandler {
+struct ConnectCloseProcessor {
     manager: Weak<ChannelManager>,
     connect_id: u32,
 }
 
-impl ConnectCloseHandler {
+impl ConnectCloseProcessor {
     pub fn close_connect(&self) -> Result<()> {
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
@@ -121,7 +121,7 @@ impl ConnectCloseHandler {
 }
 
 #[async_trait]
-impl WsCloseProcessor for ConnectCloseHandler {
+impl WsCloseProcessor for ConnectCloseProcessor {
     async fn process_close(&self, _: Arc<WsContext>) {
         if let Err(e) = self.close_connect() {
             error!("Close connect error: {}", e);
@@ -158,13 +158,47 @@ trait JsonProcessorWrapper {
     }
 }
 
-struct BindAgentHandler {
+struct MessengerInfoRequestProcessor {
+    manager: Weak<ChannelManager>,
+}
+
+#[async_trait]
+impl JsonProcessorWrapper for MessengerInfoRequestProcessor {
+    async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
+        let payload = data.payload
+        .ok_or_else(|| Error::InternalError("payload is None".to_string()))?;
+        
+        let messenger_info_request = serde_json::from_value::<MessengerInfoRequestDTO>(payload)?;
+        
+        let manager = self.manager.upgrade()
+        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        
+        let messenger_context = manager.messenger_map.get(&messenger_info_request.messenger_id)
+        .ok_or_else(|| Error::InternalError(format!("Messenger not found: messenger_id {}", messenger_info_request.messenger_id)))?;
+        
+        let messenger_info = messenger_context.messenger.get_info().await?;
+
+        let response = serde_json::to_value(messenger_info)?;
+        Ok(Some(response))
+    }
+}
+
+#[async_trait]
+impl WsJsonProcessor for MessengerInfoRequestProcessor {
+    async fn process_json(&self, data: WsMessage, context: Arc<WsContext>){
+        if let Err(e) = self.wrap_process_json(data, context).await {
+            error!("Messenger info request error: {:?}", e);
+        }
+    }
+}
+
+struct BindAgentUserProcessor {
     manager: Weak<ChannelManager>,
     connect_context: Weak<ConnectContext>,
 }
 
 #[async_trait]
-impl JsonProcessorWrapper for BindAgentHandler {
+impl JsonProcessorWrapper for BindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
         .ok_or_else(|| Error::InternalError("payload is None".to_string()))?;
@@ -246,7 +280,7 @@ impl JsonProcessorWrapper for BindAgentHandler {
 }
 
 #[async_trait]
-impl WsJsonProcessor for BindAgentHandler {
+impl WsJsonProcessor for BindAgentUserProcessor {
     async fn process_json(&self, data: WsMessage, context: Arc<WsContext>){
         if let Err(e) = self.wrap_process_json(data, context).await {
             error!("bind_agent_user error: {:?}", e);
@@ -254,13 +288,13 @@ impl WsJsonProcessor for BindAgentHandler {
     }
 }
 
-struct UnbindAgentUserHandler {
+struct UnbindAgentUserProcessor {
     manager: Weak<ChannelManager>,
     connect_context: Weak<ConnectContext>,
 }
 
 #[async_trait]
-impl JsonProcessorWrapper for UnbindAgentUserHandler {
+impl JsonProcessorWrapper for UnbindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
         .ok_or_else(|| Error::RequestError("payload is None".to_string()))?;
@@ -288,10 +322,59 @@ impl JsonProcessorWrapper for UnbindAgentUserHandler {
 }
 
 #[async_trait]
-impl WsJsonProcessor for UnbindAgentUserHandler {
+impl WsJsonProcessor for UnbindAgentUserProcessor {
     async fn process_json(&self, data: WsMessage, context: Arc<WsContext>){
         if let Err(e) = self.wrap_process_json(data, context).await {
             error!("unbind_agent_user error: {:?}", e);
+        }
+    }
+}
+
+struct OutgoingMessageProcessor {
+    manager: Weak<ChannelManager>,
+}
+
+#[async_trait]
+impl JsonProcessorWrapper for OutgoingMessageProcessor {
+    async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
+        let payload = data.payload
+        .ok_or_else(|| Error::RequestError("payload is None".to_string()))?;
+
+        let outgoing_message = serde_json::from_value::<OutgoingMessageDTO>(payload)?;
+        
+        let manager = self.manager.upgrade()
+        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+
+        let messenger_context = manager.messenger_map.get(outgoing_message.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
+
+        let agent_role = messenger_context.bound_map.get(outgoing_message.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
+
+        let agent_context = manager.agent_map.get(agent_role.0.as_str())
+        .ok_or_else(|| Error::AgentNotFound(agent_role.0.as_str().to_string()))?;
+
+        let user_map = agent_context.messenger_user_group_channel_map.get(outgoing_message.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
+
+        let group_map = user_map.get(outgoing_message.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
+
+        let channel_context = group_map.get(outgoing_message.group_id.as_str())
+        .ok_or_else(|| Error::GroupNotFound(outgoing_message.group_id.clone()))?;
+        
+        let response = channel_context.channel.send_message(outgoing_message).await?;
+        
+        let response = serde_json::to_value(response)?;
+        Ok(Some(response))
+    }
+}
+
+#[async_trait]
+impl WsJsonProcessor for OutgoingMessageProcessor {
+    async fn process_json(&self, data: WsMessage, context: Arc<WsContext>){
+        if let Err(e) = self.wrap_process_json(data, context).await {
+            error!("outgoing_message error: {:?}", e);
         }
     }
 }
@@ -314,23 +397,33 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
         ws_context.set_bin_processor(TYPE_HEARTBEAT, heartbeat_handler.clone());
         tokio::spawn(async move { heartbeat_handler.start().await });
         //处理关闭
-        let close_handler = Arc::new(ConnectCloseHandler {
+        let close_handler = Arc::new(ConnectCloseProcessor {
             manager: Arc::downgrade(&manager),
             connect_id,
         });
         ws_context.set_close_processor(close_handler);
+        //messenger info request
+        let messenger_info_request_handler = Arc::new(MessengerInfoRequestProcessor {
+            manager: Arc::downgrade(&manager),
+        });
+        ws_context.set_json_processor(TYPE_MESSENGER_INFO_REQUEST, messenger_info_request_handler);
         //agent绑定
-        let bind_agent_handler = Arc::new(BindAgentHandler {
+        let bind_agent_handler = Arc::new(BindAgentUserProcessor {
             manager: Arc::downgrade(&manager),
             connect_context: Arc::downgrade(&connect_context),
         });
         ws_context.set_json_processor(TYPE_BIND_AGENT_USER, bind_agent_handler);
         //agent解绑
-        let unbind_agent_handler = Arc::new(UnbindAgentUserHandler {
+        let unbind_agent_handler = Arc::new(UnbindAgentUserProcessor {
             manager: Arc::downgrade(&manager),
             connect_context: Arc::downgrade(&connect_context),
         });
         ws_context.set_json_processor(TYPE_UNBIND_AGENT_USER, unbind_agent_handler);
+        //outgoing message
+        let outgoing_message_handler = Arc::new(OutgoingMessageProcessor {
+            manager: Arc::downgrade(&manager),
+        });
+        ws_context.set_json_processor(TYPE_OUTGOING_MESSAGE, outgoing_message_handler);
         Ok(())
     }
 }

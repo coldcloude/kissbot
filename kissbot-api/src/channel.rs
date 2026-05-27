@@ -3,17 +3,19 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
 
-pub const TYPE_JOIN_GROUP: u32 = 0x00010001;
+pub const TYPE_MESSENGER_INFO_REQUEST: u32 = 0x00010001;
 
-pub const TYPE_LEAVE_GROUP: u32 = 0x00010002;
+pub const TYPE_BIND_AGENT_USER: u32 = 0x00020002;
 
-pub const TYPE_INCOMING_MESSAGE: u32 = 0x00020003;
+pub const TYPE_UNBIND_AGENT_USER: u32 = 0x00020003;
 
-pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00020004;
+pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00030004;
 
-pub const TYPE_BIND_AGENT_USER: u32 = 0x00030001;
+pub const TYPE_JOIN_GROUP: u32 = 0x10010001;
 
-pub const TYPE_UNBIND_AGENT_USER: u32 = 0x00030002;
+pub const TYPE_LEAVE_GROUP: u32 = 0x10010002;
+
+pub const TYPE_INCOMING_MESSAGE: u32 = 0x10020003;
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -41,18 +43,6 @@ pub struct LocalChannelInfo;
 impl ChannelInfoKind for LocalChannelInfo {
     type Type = ChannelInfoDTO;
 }
-
-// ========== User Channel Map ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserChannelMapGeneric<M, C>
-where
-    M: MapKind,
-    C: ChannelInfoKind,
-{
-    pub group_channel_map: M::Map<String, C::Type>,
-}
-
-pub type UserChannelMapDTO = UserChannelMapGeneric<LocalMap, LocalChannelInfo>;
 
 // ========== Group Info ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +108,17 @@ where
 
 pub type MessengerInfoDTO = MessengerInfoGeneric<LocalString, LocalMap, LocalUserInfo>;
 
+// ========== Messenger Info Request ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessengerInfoRequestGeneric<S>
+where
+    S: StringKind,
+{
+    pub messenger_id: S::Type,
+}
+
+pub type MessengerInfoRequestDTO = MessengerInfoRequestGeneric<LocalString>;
+
 // ========================= Message & Attachment ==========================
 
 // ========== Attachment Info ==========
@@ -152,9 +153,9 @@ where
     M: MapKind,
     A: AttachmentInfoKind,
 {
-    pub channel_id: S::Type,
+    pub messenger_id: S::Type,
     pub user_id: S::Type,
-    pub is_self: usize,
+    pub group_id: S::Type,
     pub msg_type: S::Type,
     pub content: S::Type,
     pub time: S::Type,

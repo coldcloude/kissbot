@@ -17,8 +17,6 @@ impl ChannelInfoKind for SyncChannelInfo {
     type Type = Arc<ChannelInfo>;
 }
 
-pub type UserChannelMap = UserChannelMapGeneric<SyncMap, SyncChannelInfo>;
-
 pub type GroupInfo = GroupInfoGeneric<SyncString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
