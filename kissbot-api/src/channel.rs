@@ -1,7 +1,10 @@
+use std::array::TryFromSliceError;
+
+use async_trait::async_trait;
 use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{LocalMap, LocalString, MapKind, StringKind, error::Result};
+use crate::{LocalMap, LocalString, MapKind, StringKind};
 
 pub const TYPE_MESSENGER_INFO_REQUEST: u32 = 0x00010001;
 
@@ -203,7 +206,7 @@ pub type AttachmentDownloadResponseHeaderDTO = AttachmentDownloadResponseHeaderG
 
 //========================= Attachment Binary ==========================
 
-pub const BIN_TYPE_ATTACHMENT: u16 = 0x0001;
+pub const TYPE_ATTACHMENT_PAYLOAD: u32 = 0x20010001;
 
 const OFFSET_ATT_ID: usize = OFFSET_STATUS_CODE + LEN_STATUS_CODE;
 const LEN_ATT_ID: usize = 4;
@@ -213,11 +216,16 @@ const OFFSET_ATT_POS: usize = OFFSET_ATT_SIZE + LEN_ATT_SIZE;
 const LEN_ATT_POS: usize = 8;
 const OFFSET_ATT_DATA: usize = OFFSET_ATT_POS + LEN_ATT_POS;
 
-pub trait AttachmentProcessor {
-    fn process_attachment(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> Result<()>;
+#[async_trait]
+pub trait AttachmentProcessor<E: From<TryFromSliceError> + Send + Sync> {
+    async fn process_attachment(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> std::result::Result<(), E>;
 }
 
-pub fn process_attachment<P: AttachmentProcessor>(data: &[u8], processor: &mut P) -> Result<()> {
+pub async fn process_attachment<E, P>(data: &[u8], processor: &P) -> std::result::Result<(), E>
+where
+    E: From<TryFromSliceError> + Send + Sync,
+    P: AttachmentProcessor<E>,
+{
     let id_bin: [u8; 4] = data[OFFSET_ATT_ID..OFFSET_ATT_ID + LEN_ATT_ID].try_into()?;
     let id = u32::from_be_bytes(id_bin);
     let size_bin: [u8; 4] = data[OFFSET_ATT_SIZE..OFFSET_ATT_SIZE + LEN_ATT_SIZE].try_into()?;
@@ -225,7 +233,7 @@ pub fn process_attachment<P: AttachmentProcessor>(data: &[u8], processor: &mut P
     let pos_bin: [u8; 8] = data[OFFSET_ATT_POS..OFFSET_ATT_POS + LEN_ATT_POS].try_into()?;
     let pos = u64::from_be_bytes(pos_bin);
     let data = &data[OFFSET_ATT_DATA..];
-    processor.process_attachment(id, size, pos, data)?;
+    processor.process_attachment(id, size, pos, data).await?;
     Ok(())
 }
 

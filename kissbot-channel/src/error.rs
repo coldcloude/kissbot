@@ -4,15 +4,6 @@ use crate::{memory_store_client::MessagesRecord};
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Agent not bound: {0}")]
-    AgentNotBound(String),
-
-    #[error("Agent already bound: {0}")]
-    AgentAlreadyBound(String),
-
-    #[error("Agent not found: {0}")]
-    AgentNotFound(String),
-
     #[error("Connect not found: {0}")]
     ConnectNotFound(String),
 
@@ -21,9 +12,6 @@ pub enum Error {
 
     #[error("Messenger already registered: {0}")]
     MessengerAlreadyRegistered(String),
-    
-    #[error("Channel not found: {0}")]
-    ChannelNotFound(String),
 
     #[error("Group not found: {0}")]
     GroupNotFound(String),
@@ -31,8 +19,11 @@ pub enum Error {
     #[error("User not found: {0}")]
     UserNotFound(String),
 
-    #[error("User already bound: {0}")]
+    #[error("User already bound to : {0}")]
     UserAlreadyBound(String),
+
+    #[error("User not bound: {0}")]
+    UserNotBound(String),
     
     #[error("Attachment not found: {0}")]
     AttachmentNotFound(String),
@@ -60,6 +51,9 @@ pub enum Error {
 
     #[error("Recv error: {0}")]
     RecvError(#[from] flume::RecvError),
+
+    #[error("TryFromSliceError: {0}")]
+    TryFromSliceError(#[from] std::array::TryFromSliceError),
 
     #[error("Request error: {0}")]
     RequestError(String),

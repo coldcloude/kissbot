@@ -5,7 +5,8 @@ use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use dashmap::{DashMap, Entry};
-use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, ws_handle_connection};
+use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection};
+use kissbot_api::{AttachmentProcessor, TYPE_ATTACHMENT_PAYLOAD, process_attachment};
 use kissbot_api::channel::{BindRequestDTO, MessengerInfoRequestDTO, OutgoingMessageDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -15,9 +16,15 @@ const MSG_QUEUE_SIZE: usize = 100;
 
 static INTERVAL: Duration = Duration::from_secs(10);
 
+struct BoundInfo {
+    pub connect_id: u32,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+}
+
 struct MessengerContext {
     pub messenger: Arc<dyn Messenger>,
-    pub bound_map: DashMap<String, (Arc<String>, Arc<String>)>,
+    pub bound_map: DashMap<String, BoundInfo>,
 }
 
 struct ChannelContext {
@@ -48,9 +55,9 @@ impl ChannelContext {
         .ok_or_else(|| Error::InternalError("messenger_context is None".to_string()))?;
         
         let channel_info = self.channel.get_info();
-        let agent_role = messenger_context.bound_map.get(channel_info.user_id.as_str())
+        let bound_info = messenger_context.bound_map.get(channel_info.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(format!("User not bound: user_id {}", channel_info.user_id)))?;
-        memory_store_client.push_messages(agent_role.0.clone(), agent_role.1.clone(), event.messages.clone()).await?;
+        memory_store_client.push_messages(bound_info.agent_id.clone(), bound_info.role_name.clone(), event.messages.clone()).await?;
         Ok(())
     }
 }
@@ -70,24 +77,20 @@ impl IncomingMessageHandler for ChannelContext {
     }
 }
 
-struct AgentContext {
-    connect_id: u32,
-    agent_id: Arc<String>,
-    messenger_user_group_channel_map: DashMap<String, DashMap<String, DashMap<String, Arc<ChannelContext>>>>,
-}
-
 struct ConnectContext {
     connect_id: u32,
     ws_context: Arc<WsContext>,
-    agent_map: DashMap<String, Arc<AgentContext>>,
+    messenger_user_group_channel_map: DashMap<String, DashMap<String, DashMap<String, Arc<ChannelContext>>>>,
 }
 
 pub struct ChannelManager {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
-    agent_map: DashMap<String, Arc<AgentContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
+    global_attachment_sn: Arc<AtomicU32>,
+    attachment_receiver_map: DashMap<u32, Arc<ChannelContext>>,
+    attachment_sender_map: DashMap<u32, Arc<ConnectContext>>,
 }
 
 struct ConnectCloseProcessor {
@@ -101,16 +104,11 @@ impl ConnectCloseProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         //移除连接记录
         let (_,connect_context) = manager.connect_map.remove(&self.connect_id)
-        .ok_or_else(|| Error::InternalError(format!("Connect not found: connect_id {}", self.connect_id)))?;
-        for agent_context in connect_context.agent_map.iter() {
-            //移除agent记录
-            manager.agent_map.remove(agent_context.agent_id.as_str());
-            //把agent绑定记录从messenger中移除
-            for messenger_map in agent_context.messenger_user_group_channel_map.iter() {
-                //要求messenger必须存在
-                let messenger_context = manager.messenger_map.get(messenger_map.key())
-                .ok_or_else(|| Error::InternalError(format!("Messenger not found: connect_id {}, messenger_id {}", self.connect_id, messenger_map.key())))?;
-                //移除所有绑定的user
+        .ok_or_else(|| Error::ConnectNotFound(self.connect_id.to_string()))?;
+        //把绑定记录从messenger中移除
+        for messenger_map in connect_context.messenger_user_group_channel_map.iter() {
+            //messenger存在时，移除user绑定记录
+            if let Some(messenger_context) = manager.messenger_map.get(messenger_map.key()) {
                 for user_map in messenger_map.iter() {
                     messenger_context.bound_map.remove(user_map.key());
                 }
@@ -158,6 +156,35 @@ trait JsonProcessorWrapper {
     }
 }
 
+#[async_trait]
+trait BinaryProcessorWrapper {
+    async fn raw_process_bin(&self, data: &[u8]) -> Result<Option<serde_json::Value>>;
+    
+    async fn wrap_process_bin(&self, data: &[u8], context: Arc<WsContext>) -> Result<()> {
+        let sn = parse_bin_sn(data)?;
+        match self.raw_process_bin(data).await {
+            Ok(payload) => {
+                context.send_json(WsMessage {
+                    sn,
+                    status_code: CODE_SUCCESS,
+                    payload_type: TYPE_RESPONSE,
+                    payload,
+                }).await?;
+                Ok(())
+            }
+            Err(e) => {
+                context.send_json(WsMessage {
+                    sn,
+                    status_code: CODE_ERROR,
+                    payload_type: TYPE_RESPONSE,
+                    payload: None,
+                }).await?;
+                Err(e)
+            }
+        }
+    }
+}
+
 struct MessengerInfoRequestProcessor {
     manager: Weak<ChannelManager>,
 }
@@ -166,7 +193,7 @@ struct MessengerInfoRequestProcessor {
 impl JsonProcessorWrapper for MessengerInfoRequestProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InternalError("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
         let messenger_info_request = serde_json::from_value::<MessengerInfoRequestDTO>(payload)?;
         
@@ -174,7 +201,7 @@ impl JsonProcessorWrapper for MessengerInfoRequestProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         
         let messenger_context = manager.messenger_map.get(&messenger_info_request.messenger_id)
-        .ok_or_else(|| Error::InternalError(format!("Messenger not found: messenger_id {}", messenger_info_request.messenger_id)))?;
+        .ok_or_else(|| Error::MessengerNotFound(messenger_info_request.messenger_id.to_string()))?;
         
         let messenger_info = messenger_context.messenger.get_info().await?;
 
@@ -201,7 +228,7 @@ struct BindAgentUserProcessor {
 impl JsonProcessorWrapper for BindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InternalError("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
         let bind_request = serde_json::from_value::<BindRequestDTO>(payload)?;
         
@@ -212,35 +239,6 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
 
         let agent_id = Arc::new(bind_request.agent_id);
         let role_name = Arc::new(bind_request.role_name);
-
-        //检查agent是否已绑定
-        let agent_context = match manager.agent_map.entry(agent_id.as_str().to_string()) {
-            Entry::Vacant(entry) => {
-                //没绑定过，新建
-                let agent_context = Arc::new(AgentContext {
-                    connect_id: connect_context.connect_id,
-                    agent_id: agent_id.clone(),
-                    messenger_user_group_channel_map: DashMap::new(),
-                });
-                //保存connect
-                connect_context.agent_map.insert(agent_id.as_str().to_string(), agent_context.clone());
-                //保存agent
-                entry.insert(agent_context.clone());
-                Ok(agent_context)
-            }
-            Entry::Occupied(entry) => {
-                //已绑定，检查是否是当前connect
-                //如果不是，报错
-                if entry.get().connect_id == connect_context.connect_id {
-                    //沿用当前
-                    Ok(entry.get().clone())
-                }
-                else {
-                    //被其他connect绑定，报错
-                    Err(Error::AgentAlreadyBound(entry.key().to_string()))
-                }
-            }
-        }?;
 
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
@@ -253,24 +251,30 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         let mut channel_infos = Vec::new();
         
         //绑定用户
-        let bound_info = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| (agent_context.agent_id.clone(), role_name.clone()));
+        let bound_info = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| BoundInfo {
+            connect_id: connect_context.connect_id,
+            agent_id: agent_id.clone(),
+            role_name: role_name.clone(),
+        });
         
-        if bound_info.0.as_str() == agent_context.agent_id.as_str() {
-            //成功绑定到自身
-            let mut inserted = false;
-            let user_map = agent_context.messenger_user_group_channel_map.entry(messenger_info.messenger_id.as_str().to_string()).or_insert_with(|| DashMap::new());
-            let group_map = user_map.entry(user_info.user_id.as_str().to_string()).or_insert_with(|| {
-                inserted = true;
-                DashMap::new()
-            });
-            if inserted {
-                //是新绑定的user，为每个group创建channel
-                for group_info in user_info.group_map.iter() {
-                    let channel_context = manager.create_channel(messenger_context.clone(), user_info.user_id.clone(), group_info.group_id.clone(), connect_context.ws_context.clone()).await?;
-                    let channel_info = channel_context.channel.get_info();
-                    group_map.insert(group_info.group_id.as_str().to_string(), channel_context);
-                    channel_infos.push(channel_info);
-                }
+        if bound_info.connect_id != connect_context.connect_id {
+            return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
+        }
+
+        //成功绑定到自身
+        let mut inserted = false;
+        let user_group_channel_map = connect_context.messenger_user_group_channel_map.entry(messenger_info.messenger_id.as_str().to_string()).or_insert_with(|| DashMap::new());
+        let group_channel_map = user_group_channel_map.entry(user_info.user_id.as_str().to_string()).or_insert_with(|| {
+            inserted = true;
+            DashMap::new()
+        });
+        if inserted {
+            //是新绑定的user，为每个group创建channel
+            for group_info in user_info.group_map.iter() {
+                let channel_context = manager.create_channel(messenger_context.clone(), user_info.user_id.clone(), group_info.group_id.clone(), connect_context.ws_context.clone()).await?;
+                let channel_info = channel_context.channel.get_info();
+                group_channel_map.insert(group_info.group_id.as_str().to_string(), channel_context);
+                channel_infos.push(channel_info);
             }
         }
 
@@ -297,7 +301,7 @@ struct UnbindAgentUserProcessor {
 impl JsonProcessorWrapper for UnbindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::RequestError("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
         let bind_request = serde_json::from_value::<BindRequestDTO>(payload)?;
         
@@ -305,17 +309,25 @@ impl JsonProcessorWrapper for UnbindAgentUserProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         let connect_context = self.connect_context.upgrade()
         .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
+
+        //解除绑定
+        let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
+
+        //检查是否为本连接绑定
+        let bound_info = messenger_context.bound_map.get(bind_request.user_id.as_str())
+        .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;        
+        if bound_info.connect_id != connect_context.connect_id {
+            return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
+        }
         
         //移除channel
-        if let Some(agent_context) = connect_context.agent_map.get(bind_request.agent_id.as_str()) {
-            if let Some(user_map) = agent_context.messenger_user_group_channel_map.get(bind_request.messenger_id.as_str()) {
-                user_map.remove(bind_request.user_id.as_str());
-            }
+        if let Some(user_group_channel_map) = connect_context.messenger_user_group_channel_map.get(bind_request.messenger_id.as_str()) {
+            user_group_channel_map.remove(bind_request.user_id.as_str());
         }
+
         //解除绑定
-        if let Some(messenger_context) = manager.messenger_map.get(bind_request.messenger_id.as_str()) {
-            messenger_context.bound_map.remove(bind_request.user_id.as_str());
-        }
+        messenger_context.bound_map.remove(bind_request.user_id.as_str());
 
         Ok(None)
     }
@@ -338,7 +350,7 @@ struct OutgoingMessageProcessor {
 impl JsonProcessorWrapper for OutgoingMessageProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::RequestError("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
 
         let outgoing_message = serde_json::from_value::<OutgoingMessageDTO>(payload)?;
         
@@ -348,23 +360,26 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         let messenger_context = manager.messenger_map.get(outgoing_message.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
 
-        let agent_role = messenger_context.bound_map.get(outgoing_message.user_id.as_str())
+        let bound_info = messenger_context.bound_map.get(outgoing_message.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
 
-        let agent_context = manager.agent_map.get(agent_role.0.as_str())
-        .ok_or_else(|| Error::AgentNotFound(agent_role.0.as_str().to_string()))?;
+        let connect_context = manager.connect_map.get(&bound_info.connect_id)
+        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
 
-        let user_map = agent_context.messenger_user_group_channel_map.get(outgoing_message.messenger_id.as_str())
+        let user_group_channel_map = connect_context.messenger_user_group_channel_map.get(outgoing_message.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
 
-        let group_map = user_map.get(outgoing_message.user_id.as_str())
+        let group_channel_map = user_group_channel_map.get(outgoing_message.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
 
-        let channel_context = group_map.get(outgoing_message.group_id.as_str())
+        let channel_context = group_channel_map.get(outgoing_message.group_id.as_str())
         .ok_or_else(|| Error::GroupNotFound(outgoing_message.group_id.clone()))?;
         
-        let response = channel_context.channel.send_message(outgoing_message).await?;
-        
+        let response = channel_context.channel.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
+        for id in response.attachment_upload_id_map.iter() {
+            manager.attachment_receiver_map.insert(*id, channel_context.clone());
+        }
+
         let response = serde_json::to_value(response)?;
         Ok(Some(response))
     }
@@ -379,6 +394,48 @@ impl WsJsonProcessor for OutgoingMessageProcessor {
     }
 }
 
+struct AttachmentPayloadProcessor {
+    manager: Weak<ChannelManager>,
+}
+
+#[async_trait]
+impl AttachmentProcessor<Error> for AttachmentPayloadProcessor {
+    async fn process_attachment(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> Result<()> {
+        let manager = self.manager.upgrade()
+        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+
+        let channel_context = manager.attachment_receiver_map.get(&id)
+        .ok_or_else(|| Error::AttachmentNotFound(id.to_string()))?;
+
+        if size == 0 {
+            //最后传个size=0的，表示结尾
+            manager.attachment_receiver_map.remove(&id);
+        }
+        else {
+            channel_context.channel.send_attachment_payload(id, size, pos, data).await?;
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
+    async fn raw_process_bin(&self, data: &[u8]) -> Result<Option<serde_json::Value>> {
+        process_attachment(data, self).await?;
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl WsBinaryProcessor for AttachmentPayloadProcessor {
+    async fn process_bin(&self, data: &[u8], context: Arc<WsContext>){
+        if let Err(e) = self.wrap_process_bin(data, context).await {
+            error!("attachment_payload error: {:?}", e);
+        }
+    }
+}
+
 struct ChannelManagerInitializer;
 
 #[async_trait]
@@ -389,7 +446,7 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
         let connect_context = Arc::new(ConnectContext {
             connect_id,
             ws_context: ws_context.clone(),
-            agent_map: DashMap::new(),
+            messenger_user_group_channel_map: DashMap::new(),
         });
         manager.connect_map.insert(connect_id, connect_context.clone());
         //处理心跳
@@ -424,6 +481,11 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
             manager: Arc::downgrade(&manager),
         });
         ws_context.set_json_processor(TYPE_OUTGOING_MESSAGE, outgoing_message_handler);
+        //attachment payload
+        let attachment_payload_handler = Arc::new(AttachmentPayloadProcessor {
+            manager: Arc::downgrade(&manager),
+        });
+        ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, attachment_payload_handler);
         Ok(())
     }
 }
@@ -433,9 +495,11 @@ impl ChannelManager {
         Self {
             global_connect_id: AtomicU32::new(0),
             connect_map: DashMap::new(),
-            agent_map: DashMap::new(),
             messenger_map: DashMap::new(),
             memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url)),
+            global_attachment_sn: Arc::new(AtomicU32::new(0)),
+            attachment_receiver_map: DashMap::new(),
+            attachment_sender_map: DashMap::new(),
         }
     }
 
@@ -499,19 +563,16 @@ impl ChannelManager {
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
 
-        let agent_role = messenger_context.bound_map.get(event.user_id.as_str())
+        let bound_info = messenger_context.bound_map.get(event.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
 
-        let agent_context = self.agent_map.get(agent_role.0.as_str())
-        .ok_or_else(|| Error::AgentNotFound(agent_role.0.to_string()))?;
+        let connect_context = self.connect_map.get(&bound_info.connect_id)
+        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
 
-        let connect_context = self.connect_map.get(&agent_context.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(agent_context.connect_id.to_string()))?;
-
-        let user_map = agent_context.messenger_user_group_channel_map.get(event.messenger_id.as_str())
+        let user_group_channel_map = connect_context.messenger_user_group_channel_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
 
-        let group_map = user_map.get(event.user_id.as_str())
+        let group_channel_map = user_group_channel_map.get(event.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
 
         //处理group变更事件
@@ -519,7 +580,7 @@ impl ChannelManager {
             GroupChangeType::Joined => {
                 //新建channel
                 let channel_context = self.create_channel(messenger_context.clone(), event.user_id.clone(), event.group_id.clone(), connect_context.ws_context.clone()).await?;
-                group_map.insert(event.group_id.as_str().to_string(), channel_context.clone());
+                group_channel_map.insert(event.group_id.as_str().to_string(), channel_context.clone());
                 let channel_info = channel_context.channel.get_info();
                 //通知agent新建channel
                 let channel_info = serde_json::to_value(channel_info)?;
@@ -537,7 +598,7 @@ impl ChannelManager {
                 let span = span!(Level::INFO, "channel_manager handle leave group");
                 let _enter = span.enter();
                 //退出group
-                let (_,channel_context) = group_map.remove(event.group_id.as_str())
+                let (_,channel_context) = group_channel_map.remove(event.group_id.as_str())
                 .ok_or_else(|| Error::GroupNotFound(event.group_id.to_string()))?;
                 //发channel变更消息
                 let msg_event = channel_context.channel.group_change_to_incoming_message(event.clone());
