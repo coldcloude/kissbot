@@ -1,5 +1,7 @@
 use std::{collections::HashSet};
 
+use kissbot_api::UserIdentifier;
+
 use crate::{agent::AgentMetadata, role_play::RolePlay, user_recognition::UserRecognition};
 
 #[allow(dead_code)]
@@ -11,14 +13,14 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
 }
 
 #[allow(dead_code)]
-pub fn build_ego_user_recognition_md(users: &UserRecognition, channel_ids: &HashSet<String>) -> String {
+pub fn build_ego_user_recognition_md(users: &UserRecognition, ids: &HashSet<UserIdentifier>) -> String {
     let mut content = String::from("# User Recognition\n\n");
     for user in users.user_map.iter() {
 
         let mut identifiers = String::new();
         for id in user.identifiers.iter() {
-            if channel_ids.contains(id.channel_id.as_str()) {
-                identifiers.push_str(&format!("- {} {}\n", id.channel_id, id.user_id));
+            if ids.contains(id.key()) {
+                identifiers.push_str(&format!("- {} {} {}\n", id.messenger_id, id.user_id, id.group_id));
             }
         }
 

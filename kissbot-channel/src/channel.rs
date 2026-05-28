@@ -19,7 +19,7 @@ pub trait Channel: Send + Sync {
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequestDTO, attachment_sn: Arc<AtomicU32>) -> Result<Arc<AttachmentDownloadResponseHeader>>;
 
-    fn register_on_download_attachment_payload(&self, sender: Arc<dyn AttachmentDownloadResponsePayloadSender>);
+    fn register_on_download_attachment_payload(&self, sender: Arc<dyn AttachmentDownloadPayloadSender>);
 
     fn register_on_incoming_messages(&self, callback: Weak<dyn IncomingMessageHandler>);
 }

@@ -93,7 +93,9 @@ impl_record!(
 pub struct ChannelRecordKey {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
-    pub channel_id: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub date: Arc<String>,
 }
 
@@ -242,20 +244,23 @@ pub struct ChannelParser;
 
 impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
     fn get_file_name(&self, key: &ChannelRecordKey) -> String {
-        format!("channel-{}-records-{}.jsonl", &key.channel_id, &key.date)
+        format!("channel-{}={}={}-records-{}.jsonl", &key.messenger_id, &key.user_id, &key.group_id, &key.date)
     }
 }
 
 impl RequestParser<ChannelRequestDTO, ChannelRecordKey, ChannelRecord> for ChannelParser {
     fn parse_request(&self, request: ChannelRequestDTO) -> (ChannelRecordKey, ChannelRecord) {
+        let user_id = Arc::new(request.user_id);
         let key = ChannelRecordKey {
             agent_id: Arc::new(request.agent_id),
             role_name: Arc::new(request.role_name),
-            channel_id: Arc::new(request.channel_id),
+            messenger_id: Arc::new(request.messenger_id),
+            user_id: user_id.clone(),
+            group_id: Arc::new(request.group_id),
             date: Arc::new(parse_date_from_time(&request.time)),
         };
         let record = ChannelRecord {
-            user_id: Arc::new(request.user_id),
+            user_id: user_id,
             is_self: request.is_self,
             msg_type: Arc::new(request.msg_type),
             content: Arc::new(request.content),
@@ -270,7 +275,9 @@ impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
     fn parse_query(&self, query: QueryChannelRequest) -> Vec<(ChannelRecordKey, (String, String))> {
         let agent_id = Arc::new(query.agent_id.clone());
         let role_name = Arc::new(query.role_name.clone());
-        let channel_id = Arc::new(query.channel_id.clone());
+        let messenger_id = Arc::new(query.messenger_id.clone());
+        let user_id = Arc::new(query.user_id.clone());
+        let group_id = Arc::new(query.group_id.clone());
         let mut results = Vec::new();
         if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
             for time in date_times {
@@ -278,7 +285,9 @@ impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
                 results.push((ChannelRecordKey {
                     agent_id: agent_id.clone(),
                     role_name: role_name.clone(),
-                    channel_id: channel_id.clone(),
+                    messenger_id: messenger_id.clone(),
+                    user_id: user_id.clone(),
+                    group_id: group_id.clone(),
                     date: Arc::new(date),
                 }, time));
             }
@@ -292,8 +301,9 @@ impl RecordCombiner<ChannelRecordKey, ChannelRecord, ChannelRecordResult> for Ch
         ChannelRecordResult {
             agent_id: key.agent_id.clone(),
             role_name: key.role_name.clone(),
-            channel_id: key.channel_id.clone(),
-            user_id: record.user_id.clone(),
+            messenger_id: key.messenger_id.clone(),
+            group_id: key.group_id.clone(),
+            user_id: key.user_id.clone(),
             is_self: record.is_self,
             msg_type: record.msg_type.clone(),
             content: record.content.clone(),

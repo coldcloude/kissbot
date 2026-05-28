@@ -264,7 +264,11 @@ async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoRe
         let identifiers = {
             let set = DashSet::new();
             for id in user_req.identifiers {
-                set.insert(UserIdentifier { channel_id: id.channel_id, user_id: id.user_id });
+                set.insert(UserIdentifier {
+                    messenger_id: id.messenger_id,
+                    user_id: id.user_id,
+                    group_id: id.group_id,
+                });
             }
             Arc::new(set)
         };
@@ -331,8 +335,16 @@ async fn update_user_description(Json(req): Json<ego::UpdateUserDescriptionReque
 }
 
 async fn replace_user_identifiers(Json(req): Json<ego::ReplaceUserIdentifiersRequest>) -> impl IntoResponse {
-    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| UserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
-    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| UserIdentifier { channel_id: id.channel_id, user_id: id.user_id }).collect();
+    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| UserIdentifier {
+        messenger_id: id.messenger_id,
+        user_id: id.user_id,
+        group_id: id.group_id,
+    }).collect();
+    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| UserIdentifier {
+        messenger_id: id.messenger_id,
+        user_id: id.user_id,
+        group_id: id.group_id,
+    }).collect();
 
     let result = UserRecognitionManager::get().replace_user_identifiers(&req.agent_id, &req.user_name, remove_identifiers, insert_identifiers).await;
 

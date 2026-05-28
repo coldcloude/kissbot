@@ -26,8 +26,9 @@ pub enum UserPrivilege {
 // ========== UserIdentifier (simple struct, no generics) ==========
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserIdentifier {
-    pub channel_id: String,
+    pub messenger_id: String,
     pub user_id: String,
+    pub group_id: String,
 }
 
 // ========== UserRelation - Generic with trait bounds ==========

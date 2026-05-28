@@ -10,8 +10,9 @@ where
 {
     pub agent_id: S::Type,
     pub role_name: S::Type,
-    pub channel_id: S::Type,
+    pub messenger_id: S::Type,
     pub user_id: S::Type,
+    pub group_id: S::Type,
     pub is_self: usize,
     pub msg_type: S::Type,
     pub content: S::Type,
@@ -98,7 +99,9 @@ pub struct ToolResultRequests {
 pub struct QueryChannelRequest {
     pub agent_id: String,
     pub role_name: String,
-    pub channel_id: String,
+    pub messenger_id: String,
+    pub user_id: String,
+    pub group_id: String,
     pub start_time: String,
     pub end_time: String,
 }
@@ -120,8 +123,9 @@ where
 {
     pub agent_id: S::Type,
     pub role_name: S::Type,
-    pub channel_id: S::Type,
+    pub messenger_id: S::Type,
     pub user_id: S::Type,
+    pub group_id: S::Type,
     pub is_self: usize,
     pub msg_type: S::Type,
     pub content: S::Type,

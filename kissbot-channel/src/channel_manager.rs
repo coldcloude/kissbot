@@ -4,9 +4,10 @@ use crate::channel::Channel;
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection};
-use kissbot_api::{AttachmentProcessor, TYPE_ATTACHMENT_PAYLOAD, process_attachment};
+use kissbot_api::{AttachmentDownloadRequestDTO, AttachmentProcessor, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, process_attachment};
 use kissbot_api::channel::{BindRequestDTO, MessengerInfoRequestDTO, OutgoingMessageDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -81,6 +82,16 @@ struct ConnectContext {
     connect_id: u32,
     ws_context: Arc<WsContext>,
     messenger_user_group_channel_map: DashMap<String, DashMap<String, DashMap<String, Arc<ChannelContext>>>>,
+    global_attachment_sn: Arc<AtomicU32>,
+    attachment_receiver_map: DashMap<u32, Arc<ChannelContext>>,
+}
+
+#[async_trait]
+impl AttachmentDownloadPayloadSender for ConnectContext {
+    async fn send_attachment_payload(&self, data: Bytes) -> Result<()> {
+        self.ws_context.send_bin(data).await?;
+        Ok(())
+    }
 }
 
 pub struct ChannelManager {
@@ -88,9 +99,6 @@ pub struct ChannelManager {
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
-    global_attachment_sn: Arc<AtomicU32>,
-    attachment_receiver_map: DashMap<u32, Arc<ChannelContext>>,
-    attachment_sender_map: DashMap<u32, Arc<ConnectContext>>,
 }
 
 struct ConnectCloseProcessor {
@@ -375,9 +383,9 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         let channel_context = group_channel_map.get(outgoing_message.group_id.as_str())
         .ok_or_else(|| Error::GroupNotFound(outgoing_message.group_id.clone()))?;
         
-        let response = channel_context.channel.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
+        let response = channel_context.channel.send_message(outgoing_message, connect_context.global_attachment_sn.clone()).await?;
         for id in response.attachment_upload_id_map.iter() {
-            manager.attachment_receiver_map.insert(*id, channel_context.clone());
+            connect_context.attachment_receiver_map.insert(*id, channel_context.clone());
         }
 
         let response = serde_json::to_value(response)?;
@@ -395,21 +403,21 @@ impl WsJsonProcessor for OutgoingMessageProcessor {
 }
 
 struct AttachmentPayloadProcessor {
-    manager: Weak<ChannelManager>,
+    connect_context: Weak<ConnectContext>,
 }
 
 #[async_trait]
 impl AttachmentProcessor<Error> for AttachmentPayloadProcessor {
     async fn process_attachment(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> Result<()> {
-        let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        let connect_context = self.connect_context.upgrade()
+        .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
 
-        let channel_context = manager.attachment_receiver_map.get(&id)
+        let channel_context = connect_context.attachment_receiver_map.get(&id)
         .ok_or_else(|| Error::AttachmentNotFound(id.to_string()))?;
 
         if size == 0 {
             //最后传个size=0的，表示结尾
-            manager.attachment_receiver_map.remove(&id);
+            connect_context.attachment_receiver_map.remove(&id);
         }
         else {
             channel_context.channel.send_attachment_payload(id, size, pos, data).await?;
@@ -436,6 +444,55 @@ impl WsBinaryProcessor for AttachmentPayloadProcessor {
     }
 }
 
+struct AttachmentDownloadRequestProcessor {
+    manager: Weak<ChannelManager>,
+}
+
+#[async_trait]
+impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
+    async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
+        let payload = data.payload
+        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+
+        let request = serde_json::from_value::<AttachmentDownloadRequestDTO>(payload)?;
+        
+        let manager = self.manager.upgrade()
+        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+
+        let messenger_context = manager.messenger_map.get(request.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.clone()))?;
+
+        let bound_info = messenger_context.bound_map.get(request.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(request.user_id.clone()))?;
+
+        let connect_context = manager.connect_map.get(&bound_info.connect_id)
+        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
+
+        let user_group_channel_map = connect_context.messenger_user_group_channel_map.get(request.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.clone()))?;
+
+        let group_channel_map = user_group_channel_map.get(request.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(request.user_id.clone()))?;
+
+        let channel_context = group_channel_map.get(request.group_id.as_str())
+        .ok_or_else(|| Error::GroupNotFound(request.group_id.clone()))?;
+        
+        let response = channel_context.channel.download_attachment_header(request, connect_context.global_attachment_sn.clone()).await?;
+
+        let responce = serde_json::to_value(response)?;
+        Ok(Some(responce))
+    }
+}
+
+#[async_trait]
+impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
+    async fn process_json(&self, data: WsMessage, context: Arc<WsContext>){
+        if let Err(e) = self.wrap_process_json(data, context).await {
+            error!("attachment_download_request error: {:?}", e);
+        }
+    }
+}
+
 struct ChannelManagerInitializer;
 
 #[async_trait]
@@ -447,6 +504,8 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
             connect_id,
             ws_context: ws_context.clone(),
             messenger_user_group_channel_map: DashMap::new(),
+            global_attachment_sn: Arc::new(AtomicU32::new(0)),
+            attachment_receiver_map: DashMap::new(),
         });
         manager.connect_map.insert(connect_id, connect_context.clone());
         //处理心跳
@@ -483,10 +542,16 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
         ws_context.set_json_processor(TYPE_OUTGOING_MESSAGE, outgoing_message_handler);
         //attachment payload
         let attachment_payload_handler = Arc::new(AttachmentPayloadProcessor {
-            manager: Arc::downgrade(&manager),
+            connect_context: Arc::downgrade(&connect_context),
         });
         ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, attachment_payload_handler);
+        //attachment download request
+        let attachment_download_request_handler = Arc::new(AttachmentDownloadRequestProcessor {
+            manager: Arc::downgrade(&manager),
+        });
+        ws_context.set_json_processor(TYPE_ATTACHMENT_DOWNLOAD_REQUEST, attachment_download_request_handler);
         Ok(())
+
     }
 }
 
@@ -497,9 +562,6 @@ impl ChannelManager {
             connect_map: DashMap::new(),
             messenger_map: DashMap::new(),
             memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url)),
-            global_attachment_sn: Arc::new(AtomicU32::new(0)),
-            attachment_receiver_map: DashMap::new(),
-            attachment_sender_map: DashMap::new(),
         }
     }
 

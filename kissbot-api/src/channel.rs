@@ -14,11 +14,15 @@ pub const TYPE_UNBIND_AGENT_USER: u32 = 0x00020003;
 
 pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00030004;
 
+pub const TYPE_ATTACHMENT_DOWNLOAD_REQUEST: u32 = 0x00030005;
+
 pub const TYPE_JOIN_GROUP: u32 = 0x10010001;
 
 pub const TYPE_LEAVE_GROUP: u32 = 0x10010002;
 
 pub const TYPE_INCOMING_MESSAGE: u32 = 0x10020003;
+
+pub const TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD: u32 = 0x10020004;
 
 // ========== Messenger -> User -> Group-> Channel ==========
 
@@ -28,7 +32,6 @@ pub struct ChannelInfoGeneric<S>
 where
     S: StringKind,
 {
-    pub channel_id: S::Type,
     pub messenger_id: S::Type,
     pub group_id: S::Type,
     pub user_id: S::Type,
@@ -186,7 +189,9 @@ pub struct AttachmentDownloadRequestGeneric<S>
 where
     S: StringKind,
 {
-    pub channel_id: S::Type,
+    pub messenger_id: S::Type,
+    pub user_id: S::Type,
+    pub group_id: S::Type,
     pub key: S::Type,
 }
 
@@ -246,8 +251,9 @@ where
     S: StringKind,
 {
     pub msg_id: S::Type,
-    pub channel_id: S::Type,
+    pub messenger_id: S::Type,
     pub user_id: S::Type,
+    pub group_id: S::Type,
     pub is_self: usize,
     pub msg_type: S::Type,
     pub content: S::Type,

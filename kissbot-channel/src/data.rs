@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use kissbot_api::{SyncMap, SyncString, channel::*};
 use serde::{Deserialize, Serialize};
 
@@ -53,8 +54,8 @@ pub type OutgoingMessageResponse = OutgoingMessageResponseGeneric<SyncString, Sy
 pub type AttachmentDownloadResponseHeader = AttachmentDownloadResponseHeaderGeneric<SyncAttachmentInfo>;
 
 #[async_trait]
-pub trait AttachmentDownloadResponsePayloadSender: Send + Sync {
-    async fn send_attachment_payload(&self, data: &[u8]) -> Result<()>;
+pub trait AttachmentDownloadPayloadSender: Send + Sync {
+    async fn send_attachment_payload(&self, data: Bytes) -> Result<()>;
 }
 
 // ========== Receiving Message ==========
@@ -91,9 +92,4 @@ pub enum GroupChangeType {
 #[async_trait]
 pub trait GroupChangeHandler: Send + Sync {
     async fn handle_group_change(&self, event: Arc<GroupChangeEvent>);
-}
-
-// Helper functions
-pub fn format_channel_id(messenger_id: &str, user_id: &str, group_id: &str) -> String {
-    format!("{}:{}:{}", messenger_id, user_id, group_id)
 }

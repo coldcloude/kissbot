@@ -72,8 +72,9 @@ impl MemoryStoreClient {
                     requests.push(ChannelRequest {
                         agent_id: record.agent_id.clone(),
                         role_name: record.role_name.clone(),
-                        channel_id: message.channel_id.clone(),
+                        messenger_id: message.messenger_id.clone(),
                         user_id: message.user_id.clone(),
+                        group_id: message.group_id.clone(),
                         is_self: message.is_self,
                         msg_type: message.msg_type.clone(),
                         content: message.content.clone(),
