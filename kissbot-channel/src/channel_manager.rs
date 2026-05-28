@@ -4,7 +4,7 @@ use crate::channel::Channel;
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection};
 use kissbot_api::{AttachmentDownloadRequestDTO, AttachmentProcessor, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, process_attachment};
@@ -279,7 +279,7 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         if inserted {
             //是新绑定的user，为每个group创建channel
             for group_info in user_info.group_map.iter() {
-                let channel_context = manager.create_channel(messenger_context.clone(), user_info.user_id.clone(), group_info.group_id.clone(), connect_context.ws_context.clone()).await?;
+                let channel_context = manager.create_channel(messenger_context.clone(), user_info.user_id.clone(), group_info.group_id.clone(), connect_context.clone()).await?;
                 let channel_info = channel_context.channel.get_info();
                 group_channel_map.insert(group_info.group_id.as_str().to_string(), channel_context);
                 channel_infos.push(channel_info);
@@ -601,19 +601,20 @@ impl ChannelManager {
         }
     }
 
-    async fn create_channel(&self, messenger_context: Arc<MessengerContext>, user_id: Arc<String>, group_id: Arc<String>, ws_context: Arc<WsContext>) -> Result<Arc<ChannelContext>> {
+    async fn create_channel(&self, messenger_context: Arc<MessengerContext>, user_id: Arc<String>, group_id: Arc<String>, connect_context: Arc<ConnectContext>) -> Result<Arc<ChannelContext>> {
         //新建channel
         let channel = messenger_context.messenger.create_channel(user_id.as_str(), group_id.as_str()).await?;
         //记录context
         let channel_context = Arc::new(ChannelContext {
             channel: channel.clone(),
             messenger_context: Arc::downgrade(&messenger_context),
-            ws_context: Arc::downgrade(&ws_context),
+            ws_context: Arc::downgrade(&connect_context.ws_context),
             memory_store_client: Arc::downgrade(&self.memory_store_client),
         });
         //绑定消息事件
         let channel_context_weak = Arc::downgrade(&channel_context);
         channel.register_on_incoming_messages(channel_context_weak);
+        channel.register_on_download_attachment_payload(connect_context.clone());
         //返回
         Ok(channel_context)
     }
@@ -641,7 +642,7 @@ impl ChannelManager {
         match event.change_type {
             GroupChangeType::Joined => {
                 //新建channel
-                let channel_context = self.create_channel(messenger_context.clone(), event.user_id.clone(), event.group_id.clone(), connect_context.ws_context.clone()).await?;
+                let channel_context = self.create_channel(messenger_context.clone(), event.user_id.clone(), event.group_id.clone(), connect_context.clone()).await?;
                 group_channel_map.insert(event.group_id.as_str().to_string(), channel_context.clone());
                 let channel_info = channel_context.channel.get_info();
                 //通知agent新建channel
