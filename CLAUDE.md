@@ -6,10 +6,6 @@ Keep It Simple Stupid BOT - kissbot
 ## 开发原则
 - 不要删除注释！
 
-## 开发环境
-- 开发操作系统为Windows系统，调试后台产物应为exe文件
-- 开发命令行环境为PowerShell，执行命令时使用PowerShell的语法
-
 ## 开发框架
 - 后台rust+cargo
 - 前台typescript+react+vite
