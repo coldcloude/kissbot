@@ -1,0 +1,80 @@
+# kissbot-channel 组件设计
+
+## 概述
+消息通道框架组件，定义 Messenger 接口和 Channel 接口，提供通道管理器作为核心协调层。负责连接外部系统和 agent，协调消息的路由与推送。具体的通讯应用接入由通道实现模块完成。
+
+## 内部模块
+
+### 1. ChannelManager - 通道管理器
+模块的核心协调层，内部持有：
+- messengers：按 messenger_id 索引的已注册 Messenger 实例集合
+- channels：按 channel_id 索引的已创建 Channel 实例集合
+- wss_server：WSS Server 实例（管理 agent 连接）
+- memory_store_client：与记忆存储模块通信的客户端
+- message_queue：消息队列（暂存待推送消息，不持久化）
+
+职责：
+- **Messenger 管理**：注册多个 Messenger 实例，按 ID 查找
+- **Channel 管理**：通过 Messenger 创建 Channel 实例，维护全局索引
+- **Agent 绑定**：处理 agent 的 bind 请求，指定多个 user_id 后由 Messenger 决定 group 列表，为每个 (user,group) 组合创建 Channel 实例
+- **消息队列**：维护消息队列，依次推送至 agent（WSS）和记忆存储模块
+- **WSS Server 管理**：管理 agent 连接的生命周期
+- **消息路由**：外部消息和 agent 消息均通过 ChannelManager 路由
+- **群组变化事件**：通过 WSS 向 agent 推送 group 变化通知
+- **附件下载**：根据 key 从对应 Messenger 获取附件数据
+
+### 2. Messenger 接口（由通道实现模块实现）
+定义通讯应用接入的标准接口：
+- messenger_id()：返回 messenger 的唯一标识
+- get_available_users()：获取可用用户列表
+- get_user_groups()：获取指定用户可用的 group 列表
+- create_channel()：创建 Channel 接口实现类的实例
+- get_attachment_metadata() / get_attachment_data()：附件管理（由具体实现决定存储方式）
+
+Messenger 负责管理用户的群组信息、管理附件存储（接收外部消息时保存附件，发送消息时保存附件后发送），接收外部消息后通过回调通知 ChannelManager。
+
+### 3. Channel 接口（由通道实现模块实现）
+表示一个 (messenger, group, user) 组合的消息收发通道：
+- channel_id()：唯一标识（由 messenger_id、group_id、user_id 组成）
+- send_message()：发送消息到外部系统（附件携带原始数据）
+- register_on_message_received()：注册消息到达回调
+
+Channel 不维护消息列表，不存储消息历史。
+
+### 4. WSSServer - WSS 服务器
+- 作为 WSS 服务器等待 agent 连接
+- 每个 agent 对应唯一的 WSS 连接
+- 管理多个 agent 连接，支持心跳检测和重连
+
+### 5. MemoryStoreClient - 记忆存储通信组件
+- 与记忆存储模块通信，由 ChannelManager 驱动
+- 从消息队列读取消息并推送至记忆存储模块
+
+## 内部流程
+
+### 消息上行（外部系统 → agent）
+1. Messenger 收到外部消息 → 保存附件 → 构建消息记录
+2. 调用 on_message_received 回调 → 消息入队
+3. ChannelManager 处理队列：推送记忆存储模块 + 通过 WSS 发送给 agent
+
+### 消息下行（agent → 外部系统）
+1. agent 通过 WSS 发送消息 → WSS Server 接收
+2. ChannelManager 解析 → 按 channel_id 查找 Channel 实例
+3. 消息入队 → 处理队列：推送记忆存储模块 + 调用 channel.send_message()
+
+### agent 绑定流程
+1. agent 发送 bind 请求（messenger_id + user_ids）
+2. ChannelManager 验证用户 → 获取 group 列表
+3. 为每个 (user,group) 创建 Channel 实例
+4. 注册回调 → 加入索引 → 返回绑定确认
+
+### 附件下载流程
+agent WSS 请求 → ChannelManager 按 key 调用 Messenger.get_attachment_data() → 返回数据
+
+## 外部通信
+
+| 对端 | 协议 | 通信时机 | 内容 |
+|------|------|----------|------|
+| agent | WSS | 持续 | 收发消息、绑定、附件操作、心跳 |
+| 记忆存储模块 | HTTPS | 消息产生时 | 推送消息记录 |
+| 外部系统(通道实现模块) | 内部实现 | 持续 | 接收消息/发送消息 |
