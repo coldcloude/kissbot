@@ -2,11 +2,11 @@
 
 ```
 docs/
-└─ docs-index.md                # 本文档 — 文档目录索引
+└─ index.md                # 本文档 — 文档目录索引
 │
 ├── spec/                       # 设计文档
 │   ├── system-design.md        # 系统设计（组件体系、运行流程、组件间通信）
-│   ├── tech-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
+│   ├── technical-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
 │   └── components-design/      # 组件设计文档（每个组件一个文件）
 │       ├── kissbot-agent.md           # 智能体核心
 │       ├── kissbot-channel.md         # 消息通道框架

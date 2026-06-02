@@ -16,7 +16,7 @@ Keep It Simple Stupid BOT - kissbot
   - 文档目录.md — 文档目录索引
   - spec/ — 设计文档
     - system-design.md — 系统设计文档（组件、流程、通信）
-    - tech-architecture.md — 技术架构文档（技术栈、协议）
+    - technical-architecture.md — 技术架构文档（技术栈、协议）
     - components-design/ — 组件设计文档（每个组件一个文件）
   - plan/ — 任务计划
     - system-plan.md — 组件和流程的实现顺序规划
