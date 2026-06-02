@@ -15,12 +15,12 @@ Keep It Simple Stupid BOT - kissbot
 - docs目录，项目文档，结构如下：
   - 文档目录.md — 文档目录索引
   - spec/ — 设计文档
-    - 系统设计.md — 系统设计文档（组件、流程、通信）
-    - 技术架构.md — 技术架构文档（技术栈、协议）
-    - 组件设计/ — 组件设计文档（每个组件一个文件）
+    - system-design.md — 系统设计文档（组件、流程、通信）
+    - tech-architecture.md — 技术架构文档（技术栈、协议）
+    - components-design/ — 组件设计文档（每个组件一个文件）
   - plan/ — 任务计划
-    - 实现规划.md — 组件和流程的实现顺序规划
-    - 组件实现规划/ — 组件内功能实现顺序（每个组件一个文件）
+    - system-plan.md — 组件和流程的实现顺序规划
+    - components-plan/ — 组件内功能实现顺序（每个组件一个文件）
 - .claude/rules/文档规范.md — 文档编写规范（五类文档约定）
 - kissbot开头的目录，每个代表kissbot项目一个模块，按照docs下的模块设计和规划文档实现模块的功能
 - 其他目录为kissbot项目依赖的基础功能的工程，或者临时工程，具体如下
