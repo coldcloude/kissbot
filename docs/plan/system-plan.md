@@ -72,7 +72,7 @@
 - [ ] **Nexus 模块**
   - [ ] LLM API 集成（LLMClient）
   - [ ] WSS 服务器与 channel 集成（ExternalInputHandler、WSSServer）
-  - [ ] WSS 客户端与 station 通信集成（WSSClient、StationRouter）
+  - [ ] HTTPS 客户端集成（StationRouter）
   - [ ] 基础 agentic loop 实现
   - [ ] 内置记忆查询 tool 实现（直接调用 memory-struct）
   - [ ] ToolCallDispatcher（内置工具 vs 外置工具分派）
@@ -80,7 +80,7 @@
   - [ ] 与 memory-store 集成（推送/读取记忆）
   - [ ] 与 memory-ego 集成（读取自我认知设定）
 - [ ] **Station 模块**
-  - [ ] WSS 服务器实现（WSSServer）
+  - [ ] HTTPS 服务器实现（HTTPServer）
   - [ ] ToolRegistry 实现（工具注册和注销）
   - [ ] ToolExecutor 实现（工具查找和调用）
   - [ ] 工具注册信息协议（station → nexus 注册消息）
@@ -110,7 +110,7 @@
 - [ ] channel-web-ui 完善
 
 ### 第11阶段：agent 扩展（station 设备等） 🔴 未开始
-- [ ] 轻量级 WSS 协议适配（资源受限设备）
+- [ ] 轻量级 HTTPS 协议适配（资源受限设备）
 - [ ] 设备工具站开发框架
 - [ ] 典型设备工具实现（网络设备、智能家电、机器人原型）
 

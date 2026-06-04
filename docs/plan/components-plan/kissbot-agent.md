@@ -24,7 +24,7 @@ Agent 组件包含 nexus 和 station 两个内部模块，启动时可选择启�
 - [ ] 心跳检测
 
 ### 第4阶段：Nexus — Station 通信 ❌ 未开始
-- [ ] 实现 WSSClient（连接 Station 模块）
+- [ ] 实现 HTTPS 客户端（连接 Station 模块）
 - [ ] 实现 StationRouter（工具路由表）
 - [ ] 实现 tool call 发送和 tool result 接收协议
 - [ ] 多 Station 连接管理
@@ -57,7 +57,7 @@ Agent 组件包含 nexus 和 station 两个内部模块，启动时可选择启�
 - [ ] 自主行为触发机制（空闲检测、自主目标加载）
 
 ### 第10阶段：Station — 基础框架 ❌ 未开始
-- [ ] 实现 WSSServer（接收 nexus 的 tool call）
+- [ ] 实现 HTTPServer（处理 nexus 的 tool call 请求）
 - [ ] 多 nexus 并行连接管理
 - [ ] 工具注册信息发送（station → nexus）
 - [ ] 实现 ToolRegistry（工具定义、注册、查找）
@@ -74,7 +74,7 @@ Agent 组件包含 nexus 和 station 两个内部模块，启动时可选择启�
 - [ ] 网页抓取工具（WebFetch）
 
 ### 第13阶段：Station — 设备站支持 ❌ 未开始
-- [ ] 精简版 WSS 协议（资源受限设备适配）
+- [ ] 精简版 HTTPS 协议（资源受限设备适配）
 - [ ] 设备工具注册规范
 
 ### 第14阶段：测试和完善 ❌ 未开始

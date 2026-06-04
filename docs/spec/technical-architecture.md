@@ -37,13 +37,10 @@
 ## 二、通信协议
 
 ### WSS（WebSocket Secure）
-用于实时双向通信场景，共有三组 WSS 连接：
+用于实时双向通信场景，共有两组 WSS 连接：
 
 **nexus ↔ channel**：nexus 作为 WSS 客户端连接 channel 的 WSS 服务器。每个 nexus 对应唯一连接，消息体包含 MSG 类型和 JSON data。
 - 消息类型：bind / bind_ack、outgoing_message（nexus → channel）、incoming_message（channel → nexus）、get_channels / channels、group_change、attachment_download / attachment_data、ping / pong
-
-**nexus ↔ station**：station 作为 WSS 服务器，nexus 作为客户端连接。一个 station 可同时服务多个 nexus。消息体包含 MSG 类型和 JSON data。
-- 消息类型：register（station → nexus，发送工具注册信息）、tool_call（nexus → station）、tool_result（station → nexus）、ping / pong
 
 **memory-store ↔ memory-struct**：memory-struct 作为 WSS 客户端连接 memory-store。memory-store 有新数据时通过 WSS 广播通知。
 
@@ -52,6 +49,7 @@
 - **nexus → memory-store**：推送记忆记录
 - **channel → memory-store**：推送消息记录
 - **nexus → memory-ego**：读取自我认知设定
+- **nexus ↔ station**：nexus 向 station 发起 HTTPS 请求（tool call），响应中携带执行结果（同进程时通过内部调用）
 - **nexus → memory-struct**：内置记忆查询 tool 调用（不记入记忆）
 - **前端 UI → 后端**：配置管理、记忆查看管理
 - **所有 API 路径仅用于路由，参数放在 JSON 请求体中**

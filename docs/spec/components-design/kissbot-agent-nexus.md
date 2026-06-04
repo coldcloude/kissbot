@@ -3,7 +3,7 @@
 ## 概述
 Nexus — Agent 组件的 LLM 通信枢纽模块。智能体的"思考"部分，负责将外部输入和记忆加工为 LLM 可用的上下文，通过 agentic loop 调用 LLM 执行操作、生成回复。若 LLM 输出包含 tool call，则将 tool call 分派到同 Agent 内的 Station 模块执行。
 
-Nexus 是 Agent 组件的一部分，与 Station 模块通过内部 WSS 通信。Agent 启动时可选择是否启用 nexus 模块。一个系统内可运行多个 agent 实例，每个实例可独立选择是否启用 nexus。
+Nexus 是 Agent 组件的一部分，通过内部调用与同进程 station 通信，通过 HTTPS 与远程 station 通信。Agent 启动时可选择是否启用 nexus 模块。一个系统内可运行多个 agent 实例，每个实例可独立选择是否启用 nexus。
 
 ## 内部模块
 
@@ -25,7 +25,7 @@ Nexus 是 Agent 组件的一部分，与 Station 模块通过内部 WSS 通信�
 - 解析 LLM 返回中的 tool call
 - 区分两类工具：
   - **内置工具**：由 nexus 自身执行，不发送 station，不记入记忆（如记忆查询工具）
-  - **外置工具**：通过 StationRouter 查找目标 Station，经由 WSS 分派执行
+  - **外置工具**：通过 StationRouter 查找目标 Station，经由 HTTPS 分派执行
 - 接收 Station 返回的执行结果
 - 将结果送回 LLM 继续 agentic loop
 
@@ -52,11 +52,10 @@ Nexus 是 Agent 组件的一部分，与 Station 模块通过内部 WSS 通信�
 - 提供 `find_station(tool_name) → Station` 查询接口
 - 内置工具（如记忆查询）不经过路由，由 ToolCallDispatcher 直接处理
 
-### 8. WSSClient - WSS 客户端（连接 Station）
-- 作为 WSS 客户端连接到一个或多个 Station
-- 发送 tool call 请求（tool name + parameters）
-- 接收 tool call 结果
-- 发送心跳维持连接
+### 8. StationClient - Station 通信客户端
+- 向 Station 发起 HTTPS 请求（tool name + parameters）
+- 从响应中获取 tool call 结果
+- 管理 Station 的地址和超时配置
 
 ### 9. WSSServer - WSS 服务器（连接外部）
 - 作为 WSS 服务器，接受消息通道的连接
@@ -104,8 +103,8 @@ nexus 收到 LLM 返回中的 tool call
      └─ 外置工具 →
            1. MemoryWriter 推送 tool call 调用记录到 memory-store
            2. StationRouter 查找目标 Station
-           3. WSSClient 发送 tool call 到 Station
-           4. Station 执行后返回结果
+           3. 向 Station 发起 HTTPS 请求，发送 tool call
+           4. 从 Station 的响应中获取执行结果
            5. MemoryWriter 推送 tool result 记录到 memory-store
            6. 将结果加入上下文
   → 继续步骤 3（继续 LLM 交互）
@@ -136,7 +135,7 @@ nexus 收到 LLM 返回中的 tool call
 | 对端 | 协议 | 通信时机 | 内容 |
 |------|------|----------|------|
 | 消息通道 | WSS | 持续 | 收发消息、绑定、附件下载、心跳 |
-| Station | WSS | agentic loop 内 | 发送 tool call、接收结果、心跳 |
+| Station | HTTPS | agentic loop 内 | 发送 tool call（请求），接收结果（响应） |
 | memory-store | HTTPS | 消息产生时 | 推送记忆记录 |
 | memory-struct | HTTPS | agentic loop 内 | 内置记忆查询 tool 调用 |
 | memory-ego | HTTPS | 启动/重置时 | 读取自我认知设定 |

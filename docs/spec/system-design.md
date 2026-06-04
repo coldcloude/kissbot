@@ -7,12 +7,12 @@
 
 **Nexus（LLM 通信枢纽）** — 智能体的"思考"部分。负责与 LLM 通信：接收外部输入 → 从记忆系统读取上下文 → 构建 LLM 上下文 → 调用 LLM API → 处理 LLM 输出。若输出包含 tool call，则将 tool call 分派到对应的 Station 执行；若输出为回复文本，则推送至记忆系统并发往外部通道。
 
-**Station（Tool 执行主机）** — 智能体的"行动"部分。负责执行具体的工具操作：接收来自 nexus 的 tool call → 执行工具 → 将结果通过 WSS 返回给 nexus。Station 不直接与 LLM 通信，也不对接记忆系统，只专注于工具的执行和结果返回。
+**Station（Tool 执行主机）** — 智能体的"行动"部分。负责执行具体的工具操作：接收来自 nexus 的 tool call → 执行工具 → 将结果通过 HTTPS 返回给 nexus。Station 不直接与 LLM 通信，也不对接记忆系统，只专注于工具的执行和结果返回。
 
 Agent 程序可在启动时选择开启的部分：
 - 仅开启 nexus（纯 LLM 交互，无工具执行）
 - 仅开启 station（纯工具执行，无 LLM 交互）
-- 同时开启 nexus 和 station（本地智能体）
+- 同时开启 nexus 和 station（本地智能体，同进程内通信；也可连接远程 station）
 
 同一系统内可运行多个 agent 实例，各实例可开启不同的部分、对接不同的 LLM 模型或服务于不同的场景。
 
@@ -22,7 +22,7 @@ Agent 程序可在启动时选择开启的部分：
 - **智能家电**：执行物理世界操作（开关、调节等）
 - **机器人**：执行物理动作（移动、抓取等）
 
-所有形态的 station 使用统一的 WSS 协议与 nexus 通信。
+所有形态的 station 通过 HTTPS 与远程 nexus 通信（同进程时通过内部调用）。
 
 **常见 Station 工具集**：
 - **工程工具站**：管理工作区目录结构、职位配置、笔记，提供文件操作（读/写/编辑）、命令执行等工具
@@ -90,20 +90,20 @@ Agent 程序可在启动时选择开启的部分：
          2. 回复发送到外部通道
 6. 等待下一条输入
 ```
-目的：将输入加工为 LLM 可用的上下文，循环调用 LLM 执行操作直至生成回复。过程中 tool call 经由 WSS 分派到 Station 执行，所有记忆操作（包括 tool 结果）由 nexus 统一推送到记忆系统。
+目的：将输入加工为 LLM 可用的上下文，循环调用 LLM 执行操作直至生成回复。过程中 tool call 经由 HTTPS 分派到 Station 执行，所有记忆操作（包括 tool 结果）由 nexus 统一推送到记忆系统。
 
-### 2.3 Tool 调用流程（nexus ↔ station）
+### 2.3 Tool 调用流程（nexus → station）
 ```
 nexus 收到 LLM 返回中的 tool call
   → MemoryWriter 推送 tool call 调用记录到 memory-store
   → StationRouter 根据 tool name 查找目标 Station
-  → 通过 WSS 将 tool call（tool name + parameters）发送到 Station
-  → Station 接收并执行工具
-  → 将执行结果通过 WSS 返回给 Nexus
-  → MemoryWriter 推送 tool result 记录到 memory-store
+  → 向 Station 发送 HTTPS 请求（tool name + parameters）
+  → Station 接收请求，执行工具
+  → 将执行结果作为 HTTPS 响应返回
+  → Nexus 收到响应，MemoryWriter 推送 tool result 记录到 memory-store
   → Nexus 将 tool 结果加入 LLM 上下文，继续 agentic loop
 ```
-目的：nexus 将 LLM 需要的工具调用分派到对应 station 执行，station 完成后将结果返回 nexus。tool call 和 tool result 各自保存一条记忆记录。
+目的：nexus 将 LLM 需要的工具调用分派到对应 station 执行，station 的响应中携带执行结果。tool call 和 tool result 各自保存一条记忆记录。
 
 ### 2.4 消息下行流程（nexus → 外部）
 ```
@@ -185,12 +185,12 @@ nexus 启动或上下文重置时
 ### 2.10 Station 接入和断开流程
 ```
 Station 启动
-  → 启动 WSS 服务器，等待 Nexus 连接
-  → Nexus 连接后，Station 发送工具注册信息（支持的工具列表）
-  → Nexus 更新 StationRouter 路由表
+  → 启动 HTTPS 服务器，等待 Nexus 的 tool call 请求
+  → Nexus 通过 Station 地址向其发送 tool call
+  → Station 返回结果后 Nexus 确认 Station 可用
 
 Station 断开
-  → Nexus 检测到 WSS 连接断开
+  → Nexus 检测到 HTTPS 请求失败
   → 从 StationRouter 中移除该 Station 及其工具
   → 正在执行的 tool call 标记为失败
 ```
@@ -222,8 +222,7 @@ nexus 通过 WSS 发送附件下载请求（携带 key）
 |--------|--------|------|----------|----------|
 | nexus | 消息通道 | WSS | 绑定请求、下行消息(回复/思考)、附件下载请求、心跳 | nexus 启动时绑定；有消息回复时；需要附件时 |
 | 消息通道 | nexus | WSS | 上行消息(用户消息)、群组变化通知、附件数据、心跳 | 外部消息到达时；群组变化时；nexus 请求附件时 |
-| nexus | station | WSS | tool call 请求（tool name + parameters） | agentic loop 内 LLM 生成 tool call 时 |
-| station | nexus | WSS | tool call 结果（执行结果/错误信息） | 工具执行完成后 |
+| nexus | station | HTTPS（请求/响应） | nexus 发送 tool call 请求，station 返回 tool result 响应 | agentic loop 内 LLM 生成 tool call 时 |
 | nexus | 记忆存储模块 | HTTPS | 推送记忆记录（channel 文本/思考/工具调用/工具结果） | 每条消息产生时 |
 | nexus | 记忆结构实现模块 | HTTPS（内置 tool） | 记忆查询请求 | agentic loop 内 LLM 调用记忆搜索工具时 |
 | nexus | 自我认知模块 | HTTPS | 读取自我认知信息 | nexus 启动时；上下文重置时 |
@@ -238,7 +237,6 @@ nexus 通过 WSS 发送附件下载请求（携带 key）
 
 **WSS 协议**：用于需要实时双向通信的场景。
 - nexus 与消息通道之间：通过心跳维持连接，传输消息和指令
-- nexus 与 station 之间：station 启动 WSS 服务器，nexus 作为客户端连接，传输 tool call 请求和结果
 - 记忆存储模块与记忆结构实现模块之间：用于新数据推送通知
 
 **HTTPS 协议**：用于请求-响应模式的通信。所有 API 输入参数均放在 JSON 请求体中，路径仅用于路由到具体处理函数。
