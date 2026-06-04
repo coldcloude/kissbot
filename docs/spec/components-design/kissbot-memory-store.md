@@ -12,7 +12,7 @@
 - 追加记录、按时间范围查询
 
 存储的文件分类：
-- `channel-{channel_id}-records-{date}.jsonl`：channel 文本记录（按 channel 和时间组织）
+- `channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl`：channel 文本记录（按 messenger、user、group 和时间组织）
 - `think-records-{date}.jsonl`：思考内容记录
 - `tool-call-records-{date}.jsonl`：工具调用记录
 - `tool-result-records-{date}.jsonl`：工具调用结果记录

@@ -14,7 +14,7 @@
 ### 2. UserRecognitionManager - 用户识别信息管理器
 - 管理 user-recognition.json 的读写
 - 提供用户信息的增删改查
-- 管理用户标识（channel_id + user_id 关联）、权限、用户间关系
+- 管理用户标识（messenger_id + user_id + group_id 组合）、权限、用户间关系
 
 ### 3. RolePlayManager - 角色设定管理器
 - 管理 role-play-{role-name}.json 的读写
@@ -35,7 +35,7 @@
 
 ### 客观设定（每个 agent ID 对应一份）
 - **身份标识**：id、name、description、created_at、禁止事项、自主运行目标
-- **用户识别信息**：用户列表，每项包含名称、身份（所有者/管理员/其他用户）、关联的用户标识（channel_id+user_id）、与其他用户的关系、描述
+- **用户识别信息**：用户列表，每项包含名称、身份（所有者/管理员/其他用户）、关联的用户标识（messenger_id+user_id+group_id）、与其他用户的关系、描述
 
 ### 角色设定（每个 agent ID 对应多份）
 - **角色扮演**：role-name、描述、自主运行目标

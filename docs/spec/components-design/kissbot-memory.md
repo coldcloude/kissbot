@@ -38,7 +38,7 @@
 │   ├── memory-ego/               # 自我认知数据
 │   ├── memory-store/
 │   │   └── {year}-{role-name}/
-│   │       ├── channel-{channel_id}-records-{date}.jsonl
+│   │       ├── channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl
 │   │       ├── think-records-{date}.jsonl
 │   │       ├── tool-call-records-{date}.jsonl
 │   │       └── tool-result-records-{date}.jsonl
@@ -55,7 +55,7 @@
 │   ├── memory-ego/
 │   ├── memory-store/
 │   │   └── {year}-{role-name}-{event-id}/
-│   │       ├── channel-{channel_id}-records-{date}.jsonl
+│   │       ├── channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl
 │   │       ├── think-records-{date}.jsonl
 │   │       ├── tool-call-records-{date}.jsonl
 │   │       └── tool-result-records-{date}.jsonl
