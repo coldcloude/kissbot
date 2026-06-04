@@ -37,17 +37,22 @@
 ## 二、通信协议
 
 ### WSS（WebSocket Secure）
-用于实时双向通信场景：
-- **agent ↔ channel**：agent 作为 WSS 客户端连接 channel 的 WSS 服务器。每个 agent 对应唯一连接，消息体包含 MSG 类型和 JSON data。
-  - 消息类型：bind / bind_ack、outgoing_message（agent → channel）、incoming_message（channel → agent）、get_channels / channels、group_change、attachment_download / attachment_data、ping / pong
-- **memory-store ↔ memory-struct**：memory-struct 作为 WSS 客户端连接 memory-store。memory-store 有新数据时通过 WSS 广播通知。
+用于实时双向通信场景，共有三组 WSS 连接：
+
+**nexus ↔ channel**：nexus 作为 WSS 客户端连接 channel 的 WSS 服务器。每个 nexus 对应唯一连接，消息体包含 MSG 类型和 JSON data。
+- 消息类型：bind / bind_ack、outgoing_message（nexus → channel）、incoming_message（channel → nexus）、get_channels / channels、group_change、attachment_download / attachment_data、ping / pong
+
+**nexus ↔ station**：station 作为 WSS 服务器，nexus 作为客户端连接。一个 station 可同时服务多个 nexus。消息体包含 MSG 类型和 JSON data。
+- 消息类型：register（station → nexus，发送工具注册信息）、tool_call（nexus → station）、tool_result（station → nexus）、ping / pong
+
+**memory-store ↔ memory-struct**：memory-struct 作为 WSS 客户端连接 memory-store。memory-store 有新数据时通过 WSS 广播通知。
 
 ### HTTPS
 用于请求-响应模式的通信：
-- **agent → memory-store**：推送记忆记录
+- **nexus → memory-store**：推送记忆记录
 - **channel → memory-store**：推送消息记录
-- **agent → memory-ego**：读取自我认知设定
-- **agent → memory-struct**：查询记忆（agentic loop 内的 tool call）
+- **nexus → memory-ego**：读取自我认知设定
+- **nexus → memory-struct**：内置记忆查询 tool 调用（不记入记忆）
 - **前端 UI → 后端**：配置管理、记忆查看管理
 - **所有 API 路径仅用于路由，参数放在 JSON 请求体中**
 
@@ -71,11 +76,6 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 → LocalXxx（API 类型约束，用 String/HashMap）
 ```
 
-### 安全要求
-- 所有通信使用 HTTPS 或 WSS 协议
-- 所有客户端支持自定义可信证书文件配置
-- 支持自签名证书
-
 ### 时间格式
 - 时间格式：`yyyy-MM-dd HH:mm:ss`（24 小时制）
 - 日期格式：`yyyy-MM-dd`
@@ -85,14 +85,16 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 
 ### 记忆文件
 - 使用 JSON Lines 格式，便于追加和流式读取
-- 按 agent ID → 年 → 角色 → 日期组织文件目录结构
-- 三种记录类型分文件存储：channel 文本、思考内容、工具调用
+- 按 `{agent-id}/memory-store/{year}-{suffix}/` 组织文件目录结构
+  - 角色记忆：suffix 为 `{role-name}`
+  - 事件记忆：suffix 为 `{role-name}-{event-id}`
+- 四种记录类型分文件存储：channel 文本、思考内容、工具调用记录、工具结果记录
 
 ### 元数据和配置
 - 使用 JSON 格式存储
 - metadata.json：agent 元数据
 - user-recognition.json：用户识别信息
-- role-play-{role-id}.json：角色设定
+- role-play-{role-name}.json：角色设定
 
 ### 附件
 - 由各 channel 实现模块自行管理（文件系统等）
@@ -101,26 +103,25 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 ## 五、模块类型划分
 
 ### 独立进程（Rust app）
-| 模块 | 启动方式 | 依赖的基础库 |
-|------|----------|--------------|
-| kissbot-agent | cargo run | kissbot-api, kissbot-channel |
-| kissbot-memory-store | cargo run | kissbot-memory, kissbot-api |
-| kissbot-memory-ego | cargo run | kissbot-memory, kissbot-api, kai-index |
-| kissbot-channel-web | cargo run | kissbot-channel, kissbot-api |
-| kissbot-memory-struct-abstract | cargo run | kissbot-memory-struct, kissbot-api |
+| 模块 | 启动方式 | 说明 |
+|------|----------|------|
+| kissbot-agent | cargo run | Agent 智能体，启动时选择开启 nexus、station 或同时开启两者 |
+| kissbot-memory-store | cargo run | 记忆存储模块 |
+| kissbot-memory-ego | cargo run | 自我认知模块 |
+| kissbot-channel-web | cargo run | Web 消息通道 |
+| kissbot-memory-struct-abstract | cargo run | 记忆结构（摘要索引） |
 
 ### 库模块（Rust lib）
 | 模块 | 被谁使用 |
 |------|----------|
 | kissbot-api | 所有其他模块 |
-| kissbot-channel | kissbot-channel-web 等实现模块 |
+| kissbot-channel | kissbot-channel-web 等实现模块，kissbot-agent |
 | kissbot-memory | memory-store, memory-ego, memory-struct-* |
 | kissbot-memory-struct | memory-struct-abstract 等实现 |
-| kissbot-project | agent（工程模式） |
 
 ### 前端（TypeScript + React + Vite）
 | 模块 | 访问的后端 |
 |------|------------|
-| kissbot-agent-config | agent |
+| kissbot-agent-config | kissbot-agent（nexus/station 配置） |
 | kissbot-memory-manage | memory-store, memory-struct, memory-ego |
 | kissbot-channel-web-ui | channel-web |

@@ -10,13 +10,13 @@
 - [ ] 定义错误类型和事件类型
 
 ### 第2阶段：核心组件实现 ⚠️ 代码已有部分实现
-- [ ] 实现 ChannelManager（注册多个 Messenger，消息队列，回调注册，agent 绑定）
+- [ ] 实现 ChannelManager（注册多个 Messenger，消息队列，回调注册，nexus 绑定）
 - [ ] 实现 WSS Server
 - [ ] 实现 MemoryStoreClient
 
 ### 第3阶段：Messenger/Channel 实现示例 ❌ 未开始
 - [ ] 实现 channel-web 作为参考实现
-- [ ] 实现 agent 绑定流程
+- [ ] 实现 nexus 绑定流程
 - [ ] 实现 channel 实例创建与回调注册
 - [ ] 实现附件存储
 

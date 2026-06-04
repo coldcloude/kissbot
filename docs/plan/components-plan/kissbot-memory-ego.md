@@ -28,7 +28,7 @@
 - [ ] 实现更新 agent 必须遵守事项的功能和 API
 - [ ] 实现更新 agent 自主运行目标的功能和 API
 - [ ] 实现更新角色自主运行目标的功能和 API
-- [ ] 完善 metadata.json 和 role-play-{role-id}.json 的读写
+- [ ] 完善 metadata.json 和 role-play-{role-name}.json 的读写
 
 ### 第5阶段：进阶模式改造 ❌ 未开始
 - [ ] 记忆提取器实现

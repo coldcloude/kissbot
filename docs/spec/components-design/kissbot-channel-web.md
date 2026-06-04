@@ -7,7 +7,7 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 - 实现 Messenger 接口（管理 Web 用户和会话）
 - 实现 Channel 接口（消息收发）
 - 管理附件存储
-- 作为 WSS 服务器等待 agent 连接
+- 作为 WSS 服务器等待 nexus 连接
 
 ## 前端
 - 提供用户聊天界面
@@ -20,4 +20,4 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 |------|------|----------|------|
 | 消息通道框架 | 库调用 | 持续 | 通过 Messenger/Channel 接口交互 |
 | 前端界面 | HTTPS/WebSocket | 持续 | 收发消息 |
-| agent | WSS | 持续 | 收发消息 |
+| nexus | WSS | 持续 | 收发消息 |
