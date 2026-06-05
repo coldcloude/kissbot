@@ -2,7 +2,8 @@
 
 ## 实现状态：🔴 骨架阶段
 
-### 第1阶段：基础搭建 ❌ 未开始
+### 第1阶段：基础搭建 🟡 已初始化
+- [x] 初始化 React + Vite 项目
 - [ ] 配置 LLM API（base_url、api_key、model 等）
 - [ ] 配置 tool 和 skill
 - [ ] 配置 channel、memory 组件地址

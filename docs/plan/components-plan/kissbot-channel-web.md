@@ -1,6 +1,6 @@
 # kissbot-channel-web 组件内功能实现顺序
 
-## 实现状态：🟡 骨架阶段（仅 main.rs）
+## 实现状态：🟡 骨架阶段
 
 ### kissbot-channel-web（Rust 后端）
 
@@ -16,8 +16,8 @@
 
 ### kissbot-channel-web-ui（TypeScript 前端）
 
-#### 第1阶段：基础搭建 ❌ 未开始
-- [ ] 初始化 React + Vite 项目
+#### 第1阶段：基础搭建 🟡 已初始化
+- [x] 初始化 React + Vite 项目
 - [ ] 实现聊天界面
 - [ ] 实现附件上传/下载
 - [ ] 实现与后端通信

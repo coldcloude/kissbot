@@ -7,14 +7,15 @@
 | 第1阶段 | 核心模块初始化 | ✅ 已完成 |
 | 第2阶段 | memory 基础模块实现（含角色/事件记忆路径） | ✅ 已完成 |
 | 第3阶段 | memory-store 实现 | ✅ 已完成 |
-| 第4阶段 | channel 实现 | ❌ 未开始 |
-| 第5阶段 | memory-ego 实现 | 🟡 部分完成 |
-| 第6阶段 | agent 基础实现（nexus + station 模块） | ❌ 未开始 |
-| 第7阶段 | memory-struct 实现 | ❌ 未开始 |
-| 第8阶段 | agent 记忆模式进阶实现 | ❌ 未开始 |
-| 第9阶段 | agent 工具集实现 | ❌ 未开始 |
-| 第10阶段 | UI 实现 | ❌ 未开始 |
-| 第11阶段 | agent 扩展（station 设备等） | ❌ 未开始 |
+| 第4阶段 | kissbot-security 模块实现 | 🟡 待实现 |
+| 第5阶段 | channel 实现 | 🟡 部分完成 |
+| 第6阶段 | memory-ego 实现 | 🟡 部分完成 |
+| 第7阶段 | agent 基础实现（nexus + station 模块） | ❌ 未开始 |
+| 第8阶段 | memory-struct 实现 | ❌ 未开始 |
+| 第9阶段 | agent 记忆模式进阶实现 | ❌ 未开始 |
+| 第10阶段 | agent 工具集实现 | ❌ 未开始 |
+| 第11阶段 | UI 实现 | ❌ 未开始 |
+| 第12阶段 | agent 扩展（station 设备等） | ❌ 未开始 |
 
 ## 各阶段详细说明
 
@@ -42,18 +43,25 @@
 - [x] WSS 通知服务器功能（已规划，代码中待验证是否完成）
 - [x] 记忆查询 API
 
-### 第4阶段：channel 实现 🔴 未开始
-- [ ] 模块架构设计
-- [ ] 框架 trait 定义（Messenger trait、Channel trait）
+### 第4阶段：kissbot-security 模块实现 🟡 待实现
+- [ ] 模块架构设计、Cargo.toml 配置
+- [ ] auth_types 模块（AuthError、header 常量、extract_api_key）
+- [ ] validator 模块（ApiKeyValidator trait、SimpleApiKeyValidator 实现）
+- [ ] axum_middleware 模块（AuthLayer 中间件）
+- [ ] kai-ws 集成（WssUpgradeFilter trait + 回调接入）
+- [ ] 各进程接入安全认证（memory-store、memory-ego 等）
+- [ ] 完善文档和测试
+
+### 第5阶段：channel 实现 🟡 部分完成
+- [x] 模块架构设计
+- [x] 框架 trait 定义（Messenger trait、Channel trait）
+- [x] 与 agent WSS 通信（ChannelManager 建立 WSS 服务器处理 nexus 的连接、绑定、消息收发、附件传输）
+- [x] memory-store 客户端通信（MemoryStoreClient，通过 HTTPS 推送消息到记忆存储）
 - [ ] 附件存储管理
-- [ ] WSS 服务器实现
-- [ ] HTTPS API 接口
-- [ ] channel-web 后台实现
+- [ ] channel-web 后台实现（具体 Messenger/Channel 实现）
 - [ ] channel-web-ui 前台实现
 
-> **备注**：kissbot-channel 的 Rust 源码目录中有 7 个源文件（channel_manager.rs、channel.rs、data.rs、error.rs、lib.rs、memory_store_client.rs、messenger.rs），说明框架代码已有部分基础实现。设计文档已完整编写，但开发计划中的阶段均为 [ ] 未勾选状态。
-
-### 第5阶段：memory-ego 实现 🟡 部分完成
+### 第6阶段：memory-ego 实现 🟡 部分完成
 - [x] 模块架构设计
 - [x] 实现 agent 元数据 JSON 文件存储（带读写锁）
 - [x] agent 元数据管理 API（新建、查询、更新）
@@ -64,9 +72,9 @@
 - [ ] 在 AgentMetadata 中增加 forbidden_items 和 autonomous_goals 字段
 - [ ] 在 role-play 数据结构中增加 autonomous_goals 字段
 - [ ] 实现更新禁止事项和自主运行目标的功能和 API
-- [ ] 文件命名从 role-id 迁移至 role-name
+- [x] 文件命名从 role-id 迁移至 role-name
 
-### 第6阶段：agent 基础实现（nexus + station 模块） 🔴 未开始
+### 第7阶段：agent 基础实现（nexus + station 模块） 🔴 未开始
 - [ ] 模块架构设计、Cargo.toml 配置
 - [ ] 启动模式管理（nexus 模式/station 模式/全模式）
 - [ ] **Nexus 模块**
@@ -86,30 +94,30 @@
   - [ ] 工具注册信息协议（station → nexus 注册消息）
   - [ ] tool call / tool result 消息协议
 
-### 第7阶段：memory-struct 实现 🔴 未开始
+### 第8阶段：memory-struct 实现 🔴 未开始
 - [ ] 模块架构设计
 - [ ] 框架 trait 定义
 - [ ] memory-store 实现向 memory-struct 的 WSS 通知机制
 - [ ] memory-struct-abstract 实现（摘要搜索）
 - [ ] 摘要搜索记忆 HTTPS API（供 nexus 内置 tool 调用）
 
-### 第8阶段：agent 记忆模式进阶实现 🔴 未开始
+### 第9阶段：agent 记忆模式进阶实现 🔴 未开始
 - [ ] 角色记忆模式完整实现（按 role-name 读取/写入）
 - [ ] 事件记忆模式完整实现（按 role-name-event-id 读取/写入）
 - [ ] 上下文压缩和重置功能
 - [ ] 自主运行目标触发机制
 
-### 第9阶段：agent 工具集实现 🔴 未开始
+### 第10阶段：agent 工具集实现 🔴 未开始
 - [ ] station 工程工具实现（Read、Write、Edit、Bash）
 - [ ] station 网络工具实现（WebSearch、WebFetch）
 - [ ] station 配置加载和管理
 
-### 第10阶段：UI 实现 🔴 未开始
+### 第11阶段：UI 实现 🔴 未开始
 - [ ] agent-config（配置 agent 的 nexus/station 启动模式）
 - [ ] memory-manage（管理记忆）
 - [ ] channel-web-ui 完善
 
-### 第11阶段：agent 扩展（station 设备等） 🔴 未开始
+### 第12阶段：agent 扩展（station 设备等） 🔴 未开始
 - [ ] 轻量级 HTTPS 协议适配（资源受限设备）
 - [ ] 设备工具站开发框架
 - [ ] 典型设备工具实现（网络设备、智能家电、机器人原型）

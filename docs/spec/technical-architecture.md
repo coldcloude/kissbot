@@ -14,6 +14,7 @@
 | serde / serde_json 1.0 | JSON 序列化 |
 | futures 0.3 | 异步任务组合 |
 | dashmap 6.1 | 并发安全哈希表 |
+| tower 0.5 | axum 中间件层（用于认证拦截） |
 | chrono 0.4 | 日期时间处理 |
 | thiserror 2.0 | 错误类型定义 |
 | uuid 1.0 | UUID 生成 |
@@ -65,6 +66,13 @@
 - 路径无参数：HTTP API 路径仅用于路由到具体处理函数，不含动态参数
 - 参数全 JSON：所有输入参数在请求体中传递
 - 统一响应格式：所有 API 响应使用 ApiResponse 结构（success + data + error）
+- 认证方式：所有请求（HTTPS）必须携带 `X-Api-Key` HTTP header，WSS 握手阶段同样通过 `X-Api-Key` header 认证
+
+### Security 设计原则
+- 认证方式：预配置单一 API key，通过 HTTP header `X-Api-Key` 传递
+- 无需多用户和用户系统，认证通过即为合法请求
+- 认证失败统一返回 HTTP 401 + `ApiResponse { success: false, error: "unauthorized" }`
+- 认证逻辑由 kissbot-security 库提供，各进程在 HTTPS 服务器和 WSS 服务器中接入
 
 ### 数据结构一致性
 通过泛型 trait 确保并发类型和 API 类型一致：
@@ -113,6 +121,7 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 | 模块 | 被谁使用 |
 |------|----------|
 | kissbot-api | 所有其他模块 |
+| kissbot-security | 所有需要认证能力的独立进程（memory-store、memory-ego、agent、channel-web 等） |
 | kissbot-channel | kissbot-channel-web 等实现模块，kissbot-agent |
 | kissbot-memory | memory-store, memory-ego, memory-struct-* |
 | kissbot-memory-struct | memory-struct-abstract 等实现 |
