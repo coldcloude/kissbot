@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::error::Error;
 
 /// API key 校验器 trait。
@@ -10,18 +12,18 @@ pub trait ApiKeyValidator: Send + Sync {
 /// 简单的字符串比对 API key 校验器。
 /// 持有预配置的 key，与请求中的 key 直接比对。
 pub struct SimpleApiKeyValidator {
-    configured_key: String,
+    configured_key: Arc<String>,
 }
 
 impl SimpleApiKeyValidator {
-    pub fn new(configured_key: String) -> Self {
+    pub fn new(configured_key: Arc<String>) -> Self {
         Self { configured_key }
     }
 }
 
 impl ApiKeyValidator for SimpleApiKeyValidator {
     fn validate(&self, key: &str) -> Result<(), Error> {
-        if key == self.configured_key {
+        if key == self.configured_key.as_str() {
             Ok(())
         } else {
             Err(Error::InvalidKey)

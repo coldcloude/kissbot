@@ -99,7 +99,7 @@ pub struct ChannelManager {
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
-    api_key: String,
+    api_key: Arc<String>,
 }
 
 struct ConnectCloseProcessor {
@@ -557,13 +557,13 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
 }
 
 impl ChannelManager {
-    pub fn new(memory_store_base_url: &str, api_key: &str) -> Self {
+    pub fn new(memory_store_base_url: &str, api_key: Arc<String>) -> Self {
         Self {
             global_connect_id: AtomicU32::new(0),
             connect_map: DashMap::new(),
             messenger_map: DashMap::new(),
-            memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url)),
-            api_key: api_key.to_string(),
+            memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url, api_key.clone())),
+            api_key,
         }
     }
 
@@ -579,8 +579,7 @@ impl ChannelManager {
         let listener = TcpListener::bind(addr).await?;
         info!("WSS Server listening on: {}", addr);
         let initializer = ChannelManagerInitializer {};
-        let api_key = manager.api_key.clone();
-        let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(api_key)));
+        let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(manager.api_key.clone())));
         while let Ok((stream, _)) = listener.accept().await {
             ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, manager.clone(), &initializer, &[&filter]).await?;
         }

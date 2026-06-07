@@ -19,7 +19,7 @@ async fn main() {
     let config = Config::get();
 
     let app = create_router()
-        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(config.api_key.clone()))));
+        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(Arc::new(config.api_key.clone())))));
 
     let addr = format!("{}:{}", config.listen_addr, config.listen_port);
     let listener = TcpListener::bind(&addr).await.unwrap();

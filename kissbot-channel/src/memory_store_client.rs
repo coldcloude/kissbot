@@ -1,6 +1,7 @@
 use crate::{Error, IncomingMessages, error::Result};
 use flume::{Receiver, Sender, bounded};
 use kissbot_api::{SyncString, store::*};
+use kissbot_security::HEADER_API_KEY;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{collections::LinkedList, sync::Arc};
@@ -27,15 +28,17 @@ pub struct MessagesRecord {
 pub struct MemoryStoreClient {
     client: Client,
     base_url: String,
+    api_key: Arc<String>,
     messages_queue: (Sender<MessagesRecord>, Receiver<MessagesRecord>),
-    
+
 }
 
 impl MemoryStoreClient {
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, api_key: Arc<String>) -> Self {
         Self {
             client: Client::new(),
             base_url: base_url.to_string(),
+            api_key,
             messages_queue: bounded::<MessagesRecord>(RECORD_QUEUE_SIZE),
         }
     }
@@ -89,7 +92,9 @@ impl MemoryStoreClient {
             };
             
             let url = format!("{}/store/channel", self.base_url);
-            let response = self.client.post(&url).json(&req).send().await?;
+            let response = self.client.post(&url)
+                .header(HEADER_API_KEY, self.api_key.as_str())
+                .json(&req).send().await?;
             
             if !response.status().is_success() {
                 let err_msg = format!("Failed to push message records: [{}] {}", response.status(), response.text().await?);
