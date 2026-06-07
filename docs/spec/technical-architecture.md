@@ -13,6 +13,7 @@
 | tokio-tungstenite 0.26 | WSS 客户端/服务器 |
 | serde / serde_json 1.0 | JSON 序列化 |
 | futures 0.3 | 异步任务组合 |
+| tower 0.5 | 中间件抽象层（用于认证 Layer） |
 | dashmap 6.1 | 并发安全哈希表 |
 | chrono 0.4 | 日期时间处理 |
 | thiserror 2.0 | 错误类型定义 |
