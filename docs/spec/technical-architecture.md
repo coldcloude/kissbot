@@ -8,13 +8,12 @@
 | Rust (2024 edition) | 全部后端模块开发语言 |
 | Cargo | 包管理和构建 |
 | tokio 1.x | 异步运行时 |
-| axum 0.8 | HTTPS 服务器 |
-| reqwest 0.13 | HTTPS 客户端 |
-| tokio-tungstenite 0.29 | WSS 客户端/服务器 |
+| axum 0.7 | HTTPS 服务器 |
+| reqwest 0.12 | HTTPS 客户端 |
+| tokio-tungstenite 0.26 | WSS 客户端/服务器 |
 | serde / serde_json 1.0 | JSON 序列化 |
 | futures 0.3 | 异步任务组合 |
 | dashmap 6.1 | 并发安全哈希表 |
-| tower 0.5 | axum 中间件层（用于认证拦截） |
 | chrono 0.4 | 日期时间处理 |
 | thiserror 2.0 | 错误类型定义 |
 | uuid 1.0 | UUID 生成 |
@@ -34,6 +33,9 @@
 | 库 | 用途 |
 |----|------|
 | kai-index（Rust） | 倒排索引模块，用于全文搜索 |
+| kai-ws（Rust） | WebSocket 通信框架，支持 JSON/二进制消息、心跳、请求头过滤 |
+| kai-file（Rust） | 文件 I/O 工具库（反向行读取器等） |
+| kai-codegen（Rust） | Rust struct 转 TypeScript 类型定义代码生成工具 |
 
 ## 二、通信协议
 
@@ -115,16 +117,19 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 | kissbot-memory-store | cargo run | 记忆存储模块 |
 | kissbot-memory-ego | cargo run | 自我认知模块 |
 | kissbot-channel-web | cargo run | Web 消息通道 |
-| kissbot-memory-struct-abstract | cargo run | 记忆结构（摘要索引） |
+| kissbot-memory-struct-abstract | cargo run | 记忆结构（摘要索引，骨架阶段） |
 
 ### 库模块（Rust lib）
 | 模块 | 被谁使用 |
 |------|----------|
-| kissbot-api | 所有其他模块 |
-| kissbot-security | 所有需要认证能力的独立进程（memory-store、memory-ego、agent、channel-web 等） |
+| kissbot-api | kissbot-channel, kissbot-memory, kissbot-security, kissbot-memory-ego, kissbot-memory-store, 及所有其他模块 |
+| kissbot-security | 计划接入：kissbot-memory-store、kissbot-memory-ego、kissbot-agent、kissbot-channel-web 等 |
 | kissbot-channel | kissbot-channel-web 等实现模块，kissbot-agent |
-| kissbot-memory | memory-store, memory-ego, memory-struct-* |
-| kissbot-memory-struct | memory-struct-abstract 等实现 |
+| kissbot-memory | kissbot-memory-store, kissbot-memory-ego, kissbot-memory-struct-*, kissbot-memory-struct |
+| kissbot-memory-struct | kissbot-memory-struct-abstract 等记忆结构实现模块 |
+| kai-ws | kissbot-api, kissbot-channel, kissbot-security |
+| kai-file | kissbot-memory, kissbot-memory-store |
+| kai-index | kissbot-memory-ego |
 
 ### 前端（TypeScript + React + Vite）
 | 模块 | 访问的后端 |
