@@ -21,3 +21,4 @@ async-trait = "0.1"
 tracing = "0.1"
 kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-api = { path = "../kissbot-api" }
+kissbot-security = { path = "../kissbot-security" }

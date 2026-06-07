@@ -8,6 +8,7 @@ use crate::error::Result;
 pub struct Config {
     pub listen_addr: String,
     pub listen_port: u16,
+    pub api_key: String,
 }
 
 static CONFIG_INSTANCE: OnceLock<Config> = OnceLock::new();

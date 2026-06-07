@@ -883,11 +883,25 @@ dependencies = [
  "kai-index",
  "kissbot-api",
  "kissbot-memory",
+ "kissbot-security",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "kissbot-security"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "kai-ws",
+ "kissbot-api",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

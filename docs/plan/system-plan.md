@@ -43,13 +43,13 @@
 - [x] WSS 通知服务器功能（已规划，代码中待验证是否完成）
 - [x] 记忆查询 API
 
-### 第4阶段：kissbot-security 模块实现 🟡 待实现
-- [ ] 模块架构设计、Cargo.toml 配置
-- [ ] auth_types 模块（AuthError、header 常量、extract_api_key）
-- [ ] validator 模块（ApiKeyValidator trait、SimpleApiKeyValidator 实现）
-- [ ] axum_middleware 模块（AuthLayer 中间件）
-- [ ] kai-ws 集成（WssUpgradeFilter trait + 回调接入）
-- [ ] 各进程接入安全认证（memory-store、memory-ego 等）
+### 第4阶段：kissbot-security 模块实现 🟡 部分完成
+- [x] 模块架构设计、Cargo.toml 配置
+- [x] auth_types 模块（Error、header 常量、extract_api_key）
+- [x] validator 模块（ApiKeyValidator trait、SimpleApiKeyValidator 实现）
+- [x] axum_middleware 模块（auth_middleware 函数，基于 axum::middleware::from_fn）
+- [x] kai-ws 集成（ApiKeyWsFilter 实现 kai-ws 的 WsHeaderFilter trait）
+- [x] 各进程接入安全认证（kissbot-memory-store、kissbot-memory-ego、kissbot-channel）
 - [ ] 完善文档和测试
 
 ### 第5阶段：channel 实现 🟡 部分完成

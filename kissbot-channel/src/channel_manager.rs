@@ -6,7 +6,7 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::{DashMap, Entry};
-use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection};
+use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{AttachmentDownloadRequestDTO, AttachmentProcessor, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, process_attachment};
 use kissbot_api::channel::{BindRequestDTO, MessengerInfoRequestDTO, OutgoingMessageDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
@@ -99,6 +99,7 @@ pub struct ChannelManager {
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
+    api_key: String,
 }
 
 struct ConnectCloseProcessor {
@@ -556,12 +557,13 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
 }
 
 impl ChannelManager {
-    pub fn new(memory_store_base_url: &str) -> Self {
+    pub fn new(memory_store_base_url: &str, api_key: &str) -> Self {
         Self {
             global_connect_id: AtomicU32::new(0),
             connect_map: DashMap::new(),
             messenger_map: DashMap::new(),
             memory_store_client: Arc::new(MemoryStoreClient::new(memory_store_base_url)),
+            api_key: api_key.to_string(),
         }
     }
 
@@ -577,8 +579,10 @@ impl ChannelManager {
         let listener = TcpListener::bind(addr).await?;
         info!("WSS Server listening on: {}", addr);
         let initializer = ChannelManagerInitializer {};
+        let api_key = manager.api_key.clone();
+        let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(api_key)));
         while let Ok((stream, _)) = listener.accept().await {
-            ws_handle_connection(stream, MSG_QUEUE_SIZE, manager.clone(), &initializer).await?;
+            ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, manager.clone(), &initializer, &[&filter]).await?;
         }
         Ok(())
     }
