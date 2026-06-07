@@ -55,20 +55,21 @@ Agent 程序可在启动时选择开启的部分：
 定义各模块间通信的标准数据结构和统一的响应格式。是模块间数据交换的契约层，确保跨模块通信的数据类型一致。通过泛型 trait 保证并发类型和序列化类型的编译时一致性。
 
 ### 6. 安全认证模块 (Security)
-独立的认证安全模块，为所有模块的 HTTP 通信提供统一的认证能力。
+独立的认证安全模块，为所有模块的 HTTP 通信提供统一的 API key 认证能力。
 
 **模块结构**：
-- **AuthTypes** — 认证相关数据类型定义：`AuthError` 枚举（MissingKey / InvalidKey）、HTTP header 常量 `X-Api-Key`
-- **ApiKeyValidator** trait — 统一认证校验接口：`validate(&self, key: &str) -> Result<(), AuthError>`
-- **WssUpgradeFilter** trait — WSS 握手阶段的 HTTP header 回调接口，供 `kai-ws` 在 Upgrade 前调用
+- **认证类型定义** — 认证相关的数据类型：认证失败的错误类型（缺失 key、key 不匹配）、HTTP header 名称常量 `X-Api-Key`
+- **校验接口** — 统一的认证校验接口定义，接收 key 字符串返回校验结果
+- **HTTPS 接入** — 基于 tower Layer 的 axum 中间件，可挂载到任意 Router 上
+- **WSS 接入** — 实现 kai-ws 的请求头过滤器接口，在 WebSocket 握手阶段校验
 
 **设计原则**：
 - 只做认证，不做授权——仅验证请求方知道 API key，不过问该做什么
 - 预配置单一 API key，不支持多用户和动态 key 管理
-- 数据契约（trait + 类型）和具体实现分离——`kissbot-security` 定义接口，各进程通过配置注入 key
-- WSS 在握手阶段通过 `kai-ws` 的 filter 回调机制校验 HTTP header，与 HTTPS 使用同一套逻辑
+- 认证失败统一返回 HTTP 401，不区分缺失 key 还是 key 不匹配
+- HTTPS 和 WSS 共用同一套校验逻辑，WSS 通过 kai-ws 的 filter 回调机制在握手阶段验证
 
-**依赖关系**：`kissbot-security` → `kissbot-api`（使用 ApiResponse 等现有类型），不反向依赖。
+**依赖关系**：`kissbot-security` 依赖 `kissbot-api`（使用 ApiResponse 等现有类型），不反向依赖。
 
 ### 7. 管理界面
 提供 Web 界面的管理工具集，包括：

@@ -1,84 +1,56 @@
 # kissbot-security 组件设计
 
 ## 概述
-安全认证模块，为所有模块的 HTTP 通信提供统一的 API key 认证能力。作为独立的 Rust lib crate，定义了认证相关的数据契约（trait + 类型）和具体的校验工具函数。
+安全认证模块，为所有模块的 HTTP 通信提供统一的 API key 认证能力。作为独立的 Rust lib crate，定义了认证相关的数据契约和具体的校验接入工具。
 
 ## 设计原则
 - **只做认证，不做授权**：仅验证请求方知道 API key，不过问请求方应该做什么
 - **单一 key**：使用预配置的统一 API key，不支持多用户和动态 key 管理
-- **契约与实现分离**：trait 定义校验接口，具体校验逻辑可灵活替换
-- **协议统一**：HTTPS 和 WSS 共用同一套认证机制，WSS 在握手阶段通过 `kai-ws` 的 filter 回调检查 header
+- **契约与实现分离**：接口定义与具体校验逻辑分离
+- **认证方式统一**：HTTPS 和 WSS 共用同一套校验逻辑，请求携带 `X-Api-Key` HTTP header
 
 ## 内部模块
 
-### 1. auth_types 模块
-认证核心数据类型定义，与 `kissbot-api` 的 `common` 模块同级：
+### 1. 认证类型定义
+认证相关的数据类型：
+- 认证失败错误类型：区分缺失 key 和 key 不匹配
+- HTTP header 名称常量 `X-Api-Key`
+- 从 header map 中提取 key 值的工具函数
 
-- `AuthError` 枚举：
-  - `MissingKey` — 请求未携带 API key header
-  - `InvalidKey` — API key 不匹配
-- HTTP header 常量 `X-Api-Key`
-- `extract_api_key` 辅助函数：从 HTTP header map 中提取 key 值
+### 2. 校验器
+认证校验的实现：
+- 校验接口定义：接收 API key 字符串，返回校验结果
+- 简单字符串比对实现：持有预配置 key，与请求携带的 key 比对
+- 使用者也可自定义校验逻辑
 
-### 2. validator 模块
-认证校验逻辑：
-
-- `ApiKeyValidator` trait：`fn validate(&self, key: &str) -> Result<(), AuthError>`
-- `SimpleApiKeyValidator` 具体实现：持有预配置 key，与请求 header 中的 key 做字符串比对
-- 可通过配置文件或环境变量初始化
-
-### 3. wss_filter 模块
+### 3. WSS 接入
 WSS 握手阶段的 filter 回调工具：
+- 实现 kai-ws 的 `WsHeaderFilter` 接口，在 WebSocket 握手阶段校验
+- 从 Upgrade 请求的 header 中提取 `X-Api-Key`，调用校验器验证
+- 认证失败关闭连接
 
-- `WssUpgradeFilter` trait：供 `kai-ws` 在 WSS Upgrade 握手后、WebSocket 流建立前调用的回调接口
-- 回调接收 HTTP Request headers，调用 `ApiKeyValidator` 校验
-- 认证失败则关闭连接并返回 HTTP 401 响应
-
-### 4. axum_middleware 模块
-HTTPS 请求认证的 axum middleware 工具：
-
-- 提供 axum 的 `Layer`（中间件），自动拦截所有 HTTP 请求
-- 从请求 header 中提取 `X-Api-Key`，调用 `ApiKeyValidator` 校验
-- 认证失败返回 HTTP 401 + 标准 `ApiResponse` 格式错误响应
-- 认证通过则继续处理请求
-- 开放白名单路径配置（如健康检查接口可免认证）
+### 4. HTTPS 接入
+HTTPS 请求认证的 axum 中间件：
+- 基于 tower Layer 的标准 axum 中间件，挂载到 Router 上自动拦截请求
+- 调用校验器验证 `X-Api-Key` header
+- 认证失败返回 HTTP 401 + 标准 JSON 错误响应，认证通过继续处理请求
 
 ## 依赖关系
 
 ```
 kissbot-security
   ├── kissbot-api（使用 ApiResponse 等现有类型）
-  ├── axum（提供 middleware layer）
-  └── kai-ws（使用 WssUpgradeFilter trait）
+  ├── axum + tower（提供中间件机制）
+  └── kai-ws（使用 WsHeaderFilter 接口）
 ```
 
 `kissbot-api` 不依赖 `kissbot-security`，依赖方向保持单向。
 
 ## 使用方式
 
-各独立进程（memory-store、memory-ego、agent、channel-web 等）：
-
-### HTTPS 服务器接入
-```rust
-// 1. 创建 validator 实例
-let validator = SimpleApiKeyValidator::new(config.api_key);
-
-// 2. 构建 axum router 时注入 middleware
-let app = Router::new()
-    .route("/api/...", post(handler))
-    .layer(AuthLayer::new(validator));
-```
-
-### WSS 服务器接入（通过 kai-ws）
-```rust
-// 1. 创建 validator 实例
-let validator = SimpleApiKeyValidator::new(config.api_key);
-
-// 2. ws_handle_connection 传入 filter 回调
-ws_handle_connection(stream, queue_capacity, processor_context, &initializer, 
-    |request| validator.validate(extract_api_key(request)))
-    .await?;
-```
+各独立进程在启动时创建校验器实例，挂载到 HTTPS 服务器或 WSS 服务器即可：
+- **HTTPS 服务器**：创建 `SimpleApiKeyValidator`，通过 `AuthLayer` 挂载到 axum Router
+- **WSS 服务器**：创建 `SimpleApiKeyValidator`，通过 `ApiKeyWsFilter` 传入 `ws_handle_connection_with_filter`
 
 ## 对外接口
-以库形式提供数据类型、trait、middleware 和工具函数，供所有需要认证能力的模块依赖。
+以库形式提供数据类型、校验接口、HTTPS 中间件和 WSS filter 工具，供所有需要认证能力的模块依赖。
