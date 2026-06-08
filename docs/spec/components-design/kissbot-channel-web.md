@@ -31,10 +31,9 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - 管理员在 UI 中新建/编辑/删除群组时同步写回配置文件
 - 提供运行时读取和修改群组的方法
 
-#### 1.2 UserSessionManager — 会话管理
-- 验证 HTTP 请求中的 `X-Api-Key` header
-- admin_key 用于 Web 前端认证（用户身份：admin）
-- user_key 用于 nexus 通过 WSS 连接时认证（用户身份：user）
+#### 1.2 认证方式
+- admin_key 用于 Web 前端认证。admin 后端无状态，每次请求通过 `X-Api-Key` header 独立校验
+- user_key 用于 nexus 通过 WSS 连接时认证，由 ChannelManager 管理
 
 #### 1.3 GroupManager — 群组管理
 Group 是独立实体，有自己的 ID、名称、成员列表、消息历史。GroupManager 负责维护 Group 实体和构建 Messenger 视角的 user_group 映射。

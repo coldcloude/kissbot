@@ -8,7 +8,7 @@
 - [ ] 定义 JSON 配置文件结构（admin_key、user_key），编写 ConfigManager（加载 + 自动注入单聊群组，group_name 取 user_name）
 - [ ] 实现 WebMessenger（Messenger trait）：get_info、get_available_users、get_user_groups、create_channel
 - [ ] 实现 WebChannel（Channel trait）：send_message、send_attachment_payload、download_attachment_header、register_on_incoming_messages、register_on_download_attachment_payload
-- [ ] 实现 UserSessionManager：admin_key 用于 Web 前端认证，user_key 用于 WSS 连接认证
+- [ ] 认证集成：admin_key 通过 kissbot-security 中间件每次请求校验；user_key 由 ChannelManager 的 WSS 认证处理
 - [ ] 实现 GroupManager（群组增删改查 + 配置文件同步写回），admin-user 单聊群组禁止改名/改成员/删除
 - [ ] 实现 UserManager（用户增删 + 配置文件同步写回，新增用户时自动生成单聊群组，删除时清理）
 
