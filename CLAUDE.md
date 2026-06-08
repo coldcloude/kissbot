@@ -11,7 +11,6 @@ Keep It Simple Stupid BOT - kissbot
 - 前台typescript+react+vite
 
 ## 项目结构
-- draft目录，开发者决策.txt文件、开发者决策-*.txt文件，保存项目原始需求和开发者决策。不要修改这写文件。
 - docs目录，项目文档，结构如下：
   - 文档目录.md — 文档目录索引
   - spec/ — 设计文档
