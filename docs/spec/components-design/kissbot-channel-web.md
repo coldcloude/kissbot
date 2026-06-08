@@ -49,7 +49,13 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 
 **群组变化**：新建/修改/删除 Group 后触发 `GroupChangeHandler` 回调，由 ChannelManager 处理。
 
-#### 1.4 WebChannel（Channel 实现）
+#### 1.4 UserManager — 用户管理
+- 维护用户列表（普通 users，不含 admin）
+- 新增用户：写入 JSON 配置文件，通知 GroupManager 自动生成该 user 与 admin 的单聊群组
+- 删除用户：从配置文件中移除用户及其单聊群组，触发 `GroupChangeHandler` 回调
+- 用户变化触发 `GroupChangeHandler` 回调，由 ChannelManager 处理
+
+#### 1.5 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
 - 标识由 ChannelInfo（messenger_id, group_id, user_id）三元组构成
 - 实现 `send_message()`：将消息通过 SSE 推送给前端

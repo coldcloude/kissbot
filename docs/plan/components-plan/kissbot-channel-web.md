@@ -10,6 +10,7 @@
 - [ ] 实现 WebChannel（Channel trait）：send_message、send_attachment_payload、download_attachment_header、register_on_incoming_messages、register_on_download_attachment_payload
 - [ ] 实现 UserSessionManager：admin_key 用于 Web 前端认证，user_key 用于 WSS 连接认证
 - [ ] 实现 GroupManager（群组增删改查 + 配置文件同步写回），admin-user 单聊群组禁止改名/改成员/删除
+- [ ] 实现 UserManager（用户增删 + 配置文件同步写回，新增用户时自动生成单聊群组，删除时清理）
 
 #### 第2阶段：HTTP + SSE 服务器 ❌ 未开始
 - [ ] 实现 HTTPServer（Axum），集成 kissbot-security 认证中间件
@@ -19,6 +20,7 @@
 - [ ] 实现 REST API：/api/groups/rename（admin-user 单聊群组禁止修改）
 - [ ] 实现 REST API：/api/groups/manage-members（admin-user 单聊群组禁止修改成员）
 - [ ] 实现 REST API：/api/groups/delete（admin-user 单聊群组禁止删除）
+- [ ] 实现 REST API：/api/users（列表）、/api/users/create（自动生成单聊群组）、/api/users/delete（删除对应单聊群组）
 - [ ] 实现 REST API：/api/attachment/upload（图片自动生成缩略图）、/api/attachment/download、/api/attachment/thumbnail
 - [ ] 实现 REST API：/api/messages（历史消息查询，支持 before_id/after_id/time 参数，默认返回最新 10 条）
 - [ ] 实现 SSE 端点 GET /api/events（通过 `@microsoft/fetch-event-source` 连接，header 传递 API key）
@@ -51,4 +53,5 @@
 - [ ] 实现时间搜索定位历史消息
 - [ ] 实现附件上传（图片/文件）和展示（图片显示缩略图，点击展示原图；文件显示文件名可下载）
 - [ ] 实现群组管理面板（创建/重命名/管理成员/删除，admin-user 单聊群组不可操作）
+- [ ] 实现用户管理面板（查看用户列表、新建用户、删除用户）
 - [ ] 实现 agent "思考中..."状态提示
