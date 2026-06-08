@@ -126,7 +126,7 @@ nexus 收到 LLM 返回中的 tool call
 ```
 nexus 生成回复消息
   → 通过 WSS 发送到通道管理器
-  → 通道管理器接收，按 ChannelInfo（messenger_id, group_id, user_id）查找对应 Channel 实例
+  → 通道管理器接收，按 messenger_id + group_id + user_id 查找对应 Channel 实例
   → 消息入队
   → 通道管理器处理消息队列：
       ├─ 推送消息到记忆存储模块

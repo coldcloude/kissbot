@@ -8,7 +8,7 @@
 ### 1. ChannelManager - 通道管理器
 模块的核心协调层，内部持有：
 - messengers：按 messenger_id 索引的已注册 Messenger 实例集合
-- channels：按 ChannelInfo（messenger_id, group_id, user_id）索引的已创建 Channel 实例集合
+- channels：按 messenger_id + group_id + user_id 索引的已创建 Channel 实例集合
 - wss_server：WSS Server 实例（管理 nexus 连接）
 - memory_store_client：与记忆存储模块通信的客户端
 - message_queue：消息队列（暂存待推送消息，不持久化）
@@ -24,21 +24,12 @@
 - **附件下载**：根据 key 从对应 Messenger 获取附件数据
 
 ### 2. Messenger 接口（由通道实现模块实现）
-定义通讯应用接入的标准接口：
-- messenger_id()：返回 messenger 的唯一标识
-- get_available_users()：获取可用用户列表
-- get_user_groups()：获取指定用户可用的 group 列表
-- create_channel()：创建 Channel 接口实现类的实例
-- get_attachment_metadata() / get_attachment_data()：附件管理（由具体实现决定存储方式）
+定义通讯应用接入的标准接口，以代码为准。
 
 Messenger 负责管理用户的群组信息、管理附件存储（接收外部消息时保存附件，发送消息时保存附件后发送），接收外部消息后通过回调通知 ChannelManager。
 
 ### 3. Channel 接口（由通道实现模块实现）
-表示一个 (messenger, group, user) 组合的消息收发通道，通过 get_info() 返回 ChannelInfo（含 messenger_id、group_id、user_id）：
-- send_message()：发送消息到外部系统（附件携带原始数据）
-- register_on_message_received()：注册消息到达回调
-
-Channel 不维护消息列表，不存储消息历史。
+表示一个 (messenger, group, user) 组合的消息收发通道，以代码为准。Channel 不维护消息列表，不存储消息历史。
 
 ### 4. WSSServer - WSS 服务器
 - 作为 WSS 服务器等待 nexus 连接
@@ -58,7 +49,7 @@ Channel 不维护消息列表，不存储消息历史。
 
 ### 消息下行（nexus → 外部系统）
 1. nexus 通过 WSS 发送消息 → WSS Server 接收
-2. ChannelManager 解析 → 按 ChannelInfo 查找 Channel 实例
+2. ChannelManager 解析 → 按 messenger_id + group_id + user_id 查找 Channel 实例
 3. 消息入队 → 处理队列：推送记忆存储模块 + 调用 channel.send_message()
 
 ### Nexus 绑定流程
