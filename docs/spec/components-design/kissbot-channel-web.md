@@ -48,7 +48,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 #### 1.4 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
-- `channel_id` = `(messenger_id, group_id, user_id)`
+- 标识由 ChannelInfo（messenger_id, group_id, user_id）三元组构成
 - 实现 `send_message()`：将消息通过 SSE 推送给前端
 - 注册 `on_message_received` 回调：前端发来的消息 → 回调 → ChannelManager → nexus
 
@@ -164,7 +164,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 ### 3.3 消息下行（agent → admin）
 ```
 1. Nexus 生成回复 → WSS 发送给 ChannelManager
-2. ChannelManager 按 channel_id 查找 WebChannel
+2. ChannelManager 按 ChannelInfo 查找 WebChannel
 3. 消息入队
 4. 处理队列：
    ├─ 推送至 memory-store
