@@ -38,11 +38,9 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 #### 1.3 GroupManager — 群组管理
 - 维护群组列表（配置群组 + 自动生成的单聊群组）
-- 实现 `Messenger` trait 的 `get_user_groups()`：
-  - admin 用户：看到所有群组（系统自动生成的单聊群组 + 配置的多人群组）
-  - user 用户：看到该 user 参与的所有群组（自己的单聊群组 + 所在的多人群组）
-- 实现 `Messenger` trait 的 `get_available_users()`：
-  - 返回 admin 和所有 users
+- 通过 `MessengerInfo` 提供用户和群组信息：
+  - `user_map` 包含所有普通用户（不含 admin），每个 `UserInfo` 含该用户的群组列表
+  - admin 用户不在 `user_map` 中，由上层（API 层或 Web 前端）做特别处理
 - 群组变化时触发 `GroupChangeHandler` 回调，由 ChannelManager 处理
 - 消息发送权限控制：admin 可以向所有群组发送消息；admin 未加入的群组可查看消息但不可发送（由前端 UI 和后台共同校验）
 
