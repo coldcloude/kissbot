@@ -24,12 +24,12 @@
 - **附件下载**：根据 key 从对应 Messenger 获取附件数据
 
 ### 2. Messenger 接口（由通道实现模块实现）
-定义通讯应用接入的标准接口，以代码为准。
+代表一个通讯应用接入。提供 messenger_id 标识自身，通过 create_channel 创建 Channel 实例，通过 get_info 返回 MessengerInfo（包括 messenger 信息、用户列表、用户的群组列表）。支持群组变化回调注册。
 
 Messenger 负责管理用户的群组信息、管理附件存储（接收外部消息时保存附件，发送消息时保存附件后发送），接收外部消息后通过回调通知 ChannelManager。
 
 ### 3. Channel 接口（由通道实现模块实现）
-表示一个 (messenger, group, user) 组合的消息收发通道，以代码为准。Channel 不维护消息列表，不存储消息历史。
+表示一个 (messenger, group, user) 组合的消息收发通道。通过 get_info 返回 ChannelInfo（messenger_id、group_id、user_id），通过 send_message 发送消息到外部系统（附件携带原始数据），支持注册消息到达回调和附件数据下载回调。Channel 不维护消息列表，不存储消息历史。
 
 ### 4. WSSServer - WSS 服务器
 - 作为 WSS 服务器等待 nexus 连接
