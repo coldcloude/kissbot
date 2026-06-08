@@ -6,8 +6,8 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 包含后端服务（Rust）和前端界面（React）两部分。
 
 **用户模型**：
-- **管理用户（admin）**：唯一的外部用户，通过 admin API key 认证接入 Web 前台
-- **普通用户（users）**：由 nexus 代表的智能体身份，可与管理员私聊或群聊。每个 user 拥有自己的 API key
+- **管理用户（admin）**：唯一的外部用户，通过 admin_key 认证接入 Web 前台
+- **普通用户（users）**：由 nexus 代表的智能体身份，可与管理员私聊或群聊。所有 user 共用 user_key
 - Admin 和 users 在 JSON 配置文件中定义，agent 与 user 的绑定由 kissbot-channel 的 nexus 绑定流程动态建立
 
 **默认群组**：添加 user 时自动创建该 user 与 admin 的单聊群组，group_id 为 `{user_id}_admin`，group_name 为该 user 的 user_name。
@@ -33,9 +33,8 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 #### 1.2 UserSessionManager — 会话管理
 - 验证 HTTP 请求中的 `X-Api-Key` header
-- admin 和每个 user 各自持有独立的 API key，根据 key 识别身份
-- admin API key 对应 admin 用户，拥有完整权限（消息收发、群组管理、历史消息查看）
-- user API key 对应普通用户，仅用于 nexus 绑定使用，不涉及 Web 界面
+- 两个 API key：admin_key 对应 admin 用户（拥有完整权限），user_key 对应所有普通用户（仅用于 nexus 绑定，不涉及 Web 界面）
+- 根据 key 识别请求方身份
 
 #### 1.3 GroupManager — 群组管理
 - 维护群组列表（配置群组 + 自动生成的单聊群组）
@@ -216,14 +215,15 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 ```json
 {
+  "admin_key": "admin-api-key-xxx",
+  "user_key": "user-api-key-xxx",
   "admin": {
     "user_id": "admin",
-    "user_name": "管理员",
-    "api_key": "admin-api-key-xxx"
+    "user_name": "管理员"
   },
   "users": [
-    { "user_id": "user-1", "user_name": "助手小A", "api_key": "user1-api-key-xxx" },
-    { "user_id": "user-2", "user_name": "助手小B", "api_key": "user2-api-key-xxx" }
+    { "user_id": "user-1", "user_name": "助手小A" },
+    { "user_id": "user-2", "user_name": "助手小B" }
   ],
   "groups": [
     { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] },

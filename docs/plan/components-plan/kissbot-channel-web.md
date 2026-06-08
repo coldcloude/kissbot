@@ -5,10 +5,10 @@
 ### kissbot-channel-web（Rust 后端）
 
 #### 第1阶段：基础结构 ❌ 未开始
-- [ ] 定义 JSON 配置文件结构（admin/user 各自有 api_key），编写 ConfigManager（加载 + 自动注入单聊群组，group_name 取 user_name）
+- [ ] 定义 JSON 配置文件结构（admin_key、user_key），编写 ConfigManager（加载 + 自动注入单聊群组，group_name 取 user_name）
 - [ ] 实现 WebMessenger（Messenger trait）：get_info、get_available_users、get_user_groups、create_channel
 - [ ] 实现 WebChannel（Channel trait）：send_message、send_attachment_payload、download_attachment_header、register_on_incoming_messages、register_on_download_attachment_payload
-- [ ] 实现 UserSessionManager：admin 和 user 使用不同 API key，根据 key 识别身份
+- [ ] 实现 UserSessionManager：admin_key 和 user_key 两个 API key，根据 key 区分 admin/user
 - [ ] 实现 GroupManager（群组增删改查 + 配置文件同步写回），admin-user 单聊群组禁止改名/改成员/删除
 
 #### 第2阶段：HTTP + SSE 服务器 ❌ 未开始
