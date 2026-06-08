@@ -37,12 +37,17 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - user_key 用于 nexus 通过 WSS 连接时认证（用户身份：user）
 
 #### 1.3 GroupManager — 群组管理
-- 维护群组列表（配置群组 + 自动生成的单聊群组）
-- 通过 `MessengerInfo` 提供用户和群组信息：
-  - `user_map` 包含所有普通用户（不含 admin），每个 `UserInfo` 含该用户的群组列表
-  - admin 用户不在 `user_map` 中，由上层（API 层或 Web 前端）做特别处理
-- 群组变化时触发 `GroupChangeHandler` 回调，由 ChannelManager 处理
-- 消息发送权限控制：admin 可以向所有群组发送消息；admin 未加入的群组可查看消息但不可发送（由前端 UI 和后台共同校验）
+Group 是独立实体，有自己的 ID、名称、成员列表、消息历史。GroupManager 负责维护 Group 实体和构建 Messenger 视角的 user_group 映射。
+
+**维护的 Group 实体**：配置群组 + 自动生成的 admin-user 单聊群组，每个 Group 记录 `(group_id, group_name, members, messages[])`
+
+**构建 MessengerInfo**：向每个普通 user 的 group_map 中注入该 user 所属的所有 Group。例如群组 "dev-team" 包含 admin、user-1、user-2，则在 user-1 和 user-2 的 group_map 中各出现一次。admin 不在 user_map 中。
+
+**消息发送**：向某个 Group 发送消息时，GroupManager 为 Group 内每个绑定的 user 分别调用 ChannelManager 的消息发送流程（每条消息按 (user, group) 组合分发）。
+
+**权限控制**：admin 可以向所有群组发送消息；admin 未加入的群组可查看消息但不可发送（由前端 UI 和后台共同校验）。
+
+**群组变化**：新建/修改/删除 Group 后触发 `GroupChangeHandler` 回调，由 ChannelManager 处理。
 
 #### 1.4 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
@@ -157,13 +162,14 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 ### 3.2 消息上行（admin → agent）
 ```
-1. 管理员在 Web UI 中选择会话，发送消息
-2. Web UI → HTTPS POST /api/message/send
+1. 管理员在 Web UI 中选择群组，发送消息
+2. Web UI → HTTPS POST /api/message/send { group_id, content, attachments? }
 3. WebMessenger 接收消息：
    ├─ 如有附件，保存到 AttachmentStore
    └─ 构建 IncomingMessage
-4. 通过 Messenger 回调通知 ChannelManager
-5. ChannelManager 后续处理（消息入队、推送等）
+4. GroupManager 确定群组成员（遍历所属 user 列表），为每个绑定的 user 分发
+5. 通过 Messenger 回调通知 ChannelManager，逐 user 处理
+6. ChannelManager 后续处理（消息入队、推送等）
 ```
 
 ### 3.3 消息下行（agent → admin）
