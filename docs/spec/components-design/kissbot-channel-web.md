@@ -16,11 +16,11 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 
 ## 一、后端 — kissbot-channel-web
 
-整体以 WebMessenger 为核心，向全局 ChannelManager 注册，对外提供 HTTPS API + SSE（Server-Sent Events）服务于 Web 前端。
+进程内建立一个 WebMessenger（提供 HTTPS 服务）和一个 ChannelManager（提供 WSS 服务），通过 Messenger 注册将两者关联，持续运行。
 
 ### 1. WebMessenger（Messenger 实现）
 
-kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"web"`），它向全局 ChannelManager 注册，内部持有以下模块：
+kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"web"`），注册到 ChannelManager，内部持有以下模块：
 
 #### 1.1 ConfigManager — 配置管理
 - 路径：`kissbot-channel-web-config.json`
@@ -172,8 +172,9 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 1. 读取 `kissbot-channel-web-config.json`
 2. 加载 admin、users、groups
 3. 自动生成 `{user_id}_admin` 单聊群组
-4. 创建 WebMessenger 实例，注册到全局 ChannelManager
-5. 启动 HTTPServer（HTTP + SSE）
+4. 创建 ChannelManager 实例（启动 WSS 服务）
+5. 创建 WebMessenger 实例，注册到 ChannelManager
+6. 启动 WebMessenger 的 HTTPServer（HTTP + SSE）
 
 ### 3.2 消息上行（admin → agent）
 ```
@@ -276,7 +277,7 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 | 对端 | 协议 | 通信时机 | 内容 |
 |------|------|----------|------|
-| ChannelManager | 库调用 | 持续 | 通过 Messenger/Channel 接口交互 |
+| ChannelManager | 库调用（同进程） | 持续 | 通过 Messenger/Channel 接口交互 |
 | Web 前端（浏览器） | HTTPS | 用户操作时 | 消息收发、群组管理、附件操作 |
 | Web 前端（浏览器） | SSE | 持续 | 实时推送新消息 |
 
