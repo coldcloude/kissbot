@@ -45,7 +45,7 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 
 **消息发送**：向某个 Group 发送消息时，GroupManager 为 Group 内每个绑定的 user 分别调用 ChannelManager 的消息发送流程（每条消息按 (user, group) 组合分发）。
 
-**权限控制**：admin 可以向所有群组发送消息；admin 未加入的群组可查看消息但不可发送（由前端 UI 和后台共同校验）。
+**权限控制**：admin 在群组中时，消息收发权限和普通 user 一致。web 界面额外向 admin 提供群组变更功能，以及查看未加入群组的消息的功能（不可发送）。
 
 **群组变化**：新建/修改/删除 Group 后触发 `GroupChangeHandler` 回调，由 ChannelManager 处理。
 
