@@ -42,7 +42,7 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 
 **构建 MessengerInfo**：向每个普通 user 的 group_map 中注入该 user 所属的所有 Group。例如群组 "dev-team" 包含 admin、user-1、user-2，则在 user-1 和 user-2 的 group_map 中各出现一次。admin 不在 user_map 中。
 
-**消息发送**：向某个 Group 发送消息时，GroupManager 为 Group 内每个绑定的 user 分别调用 ChannelManager 的消息发送流程（每条消息按 (user, group) 组合分发）。
+**消息发送**：向某个 Group 发送消息时，GroupManager 为 Group 内每个绑定的 user 分别调用 ChannelManager 的消息发送流程（每条消息按 (user, group) 组合分发）。消息的 msg_type 区分文本、图片、文件；附件信息以自定义 JSON 格式存储在 content 中。
 
 **权限控制**：admin 在群组中时，消息收发权限和普通 user 一致。web 界面额外向 admin 提供群组变更功能，以及查看未加入群组的消息的功能（不可发送）。
 
@@ -144,6 +144,7 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 - 上行（admin → agent）和下行（agent → admin）消息展示区分
 - 附件展示：图片显示缩略图，点击后展示原图；文件显示文件名，点击下载
 - 附件上传：支持图片和文件。后端在上传时自动为图片生成缩略图，前端通过独立 URL 读取
+- msg_type 区分：文本消息 `"text"`、图片消息 `"image"`、文件消息 `"file"`。图片和文件消息的 content 中存储自定义 JSON 格式的附件信息
 - "思考中..."状态提示（agent 正在处理时）
 
 #### 2.3 群组管理面板
@@ -280,17 +281,3 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 | Web 前端（浏览器） | HTTPS | 用户操作时 | 消息收发、群组管理、附件操作 |
 | Web 前端（浏览器） | SSE | 持续 | 实时推送新消息 |
 
----
-
-## 七、技术栈
-
-| 层 | 技术 | 用途 |
-|----|------|------|
-| 后端 Runtime | tokio | 异步运行时 |
-| 后端 HTTP | axum | HTTP + SSE 服务器 |
-| 后端认证 | kissbot-security | API key 验证中间件 |
-| 后端序列化 | serde / serde_json | JSON 处理 |
-| 前端框架 | React 19 | UI 框架 |
-| 前端构建 | Vite 8 | 构建工具 |
-| 前端语言 | TypeScript 6 | 开发语言 |
-| 前端 SSE 库 | @microsoft/fetch-event-source | SSE 连接（支持自定义 header 和自动重连） |
