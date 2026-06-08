@@ -74,8 +74,9 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 | `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。admin 与 user 的单聊群组（`{user_id}_admin`）不允许修改 |
 | `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。admin 与 user 的单聊群组不允许修改成员 |
 | `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。admin 与 user 的单聊群组不允许删除 |
-| `POST /api/attachment/upload` | POST | 上传附件（multipart） |
-| `GET /api/attachment/download` | GET | 下载附件 |
+| `POST /api/attachment/upload` | POST | 上传附件（multipart），图片自动生成缩略图 |
+| `GET /api/attachment/download` | GET | 下载原图/文件 |
+| `GET /api/attachment/thumbnail` | GET | 读取图片缩略图 |
 | `GET /api/messages` | GET | 获取历史消息：`{ group_id, before_id?, after_id?, time? }`。默认返回最新 10 条，指定 `before_id` 获取更早 10 条，`after_id` 获取之后 10 条，`time` 时间搜索定位（返回该时间点前后各 10 条） |
 
 所有端点统一携带 `X-Api-Key` header，由 kissbot-security 中间件认证。
@@ -133,8 +134,8 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
   - 已加载的消息在切换群组再切回后仍然保留
   - 时间搜索：输入时间点，跳转到该时间前后各 10 条消息
 - 上行（admin → agent）和下行（agent → admin）消息展示区分
-- 附件展示：图片直接显示原图；文件显示文件名，点击下载
-- 附件上传：支持图片和文件
+- 附件展示：图片显示缩略图，点击后展示原图；文件显示文件名，点击下载
+- 附件上传：支持图片和文件。后端在上传时自动为图片生成缩略图，前端通过独立 URL 读取
 - "思考中..."状态提示（agent 正在处理时）
 
 #### 2.3 群组管理面板
@@ -247,10 +248,12 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 - 存储方式：本地文件系统
 - 根目录：`attachments/`
 - 文件路径：`attachments/{group_id}/{msg_id}/{filename}`
-- 上传接口接收 multipart/form-data
-- 下载接口返回原始文件内容 + Content-Type
+- 上传接口接收 multipart/form-data，图片上传时后端自动生成缩略图
+- 下载接口分两种：
+  - `GET /api/attachment/download?key=...` — 下载原图/文件
+  - `GET /api/attachment/thumbnail?key=...` — 读取缩略图（仅图片类型）
 - 两种附件类型：
-  - **图片**：前端直接显示原图（支持 jpg/png/gif/webp）
+  - **图片**：前端显示缩略图，点击后展示原图（支持 jpg/png/gif/webp）
   - **文件**：前端显示文件名，点击触发下载
 
 ---
