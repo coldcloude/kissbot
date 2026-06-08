@@ -16,7 +16,7 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 
 ## 一、后端 — kissbot-channel-web
 
-整体以 WebMessenger 为核心，向全局 ChannelManager 注册，对外提供 HTTPS API + WebSocket 服务于 Web 前端。
+整体以 WebMessenger 为核心，向全局 ChannelManager 注册，对外提供 HTTPS API + SSE（Server-Sent Events）服务于 Web 前端。
 
 ### 1. WebMessenger（Messenger 实现）
 
@@ -49,7 +49,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 #### 1.4 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
 - `channel_id` = `(messenger_id, group_id, user_id)`
-- 实现 `send_message()`：将消息通过 WebSocket 推送给前端
+- 实现 `send_message()`：将消息通过 SSE 推送给前端
 - 注册 `on_message_received` 回调：前端发来的消息 → 回调 → ChannelManager → nexus
 
 #### 1.5 AttachmentStore — 附件存储
@@ -57,7 +57,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - 目录：`attachments/{group_id}/{msg_id}/`
 - 实现 `get_attachment_metadata()` 和 `get_attachment_data()`
 
-#### 1.6 HTTPServer — HTTP + WebSocket 服务器
+#### 1.6 HTTPServer — HTTP + SSE 服务器
 基于 Axum 的服务器，提供以下 API：
 
 **REST 端点：**
@@ -73,12 +73,12 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 | `POST /api/attachment/upload` | POST | 上传附件（multipart） |
 | `GET /api/attachment/download` | GET | 下载附件 |
 
-所有端点（除 `/api/connect` 外）携带 `X-Api-Key` header，由 kissbot-security 中间件认证。
+所有端点携带 `X-Api-Key` header，由 kissbot-security 中间件认证。SSE 端点例外——因浏览器 EventSource API 无法自定义 header，API key 通过 URL 查询参数 `api_key` 传递。
 
-**WebSocket 端点：**
-| 端点 | 功能 |
-|------|------|
-| `WS /api/ws` | 实时推送新消息到前端 |
+**SSE 端点：**
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `GET /api/events` | GET | SSE 长连接，实时推送消息到前端。URL 中带 API key 参数：`/api/events?api_key=...` |
 
 ---
 
@@ -133,7 +133,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 
 ### 与后端通信
 - **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
-- **WebSocket**：连接后实时接收新消息推送
+- **SSE**：连接 `GET /api/events?api_key=...` 后实时接收新消息推送。使用浏览器原生 EventSource API，断线时自动重连
 
 ---
 
@@ -144,7 +144,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 2. 加载 admin、users、groups
 3. 自动生成 `{user_id}_admin` 单聊群组
 4. 创建 WebMessenger 实例，注册到全局 ChannelManager
-5. 启动 HTTPServer（HTTP + WebSocket）
+5. 启动 HTTPServer（HTTP + SSE）
 
 ### 3.2 消息上行（admin → agent）
 ```
@@ -168,7 +168,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 3. 消息入队
 4. 处理队列：
    ├─ 推送至 memory-store
-   └─ WebChannel.send_message() → 通过 WS 推送至 Web UI
+   └─ WebChannel.send_message() → 通过 SSE 推送至 Web UI
 5. 管理员看到回复
 ```
 
@@ -249,7 +249,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 |------|------|----------|------|
 | ChannelManager | 库调用 | 持续 | 通过 Messenger/Channel 接口交互 |
 | Web 前端（浏览器） | HTTPS | 用户操作时 | 消息收发、群组管理、附件操作 |
-| Web 前端（浏览器） | WebSocket | 持续 | 实时推送新消息 |
+| Web 前端（浏览器） | SSE | 持续 | 实时推送新消息 |
 | Nexus | WSS（通过 ChannelManager） | 持续 | 收发消息、绑定/解绑、群组变化通知 |
 | 记忆存储模块 | HTTPS（通过 ChannelManager） | 消息产生时 | 推送消息记录 |
 
@@ -260,7 +260,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 | 层 | 技术 | 用途 |
 |----|------|------|
 | 后端 Runtime | tokio | 异步运行时 |
-| 后端 HTTP | axum | HTTP + WebSocket 服务器 |
+| 后端 HTTP | axum | HTTP + SSE 服务器 |
 | 后端认证 | kissbot-security | API key 验证中间件 |
 | 后端序列化 | serde / serde_json | JSON 处理 |
 | 前端框架 | React 19 | UI 框架 |

@@ -55,7 +55,7 @@
 - **nexus → memory-ego**：读取自我认知设定
 - **nexus ↔ station**：nexus 向 station 发起 HTTPS 请求（tool call），响应中携带执行结果（同进程时通过内部调用）
 - **nexus → memory-struct**：内置记忆查询 tool 调用（不记入记忆）
-- **前端 UI → 后端**：配置管理、记忆查看管理
+- **前端 UI → 后端**：配置管理、记忆查看管理。前端通过 HTTP + SSE 与后端实时通信
 - **所有 API 路径仅用于路由，参数放在 JSON 请求体中**
 
 ### 文件系统共享

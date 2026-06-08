@@ -10,13 +10,13 @@
 - [ ] 实现 WebChannel（Channel trait）：send_message、send_attachment_payload、download_attachment_header、register_on_incoming_messages、register_on_download_attachment_payload
 - [ ] 实现 GroupManager（群组增删改查 + 配置文件同步写回）
 
-#### 第2阶段：HTTP + WebSocket 服务器 ❌ 未开始
+#### 第2阶段：HTTP + SSE 服务器 ❌ 未开始
 - [ ] 实现 HTTPServer（Axum），集成 kissbot-security 认证中间件
 - [ ] 实现 REST API：/api/connect（验证 API key）
 - [ ] 实现 REST API：/api/message/send
 - [ ] 实现 REST API：/api/groups（CRUD）
 - [ ] 实现 REST API：/api/attachment/upload & /api/attachment/download
-- [ ] 实现 WebSocket 推送（新消息实时推送）
+- [ ] 实现 SSE 端点 /api/events（基于 axum 的 SSE 支持，akaxum::response::sse::Sse）
 
 #### 第3阶段：完整集成 ❌ 未开始
 - [ ] AttachmentStore（本地文件系统附件管理）
@@ -36,7 +36,7 @@
 - [ ] 实现连接页（API key 输入认证）
 - [ ] 实现聊天主界面布局（左侧会话列表 + 右侧消息区域）
 - [ ] 实现与后端的 HTTPS 通信（API client 封装）
-- [ ] 实现与后端的 WebSocket 连接
+- [ ] 实现与后端的 SSE 连接（EventSource API，断线自动重连）
 
 #### 第2阶段：功能完善 ❌ 未开始
 - [ ] 实现会话列表展示（单聊 + 群聊）
