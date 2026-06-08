@@ -1,0 +1,16 @@
+{
+  "admin_key": "admin-key-123",
+  "user_key": "user-key-456",
+  "admin": {
+    "user_id": "admin",
+    "user_name": "管理员"
+  },
+  "users": {
+    "user-1": { "user_id": "user-1", "user_name": "助手小A" },
+    "user-2": { "user_id": "user-2", "user_name": "助手小B" }
+  },
+  "groups": {
+    "dev-team": { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] },
+    "project-x": { "group_id": "project-x", "group_name": "项目X", "members": ["user-1", "user-2"] }
+  }
+}

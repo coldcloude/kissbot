@@ -14,7 +14,7 @@
 | 第8阶段 | memory-struct 实现 | ❌ 未开始 |
 | 第9阶段 | agent 记忆模式进阶实现 | ❌ 未开始 |
 | 第10阶段 | agent 工具集实现 | ❌ 未开始 |
-| 第11阶段 | UI 实现 | ❌ 未开始 |
+| 第11阶段 | UI 实现 | 🟡 部分完成 |
 | 第12阶段 | agent 扩展（station 设备等） | ❌ 未开始 |
 
 ## 各阶段详细说明
@@ -57,9 +57,9 @@
 - [x] 框架 trait 定义（Messenger trait、Channel trait）
 - [x] 与 agent WSS 通信（ChannelManager 建立 WSS 服务器处理 nexus 的连接、绑定、消息收发、附件传输）
 - [x] memory-store 客户端通信（MemoryStoreClient，通过 HTTPS 推送消息到记忆存储）
-- [ ] 附件存储管理
-- [ ] channel-web 后台实现（具体 Messenger/Channel 实现）
-- [ ] channel-web-ui 前台实现
+- [x] 附件存储管理
+- [x] channel-web 后台实现（具体 Messenger/Channel 实现）
+- [x] channel-web-ui 前台实现
 
 ### 第6阶段：memory-ego 实现 🟡 部分完成
 - [x] 模块架构设计
@@ -112,10 +112,10 @@
 - [ ] station 网络工具实现（WebSearch、WebFetch）
 - [ ] station 配置加载和管理
 
-### 第11阶段：UI 实现 🔴 未开始
+### 第11阶段：UI 实现 🟡 部分完成
 - [ ] agent-config（配置 agent 的 nexus/station 启动模式）
 - [ ] memory-manage（管理记忆）
-- [ ] channel-web-ui 完善
+- [x] channel-web-ui 完善
 
 ### 第12阶段：agent 扩展（station 设备等） 🔴 未开始
 - [ ] 轻量级 HTTPS 协议适配（资源受限设备）
@@ -126,15 +126,15 @@
 
 | 流程 | 状态 |
 |------|------|
-| 消息上行（外部 → nexus） | ❌ 未实现（依赖 channel 和 nexus 基础实现） |
-| 消息下行（nexus → 外部） | ❌ 未实现 |
+| 消息上行（外部 → nexus） | 🟡 channel-web 已实现 Web UI → WebMessenger → ChannelManager 通道，依赖 nexus 接入完成完整链路 |
+| 消息下行（nexus → 外部） | 🟡 channel-web 已实现 ChannelManager → WebChannel → SSE → Web UI 通道，依赖 nexus 接入完成完整链路 |
 | agentic loop | ❌ 未实现 |
 | tool 调用（nexus ↔ station） | ❌ 未实现 |
 | nexus 绑定 channel | ❌ 未实现 |
-| 记忆存储（推送至 memory-store） | ✅ 已有推送 API，但推送方（nexus/channel）未接入 |
+| 记忆存储（推送至 memory-store） | ✅ 已有推送 API，channel 的 MemoryStoreClient 已实现 |
 | 内置记忆查询 tool | ❌ 未实现 |
 | 自我认知读取（nexus 查询 memory-ego） | ✅ memory-ego API 已实现，但 nexus 未集成 |
 | 上下文重置 | ❌ 未实现 |
 | 自主触发主动行为 | ❌ 未实现 |
-| Group 变化通知 | ❌ 未实现 |
-| 附件下载 | ❌ 未实现 |
+| Group 变化通知 | ✅ channel-web 已实现 GroupChangeHandler 回调 |
+| 附件下载 | ✅ channel-web 已实现附件上传/下载/缩略图 API |

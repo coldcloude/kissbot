@@ -4,3 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+bytes = "1.11"
+dashmap = { version = "6.1", features = ["serde"] }
+flume = "0.12"
+futures = "0.3"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
+uuid = { version = "1.0", features = ["v4"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio-stream = "0.1"
+image = "0.25"
+mime_guess = "2"
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+kai-ws = { path = "../kai-rs/kai-ws" }
+kissbot-api = { path = "../kissbot-api" }
+kissbot-channel = { path = "../kissbot-channel" }
+kissbot-security = { path = "../kissbot-security" }
