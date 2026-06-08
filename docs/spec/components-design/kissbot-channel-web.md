@@ -8,7 +8,7 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 **用户模型**：
 - **管理用户（admin）**：唯一的外部用户，通过 API key 认证接入 Web 前台
 - **普通用户（users）**：由 nexus 代表的智能体身份，可与管理员私聊或群聊
-- Admin 和 users 在 JSON 配置文件中定义，agent 与 user 的绑定由 nexus 绑定流程动态建立
+- Admin 和 users 在 JSON 配置文件中定义，agent 与 user 的绑定由 kissbot-channel 的 nexus 绑定流程动态建立
 
 **默认群组**：添加 user 时自动创建该 user 与 admin 的双人群组，group_id 为 `{user_id}_admin`。
 
@@ -44,13 +44,13 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
   - user 用户：看到该 user 参与的所有群组（自己的单聊群组 + 所在的多人群组）
 - 实现 `Messenger` trait 的 `get_available_users()`：
   - 返回 admin 和所有 users
-- 群组变化时触发 `GroupChangeHandler` 回调，通知 ChannelManager 推送给 nexus
+- 群组变化时触发 `GroupChangeHandler` 回调，由 ChannelManager 处理
 
 #### 1.4 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
 - 标识由 ChannelInfo（messenger_id, group_id, user_id）三元组构成
 - 实现 `send_message()`：将消息通过 SSE 推送给前端
-- 注册 `on_message_received` 回调：前端发来的消息 → 回调 → ChannelManager → nexus
+- 注册 `on_message_received` 回调：前端发来的消息 → 回调 → ChannelManager
 
 #### 1.5 AttachmentStore — 附件存储
 - 使用本地文件系统存储附件
@@ -156,22 +156,14 @@ React + Vite 单页应用，仅服务 admin 用户。
    ├─ 如有附件，保存到 AttachmentStore
    └─ 构建 IncomingMessage
 4. 通过 Messenger 回调通知 ChannelManager
-5. ChannelManager 消息入队
-6. 处理队列：
-   ├─ 推送至 memory-store
-   └─ 通过 WSS 发送至 nexus
-7. Nexus 接收 → 进入 Agentic Loop
+5. ChannelManager 后续处理（消息入队、推送等）
 ```
 
 ### 3.3 消息下行（agent → admin）
 ```
-1. Nexus 生成回复 → WSS 发送给 ChannelManager
-2. ChannelManager 按 ChannelInfo 查找 WebChannel
-3. 消息入队
-4. 处理队列：
-   ├─ 推送至 memory-store
-   └─ WebChannel.send_message() → 通过 SSE 推送至 Web UI
-5. 管理员看到回复
+1. ChannelManager 按 ChannelInfo 查找 WebChannel，调用 send_message()
+2. WebChannel.send_message() → 通过 SSE 推送至 Web UI
+3. 管理员看到回复
 ```
 
 ### 3.4 群组创建流程
@@ -182,8 +174,7 @@ React + Vite 单页应用，仅服务 admin 用户。
    ├─ 写入 JSON 配置文件
    ├─ 群组加入内存
    └─ 触发 GroupChangeHandler 回调
-4. ChannelManager 通过 WSS 通知 nexus
-5. Nexus 按需绑定新群组的 channel
+4. 后续由 ChannelManager 处理通知和绑定
 ```
 
 ### 3.5 群组删除流程
@@ -196,17 +187,15 @@ React + Vite 单页应用，仅服务 admin 用户。
    ├─ 从配置文件和内存中移除
    ├─ 移除对应的所有 WebChannel 实例
    └─ 触发 GroupChangeHandler 回调
-5. ChannelManager 通过 WSS 通知 nexus
-6. Nexus 解除对应 channel
+5. 后续由 ChannelManager 处理通知和清理
 ```
 
 ### 3.6 Nexus 绑定流程
 ```
-1. Nexus 通过 WSS 发送 bind 请求（messenger_id = "web", user_id = "user-1"）
-2. ChannelManager → WebMessenger.get_user_groups("user-1")
-3. 返回 user-1 所在的所有群组（含单聊群组 user-1_admin）
-4. ChannelManager 为每组创建 WebChannel 实例
-5. 注册回调 → 加入索引 → 返回绑定确认
+1. ChannelManager 调用 WebMessenger.get_user_groups(user_id)
+2. WebMessenger 返回该 user 所在的所有群组（含单聊群组 user-1_admin）
+3. ChannelManager 按返回结果创建 WebChannel 实例
+4. WebMessenger 创建 WebChannel 并注册回调
 ```
 
 ---
@@ -254,8 +243,6 @@ React + Vite 单页应用，仅服务 admin 用户。
 | ChannelManager | 库调用 | 持续 | 通过 Messenger/Channel 接口交互 |
 | Web 前端（浏览器） | HTTPS | 用户操作时 | 消息收发、群组管理、附件操作 |
 | Web 前端（浏览器） | SSE | 持续 | 实时推送新消息 |
-| Nexus | WSS（通过 ChannelManager） | 持续 | 收发消息、绑定/解绑、群组变化通知 |
-| 记忆存储模块 | HTTPS（通过 ChannelManager） | 消息产生时 | 推送消息记录 |
 
 ---
 
