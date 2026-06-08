@@ -74,6 +74,9 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 | `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。admin 与 user 的单聊群组（`{user_id}_admin`）不允许修改 |
 | `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。admin 与 user 的单聊群组不允许修改成员 |
 | `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。admin 与 user 的单聊群组不允许删除 |
+| `GET /api/users` | GET | 获取用户列表 |
+| `POST /api/users/create` | POST | 新建用户：`{ user_id, user_name }`。自动生成该 user 与 admin 的单聊群组 |
+| `POST /api/users/delete` | POST | 删除用户：`{ user_id }`。同时删除该用户的单聊群组 |
 | `POST /api/attachment/upload` | POST | 上传附件（multipart），图片自动生成缩略图 |
 | `GET /api/attachment/download` | GET | 下载原图/文件 |
 | `GET /api/attachment/thumbnail` | GET | 读取图片缩略图 |
@@ -103,16 +106,15 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 ┌─────────────────────────────────────────────────────┐
 │  Kissbot Web Chat                       [用户名 ▼] │
 ├──────────┬──────────────────────────────────────────┤
-│ 会话列表 │          消息区域                         │
-│          │   会话标题                                │
-│  ● userA │                                           │
-│  ○ userB │   消息气泡（上行/下行）                    │
-│  ○ 群组名 │                                           │
+│ 会话列表 │          消息区域 / 管理区域              │
+│          │                                           │
+│  ● userA │   会话标题 / 管理界面标题                 │
+│  ○ userB │                                           │
+│  ○ 群组名 │   消息/管理内容                           │
 │          │                                           │
 │  ───────  │                                           │
-│  群组管理 │                                           │
-│  ○ 开发组 │                                           │
-│  ○ 项目组 │                                           │
+│  ☰ 群组管理 │                                           │
+│  ☰ 用户管理 │                                           │
 │          │                                           │
 ├──────────┼──────────────────────────────────────────┤
 │          │  ▎ 输入消息...                 📎 发送  │
@@ -124,6 +126,7 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 - 未加入的群组在列表中展示（可查看消息），发送输入框禁用
 - 按最后消息时间排序
 - 未读消息标记
+- 底部固定区域：群组管理和用户管理按钮（仅 admin 可见），点击后右侧切换到管理界面
 
 **右侧 - 消息区域**：
 - 顶部会话标题显示群组名称（group_name），无前后缀
@@ -139,12 +142,18 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 - "思考中..."状态提示（agent 正在处理时）
 
 #### 2.3 群组管理面板
-- 仅 admin 可见
+- 仅 admin 可见，点击左侧"群组管理"按钮后右侧切换到群组管理界面
 - 群组列表：展示所有群组（admin-user 单聊群组不可操作，仅可查看消息）
 - 新建群组：输入群组名称，选择成员（user 列表）
 - 修改群组名称：选择已有群组，修改名称（admin-user 单聊群组不可修改）
 - 管理成员：选择已有群组，添加或移除成员（admin-user 单聊群组不可操作）
 - 删除群组：确认后删除（admin-user 单聊群组不可删除）
+
+#### 2.4 用户管理面板
+- 仅 admin 可见，点击左侧"用户管理"按钮后右侧切换到用户管理界面
+- 用户列表：展示所有普通用户
+- 新建用户：输入 user_id 和 user_name，自动生成该 user 与 admin 的单聊群组
+- 删除用户：确认后删除用户及其单聊群组
 
 ### 与后端通信
 - **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
