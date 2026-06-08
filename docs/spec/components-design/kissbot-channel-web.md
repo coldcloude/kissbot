@@ -16,7 +16,7 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 
 ## 一、后端 — kissbot-channel-web
 
-进程内建立一个 WebMessenger（提供 HTTPS 服务）和一个 ChannelManager（提供 WSS 服务），通过 Messenger 注册将两者关联，持续运行。
+进程内运行 ChannelManager（kissbot-channel 库提供，带 WSS 服务），注册一个 WebMessenger 实现（提供 HTTPS + SSE 服务），两者通过 Messenger/Channel 接口交互，持续运行。
 
 ### 1. WebMessenger（Messenger 实现）
 
@@ -221,10 +221,9 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 ### 3.6 Nexus 绑定流程
 ```
-1. ChannelManager 调用 WebMessenger.get_user_groups(user_id)
-2. WebMessenger 返回该 user 所在的所有群组（含单聊群组 user-1_admin）
-3. ChannelManager 按返回结果创建 WebChannel 实例
-4. WebMessenger 创建 WebChannel 并注册回调
+1. ChannelManager 通过 MessengerInfo 获取 user 的群组列表
+2. 为每个 (user, group) 组合创建 WebChannel 实例
+3. WebChannel 注册消息到达回调和附件下载回调
 ```
 
 ---

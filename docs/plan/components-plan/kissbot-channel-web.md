@@ -6,8 +6,8 @@
 
 #### 第1阶段：基础结构 ❌ 未开始
 - [ ] 定义 JSON 配置文件结构（admin_key、user_key），编写 ConfigManager（加载 + 自动注入单聊群组，group_name 取 user_name）
-- [ ] 实现 WebMessenger（Messenger trait）：get_info、get_available_users、get_user_groups、create_channel
-- [ ] 实现 WebChannel（Channel trait）：send_message、send_attachment_payload、download_attachment_header、register_on_incoming_messages、register_on_download_attachment_payload
+- [ ] 实现 WebMessenger（Messenger trait）
+- [ ] 实现 WebChannel（Channel trait）
 - [ ] 认证集成：admin_key 通过 kissbot-security 中间件每次请求校验；user_key 由 ChannelManager 的 WSS 认证处理
 - [ ] 实现 GroupManager（群组增删改查 + 配置文件同步写回），admin-user 单聊群组禁止改名/改成员/删除
 - [ ] 实现 UserManager（用户增删 + 配置文件同步写回，新增用户时自动生成单聊群组，删除时清理）
@@ -27,7 +27,7 @@
 
 #### 第3阶段：完整集成 ❌ 未开始
 - [ ] AttachmentStore（本地文件系统附件管理，上传图片时自动生成缩略图）
-- [ ] WebMessenger 注册到全局 ChannelManager
+- [ ] WebMessenger 注册到 ChannelManager
 - [ ] 实现消息上行流程（admin → ChannelManager → nexus）
 - [ ] 实现消息下行流程（nexus → ChannelManager → Web UI）
 - [ ] 实现群组变化通知流程（GroupChangeHandler → nexus）
