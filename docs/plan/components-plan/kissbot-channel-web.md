@@ -19,7 +19,7 @@
 - [ ] 实现 REST API：/api/groups/manage-members（双人群组禁止修改成员）
 - [ ] 实现 REST API：/api/groups/delete（双人群组禁止删除）
 - [ ] 实现 REST API：/api/attachment/upload & /api/attachment/download
-- [ ] 实现 SSE 端点 POST /api/events（POST 长连接，从 response body 流式推送 SSE 事件）
+- [ ] 实现 SSE 端点 GET /api/events（通过 `@microsoft/fetch-event-source` 连接，header 传递 API key）
 
 #### 第3阶段：完整集成 ❌ 未开始
 - [ ] AttachmentStore（本地文件系统附件管理）
@@ -39,7 +39,8 @@
 - [ ] 实现连接页（API key 输入认证）
 - [ ] 实现聊天主界面布局（左侧会话列表 + 右侧消息区域）
 - [ ] 实现与后端的 HTTPS 通信（API client 封装）
-- [ ] 实现与后端的 SSE 连接（fetch POST + ReadableStream 流式读取，API key 在 header 中）
+- [ ] 添加 `@microsoft/fetch-event-source` 依赖
+- [ ] 实现与后端的 SSE 连接（使用 fetchEventSource 库，自定义 header 传递 API key，配置自动重连）
 
 #### 第2阶段：功能完善 ❌ 未开始
 - [ ] 实现会话列表展示（单聊 + 群聊）

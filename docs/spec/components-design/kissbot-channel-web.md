@@ -79,7 +79,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 **SSE 端点：**
 | 端点 | 方法 | 功能 |
 |------|------|------|
-| `POST /api/events` | POST | SSE 长连接，通过 fetch POST 建立，从 response body 流式读取 SSE 事件。API key 在 header 中传递。 |
+| `GET /api/events` | GET | SSE 长连接，使用 `@microsoft/fetch-event-source` 库连接，`X-Api-Key` 通过该库的自定义 header 配置传递。 |
 
 ---
 
@@ -135,7 +135,7 @@ React + Vite 单页应用，仅服务 admin 用户。
 
 ### 与后端通信
 - **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
-- **SSE（POST）**：通过 fetch POST /api/events 建立长连接，从 response body 流式读取 SSE 事件。API key 通过 header 传递，前端使用 ReadableStream 处理实时推送
+- **SSE**：通过 `@microsoft/fetch-event-source` 库连接 `GET /api/events`，`X-Api-Key` 通过该库的 header 配置传递。支持断线自动重连
 
 ---
 
@@ -270,3 +270,4 @@ React + Vite 单页应用，仅服务 admin 用户。
 | 前端框架 | React 19 | UI 框架 |
 | 前端构建 | Vite 8 | 构建工具 |
 | 前端语言 | TypeScript 6 | 开发语言 |
+| 前端 SSE 库 | @microsoft/fetch-event-source | SSE 连接（支持自定义 header 和自动重连） |
