@@ -6,11 +6,11 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 包含后端服务（Rust）和前端界面（React）两部分。
 
 **用户模型**：
-- **管理用户（admin）**：唯一的外部用户，通过 API key 认证接入 Web 前台
-- **普通用户（users）**：由 nexus 代表的智能体身份，可与管理员私聊或群聊
+- **管理用户（admin）**：唯一的外部用户，通过 admin API key 认证接入 Web 前台
+- **普通用户（users）**：由 nexus 代表的智能体身份，可与管理员私聊或群聊。每个 user 拥有自己的 API key
 - Admin 和 users 在 JSON 配置文件中定义，agent 与 user 的绑定由 kissbot-channel 的 nexus 绑定流程动态建立
 
-**默认群组**：添加 user 时自动创建该 user 与 admin 的双人群组，group_id 为 `{user_id}_admin`。
+**默认群组**：添加 user 时自动创建该 user 与 admin 的单聊群组，group_id 为 `{user_id}_admin`，group_name 为该 user 的 user_name。
 
 ---
 
@@ -27,15 +27,15 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - 加载 JSON 配置文件，解析 admin / users / groups 定义
 - 加载时自动注入默认私聊群组：
   - 每个 user 自动生成 `{user_id}_admin` 群组（成员为 admin + 该 user）
-  - 名称格式：`"与 {user_name} 的对话"`
+  - group_name 直接设为该 user 的 user_name
 - 管理员在 UI 中新建/编辑/删除群组时同步写回配置文件
 - 提供运行时读取和修改群组的方法
 
 #### 1.2 UserSessionManager — 会话管理
 - 验证 HTTP 请求中的 `X-Api-Key` header
-- 通过验证的请求映射为 admin 用户（kissbot-security 模块负责认证中间件）
-- 只有 admin 用户可以访问 Web 前端
-- 不需要多用户 session 管理
+- admin 和每个 user 各自持有独立的 API key，根据 key 识别身份
+- admin API key 对应 admin 用户，拥有完整权限（消息收发、群组管理、历史消息查看）
+- user API key 对应普通用户，仅用于 nexus 绑定使用，不涉及 Web 界面
 
 #### 1.3 GroupManager — 群组管理
 - 维护群组列表（配置群组 + 自动生成的单聊群组）
@@ -45,6 +45,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - 实现 `Messenger` trait 的 `get_available_users()`：
   - 返回 admin 和所有 users
 - 群组变化时触发 `GroupChangeHandler` 回调，由 ChannelManager 处理
+- 消息发送权限控制：admin 可以向所有群组发送消息；admin 未加入的群组可查看消息但不可发送（由前端 UI 和后台共同校验）
 
 #### 1.4 WebChannel（Channel 实现）
 - 每 (user, group) 组合对应一个 WebChannel 实例
@@ -64,15 +65,16 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 | 端点 | 方法 | 功能 |
 |------|------|------|
-| `GET /api/connect` | GET | 验证 API key，返回 Messenger 信息（users、groups） |
+| `GET /api/connect` | GET | 验证 API key，返回用户身份（admin/user）和对应的 Messenger 信息（users、groups） |
 | `POST /api/message/send` | POST | 发送消息：`{ group_id, content, attachments? }` |
 | `GET /api/groups` | GET | 获取群组列表 |
 | `POST /api/groups/create` | POST | 创建群组：`{ group_name, member_ids? }` |
-| `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。自动生成的双人群组（`{user_id}_admin`）不允许修改 |
-| `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。双人群组不允许修改成员 |
-| `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。双人群组不允许删除 |
+| `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。admin 与 user 的单聊群组（`{user_id}_admin`）不允许修改 |
+| `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。admin 与 user 的单聊群组不允许修改成员 |
+| `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。admin 与 user 的单聊群组不允许删除 |
 | `POST /api/attachment/upload` | POST | 上传附件（multipart） |
 | `GET /api/attachment/download` | GET | 下载附件 |
+| `GET /api/messages` | GET | 获取历史消息：`{ group_id, before_id?, after_id?, time? }`。默认返回最新 10 条，指定 `before_id` 获取更早 10 条，`after_id` 获取之后 10 条，`time` 时间搜索定位（返回该时间点前后各 10 条） |
 
 所有端点统一携带 `X-Api-Key` header，由 kissbot-security 中间件认证。
 
@@ -85,7 +87,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 ## 二、前端 — kissbot-channel-web-ui
 
-React + Vite 单页应用，仅服务 admin 用户。
+React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web 界面。
 
 ### 页面结构
 
@@ -115,23 +117,31 @@ React + Vite 单页应用，仅服务 admin 用户。
 ```
 
 **左侧 - 会话列表**：
-- 展示所有可用的会话（单聊群组 + 多人群组）
+- 展示所有群组（单聊群组 + 多人群组），无论 admin 是否已加入
+- 未加入的群组在列表中展示（可查看消息），发送输入框禁用
 - 按最后消息时间排序
 - 未读消息标记
 
 **右侧 - 消息区域**：
-- 消息历史和消息收发
+- 顶部会话标题显示群组名称（group_name），无前后缀
+- 消息收发和消息历史查看：
+  - 进入群组时默认加载最新 10 条消息
+  - 向上滚动加载更早 10 条消息（追加模式）
+  - 向下滚动加载之后 10 条消息（追加模式）
+  - 已加载的消息在切换群组再切回后仍然保留
+  - 时间搜索：输入时间点，跳转到该时间前后各 10 条消息
 - 上行（admin → agent）和下行（agent → admin）消息展示区分
-- 附件上传/下载（图片预览、文件链接）
+- 附件展示：图片直接显示原图；文件显示文件名，点击下载
+- 附件上传：支持图片和文件
 - "思考中..."状态提示（agent 正在处理时）
 
 #### 2.3 群组管理面板
 - 仅 admin 可见
-- 群组列表：展示所有多人群组（自动生成的双人群组不可在面板中操作）
+- 群组列表：展示所有群组（admin-user 单聊群组不可操作，仅可查看消息）
 - 新建群组：输入群组名称，选择成员（user 列表）
-- 修改群组名称：选择已有群组，修改名称
-- 管理成员：选择已有群组，添加或移除成员（仅 admin 可操作）
-- 删除群组：确认后删除（双人群组不可删除）
+- 修改群组名称：选择已有群组，修改名称（admin-user 单聊群组不可修改）
+- 管理成员：选择已有群组，添加或移除成员（admin-user 单聊群组不可操作）
+- 删除群组：确认后删除（admin-user 单聊群组不可删除）
 
 ### 与后端通信
 - **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
@@ -180,10 +190,10 @@ React + Vite 单页应用，仅服务 admin 用户。
 ### 3.5 群组删除流程
 ```
 1. 管理员在 Web UI 选择群组删除
-2. 前端校验：自动生成的双人群组（{user_id}_admin）隐藏删除按钮
+2. 前端校验：admin-user 单聊群组隐藏删除按钮
 3. Web UI → HTTPS POST /api/groups/delete { group_id }
 4. GroupManager：
-   ├─ 校验非双人群组
+   ├─ 校验非 admin-user 单聊群组
    ├─ 从配置文件和内存中移除
    ├─ 移除对应的所有 WebChannel 实例
    └─ 触发 GroupChangeHandler 回调
@@ -208,21 +218,23 @@ React + Vite 单页应用，仅服务 admin 用户。
 {
   "admin": {
     "user_id": "admin",
-    "user_name": "管理员"
+    "user_name": "管理员",
+    "api_key": "admin-api-key-xxx"
   },
   "users": [
-    { "user_id": "user-1", "user_name": "助手小A" },
-    { "user_id": "user-2", "user_name": "助手小B" }
+    { "user_id": "user-1", "user_name": "助手小A", "api_key": "user1-api-key-xxx" },
+    { "user_id": "user-2", "user_name": "助手小B", "api_key": "user2-api-key-xxx" }
   ],
   "groups": [
-    { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] }
+    { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] },
+    { "group_id": "project-x", "group_name": "项目X", "members": ["user-1", "user-2"] }
   ]
 }
 ```
 
-加载时自动注入的单聊群组（不在配置文件中存储）：
-- `{ "group_id": "user-1_admin", "group_name": "与 助手小A 的对话", "members": ["admin", "user-1"] }`
-- `{ "group_id": "user-2_admin", "group_name": "与 助手小B 的对话", "members": ["admin", "user-2"] }`
+加载时自动注入的单聊群组（不在配置文件中存储，group_name 直接取 user_name）：
+- `{ "group_id": "user-1_admin", "group_name": "助手小A", "members": ["admin", "user-1"] }`
+- `{ "group_id": "user-2_admin", "group_name": "助手小B", "members": ["admin", "user-2"] }`
 
 ---
 
@@ -233,6 +245,9 @@ React + Vite 单页应用，仅服务 admin 用户。
 - 文件路径：`attachments/{group_id}/{msg_id}/{filename}`
 - 上传接口接收 multipart/form-data
 - 下载接口返回原始文件内容 + Content-Type
+- 两种附件类型：
+  - **图片**：前端直接显示原图（支持 jpg/png/gif/webp）
+  - **文件**：前端显示文件名，点击触发下载
 
 ---
 
