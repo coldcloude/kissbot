@@ -33,8 +33,8 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 
 #### 1.2 UserSessionManager — 会话管理
 - 验证 HTTP 请求中的 `X-Api-Key` header
-- 两个 API key：admin_key 对应 admin 用户（拥有完整权限），user_key 对应所有普通用户（仅用于 nexus 绑定，不涉及 Web 界面）
-- 根据 key 识别请求方身份
+- admin_key 用于 Web 前端认证（用户身份：admin）
+- user_key 用于 nexus 通过 WSS 连接时认证（用户身份：user）
 
 #### 1.3 GroupManager — 群组管理
 - 维护群组列表（配置群组 + 自动生成的单聊群组）
