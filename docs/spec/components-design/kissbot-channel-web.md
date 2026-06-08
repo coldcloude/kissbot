@@ -68,17 +68,18 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 | `POST /api/message/send` | POST | 发送消息：`{ group_id, content, attachments? }` |
 | `GET /api/groups` | GET | 获取群组列表 |
 | `POST /api/groups/create` | POST | 创建群组：`{ group_name, member_ids? }` |
-| `POST /api/groups/update` | POST | 更新群组：`{ group_id, group_name?, member_ids? }` |
-| `POST /api/groups/delete` | POST | 删除群组：`{ group_id }` |
+| `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。自动生成的双人群组（`{user_id}_admin`）不允许修改 |
+| `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。双人群组不允许修改成员 |
+| `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。双人群组不允许删除 |
 | `POST /api/attachment/upload` | POST | 上传附件（multipart） |
 | `GET /api/attachment/download` | GET | 下载附件 |
 
-所有端点携带 `X-Api-Key` header，由 kissbot-security 中间件认证。SSE 端点例外——因浏览器 EventSource API 无法自定义 header，API key 通过 URL 查询参数 `api_key` 传递。
+所有端点统一携带 `X-Api-Key` header，由 kissbot-security 中间件认证。
 
 **SSE 端点：**
 | 端点 | 方法 | 功能 |
 |------|------|------|
-| `GET /api/events` | GET | SSE 长连接，实时推送消息到前端。URL 中带 API key 参数：`/api/events?api_key=...` |
+| `POST /api/events` | POST | SSE 长连接，通过 fetch POST 建立，从 response body 流式读取 SSE 事件。API key 在 header 中传递。 |
 
 ---
 
@@ -126,14 +127,15 @@ React + Vite 单页应用，仅服务 admin 用户。
 
 #### 2.3 群组管理面板
 - 仅 admin 可见
-- 群组列表：展示所有多人群组
+- 群组列表：展示所有多人群组（自动生成的双人群组不可在面板中操作）
 - 新建群组：输入群组名称，选择成员（user 列表）
-- 编辑群组：修改群组名称、增减成员
-- 删除群组：确认后删除
+- 修改群组名称：选择已有群组，修改名称
+- 管理成员：选择已有群组，添加或移除成员（仅 admin 可操作）
+- 删除群组：确认后删除（双人群组不可删除）
 
 ### 与后端通信
 - **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
-- **SSE**：连接 `GET /api/events?api_key=...` 后实时接收新消息推送。使用浏览器原生 EventSource API，断线时自动重连
+- **SSE（POST）**：通过 fetch POST /api/events 建立长连接，从 response body 流式读取 SSE 事件。API key 通过 header 传递，前端使用 ReadableStream 处理实时推送
 
 ---
 
@@ -186,14 +188,16 @@ React + Vite 单页应用，仅服务 admin 用户。
 
 ### 3.5 群组删除流程
 ```
-1. 管理员在 Web UI 删除群组
-2. Web UI → HTTPS POST /api/groups/delete { group_id }
-3. GroupManager：
+1. 管理员在 Web UI 选择群组删除
+2. 前端校验：自动生成的双人群组（{user_id}_admin）隐藏删除按钮
+3. Web UI → HTTPS POST /api/groups/delete { group_id }
+4. GroupManager：
+   ├─ 校验非双人群组
    ├─ 从配置文件和内存中移除
    ├─ 移除对应的所有 WebChannel 实例
    └─ 触发 GroupChangeHandler 回调
-4. ChannelManager 通过 WSS 通知 nexus
-5. Nexus 解除对应 channel
+5. ChannelManager 通过 WSS 通知 nexus
+6. Nexus 解除对应 channel
 ```
 
 ### 3.6 Nexus 绑定流程

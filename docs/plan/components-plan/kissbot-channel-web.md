@@ -14,9 +14,12 @@
 - [ ] 实现 HTTPServer（Axum），集成 kissbot-security 认证中间件
 - [ ] 实现 REST API：/api/connect（验证 API key）
 - [ ] 实现 REST API：/api/message/send
-- [ ] 实现 REST API：/api/groups（CRUD）
+- [ ] 实现 REST API：/api/groups/create
+- [ ] 实现 REST API：/api/groups/rename（双人群组禁止修改）
+- [ ] 实现 REST API：/api/groups/manage-members（双人群组禁止修改成员）
+- [ ] 实现 REST API：/api/groups/delete（双人群组禁止删除）
 - [ ] 实现 REST API：/api/attachment/upload & /api/attachment/download
-- [ ] 实现 SSE 端点 /api/events（基于 axum 的 SSE 支持，akaxum::response::sse::Sse）
+- [ ] 实现 SSE 端点 POST /api/events（POST 长连接，从 response body 流式推送 SSE 事件）
 
 #### 第3阶段：完整集成 ❌ 未开始
 - [ ] AttachmentStore（本地文件系统附件管理）
@@ -36,7 +39,7 @@
 - [ ] 实现连接页（API key 输入认证）
 - [ ] 实现聊天主界面布局（左侧会话列表 + 右侧消息区域）
 - [ ] 实现与后端的 HTTPS 通信（API client 封装）
-- [ ] 实现与后端的 SSE 连接（EventSource API，断线自动重连）
+- [ ] 实现与后端的 SSE 连接（fetch POST + ReadableStream 流式读取，API key 在 header 中）
 
 #### 第2阶段：功能完善 ❌ 未开始
 - [ ] 实现会话列表展示（单聊 + 群聊）
