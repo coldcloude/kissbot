@@ -27,3 +27,7 @@ Keep It Simple Stupid BOT - kissbot
   - kai-rs目录，本地Rust基础库，文档位于kai-rs/docs目录下，包含如下模块：
     - kai-index：倒排索引模块，提供文档索引功能
   - kai目录，本地TypeScript基础库（暂未用到）
+
+## git配置
+
+- 提交comment中，Co-Authored-By要写当前模型，而非默认的claude模型
