@@ -27,16 +27,6 @@ struct MessengerContext {
     pub bound_map: DashMap<String, BoundInfo>,
 }
 
-struct ChannelContext {
-    channel_info: Arc<ChannelInfo>,
-    messenger_context: Weak<MessengerContext>,
-    ws_context: Weak<WsContext>,
-    memory_store_client: Weak<MemoryStoreClient>,
-}
-
-impl ChannelContext {
-}
-
 struct ConnectContext {
     connect_id: u32,
     ws_context: Arc<WsContext>,
