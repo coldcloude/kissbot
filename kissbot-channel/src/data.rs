@@ -79,6 +79,7 @@ pub trait IncomingMessageHandler: Send + Sync {
 // ========== Group Change ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupChangeEvent {
+    pub msg_id: Arc<String>,
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
@@ -95,4 +96,29 @@ pub enum GroupChangeType {
 #[async_trait]
 pub trait GroupChangeHandler: Send + Sync {
     async fn handle_group_change(&self, event: Arc<GroupChangeEvent>);
+}
+
+/// 统一的 GroupChange → IncomingMessageEvent 转换。
+/// 所有 messenger 共用此实现，不再由各 Channel/Messenger 各自实现。
+pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
+    let msg_type = match message.change_type {
+        GroupChangeType::Joined => MSG_TYPE_SYSTEM_JOIN,
+        GroupChangeType::Left => MSG_TYPE_SYSTEM_LEAVE,
+    };
+    let incoming = Arc::new(IncomingMessage {
+        msg_id: message.msg_id.clone(),
+        messenger_id: message.messenger_id.clone(),
+        user_id: message.user_id.clone(),
+        group_id: message.group_id.clone(),
+        is_self: 1,
+        msg_type: Arc::new(msg_type.to_string()),
+        content: Arc::new(String::new()),
+        time: message.time.clone(),
+    });
+    Arc::new(IncomingMessageEvent {
+        messenger_id: message.messenger_id.clone(),
+        user_id: message.user_id.clone(),
+        group_id: message.group_id.clone(),
+        messages: Arc::new(vec![incoming]),
+    })
 }

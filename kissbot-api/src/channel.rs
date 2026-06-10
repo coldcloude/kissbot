@@ -24,6 +24,21 @@ pub const TYPE_INCOMING_MESSAGE: u32 = 0x10020003;
 
 pub const TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD: u32 = 0x10020004;
 
+// ========== 消息类型常量 ==========
+
+/// 文本消息
+pub const MSG_TYPE_TEXT: &str = "text";
+/// 图片消息
+pub const MSG_TYPE_IMAGE: &str = "image";
+/// 文件消息
+pub const MSG_TYPE_FILE: &str = "file";
+/// 混合内容（文本+附件）
+pub const MSG_TYPE_MIXED: &str = "mixed";
+/// 系统消息：用户加入群组
+pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
+/// 系统消息：用户离开群组
+pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
+
 // ========== Messenger -> User -> Group-> Channel ==========
 
 // ========== Channel Info ==========

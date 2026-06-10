@@ -567,14 +567,14 @@ impl ChannelManager {
                     payload: Some(channel_info),
                 }).await?;
                 //发channel变更消息
-                let msg_event = messenger_context.messenger.group_change_to_incoming_message(event.clone());
+                let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
             }
             GroupChangeType::Left => {
                 let span = span!(Level::INFO, "handle leave group");
                 let _enter = span.enter();
                 //发channel变更消息
-                let msg_event = messenger_context.messenger.group_change_to_incoming_message(event.clone());
+                let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
                 let channel_info = ChannelInfo {

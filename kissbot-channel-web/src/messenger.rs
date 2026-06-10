@@ -292,6 +292,7 @@ impl WebMessenger {
         if let Some(weak) = handler.as_ref() {
             if let Some(handler) = weak.upgrade() {
                 let event = Arc::new(GroupChangeEvent {
+                    msg_id: Arc::new(uuid::Uuid::new_v4().to_string()),
                     messenger_id: Arc::new(self.messenger_id.clone()),
                     user_id: Arc::new(user_id.to_string()),
                     group_id: Arc::new(group_id.to_string()),

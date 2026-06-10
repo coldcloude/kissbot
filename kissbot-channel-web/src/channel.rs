@@ -68,8 +68,8 @@ impl Channel for WebChannel {
             group_id: message.group_id.clone(),
             is_self: 0,
             msg_type: Arc::new(match message.change_type {
-                kissbot_channel::GroupChangeType::Joined => "system_join".to_string(),
-                kissbot_channel::GroupChangeType::Left => "system_leave".to_string(),
+                kissbot_channel::GroupChangeType::Joined => kissbot_api::channel::MSG_TYPE_SYSTEM_JOIN.to_string(),
+                kissbot_channel::GroupChangeType::Left => kissbot_api::channel::MSG_TYPE_SYSTEM_LEAVE.to_string(),
             }),
             content: Arc::new(String::new()),
             time: message.time.clone(),

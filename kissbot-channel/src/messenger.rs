@@ -11,8 +11,6 @@ pub trait Messenger: Send + Sync {
 
     async fn get_info(&self) -> Result<Arc<MessengerInfo>>;
 
-    fn group_change_to_incoming_message(&self, message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent>;
-    
     async fn send_message(&self, message: OutgoingMessageDTO, attachment_sn: Arc<AtomicU32>) -> Result<Arc<OutgoingMessageResponse>>;
 
     async fn send_attachment_payload(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> Result<()>;
