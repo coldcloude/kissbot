@@ -219,27 +219,24 @@ const OFFSET_ATT_SIZE: usize = OFFSET_ATT_ID + LEN_ATT_ID;
 const LEN_ATT_SIZE: usize = 4;
 const OFFSET_ATT_POS: usize = OFFSET_ATT_SIZE + LEN_ATT_SIZE;
 const LEN_ATT_POS: usize = 8;
-const OFFSET_ATT_DATA: usize = OFFSET_ATT_POS + LEN_ATT_POS;
 
-#[async_trait]
-pub trait AttachmentProcessor<E: From<TryFromSliceError> + Send + Sync> {
-    async fn process_attachment(&self, id: u32, size: u32, pos: u64, data: &[u8]) -> std::result::Result<(), E>;
+pub const OFFSET_ATT_DATA: usize = OFFSET_ATT_POS + LEN_ATT_POS;
+
+pub struct AttachmentPayloadHeader {
+    pub id: u32,
+    pub size: u32,
+    pub pos: u64,
 }
 
-pub async fn process_attachment<E, P>(data: &[u8], processor: &P) -> std::result::Result<(), E>
-where
-    E: From<TryFromSliceError> + Send + Sync,
-    P: AttachmentProcessor<E>,
-{
+pub fn parse_attachment_payload_header(data: &[u8]) -> std::result::Result<AttachmentPayloadHeader, TryFromSliceError> {
+    let data = data.as_ref();
     let id_bin: [u8; 4] = data[OFFSET_ATT_ID..OFFSET_ATT_ID + LEN_ATT_ID].try_into()?;
     let id = u32::from_be_bytes(id_bin);
     let size_bin: [u8; 4] = data[OFFSET_ATT_SIZE..OFFSET_ATT_SIZE + LEN_ATT_SIZE].try_into()?;
     let size = u32::from_be_bytes(size_bin);
     let pos_bin: [u8; 8] = data[OFFSET_ATT_POS..OFFSET_ATT_POS + LEN_ATT_POS].try_into()?;
     let pos = u64::from_be_bytes(pos_bin);
-    let data = &data[OFFSET_ATT_DATA..];
-    processor.process_attachment(id, size, pos, data).await?;
-    Ok(())
+    Ok(AttachmentPayloadHeader { id, size, pos })
 }
 
 // ================= Receiving Message ==========================

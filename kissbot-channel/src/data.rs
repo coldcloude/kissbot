@@ -65,6 +65,9 @@ pub type IncomingMessages = Vec<Arc<IncomingMessage>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingMessageEvent {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub messages: Arc<IncomingMessages>,
 }
 
