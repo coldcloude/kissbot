@@ -1,4 +1,5 @@
 {
+  "messenger_id": "web",
   "admin_key": "admin-key-123",
   "user_key": "user-key-456",
   "admin": {
@@ -12,5 +13,7 @@
   "groups": {
     "dev-team": { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] },
     "project-x": { "group_id": "project-x", "group_name": "项目X", "members": ["user-1", "user-2"] }
-  }
+  },
+  "next_user_seq": 0,
+  "next_group_seq": 0
 }

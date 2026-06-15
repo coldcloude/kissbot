@@ -503,7 +503,7 @@ impl ChannelManager {
         Ok(())
     }
     
-    pub async fn register_messenger(manager: Arc<Self>, messenger_id: &str, messenger_creator: Arc<dyn MessengerCreator>) -> Result<()> {
+    pub async fn register_messenger<M: Messenger + Send + Sync + 'static>(manager: Arc<Self>, messenger_id: &str, messenger_creator: Arc<dyn MessengerCreator<M>>) -> Result<Arc<M>> {
         match manager.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
                 let group_change_handler = Arc::downgrade(&manager);
@@ -515,11 +515,11 @@ impl ChannelManager {
                     download_attachment_payload_handler
                 ).await?;
                 let messenger_context = Arc::new(MessengerContext {
-                    messenger: messenger,
+                    messenger: messenger.clone() as Arc<dyn Messenger>,
                     bound_map: DashMap::new(),
                 });
                 entry.insert(messenger_context);
-                Ok(())
+                Ok(messenger)
             }
             Entry::Occupied(entry) => {
                 Err(Error::MessengerAlreadyRegistered(entry.key().to_string()))

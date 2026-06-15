@@ -6,6 +6,6 @@ pub mod channel_manager;
 
 pub use error::Error;
 pub use data::*;
-pub use messenger::Messenger;
+pub use messenger::{Messenger, MessengerCreator};
 pub use memory_store_client::MemoryStoreClient;
 pub use channel_manager::ChannelManager;

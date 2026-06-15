@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::attachment::AttachmentStore;
-use crate::messenger::WebMessenger;
+use crate::messenger::{admin_user_group_id, WebMessenger};
 
 // =========== SSE 分发器 ===========
 // admin 不走 Channel 体系，独立 SSE 通道由 SseDispatcher 管理。
@@ -92,8 +92,7 @@ pub struct UserResponse {
 }
 
 /// 返回给前端的群组，仅包含 JSON 配置中真正存储的群组。
-/// admin-user 自动生成的单聊群组由前端通过 user_id+_admin 规律自行推导，
-/// 不在管理列表中展示。
+/// admin-user 自动生成的单聊群组（a_{user_id}）不在管理列表中展示。
 #[derive(Debug, Serialize)]
 pub struct GroupResponse {
     pub group_id: String,
@@ -260,23 +259,8 @@ async fn handle_send_message(
         return Json(ApiResponse::<serde_json::Value>::error(&e.to_string()));
     }
 
-    let admin_id = state.messenger.admin_info().await.user_id;
-    let sse_data = serde_json::to_string(&serde_json::json!({
-        "type": "message",
-        "data": {
-            "msg_id": uuid::Uuid::new_v4().to_string(),
-            "group_id": req.group_id,
-            "user_id": admin_id.to_string(),
-            "is_self": 1,
-            "msg_type": msg_type,
-            "content": content,
-            "time": time,
-        }
-    })).unwrap_or_default();
-    state.sse.push(&req.group_id, &sse_data);
-
     Json(ApiResponse::success(serde_json::json!({
-        "msg_id": uuid::Uuid::new_v4().to_string(),
+        "msg_id": "",
         "time": time
     })))
 }
@@ -333,7 +317,6 @@ async fn handle_create_group(
     State(state): State<AppState>,
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
-    let group_id = state.messenger.next_group_id().await;
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let admin = state.messenger.admin_info().await;
 
@@ -342,8 +325,8 @@ async fn handle_create_group(
         member_ids.push(admin.user_id.to_string());
     }
 
-    match state.messenger.add_group(&group_id, &req.group_name, member_ids.clone()).await {
-        Ok(_) => {
+    match state.messenger.add_group(&req.group_name, member_ids.clone()).await {
+        Ok(group_id) => {
             for m in &member_ids {
                 if m.as_str() != admin.user_id.as_str() {
                     state.messenger.notify_group_change(m, &group_id, GroupChangeType::Joined, &time).await;
@@ -443,12 +426,12 @@ async fn handle_create_user(
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    match state.messenger.add_user(&req.user_id, &req.user_name).await {
-        Ok(_) => {
-            let group_id = format!("{}_admin", req.user_id);
-            state.messenger.notify_group_change(&req.user_id, &group_id, GroupChangeType::Joined, &time).await;
+    match state.messenger.add_user(&req.user_name).await {
+        Ok(user_id) => {
+            let group_id = admin_user_group_id(&user_id);
+            state.messenger.notify_group_change(&user_id, &group_id, GroupChangeType::Joined, &time).await;
             Json(ApiResponse::success(serde_json::json!({
-                "user_id": req.user_id,
+                "user_id": user_id,
                 "user_name": req.user_name
             })))
         }
@@ -465,7 +448,7 @@ async fn handle_delete_user(
 
     match state.messenger.remove_user(&req.user_id).await {
         Ok(_) => {
-            let group_id = format!("{}_admin", req.user_id);
+            let group_id = admin_user_group_id(&req.user_id);
             state.messenger.notify_group_change(&req.user_id, &group_id, GroupChangeType::Left, &time).await;
             Json(ApiResponse::success(serde_json::json!({"success": true})))
         }
@@ -495,7 +478,7 @@ async fn handle_upload_attachment(
         };
 
         let group_id = "temp";
-        let msg_id = uuid::Uuid::new_v4().to_string();
+        let msg_id = Utc::now().format("%Y%m%d%H%M%S%6f").to_string();
 
         match state.attachment_store.save_attachment(group_id, &msg_id, &filename, &data, &mime_type) {
             Ok(meta) => {
