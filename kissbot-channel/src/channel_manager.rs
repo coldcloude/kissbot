@@ -1,5 +1,5 @@
 use crate::{Error, error::Result};
-use crate::messenger::Messenger;
+use crate::messenger::{Messenger, MessengerCreator};
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
@@ -503,20 +503,22 @@ impl ChannelManager {
         Ok(())
     }
     
-    pub fn register_messenger(manager: Arc<Self>, messenger_id: &str, messenger: Arc<dyn Messenger>) -> Result<()> {
+    pub async fn register_messenger(manager: Arc<Self>, messenger_id: &str, messenger_creator: Arc<dyn MessengerCreator>) -> Result<()> {
         match manager.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
-                let messenger_context = Arc::new(MessengerContext {
-                    messenger: messenger.clone(),
-                    bound_map: DashMap::new(),
-                });
-                entry.insert(messenger_context);
                 let group_change_handler = Arc::downgrade(&manager);
                 let incoming_messages_handler = Arc::downgrade(&manager);
                 let download_attachment_payload_handler = Arc::downgrade(&manager);
-                messenger.register_on_group_change(group_change_handler);
-                messenger.register_on_incoming_messages(incoming_messages_handler);
-                messenger.register_on_download_attachment_payload(download_attachment_payload_handler);
+                let messenger = messenger_creator.create(
+                    group_change_handler,
+                    incoming_messages_handler,
+                    download_attachment_payload_handler
+                ).await?;
+                let messenger_context = Arc::new(MessengerContext {
+                    messenger: messenger,
+                    bound_map: DashMap::new(),
+                });
+                entry.insert(messenger_context);
                 Ok(())
             }
             Entry::Occupied(entry) => {
