@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak, atomic::AtomicU32};
 
 // Messenger trait
 #[async_trait]
-pub trait Messenger: Send + Sync {
+pub trait Messenger: Send + Sync + 'static {
     async fn get_info(&self) -> Result<Arc<MessengerInfo>>;
 
     async fn send_message(&self, message: OutgoingMessageDTO, attachment_sn: Arc<AtomicU32>) -> Result<Arc<OutgoingMessageResponse>>;
@@ -19,7 +19,7 @@ pub trait Messenger: Send + Sync {
 
 /// Messenger 创建器。M 为具体 Messenger 类型，create 返回 Arc<M> 供调用方直接使用。
 #[async_trait]
-pub trait MessengerCreator<M: Messenger + Send + Sync + 'static> {
+pub trait MessengerCreator<M: Messenger> {
     async fn create(
         &self,
         on_group_change: Weak<dyn GroupChangeHandler>,

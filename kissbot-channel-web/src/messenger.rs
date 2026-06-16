@@ -81,7 +81,7 @@ pub fn admin_user_group_id(user_id: &str) -> String {
 // ========== WebMessenger ==========
 
 pub struct WebMessenger {
-    messenger_id: Arc<String>,
+    pub messenger_id: Arc<String>,
     config_path: PathBuf,
     config: Arc<RwLock<MessengerConfig>>,
     msg_id_seq: AtomicU32,

@@ -503,7 +503,11 @@ impl ChannelManager {
         Ok(())
     }
     
-    pub async fn register_messenger<M: Messenger + Send + Sync + 'static>(manager: Arc<Self>, messenger_id: &str, messenger_creator: Arc<dyn MessengerCreator<M>>) -> Result<Arc<M>> {
+    pub async fn register_messenger<M,MC>(manager: Arc<Self>, messenger_id: &str, messenger_creator: MC) -> Result<Arc<M>>
+    where
+        M: Messenger,
+        MC: MessengerCreator<M>
+    {
         match manager.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
                 let group_change_handler = Arc::downgrade(&manager);
