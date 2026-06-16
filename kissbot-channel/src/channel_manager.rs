@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::{DashMap, DashSet, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{ChannelInfo, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -550,7 +550,7 @@ impl ChannelManager {
                 let span = span!(Level::INFO, "handle join group");
                 let _enter = span.enter();
                 //通知agent新建channel
-                let channel_info = kissbot_api::channel::ChannelInfo {
+                let channel_info = ChannelInfo {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()
@@ -573,7 +573,7 @@ impl ChannelManager {
                 let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
-                let channel_info = kissbot_api::channel::ChannelInfo {
+                let channel_info = ChannelInfo {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()

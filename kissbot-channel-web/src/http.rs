@@ -15,37 +15,23 @@ use axum::{
 };
 use axum::extract::multipart::Multipart;
 use chrono::Utc;
+use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
 use kissbot_api::ApiResponse;
 use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, WebMessenger};
+use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
 
 // ========== DTOs ==========
 
 #[derive(Debug, Serialize)]
-pub struct ConnectResponse {
-    pub messenger_id: String,
-    pub admin_name: String,
-    pub users: Vec<UserResponse>,
-    pub groups: Vec<GroupResponse>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UserResponse {
-    pub user_id: String,
-    pub user_name: String,
-}
-
-/// 返回给前端的群组，仅包含 JSON 配置中真正存储的群组。
-/// admin-user 自动生成的单聊群组（a_{user_id}）不在管理列表中展示。
-#[derive(Debug, Serialize)]
-pub struct GroupResponse {
-    pub group_id: String,
-    pub group_name: String,
-    pub members: Vec<String>,
+pub struct MessengerAdminInfo {
+    pub messenger_id: Arc<String>,
+    pub admin_name: Arc<String>,
+    pub users: Arc<DashMap<String, Arc<UserConfig>>>,
+    pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,7 +122,7 @@ pub struct AttachmentRefResponse {
 
 pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
     Router::new()
-        .route("/api/connect", get(handle_connect))
+        .route("/api/info", get(handle_info))
         .route("/api/message/send", post(handle_send_message))
         .route("/api/messages", get(handle_get_messages))
         .route("/api/groups", get(handle_list_groups))
@@ -159,37 +145,15 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
 
 // ========== Handlers ==========
 
-/// GET /api/connect
-async fn handle_connect(
+/// GET /api/info
+async fn handle_info(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
-    let admin_name = messenger.admin_name().await;
-    let users_list = messenger.list_users().await;
-    let groups = messenger.list_groups_raw().await;
-
-    let mut users = Vec::new();
-    users.push(UserResponse {
-        user_id: ADMIN_USER_ID.to_string(),
-        user_name: admin_name.to_string(),
-    });
-    for u in &users_list {
-        users.push(UserResponse {
-            user_id: u.user_id.to_string(),
-            user_name: u.user_name.to_string(),
-        });
-    }
-
-    let groups_resp: Vec<GroupResponse> = groups.iter().map(|g| GroupResponse {
-        group_id: g.group_id.to_string(),
-        group_name: g.group_name.to_string(),
-        members: g.members.iter().map(|m| m.to_string()).collect(),
-    }).collect();
-
-    Json(ApiResponse::success(ConnectResponse {
-        messenger_id: messenger.messenger_id.to_string(),
-        admin_name: admin_name.to_string(),
-        users,
-        groups: groups_resp,
+    Json(ApiResponse::success(MessengerAdminInfo {
+        messenger_id: messenger.messenger_id.clone(),
+        admin_name: messenger.admin_name().await,
+        users: messenger.config_users().await,
+        groups: messenger.config_groups().await,
     }))
 }
 
@@ -250,12 +214,7 @@ async fn handle_list_groups(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
     let groups = messenger.list_groups_raw().await;
-    let resp: Vec<GroupResponse> = groups.iter().map(|g| GroupResponse {
-        group_id: g.group_id.to_string(),
-        group_name: g.group_name.to_string(),
-        members: g.members.iter().map(|m| m.to_string()).collect(),
-    }).collect();
-    Json(ApiResponse::success(resp))
+    Json(ApiResponse::success(groups))
 }
 
 /// POST /api/groups/create
@@ -341,7 +300,7 @@ async fn handle_delete_group(
             if let Some(g) = group {
                 for m in g.members.iter() {
                     if m.as_str() != admin_id {
-                        messenger.notify_group_change(m, &req.group_id, GroupChangeType::Left, &time).await;
+                        messenger.notify_group_change(m.as_str(), &req.group_id, GroupChangeType::Left, &time).await;
                     }
                 }
             }
@@ -356,11 +315,7 @@ async fn handle_list_users(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
     let users = messenger.list_users().await;
-    let resp: Vec<UserResponse> = users.iter().map(|u| UserResponse {
-        user_id: u.user_id.to_string(),
-        user_name: u.user_name.to_string(),
-    }).collect();
-    Json(ApiResponse::success(resp))
+    Json(ApiResponse::success(users))
 }
 
 /// POST /api/users/create
