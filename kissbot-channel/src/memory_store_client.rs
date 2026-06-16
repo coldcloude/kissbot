@@ -1,23 +1,11 @@
 use crate::{Error, IncomingMessages, error::Result};
 use flume::{Receiver, Sender, bounded};
-use kissbot_api::{SyncString, store::*};
+use kissbot_api::{ChannelRequest, ChannelRequests};
 use kissbot_security::HEADER_API_KEY;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use std::{collections::LinkedList, sync::Arc};
 
 const RECORD_QUEUE_SIZE: usize = 10000;
-
-pub type ChannelRequest = ChannelRequestGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncChannelRequest;
-
-impl ChannelRequestKind<SyncString> for SyncChannelRequest {
-    type Type = ChannelRequest;
-}
-
-pub type ChannelRequests = ChannelRequestsGeneric<SyncString, SyncChannelRequest>;
 
 pub struct MessagesRecord {
     agent_id: Arc<String>,

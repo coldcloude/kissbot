@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::{DashMap, DashSet, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{AttachmentDownloadRequestDTO, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{BindRequestDTO, MessengerInfoRequestDTO, OutgoingMessageDTO, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
+use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -146,12 +146,12 @@ impl JsonProcessorWrapper for MessengerInfoRequestProcessor {
         let payload = data.payload
         .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
-        let messenger_info_request = serde_json::from_value::<MessengerInfoRequestDTO>(payload)?;
+        let messenger_info_request = serde_json::from_value::<MessengerInfoRequest>(payload)?;
         
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         
-        let messenger_context = manager.messenger_map.get(&messenger_info_request.messenger_id)
+        let messenger_context = manager.messenger_map.get(messenger_info_request.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(messenger_info_request.messenger_id.to_string()))?;
         
         let messenger_info = messenger_context.messenger.get_info().await?;
@@ -181,15 +181,15 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         let payload = data.payload
         .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
-        let bind_request = serde_json::from_value::<BindRequestDTO>(payload)?;
+        let bind_request = serde_json::from_value::<BindRequest>(payload)?;
         
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         let connect_context = self.connect_context.upgrade()
         .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
 
-        let agent_id = Arc::new(bind_request.agent_id);
-        let role_name = Arc::new(bind_request.role_name);
+        let agent_id = bind_request.agent_id;
+        let role_name = bind_request.role_name;
 
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
@@ -200,7 +200,7 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         .ok_or_else(|| Error::UserNotFound(bind_request.user_id.to_string()))?;
         
         //绑定用户
-        let bound_info = messenger_context.bound_map.entry(bind_request.user_id).or_insert_with(|| BoundInfo {
+        let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert_with(|| BoundInfo {
             connect_id: connect_context.connect_id,
             agent_id: agent_id.clone(),
             role_name: role_name.clone(),
@@ -238,7 +238,7 @@ impl JsonProcessorWrapper for UnbindAgentUserProcessor {
         let payload = data.payload
         .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         
-        let bind_request = serde_json::from_value::<BindRequestDTO>(payload)?;
+        let bind_request = serde_json::from_value::<BindRequest>(payload)?;
         
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
@@ -288,19 +288,19 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         let payload = data.payload
         .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
 
-        let outgoing_message = serde_json::from_value::<OutgoingMessageDTO>(payload)?;
+        let outgoing_message = serde_json::from_value::<OutgoingMessage>(payload)?;
         
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
         let messenger_context = manager.messenger_map.get(outgoing_message.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
+        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.to_string()))?;
 
         let bound_info = messenger_context.bound_map.get(outgoing_message.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
+        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.to_string()))?;
 
         if bound_info.connect_id != self.connect_id {
-            return Err(Error::UserNotBound(outgoing_message.user_id.clone()));
+            return Err(Error::UserNotBound(outgoing_message.user_id.to_string()));
         }
 
         let response = messenger_context.messenger.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
@@ -372,7 +372,7 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
         let payload = data.payload
         .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
 
-        let request = serde_json::from_value::<AttachmentDownloadRequestDTO>(payload)?;
+        let request = serde_json::from_value::<AttachmentDownloadRequest>(payload)?;
         
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
@@ -380,13 +380,13 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
         .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
         let messenger_context = manager.messenger_map.get(request.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.clone()))?;
+        .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.to_string()))?;
 
         let bound_info = messenger_context.bound_map.get(request.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(request.user_id.clone()))?;
+        .ok_or_else(|| Error::UserNotFound(request.user_id.to_string()))?;
 
         if bound_info.connect_id != connect_context.connect_id {
-            return Err(Error::UserNotBound(request.user_id.clone()));
+            return Err(Error::UserNotBound(request.user_id.to_string()));
         }
         
         let response = messenger_context.messenger.download_attachment_header(request, manager.global_attachment_sn.clone()).await?;
@@ -550,7 +550,7 @@ impl ChannelManager {
                 let span = span!(Level::INFO, "handle join group");
                 let _enter = span.enter();
                 //通知agent新建channel
-                let channel_info = ChannelInfo {
+                let channel_info = kissbot_api::channel::ChannelInfo {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()
@@ -573,7 +573,7 @@ impl ChannelManager {
                 let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
-                let channel_info = ChannelInfo {
+                let channel_info = kissbot_api::channel::ChannelInfo {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()

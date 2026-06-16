@@ -240,7 +240,7 @@ impl FileHook<RecordKey> for ToolResultFileIndexHook {
 }
 
 pub struct RecordManager {
-    channel_context: RecordContext<ChannelRequestDTO, ChannelRecordKey, ChannelRecord, ChannelParser>,
+    channel_context: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser>,
     think_context: RecordContext<ThinkRequest, RecordKey, ThinkRecord, ThinkParser>,
     tool_call_context: RecordContext<ToolCallRequest, RecordKey, ToolCallRecord, ToolCallParser>,
     tool_result_context: RecordContext<ToolResultRequest, RecordKey, ToolResultRecord, ToolResultParser>,
@@ -262,7 +262,7 @@ impl RecordManager {
         RECORD_MANAGER.get_or_init(|| RecordManager::new())
     }
 
-    pub async fn append_channel_record(&self, requests: Vec<ChannelRequestDTO>, force: bool) -> Result<()> {
+    pub async fn append_channel_record(&self, requests: Vec<ChannelRequest>, force: bool) -> Result<()> {
         self.channel_context.append_record(requests, force, ChannelFileIndexHook{}).await
     }
 

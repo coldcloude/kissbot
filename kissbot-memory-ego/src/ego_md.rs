@@ -2,7 +2,7 @@ use std::{collections::HashSet};
 
 use kissbot_api::UserIdentifier;
 
-use crate::{agent::AgentMetadata, role_play::RolePlay, user_recognition::UserRecognition};
+use kissbot_api::{AgentMetadata, RolePlay, UserRecognition};
 
 #[allow(dead_code)]
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {

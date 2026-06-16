@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 
 use crate::config::Config;
-use crate::messenger::{WebMessenger, WebMessengerCreator};
+use crate::messenger::{WebMessengerCreator};
 
 #[tokio::main]
 async fn main() {

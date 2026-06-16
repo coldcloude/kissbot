@@ -5,12 +5,14 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
-use kissbot_api::channel::{AttachmentDownloadRequestDTO, OutgoingMessageDTO};
+use kissbot_api::channel::{
+    AttachmentDownloadRequest, AttachmentDownloadResponseHeader, AttachmentInfo,
+    GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse, UserInfo,
+};
 use kissbot_channel::{
-    AttachmentDownloadPayloadSender, AttachmentDownloadResponseHeader,
-    AttachmentInfo, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
-    GroupInfo, IncomingMessage, IncomingMessageEvent, IncomingMessageHandler,
-    Messenger, MessengerCreator, MessengerInfo, OutgoingMessageResponse, UserInfo,
+    AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
+    IncomingMessageEvent, IncomingMessageHandler,
+    Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -458,14 +460,14 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(info))
     }
 
-    async fn send_message(&self, message: OutgoingMessageDTO, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
+    async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
         let group = cfg.groups.get(message.group_id.as_str())
             .map(|g| g.clone())
-            .ok_or_else(|| Error::GroupNotFound(message.group_id.clone()))?;
+            .ok_or_else(|| Error::GroupNotFound(message.group_id.to_string()))?;
         let sender_id = message.user_id.clone();
         drop(cfg);
 
@@ -474,17 +476,17 @@ impl Messenger for WebMessenger {
             let incoming = Arc::new(IncomingMessage {
                 msg_id: Arc::new(msg_id.clone()),
                 messenger_id: messenger_id.clone(),
-                user_id: Arc::new(sender_id.clone()),
-                group_id: Arc::new(message.group_id.clone()),
+                user_id: sender_id.clone(),
+                group_id: message.group_id.clone(),
                 is_self,
-                msg_type: Arc::new(message.msg_type.clone()),
-                content: Arc::new(message.content.clone()),
-                time: Arc::new(message.time.clone()),
+                msg_type: message.msg_type.clone(),
+                content: message.content.clone(),
+                time: message.time.clone(),
             });
             let event = Arc::new(IncomingMessageEvent {
                 messenger_id: messenger_id.clone(),
-                user_id: Arc::new(sender_id.clone()),
-                group_id: Arc::new(message.group_id.clone()),
+                user_id: sender_id.clone(),
+                group_id: message.group_id.clone(),
                 messages: Arc::new(vec![incoming]),
             });
 
@@ -504,8 +506,8 @@ impl Messenger for WebMessenger {
         Ok(())
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequestDTO, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
-        let meta = self.attachment_store.get_meta_by_key(&request.key)?;
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
+        let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
 
         Ok(Arc::new(AttachmentDownloadResponseHeader {
             download_id: 0,

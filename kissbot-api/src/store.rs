@@ -1,59 +1,35 @@
-﻿use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::sync::Arc;
 
-use crate::kinds::*;
+use serde::{Deserialize, Serialize};
 
-// ========== Request structures (simple, no generics) ==========
+// ========== Request structures ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRequestGeneric<S>
-where
-    S: StringKind,
-{
-    pub agent_id: S::Type,
-    pub role_name: S::Type,
-    pub messenger_id: S::Type,
-    pub user_id: S::Type,
-    pub group_id: S::Type,
+pub struct ChannelRequest {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: S::Type,
-    pub content: S::Type,
-    pub time: S::Type,
-}
-
-pub trait ChannelRequestKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone + Serialize + DeserializeOwned;
-}
-
-pub type ChannelRequestDTO = ChannelRequestGeneric<LocalString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalChannelRequest;
-
-impl ChannelRequestKind<LocalString> for LocalChannelRequest {
-    type Type = ChannelRequestDTO;
+    pub msg_type: Arc<String>,
+    pub content: Arc<String>,
+    pub time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRequestsGeneric<S,CR>
-where
-    S: StringKind,
-    CR: ChannelRequestKind<S>,
-{
-    pub requests: Vec<CR::Type>,
+pub struct ChannelRequests {
+    pub requests: Vec<ChannelRequest>,
     pub force: usize,
 }
 
-pub type ChannelRequestsDTO = ChannelRequestsGeneric<LocalString, LocalChannelRequest>;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub content: String,
-    pub key: String,
-    pub time: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub content: Arc<String>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,12 +40,12 @@ pub struct ThinkRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub tool_name: String,
-    pub tool_params: serde_json::Value,
-    pub key: String,
-    pub time: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub tool_name: Arc<String>,
+    pub tool_params: Arc<serde_json::Value>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,11 +56,11 @@ pub struct ToolCallRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub tool_result: serde_json::Value,
-    pub key: String,
-    pub time: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub tool_result: Arc<serde_json::Value>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,94 +73,66 @@ pub struct ToolResultRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryChannelRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub messenger_id: String,
-    pub user_id: String,
-    pub group_id: String,
-    pub start_time: String,
-    pub end_time: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
+    pub start_time: Arc<String>,
+    pub end_time: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub start_time: String,
-    pub end_time: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub start_time: Arc<String>,
+    pub end_time: Arc<String>,
 }
 
-// ========== ChannelRecord - Generic with trait bounds ==========
+// ========== Records ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRecordGeneric<S>
-where
-    S: StringKind,
-{
-    pub agent_id: S::Type,
-    pub role_name: S::Type,
-    pub messenger_id: S::Type,
-    pub user_id: S::Type,
-    pub group_id: S::Type,
+pub struct ChannelRecord {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: S::Type,
-    pub content: S::Type,
-    pub time: S::Type,
+    pub msg_type: Arc<String>,
+    pub content: Arc<String>,
+    pub time: Arc<String>,
     pub sn: u64,
 }
-
-pub type ChannelRecordDTO = ChannelRecordGeneric<LocalString>;
-
-// ========== ThinkRecord - Generic with trait bounds ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkRecordGeneric<S>
-where
-    S: StringKind,
-{
-    pub agent_id: S::Type,
-    pub role_name: S::Type,
-    pub content: S::Type,
-    pub key: S::Type,
-    pub time: S::Type,
+pub struct ThinkRecord {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub content: Arc<String>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
     pub sn: u64,
 }
-
-pub type ThinkRecordDTO = ThinkRecordGeneric<LocalString>;
-
-// ========== ToolCallRecord - Generic with trait bounds ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRecordGeneric<S, V>
-where
-    S: StringKind,
-    V: ValueKind,
-{
-    pub agent_id: S::Type,
-    pub role_name: S::Type,
-    pub tool_name: S::Type,
-    pub tool_params: V::Type,
-    pub key: S::Type,
-    pub time: S::Type,
+pub struct ToolCallRecord {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub tool_name: Arc<String>,
+    pub tool_params: Arc<serde_json::Value>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
     pub sn: u64,
 }
-
-pub type ToolCallRecordDTO = ToolCallRecordGeneric<LocalString, LocalValue>;
-
-// ========== ToolResultRecord - Generic with trait bounds ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRecordGeneric<S, V>
-where
-    S: StringKind,
-    V: ValueKind,
-{
-    pub agent_id: S::Type,
-    pub role_name: S::Type,
-    pub tool_result: V::Type,
-    pub key: S::Type,
-    pub time: S::Type,
+pub struct ToolResultRecord {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub tool_result: Arc<serde_json::Value>,
+    pub key: Arc<String>,
+    pub time: Arc<String>,
     pub sn: u64,
 }
-
-pub type ToolResultRecordDTO = ToolResultRecordGeneric<LocalString, LocalValue>;

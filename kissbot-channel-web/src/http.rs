@@ -21,7 +21,7 @@ use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, SseDispatcher, WebMessenger};
+use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, WebMessenger};
 
 // ========== DTOs ==========
 

@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use kissbot_api::{OtherRoleGeneric, OtherRoleKind, RoleGeneric, RoleKind, RolePlayGeneric, RoleRelationGeneric, RoleRelationKind, SyncMap, SyncString};
+use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation};
 use kissbot_memory::DirectoryManager;
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::error::Result;
@@ -21,35 +20,6 @@ pub fn ego_role_play_path(ego_dir: impl AsRef<std::path::Path>, role_name: &str)
         .to_path_buf()
         .join(format!("{}{}{}", EGO_ROLE_PLAY_PREFIX, role_name, JSON_SUFFIX))
 }
-
-pub type RoleRelation = RoleRelationGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncRoleRelation;
-
-impl RoleRelationKind<SyncString> for SyncRoleRelation {
-    type Type = Arc<RoleRelation>;
-}
-
-pub type OtherRole = OtherRoleGeneric<SyncString, SyncMap, SyncRoleRelation>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncOtherRole;
-
-impl OtherRoleKind<SyncString, SyncMap, SyncRoleRelation> for SyncOtherRole {
-    type Type = Arc<OtherRole>;
-}
-
-pub type Role = RoleGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncRole;
-
-impl RoleKind<SyncString> for SyncRole {
-    type Type = Arc<Role>;
-}
-
-pub type RolePlay = RolePlayGeneric<SyncString, SyncMap, SyncRole, SyncRoleRelation, SyncOtherRole>;
 
 type RolePlayLock = Arc<RwLock<Option<Arc<RolePlay>>>>;
 

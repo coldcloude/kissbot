@@ -11,7 +11,8 @@ use kissbot_memory::DirectoryManager;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::{agent::{AgentManager, AgentMetadata}, role_play::{OtherRole, RolePlay, RoleRelation}, user_recognition::{User, UserRecognition, UserRelation}};
+use crate::agent::AgentManager;
+use kissbot_api::AgentMetadata;
 use crate::search::SearchManager;
 use crate::error::Error;
 use crate::role_play::RolePlayManager;
@@ -213,7 +214,7 @@ async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl Into
             let roles = ego_manager.retrieve_roles(req.role_keys).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<crate::role_play::Role>>>::error(e.to_string())))
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<kissbot_api::Role>>>::error(e.to_string())))
     }
 }
 

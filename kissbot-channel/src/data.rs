@@ -2,66 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use kissbot_api::{SyncMap, SyncString, channel::*};
+use kissbot_api::channel::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-// ========== Messenger -> User -> Group -> Channel ==========
-
-pub type ChannelInfo = ChannelInfoGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncChannelInfo;
-
-impl ChannelInfoKind for SyncChannelInfo {
-    type Type = Arc<ChannelInfo>;
-}
-
-pub type GroupInfo = GroupInfoGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncGroupInfo;
-
-impl GroupInfoKind for SyncGroupInfo {
-    type Type = Arc<GroupInfo>;
-}
-
-pub type UserInfo = UserInfoGeneric<SyncString, SyncMap, SyncGroupInfo>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncUserInfo;
-
-impl UserInfoKind for SyncUserInfo {
-    type Type = Arc<UserInfo>;
-}
-
-pub type MessengerInfo = MessengerInfoGeneric<SyncString, SyncMap, SyncUserInfo>;
-
-// ========== Message & Attachment ==========
-
-pub type AttachmentInfo = AttachmentInfoGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncAttachmentInfo;
-
-impl AttachmentInfoKind for SyncAttachmentInfo {
-    type Type = Arc<AttachmentInfo>;
-}
-
-pub type OutgoingMessageResponse = OutgoingMessageResponseGeneric<SyncString, SyncMap>;
-
-pub type AttachmentDownloadResponseHeader = AttachmentDownloadResponseHeaderGeneric<SyncAttachmentInfo>;
-
-#[async_trait]
-pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    async fn send_attachment_payload(&self, data: Bytes) -> Result<()>;
-}
-
-// ========== Receiving Message ==========
-pub type IncomingMessage = IncomingMessageGeneric<SyncString>;
+// ========== Type aliases (kissbot_api 已直接使用 Arc<String> / Arc<DashMap<>>) ==========
 
 pub type IncomingMessages = Vec<Arc<IncomingMessage>>;
+
+// ========== Events ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingMessageEvent {
@@ -76,7 +26,15 @@ pub trait IncomingMessageHandler: Send + Sync {
     async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>);
 }
 
+// ========== Attachment ==========
+
+#[async_trait]
+pub trait AttachmentDownloadPayloadSender: Send + Sync {
+    async fn send_attachment_payload(&self, data: Bytes) -> Result<()>;
+}
+
 // ========== Group Change ==========
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupChangeEvent {
     pub msg_id: Arc<String>,
@@ -99,7 +57,6 @@ pub trait GroupChangeHandler: Send + Sync {
 }
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
-/// 所有 messenger 共用此实现，不再由各 Channel/Messenger 各自实现。
 pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
     let msg_type = match message.change_type {
         GroupChangeType::Joined => MSG_TYPE_SYSTEM_JOIN,

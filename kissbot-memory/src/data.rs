@@ -4,7 +4,7 @@ use chrono::{Duration, NaiveDate};
 use crate::DirectoryManager;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use kissbot_api::*;
+use kissbot_api::store::*;
 
 use crate::error::Result;
 
@@ -135,13 +135,13 @@ impl_file_key!(
 
 //===================== Record result ======================
 
-pub type ChannelRecordResult = ChannelRecordGeneric<SyncString>;
+pub type ChannelRecordResult = kissbot_api::store::ChannelRecord;
 
-pub type ThinkRecordResult = ThinkRecordGeneric<SyncString>;
+pub type ThinkRecordResult = kissbot_api::store::ThinkRecord;
 
-pub type ToolCallRecordResult = ToolCallRecordGeneric<SyncString, SyncValue>;
+pub type ToolCallRecordResult = kissbot_api::store::ToolCallRecord;
 
-pub type ToolResultRecordResult = ToolResultRecordGeneric<SyncString, SyncValue>;
+pub type ToolResultRecordResult = kissbot_api::store::ToolResultRecord;
 
 //===================== functions ======================
 
@@ -231,8 +231,8 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
         for time in date_times {
             let date = parse_date_from_time(&time.0);
             results.push((RecordKey {
-                agent_id: Arc::new(query.agent_id.clone()),
-                role_name: Arc::new(query.role_name.clone()),
+                agent_id: query.agent_id.clone(),
+                role_name: query.role_name.clone(),
                 date: Arc::new(date),
             }, time));
         }
@@ -248,23 +248,23 @@ impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
     }
 }
 
-impl RequestParser<ChannelRequestDTO, ChannelRecordKey, ChannelRecord> for ChannelParser {
-    fn parse_request(&self, request: ChannelRequestDTO) -> (ChannelRecordKey, ChannelRecord) {
-        let user_id = Arc::new(request.user_id);
+impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelParser {
+    fn parse_request(&self, request: ChannelRequest) -> (ChannelRecordKey, ChannelRecord) {
+        let user_id = request.user_id.clone();
         let key = ChannelRecordKey {
-            agent_id: Arc::new(request.agent_id),
-            role_name: Arc::new(request.role_name),
-            messenger_id: Arc::new(request.messenger_id),
+            agent_id: request.agent_id.clone(),
+            role_name: request.role_name.clone(),
+            messenger_id: request.messenger_id.clone(),
             user_id: user_id.clone(),
-            group_id: Arc::new(request.group_id),
+            group_id: request.group_id.clone(),
             date: Arc::new(parse_date_from_time(&request.time)),
         };
         let record = ChannelRecord {
             user_id: user_id,
             is_self: request.is_self,
-            msg_type: Arc::new(request.msg_type),
-            content: Arc::new(request.content),
-            time: Arc::new(request.time),
+            msg_type: request.msg_type.clone(),
+            content: request.content.clone(),
+            time: request.time.clone(),
             sn: 0,
         };
         (key, record)
@@ -273,11 +273,11 @@ impl RequestParser<ChannelRequestDTO, ChannelRecordKey, ChannelRecord> for Chann
 
 impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
     fn parse_query(&self, query: QueryChannelRequest) -> Vec<(ChannelRecordKey, (String, String))> {
-        let agent_id = Arc::new(query.agent_id.clone());
-        let role_name = Arc::new(query.role_name.clone());
-        let messenger_id = Arc::new(query.messenger_id.clone());
-        let user_id = Arc::new(query.user_id.clone());
-        let group_id = Arc::new(query.group_id.clone());
+        let agent_id = query.agent_id.clone();
+        let role_name = query.role_name.clone();
+        let messenger_id = query.messenger_id.clone();
+        let user_id = query.user_id.clone();
+        let group_id = query.group_id.clone();
         let mut results = Vec::new();
         if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
             for time in date_times {
@@ -324,14 +324,14 @@ impl FilePathGenerator<RecordKey> for ThinkParser {
 impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
     fn parse_request(&self, request: ThinkRequest) -> (RecordKey, ThinkRecord) {
         let key = RecordKey {
-            agent_id: Arc::new(request.agent_id),
-            role_name: Arc::new(request.role_name),
+            agent_id: request.agent_id.clone(),
+            role_name: request.role_name.clone(),
             date: Arc::new(parse_date_from_time(&request.time)),
         };
         let record = ThinkRecord {
-            content: Arc::new(request.content),
-            key: Arc::new(request.key),
-            time: Arc::new(request.time),
+            content: request.content.clone(),
+            key: request.key.clone(),
+            time: request.time.clone(),
             sn: 0,
         };
         (key, record)
@@ -368,15 +368,15 @@ impl FilePathGenerator<RecordKey> for ToolCallParser {
 impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParser {
     fn parse_request(&self, request: ToolCallRequest) -> (RecordKey, ToolCallRecord) {
         let key = RecordKey {
-            agent_id: Arc::new(request.agent_id),
-            role_name: Arc::new(request.role_name),
+            agent_id: request.agent_id.clone(),
+            role_name: request.role_name.clone(),
             date: Arc::new(parse_date_from_time(&request.time)),
         };
         let record = ToolCallRecord {
-            tool_name: Arc::new(request.tool_name),
-            tool_params: Arc::new(request.tool_params),
-            key: Arc::new(request.key),
-            time: Arc::new(request.time),
+            tool_name: request.tool_name.clone(),
+            tool_params: request.tool_params,
+            key: request.key.clone(),
+            time: request.time.clone(),
             sn: 0,
         };
         (key, record)
@@ -414,14 +414,14 @@ impl FilePathGenerator<RecordKey> for ToolResultParser {
 impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResultParser {
     fn parse_request(&self, request: ToolResultRequest) -> (RecordKey, ToolResultRecord) {
         let key = RecordKey {
-            agent_id: Arc::new(request.agent_id),
-            role_name: Arc::new(request.role_name),
+            agent_id: request.agent_id.clone(),
+            role_name: request.role_name.clone(),
             date: Arc::new(parse_date_from_time(&request.time)),
         };
         let record = ToolResultRecord {
-            tool_result: Arc::new(request.tool_result),
-            key: Arc::new(request.key),
-            time: Arc::new(request.time),
+            tool_result: request.tool_result,
+            key: request.key.clone(),
+            time: request.time.clone(),
             sn: 0,
         };
         (key, record)

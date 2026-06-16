@@ -4,38 +4,17 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use kissbot_memory::DirectoryManager;
-use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::error::Error;
-use kissbot_api::{SyncMap, SyncSet, SyncString, UserGeneric, UserIdentifier, UserKind, UserPrivilege, UserRecognitionGeneric, UserRelationGeneric, UserRelationKind};
+use kissbot_api::{User, UserIdentifier, UserPrivilege, UserRecognition, UserRelation};
 
 pub const EGO_USER_RECOGNITION_PREFIX: &str = "user-recognition-";
 
 pub fn ego_user_recognition_path(ego_dir: impl AsRef<std::path::Path>) -> PathBuf {
     ego_dir.as_ref().to_path_buf().join(format!("{}.json", EGO_USER_RECOGNITION_PREFIX))
 }
-
-pub type UserRelation = UserRelationGeneric<SyncString>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncUserRelation;
-
-impl UserRelationKind<SyncString> for SyncUserRelation {
-    type Type = Arc<UserRelation>;
-}
-
-pub type User = UserGeneric<SyncString, SyncMap, SyncSet, SyncUserRelation>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncUser;
-
-impl UserKind<SyncString, SyncMap, SyncSet, SyncUserRelation> for SyncUser {
-    type Type = Arc<User>;
-}
-
-pub type UserRecognition = UserRecognitionGeneric<SyncString, SyncMap, SyncSet, SyncUserRelation, SyncUser>;
 
 type UserRecognitionLock = Arc<RwLock<Option<Arc<UserRecognition>>>>;
 

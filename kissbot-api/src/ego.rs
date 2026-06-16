@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::kinds::*;
+use dashmap::{DashMap, DashSet};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
@@ -9,13 +9,14 @@ pub struct RoleKey {
     pub role_name: String,
 }
 
-impl Display for RoleKey {
+impl std::fmt::Display for RoleKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.agent_id, self.role_name)
     }
 }
 
-// ========== UserPrivilege (simple enum, no generics) ==========
+// ========== Simple enums / structs (no Arc needed, for JSON) ==========
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UserPrivilege {
     Owner,
@@ -23,7 +24,6 @@ pub enum UserPrivilege {
     Normal,
 }
 
-// ========== UserIdentifier (simple struct, no generics) ==========
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserIdentifier {
     pub messenger_id: String,
@@ -31,200 +31,64 @@ pub struct UserIdentifier {
     pub group_id: String,
 }
 
-// ========== UserRelation - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRelationGeneric<S>
-where
-    S: StringKind,
-{
-    pub relation: S::Type,
-    pub description: S::Type,
-}
-
-// SetKind trait for set type abstraction
-pub trait UserRelationKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone;
-}
-
-// Aliases for internal use and API use
-pub type UserRelationDTO = UserRelationGeneric<LocalString>;
+// ========== Internal storage types (use Arc / DashMap / DashSet) ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalUserRelation;
-
-impl UserRelationKind<LocalString> for LocalUserRelation {
-    type Type = UserRelationDTO;
+pub struct UserRelation {
+    pub relation: Arc<String>,
+    pub description: Arc<String>,
 }
 
-// ========== User - Generic with trait bounds ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserGeneric<S,M,T,UR>
-where
-    S: StringKind,
-    M: MapKind,
-    T: SetKind,
-    UR: UserRelationKind<S>,
-{
+pub struct User {
     pub privilege: UserPrivilege,
-    pub identifiers: T::Set<UserIdentifier>,
-    pub relations: M::Map<String, UR::Type>,
-    pub description: S::Type,
-}
-
-pub trait UserKind<S, M, T, UR>
-where
-    S: StringKind,
-    M: MapKind,
-    T: SetKind,
-    UR: UserRelationKind<S>,
-{
-    type Type: Clone;
-}
-
-pub type UserDTO = UserGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalUser;
-
-impl UserKind<LocalString, LocalMap, LocalSet, LocalUserRelation> for LocalUser {
-    type Type = UserDTO;
-}
-
-// ========== UserRecognition - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRecognitionGeneric<S,M,T,UR,U>
-where
-    S: StringKind,
-    M: MapKind,
-    T: SetKind,
-    UR: UserRelationKind<S>,
-    U: UserKind<S, M, T, UR>,
-{
-    pub agent_id: S::Type,
-    pub user_map: M::Map<String, U::Type>,
-}
-
-pub type UserRecognitionDTO = UserRecognitionGeneric<LocalString, LocalMap, LocalSet, LocalUserRelation, LocalUser>;
-
-// ========== AgentMetadata - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentMetadataGeneric<S>
-where
-    S: StringKind,
-{
-    pub id: S::Type,
-    pub name: S::Type,
-    pub description: S::Type,
-    pub created_at: S::Type,
-}
-
-pub type AgentMetadataDTO = AgentMetadataGeneric<LocalString>;
-
-// ========== RoleRelation - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleRelationGeneric<S>
-where
-    S: StringKind,
-{
-    pub relation: S::Type,
-    pub description: S::Type,
-}
-
-pub type RoleRelationDTO = RoleRelationGeneric<LocalString>;
-
-pub trait RoleRelationKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone;
+    pub identifiers: Arc<DashSet<UserIdentifier>>,
+    pub relations: Arc<DashMap<String, Arc<UserRelation>>>,
+    pub description: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalRoleRelation;
-
-impl RoleRelationKind<LocalString> for LocalRoleRelation {
-    type Type = RoleRelationDTO;
+pub struct UserRecognition {
+    pub agent_id: Arc<String>,
+    pub user_map: Arc<DashMap<String, Arc<User>>>,
 }
-
-// ========== OtherRole - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OtherRoleGeneric<S, M, RR>
-where
-    S: StringKind,
-    M: MapKind,
-    RR: RoleRelationKind<S>,
-{
-    pub user_name: S::Type,
-    pub role_relation: RR::Type,
-    pub other_role_relations: M::Map<String, RR::Type>,
-    pub description: S::Type,
-}
-
-pub trait OtherRoleKind<S, M, RR>
-where
-    S: StringKind,
-    M: MapKind,
-    RR: RoleRelationKind<S>,
-{
-    type Type: Clone;
-}
-
-pub type OtherRoleDTO = OtherRoleGeneric<LocalString, LocalMap, LocalRoleRelation>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalOtherRole;
-
-impl OtherRoleKind<LocalString, LocalMap, LocalRoleRelation> for LocalOtherRole {
-    type Type = OtherRoleDTO;
+pub struct AgentMetadata {
+    pub id: Arc<String>,
+    pub name: Arc<String>,
+    pub description: Arc<String>,
+    pub created_at: Arc<String>,
 }
-
-// ========== Role - Generic with trait bounds ==========
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleGeneric<S>
-where
-    S: StringKind,
-{
-    pub id: S::Type,
-    pub name: S::Type,
-    pub description: S::Type,
-}
-
-pub trait RoleKind<S>
-where
-    S: StringKind,
-{
-    type Type: Clone;
-}
-
-pub type RoleDTO = RoleGeneric<LocalString>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalRole;
-
-impl RoleKind<LocalString> for LocalRole {
-    type Type = RoleDTO;
+pub struct RoleRelation {
+    pub relation: Arc<String>,
+    pub description: Arc<String>,
 }
 
-// ========== RolePlay - Generic with trait bounds ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RolePlayGeneric<S, M, R, RR, OR>
-where
-    S: StringKind,
-    M: MapKind,
-    R: RoleKind<S>,
-    RR: RoleRelationKind<S>,
-    OR: OtherRoleKind<S, M, RR>,
-{
-    pub role: R::Type,
-    pub other_roles: M::Map<String, OR::Type>,
+pub struct Role {
+    pub id: Arc<String>,
+    pub name: Arc<String>,
+    pub description: Arc<String>,
 }
 
-pub type RolePlayDTO = RolePlayGeneric<LocalString, LocalMap, LocalRole, LocalRoleRelation, LocalOtherRole>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtherRole {
+    pub user_name: Arc<String>,
+    pub role_relation: Arc<RoleRelation>,
+    pub other_role_relations: Arc<DashMap<String, Arc<RoleRelation>>>,
+    pub description: Arc<String>,
+}
 
-// ========== Request Structures (simple, no generics) ==========
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolePlay {
+    pub role: Arc<Role>,
+    pub other_roles: Arc<DashMap<String, Arc<OtherRole>>>,
+}
+
+// ========== Request Structures (keep as simple String for JSON) ==========
 
 // Agent Management Requests
 #[derive(Debug, Serialize, Deserialize)]

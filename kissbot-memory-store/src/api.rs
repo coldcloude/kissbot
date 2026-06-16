@@ -22,7 +22,7 @@ pub fn create_router() -> Router {
         .route("/store/query/tool-result", post(query_tool_result_records))
 }
 
-async fn append_channel_record(Json(req): Json<store::ChannelRequestsDTO>) -> impl IntoResponse {
+async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
         record_manager.append_channel_record(req.requests, req.force > 0).await

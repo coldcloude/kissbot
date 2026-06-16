@@ -10,8 +10,10 @@ use kissbot_memory::DirectoryManager;
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::error::Result;
-use crate::agent::{AgentManager, AgentMetadata};
-use crate::role_play::{Role, RolePlayManager};
+use crate::agent::AgentManager;
+use kissbot_api::AgentMetadata;
+use crate::role_play::RolePlayManager;
+use kissbot_api::Role;
 
 struct SearchMetadata {
     value: Vec<Arc<String>>,

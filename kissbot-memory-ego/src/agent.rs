@@ -1,15 +1,14 @@
 use chrono::Utc;
-use kissbot_api::AgentMetadataGeneric;
-use kissbot_api::SyncString;
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
 use crate::search::SearchManager;
+use kissbot_api::AgentMetadata;
 use kissbot_memory::DirectoryManager;
 
 pub const AGENT_METADATA_JSON: &str = "metadata.json";
@@ -19,8 +18,6 @@ async fn agent_metadata_path(agent_id: &str) -> Result<PathBuf> {
     let metadata_path = agent_dir.join(AGENT_METADATA_JSON);
     Ok(metadata_path)
 }
-
-pub type AgentMetadata = AgentMetadataGeneric<SyncString>;
 
 type AgentLock = Arc<RwLock<Option<Arc<AgentMetadata>>>>;
 
