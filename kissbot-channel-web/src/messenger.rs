@@ -18,6 +18,30 @@ use tokio::sync::RwLock;
 use crate::attachment::AttachmentStore;
 use crate::error::{Error, Result};
 
+// =========== SSE 分发器（给 admin 前端推送） ===========
+
+pub struct SseDispatcher {
+    senders: DashMap<String, flume::Sender<String>>,
+}
+
+impl SseDispatcher {
+    pub fn new() -> Self {
+        Self { senders: DashMap::new() }
+    }
+
+    pub fn register(&self, group_id: &str) -> flume::Receiver<String> {
+        let (tx, rx) = flume::unbounded();
+        self.senders.insert(group_id.to_string(), tx);
+        rx
+    }
+
+    pub fn push(&self, group_id: &str, data: &str) {
+        if let Some(tx) = self.senders.get(group_id) {
+            let _ = tx.send(data.to_string());
+        }
+    }
+}
+
 const ADMIN_USER_GROUP_PREFIX: &str = "a_";
 const USER_ID_PREFIX: &str = "u";
 const GROUP_ID_PREFIX: &str = "g";
@@ -69,7 +93,8 @@ pub struct WebMessenger {
     pub(crate) on_group_change: Weak<dyn GroupChangeHandler>,
     pub(crate) on_incoming_messages: Weak<dyn IncomingMessageHandler>,
     pub(crate) on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-    sse_senders: DashMap<String, DashMap<String, flume::Sender<Arc<IncomingMessage>>>>,
+    pub sse: Arc<SseDispatcher>,
+    pub attachment_store: Arc<AttachmentStore>,
 }
 
 impl WebMessenger {
@@ -89,7 +114,8 @@ impl WebMessenger {
             on_group_change,
             on_incoming_messages,
             on_download_attachment_payload,
-            sse_senders: DashMap::new(),
+            sse: Arc::new(SseDispatcher::new()),
+            attachment_store: Arc::new(AttachmentStore::new("attachments")),
         }
     }
 
@@ -285,6 +311,21 @@ impl WebMessenger {
             self.fire_incoming(messenger_id.as_str(), &admin_id, group_id, &msg_id, is_self, msg_type, content, time).await;
         }
 
+        // 推 SSE 给 admin 前端
+        let sse_data = serde_json::to_string(&serde_json::json!({
+            "type": "message",
+            "data": {
+                "msg_id": msg_id,
+                "group_id": group_id,
+                "user_id": admin_id.to_string(),
+                "is_self": 1,
+                "msg_type": msg_type,
+                "content": content,
+                "time": time,
+            }
+        })).unwrap_or_default();
+        self.sse.push(group_id, &sse_data);
+
         Ok(())
     }
 
@@ -362,7 +403,7 @@ impl WebMessengerCreator {
         })
     }
 
-    pub async fn api_key(&self) -> Arc<String> {
+    pub async fn user_key(&self) -> Arc<String> {
         let config = self.config.read().await;
         config.user_key.clone()
     }
@@ -374,13 +415,13 @@ impl WebMessengerCreator {
 }
 
 #[async_trait]
-impl kissbot_channel::MessengerCreator<WebMessenger> for WebMessengerCreator {
+impl MessengerCreator<WebMessenger> for WebMessengerCreator {
     async fn create(
         &self,
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-    ) -> kissbot_channel::error::Result<Arc<WebMessenger>> {
+    ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
             mid,
@@ -397,19 +438,19 @@ impl kissbot_channel::MessengerCreator<WebMessenger> for WebMessengerCreator {
 
 #[async_trait]
 impl Messenger for WebMessenger {
-    async fn get_info(&self) -> kissbot_channel::error::Result<Arc<MessengerInfo>> {
+    async fn get_info(&self) -> std::result::Result<Arc<MessengerInfo>, kissbot_channel::Error> {
         let info = self.build_messenger_info().await;
         Ok(Arc::new(info))
     }
 
-    async fn send_message(&self, message: OutgoingMessageDTO, _attachment_sn: Arc<AtomicU32>) -> kissbot_channel::error::Result<Arc<OutgoingMessageResponse>> {
+    async fn send_message(&self, message: OutgoingMessageDTO, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
         let group = cfg.groups.get(message.group_id.as_str())
             .map(|g| g.clone())
-            .ok_or_else(|| kissbot_channel::Error::InternalError(format!("group not found: {}", message.group_id)))?;
+            .ok_or_else(|| Error::GroupNotFound(message.group_id.clone()))?;
         let sender_id = message.user_id.clone();
         drop(cfg);
 
@@ -444,14 +485,12 @@ impl Messenger for WebMessenger {
         }))
     }
 
-    async fn send_attachment_payload(&self, _id: u32, _size: u32, _pos: u64, _data: &[u8]) -> kissbot_channel::error::Result<()> {
+    async fn send_attachment_payload(&self, _id: u32, _size: u32, _pos: u64, _data: &[u8]) -> std::result::Result<(), kissbot_channel::Error> {
         Ok(())
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequestDTO, _attachment_sn: Arc<AtomicU32>) -> kissbot_channel::error::Result<Arc<AttachmentDownloadResponseHeader>> {
-        let store = AttachmentStore::new("attachments");
-        let meta = store.get_meta_by_key(&request.key)
-            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequestDTO, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
+        let meta = self.attachment_store.get_meta_by_key(&request.key)?;
 
         Ok(Arc::new(AttachmentDownloadResponseHeader {
             download_id: 0,

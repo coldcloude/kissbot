@@ -15,57 +15,13 @@ use axum::{
 };
 use axum::extract::multipart::Multipart;
 use chrono::Utc;
-use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
+use kissbot_api::ApiResponse;
 use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::attachment::AttachmentStore;
-use crate::messenger::{admin_user_group_id, WebMessenger};
-
-// =========== SSE 分发器 ===========
-// admin 不走 Channel 体系，独立 SSE 通道由 SseDispatcher 管理。
-
-pub struct SseDispatcher {
-    senders: DashMap<String, flume::Sender<String>>,
-}
-
-impl SseDispatcher {
-    pub fn new() -> Self {
-        Self { senders: DashMap::new() }
-    }
-
-    pub fn register(&self, group_id: &str) -> flume::Receiver<String> {
-        let (tx, rx) = flume::unbounded();
-        self.senders.insert(group_id.to_string(), tx);
-        rx
-    }
-
-    pub fn push(&self, group_id: &str, data: &str) {
-        if let Some(tx) = self.senders.get(group_id) {
-            let _ = tx.send(data.to_string());
-        }
-    }
-}
-
-// ========== API 响应 ==========
-
-#[derive(Debug, Serialize)]
-struct ApiResponse<T: Serialize> {
-    success: bool,
-    data: Option<T>,
-    error: Option<String>,
-}
-
-impl<T: Serialize> ApiResponse<T> {
-    fn success(data: T) -> Self {
-        Self { success: true, data: Some(data), error: None }
-    }
-    fn error(msg: &str) -> Self {
-        Self { success: false, data: None, error: Some(msg.to_string()) }
-    }
-}
+use crate::messenger::{admin_user_group_id, SseDispatcher, WebMessenger};
 
 // ========== DTOs ==========
 
@@ -179,8 +135,6 @@ pub struct AttachmentRefResponse {
 #[derive(Clone)]
 pub struct AppState {
     pub messenger: Arc<WebMessenger>,
-    pub attachment_store: Arc<AttachmentStore>,
-    pub sse: Arc<SseDispatcher>,
 }
 
 // ========== Router ==========
@@ -256,7 +210,7 @@ async fn handle_send_message(
     let (content, msg_type) = build_message_content(&req);
 
     if let Err(e) = state.messenger.admin_send_message(&req.group_id, &content, &msg_type, &time).await {
-        return Json(ApiResponse::<serde_json::Value>::error(&e.to_string()));
+        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
     }
 
     Json(ApiResponse::success(serde_json::json!({
@@ -294,7 +248,7 @@ async fn handle_get_messages(
 ) -> impl IntoResponse {
     let _group_id = match params.get("group_id") {
         Some(id) => id,
-        None => return Json(ApiResponse::<Vec<MessageResponse>>::error("Missing group_id")),
+        None => return Json(ApiResponse::<Vec<MessageResponse>>::error("Missing group_id".to_string())),
     };
     Json(ApiResponse::success(Vec::<MessageResponse>::new()))
 }
@@ -337,7 +291,7 @@ async fn handle_create_group(
                 "group_name": req.group_name
             })))
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -347,11 +301,11 @@ async fn handle_rename_group(
     Json(req): Json<RenameGroupRequest>,
 ) -> impl IntoResponse {
     if state.messenger.is_admin_user_group(&req.group_id).await {
-        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be renamed"));
+        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be renamed".to_string()));
     }
     match state.messenger.rename_group(&req.group_id, &req.group_name).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -361,7 +315,7 @@ async fn handle_manage_members(
     Json(req): Json<ManageMembersRequest>,
 ) -> impl IntoResponse {
     if state.messenger.is_admin_user_group(&req.group_id).await {
-        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be modified"));
+        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be modified".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let gid = req.group_id.clone();
@@ -376,7 +330,7 @@ async fn handle_manage_members(
             }
             Json(ApiResponse::success(serde_json::json!({"success": true})))
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -386,7 +340,7 @@ async fn handle_delete_group(
     Json(req): Json<DeleteGroupRequest>,
 ) -> impl IntoResponse {
     if state.messenger.is_admin_user_group(&req.group_id).await {
-        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be deleted"));
+        return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be deleted".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let group = state.messenger.get_group(&req.group_id).await;
@@ -403,7 +357,7 @@ async fn handle_delete_group(
             }
             Json(ApiResponse::success(serde_json::json!({"success": true})))
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -435,7 +389,7 @@ async fn handle_create_user(
                 "user_name": req.user_name
             })))
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -452,7 +406,7 @@ async fn handle_delete_user(
             state.messenger.notify_group_change(&req.user_id, &group_id, GroupChangeType::Left, &time).await;
             Json(ApiResponse::success(serde_json::json!({"success": true})))
         }
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(&e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }
 
@@ -480,7 +434,7 @@ async fn handle_upload_attachment(
         let group_id = "temp";
         let msg_id = Utc::now().format("%Y%m%d%H%M%S%6f").to_string();
 
-        match state.attachment_store.save_attachment(group_id, &msg_id, &filename, &data, &mime_type) {
+        match state.messenger.attachment_store.save_attachment(group_id, &msg_id, &filename, &data, &mime_type) {
             Ok(meta) => {
                 result.push(serde_json::json!({
                     "filename": filename,
@@ -491,7 +445,7 @@ async fn handle_upload_attachment(
                 }));
             }
             Err(e) => {
-                return Json(ApiResponse::<serde_json::Value>::error(&e.to_string()));
+                return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
             }
         }
     }
@@ -509,7 +463,7 @@ async fn handle_download_attachment(
         None => return (StatusCode::BAD_REQUEST, "Missing key").into_response(),
     };
 
-    match state.attachment_store.get_attachment_by_key(key) {
+    match state.messenger.attachment_store.get_attachment_by_key(key) {
         Ok(data) => {
             let mime = mime_guess::from_path(key).first_or_octet_stream();
             ([(axum::http::header::CONTENT_TYPE, mime.to_string())], data).into_response()
@@ -528,7 +482,7 @@ async fn handle_thumbnail(
         None => return (StatusCode::BAD_REQUEST, "Missing key").into_response(),
     };
 
-    match state.attachment_store.get_thumbnail_by_key(key) {
+    match state.messenger.attachment_store.get_thumbnail_by_key(key) {
         Ok(data) => {
             ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], data).into_response()
         }
@@ -541,7 +495,7 @@ async fn handle_sse_events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let groups = state.messenger.list_groups_raw().await;
-    let sse = state.sse.clone();
+    let sse = state.messenger.sse.clone();
 
     let mut receivers = Vec::new();
     for group in &groups {
