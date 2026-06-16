@@ -90,7 +90,7 @@ impl UserRecognitionManager {
 
             if !json_path.exists() {
                 let users = UserRecognition {
-                    id: Arc::new(agent_id.to_string()),
+                    agent_id: Arc::new(agent_id.to_string()),
                     user_map: Arc::new(dashmap::DashMap::new()),
                 };
                 let content = serde_json::to_string_pretty(&users)?;

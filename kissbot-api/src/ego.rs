@@ -5,13 +5,13 @@ use crate::kinds::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
-    pub id: String,
-    pub name: String,
+    pub agent_id: String,
+    pub role_name: String,
 }
 
 impl Display for RoleKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.id, self.name)
+        write!(f, "{}:{}", self.agent_id, self.role_name)
     }
 }
 
@@ -103,7 +103,7 @@ where
     UR: UserRelationKind<S>,
     U: UserKind<S, M, T, UR>,
 {
-    pub id: S::Type,
+    pub agent_id: S::Type,
     pub user_map: M::Map<String, U::Type>,
 }
 

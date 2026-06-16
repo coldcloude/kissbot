@@ -75,7 +75,7 @@ fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> 
     if let Some(agent_id) = agent_id {
         let mut filtered_results = Vec::new();
         for result in results.drain(0..results.len()) {
-            if result.as_role_key().id == agent_id {
+            if result.as_role_key().agent_id == agent_id {
                 filtered_results.push(result);
             }
         }
@@ -253,8 +253,8 @@ impl SearchManager {
 
     pub async fn force_sync_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
         let role_key = RoleKey {
-            id: agent_id.to_string(),
-            name: role_name.to_string(),
+            agent_id: agent_id.to_string(),
+            role_name: role_name.to_string(),
         };
         //取得旧索引值
         let old_search_metadata_or_none = self.role_search_metadata.remove(&role_key);
@@ -333,8 +333,8 @@ impl SearchManager {
 
     pub async fn sync_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
         let role_key = RoleKey {
-            id: agent_id.to_string(),
-            name: role_name.to_string(),
+            agent_id: agent_id.to_string(),
+            role_name: role_name.to_string(),
         };
         if self.role_dirty.remove(&role_key).is_some() {
             self.force_sync_role(agent_id, role_name).await
@@ -347,7 +347,7 @@ impl SearchManager {
         while !self.role_dirty.is_empty() {
             let keys: Vec<RoleKey> = self.role_dirty.iter().map(|r| r.clone()).collect();
             for role_key in keys {
-                let _ = self.sync_role(&role_key.id, &role_key.name).await;
+                let _ = self.sync_role(&role_key.agent_id, &role_key.role_name).await;
             }
         }
     }
@@ -355,7 +355,7 @@ impl SearchManager {
     pub async fn retrieve_roles(&self, keys: Vec<RoleKey>) -> Vec<Arc<Role>> {
         let mut results = Vec::new();
         for role_key in keys {
-            if let Ok(role_play) = RolePlayManager::get().get_role(&role_key.id, &role_key.name).await {
+            if let Ok(role_play) = RolePlayManager::get().get_role(&role_key.agent_id, &role_key.role_name).await {
                 results.push(role_play.role.clone());
             }
         }
@@ -364,8 +364,8 @@ impl SearchManager {
 
     pub fn mark_role_dirty(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            id: agent_id.to_string(),
-            name: role_name.to_string(),
+            agent_id: agent_id.to_string(),
+            role_name: role_name.to_string(),
         };
         self.role_dirty.insert(role_key);
     }

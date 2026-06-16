@@ -30,3 +30,7 @@ Keep It Simple Stupid BOT - kissbot
 ## git配置
 
 - 提交comment中，Co-Authored-By要写当前模型，而非默认的claude模型
+
+## 工具说明
+
+- 读写文件使用Read、Write、Edit等工具，而不是sed或python等命令、脚本

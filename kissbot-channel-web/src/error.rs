@@ -11,12 +11,6 @@ pub enum Error {
     #[error("User not found: {0}")]
     UserNotFound(String),
 
-    #[error("Admin-user group cannot be modified: {0}")]
-    AdminUserGroupNotModifiable(String),
-
-    #[error("Admin-user group cannot be deleted: {0}")]
-    AdminUserGroupNotDeletable(String),
-
     #[error("Attachment not found: {0}")]
     AttachmentNotFound(String),
 
@@ -32,11 +26,24 @@ pub enum Error {
     #[error("Image error: {0}")]
     ImageError(#[from] image::ImageError),
 
-    #[error("Channel error: {0}")]
-    ChannelError(String),
-
     #[error("Internal error: {0}")]
     InternalError(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<Error> for kissbot_channel::Error {
+    fn from(e: Error) -> Self {
+        match e {
+            Error::ConfigError(msg) => kissbot_channel::Error::InternalError(format!("config: {}", msg)),
+            Error::GroupNotFound(msg) => kissbot_channel::Error::GroupNotFound(msg),
+            Error::UserNotFound(msg) => kissbot_channel::Error::UserNotFound(msg),
+            Error::AttachmentNotFound(msg) => kissbot_channel::Error::AttachmentNotFound(msg),
+            Error::InvalidMessage(msg) => kissbot_channel::Error::InvalidMessage(msg),
+            Error::IoError(e) => kissbot_channel::Error::IoError(e),
+            Error::JsonError(e) => kissbot_channel::Error::JsonError(e),
+            Error::ImageError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
+            Error::InternalError(msg) => kissbot_channel::Error::InternalError(msg),
+        }
+    }
+}

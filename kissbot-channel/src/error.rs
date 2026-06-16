@@ -60,7 +60,10 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     InternalError(String),
-    
+
+    /// 接收任意 `Box<dyn std::error::Error>` 作为 cause 的外部错误
+    #[error("External error: {0}")]
+    ExternalError(Box<dyn std::error::Error + Send + Sync>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
