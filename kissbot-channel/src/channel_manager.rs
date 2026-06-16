@@ -490,11 +490,11 @@ impl ChannelManager {
         tokio::spawn(async move {
             manager_for_memory_store.memory_store_client.start_send_messages().await
         });
-        //start wss server
-        let span = span!(Level::INFO, "wss serverstart");
+        //start ws server
+        let span = span!(Level::INFO, "ws server start");
         let _enter = span.enter();
         let listener = TcpListener::bind(addr).await?;
-        info!("WSS Server listening on: {}", addr);
+        info!("WS Server listening on: {}", addr);
         let initializer = ChannelManagerInitializer {};
         let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(manager.api_key.clone())));
         while let Ok((stream, _)) = listener.accept().await {
