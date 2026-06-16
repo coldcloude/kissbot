@@ -21,7 +21,7 @@ use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{admin_user_group_id, SseDispatcher, WebMessenger};
+use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, SseDispatcher, WebMessenger};
 
 // ========== DTOs ==========
 
@@ -99,13 +99,23 @@ pub struct DeleteGroupRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
-    pub user_id: String,
     pub user_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteUserRequest {
     pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenameUserRequest {
+    pub user_id: String,
+    pub user_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenameAdminRequest {
+    pub admin_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,8 +159,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/groups/rename", post(handle_rename_group))
         .route("/api/groups/manage-members", post(handle_manage_members))
         .route("/api/groups/delete", post(handle_delete_group))
+        .route("/api/admin/rename", post(handle_rename_admin))
         .route("/api/users", get(handle_list_users))
         .route("/api/users/create", post(handle_create_user))
+        .route("/api/users/rename", post(handle_rename_user))
         .route("/api/users/delete", post(handle_delete_user))
         .route("/api/attachment/upload", post(handle_upload_attachment))
         .route("/api/attachment/download", get(handle_download_attachment))
@@ -166,14 +178,14 @@ pub fn create_router(state: AppState) -> Router {
 async fn handle_connect(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let admin = state.messenger.admin_info().await;
+    let admin_name = state.messenger.admin_name().await;
     let users_list = state.messenger.list_users().await;
     let groups = state.messenger.list_groups_raw().await;
 
     let mut users = Vec::new();
     users.push(UserResponse {
-        user_id: admin.user_id.to_string(),
-        user_name: admin.user_name.to_string(),
+        user_id: ADMIN_USER_ID.to_string(),
+        user_name: admin_name.to_string(),
     });
     for u in &users_list {
         users.push(UserResponse {
@@ -189,8 +201,8 @@ async fn handle_connect(
     }).collect();
 
     Json(ApiResponse::success(ConnectResponse {
-        user_id: admin.user_id.to_string(),
-        user_name: admin.user_name.to_string(),
+        user_id: ADMIN_USER_ID.to_string(),
+        user_name: admin_name.to_string(),
         is_admin: true,
         messenger: MessengerInfoResponse {
             messenger_id: "web".to_string(),
@@ -272,17 +284,15 @@ async fn handle_create_group(
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let admin = state.messenger.admin_info().await;
-
     let mut member_ids = req.member_ids;
-    if !member_ids.iter().any(|m| m.as_str() == admin.user_id.as_str()) {
-        member_ids.push(admin.user_id.to_string());
+    if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID) {
+        member_ids.push(ADMIN_USER_ID.to_string());
     }
 
     match state.messenger.add_group(&req.group_name, member_ids.clone()).await {
         Ok(group_id) => {
             for m in &member_ids {
-                if m.as_str() != admin.user_id.as_str() {
+                if m.as_str() != ADMIN_USER_ID {
                     state.messenger.notify_group_change(m, &group_id, GroupChangeType::Joined, &time).await;
                 }
             }
@@ -344,13 +354,13 @@ async fn handle_delete_group(
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let group = state.messenger.get_group(&req.group_id).await;
-    let admin_id = state.messenger.admin_info().await.user_id;
+    let admin_id = ADMIN_USER_ID.to_string();
 
     match state.messenger.delete_group(&req.group_id).await {
         Ok(_) => {
             if let Some(g) = group {
                 for m in g.members.iter() {
-                    if m.as_str() != admin_id.as_str() {
+                    if m.as_str() != admin_id {
                         state.messenger.notify_group_change(m, &req.group_id, GroupChangeType::Left, &time).await;
                     }
                 }
@@ -389,6 +399,28 @@ async fn handle_create_user(
                 "user_name": req.user_name
             })))
         }
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+    }
+}
+
+/// POST /api/users/rename
+async fn handle_rename_user(
+    State(state): State<AppState>,
+    Json(req): Json<RenameUserRequest>,
+) -> impl IntoResponse {
+    match state.messenger.rename_user(&req.user_id, &req.user_name).await {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+    }
+}
+
+/// POST /api/admin/rename
+async fn handle_rename_admin(
+    State(state): State<AppState>,
+    Json(req): Json<RenameAdminRequest>,
+) -> impl IntoResponse {
+    match state.messenger.update_admin_name(&req.admin_name).await {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
 }

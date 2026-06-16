@@ -43,6 +43,7 @@ impl SseDispatcher {
 }
 
 const ADMIN_USER_GROUP_PREFIX: &str = "a_";
+pub const ADMIN_USER_ID: &str = "admin";
 const USER_ID_PREFIX: &str = "u";
 const GROUP_ID_PREFIX: &str = "g";
 
@@ -53,17 +54,11 @@ pub struct MessengerConfig {
     pub messenger_id: Arc<String>,
     pub admin_key: Arc<String>,
     pub user_key: Arc<String>,
-    pub admin: AdminInfo,
+    pub admin_name: Arc<String>,
     pub users: DashMap<String, UserConfig>,
     pub groups: DashMap<String, GroupConfig>,
     pub next_user_seq: u32,
     pub next_group_seq: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminInfo {
-    pub user_id: Arc<String>,
-    pub user_name: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +100,7 @@ impl WebMessenger {
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+        attachment_dir: &str,
     ) -> Self {
         Self {
             messenger_id,
@@ -115,7 +111,7 @@ impl WebMessenger {
             on_incoming_messages,
             on_download_attachment_payload,
             sse: Arc::new(SseDispatcher::new()),
-            attachment_store: Arc::new(AttachmentStore::new("attachments")),
+            attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
         }
     }
 
@@ -148,8 +144,8 @@ impl WebMessenger {
         self.config.read().await.user_key.clone()
     }
 
-    pub async fn admin_info(&self) -> AdminInfo {
-        self.config.read().await.admin.clone()
+    pub async fn admin_name(&self) -> Arc<String> {
+        self.config.read().await.admin_name.clone()
     }
 
     pub async fn get_group(&self, group_id: &str) -> Option<GroupConfig> {
@@ -186,6 +182,22 @@ impl WebMessenger {
         let n = cfg.next_group_seq;
         cfg.next_group_seq += 1;
         format!("{}{}", GROUP_ID_PREFIX, n)
+    }
+
+    pub async fn update_admin_name(&self, new_name: &str) -> Result<()> {
+        let mut cfg = self.config.write().await;
+        cfg.admin_name = Arc::new(new_name.to_string());
+        self.save(&cfg).await?;
+        Ok(())
+    }
+
+    pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
+        let mut cfg = self.config.write().await;
+        let mut u = cfg.users.get_mut(user_id)
+            .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
+        u.user_name = Arc::new(new_name.to_string());
+        self.save(&cfg).await?;
+        Ok(())
     }
 
     pub async fn add_user(&self, user_name: &str) -> Result<String> {
@@ -300,7 +312,7 @@ impl WebMessenger {
         let group = cfg.groups.get(group_id)
             .map(|g| g.clone())
             .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-        let admin_id = cfg.admin.user_id.clone();
+        let admin_id = ADMIN_USER_ID.to_string();
         drop(cfg);
 
         let msg_id = self.next_msg_id();
@@ -390,16 +402,18 @@ impl WebMessenger {
 pub struct WebMessengerCreator {
     config_path: PathBuf,
     config: Arc<RwLock<MessengerConfig>>,
+    attachment_dir: String,
 }
 
 impl WebMessengerCreator {
-    pub async fn new(config_path: &str) -> Result<Self> {
+    pub async fn new(config_path: &str, attachment_dir: &str) -> Result<Self> {
         let path = PathBuf::from(config_path);
         let content = std::fs::read_to_string(&path)?;
         let config: MessengerConfig = serde_json::from_str(&content)?;
         Ok(Self {
             config_path: path,
             config: Arc::new(RwLock::new(config)),
+            attachment_dir: attachment_dir.to_string(),
         })
     }
 
@@ -430,6 +444,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_group_change,
             on_incoming_messages,
             on_download_attachment_payload,
+            &self.attachment_dir,
         ));
 
         Ok(messenger)

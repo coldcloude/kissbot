@@ -1,4 +1,5 @@
 mod error;
+mod config;
 mod attachment;
 mod messenger;
 mod http;
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 
+use crate::config::AppConfig;
 use crate::messenger::{WebMessenger, WebMessengerCreator};
 use crate::http::AppState;
 
@@ -15,22 +17,23 @@ use crate::http::AppState;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // 1. 读取完整配置，构造 Creator
+    // 1. 读取元配置（messenger_config 路径、attachment_dir、memory_store_url 等）
+    let app_config = AppConfig::load().expect("Failed to load app config");
+
+    // 2. 读取 messenger 配置，构造 Creator
     let creator = Arc::new(
-        WebMessengerCreator::new("kissbot-channel-web-config.json")
+        WebMessengerCreator::new(&app_config.messenger_config, &app_config.attachment_dir)
             .await
-            .expect("Failed to load config")
+            .expect("Failed to load messenger config")
     );
 
-    // 2. 创建 ChannelManager
+    // 3. 创建 ChannelManager
     let channel_manager = Arc::new(kissbot_channel::ChannelManager::new(
-        "http://127.0.0.1:8102",
+        &app_config.memory_store_url,
         creator.user_key().await,
     ));
 
-    // 3. 注册 WebMessenger，返回 Arc<WebMessenger>
-    //    WebMessenger 内部自行创建 SseDispatcher 和 AttachmentStore，
-    //    通过 messenger.sse / messenger.attachment_store 公开访问
+    // 4. 注册 WebMessenger
     let mid = creator.messenger_id().await;
     let messenger = kissbot_channel::ChannelManager::register_messenger(
         channel_manager.clone(),
@@ -38,14 +41,15 @@ async fn main() {
         creator.clone() as Arc<dyn kissbot_channel::MessengerCreator<WebMessenger>>,
     ).await.expect("Failed to register messenger");
 
-    // 4. 启动 ChannelManager WSS 服务器（后台）
+    // 5. 启动 ChannelManager WSS 服务器（后台）
     let cm_clone = channel_manager.clone();
+    let wss_addr = app_config.wss_listen_addr.clone();
     tokio::spawn(async move {
-        kissbot_channel::ChannelManager::start(cm_clone, "127.0.0.1:8201").await
+        kissbot_channel::ChannelManager::start(cm_clone, &wss_addr).await
             .expect("Failed to start ChannelManager");
     });
 
-    // 5. 创建 HTTP 服务器
+    // 6. 创建 HTTP 服务器
     let app_state = AppState {
         messenger: messenger.clone(),
     };
@@ -53,8 +57,8 @@ async fn main() {
     let app = http::create_router(app_state)
         .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(messenger.admin_key().await))));
 
-    let addr = "127.0.0.1:8301";
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let addr = app_config.http_listen_addr;
+    let listener = TcpListener::bind(&addr).await.unwrap();
     println!("kissbot-channel-web HTTP server listening on {}", addr);
 
     axum::serve(listener, app).await.unwrap();
