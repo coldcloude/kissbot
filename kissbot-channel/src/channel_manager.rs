@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::{DashMap, DashSet, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{ChannelInfo, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER};
+use kissbot_api::{GroupChangeNotification, UserRemoveNotification, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -16,6 +16,7 @@ const MSG_QUEUE_SIZE: usize = 100;
 
 static INTERVAL: Duration = Duration::from_secs(10);
 
+#[derive(Clone)]
 struct BoundInfo {
     pub connect_id: u32,
     pub agent_id: Arc<String>,
@@ -513,10 +514,12 @@ impl ChannelManager {
                 let group_change_handler = Arc::downgrade(&manager);
                 let incoming_messages_handler = Arc::downgrade(&manager);
                 let download_attachment_payload_handler = Arc::downgrade(&manager);
+                let user_remove_handler = Arc::downgrade(&manager);
                 let messenger = messenger_creator.create(
                     group_change_handler,
                     incoming_messages_handler,
-                    download_attachment_payload_handler
+                    download_attachment_payload_handler,
+                    user_remove_handler,
                 ).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
@@ -550,17 +553,17 @@ impl ChannelManager {
                 let span = span!(Level::INFO, "handle join group");
                 let _enter = span.enter();
                 //通知agent新建channel
-                let channel_info = ChannelInfo {
+                let notif = GroupChangeNotification {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()
                 };
-                let channel_info = serde_json::to_value(channel_info)?;
+                let payload = serde_json::to_value(notif)?;
                 connect_context.ws_context.send_json(WsMessage {
                     sn: connect_context.ws_context.next_request_sn(),
                     status_code: CODE_SUCCESS,
                     payload_type: TYPE_JOIN_GROUP,
-                    payload: Some(channel_info),
+                    payload: Some(payload),
                 }).await?;
                 //发channel变更消息
                 let msg_event = group_change_to_incoming_message(event.clone());
@@ -573,17 +576,17 @@ impl ChannelManager {
                 let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
-                let channel_info = ChannelInfo {
+                let notif = GroupChangeNotification {
                     messenger_id: event.messenger_id.clone(),
                     user_id: event.user_id.clone(),
                     group_id: event.group_id.clone()
                 };
-                let channel_info = serde_json::to_value(channel_info)?;
+                let payload = serde_json::to_value(notif)?;
                 connect_context.ws_context.send_json(WsMessage {
                     sn: connect_context.ws_context.next_request_sn(),
                     status_code: CODE_SUCCESS,
                     payload_type: TYPE_LEAVE_GROUP,
-                    payload: Some(channel_info),
+                    payload: Some(payload),
                 }).await?;
             }
         }
@@ -648,6 +651,41 @@ impl IncomingMessageHandler for ChannelManager {
                 error!("Error processing incoming message: {:?}", e);
             }
         }
+    }
+}
+
+#[async_trait]
+impl UserRemoveHandler for ChannelManager {
+    async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>) {
+        let messenger_context = match self.messenger_map.get(event.messenger_id.as_str()) {
+            Some(ctx) => ctx,
+            None => return,
+        };
+
+        let bound_info = match messenger_context.bound_map.get(event.user_id.as_str()) {
+            Some(info) => info.clone(),
+            None => return,
+        };
+
+        //通知 agent 用户已删除
+        if let Some(connect_context) = self.connect_map.get(&bound_info.connect_id) {
+            let notif = UserRemoveNotification {
+                messenger_id: event.messenger_id.clone(),
+                user_id: event.user_id.clone(),
+            };
+            if let Ok(payload) = serde_json::to_value(notif) {
+                let msg = WsMessage {
+                    sn: connect_context.ws_context.next_request_sn(),
+                    status_code: CODE_SUCCESS,
+                    payload_type: TYPE_USER_REMOVED,
+                    payload: Some(payload),
+                };
+                let _ = connect_context.ws_context.send_json(msg).await;
+            }
+        }
+
+        //解除绑定
+        messenger_context.bound_map.remove(event.user_id.as_str());
     }
 }
 

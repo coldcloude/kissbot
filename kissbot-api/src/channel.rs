@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub const TYPE_MESSENGER_INFO_REQUEST: u32 = 0x00010001;
 pub const TYPE_BIND_AGENT_USER: u32 = 0x00020002;
 pub const TYPE_UNBIND_AGENT_USER: u32 = 0x00020003;
+pub const TYPE_USER_REMOVED: u32 = 0x00020004;
 pub const TYPE_OUTGOING_MESSAGE: u32 = 0x00030004;
 pub const TYPE_ATTACHMENT_DOWNLOAD_REQUEST: u32 = 0x00030005;
 pub const TYPE_JOIN_GROUP: u32 = 0x10010001;
@@ -23,12 +24,20 @@ pub const MSG_TYPE_FILE: &str = "file";
 pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
 pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
 
-// ========== Messenger -> User -> Group-> Channel ==========
+// ========== Group Change Notification ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelInfo {
+pub struct GroupChangeNotification {
     pub messenger_id: Arc<String>,
     pub group_id: Arc<String>,
+    pub user_id: Arc<String>,
+}
+
+// ========== User Remove Notification ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRemoveNotification {
+    pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
 }
 

@@ -11,7 +11,7 @@ use kissbot_api::channel::{
 };
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
-    IncomingMessageEvent, IncomingMessageHandler,
+    IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
@@ -110,6 +110,7 @@ pub struct WebMessenger {
     pub(crate) on_group_change: Weak<dyn GroupChangeHandler>,
     pub(crate) on_incoming_messages: Weak<dyn IncomingMessageHandler>,
     pub(crate) on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+    on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
 }
@@ -122,6 +123,7 @@ impl WebMessenger {
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+        on_user_remove: Weak<dyn UserRemoveHandler>,
         attachment_dir: &str,
     ) -> Self {
         Self {
@@ -132,6 +134,7 @@ impl WebMessenger {
             on_group_change,
             on_incoming_messages,
             on_download_attachment_payload,
+            on_user_remove,
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
         }
@@ -230,6 +233,15 @@ impl WebMessenger {
             g.members.remove(user_id);
         }
         drop(cfg);
+
+        // 通知 agent 用户已删除
+        if let Some(handler) = self.on_user_remove.upgrade() {
+            let event = Arc::new(UserRemoveEvent {
+                messenger_id: self.messenger_id.clone(),
+                user_id: Arc::new(user_id.to_string()),
+            });
+            handler.handle_user_remove(event).await;
+        }
 
         let group_id = admin_user_group_id(user_id);
         let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -531,6 +543,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+        on_user_remove: Weak<dyn UserRemoveHandler>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
@@ -540,6 +553,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_group_change,
             on_incoming_messages,
             on_download_attachment_payload,
+            on_user_remove,
             &self.attachment_dir,
         ));
 

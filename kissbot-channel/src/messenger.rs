@@ -24,6 +24,7 @@ pub trait MessengerCreator<M: Messenger> {
         &self,
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>
+        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+        on_user_remove: Weak<dyn UserRemoveHandler>,
     ) -> Result<Arc<M>>;
 }

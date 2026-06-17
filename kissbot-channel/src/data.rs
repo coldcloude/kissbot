@@ -56,6 +56,19 @@ pub trait GroupChangeHandler: Send + Sync {
     async fn handle_group_change(&self, event: Arc<GroupChangeEvent>);
 }
 
+// ========== User Remove ==========
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRemoveEvent {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+}
+
+#[async_trait]
+pub trait UserRemoveHandler: Send + Sync {
+    async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>);
+}
+
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
 pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
     let msg_type = match message.change_type {
