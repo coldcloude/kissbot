@@ -107,9 +107,9 @@ pub struct WebMessenger {
     config_path: PathBuf,
     config: Arc<RwLock<MessengerConfig>>,
     msg_id_seq: AtomicU32,
-    pub(crate) on_group_change: Weak<dyn GroupChangeHandler>,
-    pub(crate) on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-    pub(crate) on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
+    on_group_change: Weak<dyn GroupChangeHandler>,
+    on_incoming_messages: Weak<dyn IncomingMessageHandler>,
+    on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
     on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
@@ -216,10 +216,6 @@ impl WebMessenger {
         }));
         drop(cfg);
 
-        let group_id = admin_user_group_id(&user_id);
-        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-        self.notify_group_change(&user_id, &group_id, GroupChangeType::Joined, &time).await;
-
         Ok(user_id)
     }
 
@@ -242,10 +238,6 @@ impl WebMessenger {
             });
             handler.handle_user_remove(event).await;
         }
-
-        let group_id = admin_user_group_id(user_id);
-        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-        self.notify_group_change(user_id, &group_id, GroupChangeType::Left, &time).await;
 
         Ok(())
     }
