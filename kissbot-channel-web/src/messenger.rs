@@ -57,8 +57,8 @@ pub struct MessengerConfig {
     pub admin_key: Arc<String>,
     pub user_key: Arc<String>,
     pub admin_name: Arc<String>,
-    pub users: Arc<DashMap<String, Arc<UserConfig>>>,
-    pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
+    pub users: Arc<DashMap<Arc<String>, Arc<UserConfig>>>,
+    pub groups: Arc<DashMap<Arc<String>, Arc<GroupConfig>>>,
     pub next_user_seq: u32,
     pub next_group_seq: u32,
 }
@@ -73,7 +73,7 @@ pub struct UserConfig {
 pub struct GroupConfig {
     pub group_id: Arc<String>,
     pub group_name: Arc<String>,
-    pub members: Arc<DashSet<String>>,
+    pub members: Arc<DashSet<Arc<String>>>,
 }
 
 pub fn admin_user_group_id(user_id: &str) -> String {
@@ -137,22 +137,25 @@ impl WebMessenger {
         self.config.read().await.admin_name.clone()
     }
 
-    pub async fn config_users(&self) -> Arc<DashMap<String, Arc<UserConfig>>> {
+    pub async fn config_users(&self) -> Arc<DashMap<Arc<String>, Arc<UserConfig>>> {
         self.config.read().await.users.clone()
     }
 
-    pub async fn config_groups(&self) -> Arc<DashMap<String, Arc<GroupConfig>>> {
+    pub async fn config_groups(&self) -> Arc<DashMap<Arc<String>, Arc<GroupConfig>>> {
         self.config.read().await.groups.clone()
     }
 
-    pub async fn get_group(&self, group_id: &str) -> Option<Arc<GroupConfig>> {
+    pub async fn get_group(&self, group_id: &Arc<String>) -> Option<Arc<GroupConfig>> {
         self.config.read().await.groups.get(group_id).map(|g| g.clone())
     }
 
     pub async fn is_admin_user_group(&self, group_id: &str) -> bool {
         let cfg = self.config.read().await;
         match group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX) {
-            Some(user_id) => cfg.users.contains_key(user_id) && !cfg.groups.contains_key(group_id),
+            Some(user_id) => {
+                let uid = Arc::new(user_id.to_string());
+                cfg.users.contains_key(&uid) && !cfg.groups.contains_key(&Arc::new(group_id.to_string()))
+            }
             None => false,
         }
     }
@@ -172,7 +175,7 @@ impl WebMessenger {
         Ok(())
     }
 
-    pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
+    pub async fn rename_user(&self, user_id: &Arc<String>, new_name: &str) -> Result<()> {
         let cfg = self.config.write().await;
         let mut u = cfg.users.get_mut(user_id)
             .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
@@ -185,20 +188,20 @@ impl WebMessenger {
         Ok(())
     }
 
-    pub async fn add_user(&self, user_name: &str) -> Result<String> {
+    pub async fn add_user(&self, user_name: &str) -> Result<Arc<String>> {
         let mut cfg = self.config.write().await;
         let n = cfg.next_user_seq;
         cfg.next_user_seq += 1;
-        let user_id = format!("{}{}", USER_ID_PREFIX, n);
+        let user_id = Arc::new(format!("{}{}", USER_ID_PREFIX, n));
         cfg.users.insert(user_id.clone(), Arc::new(UserConfig {
-            user_id: Arc::new(user_id.clone()),
+            user_id: user_id.clone(),
             user_name: Arc::new(user_name.to_string()),
         }));
         self.save(&cfg).await?;
         Ok(user_id)
     }
 
-    pub async fn remove_user(&self, user_id: &str) -> Result<()> {
+    pub async fn remove_user(&self, user_id: &Arc<String>) -> Result<()> {
         let cfg = self.config.write().await;
         if cfg.users.remove(user_id).is_none() {
             return Err(Error::UserNotFound(user_id.to_string()));
@@ -211,14 +214,14 @@ impl WebMessenger {
         Ok(())
     }
 
-    pub async fn add_group(&self, group_name: &str, member_ids: Vec<String>) -> Result<String> {
+    pub async fn add_group(&self, group_name: &str, member_ids: Vec<Arc<String>>) -> Result<Arc<String>> {
         let mut cfg = self.config.write().await;
         let n = cfg.next_group_seq;
         cfg.next_group_seq += 1;
-        let group_id = format!("{}{}", GROUP_ID_PREFIX, n);
-        let members = Arc::new(member_ids.into_iter().collect::<DashSet<String>>());
+        let group_id = Arc::new(format!("{}{}", GROUP_ID_PREFIX, n));
+        let members = Arc::new(member_ids.into_iter().collect::<DashSet<Arc<String>>>());
         cfg.groups.insert(group_id.clone(), Arc::new(GroupConfig {
-            group_id: Arc::new(group_id.clone()),
+            group_id: group_id.clone(),
             group_name: Arc::new(group_name.to_string()),
             members,
         }));
@@ -226,7 +229,7 @@ impl WebMessenger {
         Ok(group_id)
     }
 
-    pub async fn rename_group(&self, group_id: &str, new_name: &str) -> Result<()> {
+    pub async fn rename_group(&self, group_id: &Arc<String>, new_name: &str) -> Result<()> {
         let cfg = self.config.write().await;
         let mut g = cfg.groups.get_mut(group_id)
             .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
@@ -240,7 +243,7 @@ impl WebMessenger {
         Ok(())
     }
 
-    pub async fn manage_members(&self, group_id: &str, add_ids: &[String], remove_ids: &[String]) -> Result<()> {
+    pub async fn manage_members(&self, group_id: &Arc<String>, add_ids: &[Arc<String>], remove_ids: &[Arc<String>]) -> Result<()> {
         let cfg = self.config.write().await;
         let mut g = cfg.groups.get_mut(group_id)
             .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
@@ -249,7 +252,7 @@ impl WebMessenger {
             old.members.insert(id.clone());
         }
         for id in remove_ids {
-            old.members.remove(id.as_str());
+            old.members.remove(id);
         }
         *g = Arc::new(GroupConfig {
             group_id: old.group_id.clone(),
@@ -260,7 +263,7 @@ impl WebMessenger {
         Ok(())
     }
 
-    pub async fn delete_group(&self, group_id: &str) -> Result<()> {
+    pub async fn delete_group(&self, group_id: &Arc<String>) -> Result<()> {
         let cfg = self.config.write().await;
         if cfg.groups.remove(group_id).is_none() {
             return Err(Error::GroupNotFound(group_id.to_string()));
@@ -284,12 +287,11 @@ impl WebMessenger {
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
-        let members: Vec<String> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
-            // admin-user 单聊组：成员为 admin + 对应的 user
+        let members: Vec<Arc<String>> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
             let uid = outgoing.group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX).unwrap();
-            vec![ADMIN_USER_ID.to_string(), uid.to_string()]
+            vec![Arc::new(ADMIN_USER_ID.to_string()), Arc::new(uid.to_string())]
         } else {
-            let group = cfg.groups.get(outgoing.group_id.as_str())
+            let group = cfg.groups.get(&outgoing.group_id)
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
             group.members.iter().map(|m| m.clone()).collect()
@@ -343,12 +345,13 @@ impl WebMessenger {
     /// admin 发消息。admin 不是群组成员则拒绝。
     /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
     pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<String> {
+        let group_id_arc = Arc::new(group_id.to_string());
         let cfg = self.config.read().await;
         if !group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
-            let group = cfg.groups.get(group_id)
+            let group = cfg.groups.get(&group_id_arc)
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            if !group.members.contains(ADMIN_USER_ID) {
+            if !group.members.contains(&Arc::new(ADMIN_USER_ID.to_string())) {
                 return Err(Error::GroupNotFound(group_id.to_string()));
             }
         }
@@ -357,7 +360,7 @@ impl WebMessenger {
         let outgoing = OutgoingMessage {
             messenger_id: self.messenger_id.clone(),
             user_id: Arc::new(ADMIN_USER_ID.to_string()),
-            group_id: Arc::new(group_id.to_string()),
+            group_id: group_id_arc,
             msg_type: Arc::new(msg_type.to_string()),
             content: Arc::new(content.to_string()),
             time: Arc::new(time.to_string()),
@@ -390,23 +393,23 @@ impl WebMessenger {
             let ug_map: Arc<DashMap<String, Arc<GroupInfo>>> = Arc::new(DashMap::new());
 
             for g_ref in cfg.groups.iter() {
-                if g_ref.members.iter().any(|m| m.as_str() == user_ref.user_id.as_str()) {
-                    ug_map.insert(g_ref.group_id.to_string(), Arc::new(GroupInfo {
+                if g_ref.members.iter().any(|m| m.as_str() == user_ref.key().as_str()) {
+                    ug_map.insert(g_ref.key().to_string(), Arc::new(GroupInfo {
                         group_id: g_ref.group_id.clone(),
                         group_name: g_ref.group_name.clone(),
                     }));
                 }
             }
 
-            let gid = admin_user_group_id(&user_ref.user_id);
-            if !cfg.groups.contains_key(&gid) {
+            let gid = admin_user_group_id(user_ref.key().as_str());
+            if !cfg.groups.contains_key(&Arc::new(gid.clone())) {
                 ug_map.insert(gid.clone(), Arc::new(GroupInfo {
                     group_id: Arc::new(gid),
                     group_name: user_ref.user_name.clone(),
                 }));
             }
 
-            full_user_map.insert(user_ref.user_id.to_string(), Arc::new(UserInfo {
+            full_user_map.insert(user_ref.key().to_string(), Arc::new(UserInfo {
                 user_id: user_ref.user_id.clone(),
                 user_name: user_ref.user_name.clone(),
                 group_map: ug_map,
