@@ -298,6 +298,7 @@ impl WebMessenger {
     async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<Arc<String>> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
+        let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
 
         let cfg = self.config.read().await;
         let members: Vec<Arc<String>> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
@@ -324,7 +325,7 @@ impl WebMessenger {
                 is_self,
                 msg_type: outgoing.msg_type.clone(),
                 content: outgoing.content.clone(),
-                time: outgoing.time.clone(),
+                time: time.clone(),
             });
             let event = Arc::new(IncomingMessageEvent {
                 messenger_id: messenger_id.clone(),
@@ -348,7 +349,7 @@ impl WebMessenger {
             is_self: 1,
             msg_type: outgoing.msg_type,
             content: outgoing.content,
-            time: outgoing.time,
+            time,
         };
         let sse_payload = SsePayload { r#type: "message", data: sse_event };
         if let Ok(json) = serde_json::to_string(&sse_payload) {
@@ -360,7 +361,7 @@ impl WebMessenger {
 
     /// admin 发消息。admin 不是群组成员则拒绝。
     /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
-    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<Arc<String>> {
+    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str) -> Result<Arc<String>> {
         let cfg = self.config.read().await;
         if self.parse_admin_user_group(group_id).await.is_none() {
             let group = cfg.groups.get(group_id)
@@ -378,8 +379,37 @@ impl WebMessenger {
             group_id: Arc::new(group_id.to_string()),
             msg_type: Arc::new(msg_type.to_string()),
             content: Arc::new(content.to_string()),
-            time: Arc::new(time.to_string()),
             attachment_map: Arc::new(DashMap::new()),
+        };
+        self.outgoing_to_incoming(outgoing).await
+    }
+
+    /// admin 发消息，带附件。
+    pub async fn send_from_admin_with_attachment(
+        &self,
+        group_id: &str,
+        content: &str,
+        msg_type: &str,
+        attachment_map: Arc<DashMap<String, Arc<AttachmentInfo>>>,
+    ) -> Result<Arc<String>> {
+        let cfg = self.config.read().await;
+        if self.parse_admin_user_group(group_id).await.is_none() {
+            let group = cfg.groups.get(group_id)
+                .map(|g| g.clone())
+                .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+            if !group.members.contains(ADMIN_USER_ID.as_str()) {
+                return Err(Error::GroupNotFound(group_id.to_string()));
+            }
+        }
+        drop(cfg);
+
+        let outgoing = OutgoingMessage {
+            messenger_id: self.messenger_id.clone(),
+            user_id: ADMIN_USER_ID.clone(),
+            group_id: Arc::new(group_id.to_string()),
+            msg_type: Arc::new(msg_type.to_string()),
+            content: Arc::new(content.to_string()),
+            attachment_map,
         };
         self.outgoing_to_incoming(outgoing).await
     }

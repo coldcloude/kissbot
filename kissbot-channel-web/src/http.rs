@@ -160,13 +160,11 @@ async fn handle_send_message(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
-    let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let (content, msg_type) = build_message_content(&req);
 
-    match messenger.send_from_admin(req.group_id.as_str(), &content, &msg_type, &time).await {
+    match messenger.send_from_admin(req.group_id.as_str(), &content, &msg_type).await {
         Ok(msg_id) => Json(ApiResponse::success(serde_json::json!({
             "msg_id": msg_id.as_str(),
-            "time": time
         }))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }

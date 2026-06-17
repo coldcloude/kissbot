@@ -73,7 +73,6 @@ pub struct OutgoingMessage {
     pub group_id: Arc<String>,
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
-    pub time: Arc<String>,
     pub attachment_map: Arc<DashMap<String, Arc<AttachmentInfo>>>,
 }
 
