@@ -125,13 +125,11 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
         .route("/api/info", get(handle_info))
         .route("/api/message/send", post(handle_send_message))
         .route("/api/messages", get(handle_get_messages))
-        .route("/api/groups", get(handle_list_groups))
         .route("/api/groups/create", post(handle_create_group))
         .route("/api/groups/rename", post(handle_rename_group))
         .route("/api/groups/manage-members", post(handle_manage_members))
         .route("/api/groups/delete", post(handle_delete_group))
         .route("/api/admin/rename", post(handle_rename_admin))
-        .route("/api/users", get(handle_list_users))
         .route("/api/users/create", post(handle_create_user))
         .route("/api/users/rename", post(handle_rename_user))
         .route("/api/users/delete", post(handle_delete_user))
@@ -206,14 +204,6 @@ async fn handle_get_messages(
         None => return Json(ApiResponse::<Vec<MessageResponse>>::error("Missing group_id".to_string())),
     };
     Json(ApiResponse::success(Vec::<MessageResponse>::new()))
-}
-
-/// GET /api/groups — 仅返回 JSON 配置中真实存储的群组
-async fn handle_list_groups(
-    State(messenger): State<Arc<WebMessenger>>,
-) -> impl IntoResponse {
-    let groups = messenger.list_groups_raw().await;
-    Json(ApiResponse::success(groups))
 }
 
 /// POST /api/groups/create
@@ -306,14 +296,6 @@ async fn handle_delete_group(
         }
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
-}
-
-/// GET /api/users
-async fn handle_list_users(
-    State(messenger): State<Arc<WebMessenger>>,
-) -> impl IntoResponse {
-    let users = messenger.list_users().await;
-    Json(ApiResponse::success(users))
 }
 
 /// POST /api/users/create
@@ -458,11 +440,11 @@ async fn handle_thumbnail(
 async fn handle_sse_events(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let groups = messenger.list_groups_raw().await;
+    let groups = messenger.config_groups().await;
     let sse = messenger.sse.clone();
 
     let mut receivers = Vec::new();
-    for group in &groups {
+    for group in groups.iter() {
         let rx = sse.register(&group.group_id);
         receivers.push(rx);
     }

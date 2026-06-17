@@ -161,14 +161,6 @@ impl WebMessenger {
         }
     }
 
-    pub async fn list_users(&self) -> Vec<Arc<UserConfig>> {
-        self.config.read().await.users.iter().map(|u| u.clone()).collect()
-    }
-
-    pub async fn list_groups_raw(&self) -> Vec<Arc<GroupConfig>> {
-        self.config.read().await.groups.iter().map(|g| g.clone()).collect()
-    }
-
     pub async fn update_admin_name(&self, new_name: &str) -> Result<()> {
         let mut cfg = self.config.write().await;
         cfg.admin_name = Arc::new(new_name.to_string());
