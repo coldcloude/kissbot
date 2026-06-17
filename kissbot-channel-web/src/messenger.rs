@@ -80,6 +80,26 @@ pub fn admin_user_group_id(user_id: &str) -> String {
     format!("{}{}", ADMIN_USER_GROUP_PREFIX, user_id)
 }
 
+// ========== SSE 消息结构（编译检查的 JSON 序列化） ==========
+
+#[derive(Debug, Serialize)]
+struct SsePayload<'a> {
+    r#type: &'a str,
+    data: SseMessage,
+}
+
+#[derive(Debug, Serialize)]
+struct SseMessage {
+    msg_id: Arc<String>,
+    messenger_id: Arc<String>,
+    user_id: Arc<String>,
+    group_id: Arc<String>,
+    is_self: usize,
+    msg_type: Arc<String>,
+    content: Arc<String>,
+    time: Arc<String>,
+}
+
 // ========== WebMessenger ==========
 
 pub struct WebMessenger {
@@ -117,10 +137,10 @@ impl WebMessenger {
         }
     }
 
-    fn next_msg_id(&self) -> String {
+    fn next_msg_id(&self) -> Arc<String> {
         let now = Utc::now().format("%Y%m%d%H%M%S").to_string();
         let seq = self.msg_id_seq.fetch_add(1, Ordering::SeqCst) % 1_000_000;
-        format!("{}{:06}", now, seq)
+        Arc::new(format!("{}{:06}", now, seq))
     }
 
     async fn save(&self, cfg: &MessengerConfig) -> Result<()> {
@@ -275,7 +295,7 @@ impl WebMessenger {
     /// - 为每个成员生成 IncomingMessage（含 msg_id / is_self）
     /// - 调 on_incoming_messages 回调（传给 Agent）
     /// - 推 SSE（admin 可看所有群组消息）
-    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<String> {
+    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<Arc<String>> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
 
@@ -297,7 +317,7 @@ impl WebMessenger {
         for member_id in &members {
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
             let incoming = Arc::new(IncomingMessage {
-                msg_id: Arc::new(msg_id.clone()),
+                msg_id: msg_id.clone(),
                 messenger_id: messenger_id.clone(),
                 user_id: outgoing.user_id.clone(),
                 group_id: outgoing.group_id.clone(),
@@ -319,20 +339,20 @@ impl WebMessenger {
         }
 
         // 推 SSE
-        if let Ok(json) = serde_json::to_string(&serde_json::json!({
-            "type": "message",
-            "data": {
-                "msg_id": msg_id,
-                "messenger_id": messenger_id,
-                "user_id": outgoing.user_id,
-                "group_id": outgoing.group_id,
-                "is_self": 1u32,
-                "msg_type": outgoing.msg_type,
-                "content": outgoing.content,
-                "time": outgoing.time,
-            },
-        })) {
-            self.sse.push(outgoing.group_id.as_str(), &json);
+        let group_id = outgoing.group_id.clone();
+        let sse_event = SseMessage {
+            msg_id: msg_id.clone(),
+            messenger_id,
+            user_id: outgoing.user_id,
+            group_id: outgoing.group_id,
+            is_self: 1,
+            msg_type: outgoing.msg_type,
+            content: outgoing.content,
+            time: outgoing.time,
+        };
+        let sse_payload = SsePayload { r#type: "message", data: sse_event };
+        if let Ok(json) = serde_json::to_string(&sse_payload) {
+            self.sse.push(group_id.as_str(), &json);
         }
 
         Ok(msg_id)
@@ -340,7 +360,7 @@ impl WebMessenger {
 
     /// admin 发消息。admin 不是群组成员则拒绝。
     /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
-    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<String> {
+    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<Arc<String>> {
         let cfg = self.config.read().await;
         if self.parse_admin_user_group(group_id).await.is_none() {
             let group = cfg.groups.get(group_id)
@@ -370,7 +390,7 @@ impl WebMessenger {
             Err(_) => return,
         };
         let event = Arc::new(GroupChangeEvent {
-            msg_id: Arc::new(self.next_msg_id()),
+            msg_id: self.next_msg_id(),
             messenger_id: self.messenger_id.clone(),
             user_id: Arc::new(user_id.to_string()),
             group_id: Arc::new(group_id.to_string()),
@@ -486,7 +506,7 @@ impl Messenger for WebMessenger {
 
         let upload_id_map: Arc<DashMap<String, u32>> = Arc::new(DashMap::new());
         Ok(Arc::new(OutgoingMessageResponse {
-            msg_id: Arc::new(msg_id),
+            msg_id: msg_id,
             attachment_upload_id_map: upload_id_map,
         }))
     }

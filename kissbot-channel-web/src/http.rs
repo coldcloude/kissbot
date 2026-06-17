@@ -165,7 +165,7 @@ async fn handle_send_message(
 
     match messenger.send_from_admin(req.group_id.as_str(), &content, &msg_type, &time).await {
         Ok(msg_id) => Json(ApiResponse::success(serde_json::json!({
-            "msg_id": msg_id,
+            "msg_id": msg_id.as_str(),
             "time": time
         }))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
