@@ -281,19 +281,16 @@ impl WebMessenger {
 
         let cfg = self.config.read().await;
         let members: Vec<String> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
-            vec![ADMIN_USER_ID.as_str().to_string(), uid.to_string()]
+            vec![uid.to_string()]
         } else {
             let group = cfg.groups.get(outgoing.group_id.as_str())
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
-            group.members.iter().map(|m| m.clone()).collect()
+            group.members.iter().filter(|m| m.as_str() != ADMIN_USER_ID.as_str()).map(|m| m.clone()).collect()
         };
         drop(cfg);
 
         for member_id in &members {
-            if member_id.as_str() == ADMIN_USER_ID.as_str() {
-                continue;
-            }
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
             let incoming = Arc::new(IncomingMessage {
                 msg_id: Arc::new(msg_id.clone()),
