@@ -36,64 +36,64 @@ pub struct MessengerAdminInfo {
 
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
-    pub group_id: String,
-    pub content: String,
+    pub group_id: Arc<String>,
+    pub content: Arc<String>,
     #[serde(default)]
     pub attachments: Option<Vec<AttachmentRef>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AttachmentRef {
-    pub filename: String,
-    pub key: String,
+    pub filename: Arc<String>,
+    pub key: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateGroupRequest {
-    pub group_name: String,
+    pub group_name: Arc<String>,
     #[serde(default)]
-    pub member_ids: Vec<String>,
+    pub member_ids: Vec<Arc<String>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameGroupRequest {
-    pub group_id: String,
-    pub group_name: String,
+    pub group_id: Arc<String>,
+    pub group_name: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ManageMembersRequest {
-    pub group_id: String,
+    pub group_id: Arc<String>,
     #[serde(default)]
-    pub add_ids: Vec<String>,
+    pub add_ids: Vec<Arc<String>>,
     #[serde(default)]
-    pub remove_ids: Vec<String>,
+    pub remove_ids: Vec<Arc<String>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteGroupRequest {
-    pub group_id: String,
+    pub group_id: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
-    pub user_name: String,
+    pub user_name: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteUserRequest {
-    pub user_id: String,
+    pub user_id: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameUserRequest {
-    pub user_id: String,
-    pub user_name: String,
+    pub user_id: Arc<String>,
+    pub user_name: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameAdminRequest {
-    pub admin_name: String,
+    pub admin_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,18 +165,19 @@ async fn handle_send_message(
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let (content, msg_type) = build_message_content(&req);
 
-    let msg_id = messenger.send_from_admin(&req.group_id, &content, &msg_type, &time).await;
-
-    Json(ApiResponse::success(serde_json::json!({
-        "msg_id": msg_id,
-        "time": time
-    })))
+    match messenger.send_from_admin(req.group_id.as_str(), &content, &msg_type, &time).await {
+        Ok(msg_id) => Json(ApiResponse::success(serde_json::json!({
+            "msg_id": msg_id,
+            "time": time
+        }))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+    }
 }
 
 fn build_message_content(req: &SendMessageRequest) -> (String, String) {
     let atts = req.attachments.as_deref().unwrap_or_default();
     if atts.is_empty() {
-        return (req.content.clone(), "text".to_string());
+        return (req.content.to_string(), "text".to_string());
     }
     let att_info: Vec<serde_json::Value> = atts.iter().map(|a| {
         let is_image = a.filename.ends_with(".png") || a.filename.ends_with(".jpg") ||
@@ -191,7 +192,7 @@ fn build_message_content(req: &SendMessageRequest) -> (String, String) {
     let content = serde_json::to_string(&serde_json::json!({
         "text": req.content,
         "attachments": att_info
-    })).unwrap_or_else(|_| req.content.clone());
+    })).unwrap_or_else(|_| req.content.to_string());
     (content, "mixed".to_string())
 }
 
@@ -221,12 +222,14 @@ async fn handle_create_group(
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let mut member_ids = req.member_ids;
+    let mut member_ids: Vec<Arc<String>> = req.member_ids;
     if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID) {
-        member_ids.push(ADMIN_USER_ID.to_string());
+        member_ids.push(Arc::new(ADMIN_USER_ID.to_string()));
     }
 
-    match messenger.add_group(&req.group_name, member_ids.clone()).await {
+    let member_strs: Vec<String> = member_ids.iter().map(|m| m.to_string()).collect();
+    let group_name = req.group_name.to_string();
+    match messenger.add_group(&group_name, member_strs).await {
         Ok(group_id) => {
             for m in &member_ids {
                 if m.as_str() != ADMIN_USER_ID {
@@ -235,7 +238,6 @@ async fn handle_create_group(
             }
             Json(ApiResponse::success(serde_json::json!({
                 "group_id": group_id,
-                "group_name": req.group_name
             })))
         }
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
@@ -247,10 +249,10 @@ async fn handle_rename_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<RenameGroupRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(&req.group_id).await {
+    if messenger.is_admin_user_group(req.group_id.as_str()).await {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be renamed".to_string()));
     }
-    match messenger.rename_group(&req.group_id, &req.group_name).await {
+    match messenger.rename_group(req.group_id.as_str(), req.group_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
@@ -261,18 +263,20 @@ async fn handle_manage_members(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<ManageMembersRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(&req.group_id).await {
+    if messenger.is_admin_user_group(req.group_id.as_str()).await {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be modified".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let gid = req.group_id.clone();
+    let add_ids: Vec<String> = req.add_ids.iter().map(|a| a.to_string()).collect();
+    let remove_ids: Vec<String> = req.remove_ids.iter().map(|r| r.to_string()).collect();
+    let gid = req.group_id.to_string();
 
-    match messenger.manage_members(&gid, &req.add_ids, &req.remove_ids).await {
+    match messenger.manage_members(&gid, &add_ids, &remove_ids).await {
         Ok(_) => {
-            for add_id in &req.add_ids {
+            for add_id in &add_ids {
                 messenger.notify_group_change(add_id, &gid, GroupChangeType::Joined, &time).await;
             }
-            for remove_id in &req.remove_ids {
+            for remove_id in &remove_ids {
                 messenger.notify_group_change(remove_id, &gid, GroupChangeType::Left, &time).await;
             }
             Json(ApiResponse::success(serde_json::json!({"success": true})))
@@ -286,19 +290,20 @@ async fn handle_delete_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<DeleteGroupRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(&req.group_id).await {
+    if messenger.is_admin_user_group(req.group_id.as_str()).await {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be deleted".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let group = messenger.get_group(&req.group_id).await;
+    let group = messenger.get_group(req.group_id.as_str()).await;
     let admin_id = ADMIN_USER_ID.to_string();
+    let gid = req.group_id.to_string();
 
-    match messenger.delete_group(&req.group_id).await {
+    match messenger.delete_group(req.group_id.as_str()).await {
         Ok(_) => {
             if let Some(g) = group {
                 for m in g.members.iter() {
                     if m.as_str() != admin_id {
-                        messenger.notify_group_change(m.as_str(), &req.group_id, GroupChangeType::Left, &time).await;
+                        messenger.notify_group_change(m.as_str(), &gid, GroupChangeType::Left, &time).await;
                     }
                 }
             }
@@ -323,13 +328,12 @@ async fn handle_create_user(
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    match messenger.add_user(&req.user_name).await {
+    match messenger.add_user(req.user_name.as_str()).await {
         Ok(user_id) => {
             let group_id = admin_user_group_id(&user_id);
             messenger.notify_group_change(&user_id, &group_id, GroupChangeType::Joined, &time).await;
             Json(ApiResponse::success(serde_json::json!({
                 "user_id": user_id,
-                "user_name": req.user_name
             })))
         }
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
@@ -341,7 +345,7 @@ async fn handle_rename_user(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<RenameUserRequest>,
 ) -> impl IntoResponse {
-    match messenger.rename_user(&req.user_id, &req.user_name).await {
+    match messenger.rename_user(req.user_id.as_str(), req.user_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
@@ -352,7 +356,7 @@ async fn handle_rename_admin(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<RenameAdminRequest>,
 ) -> impl IntoResponse {
-    match messenger.update_admin_name(&req.admin_name).await {
+    match messenger.update_admin_name(req.admin_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
@@ -365,7 +369,7 @@ async fn handle_delete_user(
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    match messenger.remove_user(&req.user_id).await {
+    match messenger.remove_user(req.user_id.as_str()).await {
         Ok(_) => {
             let group_id = admin_user_group_id(&req.user_id);
             messenger.notify_group_change(&req.user_id, &group_id, GroupChangeType::Left, &time).await;

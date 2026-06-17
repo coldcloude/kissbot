@@ -277,17 +277,15 @@ impl WebMessenger {
     /// 统一 Outgoing → Incoming 转换并分发。
     /// - 为群组每个成员生成 IncomingMessage（含 msg_id / is_self）
     /// - 调 on_incoming_messages 回调（传给 Agent）
-    /// - 群组成员中有 admin 时额外推 SSE（序列化 IncomingMessage）
-    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> String {
+    /// - 推 SSE（admin 可看所有群组消息）
+    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<String> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
-        let group = match cfg.groups.get(outgoing.group_id.as_str()) {
-            Some(g) => g.clone(),
-            None => return msg_id,
-        };
-        let has_admin = group.members.contains(ADMIN_USER_ID);
+        let group = cfg.groups.get(outgoing.group_id.as_str())
+            .map(|g| g.clone())
+            .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
         drop(cfg);
 
         for member_id in group.members.iter() {
@@ -306,39 +304,45 @@ impl WebMessenger {
                 messenger_id: messenger_id.clone(),
                 user_id: outgoing.user_id.clone(),
                 group_id: outgoing.group_id.clone(),
-                messages: Arc::new(vec![incoming.clone()]),
+                messages: Arc::new(vec![incoming]),
             });
 
-            // 调 on_incoming_messages 回调传给 Agent
             if let Some(handler) = self.on_incoming_messages.upgrade() {
                 handler.handle_incoming_message(event).await;
             }
         }
 
-        // 群组中有 admin 时推 SSE（以 admin 视角 is_self=1）
-        if has_admin {
-            let admin_incoming = serde_json::json!({
+        // 推 SSE（admin 可看所有群组消息）
+        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+            "type": "message",
+            "data": {
                 "msg_id": msg_id,
                 "messenger_id": messenger_id,
                 "user_id": outgoing.user_id,
                 "group_id": outgoing.group_id,
-                "is_self": 1,
+                "is_self": 1u32,
                 "msg_type": outgoing.msg_type,
                 "content": outgoing.content,
                 "time": outgoing.time,
-            });
-            if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                "type": "message",
-                "data": admin_incoming,
-            })) {
-                self.sse.push(outgoing.group_id.as_str(), &json);
-            }
+            },
+        })) {
+            self.sse.push(outgoing.group_id.as_str(), &json);
         }
 
-        msg_id
+        Ok(msg_id)
     }
 
-    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> String {
+    /// admin 发消息。admin 不是群组成员则拒绝。
+    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<String> {
+        let cfg = self.config.read().await;
+        let group = cfg.groups.get(group_id)
+            .map(|g| g.clone())
+            .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+        if !group.members.contains(ADMIN_USER_ID) {
+            return Err(Error::GroupNotFound(group_id.to_string()));
+        }
+        drop(cfg);
+
         let outgoing = OutgoingMessage {
             messenger_id: self.messenger_id.clone(),
             user_id: Arc::new(ADMIN_USER_ID.to_string()),
@@ -469,7 +473,7 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let msg_id = self.outgoing_to_incoming(message).await;
+        let msg_id = self.outgoing_to_incoming(message).await?;
 
         let upload_id_map: Arc<DashMap<String, u32>> = Arc::new(DashMap::new());
         Ok(Arc::new(OutgoingMessageResponse {
