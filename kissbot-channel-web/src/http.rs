@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
+use kissbot_api::channel::OutgoingMessage;
 
 // ========== DTOs ==========
 
@@ -161,8 +162,16 @@ async fn handle_send_message(
     Json(req): Json<SendMessageRequest>,
 ) -> impl IntoResponse {
     let (content, msg_type) = build_message_content(&req);
+    let outgoing = OutgoingMessage {
+        messenger_id: messenger.messenger_id.clone(),
+        user_id: ADMIN_USER_ID.clone(),
+        group_id: req.group_id.clone(),
+        msg_type: Arc::new(msg_type),
+        content: Arc::new(content),
+        attachment_map: Arc::new(DashMap::new()),
+    };
 
-    match messenger.send_from_admin(req.group_id.as_str(), &content, &msg_type).await {
+    match messenger.send(outgoing).await {
         Ok(resp) => Json(ApiResponse::success(serde_json::json!({
             "msg_id": resp.msg_id.as_str(),
             "time": resp.time.as_str(),

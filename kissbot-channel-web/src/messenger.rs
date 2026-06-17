@@ -165,6 +165,12 @@ impl WebMessenger {
         self.config.read().await.groups.clone()
     }
 
+    /// 判断 group_id 是否为 user_id 的 admin-user 单聊组（a_{user_id}）。
+    /// 纯格式判断，不读 config。
+    pub fn is_admin_user_group_for(user_id: &str, group_id: &str) -> bool {
+        group_id == admin_user_group_id(user_id)
+    }
+
     pub async fn get_group(&self, group_id: &str) -> Option<Arc<GroupConfig>> {
         self.config.read().await.groups.get(group_id).map(|g| g.clone())
     }
@@ -172,8 +178,13 @@ impl WebMessenger {
     /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
     /// 验证前缀匹配、user 存在于 config。
     pub async fn parse_admin_user_group(&self, group_id: &str) -> Option<String> {
-        let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         let cfg = self.config.read().await;
+        Self::parse_admin_user_group_ref(&cfg, group_id)
+    }
+
+    /// 内部版本，直接使用已有 config 引用。
+    fn parse_admin_user_group_ref(cfg: &MessengerConfig, group_id: &str) -> Option<String> {
+        let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         if cfg.users.contains_key(uid) {
             Some(uid.to_string())
         } else {
@@ -290,32 +301,53 @@ impl WebMessenger {
             .ok_or_else(|| Error::InternalError("group change handler is None".to_string()))
     }
 
-    /// 统一 Outgoing → Incoming 转换并分发。
-    /// - 确定群组成员列表（admin-user 单聊组从 user_id 推导）
-    /// - 为每个成员生成 IncomingMessage（含 msg_id / is_self）
-    /// - 调 on_incoming_messages 回调（传给 Agent）
-    /// - 推 SSE（admin 可看所有群组消息）
-    /// - 返回 OutgoingMessageResponse（含 msg_id、time，附件映射为空）
-    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<OutgoingMessageResponse> {
+    /// 发送消息（统一入口）。接收 OutgoingMessage 并：
+    /// 1. 验证 messenger_id 匹配自己
+    /// 2. 验证发送者权限
+    /// 3. 确定群组成员（排除 admin），分发 IncomingMessage 给各成员
+    /// 4. 推 SSE（admin 可看所有群组消息）
+    /// 5. 返回 OutgoingMessageResponse
+    pub async fn send(&self, outgoing: OutgoingMessage) -> Result<OutgoingMessageResponse> {
+        // 1. 验证 messenger_id
+        if outgoing.messenger_id.as_str() != self.messenger_id.as_str() {
+            return Err(Error::InvalidMessage("messenger_id mismatch".to_string()));
+        }
+
         let msg_id = self.next_msg_id();
-        let messenger_id = self.messenger_id.clone();
         let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
 
         let cfg = self.config.read().await;
-        let members: Vec<Arc<String>> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
-            vec![Arc::new(uid)]
+
+        // 确定群组成员（不含 admin）
+        let members: Vec<Arc<String>> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() {
+                // admin 对 admin-user 单聊组发消息：用 parse 验证用户存在并提取 uid
+                match Self::parse_admin_user_group_ref(&cfg, outgoing.group_id.as_str()) {
+                    Some(uid) => vec![Arc::new(uid)],
+                    None => return Err(Error::GroupNotFound(outgoing.group_id.to_string())),
+                }
+            } else {
+                // 普通用户对 admin-user 单聊组发消息：验证 group_id == a_{user_id} 且用户存在
+                if !Self::is_admin_user_group_for(outgoing.user_id.as_str(), outgoing.group_id.as_str())
+                    || !cfg.users.contains_key(outgoing.user_id.as_str())
+                {
+                    return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
+                }
+                // 发送者发给自己（agent 会识别 is_self）
+                vec![outgoing.user_id.clone()]
+            }
         } else {
+            // 普通群组：admin 和普通用户逻辑相同——检查群组存在且发送者在成员中
             let group = cfg.groups.get(outgoing.group_id.as_str())
-                .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
+            if !group.members.contains(outgoing.user_id.as_str()) {
+                return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
+            }
             group.members.iter().filter(|m| m.as_str() != ADMIN_USER_ID.as_str()).map(|m| Arc::new(m.clone())).collect()
         };
         drop(cfg);
 
-        if members.is_empty() {
-            return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
-        }
-
+        let messenger_id = self.messenger_id.clone();
         for member_id in &members {
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
             let incoming = Arc::new(IncomingMessage {
@@ -362,62 +394,6 @@ impl WebMessenger {
             time,
             attachment_upload_id_map: Arc::new(DashMap::new()),
         })
-    }
-
-    /// admin 发消息。admin 不是群组成员则拒绝。
-    /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
-    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str) -> Result<OutgoingMessageResponse> {
-        let cfg = self.config.read().await;
-        if self.parse_admin_user_group(group_id).await.is_none() {
-            let group = cfg.groups.get(group_id)
-                .map(|g| g.clone())
-                .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            if !group.members.contains(ADMIN_USER_ID.as_str()) {
-                return Err(Error::GroupNotFound(group_id.to_string()));
-            }
-        }
-        drop(cfg);
-
-        let outgoing = OutgoingMessage {
-            messenger_id: self.messenger_id.clone(),
-            user_id: ADMIN_USER_ID.clone(),
-            group_id: Arc::new(group_id.to_string()),
-            msg_type: Arc::new(msg_type.to_string()),
-            content: Arc::new(content.to_string()),
-            attachment_map: Arc::new(DashMap::new()),
-        };
-        self.outgoing_to_incoming(outgoing).await
-    }
-
-    /// admin 发消息，带附件。先通过 outgoing_to_incoming 生成基础 response，
-    /// 再根据附件信息填充 attachment_upload_id_map。
-    pub async fn send_from_admin_with_attachment(
-        &self,
-        group_id: &str,
-        content: &str,
-        msg_type: &str,
-        attachment_map: Arc<DashMap<String, Arc<AttachmentInfo>>>,
-    ) -> Result<OutgoingMessageResponse> {
-        let cfg = self.config.read().await;
-        if self.parse_admin_user_group(group_id).await.is_none() {
-            let group = cfg.groups.get(group_id)
-                .map(|g| g.clone())
-                .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            if !group.members.contains(ADMIN_USER_ID.as_str()) {
-                return Err(Error::GroupNotFound(group_id.to_string()));
-            }
-        }
-        drop(cfg);
-
-        let outgoing = OutgoingMessage {
-            messenger_id: self.messenger_id.clone(),
-            user_id: ADMIN_USER_ID.clone(),
-            group_id: Arc::new(group_id.to_string()),
-            msg_type: Arc::new(msg_type.to_string()),
-            content: Arc::new(content.to_string()),
-            attachment_map,
-        };
-        self.outgoing_to_incoming(outgoing).await
     }
 
     pub async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
@@ -538,7 +514,7 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let resp = self.outgoing_to_incoming(message).await?;
+        let resp = self.send(message).await?;
         Ok(Arc::new(resp))
     }
 
