@@ -626,6 +626,38 @@ impl ChannelManager {
         self.memory_store_client.push_messages(bound_info.agent_id.clone(), bound_info.role_name.clone(), event.messages.clone()).await?;
         Ok(())
     }
+
+    async fn handle_user_remove_internal(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
+        let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
+            .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
+
+        let (_,bound_info) = messenger_context.bound_map.remove(event.user_id.as_str())
+            .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
+
+        let connect_context = self.connect_map.get(&bound_info.connect_id)
+            .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
+
+        //从 connect 中移除 user 记录
+        if let Some(messenger_users) = connect_context.messenger_users_map.get(event.messenger_id.as_str()) {
+            messenger_users.remove(event.user_id.as_str());
+        }
+
+        //通知 agent 用户已删除
+        let notif = UserRemoveNotification {
+            messenger_id: event.messenger_id.clone(),
+            user_id: event.user_id.clone(),
+        };
+        let payload = serde_json::to_value(notif)?;
+        let msg = WsMessage {
+            sn: connect_context.ws_context.next_request_sn(),
+            status_code: CODE_SUCCESS,
+            payload_type: TYPE_USER_REMOVED,
+            payload: Some(payload),
+        };
+        connect_context.ws_context.send_json(msg).await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -642,6 +674,8 @@ impl GroupChangeHandler for ChannelManager {
 #[async_trait]
 impl IncomingMessageHandler for ChannelManager {
     async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) {
+        let span = span!(Level::INFO, "channel_manager handle incoming message");
+        let _enter = span.enter();
         let results = tokio::join!(
             self.send_agent(event.clone()),
             self.send_memory_store(event.clone()),
@@ -657,35 +691,11 @@ impl IncomingMessageHandler for ChannelManager {
 #[async_trait]
 impl UserRemoveHandler for ChannelManager {
     async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>) {
-        let messenger_context = match self.messenger_map.get(event.messenger_id.as_str()) {
-            Some(ctx) => ctx,
-            None => return,
-        };
-
-        let bound_info = match messenger_context.bound_map.get(event.user_id.as_str()) {
-            Some(info) => info.clone(),
-            None => return,
-        };
-
-        //通知 agent 用户已删除
-        if let Some(connect_context) = self.connect_map.get(&bound_info.connect_id) {
-            let notif = UserRemoveNotification {
-                messenger_id: event.messenger_id.clone(),
-                user_id: event.user_id.clone(),
-            };
-            if let Ok(payload) = serde_json::to_value(notif) {
-                let msg = WsMessage {
-                    sn: connect_context.ws_context.next_request_sn(),
-                    status_code: CODE_SUCCESS,
-                    payload_type: TYPE_USER_REMOVED,
-                    payload: Some(payload),
-                };
-                let _ = connect_context.ws_context.send_json(msg).await;
-            }
+        let span = span!(Level::INFO, "channel_manager handle user remove");
+        let _enter = span.enter();
+        if let Err(e) = self.handle_user_remove_internal(event).await {
+            error!("handle_user_remove error: {:?}", e);
         }
-
-        //解除绑定
-        messenger_context.bound_map.remove(event.user_id.as_str());
     }
 }
 
