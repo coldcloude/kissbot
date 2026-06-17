@@ -275,7 +275,8 @@ impl WebMessenger {
     }
 
     /// 统一 Outgoing → Incoming 转换并分发。
-    /// - 为群组每个成员生成 IncomingMessage（含 msg_id / is_self）
+    /// - 确定群组成员列表（admin-user 单聊组从 user_id 推导）
+    /// - 为每个成员生成 IncomingMessage（含 msg_id / is_self）
     /// - 调 on_incoming_messages 回调（传给 Agent）
     /// - 推 SSE（admin 可看所有群组消息）
     async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<String> {
@@ -283,12 +284,19 @@ impl WebMessenger {
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
-        let group = cfg.groups.get(outgoing.group_id.as_str())
-            .map(|g| g.clone())
-            .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
+        let members: Vec<String> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            // admin-user 单聊组：成员为 admin + 对应的 user
+            let uid = outgoing.group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX).unwrap();
+            vec![ADMIN_USER_ID.to_string(), uid.to_string()]
+        } else {
+            let group = cfg.groups.get(outgoing.group_id.as_str())
+                .map(|g| g.clone())
+                .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
+            group.members.iter().map(|m| m.clone()).collect()
+        };
         drop(cfg);
 
-        for member_id in group.members.iter() {
+        for member_id in &members {
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
             let incoming = Arc::new(IncomingMessage {
                 msg_id: Arc::new(msg_id.clone()),
@@ -333,13 +341,16 @@ impl WebMessenger {
     }
 
     /// admin 发消息。admin 不是群组成员则拒绝。
+    /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
     pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<String> {
         let cfg = self.config.read().await;
-        let group = cfg.groups.get(group_id)
-            .map(|g| g.clone())
-            .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-        if !group.members.contains(ADMIN_USER_ID) {
-            return Err(Error::GroupNotFound(group_id.to_string()));
+        if !group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            let group = cfg.groups.get(group_id)
+                .map(|g| g.clone())
+                .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+            if !group.members.contains(ADMIN_USER_ID) {
+                return Err(Error::GroupNotFound(group_id.to_string()));
+            }
         }
         drop(cfg);
 
