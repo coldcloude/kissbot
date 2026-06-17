@@ -291,6 +291,9 @@ impl WebMessenger {
         drop(cfg);
 
         for member_id in &members {
+            if member_id.as_str() == ADMIN_USER_ID.as_str() {
+                continue;
+            }
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
             let incoming = Arc::new(IncomingMessage {
                 msg_id: Arc::new(msg_id.clone()),
@@ -309,10 +312,8 @@ impl WebMessenger {
                 messages: Arc::new(vec![incoming]),
             });
 
-            if member_id.as_str() != ADMIN_USER_ID.as_str() {
-                if let Some(handler) = self.on_incoming_messages.upgrade() {
-                    handler.handle_incoming_message(event).await;
-                }
+            if let Some(handler) = self.on_incoming_messages.upgrade() {
+                handler.handle_incoming_message(event).await;
             }
         }
 
