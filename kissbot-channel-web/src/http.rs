@@ -218,10 +218,7 @@ async fn handle_create_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
-    let mut member_ids: Vec<String> = req.member_ids.iter().map(|m| m.to_string()).collect();
-    if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID.as_str()) {
-        member_ids.push(ADMIN_USER_ID.to_string());
-    }
+    let member_ids: Vec<String> = req.member_ids.iter().map(|m| m.to_string()).collect();
 
     match messenger.add_group(req.group_name.as_str(), member_ids).await {
         Ok(group_id) => Json(ApiResponse::success(serde_json::json!({
