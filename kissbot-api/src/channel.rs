@@ -79,6 +79,7 @@ pub struct OutgoingMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
+    pub time: Arc<String>,
     pub attachment_upload_id_map: Arc<DashMap<String, u32>>,
 }
 

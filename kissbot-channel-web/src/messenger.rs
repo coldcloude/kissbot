@@ -295,7 +295,8 @@ impl WebMessenger {
     /// - 为每个成员生成 IncomingMessage（含 msg_id / is_self）
     /// - 调 on_incoming_messages 回调（传给 Agent）
     /// - 推 SSE（admin 可看所有群组消息）
-    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<Arc<String>> {
+    /// - 返回 OutgoingMessageResponse（含 msg_id、time，附件映射为空）
+    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> Result<OutgoingMessageResponse> {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
         let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
@@ -349,19 +350,23 @@ impl WebMessenger {
             is_self: 1,
             msg_type: outgoing.msg_type,
             content: outgoing.content,
-            time,
+            time: time.clone(),
         };
         let sse_payload = SsePayload { r#type: "message", data: sse_event };
         if let Ok(json) = serde_json::to_string(&sse_payload) {
             self.sse.push(group_id.as_str(), &json);
         }
 
-        Ok(msg_id)
+        Ok(OutgoingMessageResponse {
+            msg_id,
+            time,
+            attachment_upload_id_map: Arc::new(DashMap::new()),
+        })
     }
 
     /// admin 发消息。admin 不是群组成员则拒绝。
     /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
-    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str) -> Result<Arc<String>> {
+    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str) -> Result<OutgoingMessageResponse> {
         let cfg = self.config.read().await;
         if self.parse_admin_user_group(group_id).await.is_none() {
             let group = cfg.groups.get(group_id)
@@ -384,14 +389,15 @@ impl WebMessenger {
         self.outgoing_to_incoming(outgoing).await
     }
 
-    /// admin 发消息，带附件。
+    /// admin 发消息，带附件。先通过 outgoing_to_incoming 生成基础 response，
+    /// 再根据附件信息填充 attachment_upload_id_map。
     pub async fn send_from_admin_with_attachment(
         &self,
         group_id: &str,
         content: &str,
         msg_type: &str,
         attachment_map: Arc<DashMap<String, Arc<AttachmentInfo>>>,
-    ) -> Result<Arc<String>> {
+    ) -> Result<OutgoingMessageResponse> {
         let cfg = self.config.read().await;
         if self.parse_admin_user_group(group_id).await.is_none() {
             let group = cfg.groups.get(group_id)
@@ -532,13 +538,8 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let msg_id = self.outgoing_to_incoming(message).await?;
-
-        let upload_id_map: Arc<DashMap<String, u32>> = Arc::new(DashMap::new());
-        Ok(Arc::new(OutgoingMessageResponse {
-            msg_id: msg_id,
-            attachment_upload_id_map: upload_id_map,
-        }))
+        let resp = self.outgoing_to_incoming(message).await?;
+        Ok(Arc::new(resp))
     }
 
     async fn send_attachment_payload(&self, _id: u32, _size: u32, _pos: u64, _data: &[u8]) -> std::result::Result<(), kissbot_channel::Error> {
