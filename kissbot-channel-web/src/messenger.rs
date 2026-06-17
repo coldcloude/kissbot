@@ -280,15 +280,19 @@ impl WebMessenger {
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
-        let members: Vec<String> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
-            vec![uid.to_string()]
+        let members: Vec<Arc<String>> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
+            vec![Arc::new(uid)]
         } else {
             let group = cfg.groups.get(outgoing.group_id.as_str())
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.to_string()))?;
-            group.members.iter().filter(|m| m.as_str() != ADMIN_USER_ID.as_str()).map(|m| m.clone()).collect()
+            group.members.iter().filter(|m| m.as_str() != ADMIN_USER_ID.as_str()).map(|m| Arc::new(m.clone())).collect()
         };
         drop(cfg);
+
+        if members.is_empty() {
+            return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
+        }
 
         for member_id in &members {
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
@@ -314,7 +318,7 @@ impl WebMessenger {
             }
         }
 
-        // 推 SSE（admin 可看所有群组消息）
+        // 推 SSE
         if let Ok(json) = serde_json::to_string(&serde_json::json!({
             "type": "message",
             "data": {
