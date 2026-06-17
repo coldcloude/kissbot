@@ -149,11 +149,15 @@ impl WebMessenger {
         self.config.read().await.groups.get(group_id).map(|g| g.clone())
     }
 
-    pub async fn is_admin_user_group(&self, group_id: &str) -> bool {
+    /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
+    /// 验证前缀匹配、user 存在于 config、且该组不在 groups 配置中。
+    pub async fn parse_admin_user_group(&self, group_id: &str) -> Option<String> {
+        let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         let cfg = self.config.read().await;
-        match group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX) {
-            Some(user_id) => cfg.users.contains_key(user_id) && !cfg.groups.contains_key(group_id),
-            None => false,
+        if cfg.users.contains_key(uid) && !cfg.groups.contains_key(group_id) {
+            Some(uid.to_string())
+        } else {
+            None
         }
     }
 
@@ -284,8 +288,7 @@ impl WebMessenger {
         let messenger_id = self.messenger_id.clone();
 
         let cfg = self.config.read().await;
-        let members: Vec<String> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
-            let uid = outgoing.group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX).unwrap();
+        let members: Vec<String> = if let Some(uid) = self.parse_admin_user_group(outgoing.group_id.as_str()).await {
             vec![ADMIN_USER_ID.as_str().to_string(), uid.to_string()]
         } else {
             let group = cfg.groups.get(outgoing.group_id.as_str())
@@ -343,7 +346,7 @@ impl WebMessenger {
     /// admin-user 单聊组（a_{user_id}）不在 groups 配置中，直接允许。
     pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> Result<String> {
         let cfg = self.config.read().await;
-        if !group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        if self.parse_admin_user_group(group_id).await.is_none() {
             let group = cfg.groups.get(group_id)
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;

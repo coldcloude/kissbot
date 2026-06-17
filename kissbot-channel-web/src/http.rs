@@ -247,7 +247,7 @@ async fn handle_rename_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<RenameGroupRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(req.group_id.as_str()).await {
+    if messenger.parse_admin_user_group(req.group_id.as_str()).await.is_some() {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be renamed".to_string()));
     }
     match messenger.rename_group(req.group_id.as_str(), req.group_name.as_str()).await {
@@ -261,7 +261,7 @@ async fn handle_manage_members(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<ManageMembersRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(req.group_id.as_str()).await {
+    if messenger.parse_admin_user_group(req.group_id.as_str()).await.is_some() {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be modified".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
@@ -287,7 +287,7 @@ async fn handle_delete_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<DeleteGroupRequest>,
 ) -> impl IntoResponse {
-    if messenger.is_admin_user_group(req.group_id.as_str()).await {
+    if messenger.parse_admin_user_group(req.group_id.as_str()).await.is_some() {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be deleted".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
