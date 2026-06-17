@@ -309,8 +309,10 @@ impl WebMessenger {
                 messages: Arc::new(vec![incoming]),
             });
 
-            if let Some(handler) = self.on_incoming_messages.upgrade() {
-                handler.handle_incoming_message(event).await;
+            if member_id.as_str() != ADMIN_USER_ID.as_str() {
+                if let Some(handler) = self.on_incoming_messages.upgrade() {
+                    handler.handle_incoming_message(event).await;
+                }
             }
         }
 
