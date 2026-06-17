@@ -30,8 +30,8 @@ use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, GroupConfig, UserConf
 pub struct MessengerAdminInfo {
     pub messenger_id: Arc<String>,
     pub admin_name: Arc<String>,
-    pub users: Arc<DashMap<Arc<String>, Arc<UserConfig>>>,
-    pub groups: Arc<DashMap<Arc<String>, Arc<GroupConfig>>>,
+    pub users: Arc<DashMap<String, Arc<UserConfig>>>,
+    pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -222,16 +222,16 @@ async fn handle_create_group(
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let mut member_ids = req.member_ids;
+    let mut member_ids: Vec<String> = req.member_ids.iter().map(|m| m.to_string()).collect();
     if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID.as_str()) {
-        member_ids.push(ADMIN_USER_ID.clone());
+        member_ids.push(ADMIN_USER_ID.to_string());
     }
 
     match messenger.add_group(req.group_name.as_str(), member_ids.clone()).await {
         Ok(group_id) => {
             for m in &member_ids {
                 if m.as_str() != ADMIN_USER_ID.as_str() {
-                    messenger.notify_group_change(m.as_str(), group_id.as_str(), GroupChangeType::Joined, &time).await;
+                    messenger.notify_group_change(m, &group_id, GroupChangeType::Joined, &time).await;
                 }
             }
             Json(ApiResponse::success(serde_json::json!({
@@ -250,7 +250,7 @@ async fn handle_rename_group(
     if messenger.is_admin_user_group(req.group_id.as_str()).await {
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be renamed".to_string()));
     }
-    match messenger.rename_group(&req.group_id, req.group_name.as_str()).await {
+    match messenger.rename_group(req.group_id.as_str(), req.group_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
@@ -266,13 +266,15 @@ async fn handle_manage_members(
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    match messenger.manage_members(&req.group_id, &req.add_ids, &req.remove_ids).await {
+    let add_ids: Vec<String> = req.add_ids.iter().map(|a| a.to_string()).collect();
+    let remove_ids: Vec<String> = req.remove_ids.iter().map(|r| r.to_string()).collect();
+    match messenger.manage_members(req.group_id.as_str(), &add_ids, &remove_ids).await {
         Ok(_) => {
-            for add_id in &req.add_ids {
-                messenger.notify_group_change(add_id.as_str(), req.group_id.as_str(), GroupChangeType::Joined, &time).await;
+            for add_id in &add_ids {
+                messenger.notify_group_change(add_id, req.group_id.as_str(), GroupChangeType::Joined, &time).await;
             }
-            for remove_id in &req.remove_ids {
-                messenger.notify_group_change(remove_id.as_str(), req.group_id.as_str(), GroupChangeType::Left, &time).await;
+            for remove_id in &remove_ids {
+                messenger.notify_group_change(remove_id, req.group_id.as_str(), GroupChangeType::Left, &time).await;
             }
             Json(ApiResponse::success(serde_json::json!({"success": true})))
         }
@@ -289,9 +291,9 @@ async fn handle_delete_group(
         return Json(ApiResponse::<serde_json::Value>::error("Admin-user group cannot be deleted".to_string()));
     }
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let group = messenger.get_group(&req.group_id).await;
+    let group = messenger.get_group(req.group_id.as_str()).await;
 
-    match messenger.delete_group(&req.group_id).await {
+    match messenger.delete_group(req.group_id.as_str()).await {
         Ok(_) => {
             if let Some(g) = group {
                 for m in g.members.iter() {
@@ -322,9 +324,9 @@ async fn handle_create_user(
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
     match messenger.add_user(req.user_name.as_str()).await {
-        Ok(user_id) => {
-            let group_id = admin_user_group_id(user_id.as_str());
-            messenger.notify_group_change(user_id.as_str(), &group_id, GroupChangeType::Joined, &time).await;
+        Ok(ref user_id) => {
+            let group_id = admin_user_group_id(user_id);
+            messenger.notify_group_change(user_id, &group_id, GroupChangeType::Joined, &time).await;
             Json(ApiResponse::success(serde_json::json!({
                 "user_id": user_id,
             })))
@@ -338,7 +340,7 @@ async fn handle_rename_user(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<RenameUserRequest>,
 ) -> impl IntoResponse {
-    match messenger.rename_user(&req.user_id, req.user_name.as_str()).await {
+    match messenger.rename_user(req.user_id.as_str(), req.user_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
@@ -362,7 +364,7 @@ async fn handle_delete_user(
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-    match messenger.remove_user(&req.user_id).await {
+    match messenger.remove_user(req.user_id.as_str()).await {
         Ok(_) => {
             let group_id = admin_user_group_id(req.user_id.as_str());
             messenger.notify_group_change(req.user_id.as_str(), &group_id, GroupChangeType::Left, &time).await;
