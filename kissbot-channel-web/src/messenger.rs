@@ -150,11 +150,11 @@ impl WebMessenger {
     }
 
     /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
-    /// 验证前缀匹配、user 存在于 config、且该组不在 groups 配置中。
+    /// 验证前缀匹配、user 存在于 config。
     pub async fn parse_admin_user_group(&self, group_id: &str) -> Option<String> {
         let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         let cfg = self.config.read().await;
-        if cfg.users.contains_key(uid) && !cfg.groups.contains_key(group_id) {
+        if cfg.users.contains_key(uid) {
             Some(uid.to_string())
         } else {
             None
