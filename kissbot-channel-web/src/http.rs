@@ -22,7 +22,7 @@ use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
+use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, ADMIN_USER_ID_ARC, GroupConfig, UserConfig, WebMessenger};
 
 // ========== DTOs ==========
 
@@ -224,7 +224,7 @@ async fn handle_create_group(
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let mut member_ids = req.member_ids;
     if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID) {
-        member_ids.push(Arc::new(ADMIN_USER_ID.to_string()));
+        member_ids.push(ADMIN_USER_ID_ARC.clone());
     }
 
     match messenger.add_group(req.group_name.as_str(), member_ids.clone()).await {

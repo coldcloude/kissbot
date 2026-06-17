@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, LazyLock, Weak};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -46,6 +46,7 @@ impl SseDispatcher {
 
 const ADMIN_USER_GROUP_PREFIX: &str = "a_";
 pub const ADMIN_USER_ID: &str = "admin";
+pub static ADMIN_USER_ID_ARC: LazyLock<Arc<String>> = LazyLock::new(|| Arc::new("admin".to_string()));
 const USER_ID_PREFIX: &str = "u";
 const GROUP_ID_PREFIX: &str = "g";
 
@@ -289,7 +290,7 @@ impl WebMessenger {
         let cfg = self.config.read().await;
         let members: Vec<Arc<String>> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
             let uid = outgoing.group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX).unwrap();
-            vec![Arc::new(ADMIN_USER_ID.to_string()), Arc::new(uid.to_string())]
+            vec![ADMIN_USER_ID_ARC.clone(), Arc::new(uid.to_string())]
         } else {
             let group = cfg.groups.get(&outgoing.group_id)
                 .map(|g| g.clone())
@@ -351,7 +352,7 @@ impl WebMessenger {
             let group = cfg.groups.get(&group_id_arc)
                 .map(|g| g.clone())
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            if !group.members.contains(&Arc::new(ADMIN_USER_ID.to_string())) {
+            if !group.members.contains(&ADMIN_USER_ID_ARC.clone()) {
                 return Err(Error::GroupNotFound(group_id.to_string()));
             }
         }
@@ -359,7 +360,7 @@ impl WebMessenger {
 
         let outgoing = OutgoingMessage {
             messenger_id: self.messenger_id.clone(),
-            user_id: Arc::new(ADMIN_USER_ID.to_string()),
+            user_id: ADMIN_USER_ID_ARC.clone(),
             group_id: group_id_arc,
             msg_type: Arc::new(msg_type.to_string()),
             content: Arc::new(content.to_string()),
