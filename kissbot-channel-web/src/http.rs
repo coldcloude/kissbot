@@ -165,12 +165,10 @@ async fn handle_send_message(
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let (content, msg_type) = build_message_content(&req);
 
-    if let Err(e) = messenger.admin_send_message(&req.group_id, &content, &msg_type, &time).await {
-        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
-    }
+    let msg_id = messenger.send_from_admin(&req.group_id, &content, &msg_type, &time).await;
 
     Json(ApiResponse::success(serde_json::json!({
-        "msg_id": "",
+        "msg_id": msg_id,
         "time": time
     })))
 }

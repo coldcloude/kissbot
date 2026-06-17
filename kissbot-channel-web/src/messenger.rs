@@ -269,78 +269,86 @@ impl WebMessenger {
         Ok(())
     }
 
-    fn get_on_incoming(&self) -> Result<Arc<dyn IncomingMessageHandler>> {
-        self.on_incoming_messages.upgrade()
-            .ok_or_else(|| Error::InternalError("incoming message handler is None".to_string()))
-    }
-
     fn get_on_group_change(&self) -> Result<Arc<dyn GroupChangeHandler>> {
         self.on_group_change.upgrade()
             .ok_or_else(|| Error::InternalError("group change handler is None".to_string()))
     }
 
-    async fn fire_incoming(&self, messenger_id: &str, user_id: &str, group_id: &str, msg_id: &str, is_self: usize, msg_type: &str, content: &str, time: &str) {
-        let handler = match self.get_on_incoming() {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-        let incoming = Arc::new(IncomingMessage {
-            msg_id: Arc::new(msg_id.to_string()),
-            messenger_id: Arc::new(messenger_id.to_string()),
-            user_id: Arc::new(user_id.to_string()),
-            group_id: Arc::new(group_id.to_string()),
-            is_self,
-            msg_type: Arc::new(msg_type.to_string()),
-            content: Arc::new(content.to_string()),
-            time: Arc::new(time.to_string()),
-        });
-        let event = Arc::new(IncomingMessageEvent {
-            messenger_id: Arc::new(messenger_id.to_string()),
-            user_id: Arc::new(user_id.to_string()),
-            group_id: Arc::new(group_id.to_string()),
-            messages: Arc::new(vec![incoming]),
-        });
-        let _ = handler.handle_incoming_message(event).await;
-    }
-
-    pub async fn admin_send_message(
-        &self,
-        group_id: &str,
-        content: &str,
-        msg_type: &str,
-        time: &str,
-    ) -> Result<()> {
-        let cfg = self.config.read().await;
-        let group = cfg.groups.get(group_id)
-            .map(|g| g.clone())
-            .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-        let admin_id = ADMIN_USER_ID.to_string();
-        drop(cfg);
-
+    /// 统一 Outgoing → Incoming 转换并分发。
+    /// - 为群组每个成员生成 IncomingMessage（含 msg_id / is_self）
+    /// - 调 on_incoming_messages 回调（传给 Agent）
+    /// - 群组成员中有 admin 时额外推 SSE（序列化 IncomingMessage）
+    async fn outgoing_to_incoming(&self, outgoing: OutgoingMessage) -> String {
         let msg_id = self.next_msg_id();
         let messenger_id = self.messenger_id.clone();
 
+        let cfg = self.config.read().await;
+        let group = match cfg.groups.get(outgoing.group_id.as_str()) {
+            Some(g) => g.clone(),
+            None => return msg_id,
+        };
+        let has_admin = group.members.contains(ADMIN_USER_ID);
+        drop(cfg);
+
         for member_id in group.members.iter() {
-            let is_self = if member_id.as_str() == admin_id.as_str() { 1 } else { 0 };
-            self.fire_incoming(messenger_id.as_str(), &admin_id, group_id, &msg_id, is_self, msg_type, content, time).await;
+            let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
+            let incoming = Arc::new(IncomingMessage {
+                msg_id: Arc::new(msg_id.clone()),
+                messenger_id: messenger_id.clone(),
+                user_id: outgoing.user_id.clone(),
+                group_id: outgoing.group_id.clone(),
+                is_self,
+                msg_type: outgoing.msg_type.clone(),
+                content: outgoing.content.clone(),
+                time: outgoing.time.clone(),
+            });
+            let event = Arc::new(IncomingMessageEvent {
+                messenger_id: messenger_id.clone(),
+                user_id: outgoing.user_id.clone(),
+                group_id: outgoing.group_id.clone(),
+                messages: Arc::new(vec![incoming.clone()]),
+            });
+
+            // 调 on_incoming_messages 回调传给 Agent
+            if let Some(handler) = self.on_incoming_messages.upgrade() {
+                handler.handle_incoming_message(event).await;
+            }
         }
 
-        // 推 SSE 给 admin 前端
-        let sse_data = serde_json::to_string(&serde_json::json!({
-            "type": "message",
-            "data": {
+        // 群组中有 admin 时推 SSE（以 admin 视角 is_self=1）
+        if has_admin {
+            let admin_incoming = serde_json::json!({
                 "msg_id": msg_id,
-                "group_id": group_id,
-                "user_id": admin_id.to_string(),
+                "messenger_id": messenger_id,
+                "user_id": outgoing.user_id,
+                "group_id": outgoing.group_id,
                 "is_self": 1,
-                "msg_type": msg_type,
-                "content": content,
-                "time": time,
+                "msg_type": outgoing.msg_type,
+                "content": outgoing.content,
+                "time": outgoing.time,
+            });
+            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                "type": "message",
+                "data": admin_incoming,
+            })) {
+                self.sse.push(outgoing.group_id.as_str(), &json);
             }
-        })).unwrap_or_default();
-        self.sse.push(group_id, &sse_data);
+        }
 
-        Ok(())
+        msg_id
+    }
+
+    pub async fn send_from_admin(&self, group_id: &str, content: &str, msg_type: &str, time: &str) -> String {
+        let outgoing = OutgoingMessage {
+            messenger_id: self.messenger_id.clone(),
+            user_id: Arc::new(ADMIN_USER_ID.to_string()),
+            group_id: Arc::new(group_id.to_string()),
+            msg_type: Arc::new(msg_type.to_string()),
+            content: Arc::new(content.to_string()),
+            time: Arc::new(time.to_string()),
+            attachment_map: Arc::new(DashMap::new()),
+        };
+        self.outgoing_to_incoming(outgoing).await
     }
 
     pub async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
@@ -461,39 +469,7 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let msg_id = self.next_msg_id();
-        let messenger_id = self.messenger_id.clone();
-
-        let cfg = self.config.read().await;
-        let group = cfg.groups.get(message.group_id.as_str())
-            .map(|g| g.clone())
-            .ok_or_else(|| Error::GroupNotFound(message.group_id.to_string()))?;
-        let sender_id = message.user_id.clone();
-        drop(cfg);
-
-        for member_id in group.members.iter() {
-            let is_self = if member_id.as_str() == sender_id.as_str() { 1 } else { 0 };
-            let incoming = Arc::new(IncomingMessage {
-                msg_id: Arc::new(msg_id.clone()),
-                messenger_id: messenger_id.clone(),
-                user_id: sender_id.clone(),
-                group_id: message.group_id.clone(),
-                is_self,
-                msg_type: message.msg_type.clone(),
-                content: message.content.clone(),
-                time: message.time.clone(),
-            });
-            let event = Arc::new(IncomingMessageEvent {
-                messenger_id: messenger_id.clone(),
-                user_id: sender_id.clone(),
-                group_id: message.group_id.clone(),
-                messages: Arc::new(vec![incoming]),
-            });
-
-            if let Some(handler) = self.on_incoming_messages.upgrade() {
-                handler.handle_incoming_message(event).await;
-            }
-        }
+        let msg_id = self.outgoing_to_incoming(message).await;
 
         let upload_id_map: Arc<DashMap<String, u32>> = Arc::new(DashMap::new());
         Ok(Arc::new(OutgoingMessageResponse {
