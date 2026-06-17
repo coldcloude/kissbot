@@ -22,7 +22,7 @@ use kissbot_channel::GroupChangeType;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, ADMIN_USER_ID_ARC, GroupConfig, UserConfig, WebMessenger};
+use crate::messenger::{admin_user_group_id, ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
 
 // ========== DTOs ==========
 
@@ -223,14 +223,14 @@ async fn handle_create_group(
 ) -> impl IntoResponse {
     let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let mut member_ids = req.member_ids;
-    if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID) {
-        member_ids.push(ADMIN_USER_ID_ARC.clone());
+    if !member_ids.iter().any(|m| m.as_str() == ADMIN_USER_ID.as_str()) {
+        member_ids.push(ADMIN_USER_ID.clone());
     }
 
     match messenger.add_group(req.group_name.as_str(), member_ids.clone()).await {
         Ok(group_id) => {
             for m in &member_ids {
-                if m.as_str() != ADMIN_USER_ID {
+                if m.as_str() != ADMIN_USER_ID.as_str() {
                     messenger.notify_group_change(m.as_str(), group_id.as_str(), GroupChangeType::Joined, &time).await;
                 }
             }
@@ -295,7 +295,7 @@ async fn handle_delete_group(
         Ok(_) => {
             if let Some(g) = group {
                 for m in g.members.iter() {
-                    if m.as_str() != ADMIN_USER_ID {
+                    if m.as_str() != ADMIN_USER_ID.as_str() {
                         messenger.notify_group_change(m.as_str(), req.group_id.as_str(), GroupChangeType::Left, &time).await;
                     }
                 }
