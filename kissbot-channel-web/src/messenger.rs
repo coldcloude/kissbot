@@ -171,18 +171,8 @@ impl WebMessenger {
         group_id == admin_user_group_id(user_id)
     }
 
-    pub async fn get_group(&self, group_id: &str) -> Option<Arc<GroupConfig>> {
-        self.config.read().await.groups.get(group_id).map(|g| g.clone())
-    }
-
     /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
     /// 验证前缀匹配、user 存在于 config。
-    pub async fn parse_admin_user_group(&self, group_id: &str) -> Option<String> {
-        let cfg = self.config.read().await;
-        Self::parse_admin_user_group_ref(&cfg, group_id)
-    }
-
-    /// 内部版本，直接使用已有 config 引用。
     fn parse_admin_user_group_ref(cfg: &MessengerConfig, group_id: &str) -> Option<String> {
         let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         if cfg.users.contains_key(uid) {
@@ -221,7 +211,12 @@ impl WebMessenger {
             user_id: Arc::new(user_id.clone()),
             user_name: Arc::new(user_name.to_string()),
         }));
-        self.save(&cfg).await?;
+        drop(cfg);
+
+        let group_id = admin_user_group_id(&user_id);
+        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        self.notify_group_change(&user_id, &group_id, GroupChangeType::Joined, &time).await;
+
         Ok(user_id)
     }
 
@@ -234,7 +229,12 @@ impl WebMessenger {
         for g in cfg.groups.iter_mut() {
             g.members.remove(user_id);
         }
-        self.save(&cfg).await?;
+        drop(cfg);
+
+        let group_id = admin_user_group_id(user_id);
+        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        self.notify_group_change(user_id, &group_id, GroupChangeType::Left, &time).await;
+
         Ok(())
     }
 
@@ -243,17 +243,29 @@ impl WebMessenger {
         let n = cfg.next_group_seq;
         cfg.next_group_seq += 1;
         let group_id = format!("{}{}", GROUP_ID_PREFIX, n);
-        let members = Arc::new(member_ids.into_iter().collect::<DashSet<String>>());
+        let members = Arc::new(member_ids.clone().into_iter().collect::<DashSet<String>>());
         cfg.groups.insert(group_id.clone(), Arc::new(GroupConfig {
             group_id: Arc::new(group_id.clone()),
             group_name: Arc::new(group_name.to_string()),
             members,
         }));
-        self.save(&cfg).await?;
+        drop(cfg);
+
+        // 通知新成员
+        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        for m in &member_ids {
+            if m != ADMIN_USER_ID.as_str() {
+                self.notify_group_change(m, &group_id, GroupChangeType::Joined, &time).await;
+            }
+        }
+
         Ok(group_id)
     }
 
     pub async fn rename_group(&self, group_id: &str, new_name: &str) -> Result<()> {
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            return Err(Error::GroupNotFound(group_id.to_string()));
+        }
         let cfg = self.config.write().await;
         let mut g = cfg.groups.get_mut(group_id)
             .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
@@ -268,31 +280,60 @@ impl WebMessenger {
     }
 
     pub async fn manage_members(&self, group_id: &str, add_ids: &[String], remove_ids: &[String]) -> Result<()> {
-        let cfg = self.config.write().await;
-        let mut g = cfg.groups.get_mut(group_id)
-            .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-        let old = g.clone();
-        for id in add_ids {
-            old.members.insert(id.clone());
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            return Err(Error::GroupNotFound(group_id.to_string()));
         }
-        for id in remove_ids {
-            old.members.remove(id);
+        {
+            let cfg = self.config.write().await;
+            let mut g = cfg.groups.get_mut(group_id)
+                .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+            let old = g.clone();
+            for id in add_ids {
+                old.members.insert(id.clone());
+            }
+            for id in remove_ids {
+                old.members.remove(id);
+            }
+            *g = Arc::new(GroupConfig {
+                group_id: old.group_id.clone(),
+                group_name: old.group_name.clone(),
+                members: old.members.clone(),
+            });
         }
-        *g = Arc::new(GroupConfig {
-            group_id: old.group_id.clone(),
-            group_name: old.group_name.clone(),
-            members: old.members.clone(),
-        });
-        self.save(&cfg).await?;
+
+        // 通知成员变更
+        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        for add_id in add_ids {
+            self.notify_group_change(add_id, group_id, GroupChangeType::Joined, &time).await;
+        }
+        for remove_id in remove_ids {
+            self.notify_group_change(remove_id, group_id, GroupChangeType::Left, &time).await;
+        }
+
         Ok(())
     }
 
     pub async fn delete_group(&self, group_id: &str) -> Result<()> {
-        let cfg = self.config.write().await;
-        if cfg.groups.remove(group_id).is_none() {
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
-        self.save(&cfg).await?;
+        let members: Vec<String> = {
+            let cfg = self.config.write().await;
+            let group = cfg.groups.get(group_id).map(|g| g.members.iter().map(|m| m.clone()).collect());
+            if cfg.groups.remove(group_id).is_none() {
+                return Err(Error::GroupNotFound(group_id.to_string()));
+            }
+            group.unwrap_or_default()
+        };
+
+        // 通知成员退出
+        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        for m in &members {
+            if m.as_str() != ADMIN_USER_ID.as_str() {
+                self.notify_group_change(m, group_id, GroupChangeType::Left, &time).await;
+            }
+        }
+
         Ok(())
     }
 
@@ -396,7 +437,7 @@ impl WebMessenger {
         })
     }
 
-    pub async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
+    async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
         let handler = match self.get_on_group_change() {
             Ok(h) => h,
             Err(_) => return,
