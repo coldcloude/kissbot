@@ -233,26 +233,9 @@ nexus 通过 WSS 发送附件下载请求（携带 key）
 
 ## 三、组件间通信
 
-### 3.1 通信总览
+组件间通信使用 HTTPS、WSS 和文件系统共享三种方式，详细通信内容及时机见 [communication.md](../../../spec/communication.md)。
 
-| 发送方 | 接收方 | 协议 | 通信内容 | 通信时机 |
-|--------|--------|------|----------|----------|
-| nexus | 消息通道 | WSS | 绑定请求、下行消息(回复/思考)、附件下载请求、心跳 | nexus 启动时绑定；有消息回复时；需要附件时 |
-| 消息通道 | nexus | WSS | 上行消息(用户消息)、群组变化通知、附件数据、心跳 | 外部消息到达时；群组变化时；nexus 请求附件时 |
-| nexus | station | HTTPS（请求/响应） | nexus 发送 tool call 请求，station 返回 tool result 响应 | agentic loop 内 LLM 生成 tool call 时 |
-| nexus | 记忆存储模块 | HTTPS | 推送记忆记录（channel 文本/思考/工具调用/工具结果） | 每条消息产生时 |
-| nexus | 记忆结构实现模块 | HTTPS（内置 tool） | 记忆查询请求 | agentic loop 内 LLM 调用记忆搜索工具时 |
-| nexus | 自我认知模块 | HTTPS | 读取自我认知信息 | nexus 启动时；上下文重置时 |
-| 消息通道 | 记忆存储模块 | HTTPS | 推送消息记录 | 外部消息到达时 |
-| 记忆存储模块 | 记忆结构实现模块 | WSS | 新数据通知 | 记忆存储模块收到新记录时 |
-| 记忆存储模块 / 记忆结构实现模块 | — | 文件系统 | 共享读写记忆文件 | 持续 |
-| 调用方（任何 HTTPS 客户端） | 任意 HTTPS 服务器（memory-store/memory-ego/station/agent-config 等） | HTTPS | 认证校验 | 每次 HTTP 请求 |
-| WSS 客户端（nexus/memory-struct 等） | WSS 服务器（channel/memory-store 等） | WSS | 认证校验 | 每次 WebSocket 连接建立 |
-| 智能体配置界面 | nexus / station | HTTPS | 组件配置管理 | 用户操作配置界面时 |
-| 记忆管理界面 | 记忆存储/结构/自我认知模块 | HTTPS | 记忆查看和管理 | 用户操作管理界面时 |
-| 通道前端界面 | 通道实现模块后端 | HTTPS | 用户收发消息 | 用户操作聊天界面时 |
-
-### 3.2 关键通信约束
+### 关键通信约束
 
 - **Nexus 是唯一对接记忆系统的组件**：tool 执行结果由 station 返回 nexus 后，由 nexus 统一推送
 - **nexus 与记忆系统的交互区分两种模式**：

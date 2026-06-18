@@ -129,14 +129,3 @@ nexus 收到 LLM 返回中的 tool call
   → 将结果推送到记忆存储模块 / 发送到消息通道
   → 回到空闲状态
 ```
-
-## 外部通信
-
-| 对端 | 协议 | 通信时机 | 内容 |
-|------|------|----------|------|
-| 消息通道 | WSS | 持续 | 收发消息、绑定、附件下载、心跳 |
-| Station | HTTPS | agentic loop 内 | 发送 tool call（请求），接收结果（响应） |
-| memory-store | HTTPS | 消息产生时 | 推送记忆记录 |
-| memory-struct | HTTPS | agentic loop 内 | 内置记忆查询 tool 调用 |
-| memory-ego | HTTPS | 启动/重置时 | 读取自我认知设定 |
-| 智能体配置界面 | HTTPS | 用户操作时 | 配置 nexus 参数 |
