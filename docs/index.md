@@ -23,7 +23,7 @@ docs/
 │           └── kissbot-channel-web/
 │               ├── layout.html         # Web 聊天页面原型
 │               ├── style.css           # 样式定义
-│               └── layout.md           # 交互行为说明
+│               └── README.md           # 界面内容说明
 │
 ├── spec/                       # 技术细节约定
 │   ├── technical-architecture.md    # 技术架构（技术栈、模块类型）
