@@ -2,7 +2,7 @@
 
 ## 概述
 
-Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 Web 的即时通讯功能。
+Web 消息通道的实现。实现 Messenger 接口，提供基于 Web 的即时通讯功能。
 包含后端服务（Rust）和前端界面（React）两部分。
 
 **用户模型**：
@@ -14,7 +14,7 @@ Web 消息通道的实现。实现 Messenger 和 Channel 接口，提供基于 W
 
 ## 后端 — kissbot-channel-web
 
-进程内运行 ChannelManager（kissbot-channel 库提供，带 WSS 服务），注册一个 WebMessenger 实现（提供 HTTPS + SSE 服务），两者通过 Messenger/Channel 接口交互，持续运行。
+进程内运行 ChannelManager（kissbot-channel 库提供，带 WSS 服务），注册一个 WebMessenger 实现（提供 HTTPS + SSE 服务），通过 Messenger 接口交互，持续运行。
 
 ### 核心功能
 
@@ -41,8 +41,8 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 #### 3. UserManager — 用户管理
 维护用户列表（普通 users，不含 admin）。新增用户时写入 JSON 配置文件，通知 GroupManager 自动生成该 user 与 admin 的单聊群组。删除用户时从配置文件中移除用户及其单聊群组，触发 `GroupChangeHandler` 回调。
 
-#### 4. WebChannel（Channel 实现）
-每 (user, group) 组合对应一个 WebChannel 实例。实现 `send_message()` 将消息通过 SSE 推送给前端。注册 `on_message_received` 回调处理前端发来的消息。
+#### 4. WebChannel（消息收发通道）
+每 (user, group) 组合对应一个 WebChannel。实现 `send_message()` 将消息通过 SSE 推送给前端。注册 `on_message_received` 回调处理前端发来的消息。
 
 #### 5. AttachmentStore — 附件存储
 使用本地文件系统存储附件。实现附件元数据查询和数据读取。上传时图片自动生成缩略图。
@@ -61,7 +61,7 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 6. ChannelManager 后续处理（消息入队、推送等）
 
 #### 消息下行（agent → admin）
-1. ChannelManager 按 ChannelInfo 查找 WebChannel，调用 `send_message()`
+1. ChannelManager 按 messenger_id + group_id + user_id 查找 WebChannel，调用 `send_message()`
 2. WebChannel 通过 SSE 将消息推送至 Web UI
 3. 管理员收到回复
 
