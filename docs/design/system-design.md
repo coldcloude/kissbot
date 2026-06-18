@@ -31,9 +31,6 @@ Agent 程序可在启动时选择开启的部分：
 
 **通道实现模块**：实现 Messenger 和 Channel 接口，负责连接具体的外部系统（如 Web 页面、QQ 等），实现用户管理、群组管理、消息收发、附件管理等功能。每个实现模块对应一种通讯应用，可包含后端服务和前端界面。
 
-### 统一的公共消息格式
-channel 和 memory 使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
-
 ### 3. 记忆系统
 由四个层次组成，所有 nexus 共用同一套记忆系统：
 
@@ -246,3 +243,8 @@ nexus 通过 WSS 发送附件下载请求（携带 key）
   - agentic loop 外：直接调用 API 读取自我认知设定、推送记忆到存储模块
   - agentic loop 内：由 LLM 通过 nexus 内置 tool 从记忆结构模块查询记忆（不记入记忆）
 - **消息通道不存储历史消息**：所有历史消息由记忆存储模块保存
+
+## 四、关键设计
+
+### 统一的公共消息格式
+channel 和 memory 使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
