@@ -13,10 +13,11 @@ Keep It Simple Stupid BOT - kissbot
 ## 目录结构
 - **docs** 项目文档
   - **index.md** 文档目录索引
-  - **spec** 设计文档
+  - **design** 设计文档
     - **system-design.md** 系统设计文档（组件、流程、通信）
-    - **technical-architecture.md** 技术架构文档（技术栈、协议）
     - **components-design** 组件设计文档（每个组件一个文件）
+  - **spec** 技术细节约定
+    - **technical-architecture.md** 技术架构文档（技术栈、协议）
   - **plan** 任务计划
     - **system-plan.md** 组件和流程的实现顺序规划
     - **components-plan** 组件内功能实现顺序（每个组件一个文件）

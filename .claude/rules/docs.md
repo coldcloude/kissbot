@@ -1,6 +1,6 @@
 ---
 paths:
-  - "docs/spec/**/*.md"
+  - "docs/design/**/*.md"
 description: 项目设计文档的编写规范
 ---
 

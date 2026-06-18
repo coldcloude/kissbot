@@ -4,9 +4,8 @@
 docs/
 └─ index.md                # 本文档 — 文档目录索引
 │
-├── spec/                       # 设计文档
+├── design/                     # 设计文档
 │   ├── system-design.md        # 系统设计（组件体系、运行流程、组件间通信）
-│   ├── technical-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
 │   └── components-design/      # 组件设计文档（每个组件一个文件）
 │       ├── kissbot-agent.md           # Agent 组件（Nexus + Station 内部模块）
 │       ├── kissbot-agent-nexus.md     # Agent Nexus 模块 — LLM 通信枢纽
@@ -20,6 +19,9 @@ docs/
 │       ├── kissbot-api.md             # API 定义模块
 │       ├── kissbot-agent-config.md    # 智能体配置 UI
 │       └── kissbot-memory-manage.md   # 记忆管理 UI
+│
+├── spec/                       # 技术细节约定
+│   └── technical-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
 │
 └── plan/                       # 任务计划
     ├── system-plan.md       # 组件和流程的实现顺序规划
