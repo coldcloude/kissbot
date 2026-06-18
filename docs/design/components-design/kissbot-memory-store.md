@@ -11,11 +11,7 @@
 - 使用 JSON Lines 格式高效读写
 - 追加记录、按时间范围查询
 
-存储的文件分类：
-- `channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl`：channel 文本记录（按 messenger、user、group 和时间组织）
-- `think-records-{date}.jsonl`：思考内容记录
-- `tool-call-records-{date}.jsonl`：工具调用记录
-- `tool-result-records-{date}.jsonl`：工具调用结果记录
+存储的四种文件类型：通道文本记录、思考内容记录、工具调用记录、工具调用结果记录。每种记录按日期分文件存储。
 
 ### 2. WSSNotificationServer - WSS 通知服务器
 - 作为 WSS 服务器，接受记忆结构实现模块的连接

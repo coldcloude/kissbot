@@ -29,42 +29,19 @@
 
 ## 目录结构
 
+记忆系统根目录下按 agent 划分子目录，包含自我认知数据、记忆存储数据和记忆结构数据三类。
+
+记忆存储支持两种组织模式——角色记忆和事件记忆，区别仅在于目录名的构造方式。后缀由推送方和查询方拼接后传入，路径构造器负责拼接完整路径。
+
 ### 角色记忆模式
 ```
-{记忆系统根目录}/
-├── {agent-id}/
-│   ├── agent-{agent-id}          # agent 存在标识文件
-│   ├── metadata.json             # agent 元数据
-│   ├── memory-ego/               # 自我认知数据
-│   ├── memory-store/
-│   │   └── {year}-{role-name}/
-│   │       ├── channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl
-│   │       ├── think-records-{date}.jsonl
-│   │       ├── tool-call-records-{date}.jsonl
-│   │       └── tool-result-records-{date}.jsonl
-│   ├── memory-struct-*/          # 各记忆结构实现的数据
-│   └── ...
+{根目录}/{agent-id}/memory-store/{年}-{角色名}/
 ```
 
 ### 事件记忆模式
 ```
-{记忆系统根目录}/
-├── {agent-id}/
-│   ├── agent-{agent-id}
-│   ├── metadata.json
-│   ├── memory-ego/
-│   ├── memory-store/
-│   │   └── {year}-{role-name}-{event-id}/
-│   │       ├── channel-{messenger_id}={user_id}={group_id}-records-{date}.jsonl
-│   │       ├── think-records-{date}.jsonl
-│   │       ├── tool-call-records-{date}.jsonl
-│   │       └── tool-result-records-{date}.jsonl
-│   └── memory-struct-*/
+{根目录}/{agent-id}/memory-store/{年}-{角色名}-{事件ID}/
 ```
 
 ## 对外接口
-以库形式提供：
-- `DirectoryManager` → 目录管理单例
-- `MemoryIndexer` → 索引器单例
-- `PathBuilder` → 路径构造器，提供 `build_store_path()` 等方法
-- 路径常量集合
+以库形式提供目录管理、路径构造、索引管理等功能。

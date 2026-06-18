@@ -16,15 +16,14 @@ Keep It Simple Stupid BOT - kissbot
   - **design** 设计文档
     - **system-design.md** 系统设计文档（组件、流程、通信）
     - **components-design** 组件设计文档（每个组件一个文件）
-  - **spec** 技术细节约定
-    - **technical-architecture.md** 技术架构文档（技术栈、协议）
+  - **spec** 技术细节约定，每类细节单独一个文件
   - **plan** 任务计划
     - **system-plan.md** 组件和流程的实现顺序规划
     - **components-plan** 组件内功能实现顺序（每个组件一个文件）
-- **kissbot-\*** 每个代表kissbot项目一个模块，按照docs下的模块设计和规划文档实现模块的功能
+- **kissbot-\*** 每个代表kissbot项目一个组件，按照docs下的组件设计和规划文档实现组件的功能
 - **kai-rs** 本地Rust基础库
-  - **docs** kai-rs各模块文档
-  - **kai-\*** kai-rs各模块实现
+  - **docs** kai-rs各组件文档
+  - **kai-\*** kai-rs各组件实现
 - **kai** （未建立）本地TypeScript基础库
 - **blog** 一些形而上的思考
 - **CLAUDE.md** 项目基本原则（Claude Code默认位置）

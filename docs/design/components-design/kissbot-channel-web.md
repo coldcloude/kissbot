@@ -32,7 +32,7 @@ kissbot-channel-web 中只有一个 Messenger 实例（messenger_id 固定为 `"
 - 提供运行时读取和修改群组的方法
 
 #### 1.2 认证方式
-- admin_key 用于 Web 前端认证。admin 后端无状态，每次请求通过 `X-Api-Key` header 独立校验
+- admin_key 用于 Web 前端认证。admin 后端无状态，每次请求独立校验
 - user_key 用于 nexus 通过 WSS 连接时认证，由 ChannelManager 管理
 
 #### 1.3 GroupManager — 群组管理
@@ -66,33 +66,10 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 - 实现 `get_attachment_metadata()` 和 `get_attachment_data()`
 
 #### 1.6 HTTPServer — HTTP + SSE 服务器
-基于 Axum 的服务器，提供以下 API：
-
-**REST 端点：**
-
-| 端点 | 方法 | 功能 |
-|------|------|------|
-| `GET /api/connect` | GET | 验证 API key，返回用户身份（admin/user）和对应的 Messenger 信息（users、groups） |
-| `POST /api/message/send` | POST | 发送消息：`{ group_id, content, attachments? }` |
-| `GET /api/groups` | GET | 获取群组列表 |
-| `POST /api/groups/create` | POST | 创建群组：`{ group_name, member_ids? }` |
-| `POST /api/groups/rename` | POST | 修改群组名称：`{ group_id, group_name }`。admin 与 user 的单聊群组（`{user_id}_admin`）不允许修改 |
-| `POST /api/groups/manage-members` | POST | 增/删群组成员：`{ group_id, add_ids?, remove_ids? }`。仅 admin 可操作。admin 与 user 的单聊群组不允许修改成员 |
-| `POST /api/groups/delete` | POST | 删除群组：`{ group_id }`。admin 与 user 的单聊群组不允许删除 |
-| `GET /api/users` | GET | 获取用户列表 |
-| `POST /api/users/create` | POST | 新建用户：`{ user_id, user_name }`。自动生成该 user 与 admin 的单聊群组 |
-| `POST /api/users/delete` | POST | 删除用户：`{ user_id }`。同时删除该用户的单聊群组 |
-| `POST /api/attachment/upload` | POST | 上传附件（multipart），图片自动生成缩略图 |
-| `GET /api/attachment/download` | GET | 下载原图/文件 |
-| `GET /api/attachment/thumbnail` | GET | 读取图片缩略图 |
-| `GET /api/messages` | GET | 获取历史消息：`{ group_id, before_id?, after_id?, time? }`。默认返回最新 10 条，指定 `before_id` 获取更早 10 条，`after_id` 获取之后 10 条，`time` 时间搜索定位（返回该时间点前后各 10 条） |
-
-所有端点统一携带 `X-Api-Key` header，由 kissbot-security 中间件认证。
-
-**SSE 端点：**
-| 端点 | 方法 | 功能 |
-|------|------|------|
-| `GET /api/events` | GET | SSE 长连接，使用 `@microsoft/fetch-event-source` 库连接，`X-Api-Key` 通过该库的自定义 header 配置传递。 |
+基于 HTTP 框架的服务器，提供 REST API 和 SSE 长连接：
+- 认证：所有请求携带 API key header，由安全认证模块统一认证
+- REST 端点：连接验证、消息收发、群组管理（增删改查）、用户管理（增删改查）、附件上传下载
+- SSE 端点：消息事件实时推送，支持断线自动重连
 
 ---
 
@@ -143,8 +120,7 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
   - 时间搜索：输入时间点，跳转到该时间前后各 10 条消息
 - 上行（admin → agent）和下行（agent → admin）消息展示区分
 - 附件展示：图片显示缩略图，点击后展示原图；文件显示文件名，点击下载
-- 附件上传：支持图片和文件。后端在上传时自动为图片生成缩略图，前端通过独立 URL 读取
-- msg_type 区分：文本消息 `"text"`、图片消息 `"image"`、文件消息 `"file"`。图片和文件消息的 content 中存储自定义 JSON 格式的附件信息
+- 附件上传：支持图片和文件。后端在上传时自动为图片生成缩略图
 - "思考中..."状态提示（agent 正在处理时）
 
 #### 2.3 群组管理面板
@@ -162,8 +138,8 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 - 删除用户：确认后删除用户及其单聊群组
 
 ### 与后端通信
-- **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 `X-Api-Key` header
-- **SSE**：通过 `@microsoft/fetch-event-source` 库连接 `GET /api/events`，`X-Api-Key` 通过该库的 header 配置传递。支持断线自动重连
+- **HTTPS**：所有操作型请求（连接、发送消息、群组管理、附件），携带 API key header
+- **SSE**：通过 SSE 库连接消息事件端点，支持断线自动重连
 
 ---
 
@@ -229,51 +205,15 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 ---
 
-## 四、配置文件格式
-
-文件位置：`kissbot-channel-web-config.json`
-
-```json
-{
-  "admin_key": "admin-api-key-xxx",
-  "user_key": "user-api-key-xxx",
-  "admin": {
-    "user_id": "admin",
-    "user_name": "管理员"
-  },
-  "users": [
-    { "user_id": "user-1", "user_name": "助手小A" },
-    { "user_id": "user-2", "user_name": "助手小B" }
-  ],
-  "groups": [
-    { "group_id": "dev-team", "group_name": "开发组", "members": ["admin", "user-1", "user-2"] },
-    { "group_id": "project-x", "group_name": "项目X", "members": ["user-1", "user-2"] }
-  ]
-}
-```
-
-加载时自动注入的单聊群组（不在配置文件中存储，group_name 直接取 user_name）：
-- `{ "group_id": "user-1_admin", "group_name": "助手小A", "members": ["admin", "user-1"] }`
-- `{ "group_id": "user-2_admin", "group_name": "助手小B", "members": ["admin", "user-2"] }`
-
----
-
-## 五、附件存储
+## 四、附件存储
 
 - 存储方式：本地文件系统
-- 根目录：`attachments/`
-- 文件路径：`attachments/{group_id}/{msg_id}/{filename}`
-- 上传接口接收 multipart/form-data，图片上传时后端自动生成缩略图
-- 下载接口分两种：
-  - `GET /api/attachment/download?key=...` — 下载原图/文件
-  - `GET /api/attachment/thumbnail?key=...` — 读取缩略图（仅图片类型）
-- 两种附件类型：
-  - **图片**：前端显示缩略图，点击后展示原图（支持 jpg/png/gif/webp）
-  - **文件**：前端显示文件名，点击触发下载
+- 上传时图片自动生成缩略图
+- 附件类型：图片（显示缩略图，点击展示原图）和文件（显示文件名，点击下载）
 
 ---
 
-## 六、外部通信
+## 五、外部通信
 
 | 对端 | 协议 | 通信时机 | 内容 |
 |------|------|----------|------|

@@ -29,6 +29,7 @@
 | react-dom | 19.2.x | React DOM 渲染 |
 | @vitejs/plugin-react | 6.x | Vite React 插件 |
 | eslint | 9.x | 代码检查 |
+| @microsoft/fetch-event-source | 8.x | SSE 连接库 |
 
 ### 本地库
 | 库 | 用途 |
@@ -40,28 +41,26 @@
 
 ## 二、通信协议
 
+使用 HTTPS、WSS 和文件系统共享三种通信方式，详细协议说明见 [communication.md](communication.md)。
+
 ### WSS（WebSocket Secure）
 用于实时双向通信场景，共有两组 WSS 连接：
 
-**nexus ↔ channel**：nexus 作为 WSS 客户端连接 channel 的 WSS 服务器。每个 nexus 对应唯一连接，消息体包含 MSG 类型和 JSON data。
-- 消息类型：bind / bind_ack、outgoing_message（nexus → channel）、incoming_message（channel → nexus）、get_channels / channels、group_change、attachment_download / attachment_data、ping / pong
+**nexus ↔ channel**：nexus 作为 WSS 客户端连接 channel 的 WSS 服务器。每个 nexus 对应唯一连接。
 
-**memory-store ↔ memory-struct**：memory-struct 作为 WSS 客户端连接 memory-store。memory-store 有新数据时通过 WSS 广播通知。
+**memory-store ↔ memory-struct**：memory-struct 作为 WSS 客户端连接 memory-store。memory-store 有新数据时广播通知。
 
 ### HTTPS
 用于请求-响应模式的通信：
-- **nexus → memory-store**：推送记忆记录
-- **channel → memory-store**：推送消息记录
-- **nexus → memory-ego**：读取自我认知设定
-- **nexus ↔ station**：nexus 向 station 发起 HTTPS 请求（tool call），响应中携带执行结果（同进程时通过内部调用）
-- **nexus → memory-struct**：内置记忆查询 tool 调用（不记入记忆）
-- **前端 UI → 后端**：配置管理、记忆查看管理。前端通过 HTTP + SSE 与后端实时通信
-- **所有 API 路径仅用于路由，参数放在 JSON 请求体中**
+- nexus → memory-store：推送记忆记录
+- channel → memory-store：推送消息记录
+- nexus → memory-ego：读取自我认知设定
+- nexus ↔ station：tool call 请求/响应（同进程时通过内部调用）
+- nexus → memory-struct：内置记忆查询 tool 调用（不记入记忆）
+- 前端 UI → 后端：配置管理、记忆查看管理（HTTP + SSE）
 
 ### 文件系统共享
 - memory-store 和 memory-struct-* 共同读写同一文件系统目录
-- memory-store 写入记忆文件
-- memory-struct 读取记忆文件构建索引
 
 ## 三、通信通用规范
 
@@ -69,13 +68,8 @@
 - 路径无参数：HTTP API 路径仅用于路由到具体处理函数，不含动态参数
 - 参数全 JSON：所有输入参数在请求体中传递
 - 统一响应格式：所有 API 响应使用 ApiResponse 结构（success + data + error）
-- 认证方式：所有请求（HTTPS）必须携带 `X-Api-Key` HTTP header，WSS 握手阶段同样通过 `X-Api-Key` header 认证
-
-### Security 设计原则
-- 认证方式：预配置单一 API key，通过 HTTP header `X-Api-Key` 传递
-- 无需多用户和用户系统，认证通过即为合法请求
-- 认证失败统一返回 HTTP 401 + `ApiResponse { success: false, error: "unauthorized" }`
-- 认证逻辑由 kissbot-security 库提供，各进程在 HTTPS 服务器和 WSS 服务器中接入
+- 认证方式：所有请求（HTTPS）必须携带认证 header，WSS 握手阶段同样通过 header 认证
+- 详细认证机制见 [authentication.md](authentication.md)
 
 ### 数据结构一致性
 通过泛型 trait 确保并发类型和 API 类型一致：
@@ -94,16 +88,13 @@ XxxGeneric（泛型定义）→ XxxKind（trait 约束）
 
 ### 记忆文件
 - 使用 JSON Lines 格式，便于追加和流式读取
-- 按 `{agent-id}/memory-store/{year}-{suffix}/` 组织文件目录结构
-  - 角色记忆：suffix 为 `{role-name}`
-  - 事件记忆：suffix 为 `{role-name}-{event-id}`
-- 四种记录类型分文件存储：channel 文本、思考内容、工具调用记录、工具结果记录
+- 按 agent ID、年份和记忆模式组织目录结构
+- 四种记录类型分文件存储：通道文本、思考内容、工具调用、工具结果
+- 详细文件结构见 [memory-storage.md](memory-storage.md)
 
 ### 元数据和配置
 - 使用 JSON 格式存储
-- metadata.json：agent 元数据
-- user-recognition.json：用户识别信息
-- role-play-{role-name}.json：角色设定
+- 配置文件、元数据文件、角色设定文件等均使用 JSON
 
 ### 附件
 - 由各 channel 实现模块自行管理（文件系统等）

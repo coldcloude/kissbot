@@ -21,7 +21,10 @@ docs/
 │       └── kissbot-memory-manage.md   # 记忆管理 UI
 │
 ├── spec/                       # 技术细节约定
-│   └── technical-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
+│   ├── technical-architecture.md    # 技术架构（技术栈、通信协议、数据存储）
+│   ├── communication.md             # 组件间通信协议
+│   ├── authentication.md            # 认证方式
+│   └── memory-storage.md            # 记忆存储文件结构
 │
 └── plan/                       # 任务计划
     ├── system-plan.md       # 组件和流程的实现顺序规划

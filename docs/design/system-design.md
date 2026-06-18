@@ -58,16 +58,16 @@ Agent 程序可在启动时选择开启的部分：
 独立的认证安全模块，为所有模块的 HTTP 通信提供统一的 API key 认证能力。
 
 **模块结构**：
-- **认证类型定义** — 认证相关的数据类型：认证失败的错误类型（缺失 key、key 不匹配）、HTTP header 名称常量 `X-Api-Key`
+- **认证类型定义** — 认证相关的数据类型：认证失败的错误类型（缺失 key、key 不匹配）、HTTP header 名称常量
 - **校验接口** — 统一的认证校验接口定义，接收 key 字符串返回校验结果
-- **HTTPS 接入** — 基于 tower Layer 的 axum 中间件，可挂载到任意 Router 上
-- **WSS 接入** — 实现 kai-ws 的请求头过滤器接口，在 WebSocket 握手阶段校验
+- **HTTPS 接入** — 基于 HTTP 框架的中间件，可挂载到任意路由上
+- **WSS 接入** — 在 WebSocket 握手阶段校验
 
 **设计原则**：
 - 只做认证，不做授权——仅验证请求方知道 API key，不过问该做什么
 - 预配置单一 API key，不支持多用户和动态 key 管理
-- 认证失败统一返回 HTTP 401，不区分缺失 key 还是 key 不匹配
-- HTTPS 和 WSS 共用同一套校验逻辑，WSS 通过 kai-ws 的 filter 回调机制在握手阶段验证
+- 认证失败统一返回错误，不区分缺失 key 还是 key 不匹配
+- HTTPS 和 WSS 共用同一套校验逻辑，均在请求头中验证
 
 **依赖关系**：`kissbot-security` 依赖 `kissbot-api`（使用 ApiResponse 等现有类型），不反向依赖。
 
@@ -246,23 +246,13 @@ nexus 通过 WSS 发送附件下载请求（携带 key）
 | 消息通道 | 记忆存储模块 | HTTPS | 推送消息记录 | 外部消息到达时 |
 | 记忆存储模块 | 记忆结构实现模块 | WSS | 新数据通知 | 记忆存储模块收到新记录时 |
 | 记忆存储模块 / 记忆结构实现模块 | — | 文件系统 | 共享读写记忆文件 | 持续 |
-| 调用方（任何 HTTPS 客户端） | 任意 HTTPS 服务器（memory-store/memory-ego/station/agent-config 等） | HTTPS | 认证校验：请求携带 `X-Api-Key` header，服务器比对预配置 key | 每次 HTTP 请求 |
-| WSS 客户端（nexus/memory-struct 等） | WSS 服务器（channel/memory-store 等） | WSS | 认证校验：Upgrade 握手阶段检查 `X-Api-Key` header | 每次 WebSocket 连接建立 |
+| 调用方（任何 HTTPS 客户端） | 任意 HTTPS 服务器（memory-store/memory-ego/station/agent-config 等） | HTTPS | 认证校验 | 每次 HTTP 请求 |
+| WSS 客户端（nexus/memory-struct 等） | WSS 服务器（channel/memory-store 等） | WSS | 认证校验 | 每次 WebSocket 连接建立 |
 | 智能体配置界面 | nexus / station | HTTPS | 组件配置管理 | 用户操作配置界面时 |
 | 记忆管理界面 | 记忆存储/结构/自我认知模块 | HTTPS | 记忆查看和管理 | 用户操作管理界面时 |
 | 通道前端界面 | 通道实现模块后端 | HTTPS | 用户收发消息 | 用户操作聊天界面时 |
 
-### 3.2 通信协议说明
-
-**HTTPS 协议**：用于请求-响应模式的通信。所有 API 输入参数均放在 JSON 请求体中，路径仅用于路由到具体处理函数。所有 HTTPS 请求必须携带 `X-Api-Key` header 进行认证。
-
-**WSS 协议**：用于需要实时双向通信的场景。WSS 握手阶段的 HTTP Upgrade 请求与 HTTPS 请求使用同一套认证机制，必须携带 `X-Api-Key` header，由 WSS 服务器的 filter 回调在握手完成前完成认证，认证通过后才建立 WebSocket 连接。
-- nexus 与消息通道之间：通过心跳维持连接，传输消息和指令
-- 记忆存储模块与记忆结构实现模块之间：用于新数据推送通知
-
-**文件系统共享**：记忆存储模块和记忆结构实现模块共享同一文件系统根目录。记忆存储模块写入数据后，记忆结构实现模块通过 WSS 通知了解新数据到达并读取处理。
-
-### 3.3 关键通信约束
+### 3.2 关键通信约束
 
 - **Nexus 是唯一对接记忆系统的组件**：tool 执行结果由 station 返回 nexus 后，由 nexus 统一推送
 - **nexus 与记忆系统的交互区分两种模式**：
