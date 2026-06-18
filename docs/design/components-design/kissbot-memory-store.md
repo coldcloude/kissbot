@@ -41,7 +41,7 @@
 非text的场景中，memory 应该从 channel 获取附件，并按 key 存储二进制内容。
 
 ### 大模型输出
-思考内容存入思考记录，仅将反查 key 发送到 channel。工具调用指令的 name 和 parameter 存入工具调用记录。回复文本全文经通道推入 channel 文本记录。
+思考内容存入思考记录，不发 channel。工具调用指令的 name 和 parameter 存入工具调用记录。大模型生成回复时：如果为文本则构造 text 类型的 channel 消息，否则按照大模型返回的数据类型构造相应 msg_type 的消息。
 
 ### 工具输出
 tool call 直接返回的内容存入工具调用结果记录。副产物（写入的文件等）不包含。记忆查询工具（nexus 内置 tool）的输出不送入记忆系统。
