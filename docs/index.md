@@ -18,13 +18,19 @@ docs/
 │       ├── kissbot-memory-struct.md   # 记忆结构框架（含 abstract）
 │       ├── kissbot-api.md             # API 定义模块
 │       ├── kissbot-agent-config.md    # 智能体配置 UI
-│       └── kissbot-memory-manage.md   # 记忆管理 UI
+│       ├── kissbot-memory-manage.md   # 记忆管理 UI
+│       └── ui-ux-design/              # UI/UX 设计
+│           └── kissbot-channel-web/
+│               ├── layout.html         # Web 聊天页面原型
+│               ├── style.css           # 样式定义
+│               └── layout.md           # 交互行为说明
 │
 ├── spec/                       # 技术细节约定
 │   ├── technical-architecture.md    # 技术架构（技术栈、模块类型）
 │   ├── communication.md             # 组件间通信协议
 │   ├── authentication.md            # 认证方式
-│   └── memory-storage.md            # 记忆存储文件结构
+│   ├── memory-storage.md            # 记忆存储文件结构
+│   └── memory-ego-storage.md        # 自我认知模块文件存储
 │
 └── plan/                       # 任务计划
     ├── system-plan.md       # 组件和流程的实现顺序规划

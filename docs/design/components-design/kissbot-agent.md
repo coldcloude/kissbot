@@ -19,6 +19,12 @@ graph TB
     Nexus -. HTTPS .-> StationRemote[远程 Station<br/>Tool 主机]
 ```
 
+## 核心功能
+
+1. **LLM 驱动的智能对话**：从记忆系统读取上下文，调用 LLM 生成回复，将 tool call 分派到 station 执行
+2. **工具执行**：通过 station 执行具体的工具操作（文件操作、命令执行、网络搜索等）
+3. **分布式运行**：支持 nexus 和 station 各自独立部署运行，远程通过 HTTPS 通信
+
 ## 内部模块
 
 ### Nexus（LLM 通信枢纽）
@@ -39,10 +45,8 @@ graph TB
 
 ### 记忆系统
 - 由 nexus 对接记忆系统
-- 两种组织模式：
-  - **角色记忆**：按角色组织所有历史记录
-  - **事件记忆**：按事件隔离上下文
-- 路径后缀 `{role-name}` 或 `{role-name}-{event-id}` 由调用方拼接，完整路径由记忆基础模块构造
+- 两种组织模式：角色记忆由角色标识，事件记忆由角色和事件共同标识
+- nexus 按标识粒度和记忆系统通信
 
 详见 [kissbot-memory 组件设计](kissbot-memory.md)
 
@@ -73,6 +77,4 @@ Agent 组件内部包含两大模块：
 - 工具注册表：管理可用工具列表
 - 工具执行器：接收并执行 tool call
 - HTTPS 服务器：处理 nexus 的 tool call 请求
-- 工程工具集（Read、Write、Edit、Bash）
-- 网络工具集（WebSearch、WebFetch）
 Nexus 通过内部调用与同进程 station 通信，通过 HTTPS 与远程 station 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。
