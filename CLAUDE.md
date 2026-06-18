@@ -4,7 +4,7 @@
 Keep It Simple Stupid BOT - kissbot
 
 ## 开发原则
-- 不要删除注释！
+- 不要删除代码中的注释！
 
 ## 开发框架
 - 后台rust+cargo
@@ -30,13 +30,14 @@ Keep It Simple Stupid BOT - kissbot
 - **.claude/rules** 项目规范（Claude Code默认位置）
 - **.sessions** 和AI对话的记录（cconvo导出）
 
-## git配置
+## git约定
 
 - 提交comment中，Co-Authored-By要写当前模型，而非默认的claude模型
+- 使用中文写comment
 
-## 工具说明
+## 工具约定
 
-- 读写文件使用Read、Write、Edit等工具，而不是sed或python等命令、脚本
+- 读写文件使用Read、Write、Edit等工具，不要用sed或python等命令、脚本
 
 ## 文本格式约定
 
