@@ -13,13 +13,13 @@
 
 存储的四种文件类型：通道文本记录、思考内容记录、工具调用记录、工具调用结果记录。每种记录按日期分文件存储。
 
-### 2. WSSNotificationServer - WSS 通知服务器
-- 作为 WSS 服务器，接受记忆结构实现模块的连接
+### 2. NotificationServer - 通知服务器
+- 接受记忆结构实现模块的连接
 - 维护已连接的客户端列表
 - 新数据到达时通知所有已连接客户端
 - 支持心跳检测、连接管理
 
-### 3. HTTPS API 服务器
+### 3. API 服务器
 - 提供记忆推送 API（接收 nexus/通道推送的记忆记录）
 - 提供记忆查询 API
 
@@ -43,7 +43,7 @@
 ## 内部流程
 
 ### 记忆写入流程
-收到 HTTPS 推送请求 → RecordManager 解析 → 按路径中的 year-suffix 构建文件目录 → 按日期追加写入 → WSSNotificationServer 广播通知
+收到推送请求 → RecordManager 解析 → 按路径中的 year-suffix 构建文件目录 → 按日期追加写入 → NotificationServer 广播通知
 
 ### 记忆查询流程
-收到 HTTPS 查询请求 → RecordManager 使用 MemoryIndexer 定位 → 读取记录 → 返回
+收到查询请求 → RecordManager 使用 MemoryIndexer 定位 → 读取记录 → 返回
