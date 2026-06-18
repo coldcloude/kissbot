@@ -2,24 +2,35 @@
 
 ## 认证机制
 
-使用 HTTP header `X-Api-Key` 进行认证。所有 HTTPS 请求和 WSS 握手阶段均携带此 header。
+使用 HTTP header `X-Api-Key` 进行认证。所有 HTTP 请求和 WS 握手阶段均携带此 header。认证方式统一，HTTP 和 WS 共用同一套校验逻辑。
 
 ## 设计原则
 
 - **只做认证，不做授权**：仅验证请求方知道 API key，不过问请求方应该做什么
 - **单一 key**：使用预配置的统一 API key，不支持多用户和动态 key 管理
-- **认证方式统一**：HTTPS 和 WSS 共用同一套校验逻辑
+- **认证方式统一**：HTTP 和 WS 共用同一套校验逻辑
 
-## HTTPS 认证
+## 内部模块划分
 
-基于 tower Layer 的 axum 中间件，挂载到 Router 上自动拦截请求：
-- 请求到达 → 校验器检查 `X-Api-Key` header
-- 缺失 key 或 key 不匹配 → 返回 HTTP 401 + ApiResponse `{ success: false, error: "unauthorized" }`
+| 模块 | 职责 |
+|------|------|
+| 认证类型定义 | 认证相关的数据类型（认证失败错误类型、HTTP header 名称常量） |
+| 校验器 | 认证校验的实现。校验接口定义 + 简单字符串比对实现（持有预配置 key 比对），使用者可自定义校验逻辑 |
+| HTTP 接入 | 基于 HTTP 服务器中间件机制，挂载到路由上自动拦截请求校验 |
+| WS 接入 | 在 WebSocket 握手阶段进行认证，认证失败则关闭连接 |
+
+## 依赖关系
+
+`kissbot-security` 依赖 `kissbot-api`（使用统一响应类型），不反向依赖。
+
+## HTTP 认证流程
+
+请求到达 → 校验器检查 `X-Api-Key` header：
+- 缺失 key 或 key 不匹配 → 返回 HTTP 401 + 统一错误响应
 - 认证通过 → 继续处理请求
 
-## WSS 认证
+## WS 认证流程
 
-WSS 握手阶段的 HTTP Upgrade 请求与 HTTPS 请求使用同一套认证机制：
+WS 握手阶段的 HTTP Upgrade 请求与 HTTP 使用同一套认证机制：
 - 在握手阶段检查 Upgrade 请求的 `X-Api-Key` header
 - 认证通过后才建立 WebSocket 连接
-- 通过 WSS 框架的 filter 回调机制在握手阶段完成校验
