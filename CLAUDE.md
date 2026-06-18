@@ -32,8 +32,9 @@ Keep It Simple Stupid BOT - kissbot
 
 ## git约定
 
-- 提交comment中，Co-Authored-By要写当前模型，而非默认的claude模型
-- 使用中文写comment
+- 提交comment中，Co-Authored-By要写当前模型，不要写邮箱。当不知道是什么模型时，要先查一下。
+- 提交comment应包含提交的所有改动对应的内容，而不是仅有最近一次改动。
+- 使用中文写comment。
 
 ## 工具约定
 

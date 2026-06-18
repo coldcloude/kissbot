@@ -29,7 +29,7 @@ docs/
 │   ├── technical-architecture.md    # 技术架构（技术栈、模块类型）
 │   ├── communication.md             # 组件间通信协议
 │   ├── authentication.md            # 认证方式
-│   ├── memory-storage.md            # 记忆存储文件结构
+│   ├── memory-directory.md            # 记忆存储文件结构
 │   └── memory-ego-storage.md        # 自我认知模块文件存储
 │
 └── plan/                       # 任务计划
