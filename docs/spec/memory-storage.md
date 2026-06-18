@@ -28,6 +28,9 @@
 ## 自我认知文件
 
 `{agent-id}/memory-ego/` 目录下存储 agent 的自我认知数据：
-- 元数据文件
-- 用户识别信息文件
-- 角色设定文件（每个角色一个文件）
+
+| 文件 | 内容 |
+|------|------|
+| metadata.json | agent 元数据 |
+| user-recognition.json | 用户识别信息 |
+| role-play-{role-name}.json | 角色设定（每个角色一个文件） |

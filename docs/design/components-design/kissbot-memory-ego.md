@@ -6,18 +6,18 @@
 ## 内部模块
 
 ### 1. AgentManager - Agent 元数据管理器
-- 管理 agent 元数据的 JSON 文件存储（metadata.json）
+- 管理 agent 元数据的 JSON 文件存储
 - 使用内存缓存降低 IO 开销
 - 使用读写锁防止竞争
 - 支持 agent 的创建、查询、更新、复制、搜索
 
 ### 2. UserRecognitionManager - 用户识别信息管理器
-- 管理 user-recognition.json 的读写
+- 管理用户识别信息文件的读写
 - 提供用户信息的增删改查
 - 管理用户标识（messenger_id + user_id + group_id 组合）、权限、用户间关系
 
 ### 3. RolePlayManager - 角色设定管理器
-- 管理 role-play-{role-name}.json 的读写
+- 管理角色设定文件的读写
 - 提供角色设定的创建、查询、更新、搜索
 - 管理角色与用户的关系、角色间关系
 
