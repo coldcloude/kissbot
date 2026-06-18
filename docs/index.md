@@ -24,9 +24,6 @@ docs/
 │   ├── technical-architecture.md    # 技术架构（技术栈、模块类型）
 │   ├── communication.md             # 组件间通信协议
 │   ├── authentication.md            # 认证方式
-│   ├── api-design.md                # API 设计原则
-│   ├── date-format.md               # 时间格式约定
-│   ├── config-format.md             # 配置文件格式
 │   └── memory-storage.md            # 记忆存储文件结构
 │
 └── plan/                       # 任务计划
