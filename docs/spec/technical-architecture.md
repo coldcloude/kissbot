@@ -54,8 +54,8 @@
 | 模块 | 被谁使用 |
 |------|----------|
 | kissbot-api | 所有其他模块 |
-| kissbot-security | kissbot-agent、kissbot-memory-store、kissbot-memory-ego、kissbot-channel-web、kissbot-memory-struct-* |
-| kissbot-channel | kissbot-channel-web、kissbot-agent |
+| kissbot-security | kissbot-agent、kissbot-memory-store、kissbot-memory-ego、kissbot-channel-*、kissbot-memory-struct-* |
+| kissbot-channel | kissbot-channel-* |
 | kissbot-memory | kissbot-memory-store、kissbot-memory-ego、kissbot-memory-struct-* |
 | kissbot-memory-struct | kissbot-memory-struct-* |
 | kai-ws | kissbot-api、kissbot-channel、kissbot-security |
