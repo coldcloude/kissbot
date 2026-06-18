@@ -37,7 +37,7 @@
 ## 记忆来源处理
 
 ### channel 消息
-文本内容直接存储。非文本内容（图片、音频等）：通道将其保存为附件后存入引用 key，记忆存储模块对 key 与文本同等处理。
+channel 的 channel 记录与 memory 的消息记录使用相同的消息结构。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
 
 ### 大模型输出
 思考内容存入思考记录，仅将反查 key 发送到 channel。工具调用指令的 name 和 parameter 存入工具调用记录。回复文本全文经通道推入 channel 文本记录。

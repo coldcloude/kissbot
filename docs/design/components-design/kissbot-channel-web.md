@@ -55,7 +55,7 @@ Group 是独立实体，有自己的 ID、名称、成员列表、消息历史�
 #### 消息上行（admin → agent）
 1. 管理员在 Web UI 中选择群组，发送消息（可携带附件）
 2. Web UI → HTTPS POST 到消息发送端点
-3. WebMessenger 接收消息：如有附件则保存到 AttachmentStore，构建 IncomingMessage
+3. WebMessenger 接收消息：如有附件则保存到 AttachmentStore，生成全局唯一 key；msg_type 为非 text 时 content 为 key，text 时 content 为实际文本
 4. GroupManager 确定群组成员（遍历所属 user 列表），为每个绑定的 user 分发
 5. 通过 Messenger 回调通知 ChannelManager，逐 user 处理
 6. ChannelManager 后续处理（消息入队、推送等）
