@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kissbot Web Chat 布局</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="chat">
+  <div class="header">
+    <span>Kissbot Web Chat</span>
+    <span>管理员 ▼</span>
+  </div>
+  <div class="body">
+    <div class="sidebar">
+      <div class="sidebar-item active">● userA</div>
+      <div class="sidebar-item">○ userB</div>
+      <div class="sidebar-item">○ 群组名</div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-bottom">☰ 群组管理</div>
+      <div class="sidebar-bottom">☰ 用户管理</div>
+    </div>
+    <div class="main">
+      <div class="main-title">会话标题</div>
+      <div class="messages">
+        <div class="msg msg-from-other">
+          <div class="msg-sender">userA</div>
+          <div class="msg-bubble">你好！</div>
+        </div>
+        <div class="msg msg-from-me">
+          <div class="msg-bubble">你好，有什么需要帮助的吗？</div>
+        </div>
+        <div class="msg msg-from-other">
+          <div class="msg-sender">userA</div>
+          <div class="msg-bubble">今天天气如何？</div>
+        </div>
+      </div>
+      <div class="footer">
+        <input type="text" placeholder="输入消息..." value="今天天气很好">
+        <button>📎</button>
+        <button>发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

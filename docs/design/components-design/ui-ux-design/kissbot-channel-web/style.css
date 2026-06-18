@@ -1,22 +1,22 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>Kissbot Web Chat 布局</title>
-<style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #f0f0f0; padding: 20px; font-family: sans-serif; }
+
 .chat { width: 800px; margin: 0 auto; border: 1px solid #ccc; border-radius: 8px; overflow: hidden; background: #fff; }
+
 .header { background: #4a90d9; color: #fff; padding: 12px 16px; display: flex; justify-content: space-between; }
+
 .body { display: flex; min-height: 400px; }
+
 .sidebar { width: 200px; border-right: 1px solid #eee; background: #fafafa; padding: 8px; }
 .sidebar-item { padding: 8px; margin: 2px 0; border-radius: 4px; cursor: default; }
 .sidebar-item.active { background: #d0e4f5; }
 .sidebar-item:hover { background: #e8e8e8; }
 .sidebar-divider { border-top: 1px solid #ddd; margin: 8px 0; }
 .sidebar-bottom { padding: 8px; color: #4a90d9; cursor: default; font-size: 14px; }
+
 .main { flex: 1; display: flex; flex-direction: column; }
 .main-title { padding: 12px 16px; border-bottom: 1px solid #eee; font-weight: bold; }
+
 .messages { flex: 1; padding: 16px; }
 .msg { margin-bottom: 12px; }
 .msg-sender { font-size: 12px; color: #888; margin-bottom: 2px; }
@@ -24,48 +24,7 @@ body { background: #f0f0f0; padding: 20px; font-family: sans-serif; }
 .msg-from-me { text-align: right; }
 .msg-from-me .msg-bubble { background: #4a90d9; color: #fff; }
 .msg-from-other .msg-bubble { background: #eee; }
+
 .footer { border-top: 1px solid #eee; padding: 12px 16px; display: flex; gap: 8px; }
 .footer input { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
 .footer button { padding: 8px 16px; background: #4a90d9; color: #fff; border: none; border-radius: 4px; cursor: default; }
-</style>
-</head>
-<body>
-<div class="chat">
-  <div class="header">
-    <span>Kissbot Web Chat</span>
-    <span>管理员 ▼</span>
-  </div>
-  <div class="body">
-    <div class="sidebar">
-      <div class="sidebar-item active">● userA</div>
-      <div class="sidebar-item">○ userB</div>
-      <div class="sidebar-item">○ 群组名</div>
-      <div class="sidebar-divider"></div>
-      <div class="sidebar-bottom">☰ 群组管理</div>
-      <div class="sidebar-bottom">☰ 用户管理</div>
-    </div>
-    <div class="main">
-      <div class="main-title">会话标题</div>
-      <div class="messages">
-        <div class="msg msg-from-other">
-          <div class="msg-sender">userA</div>
-          <div class="msg-bubble">你好！</div>
-        </div>
-        <div class="msg msg-from-me">
-          <div class="msg-bubble">你好，有什么需要帮助的吗？</div>
-        </div>
-        <div class="msg msg-from-other">
-          <div class="msg-sender">userA</div>
-          <div class="msg-bubble">今天天气如何？</div>
-        </div>
-      </div>
-      <div class="footer">
-        <input type="text" placeholder="输入消息..." value="今天天气很好">
-        <button>📎</button>
-        <button>发送</button>
-      </div>
-    </div>
-  </div>
-</div>
-</body>
-</html>

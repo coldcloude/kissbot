@@ -85,7 +85,7 @@ React + Vite 单页应用，仅服务 admin 用户。普通 user 无独立 Web �
 
 #### 2.2 聊天主界面
 
-界面布局见 [kissbot-channel-web-layout.html](kissbot-channel-web-layout.html)。
+界面布局见 [ui-ux-design/kissbot-channel-web/layout.html](ui-ux-design/kissbot-channel-web/layout.html)。
 
 **左侧 - 会话列表**：
 - 展示所有群组（单聊群组 + 多人群组），无论 admin 是否已加入
