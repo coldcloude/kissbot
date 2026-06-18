@@ -49,7 +49,8 @@ Messenger 负责管理用户的群组信息、管理附件存储（接收外部�
 ## 关键设计
 
 ### 消息结构
-使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
+使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key。
+在chennel的实现中，应通过 key 关联附件。
 
 ## 内部流程
 

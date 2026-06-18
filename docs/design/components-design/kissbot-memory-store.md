@@ -37,7 +37,8 @@
 ## 记忆来源处理
 
 ### channel 消息
-使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
+使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key。
+非text的场景中，memory 应该从 channel 获取附件，并按 key 存储二进制内容。
 
 ### 大模型输出
 思考内容存入思考记录，仅将反查 key 发送到 channel。工具调用指令的 name 和 parameter 存入工具调用记录。回复文本全文经通道推入 channel 文本记录。
