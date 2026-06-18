@@ -42,29 +42,29 @@
 ## 二、模块类型划分
 
 ### 独立进程（Rust app）
-| 模块 |
-|------|
-| kissbot-agent |
-| kissbot-memory-store |
-| kissbot-memory-ego |
-| kissbot-channel-web |
-| kissbot-memory-struct-abstract |
+| 模块 | 启动方式 |
+|------|----------|
+| kissbot-agent | cargo run |
+| kissbot-memory-store | cargo run |
+| kissbot-memory-ego | cargo run |
+| kissbot-channel-web | cargo run |
+| kissbot-memory-struct-abstract | cargo run |
 
 ### 库模块（Rust lib）
-| 模块 |
-|------|
-| kissbot-api |
-| kissbot-security |
-| kissbot-channel |
-| kissbot-memory |
-| kissbot-memory-struct |
-| kai-ws |
-| kai-file |
-| kai-index |
+| 模块 | 被谁使用 |
+|------|----------|
+| kissbot-api | 所有其他模块 |
+| kissbot-security | kissbot-agent、kissbot-memory-store、kissbot-memory-ego、kissbot-channel-web、kissbot-memory-struct-* |
+| kissbot-channel | kissbot-channel-web、kissbot-agent |
+| kissbot-memory | kissbot-memory-store、kissbot-memory-ego、kissbot-memory-struct-* |
+| kissbot-memory-struct | kissbot-memory-struct-* |
+| kai-ws | kissbot-api、kissbot-channel、kissbot-security |
+| kai-file | kissbot-memory、kissbot-memory-store |
+| kai-index | kissbot-memory-ego |
 
 ### 前端（TypeScript + React + Vite）
-| 模块 |
-|------|
-| kissbot-agent-config |
-| kissbot-memory-manage |
-| kissbot-channel-web-ui |
+| 模块 | 访问的后端 |
+|------|------------|
+| kissbot-agent-config | kissbot-agent |
+| kissbot-memory-manage | kissbot-memory-store、kissbot-memory-struct-*、kissbot-memory-ego |
+| kissbot-channel-web-ui | kissbot-channel-web |
