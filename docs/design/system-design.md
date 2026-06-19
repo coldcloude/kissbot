@@ -57,130 +57,9 @@ Agent 程序可在启动时选择开启的部分：
 - **智能体配置界面**：配置 nexus 使用的 LLM API、连接的 station、记忆模式，以及各类组件地址
 - **记忆管理界面**：查看和管理记忆存储文件，配置记忆推送
 
-## 二、运行流程
+## 二、组件间通信
 
-### 2.1 消息上行流程（外部 → nexus → LLM）
-```
-外部系统（如 Web 页面）发送消息
-  → 通道实现组件接收消息，保存附件（如有），构建消息记录
-  → 通过回调通知通道管理器将消息入队
-  → 通道管理器处理消息队列：
-      ├─ 推送消息到记忆存储组件
-      └─ 通过 WSS 将消息发送给 nexus
-  → nexus 接收消息
-  → MemoryReader 根据记忆模式读取历史记录
-  → ContextBuilder 构建 LLM 上下文（系统消息 + 记忆 + 新消息）
-  → LLMClient 调用 LLM API
-  → 进入 agentic loop 处理 LLM 输出
-```
-目的：将外部用户的消息经过通道传达到 nexus，由 nexus 在 loop 中与 LLM 交互处理。
-
-### 2.2 Agentic Loop（核心执行循环）
-```
-1. 外部输入到达（来自通道或定时器）
-2. MemoryReader 根据记忆模式读取历史记录
-3. ContextBuilder 构建 LLM 上下文
-4. LLMClient 调用 LLM API
-5. 处理 LLM 返回：
-   ├─ 有 tool call → 按 2.3 Tool 调用流程处理，完成后回到步骤 3（继续 LLM 交互）
-   └─ 无 tool call →
-         1. MemoryWriter 推送思考内容到 memory-store
-         2. 回复发送到外部通道
-6. 等待下一条输入
-```
-目的：将输入加工为 LLM 可用的上下文，循环调用 LLM 执行操作直至生成回复。过程中 tool call 分派到 Station 执行，所有记忆操作（包括 tool 结果）由 nexus 统一推送到记忆系统。
-
-### 2.3 Tool 调用流程（nexus → station）
-```
-nexus 收到 LLM 返回中的 tool call
-  → MemoryWriter 推送 tool call 调用记录到 memory-store
-  → StationRouter 根据 tool name 查找目标 Station
-  → 向 Station 发送 HTTPS 请求（tool name + parameters）
-  → Station 接收请求，执行工具
-  → 将执行结果作为 HTTPS 响应返回
-  → Nexus 收到响应，MemoryWriter 推送 tool result 记录到 memory-store
-  → Nexus 将 tool 结果加入 LLM 上下文，继续 agentic loop
-```
-目的：nexus 将 LLM 需要的工具调用分派到对应 station 执行，station 的响应中携带执行结果。tool call 和 tool result 各自保存一条记忆记录。
-
-### 2.4 消息下行流程（nexus → 外部）
-```
-nexus 生成回复消息
-  → 通过 WSS 发送到通道管理器
-  → 通道管理器接收，按 messenger_id + group_id + user_id 查找对应 Messenger 的发送方法
-  → 消息入队
-  → 通道管理器处理消息队列：
-      ├─ 推送消息到记忆存储组件
-      └─ 调用 Messenger 的发送方法发送到外部系统
-           → 通道实现组件保存附件后发送
-```
-目的：将 nexus 的回复经通道送达外部系统的目标用户或群组。
-
-### 2.5 Nexus 绑定流程（接入消息通道）
-```
-nexus 发送绑定请求（指定 messenger_id 和 user_ids）
-  → 通道管理器验证用户身份
-  → 对每个用户，查询其所在的群组列表
-  → 为每个 (用户, 群组) 组合建立消息收发通道
-  → 注册消息到达回调和群组变化回调
-```
-目的：nexus 接入通道，建立与外部系统的通信连接。
-
-### 2.6 记忆存储流程
-```
-消息产生后，通过两条路径进入记忆存储组件：
-路径一（由消息通道推送）：
-  通道实现组件接收外部消息 → 通道管理器消息队列 → 发送到记忆存储组件
-路径二（由 nexus 推送）：
-  nexus 产生或收到的思考/工具调用/回复/tool 结果 → 推送到记忆存储组件
-
-推送方（nexus/channel）按记忆模式拼接标识后缀
-  → 将 (agent-id, year, suffix) 传递给记忆基础组件
-  → 记忆基础组件拼接完整文件路径
-  → 记忆存储组件写入文件
-  → 通知所有已连接的记忆结构实现组件
-```
-目的：将系统中所有交互产生的原始信息按角色或事件组织，完整保存，形成 agent 活动的完整记录。
-
-### 2.7 记忆查询流程（nexus 内置 tool 查询记忆结构）
-```
-nexus 在 agentic loop 内
-  → LLM 生成 tool call（调用记忆结构组件的搜索工具）
-  → ToolCallDispatcher 识别为内置工具（不发送 station，不记入记忆）
-  → Nexus 直接调用记忆结构实现组件的API
-  → 记忆结构实现组件从自己的索引中检索记忆
-  → 返回结构化的记忆片段
-  → nexus 将记忆片段加入当前上下文继续处理
-```
-记忆查询是 nexus 的内置工具，不经由 station 执行，且调用和结果均不写入记忆存储组件。
-
-目的：nexus 在对话过程中自主检索历史记忆，用于辅助当前对话。
-
-### 2.8 自我认知读取流程
-```
-nexus 启动或上下文重置时
-  → （在 agentic loop 外）查询自我认知组件
-  → 读取 agent 的客观设定（身份标识、用户识别信息）
-  → 如果配置了角色设定，按 role-name 读取对应的角色扮演信息
-  → 将获取的自我认知信息构建到系统消息中
-  → 进入 agentic loop
-```
-目的：nexus 获得自我认知，知道自己是谁、面对什么用户、扮演什么角色。
-
-### 2.9 上下文重置流程
-```
-触发条件：上下文超长 / 长时间无消息 / 长时间未重置
-  → MemoryWriter 将当前所有消息存入记忆存储组件
-  → 清除当前上下文
-  → MemoryReader 根据当前记忆模式重新读取近期记忆
-  → ContextBuilder 用读取到的记忆重建上下文
-  → 继续 agentic loop
-```
-目的：防止上下文超长影响 LLM 处理质量，通过归档旧对话、加载近期记忆来保持上下文精简。
-
-## 三、组件间通信
-
-### 3.1 通信总览
+### 通信总览
 
 | 发送方 | 接收方 | 通信内容（方向） | 通信时机 |
 |--------|--------|-------------------|----------|
@@ -201,7 +80,7 @@ nexus 启动或上下文重置时
 | 记忆管理界面 | memory-struct-* | 查看管理（↔） | 用户操作时 |
 | 记忆管理界面 | memory-ego | 查看管理（↔） | 用户操作时 |
 
-## 四、关键设计
+## 三、关键设计
 
 ### 统一的公共消息格式
 channel 和 memory 使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。

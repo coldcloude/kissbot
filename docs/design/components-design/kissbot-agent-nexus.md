@@ -83,35 +83,54 @@ Nexus 确定使用哪种记忆模式，这决定了上下文的构建方式和�
 
 ### Agentic Loop 流程
 ```
-1. 外部输入到达（来自通道或自主触发）
+1. 外部输入到达（来自通道或定时器）
 2. MemoryReader 根据记忆模式读取历史记录
-3. ContextBuilder 构建 LLM 上下文（系统消息 + 记忆 + 输入）
+3. ContextBuilder 构建 LLM 上下文（系统消息 + 记忆 + 当前输入）
 4. LLMClient 调用 LLM API
 5. 处理 LLM 返回：
-   ├─ 有 tool call → 按 Tool 调用流程处理，完成后回到步骤 3
+   ├─ 有 tool call → 按 Tool 调用流程处理，完成后回到步骤 3（继续 LLM 交互）
    └─ 无 tool call →
          1. MemoryWriter 推送思考内容到 memory-store
          2. 回复发送到外部通道
 6. 等待下一条输入
 ```
+目的：将输入加工为 LLM 可用的上下文，循环调用 LLM 执行操作直至生成回复。过程中 tool call 分派到 Station 执行，所有记忆操作（包括 tool 结果）由 nexus 统一推送到记忆系统。
 
 ### Tool 调用流程
 ```
 nexus 收到 LLM 返回中的 tool call
+  → MemoryWriter 推送 tool call 调用记录到 memory-store
   → ToolCallDispatcher 判断工具类型：
      ├─ 内置工具（如记忆查询）→
-     │     1. Nexus 直接调用 memory-struct 的 API
+     │     1. Nexus 直接调用记忆结构实现组件的 API
      │     2. 不记入记忆
      │     3. 将结果加入上下文
      └─ 外置工具 →
-           1. MemoryWriter 推送 tool call 调用记录到 memory-store
-           2. StationRouter 查找目标 Station
-           3. 向 Station 发起 HTTPS 请求，发送 tool call
-           4. 从 Station 的响应中获取执行结果
-           5. MemoryWriter 推送 tool result 记录到 memory-store
+           1. StationRouter 查找目标 Station
+           2. 向 Station 发送请求（tool name + parameters）
+           3. Station 接收请求，执行工具
+           4. 将执行结果作为响应返回
+           5. Nexus 收到响应，MemoryWriter 推送 tool result 记录到 memory-store
            6. 将结果加入上下文
   → 继续步骤 3（继续 LLM 交互）
 ```
+目的：nexus 将 LLM 需要的工具调用分派到对应 station 执行，station 的响应中携带执行结果。tool call 和 tool result 各自保存一条记忆记录。
+
+### 记忆查询流程（nexus 内置 tool 查询记忆结构）
+```
+nexus 在 agentic loop 内
+  → LLM 生成 tool call（调用记忆结构组件的搜索工具）
+  → ToolCallDispatcher 识别为内置工具（不发送 station，不记入记忆）
+  → Nexus 直接调用记忆结构实现组件的 API
+  → 记忆结构实现组件从自己的索引中检索记忆
+  → 返回结构化的记忆片段
+  → nexus 将记忆片段加入当前上下文继续处理
+```
+记忆查询是 nexus 的内置工具，不经由 station 执行，且调用和结果均不写入记忆存储组件。
+目的：nexus 在对话过程中自主检索历史记忆，用于辅助当前对话。
+
+### 自我认知读取流程
+nexus 启动或上下文重置时 → （在 agentic loop 外）查询自我认知组件 → 读取 agent 的客观设定（身份标识、用户识别信息）→ 如果配置了角色设定，按 role-name 读取对应的角色扮演信息 → 将获取的自我认知信息构建到系统消息中 → 进入 agentic loop。
 
 ### 上下文重置流程
 触发条件：上下文超长 / 长时间无消息 / 长时间未重置 → MemoryWriter 将当前所有消息存入 memory-store → 清除当前上下文 → MemoryReader 根据当前记忆模式重新读取近期记忆 → ContextBuilder 用读取到的记忆重建上下文 → 继续 agentic loop。

@@ -55,20 +55,23 @@ Messenger 接口包含以下能力：
 ## 内部流程
 
 ### 消息上行（外部系统 → nexus）
-1. Messenger 收到外部消息 → 保存附件 → 构建消息记录
-2. 调用 on_message_received 回调 → 消息入队
-3. ChannelManager 处理队列：推送记忆存储模块 + 通过 WSS 发送给 nexus
+1. 外部系统（如 Web 页面）发送消息
+2. 通道实现组件接收消息，保存附件（如有），构建消息记录
+3. 通过回调通知通道管理器将消息入队
+4. ChannelManager 处理消息队列：推送消息到记忆存储组件 + 通过 WSS 将消息发送给 nexus
 
 ### 消息下行（nexus → 外部系统）
-1. nexus 通过 WSS 发送消息 → WSS Server 接收
-2. ChannelManager 解析 → 按 messenger_id + group_id + user_id 查找对应 Messenger 的发送方法
-3. 消息入队 → 处理队列：推送记忆存储模块 + 调用 Messenger 的发送方法
+1. nexus 生成回复消息，通过 WSS 发送到通道管理器
+2. ChannelManager 接收，按 messenger_id + group_id + user_id 查找对应 Messenger 的发送方法
+3. 消息入队
+4. ChannelManager 处理消息队列：推送消息到记忆存储组件 + 调用 Messenger 的发送方法发送到外部系统
 
 ### Nexus 绑定流程
-1. nexus 发送 bind 请求（messenger_id + user_ids）
-2. ChannelManager 验证用户 → 获取 group 列表
-3. 为每个 (user,group) 建立消息收发通道
-4. 注册回调 → 返回绑定确认
+1. nexus 发送绑定请求（指定 messenger_id 和 user_ids）
+2. ChannelManager 验证用户身份
+3. 对每个用户，查询其所在的群组列表
+4. 为每个 (用户, 群组) 组合建立消息收发通道
+5. 注册消息到达回调和群组变化回调
 
 ### 群组变化通知流程
 通道实现组件检测到用户加入或离开群组 → 调用通道管理器注册的群组变化回调 → 通道管理器通过 WSS 将变化事件发送给 nexus → nexus 更新本地的通道列表。
