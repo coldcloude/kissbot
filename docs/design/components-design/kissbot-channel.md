@@ -70,5 +70,8 @@ Messenger 接口包含以下能力：
 3. 为每个 (user,group) 建立消息收发通道
 4. 注册回调 → 返回绑定确认
 
+### 群组变化通知流程
+通道实现组件检测到用户加入或离开群组 → 调用通道管理器注册的群组变化回调 → 通道管理器通过 WSS 将变化事件发送给 nexus → nexus 更新本地的通道列表。
+
 ### 附件下载流程
-nexus WSS 请求 → ChannelManager 按 key 调用 Messenger.get_attachment_data() → 返回数据
+nexus 发送附件下载请求（携带 key）→ 通道管理器根据 key 调用对应通道实现组件的附件获取接口 → 获取附件数据 → 将附件数据返回给 nexus。
