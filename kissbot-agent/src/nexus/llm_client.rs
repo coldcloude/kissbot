@@ -20,6 +20,7 @@ impl LlmClient {
         Self { config, client }
     }
 
+    #[allow(dead_code)]
     pub fn update_config(&mut self, config: LlmConfig) {
         self.config = config;
         self.client = reqwest::Client::builder()
@@ -45,14 +46,14 @@ impl LlmClient {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| Error::LllmApiError("LLM 调用失败".to_string())))
+        Err(last_error.unwrap_or_else(|| Error::LlmApiError("LLM 调用失败".to_string())))
     }
 
     async fn call_inner(&self, messages: &[MessageItem]) -> Result<LlmResponse> {
         match self.config.provider.as_str() {
             "openai" => self.call_openai(messages).await,
             "anthropic" => self.call_anthropic(messages).await,
-            _ => Err(Error::LllmProviderNotSupported(self.config.provider.clone())),
+            _ => Err(Error::LlmProviderNotSupported(self.config.provider.clone())),
         }
     }
 
@@ -83,7 +84,7 @@ impl LlmClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::LllmApiError(format!("OpenAI API {}: {}", status, text)));
+            return Err(Error::LlmApiError(format!("OpenAI API {}: {}", status, text)));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -139,7 +140,7 @@ impl LlmClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::LllmApiError(format!("Anthropic API {}: {}", status, text)));
+            return Err(Error::LlmApiError(format!("Anthropic API {}: {}", status, text)));
         }
 
         let data: serde_json::Value = resp.json().await?;

@@ -22,11 +22,13 @@ impl ModeManager {
     }
 
     /// 检查当前是否为角色模式
+    #[allow(dead_code)]
     pub async fn is_role_mode(&self) -> bool {
         matches!(*self.mode.read().await, Mode::Role)
     }
 
     /// 检查当前是否为事件模式，并返回事件 ID
+    #[allow(dead_code)]
     pub async fn event_id(&self) -> Option<String> {
         match &*self.mode.read().await {
             Mode::Event(id) => Some(id.clone()),

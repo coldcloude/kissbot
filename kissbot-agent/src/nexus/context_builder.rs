@@ -46,11 +46,13 @@ impl ContextBuilder {
     }
 
     /// 追加 tool call
+    #[allow(dead_code)]
     pub fn push_tool_call(&mut self, tool_name: String, parameters: serde_json::Value, time: String) {
         self.messages.push_back(ContextMessage::ToolCall { tool_name, parameters, time });
     }
 
     /// 追加 tool result
+    #[allow(dead_code)]
     pub fn push_tool_result(&mut self, tool_name: String, result: serde_json::Value, time: String) {
         self.messages.push_back(ContextMessage::ToolResult { tool_name, result, time });
     }

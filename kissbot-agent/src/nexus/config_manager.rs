@@ -163,6 +163,7 @@ impl ConfigManager {
     }
 
     /// 注册配置变更监听器
+    #[allow(dead_code)]
     pub fn add_listener(&self, key: &str, listener: Arc<dyn ConfigChangeListener>) {
         self.listeners.insert(key.to_string(), listener);
     }
@@ -202,6 +203,7 @@ impl ConfigManager {
         self.inner.read().await.admin_users.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn stations(&self) -> Vec<StationConfig> {
         self.inner.read().await.stations.clone()
     }
@@ -214,6 +216,7 @@ impl ConfigManager {
         self.inner.read().await.memory_ego_url.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn ws_reconnect_interval_secs(&self) -> u64 {
         self.inner.read().await.ws_reconnect_interval_secs
     }

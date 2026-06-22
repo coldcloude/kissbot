@@ -67,6 +67,7 @@ impl MemoryReader {
     }
 
     /// 查询事件列表
+    #[allow(dead_code)]
     pub async fn list_events(
         &self,
         config: &ConfigManager,

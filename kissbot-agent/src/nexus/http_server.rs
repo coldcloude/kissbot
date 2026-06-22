@@ -8,6 +8,7 @@ use crate::nexus::types::Result;
 
 /// 管理 REST API 服务器（本期骨架，供管理界面对接）
 pub struct HttpServer {
+    #[allow(dead_code)]
     config: Arc<ConfigManager>,
     port: u16,
 }

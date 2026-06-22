@@ -11,35 +11,41 @@ pub enum Error {
     ConfigParseError(String),
 
     #[error("LLM API error: {0}")]
-    LllmApiError(String),
+    LlmApiError(String),
 
     #[error("LLM provider not supported: {0}")]
-    LllmProviderNotSupported(String),
+    LlmProviderNotSupported(String),
 
     #[error("Memory store error: {0}")]
     MemoryStoreError(String),
 
+    #[allow(dead_code)]
     #[error("Memory ego error: {0}")]
     MemoryEgoError(String),
 
     #[error("WS connection error: {0}")]
     WsConnectionError(String),
 
+    #[allow(dead_code)]
     #[error("WS bind error: {0}")]
     WsBindError(String),
 
+    #[allow(dead_code)]
     #[error("Station connection error: {0}")]
     StationConnectionError(String),
 
     #[error("Invalid command: {0}")]
     InvalidCommand(String),
 
+    #[allow(dead_code)]
     #[error("Permission denied")]
     PermissionDenied,
 
+    #[allow(dead_code)]
     #[error("Mode conflict: {0}")]
     ModeConflict(String),
 
+    #[allow(dead_code)]
     #[error("Context overflow")]
     ContextOverflow,
 
@@ -58,6 +64,7 @@ pub enum Error {
     #[error("WS error: {0}")]
     WsError(#[from] kai_ws::Error),
 
+    #[allow(dead_code)]
     #[error("Internal error: {0}")]
     InternalError(String),
 }
@@ -100,7 +107,9 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
     pub content: String,
+    #[allow(dead_code)]
     pub tool_calls: Vec<ToolCall>,
+    #[allow(dead_code)]
     pub finish_reason: String,
 }
 
@@ -114,6 +123,7 @@ pub enum WriteTask {
         content: String,
         time: String,
     },
+    #[allow(dead_code)]
     ToolCall {
         agent_id: String,
         role_name: Option<String>,
@@ -121,6 +131,7 @@ pub enum WriteTask {
         tool_params: serde_json::Value,
         time: String,
     },
+    #[allow(dead_code)]
     ToolResult {
         agent_id: String,
         role_name: Option<String>,
@@ -134,24 +145,31 @@ pub enum WriteTask {
 #[derive(Debug, Clone)]
 pub enum ContextMessage {
     User {
+        #[allow(dead_code)]
         messenger_id: String,
+        #[allow(dead_code)]
         user_id: String,
+        #[allow(dead_code)]
         group_id: String,
         content: String,
+        #[allow(dead_code)]
         time: String,
     },
     Assistant {
         content: String,
+        #[allow(dead_code)]
         time: String,
     },
     ToolCall {
         tool_name: String,
         parameters: serde_json::Value,
+        #[allow(dead_code)]
         time: String,
     },
     ToolResult {
         tool_name: String,
         result: serde_json::Value,
+        #[allow(dead_code)]
         time: String,
     },
 }

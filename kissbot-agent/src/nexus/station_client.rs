@@ -4,12 +4,14 @@ use std::time::Duration;
 use crate::nexus::types::{Result, Error};
 
 /// Station 通信客户端
+#[allow(dead_code)]
 pub struct StationClient {
     client: reqwest::Client,
     _default_timeout: Duration,
 }
 
 impl StationClient {
+    #[allow(dead_code)]
     pub fn new(default_timeout_secs: u64) -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -22,6 +24,7 @@ impl StationClient {
 
     /// 调用 Station 上的工具
     /// 本期为骨架，仅返回未实现错误。后续由 ToolCallDispatcher 接入。
+    #[allow(dead_code)]
     pub async fn call_tool(
         &self,
         _station_url: &str,
