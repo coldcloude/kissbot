@@ -51,7 +51,7 @@
 ### Outgoing→Incoming 转换
 - 后台统一 OutgoingMessage 转 IncomingMessage 的机制
 - admin 发消息和 WSS 接到 Outgoing 走同一套处理
-- 转换后调用 group 各成员的 `on_incoming`，如果成员中有 admin 则推 SSE
+- 转换后调用 group 各成员（不含 admin）的 `on_incoming`，同时推 SSE 给 admin
 - 生成 members vec 时直接把 admin 排除
 
 ### 附件
