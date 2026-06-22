@@ -17,3 +17,5 @@ dashmap = { version = "6.1", features = ["serde"] }
 flume = "0.12"
 kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-api = { path = "../kissbot-api" }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
