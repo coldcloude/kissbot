@@ -17,11 +17,11 @@ pub enum Error {
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
 
-    #[error("Agent user not found: {0} {1}")]
-    AgentUserNotFound(String, String),
+    #[error("Agent individual not found: {0} {1}")]
+    AgentIndividualNotFound(String, String),
 
-    #[error("Agent user already exists: {0} {1}")]
-    AgentUserAlreadyExists(String, String),
+    #[error("Agent individual already exists: {0} {1}")]
+    AgentIndividualAlreadyExists(String, String),
 
     #[error("Agent role not found: {0} {1}")]
     AgentRoleNotFound(String, String),

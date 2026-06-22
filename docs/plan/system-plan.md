@@ -66,8 +66,8 @@
 - [x] 实现 agent 元数据 JSON 文件存储（带读写锁）
 - [x] agent 元数据管理 API（新建、查询、更新）
 - [x] HTTPS API 接口
-- [x] 用户识别信息、角色设定的 JSON 管理模块
-- [x] 用户识别信息、角色设定的查询 API
+- [x] 个体识别信息、角色设定的 JSON 管理模块
+- [x] 个体识别信息、角色设定的查询 API
 - [x] 全文搜索实现（kai-index 库）
 - [ ] 在 AgentMetadata 中增加 forbidden_items 和 autonomous_goals 字段
 - [ ] 在 role-play 数据结构中增加 autonomous_goals 字段

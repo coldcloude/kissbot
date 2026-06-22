@@ -216,8 +216,8 @@ impl RolePlayManager {
                 None => {
                     Ok(Arc::new(RolePlay {
                         role: Arc::new(Role {
-                            id: Arc::new(agent_id.to_string()),
-                            name: role_name.clone(),
+                            agent_id: Arc::new(agent_id.to_string()),
+                            role_name: role_name.clone(),
                             description,
                         }),
                         other_roles: Arc::new(dashmap::DashMap::new()),
@@ -255,8 +255,8 @@ impl RolePlayManager {
                 None => {
                     Ok(Arc::new(RolePlay {
                         role: Arc::new(Role {
-                            id: role.role.id.clone(),
-                            name: new_name.clone(),
+                            agent_id: role.role.agent_id.clone(),
+                            role_name: new_name.clone(),
                             description: role.role.description.clone(),
                         }),
                         other_roles: role.other_roles.clone()
@@ -277,8 +277,8 @@ impl RolePlayManager {
                 Some(role) => {
                     Ok(Arc::new(RolePlay {
                         role: Arc::new(Role {
-                            id: role.role.id.clone(),
-                            name: role.role.name.clone(),
+                            agent_id: role.role.agent_id.clone(),
+                            role_name: role.role.role_name.clone(),
                             description,
                         }),
                         other_roles: role.other_roles.clone()
@@ -335,10 +335,10 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn update_other_role_user_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_user_name: Arc<String>) -> Result<()> {
+    pub async fn update_other_role_individual_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_individual_name: Arc<String>) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
-                user_name: new_user_name,
+                individual_name: new_individual_name,
                 description: other_role.description.clone(),
                 role_relation: other_role.role_relation.clone(),
                 other_role_relations: other_role.other_role_relations.clone(),
@@ -349,7 +349,7 @@ impl RolePlayManager {
     pub async fn update_other_role_description(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_description: Arc<String>) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
-                user_name: other_role.user_name.clone(),
+                individual_name: other_role.individual_name.clone(),
                 description: new_description,
                 role_relation: other_role.role_relation.clone(),
                 other_role_relations: other_role.other_role_relations.clone(),
@@ -360,7 +360,7 @@ impl RolePlayManager {
     pub async fn update_other_role_relation(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_relation: Arc<RoleRelation>) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
-                user_name: other_role.user_name.clone(),
+                individual_name: other_role.individual_name.clone(),
                 description: other_role.description.clone(),
                 role_relation: new_relation,
                 other_role_relations: other_role.other_role_relations.clone(),

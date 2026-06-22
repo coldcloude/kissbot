@@ -3,7 +3,7 @@ mod config;
 mod agent;
 mod ego_md;
 mod search;
-mod user_recognition;
+mod individual_recognition;
 mod role_play;
 mod api;
 

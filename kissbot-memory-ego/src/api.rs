@@ -16,7 +16,7 @@ use kissbot_api::AgentMetadata;
 use crate::search::SearchManager;
 use crate::error::Error;
 use crate::role_play::RolePlayManager;
-use crate::user_recognition::UserRecognitionManager;
+use crate::individual_recognition::IndividualRecognitionManager;
 
 use kissbot_api::*;
 
@@ -34,15 +34,13 @@ pub fn create_router() -> Router {
         .route("/agent/search-description", post(search_by_description))
         .route("/agent/retrieve", post(retrieve_agents))
         .route("/agent/name-completion", post(agent_name_completion))
-        // 用户识别信息 API
-        .route("/user/get-all", post(get_users))
-        .route("/user/get", post(get_user))
-        .route("/user/replace", put(replace_users))
-        .route("/user/rename", put(rename_user))
-        .route("/user/update-privilege", put(update_user_privilege))
-        .route("/user/update-description", put(update_user_description))
-        .route("/user/replace-identifiers", put(replace_user_identifiers))
-        .route("/user/replace-relations", put(replace_user_relations))
+        // 个体识别信息 API
+        .route("/individual/get-all", post(get_individuals))
+        .route("/individual/get", post(get_individual))
+        .route("/individual/replace", put(replace_individuals))
+        .route("/individual/rename", put(rename_individual))
+        .route("/individual/replace-identifiers", put(replace_individual_identifiers))
+        .route("/individual/replace-relations", put(replace_individual_relations))
         // 角色设定 API
         .route("/role/list", post(list_roles))
         .route("/role/get", post(get_role))
@@ -58,7 +56,7 @@ pub fn create_router() -> Router {
         .route("/role/other/get", post(get_other_role))
         .route("/role/other/replace", put(replace_other_roles))
         .route("/role/other/rename", put(rename_other_role))
-        .route("/role/other/update-user-name", put(update_other_role_user_name))
+        .route("/role/other/update-individual-name", put(update_other_role_individual_name))
         .route("/role/other/update-description", put(update_other_role_description))
         .route("/role/other/update-relation", put(update_other_role_relation))
         .route("/role/other/replace-relations", put(replace_other_role_relations))
@@ -68,7 +66,7 @@ pub fn create_router() -> Router {
 async fn create_agent(Json(req): Json<ego::CreateAgentRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.create_agent(Arc::new(req.name), Arc::new(req.description)).await
+        agent_manager.create_agent(Arc::new(req.individual_name), Arc::new(req.description)).await
     };
 
     match result {
@@ -112,7 +110,7 @@ async fn get_agent(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
 async fn update_agent_name(Json(req): Json<ego::UpdateAgentNameRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.update_agent_name(&req.agent_id, Arc::new(req.name)).await
+        agent_manager.update_agent_name(&req.agent_id, Arc::new(req.individual_name)).await
     };
 
     match result {
@@ -228,44 +226,49 @@ async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -
     }
 }
 
-// ========== 用户识别信息 API ==========
-async fn get_users(Json(req): Json<ego::GetUsersRequest>) -> impl IntoResponse {
-    match UserRecognitionManager::get().get_users(&req.agent_id).await {
-        Ok(users) => (StatusCode::OK, Json(ApiResponse::success(users))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<UserRecognition>>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<UserRecognition>>::error(e.to_string()))),
+// ========== 个体识别信息 API ==========
+async fn get_individuals(Json(req): Json<ego::GetIndividualsRequest>) -> impl IntoResponse {
+    match IndividualRecognitionManager::get().get_individuals(&req.agent_id).await {
+        Ok(individuals) => (StatusCode::OK, Json(ApiResponse::success(individuals))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<IndividualRecognition>>::error(format!("Agent {} not found", req.agent_id)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<IndividualRecognition>>::error(e.to_string()))),
     }
 }
 
-async fn get_user(Json(req): Json<ego::GetUserRequest>) -> impl IntoResponse {
-    match UserRecognitionManager::get().get_user(&req.agent_id, &req.user_name).await {
-        Ok(user) => (StatusCode::OK, Json(ApiResponse::success(user))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<User>>::error(format!("User {} not found", req.user_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<User>>::error(e.to_string()))),
+async fn get_individual(Json(req): Json<ego::GetIndividualRequest>) -> impl IntoResponse {
+    match IndividualRecognitionManager::get().get_individual(&req.agent_id, &req.individual_name).await {
+        Ok(individual) => (StatusCode::OK, Json(ApiResponse::success(individual))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<Individual>>::error(format!("Individual {} not found", req.individual_name)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<Individual>>::error(e.to_string()))),
     }
 }
 
-async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoResponse {
-    let remove_user_names: HashSet<String> = req.remove_user_names.into_iter().collect();
+async fn replace_individuals(Json(req): Json<ego::ReplaceIndividualsRequest>) -> impl IntoResponse {
+    let remove_individual_names: HashSet<String> = req.remove_individual_names.into_iter().collect();
 
-    let mut insert_users = HashMap::new();
-    for (user_name, user_req) in req.insert_users {
-        let relations = {
+    let mut insert_individuals = HashMap::new();
+    for (individual_name, individual_req) in req.insert_individuals {
+        let other_relations = {
             let map = DashMap::new();
-            for (other_user, rel_req) in user_req.relations {
-                let relation = UserRelation {
+            for (other_individual, rel_req) in individual_req.other_relations {
+                let relation = IndividualRelation {
                     relation: Arc::new(rel_req.relation),
                     description: Arc::new(rel_req.description),
                 };
-                map.insert(other_user, Arc::new(relation));
+                map.insert(other_individual, Arc::new(relation));
             }
             Arc::new(map)
         };
 
+        let agent_relation = Arc::new(IndividualRelation {
+            relation: Arc::new(individual_req.agent_relation.relation),
+            description: Arc::new(individual_req.agent_relation.description),
+        });
+
         let identifiers = {
             let set = DashSet::new();
-            for id in user_req.identifiers {
-                set.insert(UserIdentifier {
+            for id in individual_req.identifiers {
+                set.insert(IndividualIdentifier {
                     messenger_id: id.messenger_id,
                     user_id: id.user_id,
                     group_id: id.group_id,
@@ -274,22 +277,15 @@ async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoRe
             Arc::new(set)
         };
 
-        let privilege = match user_req.privilege {
-            ego::UserPrivilege::Owner => UserPrivilege::Owner,
-            ego::UserPrivilege::Admin => UserPrivilege::Admin,
-            ego::UserPrivilege::Normal => UserPrivilege::Normal,
-        };
-
-        let user = User {
-            privilege,
+        let individual = Individual {
             identifiers,
-            relations,
-            description: Arc::new(user_req.description),
+            agent_relation,
+            other_relations,
         };
-        insert_users.insert(user_name, Arc::new(user));
+        insert_individuals.insert(individual_name, Arc::new(individual));
     }
 
-    let result = UserRecognitionManager::get().replace_users(&req.agent_id, remove_user_names, insert_users).await;
+    let result = IndividualRecognitionManager::get().replace_individuals(&req.agent_id, remove_individual_names, insert_individuals).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -298,81 +294,55 @@ async fn replace_users(Json(req): Json<ego::ReplaceUsersRequest>) -> impl IntoRe
     }
 }
 
-async fn rename_user(Json(req): Json<ego::RenameUserRequest>) -> impl IntoResponse {
-    let result = UserRecognitionManager::get().rename_user(&req.agent_id, &req.user_name, &req.new_name).await;
+async fn rename_individual(Json(req): Json<ego::RenameIndividualRequest>) -> impl IntoResponse {
+    let result = IndividualRecognitionManager::get().rename_individual(&req.agent_id, &req.individual_name, &req.new_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("User {} not found", req.user_name)))),
-        Err(Error::AgentUserAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("User {} already exists", req.new_name)))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
+        Err(Error::AgentIndividualAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Individual {} already exists", req.new_name)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
 
-async fn update_user_privilege(Json(req): Json<ego::UpdateUserPrivilegeRequest>) -> impl IntoResponse {
-    let privilege = match req.privilege {
-        ego::UserPrivilege::Owner => UserPrivilege::Owner,
-        ego::UserPrivilege::Admin => UserPrivilege::Admin,
-        ego::UserPrivilege::Normal => UserPrivilege::Normal,
-    };
-
-    let result = UserRecognitionManager::get().update_user_privilege(&req.agent_id, &req.user_name, privilege).await;
-
-    match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("User {} not found", req.user_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
-    }
-}
-
-async fn update_user_description(Json(req): Json<ego::UpdateUserDescriptionRequest>) -> impl IntoResponse {
-    let result = UserRecognitionManager::get().update_user_description(&req.agent_id, &req.user_name, Arc::new(req.description)).await;
-
-    match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("User {} not found", req.user_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
-    }
-}
-
-async fn replace_user_identifiers(Json(req): Json<ego::ReplaceUserIdentifiersRequest>) -> impl IntoResponse {
-    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| UserIdentifier {
+async fn replace_individual_identifiers(Json(req): Json<ego::ReplaceIndividualIdentifiersRequest>) -> impl IntoResponse {
+    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| IndividualIdentifier {
         messenger_id: id.messenger_id,
         user_id: id.user_id,
         group_id: id.group_id,
     }).collect();
-    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| UserIdentifier {
+    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| IndividualIdentifier {
         messenger_id: id.messenger_id,
         user_id: id.user_id,
         group_id: id.group_id,
     }).collect();
 
-    let result = UserRecognitionManager::get().replace_user_identifiers(&req.agent_id, &req.user_name, remove_identifiers, insert_identifiers).await;
+    let result = IndividualRecognitionManager::get().replace_individual_identifiers(&req.agent_id, &req.individual_name, remove_identifiers, insert_identifiers).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("User {} not found", req.user_name)))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
 
-async fn replace_user_relations(Json(req): Json<ego::ReplaceUserRelationsRequest>) -> impl IntoResponse {
+async fn replace_individual_relations(Json(req): Json<ego::ReplaceIndividualRelationsRequest>) -> impl IntoResponse {
     let remove_relations: HashSet<String> = req.remove_relations.into_iter().collect();
     let mut insert_relations = HashMap::new();
 
-    for (other_user, rel_req) in req.insert_relations {
-        let relation = UserRelation {
+    for (other_individual, rel_req) in req.insert_relations {
+        let relation = IndividualRelation {
             relation: Arc::new(rel_req.relation),
             description: Arc::new(rel_req.description),
         };
-        insert_relations.insert(other_user, Arc::new(relation));
+        insert_relations.insert(other_individual, Arc::new(relation));
     }
 
-    let result = UserRecognitionManager::get().replace_user_relations(&req.agent_id, &req.user_name, remove_relations, insert_relations).await;
+    let result = IndividualRecognitionManager::get().replace_individual_other_relations(&req.agent_id, &req.individual_name, remove_relations, insert_relations).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentUserNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("User {} not found", req.user_name)))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
@@ -404,12 +374,12 @@ async fn get_other_role(Json(req): Json<ego::GetOtherRoleRequest>) -> impl IntoR
 }
 
 async fn create_role(Json(req): Json<ego::CreateRoleRequest>) -> impl IntoResponse {
-    let name = req.name.clone();
-    let result = RolePlayManager::get().create_role(&req.agent_id, Arc::new(req.name), Arc::new(req.description)).await;
+    let role_name = req.role_name.clone();
+    let result = RolePlayManager::get().create_role(&req.agent_id, Arc::new(req.role_name), Arc::new(req.description)).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Role {} already exists", name)))),
+        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Role {} already exists", role_name)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
@@ -481,7 +451,7 @@ async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> 
         };
 
         let other_role = OtherRole {
-            user_name: Arc::new(other_role_req.user_name),
+            individual_name: Arc::new(other_role_req.individual_name),
             role_relation: Arc::new(role_relation),
             other_role_relations,
             description: Arc::new(other_role_req.description),
@@ -511,8 +481,8 @@ async fn rename_other_role(Json(req): Json<ego::RenameOtherRoleRequest>) -> impl
     }
 }
 
-async fn update_other_role_user_name(Json(req): Json<ego::UpdateOtherRoleUserNameRequest>) -> impl IntoResponse {
-    let result = RolePlayManager::get().update_other_role_user_name(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_user_name)).await;
+async fn update_other_role_individual_name(Json(req): Json<ego::UpdateOtherRoleIndividualNameRequest>) -> impl IntoResponse {
+    let result = RolePlayManager::get().update_other_role_individual_name(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_individual_name)).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),

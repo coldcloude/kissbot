@@ -120,18 +120,18 @@ impl AgentManager {
         }
     }
 
-    pub async fn create_agent(&self, name: Arc<String>, description: Arc<String>) -> Result<()> {
-        let id = Arc::new(Uuid::new_v4().to_string());
+    pub async fn create_agent(&self, individual_name: Arc<String>, description: Arc<String>) -> Result<()> {
+        let agent_id = Arc::new(Uuid::new_v4().to_string());
         let created_at = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
         let metadata = AgentMetadata {
-            id,
-            name,
+            agent_id: agent_id.clone(),
+            individual_name,
             description,
             created_at,
         };
 
-        self.write_agent_metadata_ref(metadata.id.clone().as_str(), |_| {
+        self.write_agent_metadata_ref(metadata.agent_id.clone().as_str(), |_| {
             Ok(Arc::new(metadata))
         }).await
     }
@@ -147,17 +147,17 @@ impl AgentManager {
 
     pub async fn copy_agent(&self, agent_id: &str) -> Result<()> {
         let metadata = self.get_agent(agent_id).await?;
-        self.create_agent(metadata.name.clone(), metadata.description.clone()).await
+        self.create_agent(metadata.individual_name.clone(), metadata.description.clone()).await
     }
 
-    pub async fn update_agent_name(&self, agent_id: &str, name: Arc<String>) -> Result<()> {
+    pub async fn update_agent_name(&self, agent_id: &str, individual_name: Arc<String>) -> Result<()> {
         let search_manager = SearchManager::get().await?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
                     Ok(Arc::new(AgentMetadata {
-                        id: metadata.id.clone(),
-                        name,
+                        agent_id: metadata.agent_id.clone(),
+                        individual_name,
                         description: metadata.description.clone(),
                         created_at: metadata.created_at.clone(),
                     }))
@@ -175,8 +175,8 @@ impl AgentManager {
             match metadata {
                 Some(metadata) => {
                     Ok(Arc::new(AgentMetadata {
-                        id: metadata.id.clone(),
-                        name: metadata.name.clone(),
+                        agent_id: metadata.agent_id.clone(),
+                        individual_name: metadata.individual_name.clone(),
                         description,
                         created_at: metadata.created_at.clone(),
                     }))

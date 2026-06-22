@@ -22,7 +22,7 @@ struct SearchMetadata {
 impl SearchMetadata {
     pub fn new(metadata: &AgentMetadata) -> Self {
         Self {
-            value: vec![metadata.name.clone(), metadata.description.clone()],
+            value: vec![metadata.individual_name.clone(), metadata.description.clone()],
         }
     }
 }
@@ -40,7 +40,7 @@ struct RoleSearchMetadata {
 impl RoleSearchMetadata {
     pub fn new(role: &Role) -> Self {
         Self {
-            value: vec![role.name.clone(), role.description.clone()],
+            value: vec![role.role_name.clone(), role.description.clone()],
         }
     }
 }
@@ -139,7 +139,7 @@ impl SearchManager {
         let metadata = AgentManager::get().get_agent(agent_id).await?;
         //变更索引
         let new_search_metadata = SearchMetadata::new(&metadata);
-        let new_name = metadata.name.clone();
+        let new_name = metadata.individual_name.clone();
         let new_descr = metadata.description.clone();
         let mut name_obsolute = true;
         let mut old_name_or_none = None;
@@ -269,7 +269,7 @@ impl SearchManager {
             let role = role_play.role.clone();
             //变更索引
             let new_search_metadata = RoleSearchMetadata::new(&role);
-            let new_name = role.name.clone();
+            let new_name = role.role_name.clone();
             let new_descr = role.description.clone();
             let mut name_obsolute = true;
             let mut descr_obsolute = true;
