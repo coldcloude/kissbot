@@ -42,11 +42,13 @@
 
 ## 四、消息处理
 
-### 统一的消息格式
+### 统一的消息格式与 ID 分配
 - 发送方不决定消息时间，由 messenger 在 out 转 in 时填入当前时间
 - 消息 ID 格式：时间（`yyyyMMddHHmmss`）+ 自增序号（固定 6 位，超过回 0）
 - user_id 用 `u{数字}` 格式，group_id 用 `g{数字}` 格式
 - admin-user 单聊群组用 `a_{user_id}` 格式
+- user_id 和 group_id 即使删除也不复用，配置中保持当前最大 ID，创建时递增
+- 创建 user 和 group 不传入 id，由系统生成
 
 ### Outgoing→Incoming 转换
 - 后台统一 OutgoingMessage 转 IncomingMessage 的机制
@@ -58,25 +60,3 @@
 - 图片和文件使用不同的 msg_type
 - 图片上传时后端自动生成缩略图
 
-## 五、代码架构
-
-### Channel 功能合并到 Messenger
-- Channel 接口合并到 Messenger 接口，解决 Channel 需要动态注册的问题
-- `register_messenger` 返回 `Result<Arc<dyn Messenger>>`
-- 回调存放在 MessengerCreator 中，避免执行回调时加锁
-
-### 配置管理
-- 统一使用 Arc 引用减少复制
-- 使用 DashMap/DashSet 等并发容器
-- 配置对象被 Messenger 构造时消耗
-
-### 消息 ID 分配
-- 不使用 UUID，使用时间+自增序号
-- user_id 和 group_id 即使删除也不复用
-- 配置中保持当前最大 ID，创建时递增
-- 创建 user 和 group 不传入 id，由系统生成
-
-### 事件通知
-- `GroupChangeNotification` 替代原有的 ChannelInfo
-- 增加 `UserRemoveNotification`，放在 kissbot-api 中
-- 删除用户时从 connect_context 中同步移除
