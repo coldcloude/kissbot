@@ -40,5 +40,5 @@
 | 文件 | 内容 |
 |------|------|
 | metadata.json | agent 元数据 |
-| user-recognition.json | 用户识别信息 |
+| individual-recognition-.json | 用户识别信息 |
 | role-play-{role-name}.json | 角色设定（每个角色一个文件） |
