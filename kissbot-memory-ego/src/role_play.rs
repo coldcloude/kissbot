@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use kissbot_api::RoleKey;
 use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation, ArcUnwrapOrClone};
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
@@ -194,6 +195,10 @@ impl RolePlayManager {
         }
 
         Ok(roles)
+    }
+
+    pub async fn get_role_arc(&self, role_key: Arc<RoleKey>) -> Result<Arc<RolePlay>> {
+        self.get_role(role_key.agent_id.as_str(), role_key.role_name.as_str()).await
     }
 
     pub async fn get_role(&self, agent_id: &str, role_name: &str) -> Result<Arc<RolePlay>> {

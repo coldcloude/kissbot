@@ -136,6 +136,10 @@ impl AgentManager {
         }).await
     }
 
+    pub async fn get_agent_arc(&self, agent_id: Arc<String>) -> Result<Arc<AgentMetadata>> {
+        self.get_agent(agent_id.as_str()).await
+    }
+
     pub async fn get_agent(&self, agent_id: &str) -> Result<Arc<AgentMetadata>> {
         let mut result = Err(Error::AgentNotFound(agent_id.to_string()));
         self.read_agent_metadata_ref(agent_id, |metadata| {

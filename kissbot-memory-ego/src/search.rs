@@ -211,13 +211,13 @@ impl SearchManager {
         }
     }
 
-    pub async fn retrieve_agents(&self, agent_ids: Vec<String>) -> Vec<Arc<AgentMetadata>> {
+    pub async fn retrieve_agents(&self, mut agent_ids: Vec<Arc<String>>) -> Vec<Arc<AgentMetadata>> {
         let mut results = Vec::new();
         let mut futs = Vec::new();
-        agent_ids.iter().for_each(|id| {
-            let fut = AgentManager::get().get_agent(id.as_str());
+        for id in agent_ids.drain(..) {
+            let fut = AgentManager::get().get_agent_arc(id);
             futs.push(fut);
-        });
+        }
         for result in future::join_all(futs).await {
             if let Ok(metadata) = result {
                 results.push(metadata);
@@ -354,10 +354,15 @@ impl SearchManager {
         }
     }
 
-    pub async fn retrieve_roles(&self, keys: Vec<RoleKey>) -> Vec<Arc<Role>> {
+    pub async fn retrieve_roles(&self, mut keys: Vec<Arc<RoleKey>>) -> Vec<Arc<Role>> {
         let mut results = Vec::new();
-        for role_key in keys {
-            if let Ok(role_play) = RolePlayManager::get().get_role(&role_key.agent_id, &role_key.role_name).await {
+        let mut futs = Vec::new();
+        for role_key in keys.drain(..) {
+            let fut = RolePlayManager::get().get_role_arc(role_key);
+            futs.push(fut);
+        }
+        for result in future::join_all(futs).await {
+            if let Ok(role_play) = result {
                 results.push(role_play.role.clone());
             }
         }

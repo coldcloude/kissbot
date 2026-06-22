@@ -10,7 +10,7 @@ use kissbot_memory::DirectoryManager;
 use std::sync::Arc;
 
 use crate::agent::AgentManager;
-use kissbot_api::{AgentMetadata, ArcUnwrapOrClone};
+use kissbot_api::AgentMetadata;
 use crate::search::SearchManager;
 use crate::error::Error;
 use crate::role_play::RolePlayManager;
@@ -167,8 +167,7 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
 async fn retrieve_agents(Json(req): Json<ego::RetrieveAgentsRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let agent_ids: Vec<String> = req.agent_ids.into_iter().map(|a| a.unwrap_or_clone()).collect();
-            let agents = ego_manager.retrieve_agents(agent_ids).await;
+            let agents = ego_manager.retrieve_agents(req.agent_ids).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string())))
@@ -208,8 +207,7 @@ async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> 
 async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let role_keys: Vec<RoleKey> = req.role_keys.into_iter().map(|k| k.unwrap_or_clone()).collect();
-            let roles = ego_manager.retrieve_roles(role_keys).await;
+            let roles = ego_manager.retrieve_roles(req.role_keys).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<kissbot_api::Role>>>::error(e.to_string())))
