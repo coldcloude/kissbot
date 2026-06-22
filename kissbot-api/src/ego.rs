@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
@@ -80,236 +80,209 @@ pub struct RolePlay {
     pub other_roles: Arc<DashMap<String, Arc<OtherRole>>>,
 }
 
-// ========== Request Structures (keep as simple String for JSON) ==========
+// ========== Request Structures ==========
 
 // Agent Management Requests
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateAgentRequest {
-    pub individual_name: String,
-    pub description: String,
+    pub individual_name: Arc<String>,
+    pub description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetAgentRequest {
-    pub agent_id: String,
+    pub agent_id: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAgentNameRequest {
-    pub agent_id: String,
-    pub individual_name: String,
+    pub agent_id: Arc<String>,
+    pub individual_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAgentDescriptionRequest {
-    pub agent_id: String,
-    pub description: String,
+    pub agent_id: Arc<String>,
+    pub description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CopyAgentRequest {
-    pub agent_id: String,
+    pub agent_id: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchRequest {
-    pub keyword: String,
+    pub keyword: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchRoleRequest {
-    pub agent_id: Option<String>,
-    pub keyword: String,
+    pub agent_id: Option<Arc<String>>,
+    pub keyword: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RetrieveAgentsRequest {
-    pub agent_ids: Vec<String>,
+    pub agent_ids: Vec<Arc<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RetrieveRolesRequest {
-    pub role_keys: Vec<RoleKey>,
+    pub role_keys: Vec<Arc<RoleKey>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NameCompletionRequest {
-    pub prefix: String,
+    pub prefix: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RoleNameCompletionRequest {
-    pub agent_id: Option<String>,
-    pub prefix: String,
+    pub agent_id: Option<Arc<String>>,
+    pub prefix: Arc<String>,
 }
 
 // Individual Recognition Requests
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetIndividualsRequest {
-    pub agent_id: String,
+    pub agent_id: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetIndividualRequest {
-    pub agent_id: String,
-    pub individual_name: String,
+    pub agent_id: Arc<String>,
+    pub individual_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceIndividualsRequest {
-    pub agent_id: String,
-    pub remove_individual_names: Vec<String>,
-    pub insert_individuals: HashMap<String, IndividualRequest>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IndividualRequest {
-    pub identifiers: Vec<IndividualIdentifier>,
-    pub agent_relation: IndividualRelationRequest,
-    pub other_relations: HashMap<String, IndividualRelationRequest>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IndividualRelationRequest {
-    pub relation: String,
-    pub description: String,
+    pub agent_id: Arc<String>,
+    pub remove_individual_names: Vec<Arc<String>>,
+    pub insert_individuals: Vec<(Arc<String>, Arc<Individual>)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RenameIndividualRequest {
-    pub agent_id: String,
-    pub individual_name: String,
-    pub new_name: String,
+    pub agent_id: Arc<String>,
+    pub individual_name: Arc<String>,
+    pub new_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceIndividualIdentifiersRequest {
-    pub agent_id: String,
-    pub individual_name: String,
-    pub remove_identifiers: Vec<IndividualIdentifier>,
-    pub insert_identifiers: Vec<IndividualIdentifier>,
+    pub agent_id: Arc<String>,
+    pub individual_name: Arc<String>,
+    pub remove_identifiers: Vec<Arc<IndividualIdentifier>>,
+    pub insert_identifiers: Vec<Arc<IndividualIdentifier>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceIndividualRelationsRequest {
-    pub agent_id: String,
-    pub individual_name: String,
-    pub remove_relations: Vec<String>,
-    pub insert_relations: HashMap<String, IndividualRelationRequest>,
+    pub agent_id: Arc<String>,
+    pub individual_name: Arc<String>,
+    pub remove_relations: Vec<Arc<String>>,
+    pub insert_relations: Vec<(Arc<String>, Arc<IndividualRelation>)>,
 }
 
 // Role Play Requests
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListRolesRequest {
-    pub agent_id: String,
+    pub agent_id: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub description: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateRoleFromRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub new_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub new_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RemoveRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RenameRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub new_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub new_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateRoleDescriptionRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub description: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetOtherRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRolesRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub remove_other_roles: Vec<String>,
-    pub insert_other_roles: HashMap<String, OtherRoleRequest>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OtherRoleRequest {
-    pub individual_name: String,
-    pub role_relation: RoleRelationRequest,
-    pub other_role_relations: HashMap<String, RoleRelationRequest>,
-    pub description: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RoleRelationRequest {
-    pub relation: String,
-    pub description: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub remove_other_roles: Vec<Arc<String>>,
+    pub insert_other_roles: Vec<(Arc<String>, Arc<OtherRole>)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RenameOtherRoleRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
-    pub new_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
+    pub new_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleIndividualNameRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
-    pub new_individual_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
+    pub new_individual_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleDescriptionRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
-    pub new_description: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
+    pub new_description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateOtherRoleRelationRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
-    pub new_relation: RoleRelationRequest,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
+    pub new_relation: Arc<RoleRelation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRoleRelationsRequest {
-    pub agent_id: String,
-    pub role_name: String,
-    pub other_role_name: String,
-    pub remove_relations: Vec<String>,
-    pub insert_relations: HashMap<String, RoleRelationRequest>,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub other_role_name: Arc<String>,
+    pub remove_relations: Vec<Arc<String>>,
+    pub insert_relations: Vec<(Arc<String>, Arc<RoleRelation>)>,
 }

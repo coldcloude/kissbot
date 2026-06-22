@@ -1,4 +1,21 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+pub trait ArcUnwrapOrClone<T> {
+    fn unwrap_or_clone(self) -> T
+    where
+        T: Clone;
+}
+
+impl<T> ArcUnwrapOrClone<T> for Arc<T> {
+    fn unwrap_or_clone(self) -> T
+    where
+        T: Clone,
+    {
+        Arc::try_unwrap(self).unwrap_or_else(|arc| (*arc).clone())
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse<T> {

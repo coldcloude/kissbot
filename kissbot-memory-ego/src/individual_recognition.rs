@@ -1,4 +1,3 @@
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -8,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::error::Error;
-use kissbot_api::{Individual, IndividualIdentifier, IndividualRecognition, IndividualRelation};
+use kissbot_api::{Individual, IndividualIdentifier, IndividualRecognition, IndividualRelation, ArcUnwrapOrClone};
 
 pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: &str = "individual-recognition-";
 
@@ -168,14 +167,14 @@ impl IndividualRecognitionManager {
         result
     }
 
-    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: HashSet<String>, mut insert_individuals: HashMap<String, Arc<Individual>>) -> Result<()> {
+    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<Arc<String>>, mut insert_individuals: Vec<(Arc<String>, Arc<Individual>)>) -> Result<()> {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
-                for individual_name in remove_individual_names.drain() {
-                    individuals.individual_map.remove(&individual_name);
+                for name in remove_individual_names.drain(..) {
+                    individuals.individual_map.remove(name.as_str());
                 }
-                for (individual_name, individual) in insert_individuals.drain() {
-                    individuals.individual_map.insert(individual_name, individual);
+                for (name, individual) in insert_individuals.drain(..) {
+                    individuals.individual_map.insert(name.unwrap_or_clone(), individual);
                 }
                 Ok(individuals)
             }
@@ -203,25 +202,25 @@ impl IndividualRecognitionManager {
         }).await
     }
 
-    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: HashSet<IndividualIdentifier>, mut insert_identifiers: HashSet<IndividualIdentifier>) -> Result<()> {
+    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<Arc<IndividualIdentifier>>, mut insert_identifiers: Vec<Arc<IndividualIdentifier>>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |individual| {
-            for identifier in remove_identifiers.drain() {
-                individual.identifiers.remove(&identifier);
+            for identifier in remove_identifiers.drain(..) {
+                individual.identifiers.remove(identifier.as_ref());
             }
-            for identifier in insert_identifiers.drain() {
-                individual.identifiers.insert(identifier);
+            for identifier in insert_identifiers.drain(..) {
+                individual.identifiers.insert(identifier.unwrap_or_clone());
             }
             Ok(individual)
         }).await
     }
 
-    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String, Arc<IndividualRelation>>) -> Result<()> {
+    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<Arc<String>>, mut insert_relations: Vec<(Arc<String>, Arc<IndividualRelation>)>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |individual| {
-            for identifier in remove_relations.drain() {
-                individual.other_relations.remove(&identifier);
+            for relation in remove_relations.drain(..) {
+                individual.other_relations.remove(relation.as_str());
             }
-            for (identifier, relation) in insert_relations.drain() {
-                individual.other_relations.insert(identifier, relation);
+            for (name, relation) in insert_relations.drain(..) {
+                individual.other_relations.insert(name.unwrap_or_clone(), relation);
             }
             Ok(individual)
         }).await

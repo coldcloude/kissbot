@@ -4,15 +4,13 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
-use dashmap::{DashMap, DashSet};
 use futures::future;
 use kai_index::CompletionResult;
 use kissbot_memory::DirectoryManager;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::agent::AgentManager;
-use kissbot_api::AgentMetadata;
+use kissbot_api::{AgentMetadata, ArcUnwrapOrClone};
 use crate::search::SearchManager;
 use crate::error::Error;
 use crate::role_play::RolePlayManager;
@@ -66,7 +64,7 @@ pub fn create_router() -> Router {
 async fn create_agent(Json(req): Json<ego::CreateAgentRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.create_agent(Arc::new(req.individual_name), Arc::new(req.description)).await
+        agent_manager.create_agent(req.individual_name, req.description).await
     };
 
     match result {
@@ -110,7 +108,7 @@ async fn get_agent(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
 async fn update_agent_name(Json(req): Json<ego::UpdateAgentNameRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.update_agent_name(&req.agent_id, Arc::new(req.individual_name)).await
+        agent_manager.update_agent_name(&req.agent_id, req.individual_name).await
     };
 
     match result {
@@ -123,7 +121,7 @@ async fn update_agent_name(Json(req): Json<ego::UpdateAgentNameRequest>) -> impl
 async fn update_agent_description(Json(req): Json<ego::UpdateAgentDescriptionRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
-        agent_manager.update_agent_description(&req.agent_id, Arc::new(req.description)).await
+        agent_manager.update_agent_description(&req.agent_id, req.description).await
     };
 
     match result {
@@ -169,7 +167,8 @@ async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl Into
 async fn retrieve_agents(Json(req): Json<ego::RetrieveAgentsRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let agents = ego_manager.retrieve_agents(req.agent_ids).await;
+            let agent_ids: Vec<String> = req.agent_ids.into_iter().map(|a| a.unwrap_or_clone()).collect();
+            let agents = ego_manager.retrieve_agents(agent_ids).await;
             (StatusCode::OK, Json(ApiResponse::success(agents)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string())))
@@ -189,7 +188,7 @@ async fn agent_name_completion(Json(req): Json<ego::NameCompletionRequest>) -> i
 async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref()).await;
+            let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
@@ -199,7 +198,7 @@ async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl In
 async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref()).await;
+            let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
@@ -209,7 +208,8 @@ async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> 
 async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let roles = ego_manager.retrieve_roles(req.role_keys).await;
+            let role_keys: Vec<RoleKey> = req.role_keys.into_iter().map(|k| k.unwrap_or_clone()).collect();
+            let roles = ego_manager.retrieve_roles(role_keys).await;
             (StatusCode::OK, Json(ApiResponse::success(roles)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<kissbot_api::Role>>>::error(e.to_string())))
@@ -219,7 +219,7 @@ async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl Into
 async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -> impl IntoResponse {
     match SearchManager::get().await {
         Ok(ego_manager) => {
-            let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref()).await;
+            let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref().map(|s| s.as_str())).await;
             (StatusCode::OK, Json(ApiResponse::success(results)))
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<ego::RoleKey>>>::error(e.to_string())))
@@ -244,48 +244,7 @@ async fn get_individual(Json(req): Json<ego::GetIndividualRequest>) -> impl Into
 }
 
 async fn replace_individuals(Json(req): Json<ego::ReplaceIndividualsRequest>) -> impl IntoResponse {
-    let remove_individual_names: HashSet<String> = req.remove_individual_names.into_iter().collect();
-
-    let mut insert_individuals = HashMap::new();
-    for (individual_name, individual_req) in req.insert_individuals {
-        let other_relations = {
-            let map = DashMap::new();
-            for (other_individual, rel_req) in individual_req.other_relations {
-                let relation = IndividualRelation {
-                    relation: Arc::new(rel_req.relation),
-                    description: Arc::new(rel_req.description),
-                };
-                map.insert(other_individual, Arc::new(relation));
-            }
-            Arc::new(map)
-        };
-
-        let agent_relation = Arc::new(IndividualRelation {
-            relation: Arc::new(individual_req.agent_relation.relation),
-            description: Arc::new(individual_req.agent_relation.description),
-        });
-
-        let identifiers = {
-            let set = DashSet::new();
-            for id in individual_req.identifiers {
-                set.insert(IndividualIdentifier {
-                    messenger_id: id.messenger_id,
-                    user_id: id.user_id,
-                    group_id: id.group_id,
-                });
-            }
-            Arc::new(set)
-        };
-
-        let individual = Individual {
-            identifiers,
-            agent_relation,
-            other_relations,
-        };
-        insert_individuals.insert(individual_name, Arc::new(individual));
-    }
-
-    let result = IndividualRecognitionManager::get().replace_individuals(&req.agent_id, remove_individual_names, insert_individuals).await;
+    let result = IndividualRecognitionManager::get().replace_individuals(&req.agent_id, req.remove_individual_names, req.insert_individuals).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -306,18 +265,7 @@ async fn rename_individual(Json(req): Json<ego::RenameIndividualRequest>) -> imp
 }
 
 async fn replace_individual_identifiers(Json(req): Json<ego::ReplaceIndividualIdentifiersRequest>) -> impl IntoResponse {
-    let remove_identifiers: HashSet<_> = req.remove_identifiers.into_iter().map(|id| IndividualIdentifier {
-        messenger_id: id.messenger_id,
-        user_id: id.user_id,
-        group_id: id.group_id,
-    }).collect();
-    let insert_identifiers: HashSet<_> = req.insert_identifiers.into_iter().map(|id| IndividualIdentifier {
-        messenger_id: id.messenger_id,
-        user_id: id.user_id,
-        group_id: id.group_id,
-    }).collect();
-
-    let result = IndividualRecognitionManager::get().replace_individual_identifiers(&req.agent_id, &req.individual_name, remove_identifiers, insert_identifiers).await;
+    let result = IndividualRecognitionManager::get().replace_individual_identifiers(&req.agent_id, &req.individual_name, req.remove_identifiers, req.insert_identifiers).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -327,18 +275,7 @@ async fn replace_individual_identifiers(Json(req): Json<ego::ReplaceIndividualId
 }
 
 async fn replace_individual_relations(Json(req): Json<ego::ReplaceIndividualRelationsRequest>) -> impl IntoResponse {
-    let remove_relations: HashSet<String> = req.remove_relations.into_iter().collect();
-    let mut insert_relations = HashMap::new();
-
-    for (other_individual, rel_req) in req.insert_relations {
-        let relation = IndividualRelation {
-            relation: Arc::new(rel_req.relation),
-            description: Arc::new(rel_req.description),
-        };
-        insert_relations.insert(other_individual, Arc::new(relation));
-    }
-
-    let result = IndividualRecognitionManager::get().replace_individual_other_relations(&req.agent_id, &req.individual_name, remove_relations, insert_relations).await;
+    let result = IndividualRecognitionManager::get().replace_individual_other_relations(&req.agent_id, &req.individual_name, req.remove_relations, req.insert_relations).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -375,7 +312,7 @@ async fn get_other_role(Json(req): Json<ego::GetOtherRoleRequest>) -> impl IntoR
 
 async fn create_role(Json(req): Json<ego::CreateRoleRequest>) -> impl IntoResponse {
     let role_name = req.role_name.clone();
-    let result = RolePlayManager::get().create_role(&req.agent_id, Arc::new(req.role_name), Arc::new(req.description)).await;
+    let result = RolePlayManager::get().create_role(&req.agent_id, req.role_name, req.description).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -386,7 +323,7 @@ async fn create_role(Json(req): Json<ego::CreateRoleRequest>) -> impl IntoRespon
 
 async fn create_role_from(Json(req): Json<ego::CreateRoleFromRequest>) -> impl IntoResponse {
     let new_name = req.new_name.clone();
-    let result = RolePlayManager::get().create_role_from(&req.agent_id, &req.role_name, Arc::new(req.new_name)).await;
+    let result = RolePlayManager::get().create_role_from(&req.agent_id, &req.role_name, req.new_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -408,7 +345,7 @@ async fn remove_role(Json(req): Json<ego::RemoveRoleRequest>) -> impl IntoRespon
 
 async fn rename_role(Json(req): Json<ego::RenameRoleRequest>) -> impl IntoResponse {
     let new_name = req.new_name.clone();
-    let result = RolePlayManager::get().rename_role(&req.agent_id, &req.role_name, Arc::new(req.new_name)).await;
+    let result = RolePlayManager::get().rename_role(&req.agent_id, &req.role_name, req.new_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -419,7 +356,7 @@ async fn rename_role(Json(req): Json<ego::RenameRoleRequest>) -> impl IntoRespon
 }
 
 async fn update_role_description(Json(req): Json<ego::UpdateRoleDescriptionRequest>) -> impl IntoResponse {
-    let result = RolePlayManager::get().update_role_description(&req.agent_id, &req.role_name, Arc::new(req.description)).await;
+    let result = RolePlayManager::get().update_role_description(&req.agent_id, &req.role_name, req.description).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -429,38 +366,7 @@ async fn update_role_description(Json(req): Json<ego::UpdateRoleDescriptionReque
 }
 
 async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> impl IntoResponse {
-    let remove_other_roles: HashSet<String> = req.remove_other_roles.into_iter().collect();
-    let mut insert_other_roles = HashMap::new();
-
-    for (other_role_name, other_role_req) in req.insert_other_roles {
-        let role_relation = RoleRelation {
-            relation: Arc::new(other_role_req.role_relation.relation),
-            description: Arc::new(other_role_req.role_relation.description),
-        };
-
-        let other_role_relations = {
-            let map = DashMap::new();
-            for (rel_name, rel_req) in other_role_req.other_role_relations {
-                let relation = RoleRelation {
-                    relation: Arc::new(rel_req.relation),
-                    description: Arc::new(rel_req.description),
-                };
-                map.insert(rel_name, Arc::new(relation));
-            }
-            Arc::new(map)
-        };
-
-        let other_role = OtherRole {
-            individual_name: Arc::new(other_role_req.individual_name),
-            role_relation: Arc::new(role_relation),
-            other_role_relations,
-            description: Arc::new(other_role_req.description),
-        };
-
-        insert_other_roles.insert(other_role_name, Arc::new(other_role));
-    }
-
-    let result = RolePlayManager::get().replace_other_roles(&req.agent_id, &req.role_name, remove_other_roles, insert_other_roles).await;
+    let result = RolePlayManager::get().replace_other_roles(&req.agent_id, &req.role_name, req.remove_other_roles, req.insert_other_roles).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -482,7 +388,7 @@ async fn rename_other_role(Json(req): Json<ego::RenameOtherRoleRequest>) -> impl
 }
 
 async fn update_other_role_individual_name(Json(req): Json<ego::UpdateOtherRoleIndividualNameRequest>) -> impl IntoResponse {
-    let result = RolePlayManager::get().update_other_role_individual_name(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_individual_name)).await;
+    let result = RolePlayManager::get().update_other_role_individual_name(&req.agent_id, &req.role_name, &req.other_role_name, req.new_individual_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -493,7 +399,7 @@ async fn update_other_role_individual_name(Json(req): Json<ego::UpdateOtherRoleI
 }
 
 async fn update_other_role_description(Json(req): Json<ego::UpdateOtherRoleDescriptionRequest>) -> impl IntoResponse {
-    let result = RolePlayManager::get().update_other_role_description(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(req.new_description)).await;
+    let result = RolePlayManager::get().update_other_role_description(&req.agent_id, &req.role_name, &req.other_role_name, req.new_description).await;
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
         Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
@@ -503,12 +409,7 @@ async fn update_other_role_description(Json(req): Json<ego::UpdateOtherRoleDescr
 }
 
 async fn update_other_role_relation(Json(req): Json<ego::UpdateOtherRoleRelationRequest>) -> impl IntoResponse {
-    let new_relation = RoleRelation {
-        relation: Arc::new(req.new_relation.relation),
-        description: Arc::new(req.new_relation.description),
-    };
-
-    let result = RolePlayManager::get().update_other_role_relation(&req.agent_id, &req.role_name, &req.other_role_name, Arc::new(new_relation)).await;
+    let result = RolePlayManager::get().update_other_role_relation(&req.agent_id, &req.role_name, &req.other_role_name, req.new_relation).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
@@ -519,18 +420,7 @@ async fn update_other_role_relation(Json(req): Json<ego::UpdateOtherRoleRelation
 }
 
 async fn replace_other_role_relations(Json(req): Json<ego::ReplaceOtherRoleRelationsRequest>) -> impl IntoResponse {
-    let remove_relations: HashSet<String> = req.remove_relations.into_iter().collect();
-    let mut insert_relations = HashMap::new();
-
-    for (rel_name, rel_req) in req.insert_relations {
-        let relation = RoleRelation {
-            relation: Arc::new(rel_req.relation),
-            description: Arc::new(rel_req.description),
-        };
-        insert_relations.insert(rel_name, Arc::new(relation));
-    }
-
-    let result = RolePlayManager::get().replace_other_role_relations(&req.agent_id, &req.role_name, &req.other_role_name, remove_relations, insert_relations).await;
+    let result = RolePlayManager::get().replace_other_role_relations(&req.agent_id, &req.role_name, &req.other_role_name, req.remove_relations, req.insert_relations).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),

@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation};
+use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation, ArcUnwrapOrClone};
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
 
@@ -300,14 +299,14 @@ impl RolePlayManager {
         result
     }
 
-    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: HashSet<String>, mut insert_other_roles: HashMap<String, Arc<OtherRole>>) -> Result<()> {
+    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<Arc<String>>, mut insert_other_roles: Vec<(Arc<String>, Arc<OtherRole>)>) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
-                for other_role_name in remove_other_roles.drain() {
-                    role.other_roles.remove(&other_role_name);
+                for name in remove_other_roles.drain(..) {
+                    role.other_roles.remove(name.as_str());
                 }
-                for (other_role_name, other_role) in insert_other_roles.drain() {
-                    role.other_roles.insert(other_role_name, other_role);
+                for (name, other_role) in insert_other_roles.drain(..) {
+                    role.other_roles.insert(name.unwrap_or_clone(), other_role);
                 }
                 Ok(role)
             }
@@ -368,13 +367,13 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: HashSet<String>, mut insert_relations: HashMap<String, Arc<RoleRelation>>) -> Result<()> {
+    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<Arc<String>>, mut insert_relations: Vec<(Arc<String>, Arc<RoleRelation>)>) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
-            for relation_name in remove_relations.drain() {
-                other_role.other_role_relations.remove(&relation_name);
+            for name in remove_relations.drain(..) {
+                other_role.other_role_relations.remove(name.as_str());
             }
-            for (relation_name, relation) in insert_relations.drain() {
-                other_role.other_role_relations.insert(relation_name, relation);
+            for (name, relation) in insert_relations.drain(..) {
+                other_role.other_role_relations.insert(name.unwrap_or_clone(), relation);
             }
             Ok(other_role)
         }).await
