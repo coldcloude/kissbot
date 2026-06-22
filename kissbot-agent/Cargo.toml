@@ -13,6 +13,7 @@ uuid = { version = "1.0", features = ["v4"] }
 thiserror = "2.0"
 async-trait = "0.1"
 tracing = "0.1"
+tracing-subscriber = "0.3"
 dashmap = { version = "6.1", features = ["serde"] }
 flume = "0.12"
 kai-ws = { path = "../kai-rs/kai-ws" }
