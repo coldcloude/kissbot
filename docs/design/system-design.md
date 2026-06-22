@@ -88,7 +88,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 ## 三、关键设计
 
 ### 统一的公共消息格式
-channel 和 memory 使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本，否则 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
+channel 和 memory 使用统一的公共消息格式。msg_type 为 text 时 content 为实际文本；multi 时 content 为 JSON 列表，每个元素包含 msg_type 和 content 两个字段；其他类型 content 为全局唯一 key——channel 通过 key 关联附件，memory 按 key 存储二进制内容。
 
 ### nexus 与记忆系统的交互
 nexus 与记忆系统的交互区分两种模式：

@@ -16,14 +16,6 @@ pub const TYPE_LEAVE_GROUP: u32 = 0x10010002;
 pub const TYPE_INCOMING_MESSAGE: u32 = 0x10020003;
 pub const TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD: u32 = 0x10020004;
 
-// ========== 消息类型常量 ==========
-
-pub const MSG_TYPE_TEXT: &str = "text";
-pub const MSG_TYPE_IMAGE: &str = "image";
-pub const MSG_TYPE_FILE: &str = "file";
-pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
-pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
-
 // ========== Group Change Notification ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

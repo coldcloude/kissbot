@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use kissbot_api::channel::*;
+use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
