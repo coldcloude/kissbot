@@ -17,13 +17,11 @@
 
 ### 群组生成规则
 - 配置文件中 users 定义普通用户，groups 定义多人群组
-- 添加 user 时自动生成 admin-user 单聊群组，group_id 为 `{user_id}_admin`
+- admin-user 单聊群组不记录在 groups 中，群组名为 `a_{user_id}`
+  - agent 获取群组信息时动态拼装
+  - admin 向群组发消息时使用 `a_{user_id}` 作为 group_id
 - 单聊群组的 group_name 即为该 user 的 user_name
 - 允许 0 人、1 人、2 人群组
-
-### 不可修改的群组
-- 只有 admin-user 单聊群组（`a_{user_id}` 前缀）不可修改名称、增减成员、删除
-- 普通多人群组不受此限制
 
 ### Group 的独立性
 - Group 是独立实体，有自己的 ID、名称、成员列表、消息历史
