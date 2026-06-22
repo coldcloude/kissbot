@@ -35,7 +35,7 @@ pub struct IndividualRelation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Individual {
     pub identifiers: Arc<DashSet<IndividualIdentifier>>,
-    pub agent_relation: Arc<IndividualRelation>,
+    pub relation: Arc<IndividualRelation>,
     pub other_relations: Arc<DashMap<String, Arc<IndividualRelation>>>,
 }
 

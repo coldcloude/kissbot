@@ -27,7 +27,7 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
         if !identifiers.is_empty() {
             content.push_str(&format!("## {}\n\n", individual.key()));
 
-            content.push_str(&format!("- **Relation with Agent**: {} - {}\n", individual.agent_relation.relation, individual.agent_relation.description));
+            content.push_str(&format!("- **Relation with Agent**: {} - {}\n", individual.relation.relation, individual.relation.description));
 
             content.push_str("### Associated Identifiers\n");
             content.push_str(&identifiers);
