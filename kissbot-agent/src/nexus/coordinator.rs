@@ -120,10 +120,8 @@ impl AgentCoordinator {
         if CommandRouter::is_command(&content) {
             if CommandRouter::check_admin(&self.config, &messenger_id, &user_id).await {
                 self.handle_admin_command(&content, &messenger_id, &user_id, &group_id).await;
-            } else {
-                self.send_reply(&messenger_id, &user_id, &group_id,
-                    "⚠️ 你没有执行此命令的权限".to_string()).await;
             }
+            // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
         }
 
