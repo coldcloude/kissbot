@@ -58,6 +58,9 @@ impl AgentCoordinator {
             context_builder.load_history(history);
         }
 
+        // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
+        let _ = memory_reader.read_memory_struct_index(&config, &mode).await;
+
         info!("AgentCoordinator 初始化完成，当前模式: {:?}", mode);
 
         Ok(Self {
@@ -272,12 +275,16 @@ impl AgentCoordinator {
             ctx.set_system_message(ego_info);
         }
 
-        // 重新读取历史
+        // 读取历史记忆
         let mode = self.mode_manager.current().await;
         if let Ok(history) = self.memory_reader.read_history(&self.config, &mode).await {
             let mut ctx = self.context_builder.lock().await;
             ctx.load_history(history);
         }
+
+        // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
+        let mode = self.mode_manager.current().await;
+        let _ = self.memory_reader.read_memory_struct_index(&self.config, &mode).await;
 
         info!("上下文已重置");
     }

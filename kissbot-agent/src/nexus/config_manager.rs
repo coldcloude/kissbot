@@ -221,6 +221,10 @@ impl ConfigManager {
         self.inner.read().await.ws_reconnect_interval_secs
     }
 
+    pub async fn memory_struct_url(&self) -> String {
+        self.inner.read().await.memory_struct_url.clone().unwrap_or_default()
+    }
+
     // ========== Setter（管理命令调用，自动持久化） ==========
 
     pub async fn set_current_role(&self, role: Option<String>) -> Result<()> {

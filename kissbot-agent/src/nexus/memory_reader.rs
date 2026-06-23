@@ -17,6 +17,48 @@ impl MemoryReader {
         }
     }
 
+    /// 从 memory-struct 读取顶层记忆索引（摘要列表）
+    /// 在启动、切换模式、重置时作为初始上下文的一部分
+    /// 注意：memory-struct 尚未实现，此方法当前调用无实际效果
+    #[allow(dead_code)]
+    pub async fn read_memory_struct_index(
+        &self,
+        config: &ConfigManager,
+        _mode: &Mode,
+    ) -> Result<Vec<String>> {
+        let struct_url = config.memory_struct_url().await;
+        if struct_url.is_empty() {
+            return Ok(Vec::new()); // memory-struct 未配置，忽略
+        }
+
+        let agent_id = config.agent_id().await;
+        let role_name = config.current_role().await;
+
+        let url = format!("{}/index", struct_url.trim_end_matches('/'));
+
+        let body = json!({
+            "agent_id": agent_id,
+            "role_name": role_name,
+        });
+
+        let resp = self.client.post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::MemoryStoreError(format!("读取记忆索引失败: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Ok(Vec::new()); // memory-struct 未就绪时静默忽略
+        }
+
+        let data: serde_json::Value = resp.json().await?;
+        let items = data["items"].as_array()
+            .map(|arr| arr.iter().filter_map(|v| v["summary"].as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+
+        Ok(items)
+    }
+
     /// 按当前模式读取最近历史记录
     pub async fn read_history(
         &self,

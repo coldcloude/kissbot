@@ -135,6 +135,18 @@
 | POST | /query/channel | QueryChannelRequest — 按 (agent_id, role_name, messenger_id, user_id, group_id) + 时间范围查询 |
 | POST | /query | QueryRequest — 按 (agent_id, role_name) + 时间范围查询 |
 
+### 记忆索引读取（MemoryReader → Memory-Struct）
+
+在启动、模式切换、上下文重置时通过 HTTP 调用 memory-struct 获取顶层记忆索引，作为初始上下文的一部分。**注意：memory-struct 尚未实现。**
+
+| 方法 | 路径 | 请求体 |
+|------|------|--------|
+| POST | /index | { "agent_id": "...", "role_name": "..." } — 返回记忆索引列表（如摘要） |
+
+### 后续记忆搜索（Agentic Loop 内 Tool Call）
+
+在 agentic loop 中，当 LLM 需要回顾更早的历史时，通过内置工具 call 调用 memory-struct 的搜索接口。由 ToolCallDispatcher 识别为内置工具，不经过 station。**本期不实现。**
+
 ### 事件查询
 
 | 方法 | 路径 | 请求体 |
