@@ -137,7 +137,7 @@
 
 ### 记忆索引读取（MemoryReader → Memory-Struct）
 
-在启动、模式切换、上下文重置时通过 HTTP 调用 memory-struct 获取顶层记忆索引，作为初始上下文的一部分。**注意：memory-struct 尚未实现。**
+在启动、模式切换、上下文重置时通过 HTTP 调用 memory-struct 获取顶层记忆索引，作为初始上下文的一部分。memory-struct 未配置时跳过。
 
 | 方法 | 路径 | 请求体 |
 |------|------|--------|
@@ -145,7 +145,7 @@
 
 ### 后续记忆搜索（Agentic Loop 内 Tool Call）
 
-在 agentic loop 中，当 LLM 需要回顾更早的历史时，通过内置工具 call 调用 memory-struct 的搜索接口。由 ToolCallDispatcher 识别为内置工具，不经过 station。**本期不实现。**
+在 agentic loop 中，当 LLM 需要回顾更早的历史时，通过内置工具 call 调用 memory-struct 的搜索接口。由 ToolCallDispatcher 识别为内置工具，不经过 station。由 ToolCallDispatcher 实现。
 
 ### 事件查询
 
@@ -194,7 +194,7 @@
 ```rust
 struct LlmResponse {
     content: String,            // 回复文本
-    tool_calls: Vec<ToolCall>,  // 工具调用列表（本期为空）
+    tool_calls: Vec<ToolCall>,  // 工具调用列表
     finish_reason: String,      // "stop", "tool_use", "length" 等
 }
 ```
