@@ -214,13 +214,12 @@ impl WebMessenger {
             user_id: Arc::new(user_id.clone()),
             user_name: Arc::new(user_name.to_string()),
         }));
-        drop(cfg);
-
+        self.save(&cfg).await?;
         Ok(user_id)
     }
 
     pub async fn remove_user(&self, user_id: &str) -> Result<()> {
-        let cfg = self.config.write().await;
+        let mut cfg = self.config.write().await;
         if cfg.users.remove(user_id).is_none() {
             return Err(Error::UserNotFound(user_id.to_string()));
         }
@@ -228,6 +227,7 @@ impl WebMessenger {
         for g in cfg.groups.iter_mut() {
             g.members.remove(user_id);
         }
+        self.save(&cfg).await?;
         drop(cfg);
 
         // 通知 agent 用户已删除
@@ -253,6 +253,7 @@ impl WebMessenger {
             group_name: Arc::new(group_name.to_string()),
             members,
         }));
+        self.save(&cfg).await?;
         drop(cfg);
 
         // 通知新成员
@@ -288,7 +289,7 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         {
-            let cfg = self.config.write().await;
+            let mut cfg = self.config.write().await;
             let mut g = cfg.groups.get_mut(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
             let old = g.clone();
@@ -303,6 +304,7 @@ impl WebMessenger {
                 group_name: old.group_name.clone(),
                 members: old.members.clone(),
             });
+            self.save(&cfg).await?;
         }
 
         // 通知成员变更
@@ -322,11 +324,12 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         let members: Vec<String> = {
-            let cfg = self.config.write().await;
+            let mut cfg = self.config.write().await;
             let group = cfg.groups.get(group_id).map(|g| g.members.iter().map(|m| m.clone()).collect());
             if cfg.groups.remove(group_id).is_none() {
                 return Err(Error::GroupNotFound(group_id.to_string()));
             }
+            self.save(&cfg).await?;
             group.unwrap_or_default()
         };
 
