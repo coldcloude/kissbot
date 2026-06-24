@@ -13,3 +13,6 @@ thiserror = "2.0"
 config = "0.15"
 kai-file = { path = "../kai-rs/kai-file" }
 kissbot-api = { path = "../kissbot-api" }
+
+[dev-dependencies]
+tempfile = "3"
