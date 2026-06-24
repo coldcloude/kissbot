@@ -538,4 +538,97 @@ mod tests {
         };
         assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
     }
+
+    // ========== Record serde ==========
+
+    #[test]
+    fn test_serde_channel_record() {
+        let obj = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.content, "hello");
+        assert_eq!(deserialized.sn, 1);
+    }
+
+    #[test]
+    fn test_serde_think_record() {
+        let obj = ThinkRecord {
+            content: Arc::new("think content".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.content, "think content");
+        assert_eq!(*deserialized.key, "k1");
+    }
+
+    #[test]
+    fn test_serde_tool_call_record() {
+        let obj = ToolCallRecord {
+            tool_name: Arc::new("get_weather".to_string()),
+            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ToolCallRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.tool_name, "get_weather");
+        assert_eq!(deserialized.tool_params["city"], "Beijing");
+    }
+
+    #[test]
+    fn test_serde_tool_result_record() {
+        let obj = ToolResultRecord {
+            tool_result: Arc::new(serde_json::json!({"temp": 25})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ToolResultRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.tool_result["temp"], 25);
+    }
+
+    // ========== Key serde ==========
+
+    #[test]
+    fn test_serde_channel_record_key() {
+        let obj = ChannelRecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ChannelRecordKey = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.messenger_id, "telegram");
+        assert_eq!(*deserialized.date, "2026-06-24");
+    }
+
+    #[test]
+    fn test_serde_record_key() {
+        let obj = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RecordKey = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.role_name, "default");
+    }
 }
