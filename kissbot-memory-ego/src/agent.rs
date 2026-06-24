@@ -193,3 +193,110 @@ impl AgentManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 初始化测试环境，创建基础 agent 目录结构供 SearchManager 使用。
+    /// 避免 test_get_agent_not_found 创建的空 agent 目录导致 SearchManager 初始化失败。
+    async fn setup() {
+        crate::test_util::init_test_config();
+        static SETUP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        SETUP.get_or_init(|| async {
+            let dm = kissbot_memory::DirectoryManager::get();
+            dm.ensure_agent_dir("setup-agent").await.unwrap();
+            let agent_dir = dm.ensure_agent_dir("setup-agent").await.unwrap();
+            let metadata = serde_json::json!({
+                "agent_id": "setup-agent",
+                "individual_name": "Setup",
+                "description": "Setup agent for SearchManager init",
+                "created_at": "2026-06-25 10:00:00"
+            });
+            tokio::fs::write(
+                agent_dir.join("metadata.json"),
+                serde_json::to_string_pretty(&metadata).unwrap(),
+            ).await.unwrap();
+            dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn test_create_agent() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("Alice".to_string()),
+            Arc::new("Test agent".to_string()),
+        ).await.unwrap();
+        let agent = manager.get_agent(&agent_id).await.unwrap();
+        assert_eq!(*agent.individual_name, "Alice");
+        assert_eq!(*agent.description, "Test agent");
+        assert_eq!(*agent.agent_id, *agent_id);
+    }
+
+    #[tokio::test]
+    async fn test_get_agent_not_found() {
+        setup().await;
+        let result = AgentManager::get().get_agent("nonexistent").await;
+        assert!(matches!(result, Err(Error::AgentNotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_update_agent_name() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("Alice".to_string()),
+            Arc::new("Original description".to_string()),
+        ).await.unwrap();
+        manager.update_agent_name(&agent_id, Arc::new("Alice2".to_string())).await.unwrap();
+        let agent = manager.get_agent(&agent_id).await.unwrap();
+        assert_eq!(*agent.individual_name, "Alice2");
+        assert_eq!(*agent.description, "Original description");
+    }
+
+    #[tokio::test]
+    async fn test_update_agent_description() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("Alice".to_string()),
+            Arc::new("Original description".to_string()),
+        ).await.unwrap();
+        manager.update_agent_description(&agent_id, Arc::new("New description".to_string())).await.unwrap();
+        let agent = manager.get_agent(&agent_id).await.unwrap();
+        assert_eq!(*agent.description, "New description");
+        assert_eq!(*agent.individual_name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_copy_agent() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("Alice".to_string()),
+            Arc::new("Test".to_string()),
+        ).await.unwrap();
+        let new_id = manager.copy_agent(&agent_id).await.unwrap();
+        assert_ne!(*agent_id, *new_id);
+        let original = manager.get_agent(&agent_id).await.unwrap();
+        let copy = manager.get_agent(&new_id).await.unwrap();
+        assert_eq!(*original.individual_name, *copy.individual_name);
+    }
+
+    #[tokio::test]
+    async fn test_crud_chain() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("Alice".to_string()),
+            Arc::new("Original".to_string()),
+        ).await.unwrap();
+        manager.update_agent_name(&agent_id, Arc::new("Alice2".to_string())).await.unwrap();
+        manager.update_agent_description(&agent_id, Arc::new("Updated".to_string())).await.unwrap();
+        let agent = manager.get_agent(&agent_id).await.unwrap();
+        assert_eq!(*agent.individual_name, "Alice2");
+        assert_eq!(*agent.description, "Updated");
+    }
+}
