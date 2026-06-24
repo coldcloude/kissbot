@@ -320,8 +320,9 @@ mod tests {
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"A","time":"2026-06-24 08:00:00","sn":1}
-{"user_id":"u1","is_self":0,"msg_type":"text","content":"B","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"A","time":"2026-06-24 08:00:00","sn":1}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date,
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"B","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         // query range excludes A, includes B
@@ -378,8 +379,9 @@ mod tests {
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"A","key":"k1","time":"2026-06-24 08:00:00","sn":1}
-{"content":"B","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"content":"A","key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date,
+            r#"{"content":"B","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
@@ -430,8 +432,9 @@ mod tests {
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"A","tool_params":{},"key":"k1","time":"2026-06-24 08:00:00","sn":1}
-{"tool_name":"B","tool_params":{},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"tool_name":"A","tool_params":{},"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date,
+            r#"{"tool_name":"B","tool_params":{},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
@@ -482,8 +485,9 @@ mod tests {
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"A"},"key":"k1","time":"2026-06-24 08:00:00","sn":1}
-{"tool_result":{"v":"B"},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"tool_result":{"v":"A"},"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date,
+            r#"{"tool_result":{"v":"B"},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
