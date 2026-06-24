@@ -680,4 +680,167 @@ mod tests {
         let parser = ToolResultParser;
         assert_eq!(parser.get_file_name(&key), "tool-result-records-2026-06-24.jsonl");
     }
+
+    // ========== RequestParser ==========
+
+    #[test]
+    fn test_channel_request_parser() {
+        let request = ChannelRequest {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            is_self: 1,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+        let parser = ChannelParser;
+        let (key, record) = parser.parse_request(request);
+        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(*key.messenger_id, "telegram");
+        assert_eq!(*key.date, "2026-06-24");
+        assert_eq!(*record.user_id, "u1");
+        assert_eq!(*record.content, "hello");
+        assert_eq!(record.sn, 0);
+    }
+
+    #[test]
+    fn test_think_request_parser() {
+        let request = ThinkRequest {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            content: Arc::new("thinking...".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+        let parser = ThinkParser;
+        let (key, record) = parser.parse_request(request);
+        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(*key.date, "2026-06-24");
+        assert_eq!(*record.content, "thinking...");
+        assert_eq!(*record.key, "k1");
+        assert_eq!(record.sn, 0);
+    }
+
+    #[test]
+    fn test_tool_call_request_parser() {
+        let request = ToolCallRequest {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            tool_name: Arc::new("get_weather".to_string()),
+            tool_params: serde_json::json!({"city": "Beijing"}).into(),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+        let parser = ToolCallParser;
+        let (key, record) = parser.parse_request(request);
+        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(*record.tool_name, "get_weather");
+        assert_eq!(record.tool_params["city"], "Beijing");
+        assert_eq!(record.sn, 0);
+    }
+
+    #[test]
+    fn test_tool_result_request_parser() {
+        let request = ToolResultRequest {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            tool_result: serde_json::json!({"temp": 25}).into(),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+        let parser = ToolResultParser;
+        let (key, record) = parser.parse_request(request);
+        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(record.tool_result["temp"], 25);
+        assert_eq!(*record.key, "k1");
+        assert_eq!(record.sn, 0);
+    }
+
+    // ========== RecordCombiner ==========
+
+    #[test]
+    fn test_channel_record_combiner() {
+        let key = ChannelRecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let record = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 1,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 5,
+        };
+        let result = ChannelParser.combine_record(&key, &record);
+        assert_eq!(*result.agent_id, "agent1");
+        assert_eq!(*result.messenger_id, "telegram");
+        assert_eq!(*result.content, "hello");
+        assert_eq!(result.sn, 5);
+    }
+
+    #[test]
+    fn test_think_record_combiner() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let record = ThinkRecord {
+            content: Arc::new("thinking...".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 3,
+        };
+        let result = ThinkParser.combine_record(&key, &record);
+        assert_eq!(*result.agent_id, "agent1");
+        assert_eq!(*result.content, "thinking...");
+        assert_eq!(result.sn, 3);
+    }
+
+    #[test]
+    fn test_tool_call_record_combiner() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let record = ToolCallRecord {
+            tool_name: Arc::new("get_weather".to_string()),
+            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 2,
+        };
+        let result = ToolCallParser.combine_record(&key, &record);
+        assert_eq!(*result.agent_id, "agent1");
+        assert_eq!(*result.tool_name, "get_weather");
+        assert_eq!(result.sn, 2);
+    }
+
+    #[test]
+    fn test_tool_result_record_combiner() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let record = ToolResultRecord {
+            tool_result: Arc::new(serde_json::json!({"temp": 25})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 7,
+        };
+        let result = ToolResultParser.combine_record(&key, &record);
+        assert_eq!(*result.agent_id, "agent1");
+        assert_eq!(result.tool_result["temp"], 25);
+        assert_eq!(result.sn, 7);
+    }
 }
