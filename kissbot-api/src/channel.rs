@@ -155,3 +155,37 @@ pub struct BindRequest {
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(28);
+        // kai-ws binary header: 12 bytes (sn 4 + payload_type 4 + status_code 4)
+        buf.extend_from_slice(&0u32.to_be_bytes());  // sn
+        buf.extend_from_slice(&0u32.to_be_bytes());  // payload_type
+        buf.extend_from_slice(&200u32.to_be_bytes()); // status_code
+        // attachment header: id 4 + size 4 + pos 8
+        buf.extend_from_slice(&id.to_be_bytes());
+        buf.extend_from_slice(&size.to_be_bytes());
+        buf.extend_from_slice(&pos.to_be_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_parse_attachment_header_ok() {
+        let data = make_att_header(42, 1024, 65536);
+        let header = parse_attachment_payload_header(&data).unwrap();
+        assert_eq!(header.id, 42);
+        assert_eq!(header.size, 1024);
+        assert_eq!(header.pos, 65536);
+    }
+
+    #[test]
+    fn test_parse_attachment_header_too_short() {
+        let data = vec![0u8; 10];
+        let result = parse_attachment_payload_header(&data);
+        assert!(matches!(result, Err(kai_ws::Error::BinParse)));
+    }
+}
