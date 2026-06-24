@@ -1,4 +1,3 @@
-use std::array::TryFromSliceError;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -117,13 +116,19 @@ pub struct AttachmentPayloadHeader {
     pub pos: u64,
 }
 
-pub fn parse_attachment_payload_header(data: &[u8]) -> std::result::Result<AttachmentPayloadHeader, TryFromSliceError> {
-    let id_bin: [u8; 4] = data[OFFSET_ATT_ID..OFFSET_ATT_ID + LEN_ATT_ID].try_into()?;
-    let id = u32::from_be_bytes(id_bin);
-    let size_bin: [u8; 4] = data[OFFSET_ATT_SIZE..OFFSET_ATT_SIZE + LEN_ATT_SIZE].try_into()?;
-    let size = u32::from_be_bytes(size_bin);
-    let pos_bin: [u8; 8] = data[OFFSET_ATT_POS..OFFSET_ATT_POS + LEN_ATT_POS].try_into()?;
-    let pos = u64::from_be_bytes(pos_bin);
+pub fn parse_attachment_payload_header(data: &[u8]) -> std::result::Result<AttachmentPayloadHeader, kai_ws::Error> {
+    let id_bytes: [u8; 4] = data.get(OFFSET_ATT_ID..OFFSET_ATT_ID + LEN_ATT_ID)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(kai_ws::Error::BinParse)?;
+    let id = u32::from_be_bytes(id_bytes);
+    let size_bytes: [u8; 4] = data.get(OFFSET_ATT_SIZE..OFFSET_ATT_SIZE + LEN_ATT_SIZE)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(kai_ws::Error::BinParse)?;
+    let size = u32::from_be_bytes(size_bytes);
+    let pos_bytes: [u8; 8] = data.get(OFFSET_ATT_POS..OFFSET_ATT_POS + LEN_ATT_POS)
+        .and_then(|s| s.try_into().ok())
+        .ok_or(kai_ws::Error::BinParse)?;
+    let pos = u64::from_be_bytes(pos_bytes);
     Ok(AttachmentPayloadHeader { id, size, pos })
 }
 
