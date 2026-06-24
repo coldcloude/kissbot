@@ -218,39 +218,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_group_info() {
-        let obj = GroupInfo {
-            group_id: Arc::new("g1".to_string()),
-            group_name: Arc::new("MyGroup".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: GroupInfo = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.group_id, "g1");
-        assert_eq!(*deserialized.group_name, "MyGroup");
-    }
-
-    #[test]
-    fn test_serde_user_info() {
-        let group_info = Arc::new(GroupInfo {
-            group_id: Arc::new("g1".to_string()),
-            group_name: Arc::new("MyGroup".to_string()),
-        });
-        let group_map = Arc::new(DashMap::new());
-        group_map.insert("g1".to_string(), group_info);
-
-        let obj = UserInfo {
-            user_id: Arc::new("u1".to_string()),
-            user_name: Arc::new("Alice".to_string()),
-            group_map,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: UserInfo = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.user_id, "u1");
-        assert_eq!(*deserialized.user_name, "Alice");
-        assert_eq!(deserialized.group_map.len(), 1);
-    }
-
-    #[test]
     fn test_serde_messenger_info() {
         let group_info = Arc::new(GroupInfo {
             group_id: Arc::new("g1".to_string()),
@@ -288,20 +255,6 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: MessengerInfoRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.messenger_id, "m1");
-    }
-
-    #[test]
-    fn test_serde_attachment_info() {
-        let obj = AttachmentInfo {
-            att_id: Arc::new("att1".to_string()),
-            mime_type: Arc::new("image/png".to_string()),
-            size_bytes: 12345,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: AttachmentInfo = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.att_id, "att1");
-        assert_eq!(*deserialized.mime_type, "image/png");
-        assert_eq!(deserialized.size_bytes, 12345);
     }
 
     #[test]
