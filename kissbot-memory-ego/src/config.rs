@@ -33,3 +33,35 @@ impl Config {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ego_config_with_values() {
+        let config = Config {
+            listen_addr: "0.0.0.0".to_string(),
+            listen_port: 9999,
+            api_key: "test-key".to_string(),
+        };
+        assert_eq!(config.listen_addr, "0.0.0.0");
+        assert_eq!(config.listen_port, 9999);
+        assert_eq!(config.api_key, "test-key");
+    }
+
+    #[test]
+    fn test_ego_config_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("test-ego-config.json");
+        std::fs::write(&config_path,
+            r#"{"listen_addr":"127.0.0.1","listen_port":3001,"api_key":"abc123"}"#).unwrap();
+        // SAFETY: 单线程测试
+        unsafe { std::env::set_var("KISSBOT_MEMORY_EGO_CONFIG", config_path.to_str().unwrap()); }
+        let config = Config::load().unwrap();
+        assert_eq!(config.listen_addr, "127.0.0.1");
+        assert_eq!(config.listen_port, 3001);
+        assert_eq!(config.api_key, "abc123");
+        unsafe { std::env::remove_var("KISSBOT_MEMORY_EGO_CONFIG"); }
+    }
+}
