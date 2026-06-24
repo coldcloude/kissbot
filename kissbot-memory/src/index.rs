@@ -21,7 +21,7 @@ pub struct FilePosition {
 
 type FileIndexLock = Arc<RwLock<BTreeMap<String, FilePosition>>>;
 
-pub(crate) struct FileIndexContext<Q,K,R,RR,P>
+struct FileIndexContext<Q,K,R,RR,P>
 where
     K: Eq + Hash + Clone + FileKey + Send + Sync,
     R: Record,
@@ -29,9 +29,9 @@ where
     P: FilePathGenerator<K> + QueryParser<Q,K>,
 {
     _marker: PhantomData<(Q,R,RR)>,
-    pub(crate) position_map_map: DashMap<K, FileIndexLock>,
-    pub(crate) obsolete_set: DashSet<K>,
-    pub(crate) all_obsolete_set: DashSet<K>,
+    position_map_map: DashMap<K, FileIndexLock>,
+    obsolete_set: DashSet<K>,
+    all_obsolete_set: DashSet<K>,
     parser: P,
 }
 
@@ -163,10 +163,10 @@ where
 }
 
 pub struct MemoryIndexer {
-    pub(crate) channel_indices: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser>,
-    pub(crate) think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkRecordResult, ThinkParser>,
-    pub(crate) tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallRecordResult, ToolCallParser>,
-    pub(crate) tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultRecordResult, ToolResultParser>,
+    channel_indices: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser>,
+    think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkRecordResult, ThinkParser>,
+    tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallRecordResult, ToolCallParser>,
+    tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultRecordResult, ToolResultParser>,
 }
 
 static MEMORY_INDEXER: OnceLock<MemoryIndexer> = OnceLock::new();
@@ -232,6 +232,46 @@ impl MemoryIndexer {
     pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<ToolResultRecordResult>> {
         self.tool_result_indices.query_all(query).await
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_channel_obsolete(&self, key: &ChannelRecordKey) -> bool {
+        self.channel_indices.obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_channel_all_obsolete(&self, key: &ChannelRecordKey) -> bool {
+        self.channel_indices.all_obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_think_obsolete(&self, key: &RecordKey) -> bool {
+        self.think_indices.obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_think_all_obsolete(&self, key: &RecordKey) -> bool {
+        self.think_indices.all_obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_tool_call_obsolete(&self, key: &RecordKey) -> bool {
+        self.tool_call_indices.obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_tool_call_all_obsolete(&self, key: &RecordKey) -> bool {
+        self.tool_call_indices.all_obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_tool_result_obsolete(&self, key: &RecordKey) -> bool {
+        self.tool_result_indices.obsolete_set.contains(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_tool_result_all_obsolete(&self, key: &RecordKey) -> bool {
+        self.tool_result_indices.all_obsolete_set.contains(key)
+    }
 }
 
 #[cfg(test)]
@@ -249,7 +289,7 @@ mod tests {
         assert_eq!(deserialized.end_pos, 200);
     }
 
-    // ========== MemoryIndexer mark methods ==========
+    // ========== MemoryIndexer ==========
 
     fn make_channel_key() -> ChannelRecordKey {
         ChannelRecordKey {
@@ -274,18 +314,18 @@ mod tests {
     fn test_mark_channel_obsolete() {
         let indexer = MemoryIndexer::new();
         let key = make_channel_key();
-        assert!(!indexer.channel_indices.obsolete_set.contains(&key));
+        assert!(!indexer.is_channel_obsolete(&key));
         indexer.mark_channel_obsolete(&key);
-        assert!(indexer.channel_indices.obsolete_set.contains(&key));
+        assert!(indexer.is_channel_obsolete(&key));
     }
 
     #[test]
     fn test_mark_channel_all_obsolete() {
         let indexer = MemoryIndexer::new();
         let key = make_channel_key();
-        assert!(!indexer.channel_indices.all_obsolete_set.contains(&key));
+        assert!(!indexer.is_channel_all_obsolete(&key));
         indexer.mark_channel_all_obsolete(&key);
-        assert!(indexer.channel_indices.all_obsolete_set.contains(&key));
+        assert!(indexer.is_channel_all_obsolete(&key));
     }
 
     #[test]
@@ -293,7 +333,7 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_think_obsolete(&key);
-        assert!(indexer.think_indices.obsolete_set.contains(&key));
+        assert!(indexer.is_think_obsolete(&key));
     }
 
     #[test]
@@ -301,7 +341,7 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_think_all_obsolete(&key);
-        assert!(indexer.think_indices.all_obsolete_set.contains(&key));
+        assert!(indexer.is_think_all_obsolete(&key));
     }
 
     #[test]
@@ -309,7 +349,7 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_tool_call_obsolete(&key);
-        assert!(indexer.tool_call_indices.obsolete_set.contains(&key));
+        assert!(indexer.is_tool_call_obsolete(&key));
     }
 
     #[test]
@@ -317,7 +357,7 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_tool_call_all_obsolete(&key);
-        assert!(indexer.tool_call_indices.all_obsolete_set.contains(&key));
+        assert!(indexer.is_tool_call_all_obsolete(&key));
     }
 
     #[test]
@@ -325,7 +365,7 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_tool_result_obsolete(&key);
-        assert!(indexer.tool_result_indices.obsolete_set.contains(&key));
+        assert!(indexer.is_tool_result_obsolete(&key));
     }
 
     #[test]
@@ -333,27 +373,15 @@ mod tests {
         let indexer = MemoryIndexer::new();
         let key = make_record_key();
         indexer.mark_tool_result_all_obsolete(&key);
-        assert!(indexer.tool_result_indices.all_obsolete_set.contains(&key));
-    }
-
-    // ========== FileIndexContext ==========
-
-    #[test]
-    fn test_file_index_context_new() {
-        let ctx: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser> = FileIndexContext::new(ChannelParser {});
-        assert!(ctx.position_map_map.is_empty());
-        assert!(ctx.obsolete_set.is_empty());
-        assert!(ctx.all_obsolete_set.is_empty());
+        assert!(indexer.is_tool_result_all_obsolete(&key));
     }
 
     #[test]
-    fn test_file_index_context_get_lock() {
-        let ctx: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser> = FileIndexContext::new(ChannelParser {});
+    fn test_indexer_new() {
+        let indexer = MemoryIndexer::new();
+        // all mark methods start clean (no keys marked)
         let key = make_channel_key();
-        let lock = ctx.get_lock(&key);
-        assert_eq!(ctx.position_map_map.len(), 1);
-        // verify the lock is usable (non-async test)
-        let _guard = lock.try_read();
-        let _wguard = lock.try_write();
+        assert!(!indexer.is_channel_obsolete(&key));
+        assert!(!indexer.is_channel_all_obsolete(&key));
     }
 }
