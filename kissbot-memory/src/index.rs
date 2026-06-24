@@ -1,6 +1,6 @@
 use dashmap::{DashMap, DashSet};
 use kissbot_api::{QueryChannelRequest, QueryRequest};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::btree_map::Entry;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -13,7 +13,7 @@ use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordR
 use crate::error::Result;
 use kai_file::ReverseLineReader;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FilePosition {
     pub start_pos: u64,
     pub end_pos: u64,
@@ -247,17 +247,6 @@ impl MemoryIndexer {
 mod tests {
     use super::*;
     use tokio;
-
-    // ========== FilePosition serde ==========
-
-    #[test]
-    fn test_serde_file_position() {
-        let obj = FilePosition { start_pos: 100, end_pos: 200 };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: FilePosition = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.start_pos, 100);
-        assert_eq!(deserialized.end_pos, 200);
-    }
 
     // ========== MemoryIndexer: mark + query ==========
 
