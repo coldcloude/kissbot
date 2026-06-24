@@ -269,8 +269,6 @@ mod tests {
             // SAFETY: single-threaded test init
             unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
             crate::Config::get();
-            // leak TempDir to keep it alive for the entire test process
-            Box::leak(Box::new(dir));
         });
     }
 
