@@ -188,4 +188,222 @@ mod tests {
         let result = parse_attachment_payload_header(&data);
         assert!(matches!(result, Err(kai_ws::Error::BinParse)));
     }
+
+    // === Roundtrip tests ===
+
+    #[test]
+    fn test_serde_group_change_notification() {
+        let obj = GroupChangeNotification {
+            messenger_id: Arc::new("messenger1".to_string()),
+            group_id: Arc::new("group1".to_string()),
+            user_id: Arc::new("user1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GroupChangeNotification = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.messenger_id, "messenger1");
+        assert_eq!(*deserialized.group_id, "group1");
+        assert_eq!(*deserialized.user_id, "user1");
+    }
+
+    #[test]
+    fn test_serde_user_remove_notification() {
+        let obj = UserRemoveNotification {
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UserRemoveNotification = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.messenger_id, "m1");
+        assert_eq!(*deserialized.user_id, "u1");
+    }
+
+    #[test]
+    fn test_serde_group_info() {
+        let obj = GroupInfo {
+            group_id: Arc::new("g1".to_string()),
+            group_name: Arc::new("MyGroup".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GroupInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.group_id, "g1");
+        assert_eq!(*deserialized.group_name, "MyGroup");
+    }
+
+    #[test]
+    fn test_serde_user_info() {
+        let group_info = Arc::new(GroupInfo {
+            group_id: Arc::new("g1".to_string()),
+            group_name: Arc::new("MyGroup".to_string()),
+        });
+        let group_map = Arc::new(DashMap::new());
+        group_map.insert("g1".to_string(), group_info);
+
+        let obj = UserInfo {
+            user_id: Arc::new("u1".to_string()),
+            user_name: Arc::new("Alice".to_string()),
+            group_map,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UserInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.user_name, "Alice");
+        assert_eq!(deserialized.group_map.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_messenger_info() {
+        let group_info = Arc::new(GroupInfo {
+            group_id: Arc::new("g1".to_string()),
+            group_name: Arc::new("MyGroup".to_string()),
+        });
+        let user_info = Arc::new(UserInfo {
+            user_id: Arc::new("u1".to_string()),
+            user_name: Arc::new("Alice".to_string()),
+            group_map: {
+                let gm = Arc::new(DashMap::new());
+                gm.insert("g1".to_string(), group_info);
+                gm
+            },
+        });
+        let user_map = Arc::new(DashMap::new());
+        user_map.insert("u1".to_string(), user_info);
+
+        let obj = MessengerInfo {
+            messenger_id: Arc::new("m1".to_string()),
+            messenger_name: Arc::new("Telegram".to_string()),
+            user_map,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: MessengerInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.messenger_id, "m1");
+        assert_eq!(*deserialized.messenger_name, "Telegram");
+        assert_eq!(deserialized.user_map.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_messenger_info_request() {
+        let obj = MessengerInfoRequest {
+            messenger_id: Arc::new("m1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: MessengerInfoRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.messenger_id, "m1");
+    }
+
+    #[test]
+    fn test_serde_attachment_info() {
+        let obj = AttachmentInfo {
+            att_id: Arc::new("att1".to_string()),
+            mime_type: Arc::new("image/png".to_string()),
+            size_bytes: 12345,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: AttachmentInfo = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.att_id, "att1");
+        assert_eq!(*deserialized.mime_type, "image/png");
+        assert_eq!(deserialized.size_bytes, 12345);
+    }
+
+    #[test]
+    fn test_serde_outgoing_message() {
+        let att_info = Arc::new(AttachmentInfo {
+            att_id: Arc::new("att1".to_string()),
+            mime_type: Arc::new("image/png".to_string()),
+            size_bytes: 12345,
+        });
+        let att_map = Arc::new(DashMap::new());
+        att_map.insert("file1".to_string(), att_info);
+
+        let obj = OutgoingMessage {
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("Hello".to_string()),
+            attachment_map: att_map,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: OutgoingMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.messenger_id, "m1");
+        assert_eq!(*deserialized.content, "Hello");
+        assert_eq!(deserialized.attachment_map.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_outgoing_message_response() {
+        let upload_map = Arc::new(DashMap::new());
+        upload_map.insert("file1".to_string(), 100u32);
+
+        let obj = OutgoingMessageResponse {
+            msg_id: Arc::new("msg1".to_string()),
+            time: Arc::new("2026-01-01 00:00:00".to_string()),
+            attachment_upload_id_map: upload_map,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.msg_id, "msg1");
+        assert_eq!(deserialized.attachment_upload_id_map.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_attachment_download_request() {
+        let obj = AttachmentDownloadRequest {
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            key: Arc::new("key1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: AttachmentDownloadRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.key, "key1");
+    }
+
+    #[test]
+    fn test_serde_attachment_download_response_header() {
+        let metadata = Arc::new(AttachmentInfo {
+            att_id: Arc::new("att1".to_string()),
+            mime_type: Arc::new("application/pdf".to_string()),
+            size_bytes: 99999,
+        });
+        let obj = AttachmentDownloadResponseHeader {
+            download_id: 42,
+            metadata,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: AttachmentDownloadResponseHeader = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.download_id, 42);
+        assert_eq!(*deserialized.metadata.att_id, "att1");
+    }
+
+    #[test]
+    fn test_serde_incoming_message() {
+        let obj = IncomingMessage {
+            msg_id: Arc::new("msg1".to_string()),
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("Hello".to_string()),
+            time: Arc::new("2026-01-01 00:00:00".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: IncomingMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.msg_id, "msg1");
+        assert_eq!(*deserialized.content, "Hello");
+    }
+
+    #[test]
+    fn test_serde_bind_request() {
+        let obj = BindRequest {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: BindRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.role_name, "admin");
+    }
 }
