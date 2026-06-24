@@ -15,7 +15,7 @@ pub const MSG_TYPE_MULTI: &str = "multi";
 
 /// multi 消息的 content 为 JSON 列表，每个元素包含 msg_type 和 content 两个字段
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MultiMessageItem {
+pub struct MessageItem {
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
 }
