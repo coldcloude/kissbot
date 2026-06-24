@@ -384,3 +384,221 @@ impl RolePlayManager {
         }).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn setup() {
+        crate::test_util::init_test_config();
+        static SETUP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        SETUP.get_or_init(|| async {
+            let dm = kissbot_memory::DirectoryManager::get();
+            dm.ensure_agent_dir("setup-agent").await.unwrap();
+            dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
+            // 补充已有 agent 的 metadata，防止 SearchManager 初始化失败
+            crate::test_util::ensure_agent_metadata().await;
+        }).await;
+    }
+
+    #[test]
+    fn test_ego_role_play_path() {
+        let path = ego_role_play_path("/tmp/ego", "admin");
+        assert_eq!(path, std::path::Path::new("/tmp/ego").join("role-play-admin.json"));
+    }
+
+    #[tokio::test]
+    async fn test_create_role() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-role1").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-role1").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-role1", Arc::new("admin".to_string()), Arc::new("Administrator".to_string())).await.unwrap();
+        let role = manager.get_role("agent-role1", "admin").await.unwrap();
+        assert_eq!(*role.role.role_name, "admin");
+        assert_eq!(*role.role.description, "Administrator");
+    }
+
+    #[tokio::test]
+    async fn test_create_role_duplicate() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-dup").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-dup").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-dup", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let result = manager.create_role("agent-dup", Arc::new("admin".to_string()), Arc::new("Other".to_string())).await;
+        assert!(matches!(result, Err(Error::AgentRoleAlreadyExists(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_create_role_from() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-from").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-from").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-from", Arc::new("admin".to_string()), Arc::new("Original desc".to_string())).await.unwrap();
+        manager.create_role_from("agent-from", "admin", Arc::new("mod".to_string())).await.unwrap();
+        let new_role = manager.get_role("agent-from", "mod").await.unwrap();
+        assert_eq!(*new_role.role.description, "Original desc");
+    }
+
+    #[tokio::test]
+    async fn test_list_roles() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-list").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-list").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-list", Arc::new("admin".to_string()), Arc::new("".to_string())).await.unwrap();
+        manager.create_role("agent-list", Arc::new("mod".to_string()), Arc::new("".to_string())).await.unwrap();
+        let roles = manager.list_roles("agent-list").await.unwrap();
+        assert_eq!(roles.len(), 2);
+        assert!(roles.contains(&"admin".to_string()));
+        assert!(roles.contains(&"mod".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_get_role_not_found() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-nf").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-nf").await.unwrap();
+        let result = RolePlayManager::get().get_role("agent-nf", "nonexistent").await;
+        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_remove_role() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-remove-role").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-remove-role").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-remove-role", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.remove_role("agent-remove-role", "admin").await.unwrap();
+        let result = manager.get_role("agent-remove-role", "admin").await;
+        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_role() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-rename-role").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-rename-role").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-rename-role", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.rename_role("agent-rename-role", "admin", Arc::new("mod".to_string())).await.unwrap();
+        let role = manager.get_role("agent-rename-role", "mod").await.unwrap();
+        assert_eq!(*role.role.role_name, "mod");
+        let result = manager.get_role("agent-rename-role", "admin").await;
+        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_update_role_description() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-upd-desc").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-upd-desc").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-upd-desc", Arc::new("admin".to_string()), Arc::new("Old".to_string())).await.unwrap();
+        manager.update_role_description("agent-upd-desc", "admin", Arc::new("New desc".to_string())).await.unwrap();
+        let role = manager.get_role("agent-upd-desc", "admin").await.unwrap();
+        assert_eq!(*role.role.description, "New desc");
+    }
+
+    #[tokio::test]
+    async fn test_other_role_replace() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-other1").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-other1").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-other1", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                description: Arc::new("Works together".to_string()),
+            }),
+            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            description: Arc::new("A colleague".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-other1", "admin",
+            vec![],
+            vec![(Arc::new("Bob".to_string()), other_role)],
+        ).await.unwrap();
+        let result = manager.get_other_role("agent-other1", "admin", "Bob").await.unwrap();
+        assert_eq!(*result.individual_name, "Bob");
+    }
+
+    #[tokio::test]
+    async fn test_rename_other_role() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-other-rename").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-other-rename").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-other-rename", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-other-rename", "admin",
+            vec![],
+            vec![(Arc::new("Bob".to_string()), other_role)],
+        ).await.unwrap();
+        manager.rename_other_role("agent-other-rename", "admin", "Bob", "Robert").await.unwrap();
+        let robert = manager.get_other_role("agent-other-rename", "admin", "Robert").await.unwrap();
+        assert_eq!(*robert.individual_name, "Bob");
+        let result = manager.get_other_role("agent-other-rename", "admin", "Bob").await;
+        assert!(matches!(result, Err(Error::AgentRoleOtherRoleNotFound(_, _, _))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_other_role_relations() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-other-rel").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-other-rel").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-other-rel", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-other-rel", "admin",
+            vec![],
+            vec![(Arc::new("Bob".to_string()), other_role)],
+        ).await.unwrap();
+        let relation = Arc::new(RoleRelation {
+            relation: Arc::new("friend".to_string()),
+            description: Arc::new("close friend".to_string()),
+        });
+        manager.replace_other_role_relations(
+            "agent-other-rel", "admin", "Bob",
+            vec![],
+            vec![(Arc::new("enemy".to_string()), relation)],
+        ).await.unwrap();
+        let bob = manager.get_other_role("agent-other-rel", "admin", "Bob").await.unwrap();
+        let rel = bob.other_role_relations.get("enemy").unwrap();
+        assert_eq!(*rel.relation, "friend");
+    }
+}

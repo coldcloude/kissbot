@@ -199,9 +199,9 @@ mod tests {
     use super::*;
 
     /// 初始化测试环境，创建基础 agent 目录结构供 SearchManager 使用。
-    /// 避免 test_get_agent_not_found 创建的空 agent 目录导致 SearchManager 初始化失败。
     async fn setup() {
         crate::test_util::init_test_config();
+        // 基础 setup 只执行一次
         static SETUP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
         SETUP.get_or_init(|| async {
             let dm = kissbot_memory::DirectoryManager::get();
@@ -219,6 +219,10 @@ mod tests {
             ).await.unwrap();
             dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
         }).await;
+        // 每次 setup 都补充已有 agent 的 metadata，
+        // 确保后续 SearchManager 初始化时不被 test_get_agent_not_found
+        // 创建的没有 metadata.json 的目录干扰
+        crate::test_util::ensure_agent_metadata().await;
     }
 
     #[tokio::test]
