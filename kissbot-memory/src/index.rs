@@ -277,6 +277,7 @@ impl MemoryIndexer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio;
 
     // ========== FilePosition serde ==========
 
@@ -376,12 +377,151 @@ mod tests {
         assert!(indexer.is_tool_result_all_obsolete(&key));
     }
 
-    #[test]
-    fn test_indexer_new() {
+    // ========== Query tests ==========
+
+    use std::sync::LazyLock;
+
+    static QUERY_TEST_DIR: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let root_dir_str = dir.path().display().to_string();
+        std::fs::write(&config_path, format!(r#"{{"root_dir":"{}"}}"#, root_dir_str)).unwrap();
+        // SAFETY: single-threaded test init
+        unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
+        crate::Config::get();
+        dir
+    });
+
+    async fn write_jsonl(agent_id: &str, role_name: &str, filename: &str, date: &str, line: &str) {
+        let _ = LazyLock::force(&QUERY_TEST_DIR);
+        let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
+        let year_role_dir = store_dir.join(format!("{}-{}", &date[..4], role_name));
+        tokio::fs::create_dir_all(&year_role_dir).await.unwrap();
+        tokio::fs::write(year_role_dir.join(filename), line).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_channel_records() {
+        let agent_id = "agent1";
+        let role_name = "default";
+        let date = "2026-06-24";
+        let messenger_id = "telegram";
+        let user_id = "u1";
+        let group_id = "g1";
+        let filename = format!("channel-{}={}={}-records-{}.jsonl", messenger_id, user_id, group_id, date);
+        let record_line = r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"hello","time":"2026-06-24 10:00:00","sn":1}"#;
+        write_jsonl(agent_id, role_name, &filename, date, record_line).await;
+
         let indexer = MemoryIndexer::new();
-        // all mark methods start clean (no keys marked)
-        let key = make_channel_key();
-        assert!(!indexer.is_channel_obsolete(&key));
-        assert!(!indexer.is_channel_all_obsolete(&key));
+        let key = ChannelRecordKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            messenger_id: Arc::new(messenger_id.to_string()),
+            user_id: Arc::new(user_id.to_string()),
+            group_id: Arc::new(group_id.to_string()),
+            date: Arc::new(date.to_string()),
+        };
+        indexer.mark_channel_obsolete(&key);
+
+        let query = QueryChannelRequest {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            messenger_id: Arc::new(messenger_id.to_string()),
+            user_id: Arc::new(user_id.to_string()),
+            group_id: Arc::new(group_id.to_string()),
+            start_time: Arc::new("2026-06-24 10:00:00".to_string()),
+            end_time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+
+        let results = indexer.query_channel_records(query).await.unwrap();
+        assert!(!results.is_empty(), "expected at least one channel record");
+        assert_eq!(results[0].content.as_str(), "hello");
+    }
+
+    #[tokio::test]
+    async fn test_query_think_records() {
+        let agent_id = "agent1";
+        let role_name = "default";
+        let date = "2026-06-24";
+        let filename = format!("think-records-{}.jsonl", date);
+        let record_line = r#"{"content":"thinking...","key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
+        write_jsonl(agent_id, role_name, &filename, date, record_line).await;
+
+        let indexer = MemoryIndexer::new();
+        let key = RecordKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            date: Arc::new(date.to_string()),
+        };
+        indexer.mark_think_obsolete(&key);
+
+        let query = QueryRequest {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            start_time: Arc::new("2026-06-24 10:00:00".to_string()),
+            end_time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+
+        let results = indexer.query_think_records(query).await.unwrap();
+        assert!(!results.is_empty(), "expected at least one think record");
+        assert_eq!(results[0].content.as_str(), "thinking...");
+    }
+
+    #[tokio::test]
+    async fn test_query_tool_call_records() {
+        let agent_id = "agent1";
+        let role_name = "default";
+        let date = "2026-06-24";
+        let filename = format!("tool-call-records-{}.jsonl", date);
+        let record_line = r#"{"tool_name":"get_weather","tool_params":{"city":"Beijing"},"key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
+        write_jsonl(agent_id, role_name, &filename, date, record_line).await;
+
+        let indexer = MemoryIndexer::new();
+        let key = RecordKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            date: Arc::new(date.to_string()),
+        };
+        indexer.mark_tool_call_obsolete(&key);
+
+        let query = QueryRequest {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            start_time: Arc::new("2026-06-24 10:00:00".to_string()),
+            end_time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+
+        let results = indexer.query_tool_call_records(query).await.unwrap();
+        assert!(!results.is_empty(), "expected at least one tool call record");
+        assert_eq!(results[0].tool_name.as_str(), "get_weather");
+    }
+
+    #[tokio::test]
+    async fn test_query_tool_result_records() {
+        let agent_id = "agent1";
+        let role_name = "default";
+        let date = "2026-06-24";
+        let filename = format!("tool-result-records-{}.jsonl", date);
+        let record_line = r#"{"tool_result":{"temp":25},"key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
+        write_jsonl(agent_id, role_name, &filename, date, record_line).await;
+
+        let indexer = MemoryIndexer::new();
+        let key = RecordKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            date: Arc::new(date.to_string()),
+        };
+        indexer.mark_tool_result_obsolete(&key);
+
+        let query = QueryRequest {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            start_time: Arc::new("2026-06-24 10:00:00".to_string()),
+            end_time: Arc::new("2026-06-24 10:00:00".to_string()),
+        };
+
+        let results = indexer.query_tool_result_records(query).await.unwrap();
+        assert!(!results.is_empty(), "expected at least one tool result record");
+        assert_eq!(results[0].key.as_str(), "k1");
     }
 }
