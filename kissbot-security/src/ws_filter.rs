@@ -39,3 +39,61 @@ impl WsHeaderFilter for ApiKeyWsFilter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+
+    /// Mock validator that returns a preset result.
+    struct MockValidator {
+        result: Result<(), Error>,
+    }
+
+    impl ApiKeyValidator for MockValidator {
+        fn validate(&self, _key: &str) -> Result<(), Error> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn test_filter_accept() {
+        let filter = ApiKeyWsFilter::new(Arc::new(MockValidator { result: Ok(()) }));
+        let request = http::Request::builder()
+            .uri("ws://example.com/ws")
+            .header(crate::HEADER_API_KEY, "valid-key")
+            .body(())
+            .unwrap();
+        let result = filter.filter(&request);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_filter_missing_key() {
+        let filter = ApiKeyWsFilter::new(Arc::new(MockValidator { result: Ok(()) }));
+        let request = http::Request::builder()
+            .uri("ws://example.com/ws")
+            .body(())
+            .unwrap();
+        let result = filter.filter(&request);
+        assert!(result.is_err());
+        let err_response = result.unwrap_err();
+        assert_eq!(err_response.status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_filter_invalid_key() {
+        let filter = ApiKeyWsFilter::new(Arc::new(MockValidator {
+            result: Err(Error::InvalidKey),
+        }));
+        let request = http::Request::builder()
+            .uri("ws://example.com/ws")
+            .header(crate::HEADER_API_KEY, "wrong-key")
+            .body(())
+            .unwrap();
+        let result = filter.filter(&request);
+        assert!(result.is_err());
+        let err_response = result.unwrap_err();
+        assert_eq!(err_response.status(), http::StatusCode::UNAUTHORIZED);
+    }
+}
