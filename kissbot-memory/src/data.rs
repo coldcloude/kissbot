@@ -631,4 +631,53 @@ mod tests {
         assert_eq!(*deserialized.agent_id, "agent1");
         assert_eq!(*deserialized.role_name, "default");
     }
+
+    // ========== FilePathGenerator ==========
+
+    #[test]
+    fn test_channel_file_name() {
+        let key = ChannelRecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let parser = ChannelParser;
+        assert_eq!(parser.get_file_name(&key), "channel-m1=u1=g1-records-2026-06-24.jsonl");
+    }
+
+    #[test]
+    fn test_think_file_name() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let parser = ThinkParser;
+        assert_eq!(parser.get_file_name(&key), "think-records-2026-06-24.jsonl");
+    }
+
+    #[test]
+    fn test_tool_call_file_name() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let parser = ToolCallParser;
+        assert_eq!(parser.get_file_name(&key), "tool-call-records-2026-06-24.jsonl");
+    }
+
+    #[test]
+    fn test_tool_result_file_name() {
+        let key = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let parser = ToolResultParser;
+        assert_eq!(parser.get_file_name(&key), "tool-result-records-2026-06-24.jsonl");
+    }
 }
