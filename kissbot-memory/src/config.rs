@@ -37,3 +37,14 @@ impl Config {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_with_root_dir() {
+        let config = Config::with_root_dir("/tmp/test_memory");
+        assert_eq!(config.root_dir, std::path::PathBuf::from("/tmp/test_memory"));
+    }
+}
