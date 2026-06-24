@@ -18,3 +18,6 @@ kai-index = { path = "../kai-rs/kai-index" }
 kissbot-memory = { path = "../kissbot-memory" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }
+
+[dev-dependencies]
+tempfile = "3"

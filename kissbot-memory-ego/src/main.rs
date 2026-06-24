@@ -1,4 +1,6 @@
 mod error;
+#[cfg(test)]
+mod test_util;
 mod config;
 mod agent;
 mod ego_md;
