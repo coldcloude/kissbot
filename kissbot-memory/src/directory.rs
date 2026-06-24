@@ -113,3 +113,42 @@ impl DirectoryManager {
         ensure_dir_exists(path).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_agent_dir() {
+        let result = agent_dir("/root", "agent1");
+        assert_eq!(result, Path::new("/root").join("agent1"));
+    }
+
+    #[test]
+    fn test_agent_uuid_file() {
+        let adir = Path::new("/root").join("agent1");
+        let result = agent_uuid_file(&adir, "agent1");
+        assert_eq!(result, adir.join("agent-agent1"));
+    }
+
+    #[test]
+    fn test_agent_ego_dir() {
+        let adir = Path::new("/root").join("agent1");
+        let result = agent_ego_dir(&adir);
+        assert_eq!(result, adir.join("memory-ego"));
+    }
+
+    #[test]
+    fn test_agent_store_dir() {
+        let adir = Path::new("/root").join("agent1");
+        let result = agent_store_dir(&adir);
+        assert_eq!(result, adir.join("memory-store"));
+    }
+
+    #[test]
+    fn test_dir_manager_new() {
+        let dm = DirectoryManager::new("/tmp/test_memory");
+        assert_eq!(dm.root_dir, std::path::PathBuf::from("/tmp/test_memory"));
+    }
+}
