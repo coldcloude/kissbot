@@ -52,6 +52,15 @@ where
         }
     }
 
+    pub fn mark_obsolete(&self, key: &K) {
+        self.obsolete_set.insert(key.clone());
+    }
+
+    pub fn mark_all_obsolete(&self, key: &K) {
+        self.all_obsolete_set.insert(key.clone());
+        self.obsolete_set.insert(key.clone());
+    }
+
     fn get_lock(&self, key: &K) -> FileIndexLock {
         self.position_map_map.entry(key.clone()).or_insert_with(|| Arc::new(RwLock::new(BTreeMap::new()))).clone()
     }
@@ -186,35 +195,35 @@ impl MemoryIndexer {
     }
 
     pub fn mark_channel_obsolete(&self, key: &ChannelRecordKey) {
-        self.channel_indices.obsolete_set.insert(key.clone());
+        self.channel_indices.mark_obsolete(key);
     }
 
     pub fn mark_channel_all_obsolete(&self, key: &ChannelRecordKey) {
-        self.channel_indices.all_obsolete_set.insert(key.clone());
+        self.channel_indices.mark_all_obsolete(key);
     }
 
     pub fn mark_think_obsolete(&self, key: &RecordKey) {
-        self.think_indices.obsolete_set.insert(key.clone());
+        self.think_indices.mark_obsolete(key);
     }
 
     pub fn mark_think_all_obsolete(&self, key: &RecordKey) {
-        self.think_indices.all_obsolete_set.insert(key.clone());
+        self.think_indices.mark_all_obsolete(key);
     }
 
     pub fn mark_tool_call_obsolete(&self, key: &RecordKey) {
-        self.tool_call_indices.obsolete_set.insert(key.clone());
+        self.tool_call_indices.mark_obsolete(key);
     }
 
     pub fn mark_tool_call_all_obsolete(&self, key: &RecordKey) {
-        self.tool_call_indices.all_obsolete_set.insert(key.clone());
+        self.tool_call_indices.mark_all_obsolete(key);
     }
 
     pub fn mark_tool_result_obsolete(&self, key: &RecordKey) {
-        self.tool_result_indices.obsolete_set.insert(key.clone());
+        self.tool_result_indices.mark_obsolete(key);
     }
 
     pub fn mark_tool_result_all_obsolete(&self, key: &RecordKey) {
-        self.tool_result_indices.all_obsolete_set.insert(key.clone());
+        self.tool_result_indices.mark_all_obsolete(key);
     }
 
     pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<ChannelRecordResult>> {
@@ -306,11 +315,18 @@ mod tests {
         let indexer = MemoryIndexer::new();
         // without mark -> no data loaded
         assert!(indexer.query_channel_records(query.clone()).await.unwrap().is_empty());
-        // with mark -> data loaded from file
+        // mark_obsolete -> data loaded
         indexer.mark_channel_obsolete(&key);
-        let results = indexer.query_channel_records(query).await.unwrap();
+        let results = indexer.query_channel_records(query.clone()).await.unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].content.as_str(), "hello");
+
+        // after mark_all_obsolete -> full rebuild, still loads data
+        let indexer2 = MemoryIndexer::new();
+        indexer2.mark_channel_all_obsolete(&key);
+        let results2 = indexer2.query_channel_records(query).await.unwrap();
+        assert!(!results2.is_empty());
+        assert_eq!(results2[0].content.as_str(), "hello");
     }
 
     #[tokio::test]
@@ -337,9 +353,15 @@ mod tests {
         let indexer = MemoryIndexer::new();
         assert!(indexer.query_think_records(query.clone()).await.unwrap().is_empty());
         indexer.mark_think_obsolete(&key);
-        let results = indexer.query_think_records(query).await.unwrap();
+        let results = indexer.query_think_records(query.clone()).await.unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].content.as_str(), "thinking...");
+
+        let indexer2 = MemoryIndexer::new();
+        indexer2.mark_think_all_obsolete(&key);
+        let results2 = indexer2.query_think_records(query).await.unwrap();
+        assert!(!results2.is_empty());
+        assert_eq!(results2[0].content.as_str(), "thinking...");
     }
 
     #[tokio::test]
@@ -366,9 +388,15 @@ mod tests {
         let indexer = MemoryIndexer::new();
         assert!(indexer.query_tool_call_records(query.clone()).await.unwrap().is_empty());
         indexer.mark_tool_call_obsolete(&key);
-        let results = indexer.query_tool_call_records(query).await.unwrap();
+        let results = indexer.query_tool_call_records(query.clone()).await.unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].tool_name.as_str(), "get_weather");
+
+        let indexer2 = MemoryIndexer::new();
+        indexer2.mark_tool_call_all_obsolete(&key);
+        let results2 = indexer2.query_tool_call_records(query).await.unwrap();
+        assert!(!results2.is_empty());
+        assert_eq!(results2[0].tool_name.as_str(), "get_weather");
     }
 
     #[tokio::test]
@@ -395,8 +423,14 @@ mod tests {
         let indexer = MemoryIndexer::new();
         assert!(indexer.query_tool_result_records(query.clone()).await.unwrap().is_empty());
         indexer.mark_tool_result_obsolete(&key);
-        let results = indexer.query_tool_result_records(query).await.unwrap();
+        let results = indexer.query_tool_result_records(query.clone()).await.unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].key.as_str(), "k1");
+
+        let indexer2 = MemoryIndexer::new();
+        indexer2.mark_tool_result_all_obsolete(&key);
+        let results2 = indexer2.query_tool_result_records(query).await.unwrap();
+        assert!(!results2.is_empty());
+        assert_eq!(results2[0].key.as_str(), "k1");
     }
 }
