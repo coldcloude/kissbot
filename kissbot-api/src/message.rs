@@ -19,3 +19,22 @@ pub struct MessageItem {
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serde_message_item() {
+        let types = [MSG_TYPE_TEXT, MSG_TYPE_IMAGE, MSG_TYPE_FILE, MSG_TYPE_SYSTEM_JOIN, MSG_TYPE_SYSTEM_LEAVE, MSG_TYPE_MULTI];
+        for msg_type in types {
+            let item = MessageItem {
+                msg_type: Arc::new(msg_type.to_string()),
+                content: Arc::new(format!("content for {}", msg_type)),
+            };
+            let json = serde_json::to_value(&item).unwrap();
+            let deserialized: MessageItem = serde_json::from_value(json).unwrap();
+            assert_eq!(*deserialized.msg_type, msg_type);
+        }
+    }
+}

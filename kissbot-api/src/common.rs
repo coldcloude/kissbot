@@ -41,3 +41,34 @@ impl<T> ApiResponse<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_api_response_success() {
+        let resp = ApiResponse::success("hello");
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"], "hello");
+        assert_eq!(json["error"], serde_json::Value::Null);
+
+        let deserialized: ApiResponse<String> = serde_json::from_value(json).unwrap();
+        assert!(deserialized.success);
+        assert_eq!(deserialized.data.unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_api_response_error() {
+        let resp: ApiResponse<()> = ApiResponse::error("something went wrong".to_string());
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["data"], serde_json::Value::Null);
+        assert_eq!(json["error"], "something went wrong");
+
+        let deserialized: ApiResponse<()> = serde_json::from_value(json).unwrap();
+        assert!(!deserialized.success);
+        assert_eq!(deserialized.error.unwrap(), "something went wrong");
+    }
+}
