@@ -120,7 +120,7 @@ impl AgentManager {
         }
     }
 
-    pub async fn create_agent(&self, individual_name: Arc<String>, description: Arc<String>) -> Result<()> {
+    pub async fn create_agent(&self, individual_name: Arc<String>, description: Arc<String>) -> Result<Arc<String>> {
         let agent_id = Arc::new(Uuid::new_v4().to_string());
         let created_at = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
@@ -133,7 +133,8 @@ impl AgentManager {
 
         self.write_agent_metadata_ref(metadata.agent_id.clone().as_str(), |_| {
             Ok(Arc::new(metadata))
-        }).await
+        }).await?;
+        Ok(agent_id)
     }
 
     pub async fn get_agent_arc(&self, agent_id: Arc<String>) -> Result<Arc<AgentMetadata>> {
@@ -149,7 +150,7 @@ impl AgentManager {
         result
     }
 
-    pub async fn copy_agent(&self, agent_id: &str) -> Result<()> {
+    pub async fn copy_agent(&self, agent_id: &str) -> Result<Arc<String>> {
         let metadata = self.get_agent(agent_id).await?;
         self.create_agent(metadata.individual_name.clone(), metadata.description.clone()).await
     }

@@ -68,7 +68,7 @@ async fn create_agent(Json(req): Json<ego::CreateAgentRequest>) -> impl IntoResp
     };
 
     match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
+        Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
@@ -138,7 +138,7 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
     };
 
     match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
+        Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
         Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
