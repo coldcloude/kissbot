@@ -17,7 +17,7 @@ impl ApiKeyWsFilter {
 }
 
 impl WsHeaderFilter for ApiKeyWsFilter {
-    fn filter(&self, request: &http::Request<()>) -> Result<(), kai_ws::Error> {
+    fn filter(&self, request: &http::Request<()>) -> std::result::Result<(), http::Response<Option<String>>> {
         let key = request
             .headers()
             .get(HEADER_API_KEY)
@@ -27,12 +27,22 @@ impl WsHeaderFilter for ApiKeyWsFilter {
 
         let key = match key {
             Some(k) => k.to_string(),
-            None => return Err(kai_ws::Error::UpgradeRejected(Error::MissingKey.to_string())),
+            None => return Err(
+                http::Response::builder()
+                    .status(http::StatusCode::UNAUTHORIZED)
+                    .body(Some(Error::MissingKey.to_string()))
+                    .unwrap()
+            ),
         };
 
         match self.validator.validate(&key) {
             Ok(()) => Ok(()),
-            Err(e) => Err(kai_ws::Error::UpgradeRejected(e.to_string())),
+            Err(e) => Err(
+                http::Response::builder()
+                    .status(http::StatusCode::UNAUTHORIZED)
+                    .body(Some(e.to_string()))
+                    .unwrap()
+            ),
         }
     }
 }
