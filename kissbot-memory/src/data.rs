@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use kissbot_api::store::*;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub trait FileHook<K> {
     fn on_append(&self, key: &K);
@@ -150,6 +150,9 @@ pub fn parse_date_from_time(time: &str) -> String {
 }
 
 pub fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
+    if start > end {
+        return Err(Error::InvalidTimeRange(start.to_string(), end.to_string()));
+    }
     let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")?;
     let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")?;
 
@@ -163,8 +166,16 @@ pub fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
 }
 
 pub fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)>> {
+    if start > end {
+        return Err(Error::InvalidTimeRange(start.to_string(), end.to_string()));
+    }
     let start_date = parse_date_from_time(start);
     let end_date = parse_date_from_time(end);
+
+    if start_date == end_date {
+        return Ok(vec![(start.to_string(), end.to_string())]);
+    }
+
     let internal_dates = get_internal_dates(&start_date, &end_date)?;
 
     let mut segments = Vec::new();
@@ -472,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_date_time_segments() {
+    fn test_get_date_time_segments_multi_day() {
         let segments = get_date_time_segments("2026-06-22 14:30:00", "2026-06-24 10:00:00").unwrap();
         assert_eq!(segments.len(), 3);
         assert_eq!(segments[0].0, "2026-06-22 14:30:00");
@@ -481,6 +492,20 @@ mod tests {
         assert_eq!(segments[1].1, "2026-06-23 23:59:59");
         assert_eq!(segments[2].0, "2026-06-24 00:00:00");
         assert_eq!(segments[2].1, "2026-06-24 10:00:00");
+    }
+
+    #[test]
+    fn test_get_date_time_segments_same_day() {
+        let segments = get_date_time_segments("2026-06-22 14:30:00", "2026-06-22 15:00:00").unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].0, "2026-06-22 14:30:00");
+        assert_eq!(segments[0].1, "2026-06-22 15:00:00");
+    }
+
+    #[test]
+    fn test_get_date_time_segments_reversed() {
+        let result = get_date_time_segments("2026-06-24 10:00:00", "2026-06-22 14:30:00");
+        assert!(result.is_err());
     }
 
     // ========== Record trait ==========
