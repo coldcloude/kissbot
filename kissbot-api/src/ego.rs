@@ -436,4 +436,114 @@ mod tests {
         assert_eq!(*deserialized.role.role_name, "admin");
         assert_eq!(deserialized.other_roles.len(), 0);
     }
+
+    // === Agent Management Requests ===
+
+    #[test]
+    fn test_serde_create_agent_request() {
+        let obj = CreateAgentRequest {
+            individual_name: Arc::new("Alice".to_string()),
+            description: Arc::new("An agent".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: CreateAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.individual_name, "Alice");
+    }
+
+    #[test]
+    fn test_serde_get_agent_request() {
+        let obj = GetAgentRequest { agent_id: Arc::new("a1".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GetAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "a1");
+    }
+
+    #[test]
+    fn test_serde_update_agent_name_request() {
+        let obj = UpdateAgentNameRequest {
+            agent_id: Arc::new("a1".to_string()),
+            individual_name: Arc::new("Alice".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateAgentNameRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.individual_name, "Alice");
+    }
+
+    #[test]
+    fn test_serde_update_agent_description_request() {
+        let obj = UpdateAgentDescriptionRequest {
+            agent_id: Arc::new("a1".to_string()),
+            description: Arc::new("New desc".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateAgentDescriptionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.description, "New desc");
+    }
+
+    #[test]
+    fn test_serde_copy_agent_request() {
+        let obj = CopyAgentRequest { agent_id: Arc::new("a1".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: CopyAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "a1");
+    }
+
+    #[test]
+    fn test_serde_search_request() {
+        let obj = SearchRequest { keyword: Arc::new("rust".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: SearchRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.keyword, "rust");
+    }
+
+    #[test]
+    fn test_serde_search_role_request() {
+        let obj = SearchRoleRequest {
+            agent_id: Some(Arc::new("a1".to_string())),
+            keyword: Arc::new("admin".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: SearchRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.keyword, "admin");
+        assert!(deserialized.agent_id.is_some());
+    }
+
+    #[test]
+    fn test_serde_retrieve_agents_request() {
+        let obj = RetrieveAgentsRequest {
+            agent_ids: vec![Arc::new("a1".to_string()), Arc::new("a2".to_string())],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RetrieveAgentsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.agent_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_serde_retrieve_roles_request() {
+        let role_key = Arc::new(RoleKey { agent_id: "a1".to_string(), role_name: "admin".to_string() });
+        let obj = RetrieveRolesRequest { role_keys: vec![role_key] };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RetrieveRolesRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.role_keys.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_name_completion_request() {
+        let obj = NameCompletionRequest { prefix: Arc::new("Al".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: NameCompletionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.prefix, "Al");
+    }
+
+    #[test]
+    fn test_serde_role_name_completion_request() {
+        let obj = RoleNameCompletionRequest {
+            agent_id: None,
+            prefix: Arc::new("ad".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RoleNameCompletionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.prefix, "ad");
+        assert!(deserialized.agent_id.is_none());
+    }
 }
