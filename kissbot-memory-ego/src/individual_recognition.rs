@@ -226,3 +226,158 @@ impl IndividualRecognitionManager {
         }).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashmap::{DashMap, DashSet};
+
+    async fn setup() {
+        crate::test_util::init_test_config();
+        static SETUP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        SETUP.get_or_init(|| async {
+            let dm = kissbot_memory::DirectoryManager::get();
+            dm.ensure_agent_dir("setup-agent").await.unwrap();
+            dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
+        }).await;
+    }
+
+    #[test]
+    fn test_ego_individual_recognition_path() {
+        let path = ego_individual_recognition_path("/tmp/ego");
+        assert_eq!(path, std::path::Path::new("/tmp/ego").join("individual-recognition-.json"));
+    }
+
+    #[tokio::test]
+    async fn test_get_individuals_new_agent() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent1").await.unwrap();
+        let result = IndividualRecognitionManager::get().get_individuals("agent1").await.unwrap();
+        assert!(result.individual_map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_individuals_not_found() {
+        setup().await;
+        let manager = IndividualRecognitionManager::get();
+        // get_individuals 会懒创建文件，对存在的 agent 返回 Ok(空数据)
+        // 但 get_individual 对不存在的 individual 返回 AgentIndividualNotFound
+        let result = manager.get_individual("setup-agent", "nonexistent").await;
+        assert!(matches!(result, Err(Error::AgentIndividualNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_individuals_insert() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent1").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        // 先触发文件自动创建
+        manager.get_individuals("agent1").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent1",
+            vec![],
+            vec![(Arc::new("Alice".to_string()), individual)],
+        ).await.unwrap();
+        let alice = manager.get_individual("agent1", "Alice").await.unwrap();
+        assert_eq!(*alice.relation.relation, "friend");
+    }
+
+    #[tokio::test]
+    async fn test_replace_individuals_remove() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-remove").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        // 先触发文件自动创建
+        manager.get_individuals("agent-remove").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent-remove",
+            vec![],
+            vec![(Arc::new("Alice".to_string()), individual)],
+        ).await.unwrap();
+        manager.replace_individuals(
+            "agent-remove",
+            vec![Arc::new("Alice".to_string())],
+            vec![],
+        ).await.unwrap();
+        let result = manager.get_individual("agent-remove", "Alice").await;
+        assert!(matches!(result, Err(Error::AgentIndividualNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_individual() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-rename").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        // 先触发文件自动创建
+        manager.get_individuals("agent-rename").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent-rename",
+            vec![],
+            vec![(Arc::new("Alice".to_string()), individual)],
+        ).await.unwrap();
+        manager.rename_individual("agent-rename", "Alice", "Bob").await.unwrap();
+        let bob = manager.get_individual("agent-rename", "Bob").await.unwrap();
+        assert_eq!(*bob.relation.relation, "friend");
+        let result = manager.get_individual("agent-rename", "Alice").await;
+        assert!(matches!(result, Err(Error::AgentIndividualNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_individual_already_exists() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-rename-exists").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        // 先触发文件自动创建
+        manager.get_individuals("agent-rename-exists").await.unwrap();
+        let alice = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        let bob = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("colleague".to_string()),
+                description: Arc::new("".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent1",
+            vec![],
+            vec![
+                (Arc::new("Alice".to_string()), alice),
+                (Arc::new("Bob".to_string()), bob),
+            ],
+        ).await.unwrap();
+        let result = manager.rename_individual("agent1", "Alice", "Bob").await;
+        assert!(matches!(result, Err(Error::AgentIndividualAlreadyExists(_, _))));
+    }
+}
