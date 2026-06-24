@@ -165,7 +165,7 @@ pub fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
 pub fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)>> {
     let start_date = parse_date_from_time(start);
     let end_date = parse_date_from_time(end);
-    let internal_dates = get_internal_dates(start, end)?;
+    let internal_dates = get_internal_dates(&start_date, &end_date)?;
 
     let mut segments = Vec::new();
     segments.push((start.to_string(), format!("{} 23:59:59", start_date)));
@@ -444,5 +444,98 @@ impl RecordCombiner<RecordKey, ToolResultRecord, ToolResultRecordResult> for Too
             time: record.time.clone(),
             sn: record.sn,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Time functions ==========
+
+    #[test]
+    fn test_parse_date_from_time() {
+        assert_eq!(parse_date_from_time("2026-06-24 15:30:00"), "2026-06-24");
+        assert_eq!(parse_date_from_time("2026-01-01 00:00:00"), "2026-01-01");
+    }
+
+    #[test]
+    fn test_get_internal_dates() {
+        let dates = get_internal_dates("2026-06-22", "2026-06-25").unwrap();
+        assert_eq!(dates, vec!["2026-06-23", "2026-06-24"]);
+    }
+
+    #[test]
+    fn test_get_internal_dates_same_day() {
+        let dates = get_internal_dates("2026-06-22", "2026-06-22").unwrap();
+        assert!(dates.is_empty());
+    }
+
+    #[test]
+    fn test_get_date_time_segments() {
+        let segments = get_date_time_segments("2026-06-22 14:30:00", "2026-06-24 10:00:00").unwrap();
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].0, "2026-06-22 14:30:00");
+        assert_eq!(segments[0].1, "2026-06-22 23:59:59");
+        assert_eq!(segments[1].0, "2026-06-23 00:00:00");
+        assert_eq!(segments[1].1, "2026-06-23 23:59:59");
+        assert_eq!(segments[2].0, "2026-06-24 00:00:00");
+        assert_eq!(segments[2].1, "2026-06-24 10:00:00");
+    }
+
+    // ========== Record trait ==========
+
+    #[test]
+    fn test_record_impl() {
+        let mut channel = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 5,
+        };
+        assert_eq!(channel.sn(), 5);
+        assert_eq!(*channel.time(), "2026-06-24 10:00:00");
+        channel.set_sn(10);
+        assert_eq!(channel.sn(), 10);
+
+        let think = ThinkRecord {
+            content: Arc::new("think".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            sn: 1,
+        };
+        assert_eq!(think.sn(), 1);
+        assert_eq!(*think.time(), "2026-06-24 10:00:01");
+    }
+
+    #[test]
+    fn test_record_cmp_time() {
+        let r1 = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let r2 = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("world".to_string()),
+            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            sn: 1,
+        };
+        assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
+
+        // same time, different sn
+        let r3 = ChannelRecord {
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 2,
+            ..r1.clone()
+        };
+        assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
     }
 }
