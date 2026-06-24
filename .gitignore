@@ -3,6 +3,5 @@ node_modules
 kai-rs
 .vscode
 dist
-.sessions
 .claude/settings.local.json
 CLAUDE.local.md

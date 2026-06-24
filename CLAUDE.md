@@ -21,6 +21,7 @@ Keep It Simple Stupid BOT - kissbot
     - **system-plan.md** 组件和流程的实现顺序规划
     - **components-plan** 组件内功能实现顺序（每个组件一个文件）
 - **kissbot-\*** 每个代表kissbot项目一个组件，按照docs下的组件设计和规划文档实现组件的功能
+  - **docs/superpowers** 针对组件进行开发的superpowers技能的过程文档
 - **kai-rs** 本地Rust基础库
   - **docs** kai-rs各组件文档
   - **kai-\*** kai-rs各组件实现
