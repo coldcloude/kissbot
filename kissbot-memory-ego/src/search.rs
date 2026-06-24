@@ -403,3 +403,136 @@ impl SearchManager {
         filter_results(results, agent_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kissbot_memory::DirectoryManager;
+
+    async fn create_test_agent(agent_id: &str, name: &str, description: &str) {
+        let dm = DirectoryManager::get();
+        let agent_dir = dm.ensure_agent_dir(agent_id).await.unwrap();
+        let metadata = serde_json::json!({
+            "agent_id": agent_id,
+            "individual_name": name,
+            "description": description,
+            "created_at": "2026-06-25 10:00:00"
+        });
+        tokio::fs::write(
+            agent_dir.join("metadata.json"),
+            serde_json::to_string_pretty(&metadata).unwrap(),
+        ).await.unwrap();
+    }
+
+    async fn create_test_role(agent_id: &str, role_name: &str, description: &str) {
+        let dm = DirectoryManager::get();
+        let ego_dir = dm.ensure_agent_ego_dir(agent_id).await.unwrap();
+        let role_play = serde_json::json!({
+            "role": {
+                "agent_id": agent_id,
+                "role_name": role_name,
+                "description": description
+            },
+            "other_roles": {}
+        });
+        let file_name = format!("role-play-{}.json", role_name);
+        tokio::fs::write(
+            ego_dir.join(&file_name),
+            serde_json::to_string_pretty(&role_play).unwrap(),
+        ).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_search_by_name() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "Test user").await;
+        create_test_agent("agent2", "Bob", "Another user").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_identity("agent2").await.unwrap();
+        let results = manager.search_by_name("Alice").await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        assert_eq!(results[0], "agent1");
+    }
+
+    #[tokio::test]
+    async fn test_search_by_name_no_match() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "Test").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        let results = manager.search_by_name("Nonexistent").await;
+        assert!(results.is_empty(), "expected empty, got {:?}", results);
+    }
+
+    #[tokio::test]
+    async fn test_search_by_description() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "Some searchable text here").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        let results = manager.search_by_description("searchable").await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        assert_eq!(results[0], "agent1");
+    }
+
+    #[tokio::test]
+    async fn test_agent_name_completion() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "").await;
+        create_test_agent("agent2", "Albert", "").await;
+        create_test_agent("agent3", "Bob", "").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_identity("agent2").await.unwrap();
+        manager.force_sync_identity("agent3").await.unwrap();
+        let results = manager.name_completion("Al").await;
+        assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
+        let ids: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
+        assert!(ids.contains(&"agent1"));
+        assert!(ids.contains(&"agent2"));
+    }
+
+    #[tokio::test]
+    async fn test_search_role_by_name() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "").await;
+        create_test_role("agent1", "admin", "Administrator").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_role("agent1", "admin").await.unwrap();
+        let results = manager.search_role_by_name("admin", None).await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        assert_eq!(results[0].role_name, "admin");
+    }
+
+    #[tokio::test]
+    async fn test_search_role_by_description() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "").await;
+        create_test_role("agent1", "admin", "Special role description").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_role("agent1", "admin").await.unwrap();
+        let results = manager.search_role_by_description("Special", None).await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_agents() {
+        crate::test_util::init_test_config();
+        create_test_agent("agent1", "Alice", "Desc1").await;
+        create_test_agent("agent2", "Bob", "Desc2").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_identity("agent2").await.unwrap();
+        let results = manager.retrieve_agents(vec![
+            Arc::new("agent1".to_string()),
+            Arc::new("agent2".to_string()),
+        ]).await;
+        assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
+        let names: Vec<&str> = results.iter().map(|a| a.individual_name.as_str()).collect();
+        assert!(names.contains(&"Alice"));
+        assert!(names.contains(&"Bob"));
+    }
+}
