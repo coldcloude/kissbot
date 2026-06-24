@@ -59,5 +59,6 @@ mod tests {
         unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
         let config = Config::load().unwrap();
         assert_eq!(config.root_dir, dir.path());
+        unsafe { std::env::remove_var("KISSBOT_MEMORY_CONFIG"); }
     }
 }

@@ -256,31 +256,29 @@ mod tests {
 
     // ========== MemoryIndexer: mark + query ==========
 
-    use std::sync::LazyLock;
-
-    static QUERY_TEST_DIR: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
-        let root_dir_str = dir.path().display().to_string();
-        std::fs::write(&config_path, format!(r#"{{"root_dir":"{}"}}"#, root_dir_str)).unwrap();
-        // SAFETY: single-threaded test init
-        unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
-        crate::Config::get();
-        dir
-    });
-
-    async fn write_jsonl(agent_id: &str, role_name: &str, filename: &str, date: &str, line: &str) {
-        let _ = LazyLock::force(&QUERY_TEST_DIR);
-        let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
-        let year_role_dir = store_dir.join(format!("{}-{}", &date[..4], role_name));
-        tokio::fs::create_dir_all(&year_role_dir).await.unwrap();
-        let content = if line.ends_with('\n') { line.to_string() } else { format!("{}\n", line) };
-        tokio::fs::write(year_role_dir.join(filename), content).await.unwrap();
+    /// Initializes the global Config singleton for tests using a temp directory.
+    /// Safe to call multiple times — only the first call initializes.
+    fn init_test_config() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let config_path = dir.path().join("config.json");
+            let root_dir_str = dir.path().display().to_string();
+            std::fs::write(&config_path, format!(r#"{{"root_dir":"{}"}}"#, root_dir_str)).unwrap();
+            // SAFETY: single-threaded test init
+            unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
+            crate::Config::get();
+            // leak TempDir to keep it alive for the entire test process
+            Box::leak(Box::new(dir));
+        });
     }
 
     async fn append_jsonl(agent_id: &str, role_name: &str, filename: &str, date: &str, line: &str) {
+        init_test_config();
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let year_role_dir = store_dir.join(format!("{}-{}", &date[..4], role_name));
+        tokio::fs::create_dir_all(&year_role_dir).await.unwrap();
         let mut f = tokio::fs::OpenOptions::new()
             .append(true)
             .create(true)
@@ -323,7 +321,7 @@ mod tests {
         };
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
-        write_jsonl(agent_id, role_name, &filename, date,
+        append_jsonl(agent_id, role_name, &filename, date,
             r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"A","time":"2026-06-24 08:00:00","sn":1}
 {"user_id":"u1","is_self":0,"msg_type":"text","content":"B","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
@@ -381,7 +379,7 @@ mod tests {
             end_time: Arc::new(format!("{} {}", date, e)),
         };
 
-        write_jsonl(agent_id, role_name, &filename, date,
+        append_jsonl(agent_id, role_name, &filename, date,
             r#"{"content":"A","key":"k1","time":"2026-06-24 08:00:00","sn":1}
 {"content":"B","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
@@ -433,7 +431,7 @@ mod tests {
             end_time: Arc::new(format!("{} {}", date, e)),
         };
 
-        write_jsonl(agent_id, role_name, &filename, date,
+        append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_name":"A","tool_params":{},"key":"k1","time":"2026-06-24 08:00:00","sn":1}
 {"tool_name":"B","tool_params":{},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
@@ -485,7 +483,7 @@ mod tests {
             end_time: Arc::new(format!("{} {}", date, e)),
         };
 
-        write_jsonl(agent_id, role_name, &filename, date,
+        append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_result":{"v":"A"},"key":"k1","time":"2026-06-24 08:00:00","sn":1}
 {"tool_result":{"v":"B"},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
