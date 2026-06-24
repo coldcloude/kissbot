@@ -47,4 +47,17 @@ mod tests {
         let config = Config::with_root_dir("/tmp/test_memory");
         assert_eq!(config.root_dir, std::path::PathBuf::from("/tmp/test_memory"));
     }
+
+    #[test]
+    fn test_config_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("test-config.json");
+        let json_content = format!(r#"{{"root_dir": "{}"}}"#, dir.path().display().to_string().replace('\\', "/"));
+        std::fs::write(&config_path, json_content).unwrap();
+
+        // SAFETY: test environment, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
+        let config = Config::load().unwrap();
+        assert_eq!(config.root_dir, dir.path());
+    }
 }
