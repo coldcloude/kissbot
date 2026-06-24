@@ -546,4 +546,282 @@ mod tests {
         assert_eq!(*deserialized.prefix, "ad");
         assert!(deserialized.agent_id.is_none());
     }
+
+    // === Individual Recognition Requests ===
+
+    #[test]
+    fn test_serde_get_individuals_request() {
+        let obj = GetIndividualsRequest { agent_id: Arc::new("a1".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GetIndividualsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "a1");
+    }
+
+    #[test]
+    fn test_serde_get_individual_request() {
+        let obj = GetIndividualRequest {
+            agent_id: Arc::new("a1".to_string()),
+            individual_name: Arc::new("Alice".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GetIndividualRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.individual_name, "Alice");
+    }
+
+    #[test]
+    fn test_serde_replace_individuals_request() {
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(DashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(DashMap::new()),
+        });
+        let obj = ReplaceIndividualsRequest {
+            agent_id: Arc::new("a1".to_string()),
+            remove_individual_names: vec![Arc::new("Bob".to_string())],
+            insert_individuals: vec![(Arc::new("Alice".to_string()), individual)],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ReplaceIndividualsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.remove_individual_names.len(), 1);
+        assert_eq!(deserialized.insert_individuals.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_rename_individual_request() {
+        let obj = RenameIndividualRequest {
+            agent_id: Arc::new("a1".to_string()),
+            individual_name: Arc::new("Alice".to_string()),
+            new_name: Arc::new("Alice2".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RenameIndividualRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_name, "Alice2");
+    }
+
+    #[test]
+    fn test_serde_replace_individual_identifiers_request() {
+        let identifier = Arc::new(IndividualIdentifier {
+            messenger_id: "m1".to_string(),
+            user_id: "u1".to_string(),
+            group_id: "g1".to_string(),
+        });
+        let obj = ReplaceIndividualIdentifiersRequest {
+            agent_id: Arc::new("a1".to_string()),
+            individual_name: Arc::new("Alice".to_string()),
+            remove_identifiers: vec![],
+            insert_identifiers: vec![identifier],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ReplaceIndividualIdentifiersRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.insert_identifiers.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_replace_individual_relations_request() {
+        let relation = Arc::new(IndividualRelation {
+            relation: Arc::new("friend".to_string()),
+            description: Arc::new("best friend".to_string()),
+        });
+        let obj = ReplaceIndividualRelationsRequest {
+            agent_id: Arc::new("a1".to_string()),
+            individual_name: Arc::new("Alice".to_string()),
+            remove_relations: vec![Arc::new("enemy".to_string())],
+            insert_relations: vec![(Arc::new("friend".to_string()), relation)],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ReplaceIndividualRelationsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.remove_relations.len(), 1);
+        assert_eq!(deserialized.insert_relations.len(), 1);
+    }
+
+    // === Role Play Requests ===
+
+    #[test]
+    fn test_serde_list_roles_request() {
+        let obj = ListRolesRequest { agent_id: Arc::new("a1".to_string()) };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ListRolesRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "a1");
+    }
+
+    #[test]
+    fn test_serde_get_role_request() {
+        let obj = GetRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GetRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.role_name, "admin");
+    }
+
+    #[test]
+    fn test_serde_create_role_request() {
+        let obj = CreateRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            description: Arc::new("Administrator".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: CreateRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.description, "Administrator");
+    }
+
+    #[test]
+    fn test_serde_create_role_from_request() {
+        let obj = CreateRoleFromRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            new_name: Arc::new("admin2".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: CreateRoleFromRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_name, "admin2");
+    }
+
+    #[test]
+    fn test_serde_remove_role_request() {
+        let obj = RemoveRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RemoveRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.role_name, "admin");
+    }
+
+    #[test]
+    fn test_serde_rename_role_request() {
+        let obj = RenameRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            new_name: Arc::new("mod".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RenameRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_name, "mod");
+    }
+
+    #[test]
+    fn test_serde_update_role_description_request() {
+        let obj = UpdateRoleDescriptionRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            description: Arc::new("New desc".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateRoleDescriptionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.description, "New desc");
+    }
+
+    #[test]
+    fn test_serde_get_other_role_request() {
+        let obj = GetOtherRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: GetOtherRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.other_role_name, "Bob");
+    }
+
+    #[test]
+    fn test_serde_replace_other_roles_request() {
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                description: Arc::new("works together".to_string()),
+            }),
+            other_role_relations: Arc::new(DashMap::new()),
+            description: Arc::new("A colleague".to_string()),
+        });
+        let obj = ReplaceOtherRolesRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            remove_other_roles: vec![],
+            insert_other_roles: vec![(Arc::new("Bob".to_string()), other_role)],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ReplaceOtherRolesRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.insert_other_roles.len(), 1);
+    }
+
+    #[test]
+    fn test_serde_rename_other_role_request() {
+        let obj = RenameOtherRoleRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+            new_name: Arc::new("Bob2".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RenameOtherRoleRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_name, "Bob2");
+    }
+
+    #[test]
+    fn test_serde_update_other_role_individual_name_request() {
+        let obj = UpdateOtherRoleIndividualNameRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+            new_individual_name: Arc::new("Robert".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateOtherRoleIndividualNameRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_individual_name, "Robert");
+    }
+
+    #[test]
+    fn test_serde_update_other_role_description_request() {
+        let obj = UpdateOtherRoleDescriptionRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+            new_description: Arc::new("New desc".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateOtherRoleDescriptionRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_description, "New desc");
+    }
+
+    #[test]
+    fn test_serde_update_other_role_relation_request() {
+        let new_relation = Arc::new(RoleRelation {
+            relation: Arc::new("friend".to_string()),
+            description: Arc::new("friend".to_string()),
+        });
+        let obj = UpdateOtherRoleRelationRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+            new_relation,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateOtherRoleRelationRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.new_relation.relation, "friend");
+    }
+
+    #[test]
+    fn test_serde_replace_other_role_relations_request() {
+        let relation = Arc::new(RoleRelation {
+            relation: Arc::new("friend".to_string()),
+            description: Arc::new("friend".to_string()),
+        });
+        let obj = ReplaceOtherRoleRelationsRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            other_role_name: Arc::new("Bob".to_string()),
+            remove_relations: vec![],
+            insert_relations: vec![(Arc::new("friend".to_string()), relation)],
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ReplaceOtherRoleRelationsRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.insert_relations.len(), 1);
+    }
 }
