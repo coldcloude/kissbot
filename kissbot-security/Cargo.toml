@@ -11,4 +11,6 @@ axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
 http = "1"
 kai-ws = { path = "../kai-rs/kai-ws" }
-kissbot-api = { path = "../kissbot-api" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

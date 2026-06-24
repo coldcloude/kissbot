@@ -86,3 +86,93 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::Error;
+    use axum::body::Body;
+    use http::Request;
+    use tower::ServiceExt;
+
+    /// Mock validator that returns a preset result.
+    struct MockValidator {
+        result: Result<(), Error>,
+    }
+
+    impl ApiKeyValidator for MockValidator {
+        fn validate(&self, _key: &str) -> Result<(), Error> {
+            self.result.clone()
+        }
+    }
+
+    /// Mock inner service: returns 200 OK.
+    async fn mock_inner(_req: Request<Body>) -> Result<Response, std::convert::Infallible> {
+        Ok(http::Response::builder()
+            .status(200)
+            .body(Body::empty())
+            .unwrap())
+    }
+
+    fn make_auth_service(validator_result: Result<(), Error>) -> AuthService<
+        tower::util::BoxCloneService<Request<Body>, Response, std::convert::Infallible>
+    > {
+        let validator: Arc<dyn ApiKeyValidator> = Arc::new(MockValidator { result: validator_result });
+        let inner = tower::service_fn(mock_inner);
+        AuthService {
+            inner: inner.boxed_clone(),
+            validator,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auth_service_accept() {
+        let mut svc = make_auth_service(Ok(()));
+        let request = Request::builder()
+            .uri("/api/test")
+            .header(crate::HEADER_API_KEY, "valid-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = svc.call(request).await.unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_auth_service_missing_key() {
+        let mut svc = make_auth_service(Ok(()));
+        let request = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+        let response = svc.call(request).await.unwrap();
+        assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn test_auth_service_invalid_key() {
+        let mut svc = make_auth_service(Err(Error::InvalidKey));
+        let request = Request::builder()
+            .uri("/api/test")
+            .header(crate::HEADER_API_KEY, "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = svc.call(request).await.unwrap();
+        assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn test_auth_service_error_body() {
+        let mut svc = make_auth_service(Err(Error::InvalidKey));
+        let request = Request::builder()
+            .uri("/api/test")
+            .header(crate::HEADER_API_KEY, "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let response = svc.call(request).await.unwrap();
+        assert_eq!(response.status(), 401);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"], "invalid api key");
+    }
+}
