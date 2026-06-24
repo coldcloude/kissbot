@@ -232,46 +232,6 @@ impl MemoryIndexer {
     pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<ToolResultRecordResult>> {
         self.tool_result_indices.query_all(query).await
     }
-
-    #[cfg(test)]
-    pub(crate) fn is_channel_obsolete(&self, key: &ChannelRecordKey) -> bool {
-        self.channel_indices.obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_channel_all_obsolete(&self, key: &ChannelRecordKey) -> bool {
-        self.channel_indices.all_obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_think_obsolete(&self, key: &RecordKey) -> bool {
-        self.think_indices.obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_think_all_obsolete(&self, key: &RecordKey) -> bool {
-        self.think_indices.all_obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_tool_call_obsolete(&self, key: &RecordKey) -> bool {
-        self.tool_call_indices.obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_tool_call_all_obsolete(&self, key: &RecordKey) -> bool {
-        self.tool_call_indices.all_obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_tool_result_obsolete(&self, key: &RecordKey) -> bool {
-        self.tool_result_indices.obsolete_set.contains(key)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_tool_result_all_obsolete(&self, key: &RecordKey) -> bool {
-        self.tool_result_indices.all_obsolete_set.contains(key)
-    }
 }
 
 #[cfg(test)]
@@ -290,94 +250,7 @@ mod tests {
         assert_eq!(deserialized.end_pos, 200);
     }
 
-    // ========== MemoryIndexer ==========
-
-    fn make_channel_key() -> ChannelRecordKey {
-        ChannelRecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        }
-    }
-
-    fn make_record_key() -> RecordKey {
-        RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        }
-    }
-
-    #[test]
-    fn test_mark_channel_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_channel_key();
-        assert!(!indexer.is_channel_obsolete(&key));
-        indexer.mark_channel_obsolete(&key);
-        assert!(indexer.is_channel_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_channel_all_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_channel_key();
-        assert!(!indexer.is_channel_all_obsolete(&key));
-        indexer.mark_channel_all_obsolete(&key);
-        assert!(indexer.is_channel_all_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_think_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_think_obsolete(&key);
-        assert!(indexer.is_think_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_think_all_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_think_all_obsolete(&key);
-        assert!(indexer.is_think_all_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_tool_call_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_tool_call_obsolete(&key);
-        assert!(indexer.is_tool_call_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_tool_call_all_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_tool_call_all_obsolete(&key);
-        assert!(indexer.is_tool_call_all_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_tool_result_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_tool_result_obsolete(&key);
-        assert!(indexer.is_tool_result_obsolete(&key));
-    }
-
-    #[test]
-    fn test_mark_tool_result_all_obsolete() {
-        let indexer = MemoryIndexer::new();
-        let key = make_record_key();
-        indexer.mark_tool_result_all_obsolete(&key);
-        assert!(indexer.is_tool_result_all_obsolete(&key));
-    }
-
-    // ========== Query tests ==========
+    // ========== MemoryIndexer: mark + query ==========
 
     use std::sync::LazyLock;
 
@@ -401,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_channel_records() {
+    async fn test_mark_and_query_channel() {
         let agent_id = "agent1";
         let role_name = "default";
         let date = "2026-06-24";
@@ -412,7 +285,6 @@ mod tests {
         let record_line = r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"hello","time":"2026-06-24 10:00:00","sn":1}"#;
         write_jsonl(agent_id, role_name, &filename, date, record_line).await;
 
-        let indexer = MemoryIndexer::new();
         let key = ChannelRecordKey {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
@@ -421,8 +293,6 @@ mod tests {
             group_id: Arc::new(group_id.to_string()),
             date: Arc::new(date.to_string()),
         };
-        indexer.mark_channel_obsolete(&key);
-
         let query = QueryChannelRequest {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
@@ -433,13 +303,18 @@ mod tests {
             end_time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
 
+        let indexer = MemoryIndexer::new();
+        // without mark -> no data loaded
+        assert!(indexer.query_channel_records(query.clone()).await.unwrap().is_empty());
+        // with mark -> data loaded from file
+        indexer.mark_channel_obsolete(&key);
         let results = indexer.query_channel_records(query).await.unwrap();
-        assert!(!results.is_empty(), "expected at least one channel record");
+        assert!(!results.is_empty());
         assert_eq!(results[0].content.as_str(), "hello");
     }
 
     #[tokio::test]
-    async fn test_query_think_records() {
+    async fn test_mark_and_query_think() {
         let agent_id = "agent1";
         let role_name = "default";
         let date = "2026-06-24";
@@ -447,14 +322,11 @@ mod tests {
         let record_line = r#"{"content":"thinking...","key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
         write_jsonl(agent_id, role_name, &filename, date, record_line).await;
 
-        let indexer = MemoryIndexer::new();
         let key = RecordKey {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
             date: Arc::new(date.to_string()),
         };
-        indexer.mark_think_obsolete(&key);
-
         let query = QueryRequest {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
@@ -462,13 +334,16 @@ mod tests {
             end_time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
 
+        let indexer = MemoryIndexer::new();
+        assert!(indexer.query_think_records(query.clone()).await.unwrap().is_empty());
+        indexer.mark_think_obsolete(&key);
         let results = indexer.query_think_records(query).await.unwrap();
-        assert!(!results.is_empty(), "expected at least one think record");
+        assert!(!results.is_empty());
         assert_eq!(results[0].content.as_str(), "thinking...");
     }
 
     #[tokio::test]
-    async fn test_query_tool_call_records() {
+    async fn test_mark_and_query_tool_call() {
         let agent_id = "agent1";
         let role_name = "default";
         let date = "2026-06-24";
@@ -476,14 +351,11 @@ mod tests {
         let record_line = r#"{"tool_name":"get_weather","tool_params":{"city":"Beijing"},"key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
         write_jsonl(agent_id, role_name, &filename, date, record_line).await;
 
-        let indexer = MemoryIndexer::new();
         let key = RecordKey {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
             date: Arc::new(date.to_string()),
         };
-        indexer.mark_tool_call_obsolete(&key);
-
         let query = QueryRequest {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
@@ -491,13 +363,16 @@ mod tests {
             end_time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
 
+        let indexer = MemoryIndexer::new();
+        assert!(indexer.query_tool_call_records(query.clone()).await.unwrap().is_empty());
+        indexer.mark_tool_call_obsolete(&key);
         let results = indexer.query_tool_call_records(query).await.unwrap();
-        assert!(!results.is_empty(), "expected at least one tool call record");
+        assert!(!results.is_empty());
         assert_eq!(results[0].tool_name.as_str(), "get_weather");
     }
 
     #[tokio::test]
-    async fn test_query_tool_result_records() {
+    async fn test_mark_and_query_tool_result() {
         let agent_id = "agent1";
         let role_name = "default";
         let date = "2026-06-24";
@@ -505,14 +380,11 @@ mod tests {
         let record_line = r#"{"tool_result":{"temp":25},"key":"k1","time":"2026-06-24 10:00:00","sn":1}"#;
         write_jsonl(agent_id, role_name, &filename, date, record_line).await;
 
-        let indexer = MemoryIndexer::new();
         let key = RecordKey {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
             date: Arc::new(date.to_string()),
         };
-        indexer.mark_tool_result_obsolete(&key);
-
         let query = QueryRequest {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
@@ -520,8 +392,11 @@ mod tests {
             end_time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
 
+        let indexer = MemoryIndexer::new();
+        assert!(indexer.query_tool_result_records(query.clone()).await.unwrap().is_empty());
+        indexer.mark_tool_result_obsolete(&key);
         let results = indexer.query_tool_result_records(query).await.unwrap();
-        assert!(!results.is_empty(), "expected at least one tool result record");
+        assert!(!results.is_empty());
         assert_eq!(results[0].key.as_str(), "k1");
     }
 }
