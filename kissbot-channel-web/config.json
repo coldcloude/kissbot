@@ -1,7 +1,0 @@
-{
-  "messenger_config": "kissbot-channel-web-config.json",
-  "attachment_dir": "attachments",
-  "memory_store_url": "http://127.0.0.1:8102",
-  "ws_listen_addr": "127.0.0.1:8201",
-  "http_listen_addr": "127.0.0.1:8301"
-}
