@@ -56,8 +56,18 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 ### 6. 安全组件
 多种安全模块统一放在安全组件中，当前模块如下：
 - **认证模块**：为所有模块提供统一的认证能力。
+- **配置模块**：定义 `SecurityConfig`（api_key、admin_api_key），从公共配置中读取安全相关的配置项。
 
-### 7. 管理界面
+### 7. 公共配置组件
+集中管理所有组件的配置信息。各组件不再各自定义配置文件和加载方式，改为从一份公共 JSON 配置文件中提取各自需要的部分。
+
+**公共配置组件**：加载 JSON 配置文件（通过 `KISSBOT_CONFIG` 环境变量指定路径，默认 `./config.json`），提供层级化的配置访问接口 `get_section(path)`。组件间通过点号路径解耦。
+
+**网络地址配置**：定义各组件访问其他服务的 URL（memory_store_url、memory_ego_url）。由 `kissbot-api` 的 `ApiConfig` 封装，各组件统一从该配置中读取外部服务地址。
+
+**安全配置**：所有 API key 统一归入 `security` 配置段，由 `kissbot-security` 的 `SecurityConfig` 封装。各组件通过 `SecurityConfig::get()` 获取认证所需的 key。
+
+### 8. 管理界面
 提供 Web 界面的管理工具集，包括：
 - **智能体配置界面**：配置 nexus 使用的 LLM API、连接的 station、记忆模式，以及各类组件地址
 - **记忆管理界面**：查看和管理记忆存储文件，配置记忆推送
