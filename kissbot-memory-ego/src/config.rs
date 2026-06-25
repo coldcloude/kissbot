@@ -17,7 +17,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let config_path = std::env::var("KISSBOT_MEMORY_EGO_CONFIG")
             .map(|p| PathBuf::from(p))
-            .unwrap_or_else(|_| PathBuf::from("config.json"));
+            .unwrap_or_else(|_| PathBuf::from("memory-ego-config.json"));
 
         let config = config::Config::builder()
             .add_source(config::File::from(config_path))

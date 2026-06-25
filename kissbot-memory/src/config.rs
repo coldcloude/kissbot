@@ -15,7 +15,7 @@ impl Config {
     pub fn load() -> Result<Self> {
         let config_path = std::env::var("KISSBOT_MEMORY_CONFIG")
             .map(|p| PathBuf::from(p))
-            .unwrap_or_else(|_| PathBuf::from("config.json"));
+            .unwrap_or_else(|_| PathBuf::from("memory-config.json"));
 
         let config = config::Config::builder()
             .add_source(config::File::from(config_path))
@@ -23,12 +23,6 @@ impl Config {
 
         let config = config.try_deserialize()?;
         Ok(config)
-    }
-
-    pub fn with_root_dir(root_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-        }
     }
 
     pub fn get() -> &'static Self {
@@ -41,12 +35,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_config_with_root_dir() {
-        let config = Config::with_root_dir("/tmp/test_memory");
-        assert_eq!(config.root_dir, std::path::PathBuf::from("/tmp/test_memory"));
-    }
 
     #[test]
     fn test_config_load() {
