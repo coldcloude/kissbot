@@ -278,3 +278,53 @@ impl RecordManager {
         self.tool_result_context.append_record(requests, force, ToolResultFileIndexHook{}).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空操作 FileHook，不调用 MemoryIndexer
+    struct NoopFileHook;
+
+    impl<K> FileHook<K> for NoopFileHook {
+        fn on_append(&self, _key: &K) {}
+        fn on_force_append(&self, _key: &K) {}
+    }
+
+    #[tokio::test]
+    async fn test_load_state_file_not_exists() {
+        let state = load_existing_file_state(&PathBuf::from("/tmp/nonexistent_file_xyz.jsonl")).await.unwrap();
+        assert_eq!(state.sn, 0);
+        assert_eq!(*state.time, "2000-01-01 00:00:00");
+    }
+
+    #[tokio::test]
+    async fn test_load_state_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("empty.jsonl");
+        tokio::fs::write(&file_path, "").await.unwrap();
+
+        let state = load_existing_file_state(&file_path).await.unwrap();
+        assert_eq!(state.sn, 0);
+        assert_eq!(*state.time, "2000-01-01 00:00:00");
+    }
+
+    #[tokio::test]
+    async fn test_load_state_with_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("records.jsonl");
+
+        // 写入 3 条 JSONL 记录
+        let lines = vec![
+            r#"{"sn":1,"time":"2026-06-25 10:00:00","content":"msg1"}"#,
+            r#"{"sn":2,"time":"2026-06-25 10:01:00","content":"msg2"}"#,
+            r#"{"sn":3,"time":"2026-06-25 10:02:00","content":"msg3"}"#,
+        ];
+        let content = lines.join("\n") + "\n";
+        tokio::fs::write(&file_path, content).await.unwrap();
+
+        let state = load_existing_file_state(&file_path).await.unwrap();
+        assert_eq!(state.sn, 3);
+        assert_eq!(*state.time, "2026-06-25 10:02:00");
+    }
+}
