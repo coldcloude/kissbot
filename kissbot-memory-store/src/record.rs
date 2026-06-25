@@ -328,22 +328,23 @@ mod tests {
         assert_eq!(*state.time, "2026-06-25 10:02:00");
     }
 
-    use std::sync::Once;
+    use std::sync::{Once, OnceLock};
     use kissbot_memory::Config as MemoryConfig;
 
-    static INIT: Once = Once::new();
+    static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
 
     fn init_test_config() {
-        INIT.call_once(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let root_dir = dir.path().to_path_buf();
+        let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+        let root_dir = dir.path().to_path_buf();
+        // 用 Once 保护 env set_var 和 config 初始化（仅执行一次）
+        static INIT_CONFIG: Once = Once::new();
+        INIT_CONFIG.call_once(|| {
             unsafe { std::env::set_var(
                 "KISSBOT_MEMORY_CONFIG",
                 root_dir.join("memory-config.json").to_str().unwrap()
             ); }
             let json_content = format!(r#"{{"root_dir": "{}"}}"#, root_dir.display().to_string());
             std::fs::write(root_dir.join("memory-config.json"), &json_content).unwrap();
-            // 提前初始化 MemoryConfig 的 OnceLock
             MemoryConfig::get();
         });
     }
