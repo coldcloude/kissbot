@@ -264,10 +264,19 @@ dependencies = [
  "async-trait",
  "dashmap",
  "kai-ws",
+ "kissbot-config",
  "serde",
  "serde_bytes",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "kissbot-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

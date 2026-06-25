@@ -10,6 +10,7 @@ use kissbot_channel::ChannelManager;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
 
+use kissbot_api::ApiConfig;
 use crate::config::Config;
 use crate::messenger::WebMessengerCreator;
 
@@ -17,8 +18,9 @@ use crate::messenger::WebMessengerCreator;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // 1. 读取元配置（messenger_repo 路径、attachment_dir、memory_store_url 等）
+    // 1. 读取元配置 + 网络地址配置
     let config = Config::get();
+    let api_config = ApiConfig::get();
     let security = SecurityConfig::get();
 
     // 2. 读取 messenger 配置，构造 Creator
@@ -27,7 +29,7 @@ async fn main() {
 
     // 3. 创建 ChannelManager
     let channel_manager = Arc::new(ChannelManager::new(
-        &config.memory_store_url,
+        &api_config.memory_store_url,
         security.api_key.clone(),
     ));
 

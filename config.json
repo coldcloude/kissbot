@@ -14,10 +14,13 @@
       "listen_port": 3001
     }
   },
+  "api": {
+    "memory_store_url": "http://127.0.0.1:8102",
+    "memory_ego_url": "http://127.0.0.1:8103"
+  },
   "channel-web": {
     "messenger_repo": "channel-web-repo.json",
     "attachment_dir": "attachments",
-    "memory_store_url": "http://127.0.0.1:8102",
     "ws_listen_addr": "127.0.0.1:8201",
     "http_listen_addr": "127.0.0.1:8301"
   }

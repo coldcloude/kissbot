@@ -11,3 +11,4 @@ thiserror = "2.0"
 dashmap = { version = "6.1", features = ["serde"] }
 async-trait = "0.1"
 kai-ws = { path = "../kai-rs/kai-ws" }
+kissbot-config = { path = "../kissbot-config" }

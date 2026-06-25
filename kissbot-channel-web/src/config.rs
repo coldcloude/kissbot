@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 pub struct Config {
     pub messenger_repo: String,
     pub attachment_dir: String,
-    pub memory_store_url: String,
     pub ws_listen_addr: String,
     pub http_listen_addr: String,
 }

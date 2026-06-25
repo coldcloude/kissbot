@@ -1182,6 +1182,7 @@ dependencies = [
  "async-trait",
  "dashmap",
  "kai-ws",
+ "kissbot-config",
  "serde",
  "serde_bytes",
  "serde_json",

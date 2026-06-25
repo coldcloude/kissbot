@@ -63,8 +63,6 @@ struct RawConfig {
     channel_bindings: Vec<ChannelBinding>,
     admin_users: Vec<AdminUser>,
     stations: Vec<StationConfig>,
-    memory_store_url: String,
-    memory_ego_url: String,
     memory_struct_url: Option<String>,
     ws_reconnect_interval_secs: u64,
 }
@@ -95,8 +93,6 @@ struct ConfigInner {
     channel_bindings: Vec<ChannelBinding>,
     admin_users: Vec<AdminUser>,
     stations: Vec<StationConfig>,
-    memory_store_url: String,
-    memory_ego_url: String,
     memory_struct_url: Option<String>,
     ws_reconnect_interval_secs: u64,
 }
@@ -123,8 +119,6 @@ impl ConfigManager {
             channel_bindings: raw.channel_bindings,
             admin_users: raw.admin_users,
             stations: raw.stations,
-            memory_store_url: raw.memory_store_url,
-            memory_ego_url: raw.memory_ego_url,
             memory_struct_url: raw.memory_struct_url,
             ws_reconnect_interval_secs: raw.ws_reconnect_interval_secs,
         };
@@ -151,8 +145,6 @@ impl ConfigManager {
             channel_bindings: inner.channel_bindings.clone(),
             admin_users: inner.admin_users.clone(),
             stations: inner.stations.clone(),
-            memory_store_url: inner.memory_store_url.clone(),
-            memory_ego_url: inner.memory_ego_url.clone(),
             memory_struct_url: inner.memory_struct_url.clone(),
             ws_reconnect_interval_secs: inner.ws_reconnect_interval_secs,
         };
@@ -209,11 +201,11 @@ impl ConfigManager {
     }
 
     pub async fn memory_store_url(&self) -> String {
-        self.inner.read().await.memory_store_url.clone()
+        kissbot_api::ApiConfig::get().memory_store_url.clone()
     }
 
     pub async fn memory_ego_url(&self) -> String {
-        self.inner.read().await.memory_ego_url.clone()
+        kissbot_api::ApiConfig::get().memory_ego_url.clone()
     }
 
     #[allow(dead_code)]
