@@ -98,6 +98,19 @@ struct SseMessage {
     time: Arc<String>,
 }
 
+// ========== 待完成附件上传 ==========
+
+/// 待完成的附件上传信息
+pub struct PendingAttachment {
+    pub group_id: Arc<String>,
+    pub msg_id: Arc<String>,
+    pub filename: Arc<String>,
+    pub mime_type: Arc<String>,
+    pub size_bytes: u64,
+    pub temp_path: PathBuf,
+    pub target_path: PathBuf,
+}
+
 // ========== WebMessenger ==========
 
 pub struct WebMessenger {
@@ -113,6 +126,7 @@ pub struct WebMessenger {
     pub attachment_store: Arc<AttachmentStore>,
     // 新增：
     global_attachment_sn: Arc<AtomicU32>,
+    pub pending_uploads: DashMap<u32, PendingAttachment>,
 }
 
 impl WebMessenger {
@@ -139,6 +153,7 @@ impl WebMessenger {
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
             global_attachment_sn,
+            pending_uploads: DashMap::new(),
         }
     }
 
@@ -422,6 +437,28 @@ impl WebMessenger {
             }
         }
 
+        // 处理附件 map，生成 upload_id
+        let attachment_upload_id_map = Arc::new(DashMap::new());
+        for entry in outgoing.attachment_map.iter() {
+            let upload_id = self.next_attachment_sn();
+            let (temp_path, target_path) = match self.attachment_store.create_temp_file(
+                outgoing.group_id.as_str(), msg_id.as_str(), entry.key().as_str()
+            ) {
+                Ok(paths) => paths,
+                Err(e) => return Err(Error::from(e)),
+            };
+            self.pending_uploads.insert(upload_id, PendingAttachment {
+                group_id: outgoing.group_id.clone(),
+                msg_id: msg_id.clone(),
+                filename: Arc::new(entry.key().clone()),
+                mime_type: entry.value().mime_type.clone(),
+                size_bytes: entry.value().size_bytes,
+                temp_path,
+                target_path,
+            });
+            attachment_upload_id_map.insert(entry.key().clone(), upload_id);
+        }
+
         // 推 SSE
         let group_id = outgoing.group_id.clone();
         let sse_event = SseMessage {
@@ -442,7 +479,7 @@ impl WebMessenger {
         Ok(OutgoingMessageResponse {
             msg_id,
             time,
-            attachment_upload_id_map: Arc::new(DashMap::new()),
+            attachment_upload_id_map,
         })
     }
 
