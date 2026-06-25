@@ -3,11 +3,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
 use async_trait::async_trait;
+use bytes::{BytesMut, BufMut};
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
+use kai_ws::{CODE_SUCCESS, LEN_STATUS_CODE, OFFSET_PAYLOAD_TYPE, LEN_PAYLOAD_TYPE};
 use kissbot_api::channel::{
     AttachmentDownloadRequest, AttachmentDownloadResponseHeader, AttachmentInfo,
     GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse, UserInfo,
+    TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD,
 };
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
@@ -604,15 +607,76 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(resp))
     }
 
-    async fn send_attachment_payload(&self, _id: u32, _size: u32, _pos: u64, _data: &[u8]) -> std::result::Result<(), kissbot_channel::Error> {
+    async fn send_attachment_payload(&self, id: u32, _size: u32, pos: u64, data: &[u8]) -> std::result::Result<(), kissbot_channel::Error> {
+        let pending = self.pending_uploads.get(&id)
+            .ok_or_else(|| kissbot_channel::Error::InternalError(format!("upload_id {} not found", id)))?;
+
+        self.attachment_store.append_to_temp(&pending.temp_path, data)
+            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+
+        // 如果这是最后一块，重命名临时文件为正式文件
+        if (pos + data.len() as u64) >= pending.size_bytes {
+            let temp = pending.temp_path.clone();
+            let target = pending.target_path.clone();
+            drop(pending);
+            AttachmentStore::finalize_upload(&temp, &target)
+                .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+            self.pending_uploads.remove(&id);
+        }
+
         Ok(())
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
+        let download_id = attachment_sn.fetch_add(1, Ordering::SeqCst);
+
+        // 启动后台任务：逐块读取文件并推送
+        let sender = self.on_download_attachment_payload.upgrade()
+            .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
+        let store = self.attachment_store.clone();
+        let key = request.key.clone();
+
+        tokio::spawn(async move {
+            const CHUNK_SIZE: u64 = 65536;
+            if let Ok(data) = store.get_attachment_by_key(&key) {
+                let len = data.len() as u64;
+                let mut pos = 0u64;
+                while pos < len {
+                    let end = std::cmp::min(pos + CHUNK_SIZE, len);
+                    let chunk = &data[pos as usize..end as usize];
+                    // 构造 binary payload: [kai-ws header] + [attachment header] + [data]
+                    let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
+                    let mut buf = BytesMut::with_capacity(header_len + chunk.len());
+                    // kai-ws header: sn(4) + payload_type(4) + status_code(4)
+                    buf.put_u32(0);    // sn
+                    buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);  // payload_type
+                    buf.put_u32(CODE_SUCCESS);  // status_code
+                    // attachment header: id(4) + size(4) + pos(8)
+                    buf.put_u32(download_id);
+                    buf.put_u32(len as u32);
+                    buf.put_u64(pos);
+                    // payload data
+                    buf.extend_from_slice(chunk);
+                    if sender.send_attachment_payload(buf.freeze()).await.is_err() {
+                        break;
+                    }
+                    pos = end;
+                }
+                // 发送 size=0 的结束标记
+                let mut end_buf = BytesMut::with_capacity(OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16);
+                end_buf.put_u32(0);
+                end_buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
+                end_buf.put_u32(CODE_SUCCESS);
+                end_buf.put_u32(download_id);
+                end_buf.put_u32(0);   // size=0 表示结束
+                end_buf.put_u64(pos);
+                let _ = sender.send_attachment_payload(end_buf.freeze()).await;
+            }
+        });
 
         Ok(Arc::new(AttachmentDownloadResponseHeader {
-            download_id: 0,
+            download_id,
             metadata: Arc::new(AttachmentInfo {
                 att_id: meta.att_id,
                 mime_type: meta.mime_type,
