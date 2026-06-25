@@ -614,14 +614,14 @@ impl Messenger for WebMessenger {
         self.attachment_store.append_to_temp(&pending.temp_path, data)
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
 
-        // 如果这是最后一块，重命名临时文件为正式文件
+        // 如果这是最后一块，用 remove 原子地取出并重命名
         if (pos + data.len() as u64) >= pending.size_bytes {
-            let temp = pending.temp_path.clone();
-            let target = pending.target_path.clone();
             drop(pending);
-            AttachmentStore::finalize_upload(&temp, &target)
-                .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-            self.pending_uploads.remove(&id);
+            if let Some((_, pending)) = self.pending_uploads.remove(&id) {
+                AttachmentStore::finalize_upload(&pending.temp_path, &pending.target_path)
+                    .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+            }
+            // 如果 remove 返回 None，说明已被其他并发路径处理，直接忽略
         }
 
         Ok(())
@@ -639,39 +639,41 @@ impl Messenger for WebMessenger {
 
         tokio::spawn(async move {
             const CHUNK_SIZE: u64 = 65536;
-            if let Ok(data) = store.get_attachment_by_key(&key) {
-                let len = data.len() as u64;
-                let mut pos = 0u64;
-                while pos < len {
-                    let end = std::cmp::min(pos + CHUNK_SIZE, len);
-                    let chunk = &data[pos as usize..end as usize];
-                    // 构造 binary payload: [kai-ws header] + [attachment header] + [data]
-                    let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
-                    let mut buf = BytesMut::with_capacity(header_len + chunk.len());
-                    // kai-ws header: sn(4) + payload_type(4) + status_code(4)
-                    buf.put_u32(0);    // sn
-                    buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);  // payload_type
-                    buf.put_u32(CODE_SUCCESS);  // status_code
-                    // attachment header: id(4) + size(4) + pos(8)
-                    buf.put_u32(download_id);
-                    buf.put_u32(len as u32);
-                    buf.put_u64(pos);
-                    // payload data
-                    buf.extend_from_slice(chunk);
-                    if sender.send_attachment_payload(buf.freeze()).await.is_err() {
-                        break;
+
+            match store.get_attachment_by_key(&key) {
+                Ok(data) => {
+                    let len = data.len() as u64;
+                    let mut pos = 0u64;
+                    let mut ok = true;
+                    while pos < len && ok {
+                        let end = std::cmp::min(pos + CHUNK_SIZE, len);
+                        let chunk = &data[pos as usize..end as usize];
+                        let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
+                        let mut buf = BytesMut::with_capacity(header_len + chunk.len());
+                        buf.put_u32(0);
+                        buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
+                        buf.put_u32(CODE_SUCCESS);
+                        buf.put_u32(download_id);
+                        buf.put_u32(len as u32);
+                        buf.put_u64(pos);
+                        buf.extend_from_slice(chunk);
+                        ok = sender.send_attachment_payload(buf.freeze()).await.is_ok();
+                        pos = end;
                     }
-                    pos = end;
+                    // 发送 size=0 的结束标记
+                    let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
+                    let mut end_buf = BytesMut::with_capacity(header_len);
+                    end_buf.put_u32(0);
+                    end_buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
+                    end_buf.put_u32(CODE_SUCCESS);
+                    end_buf.put_u32(download_id);
+                    end_buf.put_u32(0);
+                    end_buf.put_u64(pos);
+                    let _ = sender.send_attachment_payload(end_buf.freeze()).await;
                 }
-                // 发送 size=0 的结束标记
-                let mut end_buf = BytesMut::with_capacity(OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16);
-                end_buf.put_u32(0);
-                end_buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
-                end_buf.put_u32(CODE_SUCCESS);
-                end_buf.put_u32(download_id);
-                end_buf.put_u32(0);   // size=0 表示结束
-                end_buf.put_u64(pos);
-                let _ = sender.send_attachment_payload(end_buf.freeze()).await;
+                Err(e) => {
+                    tracing::error!("Failed to read attachment for download: key={}, error={}", key, e);
+                }
             }
         });
 

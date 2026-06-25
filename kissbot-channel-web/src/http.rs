@@ -338,6 +338,7 @@ async fn handle_init_attachment(
     };
 
     // 4. 记录 PendingAttachment
+    let temp_path_for_cleanup = temp_path.clone();
     messenger.pending_uploads.insert(upload_id, PendingAttachment {
         group_id: req.group_id.clone(),
         msg_id: msg_id.clone(),
@@ -375,8 +376,9 @@ async fn handle_init_attachment(
             "msg_id": resp.msg_id,
         }))),
         Err(e) => {
-            // 发送失败时清理 pending 记录
+            // 发送失败时清理 pending 记录和临时文件
             messenger.pending_uploads.remove(&upload_id);
+            let _ = std::fs::remove_file(&temp_path_for_cleanup);
             Json(ApiResponse::<serde_json::Value>::error(e.to_string()))
         }
     }
