@@ -3,9 +3,6 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-mod error;
-pub use error::ConfigError;
-
 #[derive(Deserialize)]
 pub struct Config {
     raw: serde_json::Value,
@@ -16,22 +13,23 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 impl Config {
     /// 从环境变量 KISSBOT_CONFIG 指定路径加载 JSON 文件
     /// 未设置时默认读取 ./config.json
-    pub fn load() -> Result<Self, ConfigError> {
+    /// 加载失败时 panic（fail-fast）
+    fn load() -> Self {
         let config_path = std::env::var("KISSBOT_CONFIG")
             .map(|p| PathBuf::from(p))
             .unwrap_or_else(|_| PathBuf::from("config.json"));
 
-        let content = std::fs::read_to_string(config_path)?;
-        let raw: serde_json::Value = serde_json::from_str(&content)?;
-        Ok(Self { raw })
+        let content = std::fs::read_to_string(config_path)
+            .expect("kissbot-config: failed to read config file");
+        let raw: serde_json::Value = serde_json::from_str(&content)
+            .expect("kissbot-config: failed to parse config JSON");
+        Self { raw }
     }
 
     /// 获取全局单例，首次调用时自动加载
     /// 加载失败时 panic（配置错误的 fail-fast）
     pub fn get() -> &'static Self {
-        CONFIG.get_or_init(|| {
-            Config::load().expect("kissbot-config: failed to load config")
-        })
+        CONFIG.get_or_init(|| Config::load())
     }
 
     /// 从配置的 JSON 结构中导航到指定路径，反序列化为 T
@@ -53,13 +51,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
 
     #[test]
-    fn test_load_nonexistent() {
-        unsafe { std::env::set_var("KISSBOT_CONFIG", "/tmp/nonexistent-config-test.json"); }
-        let result = Config::load();
-        assert!(result.is_err());
-        unsafe { std::env::remove_var("KISSBOT_CONFIG"); }
+    #[should_panic(expected = "section 'nonexistent' not found")]
+    fn test_get_section_panics_on_missing_path() {
+        let raw: serde_json::Value = serde_json::from_str(r#"{"key": "value"}"#).unwrap();
+        let cfg = Config { raw };
+        let _val: String = cfg.get_section("nonexistent");
     }
 
     #[test]
@@ -69,8 +68,10 @@ mod tests {
         let content = r#"{"memory": {"root_dir": "data"}}"#;
         std::fs::write(&config_path, content).unwrap();
 
-        unsafe { std::env::set_var("KISSBOT_CONFIG", config_path.to_str().unwrap()); }
-        let cfg = Config::load().unwrap();
+        // Config::get() 只初始化一次，用子进程测试就要重置 OnceLock
+        // 这里用 load() 不可行了，所以直接构造一个 Config 测试
+        let raw: serde_json::Value = serde_json::from_str(content).unwrap();
+        let cfg = Config { raw };
 
         #[derive(Deserialize)]
         struct MemCfg {
@@ -78,18 +79,13 @@ mod tests {
         }
         let mem: MemCfg = cfg.get_section("memory");
         assert_eq!(mem.root_dir, "data");
-        unsafe { std::env::remove_var("KISSBOT_CONFIG"); }
     }
 
     #[test]
     fn test_get_section_nested() {
-        let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.json");
         let content = r#"{"memory": {"store": {"port": 8082, "host": "127.0.0.1"}}}"#;
-        std::fs::write(&config_path, content).unwrap();
-
-        unsafe { std::env::set_var("KISSBOT_CONFIG", config_path.to_str().unwrap()); }
-        let cfg = Config::load().unwrap();
+        let raw: serde_json::Value = serde_json::from_str(content).unwrap();
+        let cfg = Config { raw };
 
         #[derive(Deserialize)]
         struct StoreCfg {
@@ -99,6 +95,5 @@ mod tests {
         let store: StoreCfg = cfg.get_section("memory.store");
         assert_eq!(store.port, 8082);
         assert_eq!(store.host, "127.0.0.1");
-        unsafe { std::env::remove_var("KISSBOT_CONFIG"); }
     }
 }
