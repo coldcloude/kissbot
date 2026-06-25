@@ -372,14 +372,14 @@ mod tests {
             other_relations: Arc::new(DashMap::new()),
         });
         manager.replace_individuals(
-            "agent1",
+            "agent-rename-exists",
             vec![],
             vec![
                 (Arc::new("Alice".to_string()), alice),
                 (Arc::new("Bob".to_string()), bob),
             ],
         ).await.unwrap();
-        let result = manager.rename_individual("agent1", "Alice", "Bob").await;
+        let result = manager.rename_individual("agent-rename-exists", "Alice", "Bob").await;
         assert!(matches!(result, Err(Error::AgentIndividualAlreadyExists(_, _))));
     }
 }

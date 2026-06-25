@@ -445,22 +445,22 @@ mod tests {
     #[tokio::test]
     async fn test_search_by_name() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "Test user").await;
-        create_test_agent("agent2", "Bob", "Another user").await;
+        create_test_agent("name-agt1", "Alice", "Test user").await;
+        create_test_agent("name-agt2", "Bob", "Another user").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
-        manager.force_sync_identity("agent2").await.unwrap();
+        manager.force_sync_identity("name-agt1").await.unwrap();
+        manager.force_sync_identity("name-agt2").await.unwrap();
         let results = manager.search_by_name("Alice").await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
-        assert_eq!(results[0], "agent1");
+        assert_eq!(results[0], "name-agt1");
     }
 
     #[tokio::test]
     async fn test_search_by_name_no_match() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "Test").await;
+        create_test_agent("noname-agt", "Alice", "Test").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_identity("noname-agt").await.unwrap();
         let results = manager.search_by_name("Nonexistent").await;
         assert!(results.is_empty(), "expected empty, got {:?}", results);
     }
@@ -468,39 +468,39 @@ mod tests {
     #[tokio::test]
     async fn test_search_by_description() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "Some searchable text here").await;
+        create_test_agent("desc-agt", "Alice", "Some searchable text here").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
+        manager.force_sync_identity("desc-agt").await.unwrap();
         let results = manager.search_by_description("searchable").await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
-        assert_eq!(results[0], "agent1");
+        assert_eq!(results[0], "desc-agt");
     }
 
     #[tokio::test]
     async fn test_agent_name_completion() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "").await;
-        create_test_agent("agent2", "Albert", "").await;
-        create_test_agent("agent3", "Bob", "").await;
+        create_test_agent("comp-agt1", "Alice", "").await;
+        create_test_agent("comp-agt2", "Albert", "").await;
+        create_test_agent("comp-agt3", "Bob", "").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
-        manager.force_sync_identity("agent2").await.unwrap();
-        manager.force_sync_identity("agent3").await.unwrap();
+        manager.force_sync_identity("comp-agt1").await.unwrap();
+        manager.force_sync_identity("comp-agt2").await.unwrap();
+        manager.force_sync_identity("comp-agt3").await.unwrap();
         let results = manager.name_completion("Al").await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
         let ids: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
-        assert!(ids.contains(&"agent1"));
-        assert!(ids.contains(&"agent2"));
+        assert!(ids.contains(&"comp-agt1"));
+        assert!(ids.contains(&"comp-agt2"));
     }
 
     #[tokio::test]
     async fn test_search_role_by_name() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "").await;
-        create_test_role("agent1", "admin", "Administrator").await;
+        create_test_agent("role-name-agt", "Alice", "").await;
+        create_test_role("role-name-agt", "admin", "Administrator").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
-        manager.force_sync_role("agent1", "admin").await.unwrap();
+        manager.force_sync_identity("role-name-agt").await.unwrap();
+        manager.force_sync_role("role-name-agt", "admin").await.unwrap();
         let results = manager.search_role_by_name("admin", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
         assert_eq!(results[0].role_name, "admin");
@@ -509,11 +509,11 @@ mod tests {
     #[tokio::test]
     async fn test_search_role_by_description() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "").await;
-        create_test_role("agent1", "admin", "Special role description").await;
+        create_test_agent("role-desc-agt", "Alice", "").await;
+        create_test_role("role-desc-agt", "admin", "Special role description").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
-        manager.force_sync_role("agent1", "admin").await.unwrap();
+        manager.force_sync_identity("role-desc-agt").await.unwrap();
+        manager.force_sync_role("role-desc-agt", "admin").await.unwrap();
         let results = manager.search_role_by_description("Special", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
     }
@@ -521,14 +521,14 @@ mod tests {
     #[tokio::test]
     async fn test_retrieve_agents() {
         crate::test_util::init_test_config();
-        create_test_agent("agent1", "Alice", "Desc1").await;
-        create_test_agent("agent2", "Bob", "Desc2").await;
+        create_test_agent("ret-agt1", "Alice", "Desc1").await;
+        create_test_agent("ret-agt2", "Bob", "Desc2").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("agent1").await.unwrap();
-        manager.force_sync_identity("agent2").await.unwrap();
+        manager.force_sync_identity("ret-agt1").await.unwrap();
+        manager.force_sync_identity("ret-agt2").await.unwrap();
         let results = manager.retrieve_agents(vec![
-            Arc::new("agent1".to_string()),
-            Arc::new("agent2".to_string()),
+            Arc::new("ret-agt1".to_string()),
+            Arc::new("ret-agt2".to_string()),
         ]).await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
         let names: Vec<&str> = results.iter().map(|a| a.individual_name.as_str()).collect();
