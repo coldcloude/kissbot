@@ -5,7 +5,6 @@ use axum::{
     Json, Router,
 };
 use futures::future;
-use kai_index::CompletionResult;
 use kissbot_memory::DirectoryManager;
 use std::sync::Arc;
 
@@ -145,83 +144,51 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
 }
 
 async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let agents = ego_manager.search_by_name(&req.keyword).await;
-            (StatusCode::OK, Json(ApiResponse::success(agents)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<String>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let agents = ego_manager.search_by_name(&req.keyword).await;
+    (StatusCode::OK, Json(ApiResponse::success(agents)))
 }
 
 async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let agents = ego_manager.search_by_description(&req.keyword).await;
-            (StatusCode::OK, Json(ApiResponse::success(agents)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<String>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let agents = ego_manager.search_by_description(&req.keyword).await;
+    (StatusCode::OK, Json(ApiResponse::success(agents)))
 }
 
 async fn retrieve_agents(Json(req): Json<ego::RetrieveAgentsRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let agents = ego_manager.retrieve_agents(req.agent_ids).await;
-            (StatusCode::OK, Json(ApiResponse::success(agents)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<AgentMetadata>>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let agents = ego_manager.retrieve_agents(req.agent_ids).await;
+    (StatusCode::OK, Json(ApiResponse::success(agents)))
 }
 
 async fn agent_name_completion(Json(req): Json<ego::NameCompletionRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let results = ego_manager.name_completion(&req.prefix).await;
-            (StatusCode::OK, Json(ApiResponse::success(results)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<String>>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let results = ego_manager.name_completion(&req.prefix).await;
+    (StatusCode::OK, Json(ApiResponse::success(results)))
 }
 
 async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
-            (StatusCode::OK, Json(ApiResponse::success(roles)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
+    (StatusCode::OK, Json(ApiResponse::success(roles)))
 }
 
 async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
-            (StatusCode::OK, Json(ApiResponse::success(roles)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ego::RoleKey>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
+    (StatusCode::OK, Json(ApiResponse::success(roles)))
 }
 
 async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let roles = ego_manager.retrieve_roles(req.role_keys).await;
-            (StatusCode::OK, Json(ApiResponse::success(roles)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<Arc<kissbot_api::Role>>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let roles = ego_manager.retrieve_roles(req.role_keys).await;
+    (StatusCode::OK, Json(ApiResponse::success(roles)))
 }
 
 async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -> impl IntoResponse {
-    match SearchManager::get().await {
-        Ok(ego_manager) => {
-            let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref().map(|s| s.as_str())).await;
-            (StatusCode::OK, Json(ApiResponse::success(results)))
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<CompletionResult<ego::RoleKey>>>::error(e.to_string())))
-    }
+    let ego_manager = SearchManager::get().await;
+    let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref().map(|s| s.as_str())).await;
+    (StatusCode::OK, Json(ApiResponse::success(results)))
 }
 
 // ========== 个体识别信息 API ==========

@@ -211,7 +211,6 @@ impl RolePlayManager {
     }
 
     pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         self.write_role_play_ref(agent_id, role_name.clone().as_str(), |old| {
             match old {
                 Some(_) => {
@@ -229,27 +228,24 @@ impl RolePlayManager {
                 }
             }
         }).await?;
-        search_manager.mark_role_dirty(agent_id, role_name.as_str());
+        SearchManager::get().await.mark_role_dirty(agent_id, role_name.as_str());
         Ok(())
     }
 
     pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         let role = self.get_role(agent_id, role_name).await?;
         self.create_role(agent_id, new_name.clone(), role.role.description.clone()).await?;
-        search_manager.mark_role_dirty(agent_id, new_name.as_str());
+        SearchManager::get().await.mark_role_dirty(agent_id, new_name.as_str());
         Ok(())
     }
 
     pub async fn remove_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         self.remove_role_play_ref(agent_id, role_name).await?;
-        search_manager.mark_role_dirty(agent_id, role_name);
+        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
         Ok(())
     }
 
     pub async fn rename_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         let role = self.get_role(agent_id, role_name).await?;
         self.write_role_play_ref(agent_id, new_name.as_str(), |old| {
             match old {
@@ -268,14 +264,13 @@ impl RolePlayManager {
                 }
             }
         }).await?;
-        search_manager.mark_role_dirty(agent_id, new_name.as_str());
+        SearchManager::get().await.mark_role_dirty(agent_id, new_name.as_str());
         self.remove_role(agent_id, role_name).await?;
-        search_manager.mark_role_dirty(agent_id, role_name);
+        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
         Ok(())
     }
 
     pub async fn update_role_description(&self, agent_id: &str, role_name: &str, description: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
@@ -291,7 +286,7 @@ impl RolePlayManager {
                 None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
             }
         }).await?;
-        search_manager.mark_role_dirty(agent_id, role_name);
+        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
         Ok(())
     }
 
@@ -396,8 +391,6 @@ mod tests {
             let dm = kissbot_memory::DirectoryManager::get();
             dm.ensure_agent_dir("setup-agent").await.unwrap();
             dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
-            // 补充已有 agent 的 metadata，防止 SearchManager 初始化失败
-            crate::test_util::ensure_agent_metadata().await;
         }).await;
     }
 

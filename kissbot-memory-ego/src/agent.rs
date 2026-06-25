@@ -156,7 +156,6 @@ impl AgentManager {
     }
 
     pub async fn update_agent_name(&self, agent_id: &str, individual_name: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
@@ -170,12 +169,11 @@ impl AgentManager {
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }
         }).await?;
-        search_manager.mark_identity_dirty(agent_id);
+        SearchManager::get().await.mark_identity_dirty(agent_id);
         Ok(())
     }
 
     pub async fn update_agent_description(&self, agent_id: &str, description: Arc<String>) -> Result<()> {
-        let search_manager = SearchManager::get().await?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
@@ -189,7 +187,7 @@ impl AgentManager {
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }
         }).await?;
-        search_manager.mark_identity_dirty(agent_id);
+        SearchManager::get().await.mark_identity_dirty(agent_id);
         Ok(())
     }
 }
@@ -219,10 +217,6 @@ mod tests {
             ).await.unwrap();
             dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
         }).await;
-        // 每次 setup 都补充已有 agent 的 metadata，
-        // 确保后续 SearchManager 初始化时不被 test_get_agent_not_found
-        // 创建的没有 metadata.json 的目录干扰
-        crate::test_util::ensure_agent_metadata().await;
     }
 
     #[tokio::test]

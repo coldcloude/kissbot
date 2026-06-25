@@ -239,8 +239,6 @@ mod tests {
             let dm = kissbot_memory::DirectoryManager::get();
             dm.ensure_agent_dir("setup-agent").await.unwrap();
             dm.ensure_agent_ego_dir("setup-agent").await.unwrap();
-            // 补充已有 agent 的 metadata，防止 SearchManager 初始化失败
-            crate::test_util::ensure_agent_metadata().await;
         }).await;
     }
 
