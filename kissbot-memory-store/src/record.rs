@@ -337,8 +337,6 @@ mod tests {
         INIT.call_once(|| {
             let dir = tempfile::tempdir().unwrap();
             let root_dir = dir.path().to_path_buf();
-            // 泄漏 TempDir，确保整个测试期间目录都有效
-            Box::leak(Box::new(dir));
             unsafe { std::env::set_var(
                 "KISSBOT_MEMORY_CONFIG",
                 root_dir.join("memory-config.json").to_str().unwrap()
@@ -346,7 +344,7 @@ mod tests {
             let json_content = format!(r#"{{"root_dir": "{}"}}"#, root_dir.display().to_string());
             std::fs::write(root_dir.join("memory-config.json"), &json_content).unwrap();
             // 提前初始化 MemoryConfig 的 OnceLock
-            let _ = MemoryConfig::get();
+            MemoryConfig::get();
         });
     }
 
