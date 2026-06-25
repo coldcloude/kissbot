@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use kissbot_channel::ChannelManager;
 use tokio::net::TcpListener;
-use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
+use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
 
 use crate::config::Config;
 use crate::messenger::WebMessengerCreator;
@@ -19,6 +19,7 @@ async fn main() {
 
     // 1. 读取元配置（messenger_repo 路径、attachment_dir、memory_store_url 等）
     let config = Config::get();
+    let security = SecurityConfig::get();
 
     // 2. 读取 messenger 配置，构造 Creator
     let creator = WebMessengerCreator::new(&config.messenger_repo, &config.attachment_dir).await
@@ -27,7 +28,7 @@ async fn main() {
     // 3. 创建 ChannelManager
     let channel_manager = Arc::new(ChannelManager::new(
         &config.memory_store_url,
-        config.user_key.clone(),
+        security.api_key.clone(),
     ));
 
     // 4. 注册 WebMessenger
@@ -47,7 +48,7 @@ async fn main() {
 
     // 6. 创建 HTTP 服务器
     let app = http::create_router(messenger.clone())
-        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(config.admin_key.clone()))));
+        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(security.admin_api_key.clone()))));
 
     let addr = config.http_listen_addr.clone();
     let listener = TcpListener::bind(&addr).await.unwrap();

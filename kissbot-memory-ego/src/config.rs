@@ -5,7 +5,6 @@ use std::sync::OnceLock;
 pub struct Config {
     pub listen_addr: String,
     pub listen_port: u16,
-    pub api_key: String,
 }
 
 impl Config {

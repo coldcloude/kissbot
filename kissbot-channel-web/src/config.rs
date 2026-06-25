@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::sync::Arc;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -9,8 +8,6 @@ pub struct Config {
     pub memory_store_url: String,
     pub ws_listen_addr: String,
     pub http_listen_addr: String,
-    pub admin_key: Arc<String>,
-    pub user_key: Arc<String>,
 }
 
 impl Config {

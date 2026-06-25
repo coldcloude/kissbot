@@ -595,6 +595,7 @@ dependencies = [
  "axum",
  "http",
  "kai-ws",
+ "kissbot-config",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

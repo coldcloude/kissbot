@@ -1,15 +1,17 @@
 {
+  "security": {
+    "admin_api_key": "admin-key-123",
+    "api_key": "user-key-456"
+  },
   "memory": {
     "root_dir": "data",
     "store": {
       "listen_addr": "127.0.0.1",
-      "listen_port": 8082,
-      "api_key": "memory-store-key"
+      "listen_port": 8082
     },
     "ego": {
       "listen_addr": "127.0.0.1",
-      "listen_port": 3001,
-      "api_key": "memory-ego-key"
+      "listen_port": 3001
     }
   },
   "channel-web": {
@@ -17,8 +19,6 @@
     "attachment_dir": "attachments",
     "memory_store_url": "http://127.0.0.1:8102",
     "ws_listen_addr": "127.0.0.1:8201",
-    "http_listen_addr": "127.0.0.1:8301",
-    "admin_key": "admin-key-123",
-    "user_key": "user-key-456"
+    "http_listen_addr": "127.0.0.1:8301"
   }
 }
