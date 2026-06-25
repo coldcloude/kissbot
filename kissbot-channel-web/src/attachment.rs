@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::io::Write;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,32 @@ impl AttachmentStore {
         })
     }
 
+    /// 创建临时文件，返回 (临时文件路径, 目标文件路径)
+    pub fn create_temp_file(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<(PathBuf, PathBuf)> {
+        let dir = self.base_path.join(group_id).join(msg_id);
+        std::fs::create_dir_all(&dir)?;
+        let temp_path = dir.join(format!(".{}.uploading", filename));
+        let target_path = dir.join(filename);
+        // 创建空临时文件
+        std::fs::write(&temp_path, &[])?;
+        Ok((temp_path, target_path))
+    }
+
+    /// 追加 payload 数据到临时文件
+    pub fn append_to_temp(&self, temp_path: &Path, data: &[u8]) -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(temp_path)?;
+        file.write_all(data)?;
+        Ok(())
+    }
+
+    /// 将临时文件重命名为正式文件
+    pub fn finalize_upload(temp_path: &Path, target_path: &Path) -> Result<()> {
+        std::fs::rename(temp_path, target_path)?;
+        Ok(())
+    }
+
     /// 获取附件数据
     pub fn get_attachment_data(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Vec<u8>> {
         let file_path = self.base_path.join(group_id).join(msg_id).join(filename);
@@ -74,13 +101,35 @@ impl AttachmentStore {
         Ok(std::fs::read(&file_path)?)
     }
 
-    /// 获取缩略图数据
+    /// 获取缩略图数据，如果缩略图不存在则按需生成
     pub fn get_thumbnail(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Vec<u8>> {
-        let thumb_path = self.base_path.join(group_id).join(msg_id).join(format!("thumb_{}", filename));
-        if !thumb_path.exists() {
-            return Err(Error::AttachmentNotFound(format!("thumb_{}/{}/{}", group_id, msg_id, filename)));
+        let dir = self.base_path.join(group_id).join(msg_id);
+        let thumb_path = dir.join(format!("thumb_{}", filename));
+
+        // 如果缩略图已存在则直接返回
+        if thumb_path.exists() {
+            return Ok(std::fs::read(&thumb_path)?);
         }
-        Ok(std::fs::read(&thumb_path)?)
+
+        // 延迟生成缩略图
+        let file_path = dir.join(filename);
+        if !file_path.exists() {
+            return Err(Error::AttachmentNotFound(format!("{}/{}/{}", group_id, msg_id, filename)));
+        }
+
+        let mime_type = mime_guess::from_path(&filename).first_or_octet_stream();
+        if mime_type.type_() == mime_guess::mime::IMAGE {
+            if let Ok(data) = std::fs::read(&file_path) {
+                if let Ok(img) = image::load_from_memory(&data) {
+                    let thumb = img.thumbnail(200, 200);
+                    if thumb.save(&thumb_path).is_ok() {
+                        return Ok(std::fs::read(&thumb_path)?);
+                    }
+                }
+            }
+        }
+
+        Err(Error::InternalError("not an image or failed to generate thumbnail".to_string()))
     }
 
     /// 根据 key 解析路径并获取附件
