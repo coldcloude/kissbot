@@ -33,3 +33,37 @@ impl Config {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_load_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("test-config.json");
+        let json_content = format!(
+            r#"{{"listen_addr": "127.0.0.1", "listen_port": 8082, "api_key": "test-key-123"}}"#
+        );
+        std::fs::write(&config_path, json_content).unwrap();
+
+        // SAFETY: test environment, single-threaded, no concurrent env access
+        unsafe { std::env::set_var("KISSBOT_MEMORY_STORE_CONFIG", config_path.to_str().unwrap()); }
+        let config = Config::load().unwrap();
+        assert_eq!(config.listen_addr, "127.0.0.1");
+        assert_eq!(config.listen_port, 8082);
+        assert_eq!(config.api_key, "test-key-123");
+        unsafe { std::env::remove_var("KISSBOT_MEMORY_STORE_CONFIG"); }
+    }
+
+    #[test]
+    fn test_config_load_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("nonexistent-config.json");
+
+        unsafe { std::env::set_var("KISSBOT_MEMORY_STORE_CONFIG", config_path.to_str().unwrap()); }
+        let result = Config::load();
+        assert!(result.is_err());
+        unsafe { std::env::remove_var("KISSBOT_MEMORY_STORE_CONFIG"); }
+    }
+}
