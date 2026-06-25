@@ -12,7 +12,7 @@ dashmap = { version = "6.1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["macros"] }
 thiserror = "2.0"
-config = "0.15"
+kissbot-config = { path = "../kissbot-config" }
 kai-file = { path = "../kai-rs/kai-file" }
 kissbot-memory = { path = "../kissbot-memory" }
 kissbot-api = { path = "../kissbot-api" }

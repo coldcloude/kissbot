@@ -8,10 +8,7 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("Config error: {0}")]
-    Config(#[from] config::ConfigError),
-
-    #[error("File error: {0}")]
+#[error("File error: {0}")]
     File(#[from] kai_file::Error),
 
     #[error("Memory error: {0}")]

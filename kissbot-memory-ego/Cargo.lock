@@ -857,14 +857,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kissbot-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kissbot-memory"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "config",
  "dashmap",
  "kai-file",
  "kissbot-api",
+ "kissbot-config",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
