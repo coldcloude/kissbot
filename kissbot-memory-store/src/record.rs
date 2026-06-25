@@ -13,7 +13,7 @@ use kissbot_api::store::*;
 use crate::error::{Error, Result};
 use kai_file::ReverseLineReader;
 
-struct FileState {
+pub(crate) struct FileState {
     pub sn: u64,
     pub time: Arc<String>,
 }
@@ -37,7 +37,7 @@ where K: Eq + Hash + Clone + Send + Sync,
     files_map.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(None))).clone()
 }
 
-async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
+pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     let mut result = FileState {
         sn: 0,
         time: Arc::new(String::from("2000-01-01 00:00:00")),

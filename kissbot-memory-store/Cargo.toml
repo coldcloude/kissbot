@@ -17,3 +17,6 @@ kai-file = { path = "../kai-rs/kai-file" }
 kissbot-memory = { path = "../kissbot-memory" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }
+
+[dev-dependencies]
+tempfile = "3"
