@@ -292,7 +292,7 @@ impl AgentCoordinator {
     async fn load_ego_info(config: &ConfigManager) -> Result<String> {
         let agent_id = config.agent_id().await;
         let role_name = config.current_role().await;
-        let ego_url = config.memory_ego_url().await;
+        let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
 
         let client = reqwest::Client::new();
 

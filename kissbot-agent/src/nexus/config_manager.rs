@@ -200,14 +200,6 @@ impl ConfigManager {
         self.inner.read().await.stations.clone()
     }
 
-    pub async fn memory_store_url(&self) -> String {
-        kissbot_api::ApiConfig::get().memory_store_url.clone()
-    }
-
-    pub async fn memory_ego_url(&self) -> String {
-        kissbot_api::ApiConfig::get().memory_ego_url.clone()
-    }
-
     #[allow(dead_code)]
     pub async fn ws_reconnect_interval_secs(&self) -> u64 {
         self.inner.read().await.ws_reconnect_interval_secs

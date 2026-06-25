@@ -67,7 +67,7 @@ impl MemoryReader {
     ) -> Result<Vec<ContextMessage>> {
         let agent_id = config.agent_id().await;
         let role_name = config.current_role().await;
-        let store_url = config.memory_store_url().await;
+        let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let url = format!("{}/query", store_url.trim_end_matches('/'));
 
@@ -116,7 +116,7 @@ impl MemoryReader {
     ) -> Result<Vec<String>> {
         let agent_id = config.agent_id().await;
         let role_name = config.current_role().await;
-        let store_url = config.memory_store_url().await;
+        let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let url = format!("{}/events", store_url.trim_end_matches('/'));
 

@@ -26,8 +26,7 @@ async fn main() {
     info!("Agent ID: {}", agent_id);
 
     // 2. 初始化 MemoryWriter
-    let memory_store_url = config.memory_store_url().await;
-    let memory_writer = nexus::memory_writer::MemoryWriter::start(memory_store_url);
+    let memory_writer = nexus::memory_writer::MemoryWriter::start();
 
     // 3. 初始化 WSClient
     let (ws_client, external_rx) = nexus::ws_client::WSClient::new();

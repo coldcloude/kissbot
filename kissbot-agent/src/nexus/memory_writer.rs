@@ -16,9 +16,10 @@ pub struct MemoryWriter {
 
 impl MemoryWriter {
     /// 启动 MemoryWriter，创建后台写入任务
-    pub fn start(memory_store_url: String) -> Self {
+    pub fn start() -> Self {
         let (sender, receiver): (Sender<WriteTask>, Receiver<WriteTask>) =
             bounded(DEFAULT_QUEUE_CAPACITY);
+        let memory_store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let handle = tokio::spawn(async move {
             Self::run_background(receiver, memory_store_url).await;
