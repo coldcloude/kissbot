@@ -256,17 +256,21 @@ mod tests {
 
     // ========== MemoryIndexer: mark + query ==========
 
+    use std::sync::{Once, OnceLock};
+
+    static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static INIT_CONFIG: Once = Once::new();
+
     /// Initializes the global Config singleton for tests using a temp directory.
     /// Safe to call multiple times — only the first call initializes.
     fn init_test_config() {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let config_path = dir.path().join("config.json");
-            let root_dir_str = dir.path().display().to_string();
+        let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+        let config_path = dir.path().join("config.json");
+        let root_dir_str = dir.path().display().to_string();
+        // SAFETY: single-threaded test init
+        // 用 Once 保护 env set_var 和 config 初始化（仅执行一次）
+        INIT_CONFIG.call_once(|| {
             std::fs::write(&config_path, format!(r#"{{"root_dir":"{}"}}"#, root_dir_str)).unwrap();
-            // SAFETY: single-threaded test init
             unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
             crate::Config::get();
         });

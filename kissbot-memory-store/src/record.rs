@@ -332,19 +332,16 @@ mod tests {
     use kissbot_memory::Config as MemoryConfig;
 
     static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static INIT_CONFIG: Once = Once::new();
 
     fn init_test_config() {
         let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
-        let root_dir = dir.path().to_path_buf();
+        let config_path = dir.path().join("config.json");
+        let root_dir_str = dir.path().display().to_string();
         // 用 Once 保护 env set_var 和 config 初始化（仅执行一次）
-        static INIT_CONFIG: Once = Once::new();
         INIT_CONFIG.call_once(|| {
-            unsafe { std::env::set_var(
-                "KISSBOT_MEMORY_CONFIG",
-                root_dir.join("memory-config.json").to_str().unwrap()
-            ); }
-            let json_content = format!(r#"{{"root_dir": "{}"}}"#, root_dir.display().to_string());
-            std::fs::write(root_dir.join("memory-config.json"), &json_content).unwrap();
+            std::fs::write(&config_path, format!(r#"{{"root_dir": "{}"}}"#, root_dir_str)).unwrap();
+            unsafe { std::env::set_var("KISSBOT_MEMORY_CONFIG", config_path.to_str().unwrap()); }
             MemoryConfig::get();
         });
     }
