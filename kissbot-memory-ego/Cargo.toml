@@ -13,7 +13,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 axum = { version = "0.7", features = ["macros"] }
 thiserror = "2.0"
-config = "0.15"
+kissbot-config = { path = "../kissbot-config" }
 kai-index = { path = "../kai-rs/kai-index" }
 kissbot-memory = { path = "../kissbot-memory" }
 kissbot-api = { path = "../kissbot-api" }

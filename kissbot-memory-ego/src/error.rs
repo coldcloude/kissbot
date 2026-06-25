@@ -8,10 +8,7 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("Config error: {0}")]
-    Config(#[from] config::ConfigError),
-
-    #[error("Memory error: {0}")]
+#[error("Memory error: {0}")]
     KissbotMemory(#[from] kissbot_memory::Error),
 
     #[error("Agent not found: {0}")]
