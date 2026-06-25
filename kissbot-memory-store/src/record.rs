@@ -327,4 +327,275 @@ mod tests {
         assert_eq!(state.sn, 3);
         assert_eq!(*state.time, "2026-06-25 10:02:00");
     }
+
+    use std::sync::Once;
+    use kissbot_memory::Config as MemoryConfig;
+
+    static INIT: Once = Once::new();
+
+    fn init_test_config(root_dir: &std::path::Path) {
+        INIT.call_once(|| {
+            unsafe { std::env::set_var(
+                "KISSBOT_MEMORY_CONFIG",
+                root_dir.join("memory-config.json").to_str().unwrap()
+            ); }
+            let json_content = format!(r#"{{"root_dir": "{}"}}"#, root_dir.display().to_string());
+            std::fs::write(root_dir.join("memory-config.json"), &json_content).unwrap();
+            // 提前初始化 MemoryConfig 的 OnceLock
+            let _ = MemoryConfig::get();
+        });
+    }
+
+    #[tokio::test]
+    async fn test_append_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
+            RecordContext::new(ChannelParser {});
+
+        let requests = vec![
+            ChannelRequest {
+                agent_id: Arc::new("test_append_new".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("telegram".to_string()),
+                user_id: Arc::new("u1".to_string()),
+                group_id: Arc::new("g1".to_string()),
+                is_self: 0,
+                msg_type: Arc::new("text".to_string()),
+                content: Arc::new("hello".to_string()),
+                time: Arc::new("2026-06-25 10:00:00".to_string()),
+            },
+        ];
+
+        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+
+        // 验证文件被创建
+        let expected_path = root
+            .join("test_append_new")
+            .join("memory-store")
+            .join("2026-default")
+            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
+
+        // 读取文件内容验证
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let record: ChannelRecord = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record.sn(), 1);
+        assert_eq!(*record.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_append_multiple_records() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
+            RecordContext::new(ChannelParser {});
+
+        let requests = vec![
+            ChannelRequest {
+                agent_id: Arc::new("test_append_multi".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("telegram".to_string()),
+                user_id: Arc::new("u1".to_string()),
+                group_id: Arc::new("g1".to_string()),
+                is_self: 0,
+                msg_type: Arc::new("text".to_string()),
+                content: Arc::new("msg1".to_string()),
+                time: Arc::new("2026-06-25 10:00:00".to_string()),
+            },
+            ChannelRequest {
+                agent_id: Arc::new("test_append_multi".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("telegram".to_string()),
+                user_id: Arc::new("u1".to_string()),
+                group_id: Arc::new("g1".to_string()),
+                is_self: 0,
+                msg_type: Arc::new("text".to_string()),
+                content: Arc::new("msg2".to_string()),
+                time: Arc::new("2026-06-25 10:01:00".to_string()),
+            },
+            ChannelRequest {
+                agent_id: Arc::new("test_append_multi".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("telegram".to_string()),
+                user_id: Arc::new("u1".to_string()),
+                group_id: Arc::new("g1".to_string()),
+                is_self: 0,
+                msg_type: Arc::new("text".to_string()),
+                content: Arc::new("msg3".to_string()),
+                time: Arc::new("2026-06-25 10:02:00".to_string()),
+            },
+        ];
+
+        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+
+        let expected_path = root
+            .join("test_append_multi")
+            .join("memory-store")
+            .join("2026-default")
+            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        assert_eq!(lines.len(), 3);
+
+        // 验证 sn 顺序
+        for (i, line) in lines.iter().enumerate() {
+            let record: ChannelRecord = serde_json::from_str(line).unwrap();
+            assert_eq!(record.sn(), (i + 1) as u64);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_append_sequential() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
+            RecordContext::new(ChannelParser {});
+
+        // 第一次写入
+        let req1 = vec![ChannelRequest {
+            agent_id: Arc::new("test_append_seq".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("first".to_string()),
+            time: Arc::new("2026-06-25 10:00:00".to_string()),
+        }];
+        ctx.append_record(req1, false, NoopFileHook).await.unwrap();
+
+        // 第二次写入
+        let req2 = vec![ChannelRequest {
+            agent_id: Arc::new("test_append_seq".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("second".to_string()),
+            time: Arc::new("2026-06-25 10:01:00".to_string()),
+        }];
+        ctx.append_record(req2, false, NoopFileHook).await.unwrap();
+
+        let expected_path = root
+            .join("test_append_seq")
+            .join("memory-store")
+            .join("2026-default")
+            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+
+        // 第一条 sn=1，第二条 sn=2
+        let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
+        let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(r1.sn(), 1);
+        assert_eq!(*r1.content, "first");
+        assert_eq!(r2.sn(), 2);
+        assert_eq!(*r2.content, "second");
+    }
+
+    #[tokio::test]
+    async fn test_append_think_record() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ThinkRequest, RecordKey, ThinkRecord, ThinkParser> =
+            RecordContext::new(ThinkParser {});
+
+        let requests = vec![ThinkRequest {
+            agent_id: Arc::new("test_think".to_string()),
+            role_name: Arc::new("".to_string()),
+            content: Arc::new("I think...".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-25 10:00:00".to_string()),
+        }];
+
+        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+
+        let expected_path = root
+            .join("test_think")
+            .join("memory-store")
+            .join("2026")
+            .join("think-records-2026-06-25.jsonl");
+        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
+
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let record: ThinkRecord = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record.sn(), 1);
+        assert_eq!(*record.content, "I think...");
+    }
+
+    #[tokio::test]
+    async fn test_append_tool_call_record() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ToolCallRequest, RecordKey, ToolCallRecord, ToolCallParser> =
+            RecordContext::new(ToolCallParser {});
+
+        let requests = vec![ToolCallRequest {
+            agent_id: Arc::new("test_tool_call".to_string()),
+            role_name: Arc::new("".to_string()),
+            tool_name: Arc::new("get_weather".to_string()),
+            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-25 10:00:00".to_string()),
+        }];
+
+        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+
+        let expected_path = root
+            .join("test_tool_call")
+            .join("memory-store")
+            .join("2026")
+            .join("tool-call-records-2026-06-25.jsonl");
+        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
+
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let record: ToolCallRecord = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record.sn(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_append_tool_result_record() {
+        let dir = tempfile::tempdir().unwrap();
+        init_test_config(dir.path());
+        let root = &MemoryConfig::get().root_dir;
+
+        let ctx: RecordContext<ToolResultRequest, RecordKey, ToolResultRecord, ToolResultParser> =
+            RecordContext::new(ToolResultParser {});
+
+        let requests = vec![ToolResultRequest {
+            agent_id: Arc::new("test_tool_result".to_string()),
+            role_name: Arc::new("".to_string()),
+            tool_result: Arc::new(serde_json::json!({"temp": 25})),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-25 10:00:00".to_string()),
+        }];
+
+        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+
+        let expected_path = root
+            .join("test_tool_result")
+            .join("memory-store")
+            .join("2026")
+            .join("tool-result-records-2026-06-25.jsonl");
+        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
+
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let record: ToolResultRecord = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(record.sn(), 1);
+    }
 }
