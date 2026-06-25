@@ -8,9 +8,6 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("Config error: {0}")]
-    Config(#[from] config::ConfigError),
-
     #[error("Parse date error: {0}")]
     ParseDate(#[from] chrono::ParseError),
 
