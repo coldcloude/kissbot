@@ -22,11 +22,13 @@ pub struct MemoryStoreClient {
 }
 
 impl MemoryStoreClient {
-    pub fn new(base_url: &str, api_key: Arc<String>) -> Self {
+    pub fn new() -> Self {
+        let api_config = kissbot_api::ApiConfig::get();
+        let security = kissbot_security::SecurityConfig::get();
         Self {
             client: Client::new(),
-            base_url: base_url.to_string(),
-            api_key,
+            base_url: api_config.memory_store_url.clone(),
+            api_key: security.api_key.clone(),
             messages_queue: bounded::<MessagesRecord>(RECORD_QUEUE_SIZE),
         }
     }
