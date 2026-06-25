@@ -11,17 +11,17 @@ use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 
 use crate::config::Config;
-use crate::messenger::{WebMessengerCreator};
+use crate::messenger::WebMessengerCreator;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    // 1. 读取元配置（messenger_config 路径、attachment_dir、memory_store_url 等）
-    let config = Config::load().expect("Failed to load app config");
+    // 1. 读取元配置（messenger_repo 路径、attachment_dir、memory_store_url 等）
+    let config = Config::get();
 
     // 2. 读取 messenger 配置，构造 Creator
-    let creator = WebMessengerCreator::new(&config.messenger_config, &config.attachment_dir).await
+    let creator = WebMessengerCreator::new(&config.messenger_repo, &config.attachment_dir).await
     .expect("Failed to load messenger config");
 
     // 3. 创建 ChannelManager
@@ -49,7 +49,7 @@ async fn main() {
     let app = http::create_router(messenger.clone())
         .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(messenger.admin_key().await))));
 
-    let addr = config.http_listen_addr;
+    let addr = config.http_listen_addr.clone();
     let listener = TcpListener::bind(&addr).await.unwrap();
     println!("kissbot-channel-web HTTP server listening on {}", addr);
 

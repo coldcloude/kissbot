@@ -26,5 +26,5 @@ tower-http = { version = "0.6", features = ["cors"] }
 kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-channel = { path = "../kissbot-channel" }
-config = "0.15"
+kissbot-config = { path = "../kissbot-config" }
 kissbot-security = { path = "../kissbot-security" }

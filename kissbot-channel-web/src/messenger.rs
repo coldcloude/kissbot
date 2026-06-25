@@ -52,7 +52,7 @@ const GROUP_ID_PREFIX: &str = "g";
 // ========== JSON 配置 ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessengerConfig {
+pub struct WebMessengerRepo {
     pub messenger_id: Arc<String>,
     pub admin_key: Arc<String>,
     pub user_key: Arc<String>,
@@ -104,8 +104,8 @@ struct SseMessage {
 
 pub struct WebMessenger {
     pub messenger_id: Arc<String>,
-    config_path: PathBuf,
-    config: Arc<RwLock<MessengerConfig>>,
+    repo_path: PathBuf,
+    config: Arc<RwLock<WebMessengerRepo>>,
     msg_id_seq: AtomicU32,
     on_group_change: Weak<dyn GroupChangeHandler>,
     on_incoming_messages: Weak<dyn IncomingMessageHandler>,
@@ -118,8 +118,8 @@ pub struct WebMessenger {
 impl WebMessenger {
     pub fn new(
         messenger_id: Arc<String>,
-        config_path: PathBuf,
-        config: Arc<RwLock<MessengerConfig>>,
+        repo_path: PathBuf,
+        config: Arc<RwLock<WebMessengerRepo>>,
         on_group_change: Weak<dyn GroupChangeHandler>,
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
@@ -128,7 +128,7 @@ impl WebMessenger {
     ) -> Self {
         Self {
             messenger_id,
-            config_path,
+            repo_path,
             config,
             msg_id_seq: AtomicU32::new(0),
             on_group_change,
@@ -146,9 +146,9 @@ impl WebMessenger {
         Arc::new(format!("{}{:06}", now, seq))
     }
 
-    async fn save(&self, cfg: &MessengerConfig) -> Result<()> {
+    async fn save(&self, cfg: &WebMessengerRepo) -> Result<()> {
         let json = serde_json::to_string_pretty(cfg)?;
-        std::fs::write(&self.config_path, json)?;
+        std::fs::write(&self.repo_path, json)?;
         Ok(())
     }
 
@@ -176,7 +176,7 @@ impl WebMessenger {
 
     /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
     /// 验证前缀匹配、user 存在于 config。
-    fn parse_admin_user_group_ref(cfg: &MessengerConfig, group_id: &str) -> Option<String> {
+    fn parse_admin_user_group_ref(cfg: &WebMessengerRepo, group_id: &str) -> Option<String> {
         let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
         if cfg.users.contains_key(uid) {
             Some(uid.to_string())
@@ -503,18 +503,18 @@ impl WebMessenger {
 
 /// 持有完整配置和路径，create() 时用预读的配置构造 WebMessenger。
 pub struct WebMessengerCreator {
-    config_path: PathBuf,
-    config: Arc<RwLock<MessengerConfig>>,
+    repo_path: PathBuf,
+    config: Arc<RwLock<WebMessengerRepo>>,
     attachment_dir: String,
 }
 
 impl WebMessengerCreator {
-    pub async fn new(config_path: &str, attachment_dir: &str) -> Result<Self> {
-        let path = PathBuf::from(config_path);
+    pub async fn new(repo_path: &str, attachment_dir: &str) -> Result<Self> {
+        let path = PathBuf::from(repo_path);
         let content = std::fs::read_to_string(&path)?;
-        let config: MessengerConfig = serde_json::from_str(&content)?;
+        let config: WebMessengerRepo = serde_json::from_str(&content)?;
         Ok(Self {
-            config_path: path,
+            repo_path: path,
             config: Arc::new(RwLock::new(config)),
             attachment_dir: attachment_dir.to_string(),
         })
@@ -543,7 +543,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
             mid,
-            self.config_path.clone(),
+            self.repo_path.clone(),
             self.config.clone(),
             on_group_change,
             on_incoming_messages,
