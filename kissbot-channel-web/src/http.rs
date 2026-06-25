@@ -14,14 +14,13 @@ use axum::{
     Json, Router,
 };
 use axum::extract::multipart::Multipart;
-use chrono::Utc;
 use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
 use kissbot_api::ApiResponse;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
+use crate::messenger::{ADMIN_USER_ID, GroupConfig, PendingAttachment, UserConfig, WebMessenger};
 use kissbot_api::channel::OutgoingMessage;
 
 // ========== DTOs ==========
@@ -86,6 +85,14 @@ pub struct DeleteUserRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct InitAttachmentRequest {
+    pub group_id: Arc<String>,
+    pub filename: Arc<String>,
+    pub mime_type: Arc<String>,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RenameUserRequest {
     pub user_id: Arc<String>,
     pub user_name: Arc<String>,
@@ -133,6 +140,7 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
         .route("/api/users/create", post(handle_create_user))
         .route("/api/users/rename", post(handle_rename_user))
         .route("/api/users/delete", post(handle_delete_user))
+        .route("/api/attachment/init", post(handle_init_attachment))
         .route("/api/attachment/upload", post(handle_upload_attachment))
         .route("/api/attachment/download", get(handle_download_attachment))
         .route("/api/attachment/thumbnail", get(handle_thumbnail))
@@ -309,47 +317,122 @@ async fn handle_delete_user(
     }
 }
 
-/// POST /api/attachment/upload
+/// POST /api/attachment/init — 初始化附件上传，创建临时文件并发送消息
+async fn handle_init_attachment(
+    State(messenger): State<Arc<WebMessenger>>,
+    Json(req): Json<InitAttachmentRequest>,
+) -> impl IntoResponse {
+    // 1. 分配 upload_id
+    let upload_id = messenger.next_attachment_sn();
+
+    // 2. 生成 msg_id
+    let msg_id = messenger.next_msg_id();
+    let key = format!("{}/{}/{}", req.group_id, msg_id, req.filename);
+
+    // 3. 创建临时文件
+    let (temp_path, target_path) = match messenger.attachment_store.create_temp_file(
+        req.group_id.as_str(), msg_id.as_str(), req.filename.as_str()
+    ) {
+        Ok(paths) => paths,
+        Err(e) => return Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+    };
+
+    // 4. 记录 PendingAttachment
+    messenger.pending_uploads.insert(upload_id, PendingAttachment {
+        group_id: req.group_id.clone(),
+        msg_id: msg_id.clone(),
+        filename: req.filename.clone(),
+        mime_type: req.mime_type.clone(),
+        size_bytes: req.size_bytes,
+        temp_path,
+        target_path,
+    });
+
+    // 5. 构造 OutgoingMessage 并发送
+    let is_image = req.mime_type.starts_with("image/");
+    let content = serde_json::to_string(&serde_json::json!({
+        "text": "",
+        "attachments": [{
+            "filename": req.filename,
+            "key": key,
+            "msg_type": if is_image { "image" } else { "file" }
+        }]
+    })).unwrap_or_default();
+
+    let outgoing = OutgoingMessage {
+        messenger_id: messenger.messenger_id.clone(),
+        user_id: ADMIN_USER_ID.clone(),
+        group_id: req.group_id.clone(),
+        msg_type: Arc::new("mixed".to_string()),
+        content: Arc::new(content),
+        attachment_map: Arc::new(DashMap::new()),
+    };
+
+    match messenger.send(outgoing).await {
+        Ok(resp) => Json(ApiResponse::success(serde_json::json!({
+            "upload_id": upload_id,
+            "key": key,
+            "msg_id": resp.msg_id,
+        }))),
+        Err(e) => {
+            // 发送失败时清理 pending 记录
+            messenger.pending_uploads.remove(&upload_id);
+            Json(ApiResponse::<serde_json::Value>::error(e.to_string()))
+        }
+    }
+}
+
+/// POST /api/attachment/upload — 第二步：上传文件实体
 async fn handle_upload_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let mut result = Vec::new();
+    let mut upload_id: Option<u32> = None;
+    let mut file_data: Option<Vec<u8>> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let filename = field.file_name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let mime_type = field.content_type()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                mime_guess::from_path(&filename).first_or_octet_stream().to_string()
-            });
-        let data = match field.bytes().await {
-            Ok(d) => d.to_vec(),
-            Err(_) => continue,
-        };
-
-        let group_id = "temp";
-        let msg_id = Utc::now().format("%Y%m%d%H%M%S%6f").to_string();
-
-        match messenger.attachment_store.save_attachment(group_id, &msg_id, &filename, &data, &mime_type) {
-            Ok(meta) => {
-                result.push(serde_json::json!({
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "size_bytes": meta.size_bytes,
-                    "key": format!("{}/{}/{}", group_id, msg_id, filename),
-                    "has_thumbnail": meta.has_thumbnail,
-                }));
+        let name = field.name().map(|s| s.to_string());
+        if name.as_deref() == Some("upload_id") {
+            if let Ok(data) = field.text().await {
+                upload_id = data.trim().parse::<u32>().ok();
             }
-            Err(e) => {
-                return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
+        } else if name.as_deref() == Some("file") {
+            if let Ok(data) = field.bytes().await {
+                file_data = Some(data.to_vec());
             }
         }
     }
 
-    Json(ApiResponse::success(serde_json::Value::Array(result)))
+    let upload_id = match upload_id {
+        Some(id) => id,
+        None => return Json(ApiResponse::<serde_json::Value>::error("Missing or invalid upload_id".to_string())),
+    };
+
+    let file_data = match file_data {
+        Some(d) => d,
+        None => return Json(ApiResponse::<serde_json::Value>::error("Missing file data".to_string())),
+    };
+
+    // 查找 PendingAttachment
+    let pending = match messenger.pending_uploads.get(&upload_id) {
+        Some(p) => p,
+        None => return Json(ApiResponse::<serde_json::Value>::error(format!("upload_id {} not found", upload_id))),
+    };
+
+    // 写入数据到临时文件
+    if let Err(e) = messenger.attachment_store.append_to_temp(&pending.temp_path, &file_data) {
+        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
+    }
+
+    // 重命名
+    let (temp, target) = (pending.temp_path.clone(), pending.target_path.clone());
+    drop(pending);
+    if let Err(e) = crate::attachment::AttachmentStore::finalize_upload(&temp, &target) {
+        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
+    }
+    messenger.pending_uploads.remove(&upload_id);
+
+    Json(ApiResponse::success(serde_json::json!({"success": true})))
 }
 
 /// GET /api/attachment/download

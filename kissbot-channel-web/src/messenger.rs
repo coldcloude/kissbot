@@ -160,7 +160,7 @@ impl WebMessenger {
         }
     }
 
-    fn next_msg_id(&self) -> Arc<String> {
+    pub fn next_msg_id(&self) -> Arc<String> {
         let now = Utc::now().format("%Y%m%d%H%M%S").to_string();
         let seq = self.msg_id_seq.fetch_add(1, Ordering::SeqCst) % 1_000_000;
         Arc::new(format!("{}{:06}", now, seq))
