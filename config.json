@@ -17,6 +17,8 @@
     "attachment_dir": "attachments",
     "memory_store_url": "http://127.0.0.1:8102",
     "ws_listen_addr": "127.0.0.1:8201",
-    "http_listen_addr": "127.0.0.1:8301"
+    "http_listen_addr": "127.0.0.1:8301",
+    "admin_key": "admin-key-123",
+    "user_key": "user-key-456"
   }
 }

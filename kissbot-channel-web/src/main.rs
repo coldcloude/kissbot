@@ -27,7 +27,7 @@ async fn main() {
     // 3. 创建 ChannelManager
     let channel_manager = Arc::new(ChannelManager::new(
         &config.memory_store_url,
-        creator.user_key().await,
+        config.user_key.clone(),
     ));
 
     // 4. 注册 WebMessenger
@@ -47,7 +47,7 @@ async fn main() {
 
     // 6. 创建 HTTP 服务器
     let app = http::create_router(messenger.clone())
-        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(messenger.admin_key().await))));
+        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(config.admin_key.clone()))));
 
     let addr = config.http_listen_addr.clone();
     let listener = TcpListener::bind(&addr).await.unwrap();

@@ -1,7 +1,5 @@
 {
   "messenger_id": "web",
-  "admin_key": "admin-key-123",
-  "user_key": "user-key-456",
   "admin_name": "管理员",
   "users": {
     "user-1": { "user_id": "user-1", "user_name": "助手小A" },

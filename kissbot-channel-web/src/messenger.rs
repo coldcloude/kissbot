@@ -54,8 +54,6 @@ const GROUP_ID_PREFIX: &str = "g";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebMessengerRepo {
     pub messenger_id: Arc<String>,
-    pub admin_key: Arc<String>,
-    pub user_key: Arc<String>,
     pub admin_name: Arc<String>,
     pub users: Arc<DashMap<String, Arc<UserConfig>>>,
     pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
@@ -150,10 +148,6 @@ impl WebMessenger {
         let json = serde_json::to_string_pretty(cfg)?;
         std::fs::write(&self.repo_path, json)?;
         Ok(())
-    }
-
-    pub async fn admin_key(&self) -> Arc<String> {
-        self.config.read().await.admin_key.clone()
     }
 
     pub async fn admin_name(&self) -> Arc<String> {
@@ -518,11 +512,6 @@ impl WebMessengerCreator {
             config: Arc::new(RwLock::new(config)),
             attachment_dir: attachment_dir.to_string(),
         })
-    }
-
-    pub async fn user_key(&self) -> Arc<String> {
-        let config = self.config.read().await;
-        config.user_key.clone()
     }
 
     pub async fn messenger_id(&self) -> Arc<String> {
