@@ -111,6 +111,8 @@ pub struct WebMessenger {
     on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
+    // 新增：
+    global_attachment_sn: Arc<AtomicU32>,
 }
 
 impl WebMessenger {
@@ -123,6 +125,7 @@ impl WebMessenger {
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
         attachment_dir: &str,
+        global_attachment_sn: Arc<AtomicU32>,
     ) -> Self {
         Self {
             messenger_id,
@@ -135,6 +138,7 @@ impl WebMessenger {
             on_user_remove,
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
+            global_attachment_sn,
         }
     }
 
@@ -142,6 +146,10 @@ impl WebMessenger {
         let now = Utc::now().format("%Y%m%d%H%M%S").to_string();
         let seq = self.msg_id_seq.fetch_add(1, Ordering::SeqCst) % 1_000_000;
         Arc::new(format!("{}{:06}", now, seq))
+    }
+
+    pub fn next_attachment_sn(&self) -> u32 {
+        self.global_attachment_sn.fetch_add(1, Ordering::SeqCst)
     }
 
     async fn save(&self, cfg: &WebMessengerRepo) -> Result<()> {
@@ -528,6 +536,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
+        global_attachment_sn: Arc<AtomicU32>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
@@ -539,6 +548,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_download_attachment_payload,
             on_user_remove,
             &self.attachment_dir,
+            global_attachment_sn,
         ));
 
         Ok(messenger)

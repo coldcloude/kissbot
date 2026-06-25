@@ -26,5 +26,6 @@ pub trait MessengerCreator<M: Messenger> {
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
+        global_attachment_sn: Arc<AtomicU32>,
     ) -> Result<Arc<M>>;
 }

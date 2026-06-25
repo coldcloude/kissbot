@@ -518,6 +518,7 @@ impl ChannelManager {
                     incoming_messages_handler,
                     download_attachment_payload_handler,
                     user_remove_handler,
+                    manager.global_attachment_sn.clone(),  // 新增
                 ).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
