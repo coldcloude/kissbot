@@ -222,7 +222,9 @@ async fn send_attachment_payload(&self, id: u32, _size: u32, pos: u64, data: &[u
 
 #### download_attachment_header() — 启动主动推送
 
-分配 download_id 后启动 tokio::spawn 后台任务，逐块读取文件并通过 `AttachmentDownloadPayloadSender` 推送给 nexus：
+分配 download_id 后启动 tokio::spawn 后台任务，逐块读取文件并通过 `AttachmentDownloadPayloadSender` 推送给 nexus。
+
+注意：`AttachmentDownloadPayloadSender::send_attachment_payload` 的签名是 `data: Bytes`，数据包必须包含 kai-ws 标准的二进制头部（sn + payload_type + status_code）和附件头部（id + size + pos），后续为负载数据。最后发送 size=0 的结束标记。
 
 ```rust
 async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> Result<Arc<AttachmentDownloadResponseHeader>> {
