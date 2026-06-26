@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::messenger::{ADMIN_USER_ID, GroupConfig, PendingAttachment, UserConfig, WebMessenger};
-use kissbot_api::channel::OutgoingMessage;
+use kissbot_api::channel::{AttachmentInfo, OutgoingMessage};
+use kissbot_api::message::{MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
 // ========== DTOs ==========
 
@@ -175,7 +176,6 @@ async fn handle_send_message(
         group_id: req.group_id.clone(),
         msg_type: Arc::new(msg_type),
         content: Arc::new(content),
-        attachment_map: Arc::new(DashMap::new()),
     };
 
     match messenger.send(outgoing).await {
@@ -190,23 +190,33 @@ async fn handle_send_message(
 fn build_message_content(req: &SendMessageRequest) -> (String, String) {
     let atts = req.attachments.as_deref().unwrap_or_default();
     if atts.is_empty() {
-        return (req.content.to_string(), "text".to_string());
+        return (req.content.to_string(), MSG_TYPE_TEXT.to_string());
     }
-    let att_info: Vec<serde_json::Value> = atts.iter().map(|a| {
-        let is_image = a.filename.ends_with(".png") || a.filename.ends_with(".jpg") ||
-                       a.filename.ends_with(".jpeg") || a.filename.ends_with(".gif") ||
-                       a.filename.ends_with(".webp");
-        serde_json::json!({
-            "filename": a.filename,
-            "key": a.key,
-            "msg_type": if is_image { "image" } else { "file" }
-        })
-    }).collect();
-    let content = serde_json::to_string(&serde_json::json!({
-        "text": req.content,
-        "attachments": att_info
-    })).unwrap_or_else(|_| req.content.to_string());
-    (content, "mixed".to_string())
+    // 构建 multi 类型消息
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    // 文本部分
+    if !req.content.is_empty() {
+        items.push(serde_json::json!({
+            "msg_type": MSG_TYPE_TEXT,
+            "content": req.content,
+        }));
+    }
+    // 附件部分
+    for a in atts {
+        let info = AttachmentInfo {
+            att_id: a.key.clone(),
+            filename: a.filename.clone(),
+            mime_type: Arc::new(mime_guess::from_path(a.filename.as_str())
+                .first_or_octet_stream().to_string()),
+            size_bytes: 0,
+        };
+        items.push(serde_json::json!({
+            "msg_type": MSG_TYPE_ATTACHMENT,
+            "content": serde_json::to_value(&info).unwrap_or_default(),
+        }));
+    }
+    let content = serde_json::to_string(&items).unwrap_or_else(|_| req.content.to_string());
+    (content, MSG_TYPE_MULTI.to_string())
 }
 
 /// GET /api/messages — 暂返回空
@@ -350,23 +360,20 @@ async fn handle_init_attachment(
     });
 
     // 5. 构造 OutgoingMessage 并发送
-    let is_image = req.mime_type.starts_with("image/");
-    let content = serde_json::to_string(&serde_json::json!({
-        "text": "",
-        "attachments": [{
-            "filename": req.filename,
-            "key": key,
-            "msg_type": if is_image { "image" } else { "file" }
-        }]
-    })).unwrap_or_default();
+    let info = AttachmentInfo {
+        att_id: Arc::new(upload_id.to_string()),
+        filename: req.filename.clone(),
+        mime_type: req.mime_type.clone(),
+        size_bytes: req.size_bytes,
+    };
+    let content = serde_json::to_string(&info).unwrap_or_default();
 
     let outgoing = OutgoingMessage {
         messenger_id: messenger.messenger_id.clone(),
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
-        msg_type: Arc::new("mixed".to_string()),
+        msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
         content: Arc::new(content),
-        attachment_map: Arc::new(DashMap::new()),
     };
 
     match messenger.send(outgoing).await {

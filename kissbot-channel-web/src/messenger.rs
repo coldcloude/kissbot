@@ -13,7 +13,7 @@ use kissbot_api::channel::{
     TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD,
 };
 use kissbot_channel::{
-    AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
+    AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
     Messenger, MessengerCreator,
 };
@@ -415,6 +415,33 @@ impl WebMessenger {
         };
         drop(cfg);
 
+        // 处理附件消息：解析 content、生成 key、分配 upload_id（在成员分发之前执行）
+        let (new_content, response, pending_attachments) = kissbot_channel::process_attachment_message(
+            &outgoing,
+            msg_id.as_str(),
+            self,
+            &self.global_attachment_sn,
+        ).map_err(|e| Error::InternalError(e.to_string()))?;
+
+        // 为每个 upload_id 创建临时文件
+        for (upload_id, info, _key) in pending_attachments {
+            let (temp_path, target_path) = match self.attachment_store.create_temp_file(
+                outgoing.group_id.as_str(), msg_id.as_str(), info.filename.as_str()
+            ) {
+                Ok(paths) => paths,
+                Err(e) => return Err(Error::from(e)),
+            };
+            self.pending_uploads.insert(upload_id, PendingAttachment {
+                group_id: outgoing.group_id.clone(),
+                msg_id: msg_id.clone(),
+                filename: info.filename.clone(),
+                mime_type: info.mime_type.clone(),
+                size_bytes: info.size_bytes,
+                temp_path,
+                target_path,
+            });
+        }
+
         let messenger_id = self.messenger_id.clone();
         for member_id in &members {
             let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
@@ -425,7 +452,7 @@ impl WebMessenger {
                 group_id: outgoing.group_id.clone(),
                 is_self,
                 msg_type: outgoing.msg_type.clone(),
-                content: outgoing.content.clone(),
+                content: Arc::new(new_content.clone()),
                 time: time.clone(),
             });
             let event = Arc::new(IncomingMessageEvent {
@@ -440,28 +467,6 @@ impl WebMessenger {
             }
         }
 
-        // 处理附件 map，生成 upload_id
-        let attachment_upload_id_map = Arc::new(DashMap::new());
-        for entry in outgoing.attachment_map.iter() {
-            let upload_id = self.next_attachment_sn();
-            let (temp_path, target_path) = match self.attachment_store.create_temp_file(
-                outgoing.group_id.as_str(), msg_id.as_str(), entry.key().as_str()
-            ) {
-                Ok(paths) => paths,
-                Err(e) => return Err(Error::from(e)),
-            };
-            self.pending_uploads.insert(upload_id, PendingAttachment {
-                group_id: outgoing.group_id.clone(),
-                msg_id: msg_id.clone(),
-                filename: Arc::new(entry.key().clone()),
-                mime_type: entry.value().mime_type.clone(),
-                size_bytes: entry.value().size_bytes,
-                temp_path,
-                target_path,
-            });
-            attachment_upload_id_map.insert(entry.key().clone(), upload_id);
-        }
-
         // 推 SSE
         let group_id = outgoing.group_id.clone();
         let sse_event = SseMessage {
@@ -471,7 +476,7 @@ impl WebMessenger {
             group_id: outgoing.group_id,
             is_self: 1,
             msg_type: outgoing.msg_type,
-            content: outgoing.content,
+            content: Arc::new(new_content),
             time: time.clone(),
         };
         let sse_payload = SsePayload { r#type: "message", data: sse_event };
@@ -482,7 +487,8 @@ impl WebMessenger {
         Ok(OutgoingMessageResponse {
             msg_id,
             time,
-            attachment_upload_id_map,
+            attachment_upload_id_map: response.attachment_upload_id_map,
+            attachment_key_map: response.attachment_key_map,
         })
     }
 
@@ -681,9 +687,16 @@ impl Messenger for WebMessenger {
             download_id,
             metadata: Arc::new(AttachmentInfo {
                 att_id: meta.att_id,
+                filename: meta.filename.clone(),
                 mime_type: meta.mime_type,
                 size_bytes: meta.size_bytes,
             }),
         }))
+    }
+}
+
+impl AttachmentKeyGenerator for WebMessenger {
+    fn generate_key(&self, group_id: &str, msg_id: &str, info: &AttachmentInfo) -> String {
+        format!("{}/{}/{}", group_id, msg_id, info.filename)
     }
 }
