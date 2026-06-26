@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 // ========== 消息类型常量 ==========
 
 pub const MSG_TYPE_TEXT: &str = "text";
-pub const MSG_TYPE_IMAGE: &str = "image";       // 已弃用，将在 Task 4 中移除
-pub const MSG_TYPE_FILE: &str = "file";         // 已弃用，将在 Task 4 中移除
+// 以下类型已由 MSG_TYPE_ATTACHMENT + mime_type 替代：
+// pub const MSG_TYPE_IMAGE: &str = "image";
+// pub const MSG_TYPE_FILE: &str = "file";
 pub const MSG_TYPE_ATTACHMENT: &str = "attachment";
 pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
 pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
