@@ -62,6 +62,7 @@ pub struct MessengerInfoRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentInfo {
     pub att_id: Arc<String>,
+    pub filename: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
 }
@@ -73,7 +74,7 @@ pub struct OutgoingMessage {
     pub group_id: Arc<String>,
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
-    pub attachment_map: Arc<DashMap<String, Arc<AttachmentInfo>>>,
+    // attachment_map 已移除，附件信息由 msg_type + content 承载
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,13 @@ pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub attachment_upload_id_map: Arc<DashMap<String, u32>>,
+    pub attachment_key_map: Arc<DashMap<String, Arc<String>>>,  // att_id → key
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseAttachmentInfo {
+    pub key: Arc<String>,
+    pub info: Arc<AttachmentInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +167,7 @@ pub struct BindRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MSG_TYPE_ATTACHMENT;
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
         let mut buf = Vec::with_capacity(28);
@@ -261,41 +270,43 @@ mod tests {
     fn test_serde_outgoing_message() {
         let att_info = Arc::new(AttachmentInfo {
             att_id: Arc::new("att1".to_string()),
+            filename: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 12345,
         });
-        let att_map = Arc::new(DashMap::new());
-        att_map.insert("file1".to_string(), att_info);
+        let content = serde_json::to_string(&att_info).unwrap();
 
         let obj = OutgoingMessage {
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("Hello".to_string()),
-            attachment_map: att_map,
+            msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
+            content: Arc::new(content),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessage = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.messenger_id, "m1");
-        assert_eq!(*deserialized.content, "Hello");
-        assert_eq!(deserialized.attachment_map.len(), 1);
+        assert_eq!(*deserialized.msg_type, MSG_TYPE_ATTACHMENT);
     }
 
     #[test]
     fn test_serde_outgoing_message_response() {
         let upload_map = Arc::new(DashMap::new());
-        upload_map.insert("file1".to_string(), 100u32);
+        upload_map.insert("att1".to_string(), 100u32);
+        let key_map = Arc::new(DashMap::new());
+        key_map.insert("att1".to_string(), Arc::new("g1/msg1/photo.png".to_string()));
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
             attachment_upload_id_map: upload_map,
+            attachment_key_map: key_map,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
         assert_eq!(deserialized.attachment_upload_id_map.len(), 1);
+        assert_eq!(deserialized.attachment_key_map.len(), 1);
     }
 
     #[test]
@@ -315,6 +326,7 @@ mod tests {
     fn test_serde_attachment_download_response_header() {
         let metadata = Arc::new(AttachmentInfo {
             att_id: Arc::new("att1".to_string()),
+            filename: Arc::new("doc.pdf".to_string()),
             mime_type: Arc::new("application/pdf".to_string()),
             size_bytes: 99999,
         });

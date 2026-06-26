@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 // ========== 消息类型常量 ==========
 
 pub const MSG_TYPE_TEXT: &str = "text";
-pub const MSG_TYPE_IMAGE: &str = "image";
-pub const MSG_TYPE_FILE: &str = "file";
+pub const MSG_TYPE_IMAGE: &str = "image";       // 已弃用，将在 Task 4 中移除
+pub const MSG_TYPE_FILE: &str = "file";         // 已弃用，将在 Task 4 中移除
+pub const MSG_TYPE_ATTACHMENT: &str = "attachment";
 pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
 pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
 pub const MSG_TYPE_MULTI: &str = "multi";
@@ -26,7 +27,7 @@ mod tests {
 
     #[test]
     fn test_serde_message_item() {
-        let types = [MSG_TYPE_TEXT, MSG_TYPE_IMAGE, MSG_TYPE_FILE, MSG_TYPE_SYSTEM_JOIN, MSG_TYPE_SYSTEM_LEAVE, MSG_TYPE_MULTI];
+        let types = [MSG_TYPE_TEXT, MSG_TYPE_ATTACHMENT, MSG_TYPE_SYSTEM_JOIN, MSG_TYPE_SYSTEM_LEAVE, MSG_TYPE_MULTI];
         for msg_type in types {
             let item = MessageItem {
                 msg_type: Arc::new(msg_type.to_string()),
