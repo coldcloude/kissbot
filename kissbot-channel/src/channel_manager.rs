@@ -3,11 +3,11 @@ use crate::messenger::{Messenger, MessengerCreator};
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{BufMut, BytesMut};
 use dashmap::{DashMap, DashSet, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{GroupChangeNotification, UserRemoveNotification, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
+use kissbot_api::{DataWriter, GroupChangeNotification, UserRemoveNotification, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -40,8 +40,14 @@ pub struct ChannelManager {
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
     global_attachment_sn: Arc<AtomicU32>,
-    attachment_receiver_map: DashMap<u32, Weak<dyn Messenger>>,
-    attachment_sender_map: DashMap<u32, Weak<ConnectContext>>,
+    // 上传方向：key → (internal_upload_id, Weak<Messenger>)
+    attachment_receiver_map: DashMap<String, (u32, Weak<dyn Messenger>)>,
+    // upload_id → key（WS 二进制帧按 id 查找后转 key）
+    receiver_id_to_key: DashMap<u32, String>,
+    // 下载方向：key → (internal_download_id, Weak<ConnectContext>)
+    attachment_sender_map: DashMap<String, (u32, Weak<ConnectContext>)>,
+    // download_id → key
+    sender_id_to_key: DashMap<u32, String>,
 }
 
 struct ConnectCloseProcessor {
@@ -305,11 +311,24 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
 
         let response = messenger_context.messenger.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
 
-        for id in response.attachment_upload_id_map.iter() {
-            manager.attachment_receiver_map.insert(*id, Arc::downgrade(&messenger_context.messenger));
+        // 从 response 中获取 key_map，分配内部 upload_id，构造 WsOutgoingMessageResponse
+        let ws_response = WsOutgoingMessageResponse {
+            msg_id: response.msg_id.clone(),
+            time: response.time.clone(),
+            attachment_upload_id_map: Arc::new(DashMap::new()),
+            attachment_key_map: response.attachment_key_map.clone(),
+        };
+
+        for entry in response.attachment_key_map.iter() {
+            let att_id = entry.key().clone();
+            let key = entry.value().clone();
+            let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
+            ws_response.attachment_upload_id_map.insert(att_id, internal_id);
+            manager.attachment_receiver_map.insert(key.to_string(), (internal_id, Arc::downgrade(&messenger_context.messenger)));
+            manager.receiver_id_to_key.insert(internal_id, key.to_string());
         }
 
-        let response = serde_json::to_value(response)?;
+        let response = serde_json::to_value(ws_response)?;
         Ok(Some(response))
     }
 }
@@ -335,18 +354,37 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
-        let messenger = manager.attachment_receiver_map.get(&header.id)
-        .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
+        // 通过 id 找到 key
+        let key = manager.receiver_id_to_key.get(&header.id)
+            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?
+            .clone();
 
+        // 通过 key 找到 messenger
+        let messenger_entry = manager.attachment_receiver_map.get(&key)
+            .ok_or_else(|| Error::AttachmentNotFound(key.clone()))?;
+        let (_, ref messenger) = *messenger_entry;
         let messenger = messenger.upgrade()
         .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
 
         if header.size == 0 {
             //最后传个size=0的，表示结尾
-            manager.attachment_receiver_map.remove(&header.id);
+            manager.attachment_receiver_map.remove(&key);
+            manager.receiver_id_to_key.remove(&header.id);
         }
 
-        messenger.send_attachment_payload(header.id, header.size, header.pos, data).await?;
+        // 拷贝数据以便构造 owned SliceDataWriter（摆脱生命周期约束）
+        let owned_data = data.to_vec();
+        struct SliceDataWriter(Vec<u8>);
+
+        impl DataWriter<crate::Error> for SliceDataWriter {
+            fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(), crate::Error> {
+                buf.extend_from_slice(&self.0);
+                Ok(())
+            }
+        }
+
+        let writer: Arc<dyn DataWriter<crate::Error>> = Arc::new(SliceDataWriter(owned_data));
+        messenger.send_attachment_payload(&key, header.size, header.pos, writer).await?;
 
         Ok(None)
     }
@@ -390,11 +428,17 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
         }
         
         let response = messenger_context.messenger.download_attachment_header(request, manager.global_attachment_sn.clone()).await?;
+        let key = response.response.key.clone();
+        let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
+        manager.attachment_sender_map.insert(key.to_string(), (internal_id, Arc::downgrade(&connect_context)));
+        manager.sender_id_to_key.insert(internal_id, key.to_string());
 
-        //记录到manager
-        manager.attachment_sender_map.insert(response.download_id, Arc::downgrade(&connect_context));
-
-        let responce = serde_json::to_value(response)?;
+        // 构造 WsAttachmentDownloadResponseHeader
+        let ws_response = WsAttachmentDownloadResponseHeader {
+            download_id: internal_id,
+            response: response.response.clone(),
+        };
+        let responce = serde_json::to_value(ws_response)?;
         Ok(Some(responce))
     }
 }
@@ -479,7 +523,9 @@ impl ChannelManager {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             global_attachment_sn: Arc::new(AtomicU32::new(0)),
             attachment_receiver_map: DashMap::new(),
+            receiver_id_to_key: DashMap::new(),
             attachment_sender_map: DashMap::new(),
+            sender_id_to_key: DashMap::new(),
         }
     }
 
@@ -700,21 +746,39 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    async fn send_attachment_payload(&self, data: Bytes) -> Result<()> {
-        let header = parse_attachment_payload_header(data.as_ref())?;
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, writer: Arc<dyn DataWriter<Error>>) -> Result<()> {
+        let sender_entry = self.attachment_sender_map.get(key)
+            .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
+        let (internal_id, ref connect_weak) = *sender_entry;
+        let connect_context = connect_weak.upgrade()
+            .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
-        let connect_context = self.attachment_sender_map.get(&header.id)
-        .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
+        // 从 writer 读取数据后立即释放 writer（避免 writer 跨 await 的 Send 限制）
+        let mut payload_buf = BytesMut::new();
+        writer.write_to(&mut payload_buf)?;
+        let payload_data = payload_buf.freeze();
+        // writer 在这里 drop，不再跨 await
+        drop(writer);
 
-        let connect_context = connect_context.upgrade()
-        .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
+        // 构造 kai-ws 二进制帧: [sn(4) + payload_type(4) + status_code(4)] + [id(4) + size(4) + pos(8)] + [data]
+        let mut frame = BytesMut::new();
+        frame.put_u32(0);  // sn
+        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);  // payload_type
+        frame.put_u32(CODE_SUCCESS);  // status_code
+        frame.put_u32(internal_id);
+        frame.put_u32(size);
+        frame.put_u64(pos);
+        frame.extend_from_slice(&payload_data);
 
-        if header.size == 0 {
+        if size == 0 {
             //最后传个size=0的，表示结尾
-            self.attachment_sender_map.remove(&header.id);
+            self.attachment_sender_map.remove(key);
+            self.sender_id_to_key.remove(&internal_id);
         }
 
-        connect_context.ws_context.send_bin(data).await?;
+        drop(sender_entry);
+
+        connect_context.ws_context.send_bin(frame.freeze()).await?;
 
         Ok(())
     }

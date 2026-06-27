@@ -43,7 +43,7 @@ impl<T> ApiResponse<T> {
     }
 }
 
-pub trait DataWriter<E> {
+pub trait DataWriter<E>: Send + Sync {
     fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(),E>;
 }
 

@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 
 use dashmap::DashMap;
 use kissbot_api::channel::{
@@ -17,23 +16,20 @@ pub trait AttachmentKeyGenerator: Send + Sync {
 /// 处理 OutgoingMessage 中的附件类型消息。
 ///
 /// 根据 msg_type：
-/// - "text"：原样返回，upload_id_map 和 key_map 为空
-/// - "attachment"：解析 content 中 AttachmentInfo → 生成 key + upload_id → 返回 ResponseAttachmentInfo 内容
+/// - "text"：原样返回，key_map 为空
+/// - "attachment"：解析 content 中 AttachmentInfo → 生成 key → 返回 ResponseAttachmentInfo 内容
 /// - "multi"：逐项处理，attachment 类型项同上处理
 ///
 /// 返回 (新 content, OutgoingMessageResponse, 待处理附件列表)。
-/// 新 content 中附件类型的 ResponseAttachmentInfo 已包含生成的 key。
-/// 待处理附件列表为 Vec<(upload_id, Arc<AttachmentInfo>, Arc<String>)>，
+/// 待处理附件列表为 Vec<(Arc<AttachmentInfo>, Arc<String>)>，
 /// 其中 Arc<String> 为生成的 key，供 Task 3 创建临时文件使用。
 pub fn process_attachment_message(
     outgoing: &OutgoingMessage,
     msg_id: &str,
     key_generator: &dyn AttachmentKeyGenerator,
-    attachment_sn: &Arc<AtomicU32>,
-) -> Result<(String, OutgoingMessageResponse, Vec<(u32, Arc<AttachmentInfo>, Arc<String>)>)> {
-    let attachment_upload_id_map = Arc::new(DashMap::new());
+) -> Result<(String, OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
     let attachment_key_map = Arc::new(DashMap::new());
-    let mut pending_attachments: Vec<(u32, Arc<AttachmentInfo>, Arc<String>)> = Vec::new();
+    let mut pending_attachments: Vec<(Arc<AttachmentInfo>, Arc<String>)> = Vec::new();
 
     let new_content = match outgoing.msg_type.as_str() {
         MSG_TYPE_TEXT => {
@@ -47,12 +43,10 @@ pub fn process_attachment_message(
             let key = key_generator.generate_key(
                 outgoing.group_id.as_str(), msg_id, &info
             );
-            let upload_id = attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let info_arc = Arc::new(info);
             let key_arc = Arc::new(key.clone());
-            attachment_upload_id_map.insert(info_arc.att_id.to_string(), upload_id);
             attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
-            pending_attachments.push((upload_id, info_arc.clone(), key_arc.clone()));
+            pending_attachments.push((info_arc.clone(), key_arc.clone()));
             let response = ResponseAttachmentInfo {
                 key: key_arc,
                 info: info_arc,
@@ -71,12 +65,10 @@ pub fn process_attachment_message(
                     let key = key_generator.generate_key(
                         outgoing.group_id.as_str(), msg_id, &info
                     );
-                    let upload_id = attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let info_arc = Arc::new(info);
                     let key_arc = Arc::new(key.clone());
-                    attachment_upload_id_map.insert(info_arc.att_id.to_string(), upload_id);
                     attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
-                    pending_attachments.push((upload_id, info_arc.clone(), key_arc.clone()));
+                    pending_attachments.push((info_arc.clone(), key_arc.clone()));
                     let response = ResponseAttachmentInfo {
                         key: key_arc,
                         info: info_arc,
@@ -105,7 +97,6 @@ pub fn process_attachment_message(
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
-        attachment_upload_id_map,
         attachment_key_map,
     };
 
