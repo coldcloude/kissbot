@@ -81,7 +81,6 @@ pub struct OutgoingMessage {
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
-    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,
     pub attachment_key_map: Arc<DashMap<String, Arc<String>>>,  // att_id → key
 }
 
@@ -101,8 +100,23 @@ pub struct AttachmentDownloadRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentDownloadResponseHeader {
+    pub response: Arc<ResponseAttachmentInfo>,   // key + AttachmentInfo
+}
+
+/// ChannelManager 返回给 agent 的 response，附加上传 id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsOutgoingMessageResponse {
+    pub msg_id: Arc<String>,
+    pub time: Arc<String>,
+    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
+    pub attachment_key_map: Arc<DashMap<String, Arc<String>>>,  // att_id → key
+}
+
+/// ChannelManager 返回给 agent 的下载 response，附加下载 id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsAttachmentDownloadResponseHeader {
     pub download_id: u32,
-    pub metadata: Arc<AttachmentInfo>,
+    pub response: Arc<ResponseAttachmentInfo>,
 }
 
 // ========================= Attachment Binary ==========================
@@ -291,21 +305,17 @@ mod tests {
 
     #[test]
     fn test_serde_outgoing_message_response() {
-        let upload_map = Arc::new(DashMap::new());
-        upload_map.insert("att1".to_string(), 100u32);
         let key_map = Arc::new(DashMap::new());
         key_map.insert("att1".to_string(), Arc::new("g1/msg1/photo.png".to_string()));
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
-            attachment_upload_id_map: upload_map,
             attachment_key_map: key_map,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
-        assert_eq!(deserialized.attachment_upload_id_map.len(), 1);
         assert_eq!(deserialized.attachment_key_map.len(), 1);
     }
 
@@ -330,14 +340,17 @@ mod tests {
             mime_type: Arc::new("application/pdf".to_string()),
             size_bytes: 99999,
         });
+        let response = Arc::new(ResponseAttachmentInfo {
+            key: Arc::new("g1/msg1/doc.pdf".to_string()),
+            info: metadata,
+        });
         let obj = AttachmentDownloadResponseHeader {
-            download_id: 42,
-            metadata,
+            response,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: AttachmentDownloadResponseHeader = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.download_id, 42);
-        assert_eq!(*deserialized.metadata.att_id, "att1");
+        assert_eq!(*deserialized.response.key, "g1/msg1/doc.pdf");
+        assert_eq!(*deserialized.response.info.att_id, "att1");
     }
 
     #[test]
