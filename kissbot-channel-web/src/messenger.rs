@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
 use async_trait::async_trait;
-use bytes::{BytesMut, BufMut};
+use bytes::BytesMut;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
-use kai_ws::{CODE_SUCCESS, LEN_STATUS_CODE, OFFSET_PAYLOAD_TYPE, LEN_PAYLOAD_TYPE};
+use kissbot_api::DataWriter;
 use kissbot_api::channel::{
     AttachmentDownloadRequest, AttachmentDownloadResponseHeader, AttachmentInfo,
-    GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse, UserInfo,
-    TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD,
+    GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
+    ResponseAttachmentInfo, UserInfo,
 };
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
@@ -129,7 +129,7 @@ pub struct WebMessenger {
     pub attachment_store: Arc<AttachmentStore>,
     // 新增：
     global_attachment_sn: Arc<AtomicU32>,
-    pub pending_uploads: DashMap<u32, PendingAttachment>,
+    pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
 }
 
 impl WebMessenger {
@@ -415,23 +415,22 @@ impl WebMessenger {
         };
         drop(cfg);
 
-        // 处理附件消息：解析 content、生成 key、分配 upload_id（在成员分发之前执行）
+        // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
         let (new_content, response, pending_attachments) = kissbot_channel::process_attachment_message(
             &outgoing,
             msg_id.as_str(),
             self,
-            &self.global_attachment_sn,
         ).map_err(|e| Error::InternalError(e.to_string()))?;
 
-        // 为每个 upload_id 创建临时文件
-        for (upload_id, info, _key) in pending_attachments {
+        // 为每个 key 创建临时文件
+        for (info, ref key) in pending_attachments {
             let (temp_path, target_path) = match self.attachment_store.create_temp_file(
                 outgoing.group_id.as_str(), msg_id.as_str(), info.filename.as_str()
             ) {
                 Ok(paths) => paths,
                 Err(e) => return Err(Error::from(e)),
             };
-            self.pending_uploads.insert(upload_id, PendingAttachment {
+            self.pending_uploads.insert(key.to_string(), PendingAttachment {
                 group_id: outgoing.group_id.clone(),
                 msg_id: msg_id.clone(),
                 filename: info.filename.clone(),
@@ -487,7 +486,6 @@ impl WebMessenger {
         Ok(OutgoingMessageResponse {
             msg_id,
             time,
-            attachment_upload_id_map: response.attachment_upload_id_map,
             attachment_key_map: response.attachment_key_map,
         })
     }
@@ -613,17 +611,22 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(resp))
     }
 
-    async fn send_attachment_payload(&self, id: u32, _size: u32, pos: u64, data: &[u8]) -> std::result::Result<(), kissbot_channel::Error> {
-        let pending = self.pending_uploads.get(&id)
-            .ok_or_else(|| kissbot_channel::Error::InternalError(format!("upload_id {} not found", id)))?;
+    async fn send_attachment_payload(&self, key: &str, _size: u32, pos: u64, write: Arc<dyn DataWriter<kissbot_channel::Error>>) -> std::result::Result<(), kissbot_channel::Error> {
+        let pending = self.pending_uploads.get(key)
+            .ok_or_else(|| kissbot_channel::Error::InternalError(format!("key {} not found", key)))?;
 
-        self.attachment_store.append_to_temp(&pending.temp_path, data)
+        // 从 DataWriter 读取数据
+        let mut buf = BytesMut::new();
+        write.write_to(&mut buf)
+            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+
+        self.attachment_store.append_to_temp(&pending.temp_path, &buf)
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
 
         // 如果这是最后一块，用 remove 原子地取出并重命名
-        if (pos + data.len() as u64) >= pending.size_bytes {
+        if (pos + buf.len() as u64) >= pending.size_bytes {
             drop(pending);
-            if let Some((_, pending)) = self.pending_uploads.remove(&id) {
+            if let Some((_, pending)) = self.pending_uploads.remove(key) {
                 AttachmentStore::finalize_upload(&pending.temp_path, &pending.target_path)
                     .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
             }
@@ -633,18 +636,33 @@ impl Messenger for WebMessenger {
         Ok(())
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
-        let download_id = attachment_sn.fetch_add(1, Ordering::SeqCst);
+        let info = AttachmentInfo {
+            att_id: meta.att_id.clone(),
+            filename: meta.filename.clone(),
+            mime_type: meta.mime_type.clone(),
+            size_bytes: meta.size_bytes,
+        };
+        let response_key = self.generate_key(request.group_id.as_str(), &meta.att_id, &info);
 
         // 启动后台任务：逐块读取文件并推送
         let sender = self.on_download_attachment_payload.upgrade()
             .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
         let store = self.attachment_store.clone();
         let key = request.key.clone();
+        let key_for_sender = response_key.clone();
 
         tokio::spawn(async move {
             const CHUNK_SIZE: u64 = 65536;
+
+            struct OwnedChunkWriter(Vec<u8>);
+            impl DataWriter<kissbot_channel::Error> for OwnedChunkWriter {
+                fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(), kissbot_channel::Error> {
+                    buf.extend_from_slice(&self.0);
+                    Ok(())
+                }
+            }
 
             match store.get_attachment_by_key(&key) {
                 Ok(data) => {
@@ -653,29 +671,14 @@ impl Messenger for WebMessenger {
                     let mut ok = true;
                     while pos < len && ok {
                         let end = std::cmp::min(pos + CHUNK_SIZE, len);
-                        let chunk = &data[pos as usize..end as usize];
-                        let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
-                        let mut buf = BytesMut::with_capacity(header_len + chunk.len());
-                        buf.put_u32(0);
-                        buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
-                        buf.put_u32(CODE_SUCCESS);
-                        buf.put_u32(download_id);
-                        buf.put_u32(len as u32);
-                        buf.put_u64(pos);
-                        buf.extend_from_slice(chunk);
-                        ok = sender.send_attachment_payload(buf.freeze()).await.is_ok();
+                        let chunk = data[pos as usize..end as usize].to_vec();
+                        let writer: Arc<dyn DataWriter<kissbot_channel::Error>> = Arc::new(OwnedChunkWriter(chunk));
+                        ok = sender.send_attachment_payload(&key_for_sender, len as u32, pos, writer).await.is_ok();
                         pos = end;
                     }
                     // 发送 size=0 的结束标记
-                    let header_len = OFFSET_PAYLOAD_TYPE + LEN_PAYLOAD_TYPE + LEN_STATUS_CODE + 16;
-                    let mut end_buf = BytesMut::with_capacity(header_len);
-                    end_buf.put_u32(0);
-                    end_buf.put_u32(TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD);
-                    end_buf.put_u32(CODE_SUCCESS);
-                    end_buf.put_u32(download_id);
-                    end_buf.put_u32(0);
-                    end_buf.put_u64(pos);
-                    let _ = sender.send_attachment_payload(end_buf.freeze()).await;
+                    let end_writer: Arc<dyn DataWriter<kissbot_channel::Error>> = Arc::new(OwnedChunkWriter(Vec::new()));
+                    let _ = sender.send_attachment_payload(&key_for_sender, 0, pos, end_writer).await;
                 }
                 Err(e) => {
                     tracing::error!("Failed to read attachment for download: key={}, error={}", key, e);
@@ -684,12 +687,9 @@ impl Messenger for WebMessenger {
         });
 
         Ok(Arc::new(AttachmentDownloadResponseHeader {
-            download_id,
-            metadata: Arc::new(AttachmentInfo {
-                att_id: meta.att_id,
-                filename: meta.filename.clone(),
-                mime_type: meta.mime_type,
-                size_bytes: meta.size_bytes,
+            response: Arc::new(ResponseAttachmentInfo {
+                key: Arc::new(response_key),
+                info: Arc::new(info),
             }),
         }))
     }

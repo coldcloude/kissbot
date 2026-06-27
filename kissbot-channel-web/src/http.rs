@@ -349,7 +349,7 @@ async fn handle_init_attachment(
 
     // 4. 记录 PendingAttachment
     let temp_path_for_cleanup = temp_path.clone();
-    messenger.pending_uploads.insert(upload_id, PendingAttachment {
+    messenger.pending_uploads.insert(key.clone(), PendingAttachment {
         group_id: req.group_id.clone(),
         msg_id: msg_id.clone(),
         filename: req.filename.clone(),
@@ -384,7 +384,7 @@ async fn handle_init_attachment(
         }))),
         Err(e) => {
             // 发送失败时清理 pending 记录和临时文件
-            messenger.pending_uploads.remove(&upload_id);
+            messenger.pending_uploads.remove(&key);
             let _ = std::fs::remove_file(&temp_path_for_cleanup);
             Json(ApiResponse::<serde_json::Value>::error(e.to_string()))
         }
@@ -396,14 +396,14 @@ async fn handle_upload_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let mut upload_id: Option<u32> = None;
+    let mut attachment_key: Option<String> = None;
     let mut file_data: Option<Vec<u8>> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().map(|s| s.to_string());
-        if name.as_deref() == Some("upload_id") {
+        if name.as_deref() == Some("key") {
             if let Ok(data) = field.text().await {
-                upload_id = data.trim().parse::<u32>().ok();
+                attachment_key = Some(data.trim().to_string());
             }
         } else if name.as_deref() == Some("file") {
             if let Ok(data) = field.bytes().await {
@@ -412,9 +412,9 @@ async fn handle_upload_attachment(
         }
     }
 
-    let upload_id = match upload_id {
-        Some(id) => id,
-        None => return Json(ApiResponse::<serde_json::Value>::error("Missing or invalid upload_id".to_string())),
+    let attachment_key = match attachment_key {
+        Some(k) => k,
+        None => return Json(ApiResponse::<serde_json::Value>::error("Missing key".to_string())),
     };
 
     let file_data = match file_data {
@@ -423,9 +423,9 @@ async fn handle_upload_attachment(
     };
 
     // 查找 PendingAttachment
-    let pending = match messenger.pending_uploads.get(&upload_id) {
+    let pending = match messenger.pending_uploads.get(&attachment_key) {
         Some(p) => p,
-        None => return Json(ApiResponse::<serde_json::Value>::error(format!("upload_id {} not found", upload_id))),
+        None => return Json(ApiResponse::<serde_json::Value>::error(format!("key {} not found", attachment_key))),
     };
 
     // 写入数据到临时文件
@@ -439,7 +439,7 @@ async fn handle_upload_attachment(
     if let Err(e) = crate::attachment::AttachmentStore::finalize_upload(&temp, &target) {
         return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
     }
-    messenger.pending_uploads.remove(&upload_id);
+    messenger.pending_uploads.remove(&attachment_key);
 
     Json(ApiResponse::success(serde_json::json!({"success": true})))
 }
