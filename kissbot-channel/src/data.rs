@@ -2,10 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use kissbot_api::DataWriter;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
 use crate::error::Result;
 
 // ========== Type aliases (kissbot_api 已直接使用 Arc<String> / Arc<DashMap<>>) ==========
@@ -31,7 +33,7 @@ pub trait IncomingMessageHandler: Send + Sync {
 
 #[async_trait]
 pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    async fn send_attachment_payload(&self, data: Bytes) -> Result<()>;
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, writer: Arc<dyn DataWriter<Error>>) -> Result<()>;
 }
 
 // ========== Group Change ==========

@@ -848,6 +848,7 @@ name = "kissbot-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "dashmap",
  "kai-ws",
  "kissbot-config",
