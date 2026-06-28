@@ -39,7 +39,7 @@ pub struct UserRemoveNotification {
 #[serde(untagged)]
 pub enum Content {
     Text(String),
-    Multi(Vec<MessageItem>),
+    Multi(Vec<Arc<MessageItem>>),
     AttachmentInfo(AttachmentInfo),
     AttachmentInfoResponse(AttachmentInfoResponse),
     GroupChange(GroupChangeNotification),
