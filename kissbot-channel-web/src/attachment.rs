@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentMeta {
     pub att_id: Arc<String>,
-    pub filename: Arc<String>,
+    pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
     pub has_thumbnail: bool,
@@ -59,7 +59,7 @@ impl AttachmentStore {
 
         Ok(AttachmentMeta {
             att_id: Arc::new(format!("{}/{}/{}", group_id, msg_id, filename)),
-            filename: Arc::new(filename.to_string()),
+            file_name: Arc::new(filename.to_string()),
             mime_type: Arc::new(mime_type.to_string()),
             size_bytes: data.len() as u64,
             has_thumbnail,
@@ -176,7 +176,7 @@ impl AttachmentStore {
 
         Ok(AttachmentMeta {
             att_id: Arc::new(key.to_string()),
-            filename: Arc::new(filename),
+            file_name: Arc::new(filename),
             mime_type: Arc::new(mime_type.to_string()),
             size_bytes: metadata.len(),
             has_thumbnail: thumb_path.exists(),

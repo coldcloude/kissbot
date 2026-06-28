@@ -44,7 +44,7 @@ pub struct SendMessageRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct AttachmentRef {
-    pub filename: Arc<String>,
+    pub file_name: Arc<String>,
     pub key: Arc<String>,
 }
 
@@ -88,7 +88,7 @@ pub struct DeleteUserRequest {
 #[derive(Debug, Deserialize)]
 pub struct InitAttachmentRequest {
     pub group_id: Arc<String>,
-    pub filename: Arc<String>,
+    pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
 }
@@ -119,7 +119,7 @@ pub struct MessageResponse {
 
 #[derive(Debug, Serialize)]
 pub struct AttachmentRefResponse {
-    pub filename: String,
+    pub file_name: String,
     pub mime_type: String,
     pub size_bytes: u64,
     pub key: String,
@@ -205,8 +205,8 @@ fn build_message_content(req: &SendMessageRequest) -> (String, String) {
     for a in atts {
         let info = AttachmentInfo {
             att_id: a.key.clone(),
-            file_name: a.filename.clone(),
-            mime_type: Arc::new(mime_guess::from_path(a.filename.as_str())
+            file_name: a.file_name.clone(),
+            mime_type: Arc::new(mime_guess::from_path(a.file_name.as_str())
                 .first_or_octet_stream().to_string()),
             size_bytes: 0,
         };
@@ -337,11 +337,11 @@ async fn handle_init_attachment(
 
     // 2. 生成 msg_id
     let msg_id = messenger.next_msg_id();
-    let key = format!("{}/{}/{}", req.group_id, msg_id, req.filename);
+    let key = format!("{}/{}/{}", req.group_id, msg_id, req.file_name);
 
     // 3. 创建临时文件
     let (temp_path, target_path) = match messenger.attachment_store.create_temp_file(
-        req.group_id.as_str(), msg_id.as_str(), req.filename.as_str()
+        req.group_id.as_str(), msg_id.as_str(), req.file_name.as_str()
     ) {
         Ok(paths) => paths,
         Err(e) => return Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
@@ -352,7 +352,7 @@ async fn handle_init_attachment(
     messenger.pending_uploads.insert(key.clone(), PendingAttachment {
         group_id: req.group_id.clone(),
         msg_id: msg_id.clone(),
-        filename: req.filename.clone(),
+        file_name: req.file_name.clone(),
         mime_type: req.mime_type.clone(),
         size_bytes: req.size_bytes,
         temp_path,
@@ -362,7 +362,7 @@ async fn handle_init_attachment(
     // 5. 构造 OutgoingMessage 并发送
     let info = AttachmentInfo {
         att_id: Arc::new(upload_id.to_string()),
-        file_name: req.filename.clone(),
+        file_name: req.file_name.clone(),
         mime_type: req.mime_type.clone(),
         size_bytes: req.size_bytes,
     };

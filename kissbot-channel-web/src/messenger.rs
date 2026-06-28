@@ -107,7 +107,7 @@ struct SseMessage {
 pub struct PendingAttachment {
     pub group_id: Arc<String>,
     pub msg_id: Arc<String>,
-    pub filename: Arc<String>,
+    pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
     pub temp_path: PathBuf,
@@ -433,7 +433,7 @@ impl WebMessenger {
             self.pending_uploads.insert(key.to_string(), PendingAttachment {
                 group_id: outgoing.group_id.clone(),
                 msg_id: msg_id.clone(),
-                filename: info.file_name.clone(),
+                file_name: info.file_name.clone(),
                 mime_type: info.mime_type.clone(),
                 size_bytes: info.size_bytes,
                 temp_path,
@@ -640,7 +640,7 @@ impl Messenger for WebMessenger {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
         let info = AttachmentInfo {
             att_id: meta.att_id.clone(),
-            file_name: meta.filename.clone(),
+            file_name: meta.file_name.clone(),
             mime_type: meta.mime_type.clone(),
             size_bytes: meta.size_bytes,
         };
