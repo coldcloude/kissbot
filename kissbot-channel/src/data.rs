@@ -85,7 +85,7 @@ pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<I
         group_id: message.group_id.clone(),
         is_self: 1,
         msg_type: Arc::new(msg_type.to_string()),
-        content: Arc::new(serde_json::Value::String(String::new())),
+        content: Arc::new(kissbot_api::message::Content::Text(String::new())),
         time: message.time.clone(),
     });
     Arc::new(IncomingMessageEvent {

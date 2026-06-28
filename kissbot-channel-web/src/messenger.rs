@@ -11,7 +11,7 @@ use kissbot_api::channel::{
     AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
@@ -468,7 +468,7 @@ impl WebMessenger {
 
         // 推 SSE
         let group_id = outgoing.group_id.clone();
-        let response_content: Arc<serde_json::Value> = Arc::new(new_content);
+        let response_content: Arc<Content> = Arc::new(new_content);
         let sse_event = SseMessage {
             msg_id: msg_id.clone(),
             messenger_id,

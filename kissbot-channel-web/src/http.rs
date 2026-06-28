@@ -22,7 +22,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::messenger::{ADMIN_USER_ID, GroupConfig, PendingAttachment, UserConfig, WebMessenger};
 use kissbot_api::channel::OutgoingMessage;
-use kissbot_api::message::{AttachmentInfo, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
+use kissbot_api::message::{AttachmentInfo, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 use serde_json::Value;
 
 // ========== DTOs ==========
@@ -188,10 +188,10 @@ async fn handle_send_message(
     }
 }
 
-fn build_message_content(req: &SendMessageRequest) -> (Value, String) {
+fn build_message_content(req: &SendMessageRequest) -> (Content, String) {
     let atts = req.attachments.as_deref().unwrap_or_default();
     if atts.is_empty() {
-        return (serde_json::Value::String(req.content.to_string()), MSG_TYPE_TEXT.to_string());
+        return (Content::Text(req.content.to_string()), MSG_TYPE_TEXT.to_string());
     }
     // 构建 multi 类型消息
     let mut items: Vec<serde_json::Value> = Vec::new();
@@ -216,8 +216,28 @@ fn build_message_content(req: &SendMessageRequest) -> (Value, String) {
             "content": serde_json::to_value(&info).unwrap_or_default(),
         }));
     }
-    let content = serde_json::to_value(&items).unwrap_or_else(|_| serde_json::Value::String(req.content.to_string()));
-    (content, MSG_TYPE_MULTI.to_string())
+    #[allow(unused_mut)]
+    let mut content_value = Content::Multi(
+        items.into_iter().map(|item| {
+            let item_val = item.as_object().cloned().unwrap_or_default();
+            let msg_type_val = item_val.get("msg_type").and_then(|v| v.as_str()).unwrap_or(MSG_TYPE_TEXT);
+            let content_val = item_val.get("content").cloned().unwrap_or(serde_json::Value::Null);
+            let content = match msg_type_val {
+                MSG_TYPE_ATTACHMENT => {
+                    match serde_json::from_value::<AttachmentInfo>(content_val.clone()) {
+                        Ok(info) => Content::AttachmentInfo(info),
+                        Err(_) => Content::Text(content_val.to_string()),
+                    }
+                }
+                _ => Content::Text(content_val.to_string()),
+            };
+            Arc::new(MessageItem {
+                msg_type: Arc::new(msg_type_val.to_string()),
+                content: Arc::new(content),
+            })
+        }).collect()
+    );
+    (content_value, MSG_TYPE_MULTI.to_string())
 }
 
 /// GET /api/messages — 暂返回空
@@ -367,14 +387,12 @@ async fn handle_init_attachment(
         mime_type: req.mime_type.clone(),
         size_bytes: req.size_bytes,
     };
-    let content = serde_json::to_value(&info).unwrap_or_default();
-
     let outgoing = OutgoingMessage {
         messenger_id: messenger.messenger_id.clone(),
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
         msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
-        content: Arc::new(content),
+        content: Arc::new(Content::AttachmentInfo(info)),
     };
 
     match messenger.send(outgoing).await {
