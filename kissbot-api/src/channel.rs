@@ -84,7 +84,7 @@ pub struct OutgoingMessageResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResponseAttachmentInfo {
+pub struct AttachmentInfoResponse {
     pub key: Arc<String>,
     pub info: Arc<AttachmentInfo>,
 }
@@ -95,11 +95,6 @@ pub struct AttachmentDownloadRequest {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub key: Arc<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentDownloadResponseHeader {
-    pub response: Arc<ResponseAttachmentInfo>,   // key + AttachmentInfo
 }
 
 /// ChannelManager 返回给 agent 的 response，附加上传 id
@@ -115,7 +110,7 @@ pub struct WsOutgoingMessageResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsAttachmentDownloadResponseHeader {
     pub download_id: u32,
-    pub response: Arc<ResponseAttachmentInfo>,
+    pub response: Arc<AttachmentInfoResponse>,
 }
 
 // ========================= Attachment Binary ==========================
@@ -339,17 +334,14 @@ mod tests {
             mime_type: Arc::new("application/pdf".to_string()),
             size_bytes: 99999,
         });
-        let response = Arc::new(ResponseAttachmentInfo {
+        let response = Arc::new(AttachmentInfoResponse {
             key: Arc::new("g1/msg1/doc.pdf".to_string()),
             info: metadata,
         });
-        let obj = AttachmentDownloadResponseHeader {
-            response,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: AttachmentDownloadResponseHeader = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.response.key, "g1/msg1/doc.pdf");
-        assert_eq!(*deserialized.response.info.att_id, "att1");
+        let json = serde_json::to_value(&response).unwrap();
+        let deserialized: Arc<AttachmentInfoResponse> = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.key, "g1/msg1/doc.pdf");
+        assert_eq!(*deserialized.info.att_id, "att1");
     }
 
     #[test]

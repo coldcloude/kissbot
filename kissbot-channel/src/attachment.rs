@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use kissbot_api::channel::{
-    AttachmentInfo, OutgoingMessage, OutgoingMessageResponse, ResponseAttachmentInfo,
+    AttachmentInfo, AttachmentInfoResponse, OutgoingMessage, OutgoingMessageResponse,
 };
 use kissbot_api::message::{MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
@@ -17,7 +17,7 @@ pub trait AttachmentKeyGenerator: Send + Sync {
 ///
 /// 根据 msg_type：
 /// - "text"：原样返回，key_map 为空
-/// - "attachment"：解析 content 中 AttachmentInfo → 生成 key → 返回 ResponseAttachmentInfo 内容
+/// - "attachment"：解析 content 中 AttachmentInfo → 生成 key → 返回 AttachmentInfoResponse 内容
 /// - "multi"：逐项处理，attachment 类型项同上处理
 ///
 /// 返回 (新 content, OutgoingMessageResponse, 待处理附件列表)。
@@ -47,12 +47,12 @@ pub fn process_attachment_message(
             let key_arc = Arc::new(key.clone());
             attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
             pending_attachments.push((info_arc.clone(), key_arc.clone()));
-            let response = ResponseAttachmentInfo {
+            let response = AttachmentInfoResponse {
                 key: key_arc,
                 info: info_arc,
             };
             serde_json::to_string(&response)
-                .map_err(|e| crate::Error::InternalError(format!("serialize ResponseAttachmentInfo failed: {}", e)))?
+                .map_err(|e| crate::Error::InternalError(format!("serialize AttachmentInfoResponse failed: {}", e)))?
         }
         MSG_TYPE_MULTI => {
             // multi：逐项处理
@@ -69,12 +69,12 @@ pub fn process_attachment_message(
                     let key_arc = Arc::new(key.clone());
                     attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
                     pending_attachments.push((info_arc.clone(), key_arc.clone()));
-                    let response = ResponseAttachmentInfo {
+                    let response = AttachmentInfoResponse {
                         key: key_arc,
                         info: info_arc,
                     };
                     let new_content = serde_json::to_string(&response)
-                        .map_err(|e| crate::Error::InternalError(format!("serialize ResponseAttachmentInfo failed: {}", e)))?;
+                        .map_err(|e| crate::Error::InternalError(format!("serialize AttachmentInfoResponse failed: {}", e)))?;
                     Ok(MessageItem {
                         msg_type: item.msg_type,
                         content: Arc::new(new_content),

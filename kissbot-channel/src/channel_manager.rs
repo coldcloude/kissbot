@@ -427,8 +427,8 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
             return Err(Error::UserNotBound(request.user_id.to_string()));
         }
         
-        let response = messenger_context.messenger.download_attachment_header(request, manager.global_attachment_sn.clone()).await?;
-        let key = response.response.key.clone();
+        let att_info_response = messenger_context.messenger.download_attachment_header(request, manager.global_attachment_sn.clone()).await?;
+        let key = att_info_response.key.clone();
         let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
         manager.attachment_sender_map.insert(key.to_string(), (internal_id, Arc::downgrade(&connect_context)));
         manager.sender_id_to_key.insert(internal_id, key.to_string());
@@ -436,7 +436,7 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
         // 构造 WsAttachmentDownloadResponseHeader
         let ws_response = WsAttachmentDownloadResponseHeader {
             download_id: internal_id,
-            response: response.response.clone(),
+            response: att_info_response,
         };
         let responce = serde_json::to_value(ws_response)?;
         Ok(Some(responce))

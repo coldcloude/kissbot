@@ -8,9 +8,9 @@ use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use kissbot_api::DataWriter;
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, AttachmentDownloadResponseHeader, AttachmentInfo,
+    AttachmentDownloadRequest, AttachmentInfo, AttachmentInfoResponse,
     GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
-    ResponseAttachmentInfo, UserInfo,
+    UserInfo,
 };
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
@@ -636,7 +636,7 @@ impl Messenger for WebMessenger {
         Ok(())
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentDownloadResponseHeader>, kissbot_channel::Error> {
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
         let info = AttachmentInfo {
             att_id: meta.att_id.clone(),
@@ -686,11 +686,9 @@ impl Messenger for WebMessenger {
             }
         });
 
-        Ok(Arc::new(AttachmentDownloadResponseHeader {
-            response: Arc::new(ResponseAttachmentInfo {
-                key: Arc::new(response_key),
-                info: Arc::new(info),
-            }),
+        Ok(Arc::new(AttachmentInfoResponse {
+            key: Arc::new(response_key),
+            info: Arc::new(info),
         }))
     }
 }
