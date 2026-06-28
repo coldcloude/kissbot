@@ -83,7 +83,7 @@ pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<I
         group_id: message.notification.group_id.clone(),
         is_self: 1,
         msg_type: Arc::new(msg_type.to_string()),
-        content: Arc::new(Content::GroupChange((*message.notification).clone())),
+        content: Content::GroupChange(message.notification.clone()),
         time: message.time.clone(),
     });
     Arc::new(IncomingMessageEvent {

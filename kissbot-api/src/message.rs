@@ -34,12 +34,12 @@ pub struct UserRemoveNotification {
 /// 各变体对应不同的 msg_type。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Content {
-    Text(String),
+    Text(Arc<String>),
     Multi(Vec<Arc<MessageItem>>),
-    AttachmentInfo(AttachmentInfo),
-    AttachmentInfoResponse(AttachmentInfoResponse),
-    GroupChange(GroupChangeNotification),
-    UserRemove(UserRemoveNotification),
+    AttachmentInfo(Arc<AttachmentInfo>),
+    AttachmentInfoResponse(Arc<AttachmentInfoResponse>),
+    GroupChange(Arc<GroupChangeNotification>),
+    UserRemove(Arc<UserRemoveNotification>),
 }
 
 // ========== Multi 消息 ==========
@@ -48,7 +48,7 @@ pub enum Content {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageItem {
     pub msg_type: Arc<String>,
-    pub content: Arc<Content>,
+    pub content: Content,
 }
 
 // ========== 附件消息相关类型 ==========
@@ -75,37 +75,37 @@ mod tests {
 
     fn make_content(msg_type: &str) -> Content {
         match msg_type {
-            MSG_TYPE_TEXT => Content::Text("hello".to_string()),
-            MSG_TYPE_ATTACHMENT => Content::AttachmentInfo(AttachmentInfo {
+            MSG_TYPE_TEXT => Content::Text(Arc::new("hello".to_string())),
+            MSG_TYPE_ATTACHMENT => Content::AttachmentInfo(Arc::new(AttachmentInfo {
                 att_id: Arc::new("att1".to_string()),
                 file_name: Arc::new("photo.png".to_string()),
                 mime_type: Arc::new("image/png".to_string()),
                 size_bytes: 1024,
-            }),
+            })),
             MSG_TYPE_SYSTEM_GROUP_JOIN | MSG_TYPE_SYSTEM_GROUP_LEAVE => {
-                Content::GroupChange(GroupChangeNotification {
+                Content::GroupChange(Arc::new(GroupChangeNotification {
                     messenger_id: Arc::new("m1".to_string()),
                     group_id: Arc::new("g1".to_string()),
                     user_id: Arc::new("u1".to_string()),
-                })
+                }))
             }
-            MSG_TYPE_USER_REMOVE => Content::UserRemove(UserRemoveNotification {
+            MSG_TYPE_USER_REMOVE => Content::UserRemove(Arc::new(UserRemoveNotification {
                 messenger_id: Arc::new("m1".to_string()),
                 user_id: Arc::new("u1".to_string()),
-            }),
+            })),
             MSG_TYPE_MULTI => Content::Multi(vec![
                 Arc::new(MessageItem {
                     msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
-                    content: Arc::new(Content::Text("nested".to_string())),
+                    content: Content::Text(Arc::new("nested".to_string())),
                 }),
             ]),
-            _ => Content::Text(format!("unknown: {}", msg_type)),
+            _ => Content::Text(Arc::new(format!("unknown: {}", msg_type))),
         }
     }
 
     #[test]
     fn test_serde_content_text() {
-        let content = Content::Text("hello".to_string());
+        let content = Content::Text(Arc::new("hello".to_string()));
         let json = serde_json::to_value(&content).unwrap();
         assert_eq!(json, serde_json::json!({"Text": "hello"}));
         let deserialized: Content = serde_json::from_value(json).unwrap();
@@ -114,12 +114,12 @@ mod tests {
 
     #[test]
     fn test_serde_content_attachment_info() {
-        let info = AttachmentInfo {
+        let info = Arc::new(AttachmentInfo {
             att_id: Arc::new("att1".to_string()),
             file_name: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 1024,
-        };
+        });
         let content = Content::AttachmentInfo(info);
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
@@ -134,10 +134,10 @@ mod tests {
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 1024,
         });
-        let content = Content::AttachmentInfoResponse(AttachmentInfoResponse {
+        let content = Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
             key: Arc::new("g1/msg1/photo.png".to_string()),
             info,
-        });
+        }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
@@ -145,11 +145,11 @@ mod tests {
 
     #[test]
     fn test_serde_content_group_change() {
-        let content = Content::GroupChange(GroupChangeNotification {
+        let content = Content::GroupChange(Arc::new(GroupChangeNotification {
             messenger_id: Arc::new("m1".to_string()),
             group_id: Arc::new("g1".to_string()),
             user_id: Arc::new("u1".to_string()),
-        });
+        }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
@@ -157,10 +157,10 @@ mod tests {
 
     #[test]
     fn test_serde_content_user_remove() {
-        let content = Content::UserRemove(UserRemoveNotification {
+        let content = Content::UserRemove(Arc::new(UserRemoveNotification {
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
-        });
+        }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
@@ -171,7 +171,7 @@ mod tests {
         let content = Content::Multi(vec![
             Arc::new(MessageItem {
                 msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
-                content: Arc::new(Content::Text("hello".to_string())),
+                content: Content::Text(Arc::new("hello".to_string())),
             }),
         ]);
         let json = serde_json::to_value(&content).unwrap();
@@ -193,12 +193,12 @@ mod tests {
             let content = make_content(msg_type);
             let item = MessageItem {
                 msg_type: Arc::new(msg_type.to_string()),
-                content: Arc::new(content),
+                content,
             };
             let json = serde_json::to_value(&item).unwrap();
             let deserialized: MessageItem = serde_json::from_value(json).unwrap();
             assert_eq!(*deserialized.msg_type, msg_type);
-            assert_eq!(*deserialized.content, *item.content);
+            assert_eq!(deserialized.content, item.content);
         }
     }
 }

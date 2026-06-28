@@ -176,7 +176,7 @@ async fn handle_send_message(
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
         msg_type: Arc::new(msg_type),
-        content: Arc::new(content),
+        content,
     };
 
     match messenger.send(outgoing).await {
@@ -191,7 +191,7 @@ async fn handle_send_message(
 fn build_message_content(req: &SendMessageRequest) -> (Content, String) {
     let atts = req.attachments.as_deref().unwrap_or_default();
     if atts.is_empty() {
-        return (Content::Text(req.content.to_string()), MSG_TYPE_TEXT.to_string());
+        return (Content::Text(Arc::new(req.content.to_string())), MSG_TYPE_TEXT.to_string());
     }
     // 构建 multi 类型消息
     let mut items: Vec<serde_json::Value> = Vec::new();
@@ -225,15 +225,15 @@ fn build_message_content(req: &SendMessageRequest) -> (Content, String) {
             let content = match msg_type_val {
                 MSG_TYPE_ATTACHMENT => {
                     match serde_json::from_value::<AttachmentInfo>(content_val.clone()) {
-                        Ok(info) => Content::AttachmentInfo(info),
-                        Err(_) => Content::Text(content_val.to_string()),
+                        Ok(info) => Content::AttachmentInfo(Arc::new(info)),
+                        Err(_) => Content::Text(Arc::new(content_val.to_string())),
                     }
                 }
-                _ => Content::Text(content_val.to_string()),
+                _ => Content::Text(Arc::new(content_val.to_string())),
             };
             Arc::new(MessageItem {
                 msg_type: Arc::new(msg_type_val.to_string()),
-                content: Arc::new(content),
+                content,
             })
         }).collect()
     );
@@ -392,7 +392,7 @@ async fn handle_init_attachment(
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
         msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
-        content: Arc::new(Content::AttachmentInfo(info)),
+        content: Content::AttachmentInfo(Arc::new(info)),
     };
 
     match messenger.send(outgoing).await {

@@ -32,56 +32,54 @@ pub fn process_attachment_message(
     let new_content = match outgoing.msg_type.as_str() {
         MSG_TYPE_TEXT => {
             // 纯文本，无附件处理
-            Content::Text(match outgoing.content.as_ref() {
-                Content::Text(s) => s.clone(),
+            match &outgoing.content {
+                Content::Text(s) => Content::Text(s.clone()),
                 _ => return Err(crate::Error::InternalError("expected Text content".to_string())),
-            })
+            }
         }
         MSG_TYPE_ATTACHMENT => {
             // 单条附件：content 是 AttachmentInfo
-            let info = match outgoing.content.as_ref() {
+            let info = match &outgoing.content {
                 Content::AttachmentInfo(info) => info.clone(),
                 _ => return Err(crate::Error::InternalError("expected AttachmentInfo content".to_string())),
             };
             let key = key_generator.generate_key(
                 outgoing.group_id.as_str(), msg_id, &info
             );
-            let info_arc = Arc::new(info);
             let key_arc = Arc::new(key.clone());
-            attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
-            pending_attachments.push((info_arc.clone(), key_arc.clone()));
-            let response = AttachmentInfoResponse {
+            attachment_key_map.insert(info.att_id.to_string(), key_arc.clone());
+            pending_attachments.push((info.clone(), key_arc.clone()));
+            let response = Arc::new(AttachmentInfoResponse {
                 key: key_arc,
-                info: info_arc,
-            };
+                info: info,
+            });
             Content::AttachmentInfoResponse(response)
         }
         MSG_TYPE_MULTI => {
             // multi：逐项处理
-            let items = match outgoing.content.as_ref() {
+            let items = match &outgoing.content {
                 Content::Multi(items) => items.clone(),
                 _ => return Err(crate::Error::InternalError("expected Multi content".to_string())),
             };
             let new_items: crate::error::Result<Vec<Arc<MessageItem>>> = items.into_iter().map(|item| {
                 if item.msg_type.as_str() == MSG_TYPE_ATTACHMENT {
-                    let info = match item.content.as_ref() {
+                    let info = match &item.content {
                         Content::AttachmentInfo(info) => info.clone(),
                         _ => return Err(crate::Error::InternalError("expected AttachmentInfo content in multi item".to_string())),
                     };
                     let key = key_generator.generate_key(
                         outgoing.group_id.as_str(), msg_id, &info
                     );
-                    let info_arc = Arc::new(info);
                     let key_arc = Arc::new(key.clone());
-                    attachment_key_map.insert(info_arc.att_id.to_string(), key_arc.clone());
-                    pending_attachments.push((info_arc.clone(), key_arc.clone()));
-                    let response = AttachmentInfoResponse {
+                    attachment_key_map.insert(info.att_id.to_string(), key_arc.clone());
+                    pending_attachments.push((info.clone(), key_arc.clone()));
+                    let response = Arc::new(AttachmentInfoResponse {
                         key: key_arc,
-                        info: info_arc,
-                    };
+                        info: info,
+                    });
                     Ok(Arc::new(MessageItem {
                         msg_type: item.msg_type.clone(),
-                        content: Arc::new(Content::AttachmentInfoResponse(response)),
+                        content: Content::AttachmentInfoResponse(response),
                     }))
                 } else {
                     // 非 attachment 类型（如 text），原样保留
@@ -93,16 +91,14 @@ pub fn process_attachment_message(
         }
         _other => {
             // 其他类型（如 system_join、system_leave），不做处理
-            outgoing.content.as_ref().clone()
+            outgoing.content.clone()
         }
     };
-
-    let response_content = Arc::new(new_content.clone());
 
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
-        content: response_content,
+        content: new_content.clone(),
     };
 
     Ok((new_content, response, pending_attachments))
