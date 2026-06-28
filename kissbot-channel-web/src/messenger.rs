@@ -425,7 +425,7 @@ impl WebMessenger {
         // 为每个 key 创建临时文件
         for (info, ref key) in pending_attachments {
             let (temp_path, target_path) = match self.attachment_store.create_temp_file(
-                outgoing.group_id.as_str(), msg_id.as_str(), info.filename.as_str()
+                outgoing.group_id.as_str(), msg_id.as_str(), info.file_name.as_str()
             ) {
                 Ok(paths) => paths,
                 Err(e) => return Err(Error::from(e)),
@@ -433,7 +433,7 @@ impl WebMessenger {
             self.pending_uploads.insert(key.to_string(), PendingAttachment {
                 group_id: outgoing.group_id.clone(),
                 msg_id: msg_id.clone(),
-                filename: info.filename.clone(),
+                filename: info.file_name.clone(),
                 mime_type: info.mime_type.clone(),
                 size_bytes: info.size_bytes,
                 temp_path,
@@ -640,7 +640,7 @@ impl Messenger for WebMessenger {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
         let info = AttachmentInfo {
             att_id: meta.att_id.clone(),
-            filename: meta.filename.clone(),
+            file_name: meta.filename.clone(),
             mime_type: meta.mime_type.clone(),
             size_bytes: meta.size_bytes,
         };
@@ -697,6 +697,6 @@ impl Messenger for WebMessenger {
 
 impl AttachmentKeyGenerator for WebMessenger {
     fn generate_key(&self, group_id: &str, msg_id: &str, info: &AttachmentInfo) -> String {
-        format!("{}/{}/{}", group_id, msg_id, info.filename)
+        format!("{}/{}/{}", group_id, msg_id, info.file_name)
     }
 }

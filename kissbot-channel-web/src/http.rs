@@ -205,7 +205,7 @@ fn build_message_content(req: &SendMessageRequest) -> (String, String) {
     for a in atts {
         let info = AttachmentInfo {
             att_id: a.key.clone(),
-            filename: a.filename.clone(),
+            file_name: a.filename.clone(),
             mime_type: Arc::new(mime_guess::from_path(a.filename.as_str())
                 .first_or_octet_stream().to_string()),
             size_bytes: 0,
@@ -362,7 +362,7 @@ async fn handle_init_attachment(
     // 5. 构造 OutgoingMessage 并发送
     let info = AttachmentInfo {
         att_id: Arc::new(upload_id.to_string()),
-        filename: req.filename.clone(),
+        file_name: req.filename.clone(),
         mime_type: req.mime_type.clone(),
         size_bytes: req.size_bytes,
     };

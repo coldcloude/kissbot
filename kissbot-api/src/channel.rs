@@ -62,7 +62,7 @@ pub struct MessengerInfoRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentInfo {
     pub att_id: Arc<String>,
-    pub filename: Arc<String>,
+    pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
 }
@@ -74,7 +74,6 @@ pub struct OutgoingMessage {
     pub group_id: Arc<String>,
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
-    // attachment_map 已移除，附件信息由 msg_type + content 承载
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,7 +283,7 @@ mod tests {
     fn test_serde_outgoing_message() {
         let att_info = Arc::new(AttachmentInfo {
             att_id: Arc::new("att1".to_string()),
-            filename: Arc::new("photo.png".to_string()),
+            file_name: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 12345,
         });
@@ -336,7 +335,7 @@ mod tests {
     fn test_serde_attachment_download_response_header() {
         let metadata = Arc::new(AttachmentInfo {
             att_id: Arc::new("att1".to_string()),
-            filename: Arc::new("doc.pdf".to_string()),
+            file_name: Arc::new("doc.pdf".to_string()),
             mime_type: Arc::new("application/pdf".to_string()),
             size_bytes: 99999,
         });
