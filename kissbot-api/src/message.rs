@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // ========== 消息类型常量 ==========
 
@@ -20,7 +20,7 @@ pub const MSG_TYPE_MULTI: &str = "multi";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageItem {
     pub msg_type: Arc<String>,
-    pub content: Arc<String>,
+    pub content: Arc<Value>,
 }
 
 // ========== 附件消息相关类型 ==========
@@ -51,7 +51,7 @@ mod tests {
         for msg_type in types {
             let item = MessageItem {
                 msg_type: Arc::new(msg_type.to_string()),
-                content: Arc::new(format!("content for {}", msg_type)),
+                content: Arc::new(serde_json::Value::String(format!("content for {}", msg_type))),
             };
             let json = serde_json::to_value(&item).unwrap();
             let deserialized: MessageItem = serde_json::from_value(json).unwrap();

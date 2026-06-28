@@ -175,7 +175,7 @@ async fn handle_send_message(
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
         msg_type: Arc::new(msg_type),
-        content: Arc::new(content),
+        content: Arc::new(serde_json::from_str(&content).unwrap_or(serde_json::Value::String(content))),
     };
 
     match messenger.send(outgoing).await {
@@ -373,7 +373,7 @@ async fn handle_init_attachment(
         user_id: ADMIN_USER_ID.clone(),
         group_id: req.group_id.clone(),
         msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
-        content: Arc::new(content),
+        content: Arc::new(serde_json::from_str(&content).unwrap_or(serde_json::Value::String(content))),
     };
 
     match messenger.send(outgoing).await {

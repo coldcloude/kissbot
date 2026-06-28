@@ -3,6 +3,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const TYPE_MESSENGER_INFO_REQUEST: u32 = 0x00010001;
 pub const TYPE_BIND_AGENT_USER: u32 = 0x00020002;
@@ -67,7 +68,7 @@ pub struct OutgoingMessage {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub msg_type: Arc<String>,
-    pub content: Arc<String>,
+    pub content: Arc<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +92,7 @@ pub struct WsOutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
-    pub content: Arc<String>,  // 转换后的 content（已嵌入 key）
+    pub content: Arc<Value>,  // 转换后的 content（已嵌入 key）
 }
 
 /// ChannelManager 返回给 agent 的下载 response，附加下载 id
@@ -146,7 +147,7 @@ pub struct IncomingMessage {
     pub group_id: Arc<String>,
     pub is_self: usize,
     pub msg_type: Arc<String>,
-    pub content: Arc<String>,
+    pub content: Arc<Value>,
     pub time: Arc<String>,
 }
 
@@ -270,7 +271,7 @@ mod tests {
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 12345,
         });
-        let content = serde_json::to_string(&att_info).unwrap();
+        let content = serde_json::to_value(&att_info).unwrap();
 
         let obj = OutgoingMessage {
             messenger_id: Arc::new("m1".to_string()),
@@ -340,7 +341,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("Hello".to_string()),
+            content: Arc::new(serde_json::Value::String("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();

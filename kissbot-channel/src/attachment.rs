@@ -32,11 +32,11 @@ pub fn process_attachment_message(
     let new_content = match outgoing.msg_type.as_str() {
         MSG_TYPE_TEXT => {
             // 纯文本，无附件处理
-            outgoing.content.to_string()
+            outgoing.content.as_ref().clone()
         }
         MSG_TYPE_ATTACHMENT => {
             // 单条附件：content 是 AttachmentInfo JSON
-            let info: AttachmentInfo = serde_json::from_str(outgoing.content.as_str())
+            let info: AttachmentInfo = serde_json::from_value(outgoing.content.as_ref().clone())
                 .map_err(|e| crate::Error::InternalError(format!("parse AttachmentInfo failed: {}", e)))?;
             let key = key_generator.generate_key(
                 outgoing.group_id.as_str(), msg_id, &info
@@ -49,16 +49,16 @@ pub fn process_attachment_message(
                 key: key_arc,
                 info: info_arc,
             };
-            serde_json::to_string(&response)
+            serde_json::to_value(&response)
                 .map_err(|e| crate::Error::InternalError(format!("serialize AttachmentInfoResponse failed: {}", e)))?
         }
         MSG_TYPE_MULTI => {
             // multi：逐项处理
-            let items: Vec<MessageItem> = serde_json::from_str(outgoing.content.as_str())
+            let items: Vec<MessageItem> = serde_json::from_value(outgoing.content.as_ref().clone())
                 .map_err(|e| crate::Error::InternalError(format!("parse MessageItem[] failed: {}", e)))?;
             let new_items: crate::error::Result<Vec<MessageItem>> = items.into_iter().map(|item| {
                 if item.msg_type.as_str() == MSG_TYPE_ATTACHMENT {
-                    let info: AttachmentInfo = serde_json::from_str(item.content.as_str())
+                    let info: AttachmentInfo = serde_json::from_value(item.content.as_ref().clone())
                         .map_err(|e| crate::Error::InternalError(format!("parse AttachmentInfo failed: {}", e)))?;
                     let key = key_generator.generate_key(
                         outgoing.group_id.as_str(), msg_id, &info
@@ -71,7 +71,7 @@ pub fn process_attachment_message(
                         key: key_arc,
                         info: info_arc,
                     };
-                    let new_content = serde_json::to_string(&response)
+                    let new_content = serde_json::to_value(&response)
                         .map_err(|e| crate::Error::InternalError(format!("serialize AttachmentInfoResponse failed: {}", e)))?;
                     Ok(MessageItem {
                         msg_type: item.msg_type,
@@ -83,20 +83,23 @@ pub fn process_attachment_message(
                 }
             }).collect();
             let items = new_items?;
-            serde_json::to_string(&items)
+            serde_json::to_value(&items)
                 .map_err(|e| crate::Error::InternalError(format!("serialize MessageItem[] failed: {}", e)))?
         }
         _other => {
             // 其他类型（如 system_join、system_leave），不做处理
-            outgoing.content.to_string()
+            serde_json::Value::String(outgoing.content.to_string())
         }
     };
+
+    let new_content_str = serde_json::to_string(&new_content)
+        .map_err(|e| crate::Error::InternalError(format!("serialize content failed: {}", e)))?;
 
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
-        content: Arc::new(new_content.clone()),
+        content: Arc::new(new_content_str.clone()),
     };
 
-    Ok((new_content, response, pending_attachments))
+    Ok((new_content_str, response, pending_attachments))
 }

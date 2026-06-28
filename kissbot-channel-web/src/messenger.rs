@@ -451,7 +451,7 @@ impl WebMessenger {
                 group_id: outgoing.group_id.clone(),
                 is_self,
                 msg_type: outgoing.msg_type.clone(),
-                content: Arc::new(new_content.clone()),
+                content: Arc::new(serde_json::from_str(&new_content).unwrap_or(serde_json::Value::String(new_content.clone()))),
                 time: time.clone(),
             });
             let event = Arc::new(IncomingMessageEvent {

@@ -70,7 +70,7 @@ impl MemoryStoreClient {
                         group_id: message.group_id.clone(),
                         is_self: message.is_self,
                         msg_type: message.msg_type.clone(),
-                        content: message.content.clone(),
+                        content: Arc::new(serde_json::to_string(&message.content).unwrap_or_default()),
                         time: message.time.clone(),
                     });
                 }
