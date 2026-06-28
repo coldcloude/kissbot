@@ -11,7 +11,7 @@ use kissbot_api::channel::{
     AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
@@ -253,8 +253,12 @@ impl WebMessenger {
         // 通知 agent 用户已删除
         if let Some(handler) = self.on_user_remove.upgrade() {
             let event = Arc::new(UserRemoveEvent {
-                messenger_id: self.messenger_id.clone(),
-                user_id: Arc::new(user_id.to_string()),
+                msg_id: self.next_msg_id(),
+                notification: Arc::new(UserRemoveNotification {
+                    messenger_id: self.messenger_id.clone(),
+                    user_id: Arc::new(user_id.to_string()),
+                }),
+                time: Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
             });
             handler.handle_user_remove(event).await;
         }
@@ -498,9 +502,11 @@ impl WebMessenger {
         };
         let event = Arc::new(GroupChangeEvent {
             msg_id: self.next_msg_id(),
-            messenger_id: self.messenger_id.clone(),
-            user_id: Arc::new(user_id.to_string()),
-            group_id: Arc::new(group_id.to_string()),
+            notification: Arc::new(GroupChangeNotification {
+                messenger_id: self.messenger_id.clone(),
+                user_id: Arc::new(user_id.to_string()),
+                group_id: Arc::new(group_id.to_string()),
+            }),
             change_type,
             time: Arc::new(time.to_string()),
         });

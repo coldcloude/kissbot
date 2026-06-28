@@ -574,11 +574,11 @@ impl ChannelManager {
 impl ChannelManager {
     async fn handle_group_change_internal(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
         //找到对应的group
-        let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
+        let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
 
-        let bound_info = messenger_context.bound_map.get(event.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
+        let bound_info = messenger_context.bound_map.get(event.notification.user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
@@ -589,12 +589,7 @@ impl ChannelManager {
                 let span = span!(Level::INFO, "handle join group");
                 let _enter = span.enter();
                 //通知agent新建channel
-                let notif = GroupChangeNotification {
-                    messenger_id: event.messenger_id.clone(),
-                    user_id: event.user_id.clone(),
-                    group_id: event.group_id.clone()
-                };
-                let payload = serde_json::to_value(notif)?;
+                let payload = serde_json::to_value(event.notification.as_ref())?;
                 connect_context.ws_context.send_json(WsMessage {
                     sn: connect_context.ws_context.next_request_sn(),
                     status_code: CODE_SUCCESS,
@@ -612,12 +607,7 @@ impl ChannelManager {
                 let msg_event = group_change_to_incoming_message(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
-                let notif = GroupChangeNotification {
-                    messenger_id: event.messenger_id.clone(),
-                    user_id: event.user_id.clone(),
-                    group_id: event.group_id.clone()
-                };
-                let payload = serde_json::to_value(notif)?;
+                let payload = serde_json::to_value(event.notification.as_ref())?;
                 connect_context.ws_context.send_json(WsMessage {
                     sn: connect_context.ws_context.next_request_sn(),
                     status_code: CODE_SUCCESS,
@@ -664,26 +654,22 @@ impl ChannelManager {
     }
 
     async fn handle_user_remove_internal(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
-        let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
-            .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
+        let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
+            .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
 
-        let (_,bound_info) = messenger_context.bound_map.remove(event.user_id.as_str())
-            .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
+        let (_,bound_info) = messenger_context.bound_map.remove(event.notification.user_id.as_str())
+            .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
             .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
 
         //从 connect 中移除 user 记录
-        if let Some(messenger_users) = connect_context.messenger_users_map.get(event.messenger_id.as_str()) {
-            messenger_users.remove(event.user_id.as_str());
+        if let Some(messenger_users) = connect_context.messenger_users_map.get(event.notification.messenger_id.as_str()) {
+            messenger_users.remove(event.notification.user_id.as_str());
         }
 
         //通知 agent 用户已删除
-        let notif = UserRemoveNotification {
-            messenger_id: event.messenger_id.clone(),
-            user_id: event.user_id.clone(),
-        };
-        let payload = serde_json::to_value(notif)?;
+        let payload = serde_json::to_value(event.notification.as_ref())?;
         let msg = WsMessage {
             sn: connect_context.ws_context.next_request_sn(),
             status_code: CODE_SUCCESS,

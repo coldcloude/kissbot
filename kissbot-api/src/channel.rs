@@ -3,7 +3,6 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 pub const TYPE_MESSENGER_INFO_REQUEST: u32 = 0x00010001;
 pub const TYPE_BIND_AGENT_USER: u32 = 0x00020002;
@@ -43,7 +42,7 @@ pub struct MessengerInfoRequest {
 
 // ========================= Message & Attachment ==========================
 
-use crate::message::{AttachmentInfo, AttachmentInfoResponse, Content};
+use crate::message::{AttachmentInfoResponse, Content};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingMessage {
@@ -74,8 +73,8 @@ pub struct AttachmentDownloadRequest {
 pub struct WsOutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
-    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
     pub content: Arc<Content>,
+    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
 }
 
 /// ChannelManager 返回给 agent 的下载 response，附加下载 id
@@ -148,7 +147,7 @@ pub struct BindRequest {
 mod tests {
     use super::*;
     use crate::message::{GroupChangeNotification, UserRemoveNotification};
-    use crate::MSG_TYPE_ATTACHMENT;
+    use crate::{AttachmentInfo, MSG_TYPE_ATTACHMENT};
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
         let mut buf = Vec::with_capacity(28);
