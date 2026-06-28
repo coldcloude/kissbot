@@ -75,8 +75,8 @@ pub trait UserRemoveHandler: Send + Sync {
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
 pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
     let msg_type = match message.change_type {
-        GroupChangeType::Joined => MSG_TYPE_SYSTEM_JOIN,
-        GroupChangeType::Left => MSG_TYPE_SYSTEM_LEAVE,
+        GroupChangeType::Joined => MSG_TYPE_SYSTEM_GROUP_JOIN,
+        GroupChangeType::Left => MSG_TYPE_SYSTEM_GROUP_LEAVE,
     };
     let incoming = Arc::new(IncomingMessage {
         msg_id: message.msg_id.clone(),
