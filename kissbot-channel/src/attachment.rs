@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
+use serde_json::Value;
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
 use crate::error::Result;
@@ -25,7 +26,7 @@ pub fn process_attachment_message(
     outgoing: &OutgoingMessage,
     msg_id: &str,
     key_generator: &dyn AttachmentKeyGenerator,
-) -> Result<(String, OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
+) -> Result<(Value, OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
     let attachment_key_map = Arc::new(DashMap::new());
     let mut pending_attachments: Vec<(Arc<AttachmentInfo>, Arc<String>)> = Vec::new();
 
@@ -92,14 +93,11 @@ pub fn process_attachment_message(
         }
     };
 
-    let new_content_str = serde_json::to_string(&new_content)
-        .map_err(|e| crate::Error::InternalError(format!("serialize content failed: {}", e)))?;
-
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
-        content: Arc::new(new_content_str.clone()),
+        content: Arc::new(new_content.clone()),
     };
 
-    Ok((new_content_str, response, pending_attachments))
+    Ok((new_content, response, pending_attachments))
 }

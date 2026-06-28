@@ -75,7 +75,7 @@ pub struct OutgoingMessage {
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
-    pub content: Arc<String>,  // 转换后的 content（已嵌入 key）
+    pub content: Arc<Value>,  // 转换后的 content（已嵌入 key）
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_serde_outgoing_message_response() {
-        let content = Arc::new("response content".to_string());
+        let content = Arc::new(serde_json::Value::String("response content".to_string()));
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
@@ -298,7 +298,7 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
-        assert_eq!(*deserialized.content, "response content");
+        assert_eq!(deserialized.content.as_str().unwrap(), "response content");
     }
 
     #[test]

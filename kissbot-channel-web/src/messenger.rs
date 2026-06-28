@@ -451,7 +451,7 @@ impl WebMessenger {
                 group_id: outgoing.group_id.clone(),
                 is_self,
                 msg_type: outgoing.msg_type.clone(),
-                content: Arc::new(serde_json::from_str(&new_content).unwrap_or(serde_json::Value::String(new_content.clone()))),
+                content: Arc::new(new_content.clone()),
                 time: time.clone(),
             });
             let event = Arc::new(IncomingMessageEvent {
@@ -468,7 +468,7 @@ impl WebMessenger {
 
         // 推 SSE
         let group_id = outgoing.group_id.clone();
-        let response_content = Arc::new(new_content);
+        let response_content: Arc<serde_json::Value> = Arc::new(new_content);
         let sse_event = SseMessage {
             msg_id: msg_id.clone(),
             messenger_id,
@@ -476,7 +476,7 @@ impl WebMessenger {
             group_id: outgoing.group_id,
             is_self: 1,
             msg_type: outgoing.msg_type,
-            content: response_content.clone(),
+            content: Arc::new(serde_json::to_string(response_content.as_ref()).unwrap_or_default()),
             time: time.clone(),
         };
         let sse_payload = SsePayload { r#type: "message", data: sse_event };

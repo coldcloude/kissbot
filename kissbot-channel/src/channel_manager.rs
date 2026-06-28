@@ -316,7 +316,7 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
             msg_id: response.msg_id.clone(),
             time: response.time.clone(),
             attachment_upload_id_map: Arc::new(DashMap::new()),
-            content: Arc::new(serde_json::from_str(response.content.as_str()).unwrap_or(serde_json::Value::Null)),
+            content: response.content.clone(),
         };
 
         let response = serde_json::to_value(ws_response)?;
