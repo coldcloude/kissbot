@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use kissbot_api::channel::{
-    AttachmentInfo, AttachmentInfoResponse, OutgoingMessage, OutgoingMessageResponse,
-};
-use kissbot_api::message::{MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
+use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
 use crate::error::Result;
 
@@ -97,7 +95,7 @@ pub fn process_attachment_message(
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
-        attachment_key_map,
+        content: Arc::new(new_content.clone()),
     };
 
     Ok((new_content, response, pending_attachments))

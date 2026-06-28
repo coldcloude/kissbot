@@ -59,13 +59,7 @@ pub struct MessengerInfoRequest {
 
 // ========================= Message & Attachment ==========================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentInfo {
-    pub att_id: Arc<String>,
-    pub file_name: Arc<String>,
-    pub mime_type: Arc<String>,
-    pub size_bytes: u64,
-}
+use crate::message::{AttachmentInfo, AttachmentInfoResponse};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingMessage {
@@ -80,13 +74,7 @@ pub struct OutgoingMessage {
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
-    pub attachment_key_map: Arc<DashMap<String, Arc<String>>>,  // att_id → key
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentInfoResponse {
-    pub key: Arc<String>,
-    pub info: Arc<AttachmentInfo>,
+    pub content: Arc<String>,  // 转换后的 content（已嵌入 key）
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +91,7 @@ pub struct WsOutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
-    pub attachment_key_map: Arc<DashMap<String, Arc<String>>>,  // att_id → key
+    pub content: Arc<String>,  // 转换后的 content（已嵌入 key）
 }
 
 /// ChannelManager 返回给 agent 的下载 response，附加下载 id
@@ -299,18 +287,17 @@ mod tests {
 
     #[test]
     fn test_serde_outgoing_message_response() {
-        let key_map = Arc::new(DashMap::new());
-        key_map.insert("att1".to_string(), Arc::new("g1/msg1/photo.png".to_string()));
+        let content = Arc::new("response content".to_string());
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
-            attachment_key_map: key_map,
+            content,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
-        assert_eq!(deserialized.attachment_key_map.len(), 1);
+        assert_eq!(*deserialized.content, "response content");
     }
 
     #[test]

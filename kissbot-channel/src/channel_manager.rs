@@ -311,22 +311,13 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
 
         let response = messenger_context.messenger.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
 
-        // 从 response 中获取 key_map，分配内部 upload_id，构造 WsOutgoingMessageResponse
+        // 构造 WsOutgoingMessageResponse
         let ws_response = WsOutgoingMessageResponse {
             msg_id: response.msg_id.clone(),
             time: response.time.clone(),
             attachment_upload_id_map: Arc::new(DashMap::new()),
-            attachment_key_map: response.attachment_key_map.clone(),
+            content: response.content.clone(),
         };
-
-        for entry in response.attachment_key_map.iter() {
-            let att_id = entry.key().clone();
-            let key = entry.value().clone();
-            let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
-            ws_response.attachment_upload_id_map.insert(att_id, internal_id);
-            manager.attachment_receiver_map.insert(key.to_string(), (internal_id, Arc::downgrade(&messenger_context.messenger)));
-            manager.receiver_id_to_key.insert(internal_id, key.to_string());
-        }
 
         let response = serde_json::to_value(ws_response)?;
         Ok(Some(response))

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 // ========== 消息类型常量 ==========
@@ -20,6 +21,24 @@ pub const MSG_TYPE_MULTI: &str = "multi";
 pub struct MessageItem {
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
+}
+
+// ========== 附件消息相关类型 ==========
+
+/// 附件信息。含 key 时表示已由 channel 处理后嵌入 key。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfo {
+    pub att_id: Arc<String>,
+    pub file_name: Arc<String>,
+    pub mime_type: Arc<String>,
+    pub size_bytes: u64,
+}
+
+/// 附件响应。channel 在处理后为 AttachmentInfo 附加生成的 key。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentInfoResponse {
+    pub key: Arc<String>,
+    pub info: Arc<AttachmentInfo>,
 }
 
 #[cfg(test)]

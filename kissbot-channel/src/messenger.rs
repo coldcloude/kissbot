@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use kissbot_api::{DataWriter, channel::*};
+use kissbot_api::{DataWriter, channel::*, message::*};
 
 use crate::{Error, error::Result};
 use crate::data::*;

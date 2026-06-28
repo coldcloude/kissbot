@@ -8,10 +8,10 @@ use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use kissbot_api::DataWriter;
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, AttachmentInfo, AttachmentInfoResponse,
-    GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
+    AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
@@ -468,6 +468,7 @@ impl WebMessenger {
 
         // 推 SSE
         let group_id = outgoing.group_id.clone();
+        let response_content = Arc::new(new_content);
         let sse_event = SseMessage {
             msg_id: msg_id.clone(),
             messenger_id,
@@ -475,7 +476,7 @@ impl WebMessenger {
             group_id: outgoing.group_id,
             is_self: 1,
             msg_type: outgoing.msg_type,
-            content: Arc::new(new_content),
+            content: response_content.clone(),
             time: time.clone(),
         };
         let sse_payload = SsePayload { r#type: "message", data: sse_event };
@@ -486,7 +487,7 @@ impl WebMessenger {
         Ok(OutgoingMessageResponse {
             msg_id,
             time,
-            attachment_key_map: response.attachment_key_map,
+            content: response_content,
         })
     }
 

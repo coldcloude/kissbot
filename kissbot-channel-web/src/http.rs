@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
 use crate::messenger::{ADMIN_USER_ID, GroupConfig, PendingAttachment, UserConfig, WebMessenger};
-use kissbot_api::channel::{AttachmentInfo, OutgoingMessage};
-use kissbot_api::message::{MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
+use kissbot_api::channel::OutgoingMessage;
+use kissbot_api::message::{AttachmentInfo, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
 // ========== DTOs ==========
 
