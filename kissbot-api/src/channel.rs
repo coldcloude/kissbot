@@ -16,23 +16,6 @@ pub const TYPE_LEAVE_GROUP: u32 = 0x10010002;
 pub const TYPE_INCOMING_MESSAGE: u32 = 0x10020003;
 pub const TYPE_ATTACHMENT_DOWNLOAD_PAYLOAD: u32 = 0x10020004;
 
-// ========== Group Change Notification ==========
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupChangeNotification {
-    pub messenger_id: Arc<String>,
-    pub group_id: Arc<String>,
-    pub user_id: Arc<String>,
-}
-
-// ========== User Remove Notification ==========
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserRemoveNotification {
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupInfo {
     pub group_id: Arc<String>,
@@ -164,6 +147,7 @@ pub struct BindRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::{GroupChangeNotification, UserRemoveNotification};
     use crate::MSG_TYPE_ATTACHMENT;
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {

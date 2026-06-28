@@ -14,6 +14,38 @@ pub const MSG_TYPE_SYSTEM_JOIN: &str = "system_join";
 pub const MSG_TYPE_SYSTEM_LEAVE: &str = "system_leave";
 pub const MSG_TYPE_MULTI: &str = "multi";
 
+// ========== 通知类型 ==========
+
+/// 群组变更通知
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupChangeNotification {
+    pub messenger_id: Arc<String>,
+    pub group_id: Arc<String>,
+    pub user_id: Arc<String>,
+}
+
+/// 用户移除通知
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRemoveNotification {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+}
+
+// ========== 内容类型枚举 ==========
+
+/// content 的类型化表示，替代任意的 serde_json::Value。
+/// 各变体对应不同的 msg_type。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Content {
+    Text(String),
+    Multi(Vec<MessageItem>),
+    AttachmentInfo(AttachmentInfo),
+    AttachmentInfoResponse(AttachmentInfoResponse),
+    GroupChange(GroupChangeNotification),
+    UserRemove(UserRemoveNotification),
+}
+
 // ========== Multi 消息 ==========
 
 /// multi 消息的 content 为 JSON 列表，每个元素包含 msg_type 和 content 两个字段
