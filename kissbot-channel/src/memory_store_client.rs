@@ -3,6 +3,7 @@ use flume::{Receiver, Sender, bounded};
 use kissbot_api::{ChannelRequest, ChannelRequests};
 use kissbot_security::HEADER_API_KEY;
 use reqwest::Client;
+use tracing::error;
 use std::{collections::LinkedList, sync::Arc};
 
 const RECORD_QUEUE_SIZE: usize = 10000;
@@ -62,17 +63,24 @@ impl MemoryStoreClient {
             let mut requests = Vec::with_capacity(size);
             while let Some(record) = record_list.pop_front() {
                 for message in record.messages.iter() {
-                    requests.push(ChannelRequest {
-                        agent_id: record.agent_id.clone(),
-                        role_name: record.role_name.clone(),
-                        messenger_id: message.messenger_id.clone(),
-                        user_id: message.user_id.clone(),
-                        group_id: message.group_id.clone(),
-                        is_self: message.is_self,
-                        msg_type: message.msg_type.clone(),
-                        content: Arc::new(serde_json::to_string(&message.content).unwrap_or_default()),
-                        time: message.time.clone(),
-                    });
+                    match serde_json::to_string(&message.content) {
+                        Ok(content) => {
+                            requests.push(ChannelRequest {
+                                agent_id: record.agent_id.clone(),
+                                role_name: record.role_name.clone(),
+                                messenger_id: message.messenger_id.clone(),
+                                user_id: message.user_id.clone(),
+                                group_id: message.group_id.clone(),
+                                is_self: message.is_self,
+                                msg_type: message.msg_type.clone(),
+                                content: Arc::new(content),
+                                time: message.time.clone(),
+                            });
+                        }
+                        Err(e) => {
+                            error!("JSON build failed: {:?}",e);
+                        }
+                    };
                 }
             }
         
