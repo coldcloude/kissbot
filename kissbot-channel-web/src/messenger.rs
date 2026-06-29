@@ -7,7 +7,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
+    AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, GroupChangeNotification, UserRemoveNotification};
@@ -671,20 +671,22 @@ impl Messenger for WebMessenger {
             while pos < file_len && ok {
                 let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
                 let chunk_size = (end - pos) as usize;
-                let mut buf = match sender.prepare_send(&key_for_sender, file_len as u32, pos) {
-                    Ok(b) => b,
+                let buf = match sender.prepare_send(&key_for_sender, file_len as u32, pos) {
+                    Ok(mut b) => {
+                        // 为 payload 数据预留空间
+                        b.resize(OFFSET_ATT_DATA + chunk_size, 0);
+                        // 同步读取文件块到发送 buffer 的 payload 部分
+                        use std::io::Read;
+                        match (&mut file).read_exact(&mut b[OFFSET_ATT_DATA..]) {
+                            Ok(()) => b,
+                            Err(e) => {
+                                tracing::error!("Failed to read file chunk: {}", e);
+                                break;
+                            }
+                        }
+                    }
                     Err(_) => break,
                 };
-                buf.resize(chunk_size, 0);
-                // 同步读取文件块到发送 buffer
-                use std::io::Read;
-                match (&mut file).read_exact(&mut buf[..chunk_size]) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::error!("Failed to read file chunk: {}", e);
-                        break;
-                    }
-                }
                 ok = sender.send(&key_for_sender, file_len as u32, pos, buf).await.is_ok();
                 pos = end;
             }

@@ -703,32 +703,37 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_send(&self, key: &str, _size: u32, _pos: u64) -> Result<BytesMut> {
-        Ok(BytesMut::new())
+    fn prepare_send(&self, key: &str, size: u32, pos: u64) -> Result<BytesMut> {
+        let sender_entry = self.attachment_sender_map.get(key)
+            .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
+        let (internal_id, ref _connect_weak) = *sender_entry;
+        drop(sender_entry);
+        // _connect_weak will be used in send()
+
+        // 预写入 kai-ws 头 + 附件头，后续由调用方写入 payload 数据
+        let header_size = OFFSET_ATT_DATA;
+        let mut buf = BytesMut::with_capacity(header_size);
+        buf.put_u32(0);  // sn
+        buf.put_u32(TYPE_ATTACHMENT_PAYLOAD);
+        buf.put_u32(CODE_SUCCESS);
+        buf.put_u32(internal_id);
+        buf.put_u32(size);
+        buf.put_u64(pos);
+        Ok(buf)
     }
 
-    async fn send(&self, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<()> {
+    async fn send(&self, key: &str, _size: u32, _pos: u64, buf: BytesMut) -> Result<()> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (internal_id, ref connect_weak) = *sender_entry;
         let connect_context = connect_weak.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
-        drop(sender_entry);
 
-        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + buf.len());
-        frame.put_u32(0);
-        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);
-        frame.put_u32(CODE_SUCCESS);
-        frame.put_u32(internal_id);
-        frame.put_u32(size);
-        frame.put_u64(pos);
-        frame.extend_from_slice(&buf);
-
-        if size == 0 {
+        if _size == 0 {
             self.attachment_sender_map.remove(key);
         }
 
-        connect_context.ws_context.send_bin(frame.freeze()).await?;
+        connect_context.ws_context.send_bin(buf.freeze()).await?;
         Ok(())
     }
 }
