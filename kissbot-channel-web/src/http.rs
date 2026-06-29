@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, HeaderMap},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -456,23 +456,67 @@ async fn handle_upload_attachment(
     Json(ApiResponse::success(serde_json::json!({"success": true})))
 }
 
-/// GET /api/attachment/download
+/// GET /api/attachment/download — 支持 Range 断点续传
 async fn handle_download_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     let key = match params.get("key") {
         Some(k) => k,
         None => return (StatusCode::BAD_REQUEST, "Missing key").into_response(),
     };
 
-    match messenger.attachment_store.get_attachment_by_key(key) {
+    // 获取文件信息和 MIME 类型
+    let (_, file_len, mime) = match messenger.open_download_reader(key) {
+        Ok(info) => info,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+
+    // 解析 Range header
+    let range_header = headers.get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok());
+
+    if let Some(range_str) = range_header {
+        // 解析 "bytes=start-end" 格式
+        if let Some((start, end)) = parse_range(range_str, file_len) {
+            let length = end - start + 1;
+            match messenger.read_attachment_range(key, start, length) {
+                Ok(data) => {
+                    let content_range = format!("bytes {}-{}/{}", start, end, file_len);
+                    return (
+                        StatusCode::PARTIAL_CONTENT,
+                        [
+                            (axum::http::header::CONTENT_RANGE, content_range),
+                            (axum::http::header::CONTENT_TYPE, mime),
+                        ],
+                        data,
+                    ).into_response();
+                }
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+    }
+
+    // 无 Range 或 Range 解析失败，返回全量文件
+    match messenger.read_attachment_range(key, 0, file_len) {
         Ok(data) => {
-            let mime = mime_guess::from_path(key).first_or_octet_stream();
-            ([(axum::http::header::CONTENT_TYPE, mime.to_string())], data).into_response()
+            ([(axum::http::header::CONTENT_TYPE, mime)], data).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
+}
+
+/// 解析 "bytes=start-end" 格式的 Range header
+fn parse_range(range_str: &str, file_len: u64) -> Option<(u64, u64)> {
+    let range_str = range_str.strip_prefix("bytes=")?;
+    let (start_str, end_str) = range_str.split_once('-')?;
+    let start: u64 = start_str.parse().ok()?;
+    let end: u64 = end_str.parse().ok()?;
+    if start >= file_len || end >= file_len || start > end {
+        return None;
+    }
+    Some((start, end))
 }
 
 /// GET /api/attachment/thumbnail

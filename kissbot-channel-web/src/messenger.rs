@@ -515,6 +515,28 @@ impl WebMessenger {
 
     // ========== 上传引擎 ==========
 
+    // ========== 下载引擎 ==========
+
+    /// 打开文件读取器，返回 (File, 文件长度, MIME type)
+    pub fn open_download_reader(&self, key: &str) -> Result<(std::fs::File, u64, String)> {
+        let meta = self.attachment_store.get_meta_by_key(key)?;
+        let (file, len) = self.attachment_store.open_file(key)?;
+        let mime = mime_guess::from_path(meta.file_name.as_str()).first_or_octet_stream().to_string();
+        Ok((file, len, mime))
+    }
+
+    /// 读取指定范围数据，用于 HTTP Range 断点续传
+    pub fn read_attachment_range(&self, key: &str, offset: u64, length: u64) -> Result<Bytes> {
+        let (mut file, _) = self.attachment_store.open_file(key)?;
+        use std::io::{Read, Seek, SeekFrom};
+        file.seek(SeekFrom::Start(offset))?;
+        let mut buf = vec![0u8; length as usize];
+        file.read_exact(&mut buf)?;
+        Ok(Bytes::from(buf))
+    }
+
+    // ========== 上传引擎 ==========
+
     /// 写入附件数据。通过 flume 队列串行处理，避免竞争。
     /// 返回当前已写入位置。
     pub fn write_attachment_chunk(
