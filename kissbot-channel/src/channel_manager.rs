@@ -4,9 +4,9 @@ use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
-use dashmap::{DashMap, DashSet, Entry};
+use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{DataWriter, GroupChangeNotification, UserRemoveNotification, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{DataWriter, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -31,7 +31,6 @@ struct MessengerContext {
 struct ConnectContext {
     connect_id: u32,
     ws_context: Arc<WsContext>,
-    messenger_users_map: DashMap<String, DashSet<String>>,
 }
 
 pub struct ChannelManager {
@@ -63,11 +62,21 @@ impl ConnectCloseProcessor {
         let (_,connect_context) = manager.connect_map.remove(&self.connect_id)
         .ok_or_else(|| Error::ConnectNotFound(self.connect_id.to_string()))?;
         //把绑定记录从messenger中移除
-        for messenger_users in connect_context.messenger_users_map.iter() {
-            //messenger存在时，移除user绑定记录
-            if let Some(messenger_context) = manager.messenger_map.get(messenger_users.key()) {
-                for user in messenger_users.iter() {
-                    messenger_context.bound_map.remove(user.key());
+        for messenger_context in manager.messenger_map.iter() {
+            //为防止死锁，将遍历和删除分开
+            let mut finished = false;
+            while !finished {
+                let mut candidate_user_ids = Vec::new();
+                for bound_info in messenger_context.bound_map.iter() {
+                    if bound_info.connect_id == connect_context.connect_id {
+                        candidate_user_ids.push(bound_info.key().clone());
+                    }
+                }
+                finished = candidate_user_ids.is_empty();
+                if !finished {
+                    for user_id in candidate_user_ids.iter() {
+                        messenger_context.bound_map.remove(user_id);
+                    }
                 }
             }
         }
@@ -202,9 +211,10 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         
         let messenger_info = messenger_context.messenger.get_info().await?;
 
-        let user_info = messenger_info.user_map.get(bind_request.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(bind_request.user_id.to_string()))?;
-        
+        if !messenger_info.user_map.contains_key(bind_request.user_id.as_str()) {
+            return Err(Error::UserNotFound(bind_request.user_id.to_string()));
+        }
+
         //绑定用户
         let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert_with(|| BoundInfo {
             connect_id: connect_context.connect_id,
@@ -215,10 +225,6 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         if bound_info.connect_id != connect_context.connect_id {
             return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
         }
-
-        //connect绑定
-        let messenger_users = connect_context.messenger_users_map.entry(messenger_info.messenger_id.as_str().to_string()).or_insert_with(|| DashSet::new());
-        messenger_users.insert(user_info.user_id.as_str().to_string());
 
         Ok(None)
     }
@@ -260,11 +266,6 @@ impl JsonProcessorWrapper for UnbindAgentUserProcessor {
         .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;        
         if bound_info.connect_id != connect_context.connect_id {
             return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
-        }
-        
-        //移除connect绑定
-        if let Some(messenger_users) = connect_context.messenger_users_map.get(bind_request.messenger_id.as_str()) {
-            messenger_users.remove(bind_request.user_id.as_str());
         }
 
         //解除绑定
@@ -453,7 +454,6 @@ impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
         let connect_context = Arc::new(ConnectContext {
             connect_id,
             ws_context: ws_context.clone(),
-            messenger_users_map: DashMap::new(),
         });
         manager.connect_map.insert(connect_id, connect_context.clone());
         //处理心跳
@@ -662,11 +662,6 @@ impl ChannelManager {
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
             .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
-
-        //从 connect 中移除 user 记录
-        if let Some(messenger_users) = connect_context.messenger_users_map.get(event.notification.messenger_id.as_str()) {
-            messenger_users.remove(event.notification.user_id.as_str());
-        }
 
         //通知 agent 用户已删除
         let payload = serde_json::to_value(event.notification.as_ref())?;
