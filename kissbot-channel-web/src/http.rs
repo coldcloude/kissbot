@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
+use bytes::Bytes;
 use std::time::Duration;
 
 use axum::{
@@ -416,7 +417,7 @@ async fn handle_upload_attachment(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let mut attachment_key: Option<String> = None;
-    let mut file_data: Option<Vec<u8>> = None;
+    let mut file_data: Option<Bytes> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().map(|s| s.to_string());
@@ -426,7 +427,7 @@ async fn handle_upload_attachment(
             }
         } else if name.as_deref() == Some("file") {
             if let Ok(data) = field.bytes().await {
-                file_data = Some(data.to_vec());
+                file_data = Some(data);
             }
         }
     }

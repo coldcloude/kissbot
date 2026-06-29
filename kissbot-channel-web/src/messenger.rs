@@ -3,10 +3,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
 use async_trait::async_trait;
-use bytes::BytesMut;
+use bytes::Bytes;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
-use kissbot_api::DataWriter;
 use kissbot_api::channel::{
     AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
@@ -618,20 +617,15 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(resp))
     }
 
-    async fn send_attachment_payload(&self, key: &str, _size: u32, pos: u64, write: Arc<dyn DataWriter<kissbot_channel::Error>>) -> std::result::Result<(), kissbot_channel::Error> {
+    async fn send_attachment_payload(&self, key: &str, _size: u32, pos: u64, data: Bytes) -> std::result::Result<(), kissbot_channel::Error> {
         let pending = self.pending_uploads.get(key)
             .ok_or_else(|| kissbot_channel::Error::InternalError(format!("key {} not found", key)))?;
 
-        // 从 DataWriter 读取数据
-        let mut buf = BytesMut::new();
-        write.write_to(&mut buf)
-            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-
-        self.attachment_store.append_to_temp(&pending.temp_path, &buf)
+        self.attachment_store.append_to_temp(&pending.temp_path, &data)
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
 
         // 如果这是最后一块，用 remove 原子地取出并重命名
-        if (pos + buf.len() as u64) >= pending.size_bytes {
+        if (pos + data.len() as u64) >= pending.size_bytes {
             drop(pending);
             if let Some((_, pending)) = self.pending_uploads.remove(key) {
                 AttachmentStore::finalize_upload(&pending.temp_path, &pending.target_path)
@@ -663,14 +657,6 @@ impl Messenger for WebMessenger {
         tokio::spawn(async move {
             const CHUNK_SIZE: u64 = 65536;
 
-            struct OwnedChunkWriter(Vec<u8>);
-            impl DataWriter<kissbot_channel::Error> for OwnedChunkWriter {
-                fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(), kissbot_channel::Error> {
-                    buf.extend_from_slice(&self.0);
-                    Ok(())
-                }
-            }
-
             match store.get_attachment_by_key(&key) {
                 Ok(data) => {
                     let len = data.len() as u64;
@@ -678,14 +664,12 @@ impl Messenger for WebMessenger {
                     let mut ok = true;
                     while pos < len && ok {
                         let end = std::cmp::min(pos + CHUNK_SIZE, len);
-                        let chunk = data[pos as usize..end as usize].to_vec();
-                        let writer: Arc<dyn DataWriter<kissbot_channel::Error>> = Arc::new(OwnedChunkWriter(chunk));
-                        ok = sender.send_attachment_payload(&key_for_sender, len as u32, pos, writer).await.is_ok();
+                        let chunk = data.slice(pos as usize..end as usize);
+                        ok = sender.send_attachment_payload(&key_for_sender, len as u32, pos, chunk).await.is_ok();
                         pos = end;
                     }
                     // 发送 size=0 的结束标记
-                    let end_writer: Arc<dyn DataWriter<kissbot_channel::Error>> = Arc::new(OwnedChunkWriter(Vec::new()));
-                    let _ = sender.send_attachment_payload(&key_for_sender, 0, pos, end_writer).await;
+                    let _ = sender.send_attachment_payload(&key_for_sender, 0, pos, Bytes::new()).await;
                 }
                 Err(e) => {
                     tracing::error!("Failed to read attachment for download: key={}, error={}", key, e);

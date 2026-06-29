@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::Arc;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -33,20 +34,20 @@ impl AttachmentStore {
         group_id: &str,
         msg_id: &str,
         filename: &str,
-        data: &[u8],
+        data: Bytes,
         mime_type: &str,
     ) -> Result<AttachmentMeta> {
         let dir = self.base_path.join(group_id).join(msg_id);
         std::fs::create_dir_all(&dir)?;
 
         let file_path = dir.join(filename);
-        std::fs::write(&file_path, data)?;
+        std::fs::write(&file_path, &data)?;
 
         let is_image = mime_type.starts_with("image/");
         let has_thumbnail = if is_image {
             // 生成缩略图
             let thumb_path = dir.join(format!("thumb_{}", filename));
-            if let Ok(img) = image::load_from_memory(data) {
+            if let Ok(img) = image::load_from_memory(&data) {
                 let thumb = img.thumbnail(200, 200);
                 thumb.save(&thumb_path)?;
                 true
@@ -78,7 +79,7 @@ impl AttachmentStore {
     }
 
     /// 追加 payload 数据到临时文件
-    pub fn append_to_temp(&self, temp_path: &Path, data: &[u8]) -> Result<()> {
+    pub fn append_to_temp(&self, temp_path: &Path, data: &Bytes) -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .open(temp_path)?;
@@ -93,22 +94,22 @@ impl AttachmentStore {
     }
 
     /// 获取附件数据
-    pub fn get_attachment_data(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Vec<u8>> {
+    pub fn get_attachment_data(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Bytes> {
         let file_path = self.base_path.join(group_id).join(msg_id).join(filename);
         if !file_path.exists() {
             return Err(Error::AttachmentNotFound(format!("{}/{}/{}", group_id, msg_id, filename)));
         }
-        Ok(std::fs::read(&file_path)?)
+        Ok(Bytes::from(std::fs::read(&file_path)?))
     }
 
     /// 获取缩略图数据，如果缩略图不存在则按需生成
-    pub fn get_thumbnail(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Vec<u8>> {
+    pub fn get_thumbnail(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<Bytes> {
         let dir = self.base_path.join(group_id).join(msg_id);
         let thumb_path = dir.join(format!("thumb_{}", filename));
 
         // 如果缩略图已存在则直接返回
         if thumb_path.exists() {
-            return Ok(std::fs::read(&thumb_path)?);
+            return Ok(Bytes::from(std::fs::read(&thumb_path)?));
         }
 
         // 延迟生成缩略图
@@ -123,7 +124,7 @@ impl AttachmentStore {
                 if let Ok(img) = image::load_from_memory(&data) {
                     let thumb = img.thumbnail(200, 200);
                     if thumb.save(&thumb_path).is_ok() {
-                        return Ok(std::fs::read(&thumb_path)?);
+                        return Ok(Bytes::from(std::fs::read(&thumb_path)?));
                     }
                 }
             }
@@ -134,7 +135,7 @@ impl AttachmentStore {
 
     /// 根据 key 解析路径并获取附件
     /// key 格式: "{group_id}/{msg_id}/{filename}"
-    pub fn get_attachment_by_key(&self, key: &str) -> Result<Vec<u8>> {
+    pub fn get_attachment_by_key(&self, key: &str) -> Result<Bytes> {
         let parts: Vec<&str> = key.split('/').collect();
         if parts.len() < 3 {
             return Err(Error::AttachmentNotFound(key.to_string()));
@@ -146,7 +147,7 @@ impl AttachmentStore {
     }
 
     /// 根据 key 获取缩略图
-    pub fn get_thumbnail_by_key(&self, key: &str) -> Result<Vec<u8>> {
+    pub fn get_thumbnail_by_key(&self, key: &str) -> Result<Bytes> {
         let parts: Vec<&str> = key.split('/').collect();
         if parts.len() < 3 {
             return Err(Error::AttachmentNotFound(key.to_string()));
