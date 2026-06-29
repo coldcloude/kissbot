@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kissbot_api::DataWriter;
+use bytes::Bytes;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub trait IncomingMessageHandler: Send + Sync {
 
 #[async_trait]
 pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, writer: Arc<dyn DataWriter<Error>>) -> Result<()>;
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()>;
 }
 
 // ========== Group Change ==========

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use bytes::BytesMut;
 use serde::{Deserialize, Serialize};
 
 pub trait ArcUnwrapOrClone<T> {
@@ -41,10 +40,6 @@ impl<T> ApiResponse<T> {
             error: Some(message),
         }
     }
-}
-
-pub trait DataWriter<E>: Send + Sync {
-    fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(),E>;
 }
 
 #[cfg(test)]

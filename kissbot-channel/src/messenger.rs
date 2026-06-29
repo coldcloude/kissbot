@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use kissbot_api::{DataWriter, channel::*, message::*};
+use bytes::Bytes;
+use kissbot_api::{channel::*, message::*};
 
 use crate::{Error, error::Result};
 use crate::data::*;
@@ -12,7 +13,7 @@ pub trait Messenger: Send + Sync + 'static {
 
     async fn send_message(&self, message: OutgoingMessage, attachment_sn: Arc<AtomicU32>) -> Result<Arc<OutgoingMessageResponse>>;
 
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, write: Arc<dyn DataWriter<Error>>) -> Result<()>;
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()>;
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> Result<Arc<AttachmentInfoResponse>>;
 }
