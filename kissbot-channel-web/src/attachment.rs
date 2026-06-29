@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -182,5 +182,20 @@ impl AttachmentStore {
             size_bytes: metadata.len(),
             has_thumbnail: thumb_path.exists(),
         })
+    }
+
+    /// 根据 key 打开附件文件，返回 (File, 文件长度)
+    pub fn open_file(&self, key: &str) -> Result<(std::fs::File, u64)> {
+        let parts: Vec<&str> = key.split('/').collect();
+        if parts.len() < 3 {
+            return Err(Error::AttachmentNotFound(key.to_string()));
+        }
+        let file_path = self.base_path.join(parts[0]).join(parts[1]).join(parts[2..].join("/"));
+        if !file_path.exists() {
+            return Err(Error::AttachmentNotFound(key.to_string()));
+        }
+        let metadata = std::fs::metadata(&file_path)?;
+        let file = std::fs::File::open(&file_path)?;
+        Ok((file, metadata.len()))
     }
 }

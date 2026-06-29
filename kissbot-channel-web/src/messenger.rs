@@ -647,7 +647,7 @@ impl Messenger for WebMessenger {
         };
         let response_key = self.generate_key(request.group_id.as_str(), &meta.att_id, &info);
 
-        // 启动后台任务：逐块读取文件并推送
+        // 启动后台任务：流式读取文件并推送
         let sender = self.on_download_attachment_payload.upgrade()
             .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
         let store = self.attachment_store.clone();
@@ -657,23 +657,41 @@ impl Messenger for WebMessenger {
         tokio::spawn(async move {
             const CHUNK_SIZE: u64 = 65536;
 
-            match store.get_attachment_by_key(&key) {
-                Ok(data) => {
-                    let len = data.len() as u64;
-                    let mut pos = 0u64;
-                    let mut ok = true;
-                    while pos < len && ok {
-                        let end = std::cmp::min(pos + CHUNK_SIZE, len);
-                        let chunk = data.slice(pos as usize..end as usize);
-                        ok = sender.send_attachment_payload(&key_for_sender, len as u32, pos, chunk).await.is_ok();
-                        pos = end;
-                    }
-                    // 发送 size=0 的结束标记
-                    let _ = sender.send_attachment_payload(&key_for_sender, 0, pos, Bytes::new()).await;
-                }
+            let file_result = store.open_file(&key);
+            let (mut file, file_len) = match file_result {
+                Ok(f) => f,
                 Err(e) => {
-                    tracing::error!("Failed to read attachment for download: key={}, error={}", key, e);
+                    tracing::error!("Failed to open attachment for download: key={}, error={}", key, e);
+                    return;
                 }
+            };
+
+            let mut pos = 0u64;
+            let mut ok = true;
+            while pos < file_len && ok {
+                let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
+                let chunk_size = (end - pos) as usize;
+                let mut chunk_sender = match sender.prepare_sender(&key_for_sender, file_len as u32, pos) {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let buf = chunk_sender.get_buffer();
+                buf.resize(chunk_size, 0);
+                // 同步读取文件块到发送 buffer
+                use std::io::Read;
+                match (&mut file).read_exact(&mut buf[..chunk_size]) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::error!("Failed to read file chunk: {}", e);
+                        break;
+                    }
+                }
+                ok = chunk_sender.send().await.is_ok();
+                pos = end;
+            }
+            // 发送 size=0 的结束标记
+            if let Ok(end_sender) = sender.prepare_sender(&key_for_sender, 0, pos) {
+                let _ = end_sender.send().await;
             }
         });
 
