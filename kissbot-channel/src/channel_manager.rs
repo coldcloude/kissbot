@@ -3,10 +3,10 @@ use crate::messenger::{Messenger, MessengerCreator};
 use crate::data::*;
 use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{DataWriter, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{AttachmentPayloadHeader, DataWriter, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -124,10 +124,10 @@ trait JsonProcessorWrapper {
 
 #[async_trait]
 trait BinaryProcessorWrapper {
-    async fn raw_process_bin(&self, data: &[u8]) -> Result<Option<serde_json::Value>>;
+    async fn raw_process_bin(&self, data: Bytes) -> Result<Option<serde_json::Value>>;
     
-    async fn wrap_process_bin(&self, data: &[u8], context: Arc<WsContext>) -> Result<()> {
-        let sn = parse_bin_sn(data)?;
+    async fn wrap_process_bin(&self, data: Bytes, context: Arc<WsContext>) -> Result<()> {
+        let sn = parse_bin_sn(data.as_ref())?;
         match self.raw_process_bin(data).await {
             Ok(payload) => {
                 context.send_json(WsMessage {
@@ -340,8 +340,8 @@ struct AttachmentPayloadProcessor {
 
 #[async_trait]
 impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
-    async fn raw_process_bin(&self, data: &[u8]) -> Result<Option<serde_json::Value>> {
-        let header = parse_attachment_payload_header(data)?;
+    async fn raw_process_bin(&self, data: Bytes) -> Result<Option<serde_json::Value>> {
+        let header = parse_attachment_payload_header(data.as_ref())?;
 
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
@@ -384,7 +384,7 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
 
 #[async_trait]
 impl WsBinaryProcessor for AttachmentPayloadProcessor {
-    async fn process_bin(&self, data: &[u8], context: Arc<WsContext>){
+    async fn process_bin(&self, data: Bytes, context: Arc<WsContext>){
         if let Err(e) = self.wrap_process_bin(data, context).await {
             error!("attachment_payload error: {:?}", e);
         }
