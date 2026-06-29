@@ -708,12 +708,12 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (internal_id, ref _connect_weak) = *sender_entry;
         drop(sender_entry);
-        // _connect_weak will be used in send()
 
-        // 预写入 kai-ws 头 + 附件头，后续由调用方写入 payload 数据
-        let header_size = OFFSET_ATT_DATA;
-        let mut buf = BytesMut::with_capacity(header_size);
-        buf.put_u32(0);  // sn
+        let sn = self.global_attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // capacity = 头部 + payload 数据空间
+        let capacity = OFFSET_ATT_DATA + size as usize;
+        let mut buf = BytesMut::with_capacity(capacity);
+        buf.put_u32(sn);
         buf.put_u32(TYPE_ATTACHMENT_PAYLOAD);
         buf.put_u32(CODE_SUCCESS);
         buf.put_u32(internal_id);

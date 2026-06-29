@@ -673,11 +673,9 @@ impl Messenger for WebMessenger {
                 let chunk_size = (end - pos) as usize;
                 let buf = match sender.prepare_send(&key_for_sender, file_len as u32, pos) {
                     Ok(mut b) => {
-                        // 为 payload 数据预留空间
-                        b.resize(OFFSET_ATT_DATA + chunk_size, 0);
-                        // 同步读取文件块到发送 buffer 的 payload 部分
+                        // prepare_send 已分配足够 capacity，直接读取到 payload 偏移处
                         use std::io::Read;
-                        match (&mut file).read_exact(&mut b[OFFSET_ATT_DATA..]) {
+                        match (&mut file).read_exact(&mut b[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
                             Ok(()) => b,
                             Err(e) => {
                                 tracing::error!("Failed to read file chunk: {}", e);
