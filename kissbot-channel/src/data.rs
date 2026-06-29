@@ -33,7 +33,7 @@ pub trait IncomingMessageHandler: Send + Sync {
 // ========== Attachment ==========
 #[async_trait]
 pub trait BufferSender {
-    fn get_buffer(&self) -> BytesMut;
+    fn get_buffer(&mut self) -> &mut BytesMut;
     async fn send(&self) -> Result<()>;
 }
 

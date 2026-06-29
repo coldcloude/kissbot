@@ -45,8 +45,6 @@ pub struct ChannelManager {
     receiver_id_to_key: DashMap<u32, String>,
     // 下载方向：key → (internal_download_id, Weak<ConnectContext>)
     attachment_sender_map: DashMap<String, (u32, Weak<ConnectContext>)>,
-    // download_id → key
-    sender_id_to_key: DashMap<u32, String>,
 }
 
 struct ConnectCloseProcessor {
@@ -412,7 +410,6 @@ impl JsonProcessorWrapper for AttachmentDownloadRequestProcessor {
         let key = att_info_response.key.clone();
         let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
         manager.attachment_sender_map.insert(key.to_string(), (internal_id, Arc::downgrade(&connect_context)));
-        manager.sender_id_to_key.insert(internal_id, key.to_string());
 
         // 构造 WsAttachmentDownloadResponseHeader
         let ws_response = WsAttachmentDownloadResponseHeader {
@@ -505,7 +502,6 @@ impl ChannelManager {
             attachment_receiver_map: DashMap::new(),
             receiver_id_to_key: DashMap::new(),
             attachment_sender_map: DashMap::new(),
-            sender_id_to_key: DashMap::new(),
         }
     }
 
@@ -705,35 +701,61 @@ impl UserRemoveHandler for ChannelManager {
     }
 }
 
+struct ChannelBufferSender {
+    internal_id: u32,
+    connect_context: Arc<ConnectContext>,
+    size: u32,
+    pos: u64,
+    buf: BytesMut,
+}
+
+#[async_trait]
+impl BufferSender for ChannelBufferSender {
+    fn get_buffer(&mut self) -> &mut BytesMut {
+        &mut self.buf
+    }
+
+    async fn send(&self) -> Result<()> {
+        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + self.buf.len());
+        frame.put_u32(0);
+        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);
+        frame.put_u32(CODE_SUCCESS);
+        frame.put_u32(self.internal_id);
+        frame.put_u32(self.size);
+        frame.put_u64(self.pos);
+        frame.extend_from_slice(&self.buf);
+
+        if self.size == 0 {
+            // 最后传个 size=0 的表示结尾，清理在 prepare_sender 中由调用方负责
+            // 实际上清理需要 mutable 访问 ChannelManager，这里无法直接操作
+            // 由 AttachmentDownloadRequestProcessor 在发送端清理
+        }
+
+        self.connect_context.ws_context.send_bin(frame.freeze()).await?;
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()> {
+    fn prepare_sender(&self, key: &str, size: u32, pos: u64) -> Result<Box<dyn BufferSender>> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (internal_id, ref connect_weak) = *sender_entry;
         let connect_context = connect_weak.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
-        // 构造 kai-ws 二进制帧: [sn(4) + payload_type(4) + status_code(4)] + [id(4) + size(4) + pos(8)] + [data]
-        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + data.len());
-        frame.put_u32(0);  // sn
-        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);  // payload_type
-        frame.put_u32(CODE_SUCCESS);  // status_code
-        frame.put_u32(internal_id);
-        frame.put_u32(size);
-        frame.put_u64(pos);
-        frame.extend_from_slice(&data);
-
         if size == 0 {
-            //最后传个size=0的，表示结尾
+            // 结束标记：清理
             self.attachment_sender_map.remove(key);
-            self.sender_id_to_key.remove(&internal_id);
         }
 
-        drop(sender_entry);
-
-        connect_context.ws_context.send_bin(frame.freeze()).await?;
-
-        Ok(())
+        Ok(Box::new(ChannelBufferSender {
+            internal_id,
+            connect_context,
+            size,
+            pos,
+            buf: BytesMut::new(),
+        }))
     }
 }
