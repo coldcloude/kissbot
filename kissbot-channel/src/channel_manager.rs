@@ -701,61 +701,34 @@ impl UserRemoveHandler for ChannelManager {
     }
 }
 
-struct ChannelBufferSender {
-    internal_id: u32,
-    connect_context: Arc<ConnectContext>,
-    size: u32,
-    pos: u64,
-    buf: BytesMut,
-}
-
-#[async_trait]
-impl BufferSender for ChannelBufferSender {
-    fn get_buffer(&mut self) -> &mut BytesMut {
-        &mut self.buf
-    }
-
-    async fn send(&self) -> Result<()> {
-        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + self.buf.len());
-        frame.put_u32(0);
-        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);
-        frame.put_u32(CODE_SUCCESS);
-        frame.put_u32(self.internal_id);
-        frame.put_u32(self.size);
-        frame.put_u64(self.pos);
-        frame.extend_from_slice(&self.buf);
-
-        if self.size == 0 {
-            // 最后传个 size=0 的表示结尾，清理在 prepare_sender 中由调用方负责
-            // 实际上清理需要 mutable 访问 ChannelManager，这里无法直接操作
-            // 由 AttachmentDownloadRequestProcessor 在发送端清理
-        }
-
-        self.connect_context.ws_context.send_bin(frame.freeze()).await?;
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_sender(&self, key: &str, size: u32, pos: u64) -> Result<Box<dyn BufferSender>> {
+    fn prepare_send(&self, key: &str, _size: u32, _pos: u64) -> Result<BytesMut> {
+        Ok(BytesMut::new())
+    }
+
+    async fn send(&self, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<()> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (internal_id, ref connect_weak) = *sender_entry;
         let connect_context = connect_weak.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+        drop(sender_entry);
+
+        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + buf.len());
+        frame.put_u32(0);
+        frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);
+        frame.put_u32(CODE_SUCCESS);
+        frame.put_u32(internal_id);
+        frame.put_u32(size);
+        frame.put_u64(pos);
+        frame.extend_from_slice(&buf);
 
         if size == 0 {
-            // 结束标记：清理
             self.attachment_sender_map.remove(key);
         }
 
-        Ok(Box::new(ChannelBufferSender {
-            internal_id,
-            connect_context,
-            size,
-            pos,
-            buf: BytesMut::new(),
-        }))
+        connect_context.ws_context.send_bin(frame.freeze()).await?;
+        Ok(())
     }
 }

@@ -671,11 +671,10 @@ impl Messenger for WebMessenger {
             while pos < file_len && ok {
                 let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
                 let chunk_size = (end - pos) as usize;
-                let mut chunk_sender = match sender.prepare_sender(&key_for_sender, file_len as u32, pos) {
-                    Ok(s) => s,
+                let mut buf = match sender.prepare_send(&key_for_sender, file_len as u32, pos) {
+                    Ok(b) => b,
                     Err(_) => break,
                 };
-                let buf = chunk_sender.get_buffer();
                 buf.resize(chunk_size, 0);
                 // 同步读取文件块到发送 buffer
                 use std::io::Read;
@@ -686,12 +685,12 @@ impl Messenger for WebMessenger {
                         break;
                     }
                 }
-                ok = chunk_sender.send().await.is_ok();
+                ok = sender.send(&key_for_sender, file_len as u32, pos, buf).await.is_ok();
                 pos = end;
             }
             // 发送 size=0 的结束标记
-            if let Ok(end_sender) = sender.prepare_sender(&key_for_sender, 0, pos) {
-                let _ = end_sender.send().await;
+            if let Ok(buf) = sender.prepare_send(&key_for_sender, 0, pos) {
+                let _ = sender.send(&key_for_sender, 0, pos, buf).await;
             }
         });
 

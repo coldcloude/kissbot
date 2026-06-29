@@ -31,14 +31,11 @@ pub trait IncomingMessageHandler: Send + Sync {
 }
 
 // ========== Attachment ==========
-#[async_trait]
-pub trait BufferSender: Send {
-    fn get_buffer(&mut self) -> &mut BytesMut;
-    async fn send(&self) -> Result<()>;
-}
 
+#[async_trait]
 pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    fn prepare_sender(&self, key: &str, size: u32, pos: u64) ->Result<Box<dyn BufferSender>>;
+    fn prepare_send(&self, key: &str, size: u32, pos: u64) -> Result<BytesMut>;
+    async fn send(&self, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<()>;
 }
 
 // ========== Group Change ==========
