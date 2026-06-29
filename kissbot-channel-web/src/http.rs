@@ -442,24 +442,16 @@ async fn handle_upload_attachment(
         None => return Json(ApiResponse::<serde_json::Value>::error("Missing file data".to_string())),
     };
 
-    // 查找 PendingAttachment
-    let pending = match messenger.pending_uploads.get(&attachment_key) {
-        Some(p) => p,
+    // 获取 size_bytes（从 pending_uploads 读取后立即通过上传引擎写入）
+    let size_bytes = match messenger.pending_uploads.get(&attachment_key) {
+        Some(p) => p.size_bytes,
         None => return Json(ApiResponse::<serde_json::Value>::error(format!("key {} not found", attachment_key))),
     };
 
-    // 写入数据到临时文件
-    if let Err(e) = messenger.attachment_store.append_to_temp(&pending.temp_path, &file_data) {
+    // 通过上传引擎写入（串行处理，自动 finalize）
+    if let Err(e) = messenger.write_attachment_chunk(&attachment_key, 0, size_bytes as u32, file_data) {
         return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
     }
-
-    // 重命名
-    let (temp, target) = (pending.temp_path.clone(), pending.target_path.clone());
-    drop(pending);
-    if let Err(e) = crate::attachment::AttachmentStore::finalize_upload(&temp, &target) {
-        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
-    }
-    messenger.pending_uploads.remove(&attachment_key);
 
     Json(ApiResponse::success(serde_json::json!({"success": true})))
 }

@@ -518,20 +518,20 @@ impl WebMessenger {
     /// 写入附件数据。通过 flume 队列串行处理，避免竞争。
     /// 返回当前已写入位置。
     pub fn write_attachment_chunk(
-        self: &Arc<Self>,
+        &self,
         key: &str,
         pos: u64,
         size: u32,
         data: Bytes,
     ) -> Result<u64> {
-        // 从 pending_uploads 获取路径信息（在发送到队列前读取，避免 DashMap 跨线程问题）
+        // 从 pending_uploads 获取路径信息（在发送到队列前读取）
         let (temp_path, target_path, size_bytes) = {
             let pending = self.pending_uploads.get(key)
                 .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
             (pending.temp_path.clone(), pending.target_path.clone(), pending.size_bytes)
         };
 
-        let tx = Self::get_or_create_upload_channel(self, key);
+        let tx = self.get_or_create_upload_channel(key);
         let (res_tx, res_rx) = oneshot::channel();
 
         tx.send(UploadCommand::Write {
@@ -550,15 +550,15 @@ impl WebMessenger {
             .map_err(|e| Error::InternalError(e))
     }
 
-    fn get_or_create_upload_channel(this: &Arc<Self>, key: &str) -> flume::Sender<UploadCommand> {
-        if let Some(entry) = this.upload_channels.get(key) {
+    fn get_or_create_upload_channel(&self, key: &str) -> flume::Sender<UploadCommand> {
+        if let Some(entry) = self.upload_channels.get(key) {
             return entry.value().clone();
         }
 
         let (tx, rx) = flume::unbounded::<UploadCommand>();
-        let store = this.attachment_store.clone();
+        let store = self.attachment_store.clone();
         let key_owned = key.to_string();
-        let channels = this.upload_channels.clone();
+        let channels = self.upload_channels.clone();
 
         tokio::spawn(async move {
             let mut current_pos = 0u64;
@@ -581,7 +581,7 @@ impl WebMessenger {
             }
         });
 
-        this.upload_channels.insert(key_owned, tx.clone());
+        self.upload_channels.insert(key_owned, tx.clone());
         tx
     }
 
@@ -736,23 +736,9 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(resp))
     }
 
-    async fn send_attachment_payload(&self, key: &str, _size: u32, pos: u64, data: Bytes) -> std::result::Result<(), kissbot_channel::Error> {
-        let pending = self.pending_uploads.get(key)
-            .ok_or_else(|| kissbot_channel::Error::InternalError(format!("key {} not found", key)))?;
-
-        self.attachment_store.append_to_temp(&pending.temp_path, &data)
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<(), kissbot_channel::Error> {
+        self.write_attachment_chunk(key, pos, size, data)
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-
-        // 如果这是最后一块，用 remove 原子地取出并重命名
-        if (pos + data.len() as u64) >= pending.size_bytes {
-            drop(pending);
-            if let Some((_, pending)) = self.pending_uploads.remove(key) {
-                AttachmentStore::finalize_upload(&pending.temp_path, &pending.target_path)
-                    .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-            }
-            // 如果 remove 返回 None，说明已被其他并发路径处理，直接忽略
-        }
-
         Ok(())
     }
 
