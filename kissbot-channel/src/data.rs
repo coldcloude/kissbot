@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use bytes::BytesMut;
+use bytes::buf;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
@@ -29,10 +31,14 @@ pub trait IncomingMessageHandler: Send + Sync {
 }
 
 // ========== Attachment ==========
-
 #[async_trait]
+pub trait BufferSender {
+    fn get_buffer(&self) -> BytesMut;
+    async fn send(&self) -> Result<()>;
+}
+
 pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()>;
+    fn prepare_sender(&self, key: &str, size: u32, pos: u64) ->Result<Box<dyn BufferSender>>;
 }
 
 // ========== Group Change ==========
