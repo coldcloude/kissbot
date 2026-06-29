@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
+use tokio::sync::oneshot;
 use kissbot_api::channel::{
     AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
@@ -100,6 +101,22 @@ struct SseMessage {
     time: Arc<String>,
 }
 
+// ========== 上传队列命令 ==========
+
+/// 上传队列命令，通过 flume 队列串行处理
+enum UploadCommand {
+    Write {
+        key: String,
+        pos: u64,
+        size: u32,
+        data: Bytes,
+        size_bytes: u64,
+        temp_path: PathBuf,
+        target_path: PathBuf,
+        res: oneshot::Sender<std::result::Result<u64, String>>,
+    },
+}
+
 // ========== 待完成附件上传 ==========
 
 /// 待完成的附件上传信息
@@ -129,6 +146,7 @@ pub struct WebMessenger {
     // 新增：
     global_attachment_sn: Arc<AtomicU32>,
     pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
+    pub upload_channels: Arc<DashMap<String, flume::Sender<UploadCommand>>>,
 }
 
 impl WebMessenger {
@@ -156,6 +174,7 @@ impl WebMessenger {
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
             global_attachment_sn,
             pending_uploads: DashMap::new(),
+            upload_channels: Arc::new(DashMap::new()),
         }
     }
 
@@ -492,6 +511,106 @@ impl WebMessenger {
             time,
             content: response_content,
         })
+    }
+
+    // ========== 上传引擎 ==========
+
+    /// 写入附件数据。通过 flume 队列串行处理，避免竞争。
+    /// 返回当前已写入位置。
+    pub fn write_attachment_chunk(
+        self: &Arc<Self>,
+        key: &str,
+        pos: u64,
+        size: u32,
+        data: Bytes,
+    ) -> Result<u64> {
+        // 从 pending_uploads 获取路径信息（在发送到队列前读取，避免 DashMap 跨线程问题）
+        let (temp_path, target_path, size_bytes) = {
+            let pending = self.pending_uploads.get(key)
+                .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
+            (pending.temp_path.clone(), pending.target_path.clone(), pending.size_bytes)
+        };
+
+        let tx = Self::get_or_create_upload_channel(self, key);
+        let (res_tx, res_rx) = oneshot::channel();
+
+        tx.send(UploadCommand::Write {
+            key: key.to_string(),
+            pos,
+            size,
+            data,
+            size_bytes,
+            temp_path,
+            target_path,
+            res: res_tx,
+        }).map_err(|_| Error::InternalError("upload channel closed".to_string()))?;
+
+        // 等待后台任务处理完成
+        res_rx.blocking_recv().map_err(|_| Error::InternalError("upload channel recv error".to_string()))?
+            .map_err(|e| Error::InternalError(e))
+    }
+
+    fn get_or_create_upload_channel(this: &Arc<Self>, key: &str) -> flume::Sender<UploadCommand> {
+        if let Some(entry) = this.upload_channels.get(key) {
+            return entry.value().clone();
+        }
+
+        let (tx, rx) = flume::unbounded::<UploadCommand>();
+        let store = this.attachment_store.clone();
+        let key_owned = key.to_string();
+        let channels = this.upload_channels.clone();
+
+        tokio::spawn(async move {
+            let mut current_pos = 0u64;
+            while let Ok(cmd) = rx.recv_async().await {
+                match cmd {
+                    UploadCommand::Write { key, pos, size, data, size_bytes, temp_path, target_path, res } => {
+                        let result = Self::process_upload_write(
+                            &store, &mut current_pos, pos, data, size_bytes, &temp_path, &target_path
+                        );
+
+                        // 如果是最后一块，清理 channel
+                        if let Ok(p) = &result {
+                            if *p >= size_bytes {
+                                channels.remove(&key);
+                            }
+                        }
+                        let _ = res.send(result);
+                    }
+                }
+            }
+        });
+
+        this.upload_channels.insert(key_owned, tx.clone());
+        tx
+    }
+
+    fn process_upload_write(
+        store: &AttachmentStore,
+        current_pos: &mut u64,
+        pos: u64,
+        data: Bytes,
+        size_bytes: u64,
+        temp_path: &PathBuf,
+        target_path: &PathBuf,
+    ) -> std::result::Result<u64, String> {
+        if pos < *current_pos {
+            return Ok(*current_pos);  // 已写入，幂等
+        }
+        if pos > *current_pos {
+            return Err(format!("out of order: expected pos={}, got pos={}", *current_pos, pos));
+        }
+
+        store.append_to_temp(temp_path, &data)
+            .map_err(|e| e.to_string())?;
+        *current_pos = pos + data.len() as u64;
+
+        if *current_pos >= size_bytes {
+            AttachmentStore::finalize_upload(temp_path, target_path)
+                .map_err(|e| e.to_string())?;
+        }
+
+        Ok(*current_pos)
     }
 
     async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
