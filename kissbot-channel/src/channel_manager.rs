@@ -7,7 +7,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -364,19 +364,8 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
             manager.receiver_id_to_key.remove(&header.id);
         }
 
-        // 拷贝数据以便构造 owned SliceDataWriter（摆脱生命周期约束）
-        let owned_data = data.to_vec();
-        struct SliceDataWriter(Vec<u8>);
-
-        impl DataWriter<crate::Error> for SliceDataWriter {
-            fn write_to(&self, buf: &mut BytesMut) -> std::result::Result<(), crate::Error> {
-                buf.extend_from_slice(&self.0);
-                Ok(())
-            }
-        }
-
-        let writer: Arc<dyn DataWriter<crate::Error>> = Arc::new(SliceDataWriter(owned_data));
-        messenger.send_attachment_payload(&key, header.size, header.pos, writer).await?;
+        let payload = data.slice(OFFSET_ATT_DATA..);
+        messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
 
         Ok(None)
     }
@@ -718,29 +707,22 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, writer: Arc<dyn DataWriter<Error>>) -> Result<()> {
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (internal_id, ref connect_weak) = *sender_entry;
         let connect_context = connect_weak.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
-        // 从 writer 读取数据后立即释放 writer（避免 writer 跨 await 的 Send 限制）
-        let mut payload_buf = BytesMut::new();
-        writer.write_to(&mut payload_buf)?;
-        let payload_data = payload_buf.freeze();
-        // writer 在这里 drop，不再跨 await
-        drop(writer);
-
         // 构造 kai-ws 二进制帧: [sn(4) + payload_type(4) + status_code(4)] + [id(4) + size(4) + pos(8)] + [data]
-        let mut frame = BytesMut::new();
+        let mut frame = BytesMut::with_capacity(OFFSET_ATT_DATA + data.len());
         frame.put_u32(0);  // sn
         frame.put_u32(TYPE_ATTACHMENT_PAYLOAD);  // payload_type
         frame.put_u32(CODE_SUCCESS);  // status_code
         frame.put_u32(internal_id);
         frame.put_u32(size);
         frame.put_u64(pos);
-        frame.extend_from_slice(&payload_data);
+        frame.extend_from_slice(&data);
 
         if size == 0 {
             //最后传个size=0的，表示结尾
