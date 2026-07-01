@@ -16,6 +16,8 @@ pub trait Messenger: Send + Sync + 'static {
     async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()>;
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> Result<Arc<AttachmentInfoResponse>>;
+
+    async fn start_send_download_attachment_payload(&self, key: &str) -> Result<()>;
 }
 
 /// Messenger 创建器。M 为具体 Messenger 类型，create 返回 Arc<M> 供调用方直接使用。

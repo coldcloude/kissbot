@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 
@@ -26,7 +25,6 @@ pub fn process_attachment_message(
     msg_id: &str,
     key_generator: &dyn AttachmentKeyGenerator,
 ) -> Result<(Content, OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
-    let attachment_key_map = Arc::new(DashMap::new());
     let mut pending_attachments: Vec<(Arc<AttachmentInfo>, Arc<String>)> = Vec::new();
 
     let new_content = match outgoing.msg_type.as_str() {
@@ -47,7 +45,6 @@ pub fn process_attachment_message(
                 outgoing.group_id.as_str(), msg_id, &info
             );
             let key_arc = Arc::new(key.clone());
-            attachment_key_map.insert(info.att_id.to_string(), key_arc.clone());
             pending_attachments.push((info.clone(), key_arc.clone()));
             let response = Arc::new(AttachmentInfoResponse {
                 key: key_arc,
@@ -71,7 +68,6 @@ pub fn process_attachment_message(
                         outgoing.group_id.as_str(), msg_id, &info
                     );
                     let key_arc = Arc::new(key.clone());
-                    attachment_key_map.insert(info.att_id.to_string(), key_arc.clone());
                     pending_attachments.push((info.clone(), key_arc.clone()));
                     let response = Arc::new(AttachmentInfoResponse {
                         key: key_arc,
