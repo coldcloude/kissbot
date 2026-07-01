@@ -68,13 +68,12 @@ pub struct AttachmentDownloadRequest {
     pub key: Arc<String>,
 }
 
-/// ChannelManager 返回给 agent 的 response，附加上传 id
+/// ChannelManager 返回给 agent 的 response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsOutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub content: Content,
-    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,   // att_id → upload_id
 }
 
 /// ChannelManager 返回给 agent 的下载 response，附加下载 id
@@ -82,6 +81,14 @@ pub struct WsOutgoingMessageResponse {
 pub struct WsAttachmentDownloadResponseHeader {
     pub download_id: u32,
     pub response: Arc<AttachmentInfoResponse>,
+}
+
+/// Agent 对 attachment payload chunk 的确认 response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadAttachmentPayloadResponse {
+    pub key: Arc<String>,
+    pub error_code: u32,
+    pub error_msg: Option<Arc<String>>,
 }
 
 // ========================= Attachment Binary ==========================
@@ -249,7 +256,6 @@ mod tests {
     #[test]
     fn test_serde_outgoing_message() {
         let att_info = Arc::new(AttachmentInfo {
-            att_id: Arc::new("att1".to_string()),
             file_name: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 12345,
@@ -300,7 +306,6 @@ mod tests {
     #[test]
     fn test_serde_attachment_download_response_header() {
         let metadata = Arc::new(AttachmentInfo {
-            att_id: Arc::new("att1".to_string()),
             file_name: Arc::new("doc.pdf".to_string()),
             mime_type: Arc::new("application/pdf".to_string()),
             size_bytes: 99999,
@@ -312,7 +317,7 @@ mod tests {
         let json = serde_json::to_value(&response).unwrap();
         let deserialized: Arc<AttachmentInfoResponse> = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.key, "g1/msg1/doc.pdf");
-        assert_eq!(*deserialized.info.att_id, "att1");
+        assert_eq!(*deserialized.info.file_name, "doc.pdf");
     }
 
     #[test]

@@ -56,7 +56,6 @@ pub struct MessageItem {
 /// 附件信息。含 key 时表示已由 channel 处理后嵌入 key。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentInfo {
-    pub att_id: Arc<String>,
     pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
@@ -77,7 +76,6 @@ mod tests {
         match msg_type {
             MSG_TYPE_TEXT => Content::Text(Arc::new("hello".to_string())),
             MSG_TYPE_ATTACHMENT => Content::AttachmentInfo(Arc::new(AttachmentInfo {
-                att_id: Arc::new("att1".to_string()),
                 file_name: Arc::new("photo.png".to_string()),
                 mime_type: Arc::new("image/png".to_string()),
                 size_bytes: 1024,
@@ -115,7 +113,6 @@ mod tests {
     #[test]
     fn test_serde_content_attachment_info() {
         let info = Arc::new(AttachmentInfo {
-            att_id: Arc::new("att1".to_string()),
             file_name: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 1024,
@@ -129,7 +126,6 @@ mod tests {
     #[test]
     fn test_serde_content_attachment_info_response() {
         let info = Arc::new(AttachmentInfo {
-            att_id: Arc::new("att1".to_string()),
             file_name: Arc::new("photo.png".to_string()),
             mime_type: Arc::new("image/png".to_string()),
             size_bytes: 1024,
