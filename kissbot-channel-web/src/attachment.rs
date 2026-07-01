@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Arc;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 /// 附件元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentMeta {
-    pub att_id: Arc<String>,
     pub file_name: Arc<String>,
     pub mime_type: Arc<String>,
     pub size_bytes: u64,
@@ -59,7 +58,6 @@ impl AttachmentStore {
         };
 
         Ok(AttachmentMeta {
-            att_id: Arc::new(format!("{}/{}/{}", group_id, msg_id, filename)),
             file_name: Arc::new(filename.to_string()),
             mime_type: Arc::new(mime_type.to_string()),
             size_bytes: data.len() as u64,
@@ -176,7 +174,6 @@ impl AttachmentStore {
         let thumb_path = self.base_path.join(group_id).join(msg_id).join(format!("thumb_{}", filename));
 
         Ok(AttachmentMeta {
-            att_id: Arc::new(key.to_string()),
             file_name: Arc::new(filename),
             mime_type: Arc::new(mime_type.to_string()),
             size_bytes: metadata.len(),

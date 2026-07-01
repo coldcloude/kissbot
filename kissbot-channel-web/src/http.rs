@@ -206,7 +206,6 @@ fn build_message_content(req: &SendMessageRequest) -> (Content, String) {
     // 附件部分
     for a in atts {
         let info = AttachmentInfo {
-            att_id: a.key.clone(),
             file_name: a.file_name.clone(),
             mime_type: Arc::new(mime_guess::from_path(a.file_name.as_str())
                 .first_or_octet_stream().to_string()),
@@ -354,14 +353,11 @@ async fn handle_init_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<InitAttachmentRequest>,
 ) -> impl IntoResponse {
-    // 1. 分配 upload_id
-    let upload_id = messenger.next_attachment_sn();
-
-    // 2. 生成 msg_id
+    // 1. 生成 msg_id
     let msg_id = messenger.next_msg_id();
     let key = format!("{}/{}/{}", req.group_id, msg_id, req.file_name);
 
-    // 3. 创建临时文件
+    // 2. 创建临时文件
     let (temp_path, target_path) = match messenger.attachment_store.create_temp_file(
         req.group_id.as_str(), msg_id.as_str(), req.file_name.as_str()
     ) {
@@ -369,7 +365,7 @@ async fn handle_init_attachment(
         Err(e) => return Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     };
 
-    // 4. 记录 PendingAttachment
+    // 3. 记录 PendingAttachment
     let temp_path_for_cleanup = temp_path.clone();
     messenger.pending_uploads.insert(key.clone(), PendingAttachment {
         group_id: req.group_id.clone(),
@@ -381,9 +377,8 @@ async fn handle_init_attachment(
         target_path,
     });
 
-    // 5. 构造 OutgoingMessage 并发送
+    // 4. 构造 OutgoingMessage 并发送
     let info = AttachmentInfo {
-        att_id: Arc::new(upload_id.to_string()),
         file_name: req.file_name.clone(),
         mime_type: req.mime_type.clone(),
         size_bytes: req.size_bytes,
@@ -398,7 +393,6 @@ async fn handle_init_attachment(
 
     match messenger.send(outgoing).await {
         Ok(resp) => Json(ApiResponse::success(serde_json::json!({
-            "upload_id": upload_id,
             "key": key,
             "msg_id": resp.msg_id,
         }))),

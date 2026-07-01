@@ -143,8 +143,6 @@ pub struct WebMessenger {
     on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
-    // 新增：
-    global_attachment_sn: Arc<AtomicU32>,
     pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
     pub upload_channels: Arc<DashMap<String, flume::Sender<UploadCommand>>>,
 }
@@ -159,7 +157,6 @@ impl WebMessenger {
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
         attachment_dir: &str,
-        global_attachment_sn: Arc<AtomicU32>,
     ) -> Self {
         Self {
             messenger_id,
@@ -172,7 +169,6 @@ impl WebMessenger {
             on_user_remove,
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
-            global_attachment_sn,
             pending_uploads: DashMap::new(),
             upload_channels: Arc::new(DashMap::new()),
         }
@@ -182,10 +178,6 @@ impl WebMessenger {
         let now = Utc::now().format("%Y%m%d%H%M%S").to_string();
         let seq = self.msg_id_seq.fetch_add(1, Ordering::SeqCst) % 1_000_000;
         Arc::new(format!("{}{:06}", now, seq))
-    }
-
-    pub fn next_attachment_sn(&self) -> u32 {
-        self.global_attachment_sn.fetch_add(1, Ordering::SeqCst)
     }
 
     async fn save(&self, cfg: &WebMessengerRepo) -> Result<()> {
@@ -707,7 +699,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
-        global_attachment_sn: Arc<AtomicU32>,
+        _global_attachment_sn: Arc<AtomicU32>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
@@ -719,7 +711,6 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_download_attachment_payload,
             on_user_remove,
             &self.attachment_dir,
-            global_attachment_sn,
         ));
 
         Ok(messenger)
@@ -747,28 +738,31 @@ impl Messenger for WebMessenger {
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
         let info = AttachmentInfo {
-            att_id: meta.att_id.clone(),
             file_name: meta.file_name.clone(),
             mime_type: meta.mime_type.clone(),
             size_bytes: meta.size_bytes,
         };
-        let response_key = self.generate_key(request.group_id.as_str(), &meta.att_id, &info);
 
-        // 启动后台任务：流式读取文件并推送
+        Ok(Arc::new(AttachmentInfoResponse {
+            key: Arc::clone(&request.key),
+            info: Arc::new(info),
+        }))
+    }
+
+    async fn start_send_download_attachment_payload(&self, key: &str) -> std::result::Result<(), kissbot_channel::Error> {
         let sender = self.on_download_attachment_payload.upgrade()
             .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
         let store = self.attachment_store.clone();
-        let key = request.key.clone();
-        let key_for_sender = response_key.clone();
+        let key_owned = key.to_string();
 
         tokio::spawn(async move {
             const CHUNK_SIZE: u64 = 65536;
 
-            let file_result = store.open_file(&key);
+            let file_result = store.open_file(&key_owned);
             let (mut file, file_len) = match file_result {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::error!("Failed to open attachment for download: key={}, error={}", key, e);
+                    tracing::error!("Failed to open attachment for download: key={}, error={}", key_owned, e);
                     return;
                 }
             };
@@ -778,33 +772,29 @@ impl Messenger for WebMessenger {
             while pos < file_len && ok {
                 let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
                 let chunk_size = (end - pos) as usize;
-                let buf = match sender.prepare_send(&key_for_sender, file_len as u32, pos) {
-                    Ok(mut b) => {
-                        // prepare_send 已分配足够 capacity，直接读取到 payload 偏移处
-                        use std::io::Read;
-                        match (&mut file).read_exact(&mut b[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
-                            Ok(()) => b,
-                            Err(e) => {
-                                tracing::error!("Failed to read file chunk: {}", e);
-                                break;
-                            }
-                        }
+                let (mut buf, _sn) = match sender.prepare_send(&key_owned, file_len as u32, pos) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("prepare_send error: {}", e);
+                        break;
                     }
-                    Err(_) => break,
                 };
-                ok = sender.send(&key_for_sender, file_len as u32, pos, buf).await.is_ok();
+                // 读取到 payload 偏移处（prepare_send 已分配足够 capacity）
+                use std::io::Read;
+                if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
+                    tracing::error!("Failed to read file chunk: {}", e);
+                    break;
+                }
+                ok = sender.send(&key_owned, file_len as u32, pos, buf).await.is_ok();
                 pos = end;
             }
             // 发送 size=0 的结束标记
-            if let Ok(buf) = sender.prepare_send(&key_for_sender, 0, pos) {
-                let _ = sender.send(&key_for_sender, 0, pos, buf).await;
+            if let Ok((buf, _sn)) = sender.prepare_send(&key_owned, 0, pos) {
+                let _ = sender.send(&key_owned, 0, pos, buf).await;
             }
         });
 
-        Ok(Arc::new(AttachmentInfoResponse {
-            key: Arc::new(response_key),
-            info: Arc::new(info),
-        }))
+        Ok(())
     }
 }
 
