@@ -467,11 +467,16 @@ async fn handle_download_attachment(
         None => return (StatusCode::BAD_REQUEST, "Missing key").into_response(),
     };
 
-    // 获取文件信息和 MIME 类型
-    let (_, file_len, mime) = match messenger.open_download_reader(key) {
-        Ok(info) => info,
+    // 获取文件元数据
+    let file_len = match messenger.attachment_store.open_file(key) {
+        Ok((_, len)) => len,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
+    let meta = match messenger.attachment_store.get_meta_by_key(key) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+    let mime = mime_guess::from_path(meta.file_name.as_str()).first_or_octet_stream().to_string();
 
     // 解析 Range header
     let range_header = headers.get(axum::http::header::RANGE)
@@ -481,7 +486,11 @@ async fn handle_download_attachment(
         // 解析 "bytes=start-end" 格式
         if let Some((start, end)) = parse_range(range_str, file_len) {
             let length = end - start + 1;
-            match messenger.read_attachment_range(key, start, length) {
+            let (file, _) = match messenger.attachment_store.open_file(key) {
+                Ok(f) => f,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            };
+            match read_attachment_range(file, start, length) {
                 Ok(data) => {
                     let content_range = format!("bytes {}-{}/{}", start, end, file_len);
                     return (
@@ -499,12 +508,25 @@ async fn handle_download_attachment(
     }
 
     // 无 Range 或 Range 解析失败，返回全量文件
-    match messenger.read_attachment_range(key, 0, file_len) {
+    let (file, _) = match messenger.attachment_store.open_file(key) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+    match read_attachment_range(file, 0, file_len) {
         Ok(data) => {
             ([(axum::http::header::CONTENT_TYPE, mime)], data).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
+}
+
+/// 读取指定范围的文件数据
+fn read_attachment_range(mut file: std::fs::File, offset: u64, length: u64) -> Result<Bytes, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; length as usize];
+    file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+    Ok(Bytes::from(buf))
 }
 
 /// 解析 "bytes=start-end" 格式的 Range header
