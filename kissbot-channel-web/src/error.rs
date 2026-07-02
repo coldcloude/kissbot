@@ -28,6 +28,9 @@ pub enum Error {
 
     #[error("Internal error: {0}")]
     InternalError(String),
+
+    #[error("Channel error: {0}")]
+    ChannelError(#[from] kissbot_channel::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,6 +47,7 @@ impl From<Error> for kissbot_channel::Error {
             Error::JsonError(e) => kissbot_channel::Error::JsonError(e),
             Error::ImageError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
             Error::InternalError(msg) => kissbot_channel::Error::InternalError(msg),
+            Error::ChannelError(e) => e,
         }
     }
 }

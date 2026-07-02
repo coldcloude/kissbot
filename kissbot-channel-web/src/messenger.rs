@@ -728,12 +728,11 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        self.send(Arc::new(message)).await.map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))
+        Ok(self.send(Arc::new(message)).await?)
     }
 
     async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
-        self.write_attachment_chunk(key, pos, size, data)
-            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
+        self.write_attachment_chunk(key, pos, size, data)?;
         Ok(AttachmentPayloadResponse {
             key: Arc::new(key.to_string()),
             pos,
