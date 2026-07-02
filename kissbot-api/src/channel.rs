@@ -88,8 +88,17 @@ pub struct WsAttachmentDownloadResponseHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentPayloadResponse {
     pub key: Arc<String>,
+    pub pos: u64,
+    pub size: u32,
     pub error_code: u32,
     pub error_msg: Option<Arc<String>>,
+}
+
+/// WS 传输用的 attachment payload response，包含二进制帧头中的 id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsAttachmentPayloadResponse {
+    pub id: u32,
+    pub response: AttachmentPayloadResponse,
 }
 
 // ========================= Attachment Binary ==========================

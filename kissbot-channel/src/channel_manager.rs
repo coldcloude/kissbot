@@ -395,6 +395,8 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
 
         let response = serde_json::to_value(AttachmentPayloadResponse {
             key: Arc::new(key),
+            pos: header.pos,
+            size: header.size,
             error_code: 0,
             error_msg: None,
         })?;
@@ -423,6 +425,8 @@ impl WsJsonProcessor for DownloadResponseHandler {
                 .and_then(|v| serde_json::from_value::<AttachmentPayloadResponse>(v).ok())
                 .unwrap_or_else(|| AttachmentPayloadResponse {
                     key: Arc::new(String::new()),
+                    pos: 0,
+                    size: 0,
                     error_code: data.status_code,
                     error_msg: None,
                 });
@@ -786,7 +790,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         Ok((buf, sn))
     }
 
-    async fn send(&self, key: &str, size: u32, _pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
+    async fn send(&self, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (_internal_id, ref connect_weak) = *sender_entry;
@@ -799,6 +803,8 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             connect_context.ws_context.send_bin(buf.freeze()).await?;
             return Ok(AttachmentPayloadResponse {
                 key: Arc::new(key.to_string()),
+                pos,
+                size,
                 error_code: 0,
                 error_msg: None,
             });
