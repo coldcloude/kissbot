@@ -94,6 +94,7 @@ pub fn process_attachment_message(
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
         time: Arc::new(String::new()),  // 调用方会覆写 time
+        msg_type: outgoing.msg_type.clone(),
         content: new_content.clone(),
     };
 

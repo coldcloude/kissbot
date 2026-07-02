@@ -57,6 +57,7 @@ pub struct OutgoingMessage {
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
+    pub msg_type: Arc<String>,
     pub content: Content,  // 转换后的 content（已嵌入 key）
 }
 
@@ -73,6 +74,7 @@ pub struct AttachmentDownloadRequest {
 pub struct WsOutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
+    pub msg_type: Arc<String>,
     pub content: Content,
 }
 
@@ -281,12 +283,14 @@ mod tests {
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
+            msg_type: Arc::new("text".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
             content,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
+        assert_eq!(*deserialized.msg_type, "text");
         assert_eq!(deserialized.content, Content::Text(Arc::new("response content".to_string())));
     }
 

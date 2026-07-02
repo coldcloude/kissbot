@@ -314,6 +314,7 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         let ws_response = WsOutgoingMessageResponse {
             msg_id: response.msg_id.clone(),
             time: response.time.clone(),
+            msg_type: response.msg_type.clone(),
             content: response.content.clone(),
         };
 

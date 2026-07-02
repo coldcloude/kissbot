@@ -489,7 +489,7 @@ impl WebMessenger {
             user_id: outgoing.user_id,
             group_id: outgoing.group_id,
             is_self: 1,
-            msg_type: outgoing.msg_type,
+            msg_type: outgoing.msg_type.clone(),
             content: Arc::new(serde_json::to_string(&response_content).unwrap_or_default()),
             time: time.clone(),
         };
@@ -501,6 +501,7 @@ impl WebMessenger {
         Ok(OutgoingMessageResponse {
             msg_id,
             time,
+            msg_type: outgoing.msg_type.clone(),
             content: response_content,
         })
     }
