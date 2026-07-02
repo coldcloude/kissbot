@@ -290,8 +290,8 @@ struct OutgoingMessageProcessor {
 fn collect_attachment_keys(
     content: &Content,
     manager: &ChannelManager,
-    upload_id_map: &DashMap<String, u32>,
     messenger_weak: Weak<dyn Messenger>,
+    upload_id_map: &DashMap<String, u32>,
 ) {
     match content {
         Content::AttachmentInfoResponse(resp) => {
@@ -302,7 +302,7 @@ fn collect_attachment_keys(
         }
         Content::Multi(items) => {
             for item in items.iter() {
-                collect_attachment_keys(&item.content, manager, upload_id_map, messenger_weak.clone());
+                collect_attachment_keys(&item.content, manager, messenger_weak.clone(), upload_id_map);
             }
         }
         _ => {}
@@ -335,7 +335,7 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         // 遍历 content 中的 AttachmentInfoResponse，为每个 key 分配 upload_id 并注册
         let attachment_upload_id_map = Arc::new(DashMap::new());
         let messenger_weak = Arc::downgrade(&messenger_context.messenger);
-        collect_attachment_keys(&response.content, &manager, &attachment_upload_id_map, messenger_weak);
+        collect_attachment_keys(&response.content, &manager, messenger_weak, &attachment_upload_id_map);
 
         // 构造 WsOutgoingMessageResponse
         let ws_response = WsOutgoingMessageResponse {
