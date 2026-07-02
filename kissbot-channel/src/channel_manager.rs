@@ -5,7 +5,7 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
-use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
+use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, WsAttachmentPayloadResponse, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use kissbot_api::message::Content;
@@ -413,13 +413,13 @@ impl WsBinaryProcessor for AttachmentPayloadProcessor {
 }
 
 struct DownloadResponseHandler {
-    response_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<AttachmentPayloadResponse>>>,
+    response_tx: Option<tokio::sync::oneshot::Sender<AttachmentPayloadResponse>>,
 }
 
 #[async_trait]
-impl WsJsonProcessor for DownloadResponseHandler {
-    async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
-        if let Some(tx) = self.response_tx.lock().await.take() {
+impl WsJsonProcessorMut for DownloadResponseHandler {
+    async fn process_json(&mut self, data: WsMessage, _context: Arc<WsContext>) {
+        if let Some(tx) = self.response_tx.take() {
             let response = data.payload
                 .and_then(|v| serde_json::from_value::<AttachmentPayloadResponse>(v).ok())
                 .unwrap_or_else(|| AttachmentPayloadResponse {
@@ -846,8 +846,8 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         let mut success = false;
         let result = {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let handler = Arc::new(DownloadResponseHandler {
-                response_tx: tokio::sync::Mutex::new(Some(tx)),
+            let handler = Box::new(DownloadResponseHandler {
+                response_tx: Some(tx),
             });
 
             connect_context.ws_context.send_bin_with_json_response(sn, buf.freeze(), handler).await?;
