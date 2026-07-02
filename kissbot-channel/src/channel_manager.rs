@@ -8,6 +8,7 @@ use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, DownloadAttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
+use kissbot_api::message::Content;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -287,6 +288,30 @@ struct OutgoingMessageProcessor {
     manager: Weak<ChannelManager>,
 }
 
+/// 递归遍历 Content，提取所有 AttachmentInfoResponse 的 key，分配 upload_id 并注册
+fn collect_attachment_keys(
+    content: &Content,
+    manager: &ChannelManager,
+    upload_id_map: &DashMap<String, u32>,
+    messenger_weak: Weak<dyn Messenger>,
+) {
+    match content {
+        Content::AttachmentInfoResponse(resp) => {
+            let key = resp.key.to_string();
+            let id = manager.global_attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            manager.attachment_receiver_map.insert(key.clone(), (id, messenger_weak.clone()));
+            manager.receiver_id_to_key.insert(id, key.clone());
+            upload_id_map.insert(key, id);
+        }
+        Content::Multi(items) => {
+            for item in items.iter() {
+                collect_attachment_keys(&item.content, manager, upload_id_map, messenger_weak.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
 #[async_trait]
 impl JsonProcessorWrapper for OutgoingMessageProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
@@ -310,12 +335,18 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
 
         let response = messenger_context.messenger.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
 
+        // 遍历 content 中的 AttachmentInfoResponse，为每个 key 分配 upload_id 并注册
+        let attachment_upload_id_map = Arc::new(DashMap::new());
+        let messenger_weak = Arc::downgrade(&messenger_context.messenger);
+        collect_attachment_keys(&response.content, &manager, &attachment_upload_id_map, messenger_weak);
+
         // 构造 WsOutgoingMessageResponse
         let ws_response = WsOutgoingMessageResponse {
             msg_id: response.msg_id.clone(),
             time: response.time.clone(),
             msg_type: response.msg_type.clone(),
             content: response.content.clone(),
+            attachment_upload_id_map,
         };
 
         let response = serde_json::to_value(ws_response)?;

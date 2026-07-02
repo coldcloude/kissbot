@@ -76,6 +76,8 @@ pub struct WsOutgoingMessageResponse {
     pub time: Arc<String>,
     pub msg_type: Arc<String>,
     pub content: Content,
+    /// key → internal_upload_id 映射，agent 上传 attachment payload 时使用
+    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,
 }
 
 /// ChannelManager 返回给 agent 的下载 response，附加下载 id
