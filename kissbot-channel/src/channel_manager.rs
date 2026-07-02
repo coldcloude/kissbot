@@ -426,18 +426,22 @@ struct AttachmentDownloadRequestProcessor {
     manager: Weak<ChannelManager>,
 }
 
-#[async_trait]
-impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
-    async fn process_json(&self, data: WsMessage, context: Arc<WsContext>) {
-        let result = self.handle_download_request(data, context).await;
-        if let Err(e) = result {
-            error!("attachment_download_request error: {:?}", e);
+struct StartSendDownloadAttachmentPayloadExecutor {
+    messenger: Arc<dyn Messenger>,
+    key: Arc<String>,
+}
+
+impl StartSendDownloadAttachmentPayloadExecutor {
+    pub async fn execute(&self) {
+        // start_send_download_attachment_payload 内部自己 spawn
+        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.key.as_str()).await {
+            error!("start_send_download_attachment_payload error: {:?}", e);
         }
     }
 }
 
 impl AttachmentDownloadRequestProcessor {
-    async fn handle_download_request(&self, data: WsMessage, context: Arc<WsContext>) -> Result<()> {
+    async fn process_download_request_header(&self, data: WsMessage) -> Result<(WsAttachmentDownloadResponseHeader,StartSendDownloadAttachmentPayloadExecutor)> {
         let payload = data.payload
             .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         let request = serde_json::from_value::<AttachmentDownloadRequest>(payload)?;
@@ -463,24 +467,58 @@ impl AttachmentDownloadRequestProcessor {
         manager.attachment_sender_map.insert(key.to_string(), (internal_id, Arc::downgrade(&connect_context)));
 
         // 构造 WsAttachmentDownloadResponseHeader 返回给 agent
-        let ws_response = WsAttachmentDownloadResponseHeader {
+        Ok((WsAttachmentDownloadResponseHeader {
             download_id: internal_id,
             response: att_info_response,
+        },StartSendDownloadAttachmentPayloadExecutor {
+            messenger: messenger,
+            key: key
+        }))
+    }
+}
+
+#[async_trait]
+impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
+    async fn process_json(&self, data: WsMessage, context: Arc<WsContext>) {
+        let sn = data.sn;
+        let mut result: Option<Error> = None;
+        match self.process_download_request_header(data).await {
+            Ok((response_header,start_executor)) => {
+                match serde_json::to_value(response_header) {
+                    Ok(response_header_value) => {
+                        // 先返回 header，再启动 payload 推送
+                        match context.send_json(WsMessage {
+                            sn: sn,
+                            status_code: CODE_SUCCESS,
+                            payload_type: TYPE_RESPONSE,
+                            payload: Some(response_header_value),
+                        }).await {
+                            Ok(_) => {
+                                start_executor.execute().await;
+                            }
+                            Err(e) => {
+                                error!("attachment_download_request error: {:?}", e);
+                            }
+                        };
+                    }
+                    Err(e) => {
+                        result = Some(Error::JsonError(e));
+                    }
+                }
+            }
+            Err(e) => {
+                result = Some(e);
+            }
         };
-        let response_value = serde_json::to_value(ws_response)?;
-
-        // 先返回 header，再启动 payload 推送
-        context.send_json(WsMessage {
-            sn: data.sn,
-            status_code: CODE_SUCCESS,
-            payload_type: TYPE_RESPONSE,
-            payload: Some(response_value),
-        }).await?;
-
-        // start_send_download_attachment_payload 内部自己 spawn
-        messenger.start_send_download_attachment_payload(&key).await?;
-
-        Ok(())
+        if let Some(e) = result {
+            let _ = context.send_json(WsMessage {
+                sn,
+                status_code: CODE_ERROR,
+                payload_type: TYPE_RESPONSE,
+                payload: None,
+            }).await;
+            error!("attachment_download_request error: {:?}", e);
+        }
     }
 }
 
