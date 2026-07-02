@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, WsAttachmentPayloadResponse, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use kissbot_api::message::Content;
 use tracing::{Level, error, info, span};
@@ -382,11 +382,24 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
             manager.attachment_receiver_map.remove(&header.id);
         }
 
-        let payload = data.slice(OFFSET_ATT_DATA..);
-        let att_response = messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
+        let mut success = false;
+        let result = {
+            let payload = data.slice(OFFSET_ATT_DATA..);
+            let response = messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
+            let ws_response = WsAttachmentPayloadResponse {
+                id: header.id,
+                response
+            };
+            let value = serde_json::to_value(&ws_response)?;
+            success = ws_response.response.error_code == 0;
+            Ok(Some(value))
+        };
 
-        let response = serde_json::to_value(att_response)?;
-        Ok(Some(response))
+        if !success {
+            manager.attachment_receiver_map.remove(&header.id);
+        }
+
+        result
     }
 }
 
@@ -729,7 +742,7 @@ impl ChannelManager {
         Ok(())
     }
 
-    async fn handle_user_remove_internal(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
+    async fn process_user_remove(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
             .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
 
@@ -786,7 +799,7 @@ impl UserRemoveHandler for ChannelManager {
     async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>) {
         let span = span!(Level::INFO, "channel_manager handle user remove");
         let _enter = span.enter();
-        if let Err(e) = self.handle_user_remove_internal(event).await {
+        if let Err(e) = self.process_user_remove(event).await {
             error!("handle_user_remove error: {:?}", e);
         }
     }
@@ -794,11 +807,9 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_send(&self, key: &str, size: u32, pos: u64) -> Result<(BytesMut, u32)> {
-        let sender_entry = self.attachment_sender_map.get(key)
+    fn prepare_send(&self, key: &str, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
+        let id_connect_context = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
-        let (internal_id, ref _connect_weak) = *sender_entry;
-        drop(sender_entry);
 
         let sn = self.global_attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // capacity = 头部 + payload 数据空间
@@ -807,22 +818,21 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         buf.put_u32(sn);
         buf.put_u32(TYPE_ATTACHMENT_PAYLOAD);
         buf.put_u32(CODE_SUCCESS);
-        buf.put_u32(internal_id);
+        buf.put_u32(id_connect_context.0);
         buf.put_u32(size);
         buf.put_u64(pos);
-        Ok((buf, sn))
+        Ok((sn, buf))
     }
 
-    async fn send(&self, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
-        let sender_entry = self.attachment_sender_map.get(key)
+    async fn send(&self, sn: u32, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
+        let id_connect_context = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
-        let (_internal_id, ref connect_weak) = *sender_entry;
-        let connect_context = connect_weak.upgrade()
+        let connect_context = id_connect_context.1.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
         if size == 0 {
+            // size=0 的结束标记，直接发送，不需要等待 response
             self.attachment_sender_map.remove(key);
-            // size=0 的结束标记，不需要 await response
             connect_context.ws_context.send_bin(buf.freeze()).await?;
             return Ok(AttachmentPayloadResponse {
                 key: Arc::new(key.to_string()),
@@ -833,20 +843,24 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             });
         }
 
-        // 从 buf 中提取 sn（prepare_send 已写入）
-        let sn = {
-            let arr: [u8; 4] = buf[..4].try_into().unwrap();
-            u32::from_be_bytes(arr)
+        let mut success = false;
+        let result = {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let handler = Arc::new(DownloadResponseHandler {
+                response_tx: tokio::sync::Mutex::new(Some(tx)),
+            });
+
+            connect_context.ws_context.send_bin_with_json_response(sn, buf.freeze(), handler).await?;
+
+            let response =  rx.await?;
+            success = response.error_code == 0;
+            Ok(response)
         };
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let handler = Arc::new(DownloadResponseHandler {
-            response_tx: tokio::sync::Mutex::new(Some(tx)),
-        });
+        if !success {
+            self.attachment_sender_map.remove(key);
+        }
 
-        connect_context.ws_context.send_bin_with_json_response(sn, buf.freeze(), handler).await?;
-
-        let response = rx.await.map_err(|_| Error::InternalError("download response channel closed".to_string()))?;
-        Ok(response)
+        result
     }
 }

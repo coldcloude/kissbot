@@ -46,11 +46,14 @@ pub enum Error {
     #[error("WS error: {0}")]
     WsError(#[from] kai_ws::Error),
 
-    #[error("Send error: {0}")]
+    #[error("Flume Send error: {0}")]
     SendError(#[from] flume::SendError<MessagesRecord>),
 
-    #[error("Recv error: {0}")]
+    #[error("Flume Recv error: {0}")]
     RecvError(#[from] flume::RecvError),
+
+    #[error("")]
+    OneshotRecvError(#[from] tokio::sync::oneshot::error::RecvError),
 
     #[error("TryFromSliceError: {0}")]
     TryFromSliceError(#[from] std::array::TryFromSliceError),

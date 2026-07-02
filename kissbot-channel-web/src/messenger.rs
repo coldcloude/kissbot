@@ -779,7 +779,7 @@ impl Messenger for WebMessenger {
             while pos < file_len && ok {
                 let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
                 let chunk_size = (end - pos) as usize;
-                let (mut buf, _sn) = match sender.prepare_send(&key_owned, chunk_size as u32, pos) {
+                let (sn, mut buf) = match sender.prepare_send(&key_owned, chunk_size as u32, pos) {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::error!("prepare_send error: {}", e);
@@ -792,12 +792,12 @@ impl Messenger for WebMessenger {
                     tracing::error!("Failed to read file chunk: {}", e);
                     break;
                 }
-                ok = sender.send(&key_owned, chunk_size as u32, pos, buf).await.is_ok();
+                ok = sender.send(sn, &key_owned, chunk_size as u32, pos, buf).await.is_ok();
                 pos = end;
             }
             // 发送 size=0 的结束标记
-            if let Ok((buf, _sn)) = sender.prepare_send(&key_owned, 0, pos) {
-                let _ = sender.send(&key_owned, 0, pos, buf).await;
+            if let Ok((sn, buf)) = sender.prepare_send(&key_owned, 0, pos) {
+                let _ = sender.send(sn, &key_owned, 0, pos, buf).await;
             }
         });
 

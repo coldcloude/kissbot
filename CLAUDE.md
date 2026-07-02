@@ -39,7 +39,8 @@ Keep It Simple Stupid BOT - kissbot
 
 ## 工具约定
 
-- 读写文件使用Read、Write、Edit等工具，不要用sed或python等命令、脚本
+- 读写文件必须使用Read、Write、Edit等工具，遇到报错解决不了时停下来询问
+- 禁止使用sed或python等命令、脚本修改文件
 
 ## 文本格式约定
 
