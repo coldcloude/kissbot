@@ -391,7 +391,7 @@ impl WebMessenger {
     /// 3. 确定群组成员（排除 admin），分发 IncomingMessage 给各成员
     /// 4. 推 SSE（admin 可看所有群组消息）
     /// 5. 返回 OutgoingMessageResponse
-    pub async fn send(&self, outgoing: Arc<OutgoingMessage>) -> Result<OutgoingMessageResponse> {
+    pub async fn send(&self, outgoing: Arc<OutgoingMessage>) -> Result<Arc<OutgoingMessageResponse>> {
         // 1. 验证 messenger_id
         if outgoing.messenger_id.as_str() != self.messenger_id.as_str() {
             return Err(Error::InvalidMessage("messenger_id mismatch".to_string()));
@@ -500,12 +500,12 @@ impl WebMessenger {
             self.sse.push(group_id.as_str(), &json);
         }
 
-        Ok(OutgoingMessageResponse {
+        Ok(Arc::new(OutgoingMessageResponse {
             msg_id,
             time,
             msg_type: outgoing.msg_type.clone(),
             content: response_content,
-        })
+        }))
     }
 
     // ========== 上传引擎 ==========
@@ -728,8 +728,7 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let resp = self.send(Arc::new(message)).await?;
-        Ok(Arc::new(resp))
+        self.send(Arc::new(message)).await.map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))
     }
 
     async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
