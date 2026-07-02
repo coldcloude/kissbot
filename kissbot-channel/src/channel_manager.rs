@@ -7,7 +7,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, DownloadAttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use kissbot_api::message::Content;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -393,7 +393,12 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let payload = data.slice(OFFSET_ATT_DATA..);
         messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
 
-        Ok(None)
+        let response = serde_json::to_value(AttachmentPayloadResponse {
+            key: Arc::new(key),
+            error_code: 0,
+            error_msg: None,
+        })?;
+        Ok(Some(response))
     }
 }
 
@@ -407,7 +412,7 @@ impl WsBinaryProcessor for AttachmentPayloadProcessor {
 }
 
 struct DownloadResponseHandler {
-    response_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<DownloadAttachmentPayloadResponse>>>,
+    response_tx: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<AttachmentPayloadResponse>>>,
 }
 
 #[async_trait]
@@ -415,8 +420,8 @@ impl WsJsonProcessor for DownloadResponseHandler {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         if let Some(tx) = self.response_tx.lock().await.take() {
             let response = data.payload
-                .and_then(|v| serde_json::from_value::<DownloadAttachmentPayloadResponse>(v).ok())
-                .unwrap_or_else(|| DownloadAttachmentPayloadResponse {
+                .and_then(|v| serde_json::from_value::<AttachmentPayloadResponse>(v).ok())
+                .unwrap_or_else(|| AttachmentPayloadResponse {
                     key: Arc::new(String::new()),
                     error_code: data.status_code,
                     error_msg: None,
@@ -781,7 +786,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         Ok((buf, sn))
     }
 
-    async fn send(&self, key: &str, size: u32, _pos: u64, buf: BytesMut) -> Result<DownloadAttachmentPayloadResponse> {
+    async fn send(&self, key: &str, size: u32, _pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let sender_entry = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let (_internal_id, ref connect_weak) = *sender_entry;
@@ -792,7 +797,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             self.attachment_sender_map.remove(key);
             // size=0 的结束标记，不需要 await response
             connect_context.ws_context.send_bin(buf.freeze()).await?;
-            return Ok(DownloadAttachmentPayloadResponse {
+            return Ok(AttachmentPayloadResponse {
                 key: Arc::new(key.to_string()),
                 error_code: 0,
                 error_msg: None,

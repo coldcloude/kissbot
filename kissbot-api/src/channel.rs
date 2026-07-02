@@ -86,7 +86,7 @@ pub struct WsAttachmentDownloadResponseHeader {
 
 /// Agent 对 attachment payload chunk 的确认 response
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadAttachmentPayloadResponse {
+pub struct AttachmentPayloadResponse {
     pub key: Arc<String>,
     pub error_code: u32,
     pub error_msg: Option<Arc<String>>,
