@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use bytes::BytesMut;
-use bytes::buf;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
 use crate::error::Result;
 
 // ========== Type aliases (kissbot_api 已直接使用 Arc<String> / Arc<DashMap<>>) ==========

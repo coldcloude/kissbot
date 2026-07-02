@@ -61,6 +61,9 @@ pub enum Error {
     #[error("Request error: {0}")]
     RequestError(String),
 
+    #[error("Request error: {0}")]
+    ReponseError(String),
+
     #[error("Internal error: {0}")]
     InternalError(String),
 

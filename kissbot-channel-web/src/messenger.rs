@@ -11,7 +11,7 @@ use kissbot_api::channel::{
     AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, GroupChangeNotification, UserRemoveNotification};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,

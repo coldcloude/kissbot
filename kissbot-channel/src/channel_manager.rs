@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{AttachmentPayloadHeader, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, WsAttachmentPayloadResponse, parse_attachment_payload_header};
+use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, WsAttachmentPayloadResponse, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
 use kissbot_api::message::Content;
+use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
@@ -383,16 +384,22 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         }
 
         let mut success = false;
-        let result = {
-            let payload = data.slice(OFFSET_ATT_DATA..);
-            let response = messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
-            let ws_response = WsAttachmentPayloadResponse {
-                id: header.id,
-                response
-            };
-            let value = serde_json::to_value(&ws_response)?;
-            success = ws_response.response.error_code == 0;
-            Ok(Some(value))
+        let payload = data.slice(OFFSET_ATT_DATA..);
+        let result = match messenger.send_attachment_payload(&key, header.size, header.pos, payload).await {
+            Ok(response) => {
+                let ws_response = WsAttachmentPayloadResponse {
+                    id: header.id,
+                    response
+                };
+                match serde_json::to_value(&ws_response) {
+                    Ok(value) => {
+                        success = ws_response.response.error_code == 0;
+                        Ok(Some(value))
+                    }
+                    Err(e) => Err(Error::from(e))
+                }
+            }
+            Err(e) => Err(e)
         };
 
         if !success {
@@ -413,24 +420,23 @@ impl WsBinaryProcessor for AttachmentPayloadProcessor {
 }
 
 struct DownloadResponseHandler {
-    response_tx: Option<tokio::sync::oneshot::Sender<AttachmentPayloadResponse>>,
+    response_tx: Sender<Result<AttachmentPayloadResponse>>,
+}
+
+impl DownloadResponseHandler {
+    fn parse_response(&self, data: WsMessage) -> Result<AttachmentPayloadResponse> {
+        let payload = data.payload
+        .ok_or_else(|| Error::ReponseError("download response payload is None".to_string()))?;
+        let response = serde_json::from_value::<AttachmentPayloadResponse>(payload)?;
+        Ok(response)
+    }
 }
 
 #[async_trait]
 impl WsJsonProcessorMut for DownloadResponseHandler {
-    async fn process_json(&mut self, data: WsMessage, _context: Arc<WsContext>) {
-        if let Some(tx) = self.response_tx.take() {
-            let response = data.payload
-                .and_then(|v| serde_json::from_value::<AttachmentPayloadResponse>(v).ok())
-                .unwrap_or_else(|| AttachmentPayloadResponse {
-                    key: Arc::new(String::new()),
-                    pos: 0,
-                    size: 0,
-                    error_code: data.status_code,
-                    error_msg: None,
-                });
-            let _ = tx.send(response);
-        }
+    async fn process_json(mut self: Box<Self>, data: WsMessage, _context: Arc<WsContext>) {
+        let result = self.parse_response(data);
+        let _ = self.response_tx.send(result);
     }
 }
 
@@ -609,9 +615,9 @@ impl ChannelManager {
         }
     }
 
-    pub async fn start(manager: Arc<Self>, addr: &str) -> Result<()> {
+    pub async fn start(self: &Arc<Self>, addr: &str) -> Result<()> {
         //start memory store client
-        let manager_for_memory_store = manager.clone();
+        let manager_for_memory_store = self.clone();
         tokio::spawn(async move {
             manager_for_memory_store.memory_store_client.start_send_messages().await
         });
@@ -623,28 +629,28 @@ impl ChannelManager {
         let initializer = ChannelManagerInitializer {};
         let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(kissbot_security::SecurityConfig::get().api_key.clone())));
         while let Ok((stream, _)) = listener.accept().await {
-            ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, manager.clone(), &initializer, &[&filter]).await?;
+            ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, self.clone(), &initializer, &[&filter]).await?;
         }
         Ok(())
     }
     
-    pub async fn register_messenger<M,MC>(manager: Arc<Self>, messenger_id: &str, messenger_creator: MC) -> Result<Arc<M>>
+    pub async fn register_messenger<M,MC>(self: &Arc<Self>, messenger_id: &str, messenger_creator: MC) -> Result<Arc<M>>
     where
         M: Messenger,
         MC: MessengerCreator<M>
     {
-        match manager.messenger_map.entry(messenger_id.to_string()) {
+        match self.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
-                let group_change_handler = Arc::downgrade(&manager);
-                let incoming_messages_handler = Arc::downgrade(&manager);
-                let download_attachment_payload_handler = Arc::downgrade(&manager);
-                let user_remove_handler = Arc::downgrade(&manager);
+                let group_change_handler = Arc::downgrade(self);
+                let incoming_messages_handler = Arc::downgrade(self);
+                let download_attachment_payload_handler = Arc::downgrade(self);
+                let user_remove_handler = Arc::downgrade(self);
                 let messenger = messenger_creator.create(
                     group_change_handler,
                     incoming_messages_handler,
                     download_attachment_payload_handler,
                     user_remove_handler,
-                    manager.global_attachment_sn.clone(),  // 新增
+                    self.global_attachment_sn.clone(),  // 新增
                 ).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
@@ -658,9 +664,7 @@ impl ChannelManager {
             }
         }
     }
-}
 
-impl ChannelManager {
     async fn handle_group_change_internal(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
         //找到对应的group
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
@@ -764,6 +768,18 @@ impl ChannelManager {
 
         Ok(())
     }
+
+    async fn send_download_attachment_payload(&self, sn: u32, buf: BytesMut, connect_context: Arc<ConnectContext>) -> Result<AttachmentPayloadResponse> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handler = Box::new(DownloadResponseHandler {
+            response_tx: tx,
+        });
+
+        connect_context.ws_context.send_bin_with_json_response(sn, buf.freeze(), handler).await?;
+
+        let response =  rx.await??;
+        Ok(response)
+    }
 }
 
 #[async_trait]
@@ -843,21 +859,9 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             });
         }
 
-        let mut success = false;
-        let result = {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let handler = Box::new(DownloadResponseHandler {
-                response_tx: Some(tx),
-            });
+        let result = self.send_download_attachment_payload(sn, buf, connect_context).await;
 
-            connect_context.ws_context.send_bin_with_json_response(sn, buf.freeze(), handler).await?;
-
-            let response =  rx.await?;
-            success = response.error_code == 0;
-            Ok(response)
-        };
-
-        if !success {
+        if match result.as_ref() { Ok(res) => res.error_code != 0, Err(_) => true } {
             self.attachment_sender_map.remove(key);
         }
 

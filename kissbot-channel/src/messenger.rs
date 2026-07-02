@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use kissbot_api::{channel::*, message::*};
 
-use crate::{Error, error::Result};
+use crate::error::Result;
 use crate::data::*;
 use std::sync::{Arc, Weak, atomic::AtomicU32};
 

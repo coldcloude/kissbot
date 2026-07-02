@@ -30,8 +30,7 @@ async fn main() {
 
     // 4. 注册 WebMessenger
     let mid = creator.messenger_id().await;
-    let messenger = ChannelManager::register_messenger(
-        channel_manager.clone(),
+    let messenger = channel_manager.register_messenger(
         &mid,
         creator
     ).await.expect("Failed to register messenger");
@@ -39,7 +38,7 @@ async fn main() {
     // 5. 启动 ChannelManager WS 服务器（后台）
     let ws_addr = config.ws_listen_addr.clone();
     tokio::spawn(async move {
-        ChannelManager::start(channel_manager, &ws_addr).await
+        channel_manager.start(&ws_addr).await
         .expect("Failed to start ChannelManager");
     });
 
