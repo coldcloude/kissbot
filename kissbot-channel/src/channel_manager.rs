@@ -383,15 +383,9 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         }
 
         let payload = data.slice(OFFSET_ATT_DATA..);
-        messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
+        let att_response = messenger.send_attachment_payload(&key, header.size, header.pos, payload).await?;
 
-        let response = serde_json::to_value(AttachmentPayloadResponse {
-            key: Arc::new(key),
-            pos: header.pos,
-            size: header.size,
-            error_code: 0,
-            error_msg: None,
-        })?;
+        let response = serde_json::to_value(att_response)?;
         Ok(Some(response))
     }
 }

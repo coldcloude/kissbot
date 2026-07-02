@@ -8,7 +8,7 @@ use chrono::Utc;
 use dashmap::{DashMap, DashSet};
 use tokio::sync::oneshot;
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
+    AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, GroupChangeNotification, UserRemoveNotification};
@@ -730,10 +730,16 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(resp))
     }
 
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<(), kissbot_channel::Error> {
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
         self.write_attachment_chunk(key, pos, size, data)
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-        Ok(())
+        Ok(AttachmentPayloadResponse {
+            key: Arc::new(key.to_string()),
+            pos,
+            size,
+            error_code: 0,
+            error_msg: None,
+        })
     }
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {

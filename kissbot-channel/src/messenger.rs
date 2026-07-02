@@ -13,7 +13,7 @@ pub trait Messenger: Send + Sync + 'static {
 
     async fn send_message(&self, message: OutgoingMessage, attachment_sn: Arc<AtomicU32>) -> Result<Arc<OutgoingMessageResponse>>;
 
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<()>;
+    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> Result<AttachmentPayloadResponse>;
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, attachment_sn: Arc<AtomicU32>) -> Result<Arc<AttachmentInfoResponse>>;
 
