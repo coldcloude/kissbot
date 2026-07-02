@@ -17,14 +17,14 @@ pub trait AttachmentRegistry: Send + Sync {
 /// 注册过程由 AttachmentRegistry 完成。
 pub fn process_attachment_message(
     outgoing: Arc<OutgoingMessage>,
-    registry: Arc<dyn AttachmentRegistry>,
+    registry: &dyn AttachmentRegistry,
 ) -> Result<Arc<OutgoingMessageResponse>> {
     let new_content = process_content(
         &outgoing.content,
         outgoing.messenger_id.as_str(),
         outgoing.user_id.as_str(),
         outgoing.group_id.as_str(),
-        registry.as_ref(),
+        registry,
     )?;
 
     Ok(Arc::new(OutgoingMessageResponse {
