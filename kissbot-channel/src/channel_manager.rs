@@ -40,10 +40,8 @@ pub struct ChannelManager {
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
     global_attachment_sn: Arc<AtomicU32>,
-    // 上传方向：key → (internal_upload_id, Weak<Messenger>)
-    attachment_receiver_map: DashMap<String, (u32, Weak<dyn Messenger>)>,
-    // upload_id → key（WS 二进制帧按 id 查找后转 key）
-    receiver_id_to_key: DashMap<u32, String>,
+    // 上传方向：internal_upload_id → (key, Weak<Messenger>)
+    attachment_receiver_map: DashMap<u32, (String, Weak<dyn Messenger>)>,
     // 下载方向：key → (internal_download_id, Weak<ConnectContext>)
     attachment_sender_map: DashMap<String, (u32, Weak<ConnectContext>)>,
 }
@@ -299,8 +297,7 @@ fn collect_attachment_keys(
         Content::AttachmentInfoResponse(resp) => {
             let key = resp.key.to_string();
             let id = manager.global_attachment_sn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            manager.attachment_receiver_map.insert(key.clone(), (id, messenger_weak.clone()));
-            manager.receiver_id_to_key.insert(id, key.clone());
+            manager.attachment_receiver_map.insert(id, (key.clone(), messenger_weak.clone()));
             upload_id_map.insert(key, id);
         }
         Content::Multi(items) => {
@@ -372,22 +369,18 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
-        // 通过 id 找到 key
-        let key = manager.receiver_id_to_key.get(&header.id)
-            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?
-            .clone();
-
-        // 通过 key 找到 messenger
-        let messenger_entry = manager.attachment_receiver_map.get(&key)
-            .ok_or_else(|| Error::AttachmentNotFound(key.clone()))?;
-        let (_, ref messenger) = *messenger_entry;
-        let messenger = messenger.upgrade()
+        // 通过 id 找到 (key, messenger)
+        let entry = manager.attachment_receiver_map.get(&header.id)
+            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
+        let (key, messenger_weak) = entry.value();
+        let key = key.clone();
+        let messenger = messenger_weak.upgrade()
         .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
+        drop(entry);
 
         if header.size == 0 {
             //最后传个size=0的，表示结尾
-            manager.attachment_receiver_map.remove(&key);
-            manager.receiver_id_to_key.remove(&header.id);
+            manager.attachment_receiver_map.remove(&header.id);
         }
 
         let payload = data.slice(OFFSET_ATT_DATA..);
@@ -568,7 +561,6 @@ impl ChannelManager {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             global_attachment_sn: Arc::new(AtomicU32::new(0)),
             attachment_receiver_map: DashMap::new(),
-            receiver_id_to_key: DashMap::new(),
             attachment_sender_map: DashMap::new(),
         }
     }
