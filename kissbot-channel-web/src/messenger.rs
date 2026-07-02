@@ -13,7 +13,7 @@ use kissbot_api::channel::{
 };
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
-    AttachmentDownloadPayloadSender, AttachmentKeyGenerator, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
+    AttachmentDownloadPayloadSender, AttachmentRegistry, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
     Messenger, MessengerCreator,
 };
@@ -145,6 +145,7 @@ pub struct WebMessenger {
     pub attachment_store: Arc<AttachmentStore>,
     pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
     pub upload_channels: Arc<DashMap<String, flume::Sender<UploadCommand>>>,
+    pending_registrations: tokio::sync::Mutex<Vec<(Arc<String>, Arc<AttachmentInfo>)>>,
 }
 
 impl WebMessenger {
@@ -171,6 +172,7 @@ impl WebMessenger {
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
             pending_uploads: DashMap::new(),
             upload_channels: Arc::new(DashMap::new()),
+            pending_registrations: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -430,7 +432,7 @@ impl WebMessenger {
         drop(cfg);
 
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
-        let (response, pending_attachments) = kissbot_channel::process_attachment_message(
+        let response = kissbot_channel::process_attachment_message(
             &outgoing,
             msg_id.as_str(),
             self,
@@ -438,7 +440,7 @@ impl WebMessenger {
         let new_content = response.content.clone();
 
         // 为每个 key 创建临时文件
-        for (info, ref key) in pending_attachments {
+        for (key, info) in self.pending_registrations.lock().await.drain(..) {
             let (temp_path, target_path) = match self.attachment_store.create_temp_file(
                 outgoing.group_id.as_str(), msg_id.as_str(), info.file_name.as_str()
             ) {
@@ -806,8 +808,19 @@ impl Messenger for WebMessenger {
     }
 }
 
-impl AttachmentKeyGenerator for WebMessenger {
-    fn generate_key(&self, group_id: &str, msg_id: &str, info: &AttachmentInfo) -> String {
-        format!("{}/{}/{}", group_id, msg_id, info.file_name)
+impl AttachmentRegistry for WebMessenger {
+    fn register(&self, group_id: &str, msg_id: &str, info: &AttachmentInfo) -> String {
+        let key = format!("{}/{}/{}", group_id, msg_id, info.file_name);
+        // 同步存储，process_attachment_message 调用后立即通过 drain_pending 取出
+        let rt = tokio::runtime::Handle::current();
+        let mut guard = rt.block_on(self.pending_registrations.lock());
+        guard.push((Arc::new(key.clone()), Arc::new(info.clone())));
+        key
+    }
+
+    fn drain_pending(&self) -> Vec<(Arc<String>, Arc<AttachmentInfo>)> {
+        let rt = tokio::runtime::Handle::current();
+        let mut guard = rt.block_on(self.pending_registrations.lock());
+        guard.drain(..).collect()
     }
 }

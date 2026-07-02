@@ -5,7 +5,7 @@ pub mod messenger;
 pub mod memory_store_client;
 pub mod channel_manager;
 
-pub use attachment::{AttachmentKeyGenerator, process_attachment_message};
+pub use attachment::{AttachmentRegistry, process_attachment_message};
 pub use error::Error;
 pub use data::*;
 pub use messenger::{Messenger, MessengerCreator};
