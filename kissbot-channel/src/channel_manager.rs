@@ -342,10 +342,7 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
 
         // 构造 WsOutgoingMessageResponse
         let ws_response = WsOutgoingMessageResponse {
-            msg_id: response.msg_id.clone(),
-            time: response.time.clone(),
-            msg_type: response.msg_type.clone(),
-            content: response.content.clone(),
+            response: response.clone(),
             attachment_upload_id_map,
         };
 
