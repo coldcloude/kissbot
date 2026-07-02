@@ -370,13 +370,12 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
         // 通过 id 找到 (key, messenger)
-        let entry = manager.attachment_receiver_map.get(&header.id)
+        let key_messenger = manager.attachment_receiver_map.get(&header.id)
             .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
-        let (key, messenger_weak) = entry.value();
-        let key = key.clone();
-        let messenger = messenger_weak.upgrade()
+        let key = key_messenger.0.clone();
+        let messenger = key_messenger.1.upgrade()
         .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
-        drop(entry);
+        drop(key_messenger);
 
         if header.size == 0 {
             //最后传个size=0的，表示结尾
