@@ -16,25 +16,23 @@ pub trait AttachmentRegistry: Send + Sync {
 /// 递归遍历 content，将所有 AttachmentInfo 替换为 AttachmentInfoResponse（嵌入 key）。
 /// 注册过程由 AttachmentRegistry 完成。
 pub fn process_attachment_message(
-    outgoing: &OutgoingMessage,
-    registry: &dyn AttachmentRegistry,
-) -> Result<OutgoingMessageResponse> {
+    outgoing: Arc<OutgoingMessage>,
+    registry: Arc<dyn AttachmentRegistry>,
+) -> Result<Arc<OutgoingMessageResponse>> {
     let new_content = process_content(
         &outgoing.content,
         outgoing.messenger_id.as_str(),
         outgoing.user_id.as_str(),
         outgoing.group_id.as_str(),
-        registry,
+        registry.as_ref(),
     )?;
 
-    let response = OutgoingMessageResponse {
+    Ok(Arc::new(OutgoingMessageResponse {
         msg_id: Arc::new(String::new()),  // 调用方会覆写 msg_id 和 time
         time: Arc::new(String::new()),
         msg_type: outgoing.msg_type.clone(),
         content: new_content.clone(),
-    };
-
-    Ok(response)
+    }))
 }
 
 /// 递归处理 Content，将 AttachmentInfo 替换为 AttachmentInfoResponse。

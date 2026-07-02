@@ -180,7 +180,7 @@ async fn handle_send_message(
         content,
     };
 
-    match messenger.send(outgoing).await {
+    match messenger.send(Arc::new(outgoing)).await {
         Ok(resp) => Json(ApiResponse::success(serde_json::json!({
             "msg_id": resp.msg_id.as_str(),
             "time": resp.time.as_str(),
@@ -391,7 +391,7 @@ async fn handle_init_attachment(
         content: Content::AttachmentInfo(Arc::new(info)),
     };
 
-    match messenger.send(outgoing).await {
+    match messenger.send(Arc::new(outgoing)).await {
         Ok(resp) => Json(ApiResponse::success(serde_json::json!({
             "key": key,
             "msg_id": resp.msg_id,

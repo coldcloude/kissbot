@@ -146,6 +146,7 @@ pub struct WebMessenger {
     pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
     pub upload_channels: Arc<DashMap<String, flume::Sender<UploadCommand>>>,
     pending_registrations: tokio::sync::Mutex<Vec<(Arc<String>, Arc<AttachmentInfo>)>>,
+    self_weak: tokio::sync::RwLock<Option<Weak<Self>>>,
 }
 
 impl WebMessenger {
@@ -173,6 +174,7 @@ impl WebMessenger {
             pending_uploads: DashMap::new(),
             upload_channels: Arc::new(DashMap::new()),
             pending_registrations: tokio::sync::Mutex::new(Vec::new()),
+            self_weak: tokio::sync::RwLock::new(None),
         }
     }
 
@@ -391,7 +393,7 @@ impl WebMessenger {
     /// 3. 确定群组成员（排除 admin），分发 IncomingMessage 给各成员
     /// 4. 推 SSE（admin 可看所有群组消息）
     /// 5. 返回 OutgoingMessageResponse
-    pub async fn send(&self, outgoing: OutgoingMessage) -> Result<OutgoingMessageResponse> {
+    pub async fn send(&self, outgoing: Arc<OutgoingMessage>) -> Result<OutgoingMessageResponse> {
         // 1. 验证 messenger_id
         if outgoing.messenger_id.as_str() != self.messenger_id.as_str() {
             return Err(Error::InvalidMessage("messenger_id mismatch".to_string()));
@@ -432,9 +434,12 @@ impl WebMessenger {
         drop(cfg);
 
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
+        let self_arc = self.self_weak.read().await.as_ref()
+            .and_then(|w| w.upgrade())
+            .ok_or_else(|| Error::InternalError("self_weak not set".to_string()))?;
         let response = kissbot_channel::process_attachment_message(
-            &outgoing,
-            self,
+            outgoing.clone(),
+            self_arc as Arc<dyn AttachmentRegistry>,
         ).map_err(|e| Error::InternalError(e.to_string()))?;
         let new_content = response.content.clone();
 
@@ -488,8 +493,8 @@ impl WebMessenger {
         let sse_event = SseMessage {
             msg_id: msg_id.clone(),
             messenger_id,
-            user_id: outgoing.user_id,
-            group_id: outgoing.group_id,
+            user_id: outgoing.user_id.clone(),
+            group_id: outgoing.group_id.clone(),
             is_self: 1,
             msg_type: outgoing.msg_type.clone(),
             content: Arc::new(serde_json::to_string(&response_content).unwrap_or_default()),
@@ -545,6 +550,12 @@ impl WebMessenger {
         // 等待后台任务处理完成
         res_rx.blocking_recv().map_err(|_| Error::InternalError("upload channel recv error".to_string()))?
             .map_err(|e| Error::InternalError(e))
+    }
+
+    pub fn set_self_weak(&self, weak: Weak<Self>) {
+        if let Ok(mut guard) = self.self_weak.try_write() {
+            *guard = Some(weak);
+        }
     }
 
     fn get_or_create_upload_channel(&self, key: &str) -> flume::Sender<UploadCommand> {
@@ -715,6 +726,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_user_remove,
             &self.attachment_dir,
         ));
+        messenger.set_self_weak(Arc::downgrade(&messenger));
 
         Ok(messenger)
     }
@@ -728,7 +740,7 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
-        let resp = self.send(message).await?;
+        let resp = self.send(Arc::new(message)).await?;
         Ok(Arc::new(resp))
     }
 
