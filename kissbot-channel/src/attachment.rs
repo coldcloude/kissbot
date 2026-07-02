@@ -52,7 +52,8 @@ fn process_content(
             })))
         }
         Content::Multi(items) => {
-            let new_items: Result<Vec<Arc<MessageItem>>> = items.iter().map(|item| {
+            let mut new_items = Vec::with_capacity(items.len());
+            for item in items.iter() {
                 let new_content = process_content(
                     &item.content,
                     messenger_id,
@@ -60,12 +61,12 @@ fn process_content(
                     group_id,
                     registry,
                 )?;
-                Ok(Arc::new(MessageItem {
+                new_items.push(Arc::new(MessageItem {
                     msg_type: item.msg_type.clone(),
                     content: new_content,
-                }))
-            }).collect();
-            Ok(Content::Multi(new_items?))
+                }));
+            }
+            Ok(Content::Multi(new_items))
         }
         // 其他类型（text、group_change、user_remove、AttachmentInfoResponse），不做处理
         _ => Ok(content.clone()),
