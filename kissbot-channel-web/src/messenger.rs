@@ -430,11 +430,12 @@ impl WebMessenger {
         drop(cfg);
 
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
-        let (new_content, response, pending_attachments) = kissbot_channel::process_attachment_message(
+        let (response, pending_attachments) = kissbot_channel::process_attachment_message(
             &outgoing,
             msg_id.as_str(),
             self,
         ).map_err(|e| Error::InternalError(e.to_string()))?;
+        let new_content = response.content.clone();
 
         // 为每个 key 创建临时文件
         for (info, ref key) in pending_attachments {

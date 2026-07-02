@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI};
 
 use crate::error::Result;
 
@@ -12,84 +12,23 @@ pub trait AttachmentKeyGenerator: Send + Sync {
 
 /// 处理 OutgoingMessage 中的附件类型消息。
 ///
-/// 根据 msg_type：
-/// - "text"：原样返回，key_map 为空
-/// - "attachment"：解析 content 中 AttachmentInfo → 生成 key → 返回 AttachmentInfoResponse 内容
-/// - "multi"：逐项处理，attachment 类型项同上处理
+/// 递归遍历 content，将所有 AttachmentInfo 替换为 AttachmentInfoResponse（嵌入 key），
+/// 同时收集待处理的附件列表供调用方创建临时文件。
 ///
-/// 返回 (新 content, OutgoingMessageResponse, 待处理附件列表)。
-/// 待处理附件列表为 Vec<(Arc<AttachmentInfo>, Arc<String>)>，
-/// 其中 Arc<String> 为生成的 key，供 Task 3 创建临时文件使用。
+/// 返回 (OutgoingMessageResponse, 待处理附件列表)。
 pub fn process_attachment_message(
     outgoing: &OutgoingMessage,
     msg_id: &str,
     key_generator: &dyn AttachmentKeyGenerator,
-) -> Result<(Content, OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
+) -> Result<(OutgoingMessageResponse, Vec<(Arc<AttachmentInfo>, Arc<String>)>)> {
     let mut pending_attachments: Vec<(Arc<AttachmentInfo>, Arc<String>)> = Vec::new();
-
-    let new_content = match outgoing.msg_type.as_str() {
-        MSG_TYPE_TEXT => {
-            // 纯文本，无附件处理
-            match &outgoing.content {
-                Content::Text(s) => Content::Text(s.clone()),
-                _ => return Err(crate::Error::InternalError("expected Text content".to_string())),
-            }
-        }
-        MSG_TYPE_ATTACHMENT => {
-            // 单条附件：content 是 AttachmentInfo
-            let info = match &outgoing.content {
-                Content::AttachmentInfo(info) => info.clone(),
-                _ => return Err(crate::Error::InternalError("expected AttachmentInfo content".to_string())),
-            };
-            let key = key_generator.generate_key(
-                outgoing.group_id.as_str(), msg_id, &info
-            );
-            let key_arc = Arc::new(key.clone());
-            pending_attachments.push((info.clone(), key_arc.clone()));
-            let response = Arc::new(AttachmentInfoResponse {
-                key: key_arc,
-                info: info,
-            });
-            Content::AttachmentInfoResponse(response)
-        }
-        MSG_TYPE_MULTI => {
-            // multi：逐项处理
-            let items = match &outgoing.content {
-                Content::Multi(items) => items.clone(),
-                _ => return Err(crate::Error::InternalError("expected Multi content".to_string())),
-            };
-            let new_items: crate::error::Result<Vec<Arc<MessageItem>>> = items.into_iter().map(|item| {
-                if item.msg_type.as_str() == MSG_TYPE_ATTACHMENT {
-                    let info = match &item.content {
-                        Content::AttachmentInfo(info) => info.clone(),
-                        _ => return Err(crate::Error::InternalError("expected AttachmentInfo content in multi item".to_string())),
-                    };
-                    let key = key_generator.generate_key(
-                        outgoing.group_id.as_str(), msg_id, &info
-                    );
-                    let key_arc = Arc::new(key.clone());
-                    pending_attachments.push((info.clone(), key_arc.clone()));
-                    let response = Arc::new(AttachmentInfoResponse {
-                        key: key_arc,
-                        info: info,
-                    });
-                    Ok(Arc::new(MessageItem {
-                        msg_type: item.msg_type.clone(),
-                        content: Content::AttachmentInfoResponse(response),
-                    }))
-                } else {
-                    // 非 attachment 类型（如 text），原样保留
-                    Ok(item)
-                }
-            }).collect();
-            let items = new_items?;
-            Content::Multi(items)
-        }
-        _other => {
-            // 其他类型（如 system_join、system_leave），不做处理
-            outgoing.content.clone()
-        }
-    };
+    let new_content = process_content(
+        &outgoing.content,
+        outgoing.group_id.as_str(),
+        msg_id,
+        key_generator,
+        &mut pending_attachments,
+    )?;
 
     let response = OutgoingMessageResponse {
         msg_id: Arc::new(msg_id.to_string()),
@@ -98,5 +37,44 @@ pub fn process_attachment_message(
         content: new_content.clone(),
     };
 
-    Ok((new_content, response, pending_attachments))
+    Ok((response, pending_attachments))
+}
+
+/// 递归处理 Content，将 AttachmentInfo 替换为 AttachmentInfoResponse。
+fn process_content(
+    content: &Content,
+    group_id: &str,
+    msg_id: &str,
+    key_generator: &dyn AttachmentKeyGenerator,
+    pending_attachments: &mut Vec<(Arc<AttachmentInfo>, Arc<String>)>,
+) -> Result<Content> {
+    match content {
+        Content::AttachmentInfo(info) => {
+            let key = key_generator.generate_key(group_id, msg_id, info);
+            let key_arc = Arc::new(key);
+            pending_attachments.push((info.clone(), key_arc.clone()));
+            Ok(Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
+                key: key_arc,
+                info: info.clone(),
+            })))
+        }
+        Content::Multi(items) => {
+            let new_items: Result<Vec<Arc<MessageItem>>> = items.iter().map(|item| {
+                let new_content = process_content(
+                    &item.content,
+                    group_id,
+                    msg_id,
+                    key_generator,
+                    pending_attachments,
+                )?;
+                Ok(Arc::new(MessageItem {
+                    msg_type: item.msg_type.clone(),
+                    content: new_content,
+                }))
+            }).collect();
+            Ok(Content::Multi(new_items?))
+        }
+        // 其他类型（text、group_change、user_remove、AttachmentInfoResponse），不做处理
+        _ => Ok(content.clone()),
+    }
 }
