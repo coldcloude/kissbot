@@ -21,8 +21,8 @@ use kissbot_api::ApiResponse;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{ADMIN_USER_ID, GroupConfig, PendingAttachment, UserConfig, WebMessenger};
-use kissbot_api::channel::OutgoingMessage;
+use crate::messenger::{ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
+use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 use kissbot_api::message::{AttachmentInfo, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
 use serde_json::Value;
 
@@ -348,36 +348,11 @@ async fn handle_delete_user(
     }
 }
 
-/// POST /api/attachment/init — 初始化附件上传，创建临时文件并发送消息
+/// POST /api/attachment/init — 初始化附件上传，发送消息并返回 OutgoingMessageResponse
 async fn handle_init_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<InitAttachmentRequest>,
 ) -> impl IntoResponse {
-    // 1. 生成 msg_id
-    let msg_id = messenger.next_msg_id();
-    let key = format!("{}/{}/{}", req.group_id, msg_id, req.file_name);
-
-    // 2. 创建临时文件
-    let (temp_path, target_path) = match messenger.attachment_store.create_temp_file(
-        req.group_id.as_str(), msg_id.as_str(), req.file_name.as_str()
-    ) {
-        Ok(paths) => paths,
-        Err(e) => return Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
-    };
-
-    // 3. 记录 PendingAttachment
-    let temp_path_for_cleanup = temp_path.clone();
-    messenger.pending_uploads.insert(key.clone(), PendingAttachment {
-        group_id: req.group_id.clone(),
-        msg_id: msg_id.clone(),
-        file_name: req.file_name.clone(),
-        mime_type: req.mime_type.clone(),
-        size_bytes: req.size_bytes,
-        temp_path,
-        target_path,
-    });
-
-    // 4. 构造 OutgoingMessage 并发送
     let info = AttachmentInfo {
         file_name: req.file_name.clone(),
         mime_type: req.mime_type.clone(),
@@ -392,20 +367,12 @@ async fn handle_init_attachment(
     };
 
     match messenger.send(Arc::new(outgoing)).await {
-        Ok(resp) => Json(ApiResponse::success(serde_json::json!({
-            "key": key,
-            "msg_id": resp.msg_id,
-        }))),
-        Err(e) => {
-            // 发送失败时清理 pending 记录和临时文件
-            messenger.pending_uploads.remove(&key);
-            let _ = std::fs::remove_file(&temp_path_for_cleanup);
-            Json(ApiResponse::<serde_json::Value>::error(e.to_string()))
-        }
+        Ok(resp) => Json(ApiResponse::success(resp)),
+        Err(e) => Json(ApiResponse::<Arc<OutgoingMessageResponse>>::error(e.to_string())),
     }
 }
 
-/// POST /api/attachment/upload — 第二步：上传文件实体
+/// POST /api/attachment/upload — 上传文件实体
 async fn handle_upload_attachment(
     State(messenger): State<Arc<WebMessenger>>,
     mut multipart: Multipart,
@@ -436,18 +403,11 @@ async fn handle_upload_attachment(
         None => return Json(ApiResponse::<serde_json::Value>::error("Missing file data".to_string())),
     };
 
-    // 获取 size_bytes（从 pending_uploads 读取后立即通过上传引擎写入）
-    let size_bytes = match messenger.pending_uploads.get(&attachment_key) {
-        Some(p) => p.size_bytes,
-        None => return Json(ApiResponse::<serde_json::Value>::error(format!("key {} not found", attachment_key))),
-    };
-
-    // 通过上传引擎写入（串行处理，自动 finalize）
-    if let Err(e) = messenger.write_attachment_chunk(&attachment_key, 0, size_bytes as u32, file_data) {
-        return Json(ApiResponse::<serde_json::Value>::error(e.to_string()));
+    // 通过 AttachmentStore 写入
+    match messenger.attachment_store.write_chunk(&attachment_key, 0, file_data.len() as u32, file_data).await {
+        Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
-
-    Json(ApiResponse::success(serde_json::json!({"success": true})))
 }
 
 /// GET /api/attachment/download — 支持 Range 断点续传
@@ -466,7 +426,7 @@ async fn handle_download_attachment(
         Ok((_, len)) => len,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
-    let meta = match messenger.attachment_store.get_meta_by_key(key) {
+    let meta = match messenger.attachment_store.get_meta(key) {
         Ok(m) => m,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
@@ -545,7 +505,7 @@ async fn handle_thumbnail(
         None => return (StatusCode::BAD_REQUEST, "Missing key").into_response(),
     };
 
-    match messenger.attachment_store.get_thumbnail_by_key(key) {
+    match messenger.attachment_store.get_thumbnail(key) {
         Ok(data) => {
             ([(axum::http::header::CONTENT_TYPE, "image/jpeg")], data).into_response()
         }

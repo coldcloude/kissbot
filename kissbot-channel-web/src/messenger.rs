@@ -6,14 +6,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::{DashMap, DashSet};
-use tokio::sync::oneshot;
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse,
+    AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
-    AttachmentDownloadPayloadSender, AttachmentRegistry, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
+    AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
     Messenger, MessengerCreator,
 };
@@ -101,35 +100,6 @@ struct SseMessage {
     time: Arc<String>,
 }
 
-// ========== 上传队列命令 ==========
-
-/// 上传队列命令，通过 flume 队列串行处理
-enum UploadCommand {
-    Write {
-        key: String,
-        pos: u64,
-        size: u32,
-        data: Bytes,
-        size_bytes: u64,
-        temp_path: PathBuf,
-        target_path: PathBuf,
-        res: oneshot::Sender<std::result::Result<u64, String>>,
-    },
-}
-
-// ========== 待完成附件上传 ==========
-
-/// 待完成的附件上传信息
-pub struct PendingAttachment {
-    pub group_id: Arc<String>,
-    pub msg_id: Arc<String>,
-    pub file_name: Arc<String>,
-    pub mime_type: Arc<String>,
-    pub size_bytes: u64,
-    pub temp_path: PathBuf,
-    pub target_path: PathBuf,
-}
-
 // ========== WebMessenger ==========
 
 pub struct WebMessenger {
@@ -143,9 +113,6 @@ pub struct WebMessenger {
     on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
-    pub pending_uploads: DashMap<String, PendingAttachment>,  // key → pending
-    pub upload_channels: Arc<DashMap<String, flume::Sender<UploadCommand>>>,
-    pending_registrations: tokio::sync::Mutex<Vec<(Arc<String>, Arc<AttachmentInfo>)>>,
 }
 
 impl WebMessenger {
@@ -170,9 +137,6 @@ impl WebMessenger {
             on_user_remove,
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
-            pending_uploads: DashMap::new(),
-            upload_channels: Arc::new(DashMap::new()),
-            pending_registrations: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -434,28 +398,9 @@ impl WebMessenger {
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
         let response = kissbot_channel::process_attachment_message(
             outgoing.clone(),
-            self,
+            &*self.attachment_store,
         ).await.map_err(|e| Error::InternalError(e.to_string()))?;
         let new_content = response.content.clone();
-
-        // 为每个 key 创建临时文件（AttachmentRegistry::register 已填充 pending_registrations）
-        for (key, info) in self.pending_registrations.lock().await.drain(..) {
-            let (temp_path, target_path) = match self.attachment_store.create_temp_file(
-                outgoing.group_id.as_str(), msg_id.as_str(), info.file_name.as_str()
-            ) {
-                Ok(paths) => paths,
-                Err(e) => return Err(Error::from(e)),
-            };
-            self.pending_uploads.insert(key.to_string(), PendingAttachment {
-                group_id: outgoing.group_id.clone(),
-                msg_id: msg_id.clone(),
-                file_name: info.file_name.clone(),
-                mime_type: info.mime_type.clone(),
-                size_bytes: info.size_bytes,
-                temp_path,
-                target_path,
-            });
-        }
 
         let messenger_id = self.messenger_id.clone();
         for member_id in &members {
@@ -506,108 +451,6 @@ impl WebMessenger {
             msg_type: outgoing.msg_type.clone(),
             content: response_content,
         }))
-    }
-
-    // ========== 上传引擎 ==========
-
-    // ========== 上传引擎 ==========
-
-    /// 写入附件数据。通过 flume 队列串行处理，避免竞争。
-    /// 返回当前已写入位置。
-    pub fn write_attachment_chunk(
-        &self,
-        key: &str,
-        pos: u64,
-        size: u32,
-        data: Bytes,
-    ) -> Result<u64> {
-        // 从 pending_uploads 获取路径信息（在发送到队列前读取）
-        let (temp_path, target_path, size_bytes) = {
-            let pending = self.pending_uploads.get(key)
-                .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
-            (pending.temp_path.clone(), pending.target_path.clone(), pending.size_bytes)
-        };
-
-        let tx = self.get_or_create_upload_channel(key);
-        let (res_tx, res_rx) = oneshot::channel();
-
-        tx.send(UploadCommand::Write {
-            key: key.to_string(),
-            pos,
-            size,
-            data,
-            size_bytes,
-            temp_path,
-            target_path,
-            res: res_tx,
-        }).map_err(|_| Error::InternalError("upload channel closed".to_string()))?;
-
-        // 等待后台任务处理完成
-        res_rx.blocking_recv().map_err(|_| Error::InternalError("upload channel recv error".to_string()))?
-            .map_err(|e| Error::InternalError(e))
-    }
-
-    fn get_or_create_upload_channel(&self, key: &str) -> flume::Sender<UploadCommand> {
-        if let Some(entry) = self.upload_channels.get(key) {
-            return entry.value().clone();
-        }
-
-        let (tx, rx) = flume::unbounded::<UploadCommand>();
-        let store = self.attachment_store.clone();
-        let key_owned = key.to_string();
-        let channels = self.upload_channels.clone();
-
-        tokio::spawn(async move {
-            let mut current_pos = 0u64;
-            while let Ok(cmd) = rx.recv_async().await {
-                match cmd {
-                    UploadCommand::Write { key, pos, size, data, size_bytes, temp_path, target_path, res } => {
-                        let result = Self::process_upload_write(
-                            &store, &mut current_pos, pos, data, size_bytes, &temp_path, &target_path
-                        );
-
-                        // 如果是最后一块，清理 channel
-                        if let Ok(p) = &result {
-                            if *p >= size_bytes {
-                                channels.remove(&key);
-                            }
-                        }
-                        let _ = res.send(result);
-                    }
-                }
-            }
-        });
-
-        self.upload_channels.insert(key_owned, tx.clone());
-        tx
-    }
-
-    fn process_upload_write(
-        store: &AttachmentStore,
-        current_pos: &mut u64,
-        pos: u64,
-        data: Bytes,
-        size_bytes: u64,
-        temp_path: &PathBuf,
-        target_path: &PathBuf,
-    ) -> std::result::Result<u64, String> {
-        if pos < *current_pos {
-            return Ok(*current_pos);  // 已写入，幂等
-        }
-        if pos > *current_pos {
-            return Err(format!("out of order: expected pos={}, got pos={}", *current_pos, pos));
-        }
-
-        store.append_to_temp(temp_path, &data)
-            .map_err(|e| e.to_string())?;
-        *current_pos = pos + data.len() as u64;
-
-        if *current_pos >= size_bytes {
-            AttachmentStore::finalize_upload(temp_path, target_path)
-                .map_err(|e| e.to_string())?;
-        }
-
-        Ok(*current_pos)
     }
 
     async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
@@ -732,7 +575,8 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
-        self.write_attachment_chunk(key, pos, size, data)?;
+        self.attachment_store.write_chunk(key, pos, size, data).await
+            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
         Ok(AttachmentPayloadResponse {
             key: Arc::new(key.to_string()),
             pos,
@@ -743,7 +587,8 @@ impl Messenger for WebMessenger {
     }
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
-        let meta = self.attachment_store.get_meta_by_key(request.key.as_str())?;
+        let meta = self.attachment_store.get_meta(request.key.as_str())
+            .map_err(|e| kissbot_channel::Error::AttachmentNotFound(e.to_string()))?;
         let info = AttachmentInfo {
             file_name: meta.file_name.clone(),
             mime_type: meta.mime_type.clone(),
@@ -763,41 +608,8 @@ impl Messenger for WebMessenger {
         let key_owned = key.to_string();
 
         tokio::spawn(async move {
-            const CHUNK_SIZE: u64 = 65536;
-
-            let file_result = store.open_file(&key_owned);
-            let (mut file, file_len) = match file_result {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::error!("Failed to open attachment for download: key={}, error={}", key_owned, e);
-                    return;
-                }
-            };
-
-            let mut pos = 0u64;
-            let mut ok = true;
-            while pos < file_len && ok {
-                let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
-                let chunk_size = (end - pos) as usize;
-                let (sn, mut buf) = match sender.prepare_send(&key_owned, chunk_size as u32, pos) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!("prepare_send error: {}", e);
-                        break;
-                    }
-                };
-                // 读取到 payload 偏移处（prepare_send 已分配足够 capacity）
-                use std::io::Read;
-                if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
-                    tracing::error!("Failed to read file chunk: {}", e);
-                    break;
-                }
-                ok = sender.send(sn, &key_owned, chunk_size as u32, pos, buf).await.is_ok();
-                pos = end;
-            }
-            // 发送 size=0 的结束标记
-            if let Ok((sn, buf)) = sender.prepare_send(&key_owned, 0, pos) {
-                let _ = sender.send(sn, &key_owned, 0, pos, buf).await;
+            if let Err(e) = store.send_download_payload(&key_owned, &*sender).await {
+                tracing::error!("Failed to send download payload: {}", e);
             }
         });
 
@@ -805,12 +617,3 @@ impl Messenger for WebMessenger {
     }
 }
 
-#[async_trait]
-impl AttachmentRegistry for WebMessenger {
-    async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<String>, kissbot_channel::Error> {
-        let msg_id = self.next_msg_id();
-        let key = format!("{}/{}/{}", group_id, msg_id, info.file_name);
-        self.pending_registrations.lock().await.push((Arc::new(key.clone()), info));
-        Ok(Arc::new(key))
-    }
-}
