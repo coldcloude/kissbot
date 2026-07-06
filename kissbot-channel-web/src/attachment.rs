@@ -2,11 +2,26 @@ use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::Mutex;
+use async_trait::async_trait;
 use bytes::Bytes;
+use dashmap::DashMap;
+use kissbot_api::message::AttachmentInfo;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 use crate::error::{Error, Result};
+
+/// 上传队列命令
+enum UploadCommand {
+    Write {
+        key: String,
+        pos: u64,
+        size: u32,
+        data: Bytes,
+        res: oneshot::Sender<std::result::Result<u64, String>>,
+    },
+}
 
 /// 附件元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +40,8 @@ pub struct AttachmentMeta {
 pub struct AttachmentStore {
     base_path: PathBuf,
     meta_cache: Mutex<LruCache<String, Arc<AttachmentMeta>>>,
+    /// 上传队列：key → (current_pos, sender)
+    upload_channels: DashMap<String, (u64, flume::Sender<UploadCommand>)>,
 }
 
 impl AttachmentStore {
@@ -32,6 +49,7 @@ impl AttachmentStore {
         Self {
             base_path: PathBuf::from(base_path),
             meta_cache: Mutex::new(LruCache::new(std::num::NonZeroUsize::new(1024).unwrap())),
+            upload_channels: DashMap::new(),
         }
     }
 
@@ -118,7 +136,153 @@ impl AttachmentStore {
         Err(Error::InternalError("not an image or failed to generate thumbnail".to_string()))
     }
 
-    // ===== 以下方法为旧版兼容，使用 {group_id}/{msg_id}/{filename} 路径格式 =====
+    // ===== 上传队列 =====
+
+    /// 异步写入 chunk（通过 flume 队列串行处理）
+    pub async fn write_chunk(&self, key: &str, pos: u64, size: u32, data: Bytes) -> Result<u64> {
+        let tx = self.get_or_create_upload_channel(key);
+        let (res_tx, res_rx) = oneshot::channel();
+
+        tx.send(UploadCommand::Write {
+            key: key.to_string(),
+            pos,
+            size,
+            data,
+            res: res_tx,
+        }).map_err(|_| Error::InternalError("upload channel closed".to_string()))?;
+
+        res_rx.await
+            .map_err(|_| Error::InternalError("upload channel recv error".to_string()))?
+            .map_err(|e| Error::InternalError(e))
+    }
+
+    fn get_or_create_upload_channel(&self, key: &str) -> flume::Sender<UploadCommand> {
+        if let Some(entry) = self.upload_channels.get(key) {
+            return entry.value().1.clone();
+        }
+
+        let (tx, rx) = flume::unbounded::<UploadCommand>();
+        let key_owned = key.to_string();
+        let channels = self.upload_channels.clone();
+        let base_path = self.base_path.clone();
+
+        tokio::spawn(async move {
+            let mut current_pos = 0u64;
+
+            while let Ok(cmd) = rx.recv_async().await {
+                match cmd {
+                    UploadCommand::Write { key, pos, size: _, data, res } => {
+                        let result = Self::process_upload_write_inner(
+                            &base_path, &key, &mut current_pos, pos, &data,
+                        );
+
+                        // 完成后清理 channel
+                        if result.is_ok() {
+                            channels.remove(&key);
+                        }
+                        let _ = res.send(result);
+                    }
+                }
+            }
+        });
+
+        self.upload_channels.insert(key_owned, (0u64, tx.clone()));
+        tx
+    }
+
+    /// 内部处理上传写入（同步执行，在 flume 异步任务中调用）
+    fn process_upload_write_inner(
+        base_path: &Path,
+        key: &str,
+        current_pos: &mut u64,
+        pos: u64,
+        data: &Bytes,
+    ) -> std::result::Result<u64, String> {
+        if pos < *current_pos {
+            return Ok(*current_pos); // 已写入，幂等
+        }
+        if pos > *current_pos {
+            return Err(format!("out of order: expected pos={}, got pos={}", *current_pos, pos));
+        }
+
+        let (group_id, uuid) = AttachmentStore::parse_key(key)
+            .map_err(|e| e.to_string())?;
+        let dir = base_path.join(group_id);
+        let temp_path = dir.join(format!(".{}.uploading", uuid));
+        let target_path = dir.join(uuid);
+
+        // 追加写入临时文件
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&temp_path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(data).map_err(|e| e.to_string())?;
+        *current_pos = pos + data.len() as u64;
+
+        // 从 metadata 获取 size_bytes 判断是否完成
+        let meta_path = dir.join(format!("{}.metadata", uuid));
+        if let Ok(content) = std::fs::read_to_string(&meta_path) {
+            if let Ok(meta) = serde_json::from_str::<AttachmentMeta>(&content) {
+                if *current_pos >= meta.size_bytes {
+                    // 写入完成，rename
+                    std::fs::rename(&temp_path, &target_path).map_err(|e| e.to_string())?;
+
+                    // 如果是图片则生成缩略图
+                    if meta.mime_type.starts_with("image/") {
+                        if let Ok(data) = std::fs::read(&target_path) {
+                            if let Ok(img) = image::load_from_memory(&data) {
+                                let thumb_path = dir.join(format!("thumb_{}", uuid));
+                                let thumb = img.thumbnail(200, 200);
+                                if thumb.save(&thumb_path).is_ok() {
+                                    // 更新 metadata 中的 has_thumbnail
+                                    let mut updated_meta = meta.clone();
+                                    updated_meta.has_thumbnail = true;
+                                    let _ = std::fs::write(&meta_path, serde_json::to_string(&updated_meta).unwrap());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(*current_pos)
+    }
+
+    // ===== 下载 =====
+
+    /// 发送下载 payload（内部按 CHUNK_SIZE 分块读取并调用 sender）
+    pub async fn send_download_payload(&self, key: &str, sender: &dyn kissbot_channel::AttachmentDownloadPayloadSender) -> Result<()> {
+        use kissbot_api::channel::OFFSET_ATT_DATA;
+        const CHUNK_SIZE: u64 = 65536;
+
+        let (mut file, file_len) = self.open_file(key)?;
+
+        let mut pos = 0u64;
+        let mut ok = true;
+        while pos < file_len && ok {
+            let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
+            let chunk_size = (end - pos) as usize;
+            let (sn, mut buf) = sender.prepare_send(key, chunk_size as u32, pos)
+                .map_err(|e| Error::InternalError(e.to_string()))?;
+            // 读取到 payload 偏移处
+            use std::io::Read;
+            if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
+                return Err(Error::InternalError(format!("Failed to read file chunk: {}", e)));
+            }
+            ok = sender.send(sn, key, chunk_size as u32, pos, buf).await.is_ok();
+            pos = end;
+        }
+        // 发送 size=0 的结束标记
+        if let Ok((sn, buf)) = sender.prepare_send(key, 0, pos) {
+            let _ = sender.send(sn, key, 0, pos, buf).await;
+        }
+
+        Ok(())
+    }
+
+    // ===== 旧版兼容方法 =====
 
     /// 创建临时文件，返回 (临时文件路径, 目标文件路径)
     pub fn create_temp_file(&self, group_id: &str, msg_id: &str, filename: &str) -> Result<(PathBuf, PathBuf)> {
@@ -207,5 +371,43 @@ impl AttachmentStore {
         }
 
         Err(Error::InternalError("not an image or failed to generate thumbnail".to_string()))
+    }
+}
+
+// ===== AttachmentRegistry 实现 =====
+
+#[async_trait]
+impl kissbot_channel::AttachmentRegistry for AttachmentStore {
+    async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<String>, kissbot_channel::Error> {
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let key = Arc::new(format!("{}/{}", group_id, uuid));
+
+        // 1. 创建 group 目录
+        let dir = self.base_path.join(group_id);
+        std::fs::create_dir_all(&dir)?;
+
+        // 2. 创建空临时文件（防止 upload 在 register 之前到达）
+        let temp_path = dir.join(format!(".{}.uploading", uuid));
+        std::fs::write(&temp_path, &[])?;
+
+        // 3. 写 metadata 文件
+        let meta = AttachmentMeta {
+            file_name: info.file_name.clone(),
+            mime_type: info.mime_type.clone(),
+            size_bytes: info.size_bytes,
+            has_thumbnail: false,
+        };
+        let meta_path = dir.join(format!("{}.metadata", uuid));
+        let meta_json = serde_json::to_string(&meta)
+            .map_err(|e| kissbot_channel::Error::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        std::fs::write(&meta_path, &meta_json)?;
+
+        // 4. 插入 LRU 缓存
+        {
+            let mut cache = self.meta_cache.lock().unwrap();
+            cache.put(uuid, Arc::new(meta));
+        }
+
+        Ok(key)
     }
 }
