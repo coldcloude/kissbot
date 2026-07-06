@@ -435,7 +435,7 @@ impl WebMessenger {
         let response = kissbot_channel::process_attachment_message(
             outgoing.clone(),
             self,
-        ).map_err(|e| Error::InternalError(e.to_string()))?;
+        ).await.map_err(|e| Error::InternalError(e.to_string()))?;
         let new_content = response.content.clone();
 
         // 为每个 key 创建临时文件（AttachmentRegistry::register 已填充 pending_registrations）
@@ -805,13 +805,12 @@ impl Messenger for WebMessenger {
     }
 }
 
+#[async_trait]
 impl AttachmentRegistry for WebMessenger {
-    fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> Arc<String> {
+    async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<String>, kissbot_channel::Error> {
         let msg_id = self.next_msg_id();
         let key = format!("{}/{}/{}", group_id, msg_id, info.file_name);
-        let rt = tokio::runtime::Handle::current();
-        let mut guard = rt.block_on(self.pending_registrations.lock());
-        guard.push((Arc::new(key.clone()), info));
-        Arc::new(key)
+        self.pending_registrations.lock().await.push((Arc::new(key.clone()), info));
+        Ok(Arc::new(key))
     }
 }

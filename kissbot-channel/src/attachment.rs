@@ -1,21 +1,23 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, MessageItem};
 
 use crate::error::Result;
 
 /// 附件注册器。将 AttachmentInfo 注册为全局唯一的 key，并管理 key 与 info 的关系。
+#[async_trait]
 pub trait AttachmentRegistry: Send + Sync {
     /// 注册附件，返回生成的 key。
-    fn register(&self, messenger_id: &str, user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> Arc<String>;
+    async fn register(&self, messenger_id: &str, user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> Result<Arc<String>>;
 }
 
 /// 处理 OutgoingMessage 中的附件类型消息。
 ///
 /// 递归遍历 content，将所有 AttachmentInfo 替换为 AttachmentInfoResponse（嵌入 key）。
 /// 注册过程由 AttachmentRegistry 完成。
-pub fn process_attachment_message(
+pub async fn process_attachment_message(
     outgoing: Arc<OutgoingMessage>,
     registry: &dyn AttachmentRegistry,
 ) -> Result<Arc<OutgoingMessageResponse>> {
@@ -25,7 +27,7 @@ pub fn process_attachment_message(
         outgoing.user_id.as_str(),
         outgoing.group_id.as_str(),
         registry,
-    )?;
+    ).await?;
 
     Ok(Arc::new(OutgoingMessageResponse {
         msg_id: Arc::new(String::new()),  // 调用方会覆写 msg_id 和 time
@@ -36,7 +38,7 @@ pub fn process_attachment_message(
 }
 
 /// 递归处理 Content，将 AttachmentInfo 替换为 AttachmentInfoResponse。
-fn process_content(
+async fn process_content(
     content: &Content,
     messenger_id: &str,
     user_id: &str,
@@ -45,7 +47,7 @@ fn process_content(
 ) -> Result<Content> {
     match content {
         Content::AttachmentInfo(info) => {
-            let key = registry.register(messenger_id, user_id, group_id, info.clone());
+            let key = registry.register(messenger_id, user_id, group_id, info.clone()).await?;
             Ok(Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
                 key,
                 info: info.clone(),
@@ -54,13 +56,13 @@ fn process_content(
         Content::Multi(items) => {
             let mut new_items = Vec::with_capacity(items.len());
             for item in items.iter() {
-                let new_content = process_content(
+                let new_content = Box::pin(process_content(
                     &item.content,
                     messenger_id,
                     user_id,
                     group_id,
                     registry,
-                )?;
+                )).await?;
                 new_items.push(Arc::new(MessageItem {
                     msg_type: item.msg_type.clone(),
                     content: new_content,
