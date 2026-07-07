@@ -42,7 +42,7 @@ pub struct MessengerInfoRequest {
 
 // ========================= Message & Attachment ==========================
 
-use crate::message::{AttachmentInfoResponse, Content};
+use crate::message::Content;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutgoingMessage {
@@ -69,36 +69,15 @@ pub struct AttachmentDownloadRequest {
     pub key: Arc<String>,
 }
 
-/// ChannelManager 返回给 agent 的 response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsOutgoingMessageResponse {
-    pub response: Arc<OutgoingMessageResponse>,
-    /// key → internal_upload_id 映射，agent 上传 attachment payload 时使用
-    pub attachment_upload_id_map: Arc<DashMap<String, u32>>,
-}
-
-/// ChannelManager 返回给 agent 的下载 response，附加下载 id
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsAttachmentDownloadResponseHeader {
-    pub download_id: u32,
-    pub response: Arc<AttachmentInfoResponse>,
-}
-
 /// Agent 对 attachment payload chunk 的确认 response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentPayloadResponse {
     pub key: Arc<String>,
+    pub transfer_id: u32,
     pub pos: u64,
     pub size: u32,
     pub error_code: u32,
     pub error_msg: Option<Arc<String>>,
-}
-
-/// WS 传输用的 attachment payload response，包含二进制帧头中的 id
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WsAttachmentPayloadResponse {
-    pub id: u32,
-    pub response: AttachmentPayloadResponse,
 }
 
 // ========================= Attachment Binary ==========================
@@ -163,7 +142,7 @@ pub struct BindRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{GroupChangeNotification, UserRemoveNotification};
+    use crate::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
     use crate::{AttachmentInfo, MSG_TYPE_ATTACHMENT};
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
@@ -325,11 +304,13 @@ mod tests {
         let response = Arc::new(AttachmentInfoResponse {
             key: Arc::new("g1/msg1/doc.pdf".to_string()),
             info: metadata,
+            transfer_id: 42,
         });
         let json = serde_json::to_value(&response).unwrap();
         let deserialized: Arc<AttachmentInfoResponse> = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.key, "g1/msg1/doc.pdf");
         assert_eq!(*deserialized.info.file_name, "doc.pdf");
+        assert_eq!(deserialized.transfer_id, 42);
     }
 
     #[test]

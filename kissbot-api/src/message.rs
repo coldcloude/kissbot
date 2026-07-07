@@ -66,6 +66,7 @@ pub struct AttachmentInfo {
 pub struct AttachmentInfoResponse {
     pub key: Arc<String>,
     pub info: Arc<AttachmentInfo>,
+    pub transfer_id: u32,
 }
 
 #[cfg(test)]
@@ -133,6 +134,7 @@ mod tests {
         let content = Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
             key: Arc::new("g1/msg1/photo.png".to_string()),
             info,
+            transfer_id: 42,
         }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
