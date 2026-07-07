@@ -378,6 +378,7 @@ async fn handle_upload_attachment(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let mut attachment_key: Option<String> = None;
+    let mut attachment_transfer_id: Option<u32> = None;
     let mut file_data: Option<Bytes> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -385,6 +386,10 @@ async fn handle_upload_attachment(
         if name.as_deref() == Some("key") {
             if let Ok(data) = field.text().await {
                 attachment_key = Some(data.trim().to_string());
+            }
+        } else if name.as_deref() == Some("transfer_id") {
+            if let Ok(data) = field.text().await {
+                attachment_transfer_id = data.trim().parse::<u32>().ok();
             }
         } else if name.as_deref() == Some("file") {
             if let Ok(data) = field.bytes().await {
@@ -398,13 +403,18 @@ async fn handle_upload_attachment(
         None => return Json(ApiResponse::<serde_json::Value>::error("Missing key".to_string())),
     };
 
+    let attachment_transfer_id = match attachment_transfer_id {
+        Some(id) => id,
+        None => return Json(ApiResponse::<serde_json::Value>::error("Missing transfer_id".to_string())),
+    };
+
     let file_data = match file_data {
         Some(d) => d,
         None => return Json(ApiResponse::<serde_json::Value>::error("Missing file data".to_string())),
     };
 
     // 通过 AttachmentStore 写入
-    match messenger.attachment_store.write_chunk(&attachment_key, 0, file_data.len() as u32, file_data).await {
+    match messenger.attachment_store.write_chunk(&attachment_key, attachment_transfer_id, 0, file_data.len() as u32, file_data).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
     }
