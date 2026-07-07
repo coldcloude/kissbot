@@ -396,11 +396,11 @@ impl WebMessenger {
         drop(cfg);
 
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
-        let response = kissbot_channel::process_attachment_message(
+        let attachment_item = kissbot_channel::process_attachment_message(
             outgoing.clone(),
             &*self.attachment_store,
         ).await.map_err(|e| Error::InternalError(e.to_string()))?;
-        let new_content = response.content.clone();
+        let new_content = attachment_item.content.clone();
 
         let messenger_id = self.messenger_id.clone();
         for member_id in &members {
