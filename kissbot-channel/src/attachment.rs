@@ -11,6 +11,8 @@ use crate::error::Result;
 pub trait AttachmentRegistry: Send + Sync {
     /// 注册附件，返回生成的 key。
     async fn register(&self, messenger_id: &str, user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> Result<Arc<String>>;
+    /// 生成传输 ID。
+    async fn gen_transfer_id(&self, key: &str) -> u32;
 }
 
 /// 处理 OutgoingMessage 中的附件类型消息。
@@ -48,9 +50,11 @@ async fn process_content(
     match content {
         Content::AttachmentInfo(info) => {
             let key = registry.register(messenger_id, user_id, group_id, info.clone()).await?;
+            let transfer_id = registry.gen_transfer_id(key.as_str()).await;
             Ok(Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
                 key,
                 info: info.clone(),
+                transfer_id,
             })))
         }
         Content::Multi(items) => {

@@ -5,14 +5,41 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
+use serde::Serialize;
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, WsAttachmentPayloadResponse, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED, WsOutgoingMessageResponse, WsAttachmentDownloadResponseHeader};
-use kissbot_api::message::Content;
+use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
+use kissbot_api::message::{AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
+
+// ========== Local WS 响应包装结构体 ==========
+
+/// 出站消息响应 + 附件上传 ID 映射
+#[derive(Debug, Clone, Serialize)]
+struct WsOutgoingMessageResponse {
+    #[serde(flatten)]
+    response: Arc<OutgoingMessageResponse>,
+    attachment_upload_id_map: Arc<DashMap<String, u32>>,
+}
+
+/// 附件 payload 响应（包含 upload_id）
+#[derive(Debug, Clone, Serialize)]
+struct WsAttachmentPayloadResponse {
+    id: u32,
+    #[serde(flatten)]
+    response: AttachmentPayloadResponse,
+}
+
+/// 附件下载请求响应 header（包含 download_id）
+#[derive(Debug, Clone, Serialize)]
+struct WsAttachmentDownloadResponseHeader {
+    download_id: u32,
+    #[serde(flatten)]
+    response: Arc<AttachmentInfoResponse>,
+}
 
 const MSG_QUEUE_SIZE: usize = 100;
 
@@ -331,7 +358,7 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
             return Err(Error::UserNotBound(outgoing_message.user_id.to_string()));
         }
 
-        let response = messenger_context.messenger.send_message(outgoing_message, manager.global_attachment_sn.clone()).await?;
+        let response = messenger_context.messenger.send_message(outgoing_message).await?;
 
         // 遍历 content 中的 AttachmentInfoResponse，为每个 key 分配 upload_id 并注册
         let attachment_upload_id_map = Arc::new(DashMap::new());
@@ -385,7 +412,8 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
 
         let mut success = false;
         let payload = data.slice(OFFSET_ATT_DATA..);
-        let result = match messenger.send_attachment_payload(&key, header.size, header.pos, payload).await {
+        let transfer_id = 0; // TODO: 从 attachment_receiver_map 获取 transfer_id
+        let result = match messenger.send_attachment_payload(&key, transfer_id, header.size, header.pos, payload).await {
             Ok(response) => {
                 let ws_response = WsAttachmentPayloadResponse {
                     id: header.id,
@@ -453,7 +481,8 @@ struct StartSendDownloadAttachmentPayloadExecutor {
 impl StartSendDownloadAttachmentPayloadExecutor {
     pub async fn execute(&self) {
         // start_send_download_attachment_payload 内部自己 spawn
-        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.key.as_str()).await {
+        let transfer_id = 0; // TODO: 从 attachment_sender_map 获取 transfer_id
+        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.key.as_str(), transfer_id).await {
             error!("start_send_download_attachment_payload error: {:?}", e);
         }
     }
@@ -480,7 +509,7 @@ impl AttachmentDownloadRequestProcessor {
         }
         let messenger = messenger_context.messenger.clone();
 
-        let att_info_response = messenger.download_attachment_header(request, manager.global_attachment_sn.clone()).await?;
+        let att_info_response = messenger.download_attachment_header(request).await?;
         let key = att_info_response.key.clone();
         let internal_id = manager.global_attachment_sn.fetch_add(1, Ordering::SeqCst);
         manager.attachment_sender_map.insert(key.to_string(), (internal_id, Arc::downgrade(&connect_context)));
@@ -650,7 +679,6 @@ impl ChannelManager {
                     incoming_messages_handler,
                     download_attachment_payload_handler,
                     user_remove_handler,
-                    self.global_attachment_sn.clone(),  // 新增
                 ).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
@@ -823,7 +851,7 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_send(&self, key: &str, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
+    fn prepare_send(&self, key: &str, _transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
         let id_connect_context = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
 
@@ -840,7 +868,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         Ok((sn, buf))
     }
 
-    async fn send(&self, sn: u32, key: &str, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
+    async fn send(&self, sn: u32, key: &str, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let id_connect_context = self.attachment_sender_map.get(key)
             .ok_or_else(|| Error::AttachmentNotFound(key.to_string()))?;
         let connect_context = id_connect_context.1.upgrade()
@@ -852,6 +880,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
             connect_context.ws_context.send_bin(buf.freeze()).await?;
             return Ok(AttachmentPayloadResponse {
                 key: Arc::new(key.to_string()),
+                transfer_id,
                 pos,
                 size,
                 error_code: 0,
