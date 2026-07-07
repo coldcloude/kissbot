@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use kissbot_api::AttachmentPayloadHeader;
 use kissbot_api::message::AttachmentInfo;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -14,23 +15,18 @@ use tokio::sync::oneshot;
 use crate::error::{Error, Result};
 
 /// 上传队列命令
-enum UploadCommand {
-    Write {
-        transfer_id: u32,
-        key: String,
-        pos: u64,
-        size: u32,
-        data: Bytes,
-        res: oneshot::Sender<std::result::Result<u64, String>>,
-    },
+pub struct UploadCommand {
+    key: String,
+    header: AttachmentPayloadHeader,
+    data: Bytes,
+    res: oneshot::Sender<Result<u64>>,
 }
 
 /// 附件元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentMeta {
-    pub file_name: Arc<String>,
-    pub mime_type: Arc<String>,
-    pub size_bytes: u64,
+    pub key: Arc<String>,
+    pub info: Arc<AttachmentInfo>,
     pub has_thumbnail: bool,
 }
 
@@ -164,18 +160,18 @@ impl AttachmentStore {
         let tx = self.get_or_create_upload_channel(transfer_id, key.clone());
         let (res_tx, res_rx) = oneshot::channel();
 
-        tx.send(UploadCommand::Write {
-            transfer_id,
+        tx.send(UploadCommand {
             key: key.to_string(),
-            pos,
-            size,
+            header: AttachmentPayloadHeader {
+                id: transfer_id,
+                size,
+                pos
+            },
             data,
             res: res_tx,
-        }).map_err(|_| Error::InternalError("upload channel closed".to_string()))?;
+        })?;
 
-        res_rx.await
-            .map_err(|_| Error::InternalError("upload channel recv error".to_string()))?
-            .map_err(|e| Error::InternalError(e))
+        res_rx.await?
     }
 
     fn get_or_create_upload_channel(&self, transfer_id: u32, key: Arc<String>) -> flume::Sender<UploadCommand> {
@@ -187,26 +183,23 @@ impl AttachmentStore {
         let channels = self.upload_channels.clone();
         let base_path = self.base_path.clone();
 
+        let kk = key.clone();
         tokio::spawn(async move {
             let mut current_pos = 0u64;
 
             while let Ok(cmd) = rx.recv_async().await {
-                match cmd {
-                    UploadCommand::Write { transfer_id, key, pos, size: _, data, res } => {
-                        let result = Self::process_upload_write_inner(
-                            &base_path, &key, &mut current_pos, pos, &data,
-                        );
+                let result = Self::process_upload_write_inner(
+                    &base_path, key.as_str(), &mut current_pos, cmd.header.pos, &cmd.data,
+                );
 
-                        if result.is_ok() {
-                            channels.remove(&transfer_id);
-                        }
-                        let _ = res.send(result);
-                    }
+                if result.is_ok() {
+                    channels.remove(&transfer_id);
                 }
+                let _ = cmd.res.send(result);
             }
         });
 
-        self.upload_channels.insert(transfer_id, (key, 0u64, tx.clone()));
+        self.upload_channels.insert(transfer_id, (kk, 0u64, tx.clone()));
         tx
     }
 
@@ -217,16 +210,15 @@ impl AttachmentStore {
         current_pos: &mut u64,
         pos: u64,
         data: &Bytes,
-    ) -> std::result::Result<u64, String> {
+    ) -> Result<u64> {
         if pos < *current_pos {
             return Ok(*current_pos); // 已写入，幂等
         }
         if pos > *current_pos {
-            return Err(format!("out of order: expected pos={}, got pos={}", *current_pos, pos));
+            return Err(Error::AttachmentPositionOutOfOrder(key.to_string(), *current_pos, pos));
         }
 
-        let (group_id, uuid) = AttachmentStore::parse_key(key)
-            .map_err(|e| e.to_string())?;
+        let (group_id, uuid) = AttachmentStore::parse_key(key)?;
         let dir = base_path.join(group_id);
         let temp_path = dir.join(format!(".{}.uploading", uuid));
         let target_path = dir.join(uuid);
@@ -235,21 +227,20 @@ impl AttachmentStore {
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(&temp_path)
-            .map_err(|e| e.to_string())?;
-        file.write_all(data).map_err(|e| e.to_string())?;
+            .open(&temp_path)?;
+        file.write_all(data)?;
         *current_pos = pos + data.len() as u64;
 
         // 从 metadata 获取 size_bytes 判断是否完成
         let meta_path = dir.join(format!("{}.metadata", uuid));
         if let Ok(content) = std::fs::read_to_string(&meta_path) {
             if let Ok(meta) = serde_json::from_str::<AttachmentMeta>(&content) {
-                if *current_pos >= meta.size_bytes {
+                if *current_pos >= meta.info.size_bytes {
                     // 写入完成，rename
-                    std::fs::rename(&temp_path, &target_path).map_err(|e| e.to_string())?;
+                    std::fs::rename(&temp_path, &target_path)?;
 
                     // 如果是图片则生成缩略图
-                    if meta.mime_type.starts_with("image/") {
+                    if meta.info.mime_type.starts_with("image/") {
                         if let Ok(data) = std::fs::read(&target_path) {
                             if let Ok(img) = image::load_from_memory(&data) {
                                 let thumb_path = dir.join(format!("thumb_{}", uuid));
@@ -287,8 +278,7 @@ impl AttachmentStore {
         while pos < file_len && ok {
             let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
             let chunk_size = (end - pos) as usize;
-            let (sn, mut buf) = sender.prepare_send(transfer_id, chunk_size as u32, pos)
-                .map_err(|e| Error::InternalError(e.to_string()))?;
+            let (sn, mut buf) = sender.prepare_send(transfer_id, chunk_size as u32, pos)?;
             // 读取到 payload 偏移处
             use std::io::Read;
             if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
@@ -351,9 +341,12 @@ impl AttachmentStore {
         let thumb_path = self.base_path.join(group_id).join(msg_id).join(format!("thumb_{}", filename));
 
         Ok(AttachmentMeta {
-            file_name: Arc::new(filename),
-            mime_type: Arc::new(mime_type.to_string()),
-            size_bytes: metadata.len(),
+            key: Arc::new(key.to_string()),
+            info: Arc::new(AttachmentInfo {
+                file_name: Arc::new(filename),
+                mime_type: Arc::new(mime_type.to_string()),
+                size_bytes: metadata.len(),
+            }),
             has_thumbnail: thumb_path.exists(),
         })
     }
@@ -415,14 +408,12 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
 
         // 3. 写 metadata 文件
         let meta = AttachmentMeta {
-            file_name: info.file_name.clone(),
-            mime_type: info.mime_type.clone(),
-            size_bytes: info.size_bytes,
+            key: key.clone(),
+            info,
             has_thumbnail: false,
         };
         let meta_path = dir.join(format!("{}.metadata", uuid));
-        let meta_json = serde_json::to_string(&meta)
-            .map_err(|e| kissbot_channel::Error::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let meta_json = serde_json::to_string(&meta)?;
         std::fs::write(&meta_path, &meta_json)?;
 
         // 4. 插入 LRU 缓存

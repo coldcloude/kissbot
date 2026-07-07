@@ -5,7 +5,7 @@ use crate::{memory_store_client::MessagesRecord};
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Connect not found: {0}")]
-    ConnectNotFound(String),
+    ConnectNotFound(u32),
 
     #[error("Messenger not found: {0}")]
     MessengerNotFound(String),
@@ -27,6 +27,9 @@ pub enum Error {
     
     #[error("Attachment not found: {0}")]
     AttachmentNotFound(String),
+    
+    #[error("Attachment not found: {0} {1} {2}")]
+    AttachmentPositionOutOfOrder(String, u64, u64),
     
     #[error("Invalid message: {0}")]
     InvalidMessage(String),
@@ -52,7 +55,7 @@ pub enum Error {
     #[error("Flume Recv error: {0}")]
     RecvError(#[from] flume::RecvError),
 
-    #[error("")]
+    #[error("Oneshot Recv error: {0}")]
     OneshotRecvError(#[from] tokio::sync::oneshot::error::RecvError),
 
     #[error("TryFromSliceError: {0}")]

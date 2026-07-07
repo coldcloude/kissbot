@@ -588,17 +588,13 @@ impl Messenger for WebMessenger {
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta(request.key.as_str())
             .map_err(|e| kissbot_channel::Error::AttachmentNotFound(e.to_string()))?;
-        let info = AttachmentInfo {
-            file_name: meta.file_name.clone(),
-            mime_type: meta.mime_type.clone(),
-            size_bytes: meta.size_bytes,
-        };
+        let info = meta.info.clone();
         // 生成 transfer_id 并存储 key 映射（下载时由 transfer_id 反查 key）
         let transfer_id = self.attachment_store.next_transfer_id_for(request.key.clone());
 
         Ok(Arc::new(AttachmentInfoResponse {
             key: Arc::clone(&request.key),
-            info: Arc::new(info),
+            info,
             transfer_id,
         }))
     }

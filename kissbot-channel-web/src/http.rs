@@ -430,7 +430,7 @@ async fn handle_download_attachment(
         Ok(m) => m,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
-    let mime = mime_guess::from_path(meta.file_name.as_str()).first_or_octet_stream().to_string();
+    let mime = mime_guess::from_path(meta.info.file_name.as_str()).first_or_octet_stream().to_string();
 
     // 解析 Range header
     let range_header = headers.get(axum::http::header::RANGE)

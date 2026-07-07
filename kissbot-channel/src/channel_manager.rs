@@ -57,7 +57,7 @@ impl ConnectCloseProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
         //移除连接记录
         let (_,connect_context) = manager.connect_map.remove(&self.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(self.connect_id.to_string()))?;
+        .ok_or_else(|| Error::ConnectNotFound(self.connect_id))?;
         //把绑定记录从messenger中移除
         for messenger_context in manager.messenger_map.iter() {
             //为防止死锁，将遍历和删除分开
@@ -651,7 +651,7 @@ impl ChannelManager {
         .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
+        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
 
         //处理group变更事件
         match event.change_type {
@@ -698,7 +698,7 @@ impl ChannelManager {
         .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
+        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
 
         let payload = serde_json::to_value(event.messages.clone())?;
         let sn = connect_context.ws_context.next_request_sn();
@@ -731,7 +731,7 @@ impl ChannelManager {
             .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_info.connect_id)
-            .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id.to_string()))?;
+            .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
 
         //通知 agent 用户已删除
         let payload = serde_json::to_value(event.notification.as_ref())?;
