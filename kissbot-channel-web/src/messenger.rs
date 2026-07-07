@@ -545,7 +545,6 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         on_incoming_messages: Weak<dyn IncomingMessageHandler>,
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
-        _global_attachment_sn: Arc<AtomicU32>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = Arc::new(WebMessenger::new(
@@ -570,15 +569,16 @@ impl Messenger for WebMessenger {
         Ok(Arc::new(info))
     }
 
-    async fn send_message(&self, message: OutgoingMessage, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
+    async fn send_message(&self, message: OutgoingMessage) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel::Error> {
         Ok(self.send(Arc::new(message)).await?)
     }
 
-    async fn send_attachment_payload(&self, key: &str, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
-        self.attachment_store.write_chunk(key, pos, size, data).await
+    async fn send_attachment_payload(&self, key: &str, transfer_id: u32, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
+        self.attachment_store.write_chunk(key, transfer_id, pos, size, data).await
             .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
         Ok(AttachmentPayloadResponse {
             key: Arc::new(key.to_string()),
+            transfer_id,
             pos,
             size,
             error_code: 0,
@@ -586,7 +586,7 @@ impl Messenger for WebMessenger {
         })
     }
 
-    async fn download_attachment_header(&self, request: AttachmentDownloadRequest, _attachment_sn: Arc<AtomicU32>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
+    async fn download_attachment_header(&self, request: AttachmentDownloadRequest) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
         let meta = self.attachment_store.get_meta(request.key.as_str())
             .map_err(|e| kissbot_channel::Error::AttachmentNotFound(e.to_string()))?;
         let info = AttachmentInfo {
@@ -594,21 +594,23 @@ impl Messenger for WebMessenger {
             mime_type: meta.mime_type.clone(),
             size_bytes: meta.size_bytes,
         };
+        let transfer_id = self.attachment_store.next_transfer_id();
 
         Ok(Arc::new(AttachmentInfoResponse {
             key: Arc::clone(&request.key),
             info: Arc::new(info),
+            transfer_id,
         }))
     }
 
-    async fn start_send_download_attachment_payload(&self, key: &str) -> std::result::Result<(), kissbot_channel::Error> {
+    async fn start_send_download_attachment_payload(&self, key: &str, transfer_id: u32) -> std::result::Result<(), kissbot_channel::Error> {
         let sender = self.on_download_attachment_payload.upgrade()
             .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
         let store = self.attachment_store.clone();
         let key_owned = key.to_string();
 
         tokio::spawn(async move {
-            if let Err(e) = store.send_download_payload(&key_owned, &*sender).await {
+            if let Err(e) = store.send_download_payload(&key_owned, transfer_id, &*sender).await {
                 tracing::error!("Failed to send download payload: {}", e);
             }
         });
