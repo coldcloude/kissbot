@@ -426,21 +426,8 @@ struct AttachmentDownloadRequestProcessor {
     manager: Weak<ChannelManager>,
 }
 
-struct StartSendDownloadAttachmentPayloadExecutor {
-    messenger: Arc<dyn Messenger>,
-    transfer_id: u32,
-}
-
-impl StartSendDownloadAttachmentPayloadExecutor {
-    pub async fn execute(&self) {
-        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.transfer_id).await {
-            error!("start_send_download_attachment_payload error: {:?}", e);
-        }
-    }
-}
-
 impl AttachmentDownloadRequestProcessor {
-    async fn process_download_request_header(&self, data: WsMessage) -> Result<(Arc<AttachmentInfoResponse>, StartSendDownloadAttachmentPayloadExecutor)> {
+    async fn process_download_request_header(&self, data: WsMessage) -> Result<(Arc<AttachmentInfoResponse>, Arc<dyn Messenger>)> {
         let payload = data.payload
             .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
         let request = serde_json::from_value::<AttachmentDownloadRequest>(payload)?;
@@ -464,10 +451,14 @@ impl AttachmentDownloadRequestProcessor {
         let transfer_id = att_info_response.transfer_id;
         manager.attachment_sender_map.insert(transfer_id, Arc::downgrade(&connect_context));
 
-        Ok((att_info_response, StartSendDownloadAttachmentPayloadExecutor {
-            messenger,
-            transfer_id,
-        }))
+        Ok((att_info_response, messenger))
+    }
+
+    fn stop_download(&self, transfer_id: u32) -> Result<()> {
+        let manager = self.manager.upgrade()
+            .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        manager.attachment_sender_map.remove(&transfer_id);
+        Ok(())
     }
 }
 
@@ -477,8 +468,9 @@ impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
         let sn = data.sn;
         let mut result: Option<Error> = None;
         match self.process_download_request_header(data).await {
-            Ok((response_header,start_executor)) => {
-                match serde_json::to_value(response_header) {
+            Ok((response,messenger)) => {
+                let mut send_succeed = false;
+                match serde_json::to_value(&response) {
                     Ok(response_header_value) => {
                         // 先返回 header，再启动 payload 推送
                         match context.send_json(WsMessage {
@@ -488,15 +480,27 @@ impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
                             payload: Some(response_header_value),
                         }).await {
                             Ok(_) => {
-                                start_executor.execute().await;
+                                match messenger.start_send_download_attachment_payload(response.transfer_id).await {
+                                    Ok(_) => {
+                                        send_succeed = true;
+                                    }
+                                    Err(e) => {
+                                        error!("start_send_download_attachment_payload error: {:?}", e);
+                                    }
+                                }
                             }
                             Err(e) => {
-                                error!("attachment_download_request error: {:?}", e);
+                                error!("attachment_download_request {} error: {:?}", response.transfer_id, e);
                             }
                         };
                     }
                     Err(e) => {
                         result = Some(Error::JsonError(e));
+                    }
+                }
+                if !send_succeed {
+                    if let Err(e) = self.stop_download(response.transfer_id) {
+                        error!("stop_download {} error: {:?}", response.transfer_id, e);
                     }
                 }
             }
@@ -685,7 +689,7 @@ impl ChannelManager {
         Ok(())
     }
         
-    async fn send_agent(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+    async fn send_to_agent(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
         //找到对应的connect
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
@@ -707,7 +711,7 @@ impl ChannelManager {
         Ok(())
     }
 
-    async fn send_memory_store(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+    async fn send_to_memory_store(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
         //找到对应的agent和role
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
@@ -772,8 +776,8 @@ impl IncomingMessageHandler for ChannelManager {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
         let results = tokio::join!(
-            self.send_agent(event.clone()),
-            self.send_memory_store(event.clone()),
+            self.send_to_agent(event.clone()),
+            self.send_to_memory_store(event.clone()),
         );
         for result in vec![results.0, results.1] {
             if let Err(e) = result {
