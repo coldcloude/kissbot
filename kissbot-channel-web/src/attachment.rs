@@ -44,6 +44,8 @@ pub struct AttachmentStore {
     meta_cache: Mutex<LruCache<String, Arc<AttachmentMeta>>>,
     /// 上传队列：transfer_id → (key, current_pos, sender)
     upload_channels: DashMap<u32, (Arc<String>, u64, flume::Sender<UploadCommand>)>,
+    /// transfer_id → key 映射（上传和下载通用）
+    transfer_key_map: DashMap<u32, Arc<String>>,
     transfer_id_seq: AtomicU32,
 }
 
@@ -53,12 +55,20 @@ impl AttachmentStore {
             base_path: PathBuf::from(base_path),
             meta_cache: Mutex::new(LruCache::new(std::num::NonZeroUsize::new(1024).unwrap())),
             upload_channels: DashMap::new(),
+            transfer_key_map: DashMap::new(),
             transfer_id_seq: AtomicU32::new(0),
         }
     }
 
     pub fn next_transfer_id(&self) -> u32 {
         self.transfer_id_seq.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// 生成 transfer_id 并存储 transfer_id → key 映射
+    pub fn next_transfer_id_for(&self, key: Arc<String>) -> u32 {
+        let id = self.next_transfer_id();
+        self.transfer_key_map.insert(id, key);
+        id
     }
 
     /// 解析 key 为 (group_id, uuid)
@@ -147,8 +157,11 @@ impl AttachmentStore {
     // ===== 上传队列 =====
 
     /// 异步写入 chunk（通过 flume 队列串行处理）
-    pub async fn write_chunk(&self, key: &str, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<u64> {
-        let tx = self.get_or_create_upload_channel(transfer_id, Arc::new(key.to_string()));
+    pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<u64> {
+        let key = self.transfer_key_map.get(&transfer_id)
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
+            .clone();
+        let tx = self.get_or_create_upload_channel(transfer_id, key.clone());
         let (res_tx, res_rx) = oneshot::channel();
 
         tx.send(UploadCommand::Write {
@@ -260,30 +273,33 @@ impl AttachmentStore {
     // ===== 下载 =====
 
     /// 发送下载 payload（内部按 CHUNK_SIZE 分块读取并调用 sender）
-    pub async fn send_download_payload(&self, key: &str, transfer_id: u32, sender: &dyn kissbot_channel::AttachmentDownloadPayloadSender) -> Result<()> {
+    pub async fn send_download_payload(&self, transfer_id: u32, sender: &dyn kissbot_channel::AttachmentDownloadPayloadSender) -> Result<()> {
         use kissbot_api::channel::OFFSET_ATT_DATA;
         const CHUNK_SIZE: u64 = 65536;
 
-        let (mut file, file_len) = self.open_file(key)?;
+        let key = self.transfer_key_map.get(&transfer_id)
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
+            .clone();
+        let (mut file, file_len) = self.open_file(key.as_str())?;
 
         let mut pos = 0u64;
         let mut ok = true;
         while pos < file_len && ok {
             let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
             let chunk_size = (end - pos) as usize;
-            let (sn, mut buf) = sender.prepare_send(key, transfer_id, chunk_size as u32, pos)
+            let (sn, mut buf) = sender.prepare_send(transfer_id, chunk_size as u32, pos)
                 .map_err(|e| Error::InternalError(e.to_string()))?;
             // 读取到 payload 偏移处
             use std::io::Read;
             if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
                 return Err(Error::InternalError(format!("Failed to read file chunk: {}", e)));
             }
-            ok = sender.send(sn, key, transfer_id, chunk_size as u32, pos, buf).await.is_ok();
+            ok = sender.send(sn, transfer_id, chunk_size as u32, pos, buf).await.is_ok();
             pos = end;
         }
         // 发送 size=0 的结束标记
-        if let Ok((sn, buf)) = sender.prepare_send(key, transfer_id, 0, pos) {
-            let _ = sender.send(sn, key, transfer_id, 0, pos, buf).await;
+        if let Ok((sn, buf)) = sender.prepare_send(transfer_id, 0, pos) {
+            let _ = sender.send(sn, transfer_id, 0, pos, buf).await;
         }
 
         Ok(())
@@ -418,7 +434,9 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
         Ok(key)
     }
 
-    async fn gen_transfer_id(&self, _key: &str) -> u32 {
-        self.next_transfer_id()
+    async fn gen_transfer_id(&self, key: &str) -> u32 {
+        let id = self.next_transfer_id();
+        self.transfer_key_map.insert(id, Arc::new(key.to_string()));
+        id
     }
 }

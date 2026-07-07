@@ -72,7 +72,6 @@ pub struct AttachmentDownloadRequest {
 /// Agent 对 attachment payload chunk 的确认 response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentPayloadResponse {
-    pub key: Arc<String>,
     pub transfer_id: u32,
     pub pos: u64,
     pub size: u32,

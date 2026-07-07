@@ -31,8 +31,8 @@ pub trait IncomingMessageHandler: Send + Sync {
 
 #[async_trait]
 pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    fn prepare_send(&self, key: &str, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)>;
-    async fn send(&self, sn: u32, key: &str, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse>;
+    fn prepare_send(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)>;
+    async fn send(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse>;
 }
 
 // ========== Group Change ==========

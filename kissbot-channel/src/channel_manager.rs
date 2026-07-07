@@ -5,33 +5,14 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
-use serde::Serialize;
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, OutgoingMessageResponse, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use kissbot_api::message::{AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
 use tokio::{net::TcpListener, time::{Duration}};
-
-// ========== Local WS 响应包装结构体 ==========
-
-/// 出站消息响应 + 附件上传 ID 映射
-#[derive(Debug, Clone, Serialize)]
-struct WsOutgoingMessageResponse {
-    #[serde(flatten)]
-    response: Arc<OutgoingMessageResponse>,
-    attachment_upload_id_map: Arc<DashMap<String, u32>>,
-}
-
-/// 附件 payload 响应（包含 upload_id）
-#[derive(Debug, Clone, Serialize)]
-struct WsAttachmentPayloadResponse {
-    id: u32,
-    #[serde(flatten)]
-    response: AttachmentPayloadResponse,
-}
 
 const MSG_QUEUE_SIZE: usize = 100;
 
@@ -310,17 +291,15 @@ fn register_attachment_receivers(
     content: &Content,
     manager: &ChannelManager,
     messenger_weak: Weak<dyn Messenger>,
-    upload_id_map: &DashMap<String, u32>,
 ) {
     match content {
         Content::AttachmentInfoResponse(resp) => {
             let id = resp.transfer_id;
             manager.attachment_receiver_map.insert(id, (resp.key.to_string(), messenger_weak.clone()));
-            upload_id_map.insert(resp.key.to_string(), id);
         }
         Content::Multi(items) => {
             for item in items.iter() {
-                register_attachment_receivers(&item.content, manager, messenger_weak.clone(), upload_id_map);
+                register_attachment_receivers(&item.content, manager, messenger_weak.clone());
             }
         }
         _ => {}
@@ -350,18 +329,11 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
 
         let response = messenger_context.messenger.send_message(outgoing_message).await?;
 
-        // 遍历 content 中的 AttachmentInfoResponse，为每个 key 分配 upload_id 并注册
-        let attachment_upload_id_map = Arc::new(DashMap::new());
+        // 遍历 content 中的 AttachmentInfoResponse，注册 transfer_id 到 receiver_map
         let messenger_weak = Arc::downgrade(&messenger_context.messenger);
-        register_attachment_receivers(&response.content, &manager, messenger_weak, &attachment_upload_id_map);
+        register_attachment_receivers(&response.content, &manager, messenger_weak);
 
-        // 构造 WsOutgoingMessageResponse
-        let ws_response = WsOutgoingMessageResponse {
-            response: response.clone(),
-            attachment_upload_id_map,
-        };
-
-        let response = serde_json::to_value(ws_response)?;
+        let response = serde_json::to_value(response)?;
         Ok(Some(response))
     }
 }
@@ -388,29 +360,22 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
         // 通过 id 找到 (key, messenger)
-        let key_messenger = manager.attachment_receiver_map.get(&header.id)
-            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
-        let key = key_messenger.0.clone();
-        let messenger = key_messenger.1.upgrade()
-        .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
-        drop(key_messenger);
+        let messenger = manager.attachment_receiver_map.get(&header.id)
+            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?
+            .1.upgrade()
+            .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
 
         if header.size == 0 {
-            //最后传个size=0的，表示结尾
             manager.attachment_receiver_map.remove(&header.id);
         }
 
         let mut success = false;
         let payload = data.slice(OFFSET_ATT_DATA..);
-        let result = match messenger.send_attachment_payload(&key, header.id, header.size, header.pos, payload).await {
+        let result = match messenger.send_attachment_payload(header.id, header.size, header.pos, payload).await {
             Ok(response) => {
-                let ws_response = WsAttachmentPayloadResponse {
-                    id: header.id,
-                    response
-                };
-                match serde_json::to_value(&ws_response) {
+                match serde_json::to_value(&response) {
                     Ok(value) => {
-                        success = ws_response.response.error_code == 0;
+                        success = response.error_code == 0;
                         Ok(Some(value))
                     }
                     Err(e) => Err(Error::from(e))
@@ -464,13 +429,12 @@ struct AttachmentDownloadRequestProcessor {
 
 struct StartSendDownloadAttachmentPayloadExecutor {
     messenger: Arc<dyn Messenger>,
-    key: Arc<String>,
     transfer_id: u32,
 }
 
 impl StartSendDownloadAttachmentPayloadExecutor {
     pub async fn execute(&self) {
-        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.key.as_str(), self.transfer_id).await {
+        if let Err(e) = self.messenger.start_send_download_attachment_payload(self.transfer_id).await {
             error!("start_send_download_attachment_payload error: {:?}", e);
         }
     }
@@ -498,13 +462,11 @@ impl AttachmentDownloadRequestProcessor {
         let messenger = messenger_context.messenger.clone();
 
         let att_info_response = messenger.download_attachment_header(request).await?;
-        let key = att_info_response.key.clone();
         let transfer_id = att_info_response.transfer_id;
         manager.attachment_sender_map.insert(transfer_id, Arc::downgrade(&connect_context));
 
         Ok((att_info_response, StartSendDownloadAttachmentPayloadExecutor {
-            messenger: messenger,
-            key: key,
+            messenger,
             transfer_id,
         }))
     }
@@ -835,14 +797,13 @@ impl UserRemoveHandler for ChannelManager {
 
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_send(&self, _key: &str, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
+    fn prepare_send(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
         let connect_context = self.attachment_sender_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
             .upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
         let sn = connect_context.ws_context.next_request_sn();
-        // capacity = 头部 + payload 数据空间
         let capacity = OFFSET_ATT_DATA + size as usize;
         let mut buf = BytesMut::with_capacity(capacity);
         buf.put_u32(sn);
@@ -854,18 +815,16 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         Ok((sn, buf))
     }
 
-    async fn send(&self, sn: u32, key: &str, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
+    async fn send(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let connect_context = self.attachment_sender_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
             .upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
 
         if size == 0 {
-            // size=0 的结束标记，直接发送，不需要等待 response
             self.attachment_sender_map.remove(&transfer_id);
             connect_context.ws_context.send_bin(buf.freeze()).await?;
             return Ok(AttachmentPayloadResponse {
-                key: Arc::new(key.to_string()),
                 transfer_id,
                 pos,
                 size,
