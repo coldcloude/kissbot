@@ -40,8 +40,8 @@ pub struct ChannelManager {
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
-    // 上传方向：internal_upload_id → (key, Weak<Messenger>)
-    attachment_receiver_map: DashMap<u32, (String, Weak<dyn Messenger>)>,
+    // 上传方向：transfer_id → Weak<Messenger>
+    attachment_receiver_map: DashMap<u32, Weak<dyn Messenger>>,
     // 下载方向：transfer_id → Weak<ConnectContext>
     attachment_sender_map: DashMap<u32, Weak<ConnectContext>>,
 }
@@ -290,16 +290,15 @@ struct OutgoingMessageProcessor {
 fn register_attachment_receivers(
     content: &Content,
     manager: &ChannelManager,
-    messenger_weak: Weak<dyn Messenger>,
+    messenger: Weak<dyn Messenger>,
 ) {
     match content {
         Content::AttachmentInfoResponse(resp) => {
-            let id = resp.transfer_id;
-            manager.attachment_receiver_map.insert(id, (resp.key.to_string(), messenger_weak.clone()));
+            manager.attachment_receiver_map.insert(resp.transfer_id, messenger.clone());
         }
         Content::Multi(items) => {
             for item in items.iter() {
-                register_attachment_receivers(&item.content, manager, messenger_weak.clone());
+                register_attachment_receivers(&item.content, manager, messenger.clone());
             }
         }
         _ => {}
@@ -359,10 +358,10 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
-        // 通过 id 找到 (key, messenger)
+        // 通过 transfer_id 找到 messenger
         let messenger = manager.attachment_receiver_map.get(&header.id)
             .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?
-            .1.upgrade()
+            .upgrade()
             .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
 
         if header.size == 0 {
