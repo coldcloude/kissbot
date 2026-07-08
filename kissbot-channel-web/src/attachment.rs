@@ -24,7 +24,9 @@ pub struct UploadCommand {
 /// 上传通道
 #[derive(Clone)]
 struct UploadChannel {
+    #[allow(dead_code)]
     key: Arc<String>,
+    #[allow(dead_code)]
     current_pos: u64,
     sender: flume::Sender<UploadCommand>,
 }
@@ -235,13 +237,9 @@ impl AttachmentStore {
         let key = self.transfer_key_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
             .clone();
-        let file_len = {
-            let (group_id, uuid) = Self::parse_key(key.as_str())?;
-            let file_path = self.base_path.join(group_id).join(uuid);
-            std::fs::metadata(&file_path)?.len()
-        };
         let (group_id, uuid) = Self::parse_key(key.as_str())?;
         let file_path = self.base_path.join(group_id).join(uuid);
+        let file_len = std::fs::metadata(&file_path)?.len();
         let mut file = std::fs::File::open(&file_path)?;
 
         let mut pos = 0u64;
