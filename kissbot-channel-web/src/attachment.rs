@@ -16,7 +16,6 @@ use crate::error::{Error, Result};
 
 /// 上传队列命令
 pub struct UploadCommand {
-    key: String,
     header: AttachmentPayloadHeader,
     data: Bytes,
     res: oneshot::Sender<Result<u64>>,
@@ -154,14 +153,10 @@ impl AttachmentStore {
 
     /// 异步写入 chunk（通过 flume 队列串行处理）
     pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<u64> {
-        let key = self.transfer_key_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
-            .clone();
-        let tx = self.get_or_create_upload_channel(transfer_id, key.clone());
+        let tx = self.get_or_create_upload_channel(transfer_id);
         let (res_tx, res_rx) = oneshot::channel();
 
         tx.send(UploadCommand {
-            key: key.to_string(),
             header: AttachmentPayloadHeader {
                 id: transfer_id,
                 size,
@@ -174,22 +169,25 @@ impl AttachmentStore {
         res_rx.await?
     }
 
-    fn get_or_create_upload_channel(&self, transfer_id: u32, key: Arc<String>) -> flume::Sender<UploadCommand> {
+    fn get_or_create_upload_channel(&self, transfer_id: u32) -> flume::Sender<UploadCommand> {
         if let Some(entry) = self.upload_channels.get(&transfer_id) {
             return entry.value().2.clone();
         }
 
+        let key = self.transfer_key_map.get(&transfer_id)
+            .map(|k| k.clone())
+            .unwrap_or_else(|| Arc::new(String::new()));
         let (tx, rx) = flume::unbounded::<UploadCommand>();
         let channels = self.upload_channels.clone();
         let base_path = self.base_path.clone();
+        let key_for_task = key.clone();
 
-        let kk = key.clone();
         tokio::spawn(async move {
             let mut current_pos = 0u64;
 
             while let Ok(cmd) = rx.recv_async().await {
                 let result = Self::process_upload_write_inner(
-                    &base_path, key.as_str(), &mut current_pos, cmd.header.pos, &cmd.data,
+                    &base_path, key_for_task.as_str(), &mut current_pos, cmd.header.pos, &cmd.data,
                 );
 
                 if result.is_ok() {
@@ -199,7 +197,7 @@ impl AttachmentStore {
             }
         });
 
-        self.upload_channels.insert(transfer_id, (kk, 0u64, tx.clone()));
+        self.upload_channels.insert(transfer_id, (key, 0u64, tx.clone()));
         tx
     }
 
