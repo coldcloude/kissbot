@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use kissbot_api::AttachmentPayloadHeader;
-use kissbot_api::message::AttachmentInfo;
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -19,6 +19,14 @@ pub struct UploadCommand {
     header: AttachmentPayloadHeader,
     data: Bytes,
     res: oneshot::Sender<Result<u64>>,
+}
+
+/// 上传通道
+#[derive(Clone)]
+struct UploadChannel {
+    key: Arc<String>,
+    current_pos: u64,
+    sender: flume::Sender<UploadCommand>,
 }
 
 /// 附件元数据
@@ -37,8 +45,8 @@ pub struct AttachmentMeta {
 pub struct AttachmentStore {
     base_path: PathBuf,
     meta_cache: Mutex<LruCache<String, Arc<AttachmentMeta>>>,
-    /// 上传队列：transfer_id → (key, current_pos, sender)
-    upload_channels: DashMap<u32, (Arc<String>, u64, flume::Sender<UploadCommand>)>,
+    /// 上传队列：transfer_id → UploadChannel
+    upload_channels: DashMap<u32, UploadChannel>,
     /// transfer_id → key 映射（上传和下载通用）
     transfer_key_map: DashMap<u32, Arc<String>>,
     transfer_id_seq: AtomicU32,
@@ -171,7 +179,7 @@ impl AttachmentStore {
 
     fn get_or_create_upload_channel(&self, transfer_id: u32) -> flume::Sender<UploadCommand> {
         if let Some(entry) = self.upload_channels.get(&transfer_id) {
-            return entry.value().2.clone();
+            return entry.value().sender.clone();
         }
 
         let key = self.transfer_key_map.get(&transfer_id)
@@ -197,7 +205,11 @@ impl AttachmentStore {
             }
         });
 
-        self.upload_channels.insert(transfer_id, (key, 0u64, tx.clone()));
+        self.upload_channels.insert(transfer_id, UploadChannel {
+            key,
+            current_pos: 0,
+            sender: tx.clone(),
+        });
         tx
     }
 
@@ -299,40 +311,64 @@ impl AttachmentStore {
 
 #[async_trait]
 impl kissbot_channel::AttachmentRegistry for AttachmentStore {
-    async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<String>, kissbot_channel::Error> {
+    async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
         let uuid = uuid::Uuid::new_v4().to_string();
         let key = Arc::new(format!("{}/{}", group_id, uuid));
+        let transfer_id = self.next_transfer_id();
 
-        // 1. 创建 group 目录
+        // 创建 group 目录
         let dir = self.base_path.join(group_id);
         std::fs::create_dir_all(&dir)?;
 
-        // 2. 创建空临时文件（防止 upload 在 register 之前到达）
+        // 创建空临时文件
         let temp_path = dir.join(format!(".{}.uploading", uuid));
         std::fs::write(&temp_path, &[])?;
 
-        // 3. 写 metadata 文件
+        // 写 metadata 文件
         let meta = AttachmentMeta {
             key: key.clone(),
-            info,
+            info: info.clone(),
             has_thumbnail: false,
         };
         let meta_path = dir.join(format!("{}.metadata", uuid));
         let meta_json = serde_json::to_string(&meta)?;
         std::fs::write(&meta_path, &meta_json)?;
 
-        // 4. 插入 LRU 缓存
+        // 插入 LRU 缓存
         {
             let mut cache = self.meta_cache.lock().unwrap();
             cache.put(uuid, Arc::new(meta));
         }
 
-        Ok(key)
-    }
+        // 创建上传队列并注册到 upload_channels（不上 transfer_key_map）
+        let (tx, rx) = flume::unbounded::<UploadCommand>();
+        let channels = self.upload_channels.clone();
+        let base_path = self.base_path.clone();
+        let key_ch = key.clone();
+        let id = transfer_id;
+        tokio::spawn(async move {
+            let mut current_pos = 0u64;
+            while let Ok(cmd) = rx.recv_async().await {
+                let result = Self::process_upload_write_inner(
+                    &base_path, key_ch.as_str(), &mut current_pos, cmd.header.pos, &cmd.data,
+                );
+                if result.is_ok() {
+                    channels.remove(&id);
+                }
+                let _ = cmd.res.send(result);
+            }
+        });
 
-    async fn gen_transfer_id(&self, key: &str) -> u32 {
-        let id = self.next_transfer_id();
-        self.transfer_key_map.insert(id, Arc::new(key.to_string()));
-        id
+        self.upload_channels.insert(transfer_id, UploadChannel {
+            key: key.clone(),
+            current_pos: 0,
+            sender: tx,
+        });
+
+        Ok(Arc::new(AttachmentInfoResponse {
+            key,
+            info,
+            transfer_id,
+        }))
     }
 }

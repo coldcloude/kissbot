@@ -9,10 +9,15 @@ use crate::error::Result;
 /// 附件注册器。将 AttachmentInfo 注册为全局唯一的 key，并管理 key 与 info 的关系。
 #[async_trait]
 pub trait AttachmentRegistry: Send + Sync {
-    /// 注册附件，返回生成的 key。
-    async fn register(&self, messenger_id: &str, user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> Result<Arc<String>>;
-    /// 生成传输 ID。
-    async fn gen_transfer_id(&self, key: &str) -> u32;
+    /// 注册附件，返回包含 key、info、transfer_id 的响应。
+    /// transfer_id 用于上传时的 write_chunk 路由。
+    async fn register(
+        &self,
+        messenger_id: &str,
+        user_id: &str,
+        group_id: &str,
+        info: Arc<AttachmentInfo>,
+    ) -> Result<Arc<AttachmentInfoResponse>>;
 }
 
 /// 处理 OutgoingMessage 中的附件类型消息。
@@ -48,13 +53,8 @@ async fn process_content(
 ) -> Result<Content> {
     match content {
         Content::AttachmentInfo(info) => {
-            let key = registry.register(messenger_id, user_id, group_id, info.clone()).await?;
-            let transfer_id = registry.gen_transfer_id(key.as_str()).await;
-            Ok(Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
-                key,
-                info: info.clone(),
-                transfer_id,
-            })))
+            let resp = registry.register(messenger_id, user_id, group_id, info.clone()).await?;
+            Ok(Content::AttachmentInfoResponse(resp))
         }
         Content::Multi(items) => {
             let mut new_items = Vec::with_capacity(items.len());
