@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -113,18 +113,6 @@ impl AttachmentStore {
         Ok(meta)
     }
 
-    /// 打开附件文件（下载用）
-    pub fn open_file(&self, key: &str) -> Result<(std::fs::File, u64)> {
-        let (group_id, uuid) = Self::parse_key(key)?;
-        let file_path = self.base_path.join(group_id).join(uuid);
-        if !file_path.exists() {
-            return Err(Error::AttachmentNotFound(key.to_string()));
-        }
-        let metadata = std::fs::metadata(&file_path)?;
-        let file = std::fs::File::open(&file_path)?;
-        Ok((file, metadata.len()))
-    }
-
     /// 获取缩略图数据
     pub fn get_thumbnail(&self, key: &str) -> Result<Bytes> {
         let (group_id, uuid) = Self::parse_key(key)?;
@@ -161,56 +149,22 @@ impl AttachmentStore {
 
     /// 异步写入 chunk（通过 flume 队列串行处理）
     pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<u64> {
-        let tx = self.get_or_create_upload_channel(transfer_id);
+        let sender = self.upload_channels.get(&transfer_id)
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
+            .value().sender.clone();
         let (res_tx, res_rx) = oneshot::channel();
 
-        tx.send(UploadCommand {
+        sender.send(UploadCommand {
             header: AttachmentPayloadHeader {
                 id: transfer_id,
                 size,
-                pos
+                pos,
             },
             data,
             res: res_tx,
         })?;
 
         res_rx.await?
-    }
-
-    fn get_or_create_upload_channel(&self, transfer_id: u32) -> flume::Sender<UploadCommand> {
-        if let Some(entry) = self.upload_channels.get(&transfer_id) {
-            return entry.value().sender.clone();
-        }
-
-        let key = self.transfer_key_map.get(&transfer_id)
-            .map(|k| k.clone())
-            .unwrap_or_else(|| Arc::new(String::new()));
-        let (tx, rx) = flume::unbounded::<UploadCommand>();
-        let channels = self.upload_channels.clone();
-        let base_path = self.base_path.clone();
-        let key_for_task = key.clone();
-
-        tokio::spawn(async move {
-            let mut current_pos = 0u64;
-
-            while let Ok(cmd) = rx.recv_async().await {
-                let result = Self::process_upload_write_inner(
-                    &base_path, key_for_task.as_str(), &mut current_pos, cmd.header.pos, &cmd.data,
-                );
-
-                if result.is_ok() {
-                    channels.remove(&transfer_id);
-                }
-                let _ = cmd.res.send(result);
-            }
-        });
-
-        self.upload_channels.insert(transfer_id, UploadChannel {
-            key,
-            current_pos: 0,
-            sender: tx.clone(),
-        });
-        tx
     }
 
     /// 内部处理上传写入（同步执行，在 flume 异步任务中调用）
@@ -281,7 +235,14 @@ impl AttachmentStore {
         let key = self.transfer_key_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
             .clone();
-        let (mut file, file_len) = self.open_file(key.as_str())?;
+        let file_len = {
+            let (group_id, uuid) = Self::parse_key(key.as_str())?;
+            let file_path = self.base_path.join(group_id).join(uuid);
+            std::fs::metadata(&file_path)?.len()
+        };
+        let (group_id, uuid) = Self::parse_key(key.as_str())?;
+        let file_path = self.base_path.join(group_id).join(uuid);
+        let mut file = std::fs::File::open(&file_path)?;
 
         let mut pos = 0u64;
         let mut ok = true;
@@ -290,7 +251,6 @@ impl AttachmentStore {
             let chunk_size = (end - pos) as usize;
             let (sn, mut buf) = sender.prepare_send(transfer_id, chunk_size as u32, pos)?;
             // 读取到 payload 偏移处
-            use std::io::Read;
             if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
                 return Err(Error::InternalError(format!("Failed to read file chunk: {}", e)));
             }
@@ -302,7 +262,22 @@ impl AttachmentStore {
             let _ = sender.send(sn, transfer_id, 0, pos, buf).await;
         }
 
+        // 下载完成，清理 transfer_key_map
+        self.transfer_key_map.remove(&transfer_id);
+
         Ok(())
+    }
+
+    /// 根据 key 和范围读取附件数据
+    /// 内部 parse_key → open file → seek → read_exact
+    pub fn read_attachment_range(&self, key: &str, start: u64, length: u64) -> Result<Bytes> {
+        let (group_id, uuid) = Self::parse_key(key)?;
+        let file_path = self.base_path.join(group_id).join(uuid);
+        let mut file = std::fs::File::open(&file_path)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut buf = vec![0u8; length as usize];
+        file.read_exact(&mut buf)?;
+        Ok(Bytes::from(buf))
     }
 
 }

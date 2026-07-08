@@ -422,14 +422,11 @@ async fn handle_download_attachment(
     };
 
     // 获取文件元数据
-    let file_len = match messenger.attachment_store.open_file(key) {
-        Ok((_, len)) => len,
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
-    };
     let meta = match messenger.attachment_store.get_meta(key) {
         Ok(m) => m,
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
+    let file_len = meta.info.size_bytes;
     let mime = mime_guess::from_path(meta.info.file_name.as_str()).first_or_octet_stream().to_string();
 
     // 解析 Range header
@@ -440,11 +437,7 @@ async fn handle_download_attachment(
         // 解析 "bytes=start-end" 格式
         if let Some((start, end)) = parse_range(range_str, file_len) {
             let length = end - start + 1;
-            let (file, _) = match messenger.attachment_store.open_file(key) {
-                Ok(f) => f,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            };
-            match read_attachment_range(file, start, length) {
+            match messenger.attachment_store.read_attachment_range(key, start, length) {
                 Ok(data) => {
                     let content_range = format!("bytes {}-{}/{}", start, end, file_len);
                     return (
@@ -462,25 +455,12 @@ async fn handle_download_attachment(
     }
 
     // 无 Range 或 Range 解析失败，返回全量文件
-    let (file, _) = match messenger.attachment_store.open_file(key) {
-        Ok(f) => f,
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
-    };
-    match read_attachment_range(file, 0, file_len) {
+    match messenger.attachment_store.read_attachment_range(key, 0, file_len) {
         Ok(data) => {
             ([(axum::http::header::CONTENT_TYPE, mime)], data).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
-}
-
-/// 读取指定范围的文件数据
-fn read_attachment_range(mut file: std::fs::File, offset: u64, length: u64) -> Result<Bytes, String> {
-    use std::io::{Read, Seek, SeekFrom};
-    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; length as usize];
-    file.read_exact(&mut buf).map_err(|e| e.to_string())?;
-    Ok(Bytes::from(buf))
 }
 
 /// 解析 "bytes=start-end" 格式的 Range header
