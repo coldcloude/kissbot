@@ -844,14 +844,13 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
 
         // 判断是否为最后一块
         let is_last = pos + size as u64 >= file_size;
-        if is_last {
-            self.attachment_sender_map.remove(&transfer_id);
-        }
 
         let result = self.send_download_attachment_payload(sn, buf, connect_context).await;
 
-        // 错误时清理（最后一块已清理过，remove 是幂等的）
-        if match result.as_ref() { Ok(res) => res.error_code != 0, Err(_) => true } {
+        let is_error = match result.as_ref() { Ok(res) => res.error_code != 0, Err(_) => true };
+
+        // 错误时清理，最后一块时清理过
+        if is_error || is_last {
             self.attachment_sender_map.remove(&transfer_id);
         }
 
