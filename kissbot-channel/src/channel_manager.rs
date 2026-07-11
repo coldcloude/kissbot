@@ -40,6 +40,11 @@ struct AttachmentReceiverContext {
     pub info: Arc<AttachmentInfo>,
 }
 
+struct AttachmentSenderContext {
+    pub connect_context: Weak<ConnectContext>,
+    pub info: Arc<AttachmentInfo>,
+}
+
 pub struct ChannelManager {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
@@ -47,8 +52,8 @@ pub struct ChannelManager {
     memory_store_client: Arc<MemoryStoreClient>,
     // 上传方向：transfer_id → AttachmentReceiverContext
     attachment_receiver_map: DashMap<u32, AttachmentReceiverContext>,
-    // 下载方向：transfer_id → Weak<ConnectContext>
-    attachment_sender_map: DashMap<u32, Weak<ConnectContext>>,
+    // 下载方向：transfer_id → AttachmentSenderContext
+    attachment_sender_map: DashMap<u32, AttachmentSenderContext>,
 }
 
 struct ConnectCloseProcessor {
@@ -456,7 +461,10 @@ impl AttachmentDownloadRequestProcessor {
 
         let att_info_response = messenger.download_attachment_header(request).await?;
         let transfer_id = att_info_response.transfer_id;
-        manager.attachment_sender_map.insert(transfer_id, Arc::downgrade(&connect_context));
+        manager.attachment_sender_map.insert(transfer_id, AttachmentSenderContext {
+            connect_context: Arc::downgrade(&connect_context),
+            info: att_info_response.info.clone(),
+        });
 
         Ok((att_info_response, messenger))
     }
@@ -808,10 +816,11 @@ impl UserRemoveHandler for ChannelManager {
 #[async_trait]
 impl AttachmentDownloadPayloadSender for ChannelManager {
     fn prepare_send(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
-        let connect_context = self.attachment_sender_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
-            .upgrade()
+        let sender_info = self.attachment_sender_map.get(&transfer_id)
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
+        let connect_context = sender_info.connect_context.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+        drop(sender_info);
 
         let sn = connect_context.ws_context.next_request_sn();
         let capacity = OFFSET_ATT_DATA + size as usize;
@@ -826,25 +835,22 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
     }
 
     async fn send(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
-        let connect_context = self.attachment_sender_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
-            .upgrade()
+        let sender_info = self.attachment_sender_map.get(&transfer_id)
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
+        let connect_context = sender_info.connect_context.upgrade()
             .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+        let file_size = sender_info.info.size_bytes;
+        drop(sender_info);
 
-        if size == 0 {
+        // 判断是否为最后一块
+        let is_last = pos + size as u64 >= file_size;
+        if is_last {
             self.attachment_sender_map.remove(&transfer_id);
-            connect_context.ws_context.send_bin(buf.freeze()).await?;
-            return Ok(AttachmentPayloadResponse {
-                transfer_id,
-                pos,
-                size,
-                error_code: 0,
-                error_msg: None,
-            });
         }
 
         let result = self.send_download_attachment_payload(sn, buf, connect_context).await;
 
+        // 错误时清理（最后一块已清理过，remove 是幂等的）
         if match result.as_ref() { Ok(res) => res.error_code != 0, Err(_) => true } {
             self.attachment_sender_map.remove(&transfer_id);
         }
