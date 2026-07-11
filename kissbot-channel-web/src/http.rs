@@ -17,14 +17,12 @@ use axum::{
 use axum::extract::multipart::Multipart;
 use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
-use kissbot_api::ApiResponse;
+use kissbot_api::{ApiResponse, AttachmentPayloadResponse};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::messenger::{ADMIN_USER_ID, GroupConfig, UserConfig, WebMessenger};
+use crate::messenger::{GroupConfig, UserConfig, WebMessenger};
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
-use kissbot_api::message::{AttachmentInfo, Content, MessageItem, MSG_TYPE_ATTACHMENT, MSG_TYPE_MULTI, MSG_TYPE_TEXT};
-use serde_json::Value;
 
 // ========== DTOs ==========
 
@@ -34,20 +32,6 @@ pub struct MessengerAdminInfo {
     pub admin_name: Arc<String>,
     pub users: Arc<DashMap<String, Arc<UserConfig>>>,
     pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SendMessageRequest {
-    pub group_id: Arc<String>,
-    pub content: Arc<String>,
-    #[serde(default)]
-    pub attachments: Option<Vec<AttachmentRef>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AttachmentRef {
-    pub file_name: Arc<String>,
-    pub key: Arc<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,14 +69,6 @@ pub struct CreateUserRequest {
 #[derive(Debug, Deserialize)]
 pub struct DeleteUserRequest {
     pub user_id: Arc<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InitAttachmentRequest {
-    pub group_id: Arc<String>,
-    pub file_name: Arc<String>,
-    pub mime_type: Arc<String>,
-    pub size_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +119,6 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
         .route("/api/users/create", post(handle_create_user))
         .route("/api/users/rename", post(handle_rename_user))
         .route("/api/users/delete", post(handle_delete_user))
-        .route("/api/attachment/init", post(handle_init_attachment))
         .route("/api/attachment/upload", post(handle_upload_attachment))
         .route("/api/attachment/download", get(handle_download_attachment))
         .route("/api/attachment/thumbnail", get(handle_thumbnail))
@@ -169,75 +144,12 @@ async fn handle_info(
 /// POST /api/message/send
 async fn handle_send_message(
     State(messenger): State<Arc<WebMessenger>>,
-    Json(req): Json<SendMessageRequest>,
+    Json(outgoing): Json<Arc<OutgoingMessage>>,
 ) -> impl IntoResponse {
-    let (content, msg_type) = build_message_content(&req);
-    let outgoing = OutgoingMessage {
-        messenger_id: messenger.messenger_id.clone(),
-        user_id: ADMIN_USER_ID.clone(),
-        group_id: req.group_id.clone(),
-        msg_type: Arc::new(msg_type),
-        content,
-    };
-
-    match messenger.send(Arc::new(outgoing)).await {
-        Ok(resp) => Json(ApiResponse::success(serde_json::json!({
-            "msg_id": resp.msg_id.as_str(),
-            "time": resp.time.as_str(),
-        }))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+    match messenger.send(outgoing).await {
+        Ok(resp) => Json(ApiResponse::success(resp)),
+        Err(e) => Json(ApiResponse::<Arc<OutgoingMessageResponse>>::error(e.to_string())),
     }
-}
-
-fn build_message_content(req: &SendMessageRequest) -> (Content, String) {
-    let atts = req.attachments.as_deref().unwrap_or_default();
-    if atts.is_empty() {
-        return (Content::Text(Arc::new(req.content.to_string())), MSG_TYPE_TEXT.to_string());
-    }
-    // 构建 multi 类型消息
-    let mut items: Vec<serde_json::Value> = Vec::new();
-    // 文本部分
-    if !req.content.is_empty() {
-        items.push(serde_json::json!({
-            "msg_type": MSG_TYPE_TEXT,
-            "content": req.content,
-        }));
-    }
-    // 附件部分
-    for a in atts {
-        let info = AttachmentInfo {
-            file_name: a.file_name.clone(),
-            mime_type: Arc::new(mime_guess::from_path(a.file_name.as_str())
-                .first_or_octet_stream().to_string()),
-            size_bytes: 0,
-        };
-        items.push(serde_json::json!({
-            "msg_type": MSG_TYPE_ATTACHMENT,
-            "content": serde_json::to_value(&info).unwrap_or_default(),
-        }));
-    }
-    #[allow(unused_mut)]
-    let mut content_value = Content::Multi(
-        items.into_iter().map(|item| {
-            let item_val = item.as_object().cloned().unwrap_or_default();
-            let msg_type_val = item_val.get("msg_type").and_then(|v| v.as_str()).unwrap_or(MSG_TYPE_TEXT);
-            let content_val = item_val.get("content").cloned().unwrap_or(serde_json::Value::Null);
-            let content = match msg_type_val {
-                MSG_TYPE_ATTACHMENT => {
-                    match serde_json::from_value::<AttachmentInfo>(content_val.clone()) {
-                        Ok(info) => Content::AttachmentInfo(Arc::new(info)),
-                        Err(_) => Content::Text(Arc::new(content_val.to_string())),
-                    }
-                }
-                _ => Content::Text(Arc::new(content_val.to_string())),
-            };
-            Arc::new(MessageItem {
-                msg_type: Arc::new(msg_type_val.to_string()),
-                content,
-            })
-        }).collect()
-    );
-    (content_value, MSG_TYPE_MULTI.to_string())
 }
 
 /// GET /api/messages — 暂返回空
@@ -348,30 +260,6 @@ async fn handle_delete_user(
     }
 }
 
-/// POST /api/attachment/init — 初始化附件上传，发送消息并返回 OutgoingMessageResponse
-async fn handle_init_attachment(
-    State(messenger): State<Arc<WebMessenger>>,
-    Json(req): Json<InitAttachmentRequest>,
-) -> impl IntoResponse {
-    let info = AttachmentInfo {
-        file_name: req.file_name.clone(),
-        mime_type: req.mime_type.clone(),
-        size_bytes: req.size_bytes,
-    };
-    let outgoing = OutgoingMessage {
-        messenger_id: messenger.messenger_id.clone(),
-        user_id: ADMIN_USER_ID.clone(),
-        group_id: req.group_id.clone(),
-        msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
-        content: Content::AttachmentInfo(Arc::new(info)),
-    };
-
-    match messenger.send(Arc::new(outgoing)).await {
-        Ok(resp) => Json(ApiResponse::success(resp)),
-        Err(e) => Json(ApiResponse::<Arc<OutgoingMessageResponse>>::error(e.to_string())),
-    }
-}
-
 /// POST /api/attachment/upload — 上传文件实体
 async fn handle_upload_attachment(
     State(messenger): State<Arc<WebMessenger>>,
@@ -395,18 +283,18 @@ async fn handle_upload_attachment(
 
     let attachment_transfer_id = match attachment_transfer_id {
         Some(id) => id,
-        None => return Json(ApiResponse::<serde_json::Value>::error("Missing transfer_id".to_string())),
+        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error("Missing transfer_id".to_string())),
     };
 
     let file_data = match file_data {
         Some(d) => d,
-        None => return Json(ApiResponse::<serde_json::Value>::error("Missing file data".to_string())),
+        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error("Missing file data".to_string())),
     };
 
     // 通过 AttachmentStore 写入
     match messenger.attachment_store.write_chunk(attachment_transfer_id, 0, file_data.len() as u32, file_data).await {
-        Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Ok(resp) => Json(ApiResponse::success(resp)),
+        Err(e) => Json(ApiResponse::<AttachmentPayloadResponse>::error(e.to_string())),
     }
 }
 

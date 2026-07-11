@@ -72,12 +72,13 @@ pub struct AttachmentDownloadRequest {
 /// Agent 对 attachment payload chunk 的确认 response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentPayloadResponse {
-    pub transfer_id: u32,
-    pub pos: u64,
-    pub size: u32,
+    pub current_pos: u64,
     pub error_code: u32,
     pub error_msg: Option<Arc<String>>,
 }
+
+pub const PAYLOAD_ERRCODE_OK: u32 = 0;
+pub const PAYLOAD_ERRCODE_POSITION_OUT_OF_ORDER: u32 = 1;
 
 // ========================= Attachment Binary ==========================
 

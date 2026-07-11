@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use kissbot_api::{AttachmentPayloadResponse, PAYLOAD_ERRCODE_POSITION_OUT_OF_ORDER};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse};
+use kissbot_channel::AttachmentDownloadPayloadSender;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -18,7 +20,7 @@ pub struct UploadCommand {
     size: u32,
 	pos: u64,
     data: Bytes,
-    res: oneshot::Sender<Result<u64>>,
+    res: oneshot::Sender<Result<AttachmentPayloadResponse>>,
 }
 
 type UploadChannel = flume::Sender<UploadCommand>;
@@ -142,7 +144,7 @@ impl AttachmentStore {
     // ===== 上传队列 =====
 
     /// 异步写入 chunk（通过 flume 队列串行处理）
-    pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<u64> {
+    pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<AttachmentPayloadResponse> {
         let sender = self.upload_channels.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
         let (res_tx, res_rx) = oneshot::channel();
@@ -200,7 +202,7 @@ impl AttachmentStore {
     // ===== 下载 =====
 
     /// 发送下载 payload（内部按 CHUNK_SIZE 分块读取并调用 sender）
-    pub async fn send_download_payload(&self, transfer_id: u32, sender: &dyn kissbot_channel::AttachmentDownloadPayloadSender) -> Result<()> {
+    pub async fn send_download_payload(&self, transfer_id: u32, sender: Arc<dyn AttachmentDownloadPayloadSender>) -> Result<()> {
         use kissbot_api::channel::OFFSET_ATT_DATA;
         const CHUNK_SIZE: u64 = 65536;
 
@@ -296,23 +298,38 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
                 );
                 
                 // 更新写入结果
-                match result.as_ref() {
-                    Ok(pos) => current_pos = *pos,
+                let result = match result {
+                    Ok(pos) => {
+                        current_pos = pos;
+                        Ok(AttachmentPayloadResponse {
+                            current_pos: pos,
+                            error_code: 0,
+                            error_msg: None,
+                        })
+                    }
                     Err(e) => {
                         match e {
-                            Error::AttachmentPositionOutOfOrder(..) => {},
+                            Error::AttachmentPositionOutOfOrder(_,current_pos,_) => {
+                                Ok(AttachmentPayloadResponse {
+                                    current_pos,
+                                    error_code: PAYLOAD_ERRCODE_POSITION_OUT_OF_ORDER,
+                                    error_msg: Some(Arc::new(e.to_string())),
+                                })
+                            },
                             _ => {
-                                break;
+                                Err(e)
                             }
                         }
                     }
-                }
+                };
 
-                // 回复 chunk 写入
+                // 错误 或者 最后一块 判断为完成
+                let is_done = result.is_err() || current_pos >= meta.info.size_bytes;
+
+                // 回复 chunk 写入结果
                 let _ = cmd.res.send(result);
 
-                // 从 metadata 获取 size_bytes 判断是否完成
-                if current_pos >= meta.info.size_bytes {
+                if is_done {
                     break;
                 }
             }

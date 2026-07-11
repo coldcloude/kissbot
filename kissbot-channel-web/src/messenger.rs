@@ -10,7 +10,7 @@ use kissbot_api::channel::{
     AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
     IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
@@ -215,7 +215,7 @@ impl WebMessenger {
     }
 
     pub async fn remove_user(&self, user_id: &str) -> Result<()> {
-        let mut cfg = self.config.write().await;
+        let cfg = self.config.write().await;
         if cfg.users.remove(user_id).is_none() {
             return Err(Error::UserNotFound(user_id.to_string()));
         }
@@ -289,7 +289,7 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         {
-            let mut cfg = self.config.write().await;
+            let cfg = self.config.write().await;
             let mut g = cfg.groups.get_mut(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
             let old = g.clone();
@@ -324,7 +324,7 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         let members: Vec<String> = {
-            let mut cfg = self.config.write().await;
+            let cfg = self.config.write().await;
             let group = cfg.groups.get(group_id).map(|g| g.members.iter().map(|m| m.clone()).collect());
             if cfg.groups.remove(group_id).is_none() {
                 return Err(Error::GroupNotFound(group_id.to_string()));
@@ -574,15 +574,8 @@ impl Messenger for WebMessenger {
     }
 
     async fn send_attachment_payload(&self, transfer_id: u32, size: u32, pos: u64, data: Bytes) -> std::result::Result<AttachmentPayloadResponse, kissbot_channel::Error> {
-        self.attachment_store.write_chunk(transfer_id, pos, size, data).await
-            .map_err(|e| kissbot_channel::Error::InternalError(e.to_string()))?;
-        Ok(AttachmentPayloadResponse {
-            transfer_id,
-            pos,
-            size,
-            error_code: 0,
-            error_msg: None,
-        })
+        let response = self.attachment_store.write_chunk(transfer_id, pos, size, data).await?;
+        Ok(response)
     }
 
     async fn download_attachment_header(&self, request: AttachmentDownloadRequest) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
@@ -605,7 +598,7 @@ impl Messenger for WebMessenger {
         let store = self.attachment_store.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = store.send_download_payload(transfer_id, &*sender).await {
+            if let Err(e) = store.send_download_payload(transfer_id, sender).await {
                 tracing::error!("Failed to send download payload: {}", e);
             }
         });
