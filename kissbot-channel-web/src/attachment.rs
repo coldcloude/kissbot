@@ -225,11 +225,6 @@ impl AttachmentStore {
             ok = sender.send(sn, transfer_id, chunk_size as u32, pos, buf).await.is_ok();
             pos = end;
         }
-        // 发送 size=0 的结束标记
-        if let Ok((sn, buf)) = sender.prepare_send(transfer_id, 0, pos) {
-            let _ = sender.send(sn, transfer_id, 0, pos, buf).await;
-        }
-
         // 下载完成，清理 transfer_key_map
         self.transfer_key_map.remove(&transfer_id);
 
