@@ -8,7 +8,7 @@ use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
-use kissbot_api::message::{AttachmentInfoResponse, Content};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
@@ -35,13 +35,18 @@ struct ConnectContext {
     ws_context: Arc<WsContext>,
 }
 
+struct AttachmentReceiverContext {
+    pub messenger: Weak<dyn Messenger>,
+    pub info: Arc<AttachmentInfo>,
+}
+
 pub struct ChannelManager {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
     memory_store_client: Arc<MemoryStoreClient>,
-    // 上传方向：transfer_id → Weak<Messenger>
-    attachment_receiver_map: DashMap<u32, Weak<dyn Messenger>>,
+    // 上传方向：transfer_id → AttachmentReceiverContext
+    attachment_receiver_map: DashMap<u32, AttachmentReceiverContext>,
     // 下载方向：transfer_id → Weak<ConnectContext>
     attachment_sender_map: DashMap<u32, Weak<ConnectContext>>,
 }
@@ -294,7 +299,10 @@ fn register_attachment_receivers(
 ) {
     match content {
         Content::AttachmentInfoResponse(resp) => {
-            manager.attachment_receiver_map.insert(resp.transfer_id, messenger.clone());
+            manager.attachment_receiver_map.insert(resp.transfer_id, AttachmentReceiverContext {
+                messenger: messenger.clone(),
+                info: resp.info.clone(),
+            });
         }
         Content::Multi(items) => {
             for item in items.iter() {
@@ -358,15 +366,13 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let manager = self.manager.upgrade()
         .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
 
-        // 通过 transfer_id 找到 messenger
-        let messenger = manager.attachment_receiver_map.get(&header.id)
-            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?
-            .upgrade()
+        // 通过 transfer_id 找到 messenger 和 info
+        let receiver = manager.attachment_receiver_map.get(&header.id)
+            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
+        let messenger = receiver.messenger.upgrade()
             .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
-
-        if header.size == 0 {
-            manager.attachment_receiver_map.remove(&header.id);
-        }
+        let file_size = receiver.info.size_bytes;
+        drop(receiver);
 
         let mut success = false;
         let payload = data.slice(OFFSET_ATT_DATA..);
@@ -383,7 +389,8 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
             Err(e) => Err(e)
         };
 
-        if !success {
+        // 根据 pos+size 判断是否最后一块，或错误时清理
+        if header.pos as u64 + header.size as u64 >= file_size || !success {
             manager.attachment_receiver_map.remove(&header.id);
         }
 
