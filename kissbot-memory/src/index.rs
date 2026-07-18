@@ -1,181 +1,9 @@
-use dashmap::{DashMap, DashSet};
 use kissbot_api::{QueryChannelRequest, QueryRequest};
-use serde::Serialize;
-use std::collections::btree_map::Entry;
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
-use tokio::sync::{RwLock, RwLockWriteGuard};
-use std::collections::{BTreeMap, LinkedList};
+use std::sync::{OnceLock};
 
-use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, FileKey, FilePathGenerator, QueryParser, Record, RecordCombiner, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult, ensure_file_path};
+use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult};
 use crate::error::Result;
-use kai_file::ReverseLineReader;
-
-#[derive(Debug, Clone)]
-pub struct FilePosition {
-    pub start_pos: u64,
-    pub end_pos: u64,
-}
-
-type FileIndexLock = Arc<RwLock<BTreeMap<String, FilePosition>>>;
-
-struct FileIndexContext<Q,K,R,RR,P>
-where
-    K: Eq + Hash + Clone + FileKey + Send + Sync,
-    R: Record,
-    RR: Serialize,
-    P: FilePathGenerator<K> + QueryParser<Q,K>,
-{
-    _marker: PhantomData<(Q,R,RR)>,
-    position_map_map: DashMap<K, FileIndexLock>,
-    obsolete_set: DashSet<K>,
-    all_obsolete_set: DashSet<K>,
-    parser: P,
-}
-
-impl<Q,K,R,RR,P> FileIndexContext<Q,K,R,RR,P>
-where
-    K: Eq + Hash + Clone + FileKey + Send + Sync,
-    R: Record,
-    RR: Serialize,
-    P: FilePathGenerator<K> + QueryParser<Q,K> + RecordCombiner<K,R,RR>,
-{
-    pub fn new(parser: P) -> Self {
-        Self {
-            _marker: PhantomData,
-            position_map_map: DashMap::new(),
-            obsolete_set: DashSet::new(),
-            all_obsolete_set: DashSet::new(),
-            parser,
-        }
-    }
-
-    pub fn mark_obsolete(&self, key: &K) {
-        self.obsolete_set.insert(key.clone());
-    }
-
-    pub fn mark_all_obsolete(&self, key: &K) {
-        self.all_obsolete_set.insert(key.clone());
-        self.obsolete_set.insert(key.clone());
-    }
-
-    fn get_lock(&self, key: &K) -> FileIndexLock {
-        let lock = self.position_map_map.entry(key.clone()).or_insert_with(|| {
-            // 新创建的 BTree：标记为需要全量加载
-            self.all_obsolete_set.insert(key.clone());
-            self.obsolete_set.insert(key.clone());
-            Arc::new(RwLock::new(BTreeMap::new()))
-        }).clone();
-        lock
-    }
-
-    async fn update(mut guard: RwLockWriteGuard<'_, BTreeMap<String, FilePosition>>, file_path: impl AsRef<Path>) -> Result<()> {
-        let last_key = if let Some((key, _)) = guard.last_key_value() {
-            key.clone()
-        } else {
-            String::from("2000-01-01 00:00:00")
-        };
-        let mut reader = ReverseLineReader::new(file_path, None, None).await?;
-        while let Some(line_with_pos) = reader.next_line().await? {
-            let record = serde_json::from_str::<R>(line_with_pos.line.as_str())?;
-            if record.time().as_str() < last_key.as_str() {
-                break;
-            }
-            match guard.entry(record.time().to_string()) {
-                Entry::Occupied(mut entry) => {
-                    let min_start_pos = entry.get().start_pos.min(line_with_pos.start_pos);
-                    let max_end_pos = entry.get().end_pos.max(line_with_pos.end_pos);
-                    entry.get_mut().start_pos = min_start_pos;
-                    entry.get_mut().end_pos = max_end_pos;
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(FilePosition {
-                        start_pos: line_with_pos.start_pos,
-                        end_pos: line_with_pos.end_pos,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn update_index(&self, guard: RwLockWriteGuard<'_, BTreeMap<String, FilePosition>>, key: &K) -> Result<()> {
-        let file_path = ensure_file_path(key, &self.parser).await?;
-        Self::update(guard, file_path).await
-    }
-
-    async fn update_all_index(&self, mut guard: RwLockWriteGuard<'_, BTreeMap<String, FilePosition>>, key: &K) -> Result<()> {
-        guard.clear();
-        let file_path = ensure_file_path(key, &self.parser).await?;
-        Self::update(guard, file_path).await
-    }
-
-    async fn query_reverse(&self, key: &K, start: &str, end: &str) -> Result<LinkedList<RR>> {
-        let position_map = self.get_lock(key);
-
-        if self.obsolete_set.remove(key).is_some() {
-            if self.all_obsolete_set.contains(key) {
-                let guard = position_map.write().await;
-                if let Err(e) = self.update_all_index(guard, key).await {
-                    self.all_obsolete_set.insert(key.clone());
-                    self.obsolete_set.insert(key.clone());
-                    return Err(e);
-                }
-            } else {
-                let guard = position_map.write().await;
-                if let Err(e) = self.update_index(guard, key).await {
-                    self.obsolete_set.insert(key.clone());
-                    return Err(e);
-                }
-            }
-        }
-
-        let mut results = LinkedList::new();
-        let guard = position_map.read().await;
-        let mut start_pos: Option<u64> = None;
-        let mut end_pos: Option<u64> = None;
-        if let Some((_, position)) = guard.range(start.to_string()..=end.to_string()).next() {
-            start_pos = Some(position.start_pos);
-        }
-        if let Some((_, position)) = guard.range(start.to_string()..=end.to_string()).next_back() {
-            end_pos = Some(position.end_pos);
-        }
-        if start_pos.is_some() && end_pos.is_some() {
-            let file_path = ensure_file_path(key, &self.parser).await?;
-            let mut reader = ReverseLineReader::new(file_path, start_pos, end_pos).await?;
-            while let Some(line_with_pos) = reader.next_line().await? {
-                let record = serde_json::from_str::<R>(line_with_pos.line.as_str())?;
-                let record = self.parser.combine_record(key, &record);
-                results.push_front(record);
-            }
-        }
-        Ok(results)
-    }
-
-    pub async fn query_all(&self, query: Q) -> Result<Vec<RR>> {
-        let key_with_range = self.parser.parse_query(query);
-        let mut results_list = LinkedList::new();
-        for (key, (start, end)) in key_with_range {
-            let results = self.query_reverse(&key, start.as_str(), end.as_str()).await?;
-            results_list.push_back(results);
-        }
-        //先计算总数
-        let mut len = 0;
-        for results in results_list.iter() {
-            len += results.len();
-        }
-        //按总长建结果数组
-        let mut results = Vec::with_capacity(len);
-        while let Some(mut records) = results_list.pop_front() {
-            while let Some(record) = records.pop_front() {
-                results.push(record);
-            }
-        }
-        Ok(results)
-    }
-}
+use kai_file::FileIndexContext;
 
 pub struct MemoryIndexer {
     channel_indices: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser>,
@@ -233,19 +61,23 @@ impl MemoryIndexer {
     }
 
     pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<ChannelRecordResult>> {
-        self.channel_indices.query_all(query).await
+        let result = self.channel_indices.query_all(query).await?;
+        Ok(result)
     }
 
     pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<ThinkRecordResult>> {
-        self.think_indices.query_all(query).await
+        let result = self.think_indices.query_all(query).await?;
+        Ok(result)
     }
 
     pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<ToolCallRecordResult>> {
-        self.tool_call_indices.query_all(query).await
+        let result = self.tool_call_indices.query_all(query).await?;
+        Ok(result)
     }
 
     pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<ToolResultRecordResult>> {
-        self.tool_result_indices.query_all(query).await
+        let result = self.tool_result_indices.query_all(query).await?;
+        Ok(result)
     }
 }
 
@@ -256,7 +88,7 @@ mod tests {
 
     // ========== MemoryIndexer: mark + query ==========
 
-    use std::sync::{Once, OnceLock};
+    use std::sync::{Arc, Once, OnceLock};
 
     static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static INIT_CONFIG: Once = Once::new();

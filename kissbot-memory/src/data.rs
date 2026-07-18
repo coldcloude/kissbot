@@ -1,12 +1,12 @@
 use std::{cmp::Ordering, path::PathBuf, sync::Arc};
 
-use chrono::{Duration, NaiveDate};
+use async_trait::async_trait;
+use kai_date::{as_date, as_year, get_date_time_segments};
+use kai_file::index::{FilePathGenerator, QueryParser, Record, RecordCombiner};
 use crate::DirectoryManager;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 use kissbot_api::store::*;
-
-use crate::error::{Error, Result};
 
 pub trait FileHook<K> {
     fn on_append(&self, key: &K);
@@ -50,12 +50,12 @@ pub struct ToolResultRecord {
     pub sn: u64,
 }
 
-pub trait Record: Serialize + DeserializeOwned {
+pub trait MemoryRecord: Record {
     fn sn(&self) -> u64;
     fn set_sn(&mut self, sn: u64);
-    fn time(&self) -> Arc<String>;
+    fn time_string(&self) -> Arc<String>;
     fn cmp(&self, other: &Self) -> Ordering {
-        let sign = self.time().as_str().cmp(other.time().as_str());
+        let sign = self.time().cmp(other.time());
         if sign == Ordering::Equal {
             self.sn().cmp(&other.sn())
         } else {
@@ -67,13 +67,18 @@ pub trait Record: Serialize + DeserializeOwned {
 macro_rules! impl_record {
     ($($t:ty),*) => {
         $(impl Record for $t {
+            fn time(&self) -> &str {
+                self.time.as_str()
+            }
+        })*
+        $(impl MemoryRecord for $t {
             fn sn(&self) -> u64 {
                 self.sn
             }
             fn set_sn(&mut self, sn: u64) {
                 self.sn = sn;
             }
-            fn time(&self) -> Arc<String> {
+            fn time_string(&self) -> Arc<String> {
                 self.time.clone()
             }
         })*
@@ -106,33 +111,6 @@ pub struct RecordKey {
     pub date: Arc<String>,
 }
 
-pub trait FileKey {
-    fn agent_id(&self) -> &str;
-    fn role_name(&self) -> &str;
-    fn date(&self) -> &str;
-}
-
-macro_rules! impl_file_key {
-    ($($t:ty),*) => {
-        $(impl FileKey for $t {
-            fn agent_id(&self) -> &str {
-                self.agent_id.as_str()
-            }
-            fn role_name(&self) -> &str {
-                self.role_name.as_str()
-            }
-            fn date(&self) -> &str {
-                self.date.as_str()
-            }
-        })*
-    };
-}
-
-impl_file_key!(
-    ChannelRecordKey,
-    RecordKey
-);
-
 //===================== Record result ======================
 
 pub type ChannelRecordResult = kissbot_api::store::ChannelRecord;
@@ -145,106 +123,44 @@ pub type ToolResultRecordResult = kissbot_api::store::ToolResultRecord;
 
 //===================== functions ======================
 
-pub fn parse_date_from_time(time: &str) -> String {
-    time[0..10].to_string()
-}
-
-pub fn get_internal_dates(start: &str, end: &str) -> Result<Vec<String>> {
-    if start > end {
-        return Err(Error::InvalidTimeRange(start.to_string(), end.to_string()));
+pub async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> std::result::Result<PathBuf,kai_file::Error> {
+    let year = as_year(date);
+    match DirectoryManager::get().ensure_agent_store_dir(agent_id).await {
+        Ok(store_dir) => {
+            let year_role_dir = if role_name.is_empty() {
+                store_dir.join(year)
+            } else {
+                store_dir.join(format!("{}-{}", year, role_name))
+            };
+            
+            if !year_role_dir.exists() {
+                tokio::fs::create_dir_all(&year_role_dir).await?;
+            }
+            
+            Ok(year_role_dir)
+        }
+        Err(e) => {
+            return Err(kai_file::Error::ExternalError(Box::new(e)));
+        }
     }
-    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d")?;
-    let end_date = NaiveDate::parse_from_str(end, "%Y-%m-%d")?;
-
-    let mut dates = Vec::new();
-    let mut current = start_date + Duration::days(1);
-    while current < end_date {
-        dates.push(current.format("%Y-%m-%d").to_string());
-        current += Duration::days(1);
-    }
-    Ok(dates)
-}
-
-pub fn get_date_time_segments(start: &str, end: &str) -> Result<Vec<(String, String)>> {
-    if start > end {
-        return Err(Error::InvalidTimeRange(start.to_string(), end.to_string()));
-    }
-    let start_date = parse_date_from_time(start);
-    let end_date = parse_date_from_time(end);
-
-    if start_date == end_date {
-        return Ok(vec![(start.to_string(), end.to_string())]);
-    }
-
-    let internal_dates = get_internal_dates(&start_date, &end_date)?;
-
-    let mut segments = Vec::new();
-    segments.push((start.to_string(), format!("{} 23:59:59", start_date)));
-    for date in internal_dates {
-        segments.push((format!("{} 00:00:00", date.as_str()), format!("{} 23:59:59", date.as_str())));
-    }
-    segments.push((format!("{} 00:00:00", end_date), end.to_string()));
-    Ok(segments)
-}
-
-pub async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> Result<PathBuf> {
-    let year = &date[0..4];
-    let store_dir = DirectoryManager::get().ensure_agent_store_dir(agent_id).await?;
-    let year_role_dir = if role_name.is_empty() {
-        store_dir.join(year)
-    } else {
-        store_dir.join(format!("{}-{}", year, role_name))
-    };
-    
-    if !year_role_dir.exists() {
-        tokio::fs::create_dir_all(&year_role_dir).await?;
-    }
-    
-    Ok(year_role_dir)
-}
-
-pub trait FilePathGenerator<K>
-where
-    K: FileKey,
-{
-    fn get_file_name(&self, key: &K) -> String;
 }
 
 pub trait RequestParser<Q,K,R>
 where
-    R: Record,
+    R: MemoryRecord,
 {
     fn parse_request(&self, request: Q) -> (K, R);
-}
-
-pub trait QueryParser<Q,K> {
-    fn parse_query(&self, query: Q) -> Vec<(K, (String, String))>;
-}
-
-pub trait RecordCombiner<K,R,RR> {
-    fn combine_record(&self, key: &K, record: &R) -> RR;
-}
-
-pub async fn ensure_file_path<K,P>(key: &K, parser: &P) -> Result<PathBuf>
-where
-    K: FileKey,
-    P: FilePathGenerator<K>,
-{
-    let year_role_dir = ensure_year_role_dir(key.agent_id(), key.role_name(), key.date()).await?;
-    let file_name = parser.get_file_name(key);
-    let file_path = year_role_dir.join(file_name);
-    Ok(file_path)
 }
 
 pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
     let mut results = Vec::new();
     if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
         for time in date_times {
-            let date = parse_date_from_time(&time.0);
+            let date = as_date(&time.0);
             results.push((RecordKey {
                 agent_id: query.agent_id.clone(),
                 role_name: query.role_name.clone(),
-                date: Arc::new(date),
+                date: Arc::new(date.to_string()),
             }, time));
         }
     }
@@ -253,9 +169,12 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
 
 pub struct ChannelParser;
 
+#[async_trait]
 impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
-    fn get_file_name(&self, key: &ChannelRecordKey) -> String {
-        format!("channel-{}={}={}-records-{}.jsonl", &key.messenger_id, &key.user_id, &key.group_id, &key.date)
+    async fn get_path(&self, key: &ChannelRecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let file_name = format!("channel-{}={}={}-records-{}.jsonl", key.messenger_id.as_str(), key.user_id.as_str(), key.group_id.as_str(), key.date.as_str());
+        Ok(year_role_dir.join(file_name))
     }
 }
 
@@ -268,7 +187,7 @@ impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelP
             messenger_id: request.messenger_id.clone(),
             user_id: user_id.clone(),
             group_id: request.group_id.clone(),
-            date: Arc::new(parse_date_from_time(&request.time)),
+            date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ChannelRecord {
             user_id: user_id,
@@ -292,14 +211,14 @@ impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
         let mut results = Vec::new();
         if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
             for time in date_times {
-                let date = parse_date_from_time(&time.0);
+                let date = as_date(&time.0);
                 results.push((ChannelRecordKey {
                     agent_id: agent_id.clone(),
                     role_name: role_name.clone(),
                     messenger_id: messenger_id.clone(),
                     user_id: user_id.clone(),
                     group_id: group_id.clone(),
-                    date: Arc::new(date),
+                    date: Arc::new(date.to_string()),
                 }, time));
             }
         }
@@ -326,9 +245,12 @@ impl RecordCombiner<ChannelRecordKey, ChannelRecord, ChannelRecordResult> for Ch
 
 pub struct ThinkParser;
 
+#[async_trait]
 impl FilePathGenerator<RecordKey> for ThinkParser {
-    fn get_file_name(&self, key: &RecordKey) -> String {
-        format!("think-records-{}.jsonl", key.date)
+    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let file_name = format!("think-records-{}.jsonl", key.date);
+        Ok(year_role_dir.join(file_name))
     }
 }
 
@@ -337,7 +259,7 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_name: request.role_name.clone(),
-            date: Arc::new(parse_date_from_time(&request.time)),
+            date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ThinkRecord {
             content: request.content.clone(),
@@ -370,9 +292,12 @@ impl RecordCombiner<RecordKey, ThinkRecord, ThinkRecordResult> for ThinkParser {
 
 pub struct ToolCallParser;
 
+#[async_trait]
 impl FilePathGenerator<RecordKey> for ToolCallParser {
-    fn get_file_name(&self, key: &RecordKey) -> String {
-        format!("tool-call-records-{}.jsonl", key.date)
+    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let file_name = format!("tool-call-records-{}.jsonl", key.date);
+        Ok(year_role_dir.join(file_name))
     }
 }
 
@@ -381,7 +306,7 @@ impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParse
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_name: request.role_name.clone(),
-            date: Arc::new(parse_date_from_time(&request.time)),
+            date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ToolCallRecord {
             tool_name: request.tool_name.clone(),
@@ -416,9 +341,12 @@ impl RecordCombiner<RecordKey, ToolCallRecord, ToolCallRecordResult> for ToolCal
 
 pub struct ToolResultParser;
 
+#[async_trait]
 impl FilePathGenerator<RecordKey> for ToolResultParser {
-    fn get_file_name(&self, key: &RecordKey) -> String {
-        format!("tool-result-records-{}.jsonl", key.date)
+    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let file_name = format!("tool-result-records-{}.jsonl", key.date);
+        Ok(year_role_dir.join(file_name))
     }
 }
 
@@ -427,7 +355,7 @@ impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResul
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_name: request.role_name.clone(),
-            date: Arc::new(parse_date_from_time(&request.time)),
+            date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ToolResultRecord {
             tool_result: request.tool_result,
@@ -462,52 +390,6 @@ impl RecordCombiner<RecordKey, ToolResultRecord, ToolResultRecordResult> for Too
 mod tests {
     use super::*;
 
-    // ========== Time functions ==========
-
-    #[test]
-    fn test_parse_date_from_time() {
-        assert_eq!(parse_date_from_time("2026-06-24 15:30:00"), "2026-06-24");
-        assert_eq!(parse_date_from_time("2026-01-01 00:00:00"), "2026-01-01");
-    }
-
-    #[test]
-    fn test_get_internal_dates() {
-        let dates = get_internal_dates("2026-06-22", "2026-06-25").unwrap();
-        assert_eq!(dates, vec!["2026-06-23", "2026-06-24"]);
-    }
-
-    #[test]
-    fn test_get_internal_dates_same_day() {
-        let dates = get_internal_dates("2026-06-22", "2026-06-22").unwrap();
-        assert!(dates.is_empty());
-    }
-
-    #[test]
-    fn test_get_date_time_segments_multi_day() {
-        let segments = get_date_time_segments("2026-06-22 14:30:00", "2026-06-24 10:00:00").unwrap();
-        assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].0, "2026-06-22 14:30:00");
-        assert_eq!(segments[0].1, "2026-06-22 23:59:59");
-        assert_eq!(segments[1].0, "2026-06-23 00:00:00");
-        assert_eq!(segments[1].1, "2026-06-23 23:59:59");
-        assert_eq!(segments[2].0, "2026-06-24 00:00:00");
-        assert_eq!(segments[2].1, "2026-06-24 10:00:00");
-    }
-
-    #[test]
-    fn test_get_date_time_segments_same_day() {
-        let segments = get_date_time_segments("2026-06-22 14:30:00", "2026-06-22 15:00:00").unwrap();
-        assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].0, "2026-06-22 14:30:00");
-        assert_eq!(segments[0].1, "2026-06-22 15:00:00");
-    }
-
-    #[test]
-    fn test_get_date_time_segments_reversed() {
-        let result = get_date_time_segments("2026-06-24 10:00:00", "2026-06-22 14:30:00");
-        assert!(result.is_err());
-    }
-
     // ========== Record trait ==========
 
     #[test]
@@ -521,7 +403,7 @@ mod tests {
             sn: 5,
         };
         assert_eq!(channel.sn(), 5);
-        assert_eq!(*channel.time(), "2026-06-24 10:00:00");
+        assert_eq!(channel.time(), "2026-06-24 10:00:00");
         channel.set_sn(10);
         assert_eq!(channel.sn(), 10);
 
@@ -532,7 +414,7 @@ mod tests {
             sn: 1,
         };
         assert_eq!(think.sn(), 1);
-        assert_eq!(*think.time(), "2026-06-24 10:00:01");
+        assert_eq!(think.time(), "2026-06-24 10:00:01");
     }
 
     #[test]
@@ -659,8 +541,8 @@ mod tests {
 
     // ========== FilePathGenerator ==========
 
-    #[test]
-    fn test_channel_file_name() {
+    #[tokio::test]
+    async fn test_channel_file_name() {
         let key = ChannelRecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
@@ -670,40 +552,48 @@ mod tests {
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ChannelParser;
-        assert_eq!(parser.get_file_name(&key), "channel-m1=u1=g1-records-2026-06-24.jsonl");
+        let path = parser.get_path(&key).await.unwrap();
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(file_name, "channel-m1=u1=g1-records-2026-06-24.jsonl");
     }
 
-    #[test]
-    fn test_think_file_name() {
+    #[tokio::test]
+    async fn test_think_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ThinkParser;
-        assert_eq!(parser.get_file_name(&key), "think-records-2026-06-24.jsonl");
+        let path = parser.get_path(&key).await.unwrap();
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(file_name, "think-records-2026-06-24.jsonl");
     }
 
-    #[test]
-    fn test_tool_call_file_name() {
+    #[tokio::test]
+    async fn test_tool_call_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ToolCallParser;
-        assert_eq!(parser.get_file_name(&key), "tool-call-records-2026-06-24.jsonl");
+        let path = parser.get_path(&key).await.unwrap();
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(file_name, "tool-call-records-2026-06-24.jsonl");
     }
 
-    #[test]
-    fn test_tool_result_file_name() {
+    #[tokio::test]
+    async fn test_tool_result_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ToolResultParser;
-        assert_eq!(parser.get_file_name(&key), "tool-result-records-2026-06-24.jsonl");
+        let path = parser.get_path(&key).await.unwrap();
+        let file_name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(file_name, "tool-result-records-2026-06-24.jsonl");
     }
 
     // ========== RequestParser ==========

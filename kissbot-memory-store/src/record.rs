@@ -1,4 +1,5 @@
 ﻿use dashmap::DashMap;
+use kai_file::index::FilePathGenerator;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -7,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, FileKey, FilePathGenerator, Record, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord, ensure_file_path};
+use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, MemoryRecord, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord};
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::store::*;
 use crate::error::{Error, Result};
@@ -18,13 +19,13 @@ pub(crate) struct FileState {
     pub time: Arc<String>,
 }
 
-async fn write_records_to_file<R: Record>(file: &mut tokio::fs::File, records: &mut Vec<R>, state: &mut FileState) -> Result<()>{
+async fn write_records_to_file<R: MemoryRecord>(file: &mut tokio::fs::File, records: &mut Vec<R>, state: &mut FileState) -> Result<()>{
     for record in records {
         record.set_sn(state.sn + 1);
         let line = serde_json::to_string(&record)? + "\n";
         file.write_all(line.as_bytes()).await?;
         state.sn = record.sn();
-        state.time = record.time();
+        state.time = record.time_string();
     }
     Ok(())
 }
@@ -68,12 +69,7 @@ pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<File
     Ok(result)
 }
 
-struct RecordContext<Q,K,R,P>
-where
-    K: Eq + Hash + Clone + FileKey + Send + Sync,
-    R: Record,
-    P: RequestParser<Q,K,R> + FilePathGenerator<K>,
-{
+struct RecordContext<Q,K,R,P> {
     _marker: PhantomData<(Q,R)>,
     states: DashMap<K, FileLock>,
     parser: P,
@@ -81,8 +77,8 @@ where
 
 impl<Q,K,R,P> RecordContext<Q,K,R,P>
 where
-    K: Eq + Hash + Clone + FileKey + Send + Sync,
-    R: Record,
+    K: Eq + Hash + Clone + Send + Sync,
+    R: MemoryRecord,
     P: RequestParser<Q,K,R> + FilePathGenerator<K>,
 {
     pub fn new(parser: P) -> Self {
@@ -107,7 +103,7 @@ where
             let lock = get_lock(&self.states, &key).await;
             let mut gaurd = lock.lock().await;
 
-            let file_path = ensure_file_path(&key, &self.parser).await?;
+            let file_path = self.parser.get_path(&key).await?;
 
             let mut state = if let Some(old_state) = gaurd.take() {
                 old_state
@@ -120,7 +116,7 @@ where
             }
             records.sort_by(|a, b| a.cmp(b));
 
-            if state.time.as_str() > records[0].time().as_str() {
+            if state.time.as_str() > records[0].time() {
                 if force {
                     //强行插入，则要读入所有记录，全部排序
                     let mut max_sn = 0 as u64;

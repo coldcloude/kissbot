@@ -16,9 +16,6 @@ pub enum Error {
 
     #[error("Path not exist: {0}")]
     PathNotExist(String),
-
-    #[error("Invalid time range: {0} > {1}")]
-    InvalidTimeRange(String, String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

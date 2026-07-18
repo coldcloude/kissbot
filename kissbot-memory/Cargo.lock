@@ -316,9 +316,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kai-date"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kai-file"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "dashmap",
+ "kai-date",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -368,8 +382,10 @@ dependencies = [
 name = "kissbot-memory"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "dashmap",
+ "kai-date",
  "kai-file",
  "kissbot-api",
  "kissbot-config",
