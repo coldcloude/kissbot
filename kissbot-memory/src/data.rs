@@ -1,125 +1,16 @@
-use std::{cmp::Ordering, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use kai_date::{as_date, as_year, get_date_time_segments};
-use kai_file::index::{FilePathGenerator, QueryParser, Record, RecordCombiner};
+use kai_file::index::{FilePathGenerator, QueryParser};
 use crate::DirectoryManager;
-use serde::{Deserialize, Serialize};
 
-use kissbot_api::store::*;
+use kissbot_api::memory::*;
 
 pub trait FileHook<K> {
     fn on_append(&self, key: &K);
     fn on_force_append(&self, key: &K);
 }
-
-//===================== Record in file ======================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRecord {
-    pub user_id: Arc<String>,
-    pub is_self: usize,
-    pub msg_type: Arc<String>,
-    pub content: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkRecord {
-    pub content: Arc<String>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRecord {
-    pub tool_name: Arc<String>,
-    pub tool_params: Arc<serde_json::Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRecord {
-    pub tool_result: Arc<serde_json::Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
-    pub sn: u64,
-}
-
-pub trait MemoryRecord: Record {
-    fn sn(&self) -> u64;
-    fn set_sn(&mut self, sn: u64);
-    fn time_string(&self) -> Arc<String>;
-    fn cmp(&self, other: &Self) -> Ordering {
-        let sign = self.time().cmp(other.time());
-        if sign == Ordering::Equal {
-            self.sn().cmp(&other.sn())
-        } else {
-            sign
-        }
-    }
-}
-
-macro_rules! impl_record {
-    ($($t:ty),*) => {
-        $(impl Record for $t {
-            fn time(&self) -> &str {
-                self.time.as_str()
-            }
-        })*
-        $(impl MemoryRecord for $t {
-            fn sn(&self) -> u64 {
-                self.sn
-            }
-            fn set_sn(&mut self, sn: u64) {
-                self.sn = sn;
-            }
-            fn time_string(&self) -> Arc<String> {
-                self.time.clone()
-            }
-        })*
-    };
-}
-
-impl_record!(
-    ChannelRecord,
-    ThinkRecord,
-    ToolCallRecord,
-    ToolResultRecord
-);
-
-//===================== Record file key ======================
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct ChannelRecordKey {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
-    pub date: Arc<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct RecordKey {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub date: Arc<String>,
-}
-
-//===================== Record result ======================
-
-pub type ChannelRecordResult = kissbot_api::store::ChannelRecord;
-
-pub type ThinkRecordResult = kissbot_api::store::ThinkRecord;
-
-pub type ToolCallRecordResult = kissbot_api::store::ToolCallRecord;
-
-pub type ToolResultRecordResult = kissbot_api::store::ToolResultRecord;
 
 //===================== functions ======================
 
@@ -226,23 +117,6 @@ impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
     }
 }
 
-impl RecordCombiner<ChannelRecordKey, ChannelRecord, ChannelRecordResult> for ChannelParser {
-    fn combine_record(&self, key: &ChannelRecordKey, record: &ChannelRecord) -> ChannelRecordResult {
-        ChannelRecordResult {
-            agent_id: key.agent_id.clone(),
-            role_name: key.role_name.clone(),
-            messenger_id: key.messenger_id.clone(),
-            group_id: key.group_id.clone(),
-            user_id: key.user_id.clone(),
-            is_self: record.is_self,
-            msg_type: record.msg_type.clone(),
-            content: record.content.clone(),
-            time: record.time.clone(),
-            sn: record.sn,
-        }
-    }
-}
-
 pub struct ThinkParser;
 
 #[async_trait]
@@ -274,19 +148,6 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
 impl QueryParser<QueryRequest, RecordKey> for ThinkParser {
     fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
         parse_query(query)
-    }
-}
-
-impl RecordCombiner<RecordKey, ThinkRecord, ThinkRecordResult> for ThinkParser {
-    fn combine_record(&self, key: &RecordKey, record: &ThinkRecord) -> ThinkRecordResult {
-        ThinkRecordResult {
-            agent_id: key.agent_id.clone(),
-            role_name: key.role_name.clone(),
-            content: record.content.clone(),
-            key: record.key.clone(),
-            time: record.time.clone(),
-            sn: record.sn,
-        }
     }
 }
 
@@ -325,20 +186,6 @@ impl QueryParser<QueryRequest, RecordKey> for ToolCallParser {
     }
 }
 
-impl RecordCombiner<RecordKey, ToolCallRecord, ToolCallRecordResult> for ToolCallParser {
-    fn combine_record(&self, key: &RecordKey, record: &ToolCallRecord) -> ToolCallRecordResult {
-        ToolCallRecordResult {
-            agent_id: key.agent_id.clone(),
-            role_name: key.role_name.clone(),
-            tool_name: record.tool_name.clone(),
-            tool_params: record.tool_params.clone(),
-            key: record.key.clone(),
-            time: record.time.clone(),
-            sn: record.sn,
-        }
-    }
-}
-
 pub struct ToolResultParser;
 
 #[async_trait]
@@ -373,171 +220,9 @@ impl QueryParser<QueryRequest, RecordKey> for ToolResultParser {
     }
 }
 
-impl RecordCombiner<RecordKey, ToolResultRecord, ToolResultRecordResult> for ToolResultParser {
-    fn combine_record(&self, key: &RecordKey, record: &ToolResultRecord) -> ToolResultRecordResult {
-        ToolResultRecordResult {
-            agent_id: key.agent_id.clone(),
-            role_name: key.role_name.clone(),
-            tool_result: record.tool_result.clone(),
-            key: record.key.clone(),
-            time: record.time.clone(),
-            sn: record.sn,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ========== Record trait ==========
-
-    #[test]
-    fn test_record_impl() {
-        let mut channel = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            is_self: 0,
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 5,
-        };
-        assert_eq!(channel.sn(), 5);
-        assert_eq!(channel.time(), "2026-06-24 10:00:00");
-        channel.set_sn(10);
-        assert_eq!(channel.sn(), 10);
-
-        let think = ThinkRecord {
-            content: Arc::new("think".to_string()),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:01".to_string()),
-            sn: 1,
-        };
-        assert_eq!(think.sn(), 1);
-        assert_eq!(think.time(), "2026-06-24 10:00:01");
-    }
-
-    #[test]
-    fn test_record_cmp_time() {
-        let r1 = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            is_self: 0,
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 1,
-        };
-        let r2 = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            is_self: 0,
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("world".to_string()),
-            time: Arc::new("2026-06-24 10:00:01".to_string()),
-            sn: 1,
-        };
-        assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
-
-        // same time, different sn
-        let r3 = ChannelRecord {
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 2,
-            ..r1.clone()
-        };
-        assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
-    }
-
-    // ========== Record serde ==========
-
-    #[test]
-    fn test_serde_channel_record() {
-        let obj = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            is_self: 0,
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.user_id, "u1");
-        assert_eq!(*deserialized.content, "hello");
-        assert_eq!(deserialized.sn, 1);
-    }
-
-    #[test]
-    fn test_serde_think_record() {
-        let obj = ThinkRecord {
-            content: Arc::new("think content".to_string()),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.content, "think content");
-        assert_eq!(*deserialized.key, "k1");
-    }
-
-    #[test]
-    fn test_serde_tool_call_record() {
-        let obj = ToolCallRecord {
-            tool_name: Arc::new("get_weather".to_string()),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolCallRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.tool_name, "get_weather");
-        assert_eq!(deserialized.tool_params["city"], "Beijing");
-    }
-
-    #[test]
-    fn test_serde_tool_result_record() {
-        let obj = ToolResultRecord {
-            tool_result: Arc::new(serde_json::json!({"temp": 25})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolResultRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.tool_result["temp"], 25);
-    }
-
-    // ========== Key serde ==========
-
-    #[test]
-    fn test_serde_channel_record_key() {
-        let obj = ChannelRecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ChannelRecordKey = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.messenger_id, "telegram");
-        assert_eq!(*deserialized.date, "2026-06-24");
-    }
-
-    #[test]
-    fn test_serde_record_key() {
-        let obj = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: RecordKey = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.role_name, "default");
-    }
 
     // ========== FilePathGenerator ==========
 
@@ -672,90 +357,5 @@ mod tests {
         assert_eq!(record.tool_result["temp"], 25);
         assert_eq!(*record.key, "k1");
         assert_eq!(record.sn, 0);
-    }
-
-    // ========== RecordCombiner ==========
-
-    #[test]
-    fn test_channel_record_combiner() {
-        let key = ChannelRecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let record = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            is_self: 1,
-            msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 5,
-        };
-        let result = ChannelParser.combine_record(&key, &record);
-        assert_eq!(*result.agent_id, "agent1");
-        assert_eq!(*result.messenger_id, "telegram");
-        assert_eq!(*result.content, "hello");
-        assert_eq!(result.sn, 5);
-    }
-
-    #[test]
-    fn test_think_record_combiner() {
-        let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let record = ThinkRecord {
-            content: Arc::new("thinking...".to_string()),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 3,
-        };
-        let result = ThinkParser.combine_record(&key, &record);
-        assert_eq!(*result.agent_id, "agent1");
-        assert_eq!(*result.content, "thinking...");
-        assert_eq!(result.sn, 3);
-    }
-
-    #[test]
-    fn test_tool_call_record_combiner() {
-        let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let record = ToolCallRecord {
-            tool_name: Arc::new("get_weather".to_string()),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 2,
-        };
-        let result = ToolCallParser.combine_record(&key, &record);
-        assert_eq!(*result.agent_id, "agent1");
-        assert_eq!(*result.tool_name, "get_weather");
-        assert_eq!(result.sn, 2);
-    }
-
-    #[test]
-    fn test_tool_result_record_combiner() {
-        let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let record = ToolResultRecord {
-            tool_result: Arc::new(serde_json::json!({"temp": 25})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
-            sn: 7,
-        };
-        let result = ToolResultParser.combine_record(&key, &record);
-        assert_eq!(*result.agent_id, "agent1");
-        assert_eq!(result.tool_result["temp"], 25);
-        assert_eq!(result.sn, 7);
     }
 }

@@ -22,7 +22,7 @@ pub fn create_router() -> Router {
         .route("/store/query/tool-result", post(query_tool_result_records))
 }
 
-async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl IntoResponse {
+async fn append_channel_record(Json(req): Json<memory::ChannelRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
         record_manager.append_channel_record(req.requests, req.force > 0).await
@@ -34,7 +34,7 @@ async fn append_channel_record(Json(req): Json<store::ChannelRequests>) -> impl 
     }
 }
 
-async fn append_think_record(Json(req): Json<store::ThinkRequests>) -> impl IntoResponse {
+async fn append_think_record(Json(req): Json<memory::ThinkRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
         record_manager.append_think_record(req.requests, req.force > 0).await
@@ -46,7 +46,7 @@ async fn append_think_record(Json(req): Json<store::ThinkRequests>) -> impl Into
     }
 }
 
-async fn append_tool_call_record(Json(req): Json<store::ToolCallRequests>) -> impl IntoResponse {
+async fn append_tool_call_record(Json(req): Json<memory::ToolCallRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
         record_manager.append_tool_call_record(req.requests, req.force > 0).await
@@ -58,7 +58,7 @@ async fn append_tool_call_record(Json(req): Json<store::ToolCallRequests>) -> im
     }
 }
 
-async fn append_tool_result_record(Json(req): Json<store::ToolResultRequests>) -> impl IntoResponse {
+async fn append_tool_result_record(Json(req): Json<memory::ToolResultRequests>) -> impl IntoResponse {
     let result = {
         let record_manager = RecordManager::get();
         record_manager.append_tool_result_record(req.requests, req.force > 0).await
@@ -70,7 +70,7 @@ async fn append_tool_result_record(Json(req): Json<store::ToolResultRequests>) -
     }
 }
 
-async fn query_channel_records(Json(req): Json<store::QueryChannelRequest>) -> impl IntoResponse {
+async fn query_channel_records(Json(req): Json<memory::QueryChannelRequest>) -> impl IntoResponse {
     let records = MemoryIndexer::get().query_channel_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
@@ -78,7 +78,7 @@ async fn query_channel_records(Json(req): Json<store::QueryChannelRequest>) -> i
     }
 }
 
-async fn query_think_records(Json(req): Json<store::QueryRequest>) -> impl IntoResponse {
+async fn query_think_records(Json(req): Json<memory::QueryRequest>) -> impl IntoResponse {
     let records = MemoryIndexer::get().query_think_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
@@ -86,7 +86,7 @@ async fn query_think_records(Json(req): Json<store::QueryRequest>) -> impl IntoR
     }
 }
 
-async fn query_tool_call_records(Json(req): Json<store::QueryRequest>) -> impl IntoResponse {
+async fn query_tool_call_records(Json(req): Json<memory::QueryRequest>) -> impl IntoResponse {
     let records = MemoryIndexer::get().query_tool_call_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
@@ -94,7 +94,7 @@ async fn query_tool_call_records(Json(req): Json<store::QueryRequest>) -> impl I
     }
 }
 
-async fn query_tool_result_records(Json(req): Json<store::QueryRequest>) -> impl IntoResponse {
+async fn query_tool_result_records(Json(req): Json<memory::QueryRequest>) -> impl IntoResponse {
     let records = MemoryIndexer::get().query_tool_result_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),

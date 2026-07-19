@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{cmp::Ordering, sync::Arc};
 
+use kai_file::index::Record;
 use serde::{Deserialize, Serialize};
 
 // ========== Request structures ==========
@@ -90,15 +91,12 @@ pub struct QueryRequest {
     pub end_time: Arc<String>,
 }
 
-// ========== Records ==========
+
+//===================== Record in file ======================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
     pub is_self: usize,
     pub msg_type: Arc<String>,
     pub content: Arc<String>,
@@ -108,8 +106,6 @@ pub struct ChannelRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRecord {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
     pub content: Arc<String>,
     pub key: Arc<String>,
     pub time: Arc<String>,
@@ -118,8 +114,6 @@ pub struct ThinkRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
     pub tool_name: Arc<String>,
     pub tool_params: Arc<serde_json::Value>,
     pub key: Arc<String>,
@@ -129,12 +123,71 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecord {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
     pub tool_result: Arc<serde_json::Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
+}
+
+pub trait MemoryRecord: Record {
+    fn sn(&self) -> u64;
+    fn set_sn(&mut self, sn: u64);
+    fn time_string(&self) -> Arc<String>;
+    fn cmp(&self, other: &Self) -> Ordering {
+        let sign = self.time().cmp(other.time());
+        if sign == Ordering::Equal {
+            self.sn().cmp(&other.sn())
+        } else {
+            sign
+        }
+    }
+}
+
+macro_rules! impl_record {
+    ($($t:ty),*) => {
+        $(impl Record for $t {
+            fn time(&self) -> &str {
+                self.time.as_str()
+            }
+        })*
+        $(impl MemoryRecord for $t {
+            fn sn(&self) -> u64 {
+                self.sn
+            }
+            fn set_sn(&mut self, sn: u64) {
+                self.sn = sn;
+            }
+            fn time_string(&self) -> Arc<String> {
+                self.time.clone()
+            }
+        })*
+    };
+}
+
+impl_record!(
+    ChannelRecord,
+    ThinkRecord,
+    ToolCallRecord,
+    ToolResultRecord
+);
+
+//===================== Record file key ======================
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ChannelRecordKey {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
+    pub date: Arc<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RecordKey {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub date: Arc<String>,
 }
 
 #[cfg(test)]
@@ -285,69 +338,152 @@ mod tests {
         assert_eq!(*deserialized.agent_id, "a1");
     }
 
+    // ========== Record trait ==========
+
+    #[test]
+    fn test_record_impl() {
+        let mut channel = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 5,
+        };
+        assert_eq!(channel.sn(), 5);
+        assert_eq!(channel.time(), "2026-06-24 10:00:00");
+        channel.set_sn(10);
+        assert_eq!(channel.sn(), 10);
+
+        let think = ThinkRecord {
+            content: Arc::new("think".to_string()),
+            key: Arc::new("k1".to_string()),
+            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            sn: 1,
+        };
+        assert_eq!(think.sn(), 1);
+        assert_eq!(think.time(), "2026-06-24 10:00:01");
+    }
+
+    #[test]
+    fn test_record_cmp_time() {
+        let r1 = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
+        };
+        let r2 = ChannelRecord {
+            user_id: Arc::new("u1".to_string()),
+            is_self: 0,
+            msg_type: Arc::new("text".to_string()),
+            content: Arc::new("world".to_string()),
+            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            sn: 1,
+        };
+        assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
+
+        // same time, different sn
+        let r3 = ChannelRecord {
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 2,
+            ..r1.clone()
+        };
+        assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
+    }
+
+    // ========== Record serde ==========
+
     #[test]
     fn test_serde_channel_record() {
         let obj = ChannelRecord {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("r1".to_string()),
-            messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("Hello".to_string()),
-            time: Arc::new("t1".to_string()),
-            sn: 100,
+            content: Arc::new("hello".to_string()),
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.sn, 100);
-        assert_eq!(*deserialized.content, "Hello");
+        assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.content, "hello");
+        assert_eq!(deserialized.sn, 1);
     }
 
     #[test]
     fn test_serde_think_record() {
         let obj = ThinkRecord {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("r1".to_string()),
-            content: Arc::new("thinking...".to_string()),
+            content: Arc::new("think content".to_string()),
             key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
-            sn: 200,
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.sn, 200);
+        assert_eq!(*deserialized.content, "think content");
+        assert_eq!(*deserialized.key, "k1");
     }
 
     #[test]
     fn test_serde_tool_call_record() {
         let obj = ToolCallRecord {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("r1".to_string()),
             tool_name: Arc::new("get_weather".to_string()),
             tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
             key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
-            sn: 300,
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolCallRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.sn, 300);
+        assert_eq!(*deserialized.tool_name, "get_weather");
+        assert_eq!(deserialized.tool_params["city"], "Beijing");
     }
 
     #[test]
     fn test_serde_tool_result_record() {
         let obj = ToolResultRecord {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("r1".to_string()),
             tool_result: Arc::new(serde_json::json!({"temp": 25})),
             key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
-            sn: 400,
+            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolResultRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.sn, 400);
+        assert_eq!(deserialized.tool_result["temp"], 25);
+    }
+
+    // ========== Key serde ==========
+
+    #[test]
+    fn test_serde_channel_record_key() {
+        let obj = ChannelRecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: ChannelRecordKey = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.messenger_id, "telegram");
+        assert_eq!(*deserialized.date, "2026-06-24");
+    }
+
+    #[test]
+    fn test_serde_record_key() {
+        let obj = RecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("default".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: RecordKey = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.role_name, "default");
     }
 }

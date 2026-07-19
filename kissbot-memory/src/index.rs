@@ -1,15 +1,17 @@
 use kissbot_api::{QueryChannelRequest, QueryRequest};
 use std::sync::{OnceLock};
 
-use crate::data::{ChannelParser, ChannelRecord, ChannelRecordKey, ChannelRecordResult, RecordKey, ThinkParser, ThinkRecord, ThinkRecordResult, ToolCallParser, ToolCallRecord, ToolCallRecordResult, ToolResultParser, ToolResultRecord, ToolResultRecordResult};
+use crate::data::{ChannelParser, ThinkParser, ToolCallParser, ToolResultParser};
 use crate::error::Result;
 use kai_file::FileIndexContext;
 
+use kissbot_api::memory::*;
+
 pub struct MemoryIndexer {
-    channel_indices: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelRecordResult, ChannelParser>,
-    think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkRecordResult, ThinkParser>,
-    tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallRecordResult, ToolCallParser>,
-    tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultRecordResult, ToolResultParser>,
+    channel_indices: FileIndexContext<QueryChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser>,
+    think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkParser>,
+    tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallParser>,
+    tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultParser>,
 }
 
 static MEMORY_INDEXER: OnceLock<MemoryIndexer> = OnceLock::new();
@@ -60,22 +62,22 @@ impl MemoryIndexer {
         self.tool_result_indices.mark_all_obsolete(key);
     }
 
-    pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<ChannelRecordResult>> {
+    pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<(ChannelRecordKey, Vec<(u32, ChannelRecord)>)>> {
         let result = self.channel_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<ThinkRecordResult>> {
+    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ThinkRecord)>)>> {
         let result = self.think_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<ToolCallRecordResult>> {
+    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ToolCallRecord)>)>> {
         let result = self.tool_call_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<ToolResultRecordResult>> {
+    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ToolResultRecord)>)>> {
         let result = self.tool_result_indices.query_all(query).await?;
         Ok(result)
     }
@@ -163,8 +165,8 @@ mod tests {
         let indexer = MemoryIndexer::new();
         // query range excludes A, includes B
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content.as_str(), "B");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.content.as_str(), "B");
 
         // write C (in range) after MemoryIndexer created
         append_jsonl(agent_id, role_name, &filename, date,
@@ -173,9 +175,9 @@ mod tests {
         // mark + query — incremental load picks up C
         indexer.mark_channel_obsolete(&key);
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].content.as_str(), "B");
-        assert_eq!(results[1].content.as_str(), "C");
+        assert_eq!(results[0].1.len(), 2);
+        assert_eq!(results[0].1[0].1.content.as_str(), "B");
+        assert_eq!(results[0].1[1].1.content.as_str(), "C");
 
         // delete file, write D(before start), E(in range), F(after end)
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
@@ -191,8 +193,8 @@ mod tests {
         // mark_all — full rebuild, only E in range
         indexer.mark_channel_all_obsolete(&key);
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content.as_str(), "E");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.content.as_str(), "E");
     }
 
     #[tokio::test]
@@ -221,16 +223,16 @@ mod tests {
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content.as_str(), "B");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.content.as_str(), "B");
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"content":"C","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_think_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].content.as_str(), "B");
-        assert_eq!(results[1].content.as_str(), "C");
+        assert_eq!(results[0].1.len(), 2);
+        assert_eq!(results[0].1[0].1.content.as_str(), "B");
+        assert_eq!(results[0].1[1].1.content.as_str(), "C");
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
@@ -244,8 +246,8 @@ mod tests {
 
         indexer.mark_think_all_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content.as_str(), "E");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.content.as_str(), "E");
     }
 
     #[tokio::test]
@@ -274,16 +276,16 @@ mod tests {
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].tool_name.as_str(), "B");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.tool_name.as_str(), "B");
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_name":"C","tool_params":{},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_tool_call_obsolete(&key);
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].tool_name.as_str(), "B");
-        assert_eq!(results[1].tool_name.as_str(), "C");
+        assert_eq!(results[0].1.len(), 2);
+        assert_eq!(results[0].1[0].1.tool_name.as_str(), "B");
+        assert_eq!(results[0].1[1].1.tool_name.as_str(), "C");
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
@@ -297,8 +299,8 @@ mod tests {
 
         indexer.mark_tool_call_all_obsolete(&key);
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].tool_name.as_str(), "E");
+        assert_eq!(results[0].1.len(), 1);
+        assert_eq!(results[0].1[0].1.tool_name.as_str(), "E");
     }
 
     #[tokio::test]
@@ -327,13 +329,13 @@ mod tests {
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.len(), 1);
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_result":{"v":"C"},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_tool_result_obsolete(&key);
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].1.len(), 2);
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
@@ -347,6 +349,6 @@ mod tests {
 
         indexer.mark_tool_result_all_obsolete(&key);
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1.len(), 1);
     }
 }

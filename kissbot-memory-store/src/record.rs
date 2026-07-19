@@ -8,9 +8,9 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use kissbot_memory::data::{ChannelParser, ChannelRecord, ChannelRecordKey, FileHook, MemoryRecord, RecordKey, RequestParser, ThinkParser, ThinkRecord, ToolCallParser, ToolCallRecord, ToolResultParser, ToolResultRecord};
+use kissbot_memory::data::{ChannelParser, FileHook, RequestParser, ThinkParser, ToolCallParser, ToolResultParser};
 use kissbot_memory::index::MemoryIndexer;
-use kissbot_api::store::*;
+use kissbot_api::memory::*;
 use crate::error::{Error, Result};
 use kai_file::ReverseLineReader;
 
