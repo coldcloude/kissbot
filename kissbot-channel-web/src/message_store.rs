@@ -45,9 +45,9 @@ struct GroupParser {
 }
 
 impl GroupParser {
-    fn new(base_dir: &Path, group_id: &str) -> Self {
+    fn new(base_dir: &Path, messenger_id: &str, group_id: &str) -> Self {
         Self {
-            group_dir: base_dir.join(group_id),
+            group_dir: base_dir.join(messenger_id).join(group_id),
         }
     }
 }
@@ -85,16 +85,18 @@ impl QueryParser<TimeRangeQuery, DateKey> for GroupParser {
 
 pub struct MessageStore {
     base_dir: PathBuf,
+    messenger_id: String,
     writer_tx: flume::Sender<IncomingMessage>,
     indices: DashMap<String, GroupIndex>,
     date_sets: DashMap<String, BTreeSet<String>>,
 }
 
 impl MessageStore {
-    pub fn new(base_dir: PathBuf, _messenger_id: String) -> Arc<Self> {
+    pub fn new(base_dir: PathBuf, messenger_id: String) -> Arc<Self> {
         let (tx, rx) = flume::unbounded();
         let store = Arc::new(Self {
             base_dir,
+            messenger_id,
             writer_tx: tx,
             indices: DashMap::new(),
             date_sets: DashMap::new(),
@@ -123,7 +125,7 @@ impl MessageStore {
         let group_id = msg.group_id.as_str();
 
         // Ensure group directory exists
-        let group_dir = self.base_dir.join(group_id);
+        let group_dir = self.base_dir.join(&self.messenger_id).join(group_id);
         tokio::fs::create_dir_all(&group_dir).await?;
 
         // Append to file
@@ -156,7 +158,7 @@ impl MessageStore {
         if self.indices.contains_key(group_id) {
             return Ok(());
         }
-        let parser = GroupParser::new(&self.base_dir, group_id);
+        let parser = GroupParser::new(&self.base_dir, &self.messenger_id, group_id);
         let index = GroupIndex::new(parser);
         if let Some(dates) = self.date_sets.get(group_id) {
             for date in dates.iter() {
@@ -208,7 +210,13 @@ impl MessageStore {
         let mut results: Vec<GroupedMessages> = Vec::new();
 
         let key_s = key.to_string();
-        let msgs = index.query_before(&key_s, line, remaining).await?;
+        // query_before is inclusive of `line`, so use line-1 to exclude anchor message
+        let query_line = line.saturating_sub(1);
+        let msgs = if query_line > 0 {
+            index.query_before(&key_s, query_line, remaining).await?
+        } else {
+            Vec::new()
+        };
         let count = msgs.len() as u32;
         if count > 0 {
             let messages: Vec<LineMessage> = msgs.into_iter()
