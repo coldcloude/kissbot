@@ -85,18 +85,16 @@ impl QueryParser<TimeRangeQuery, DateKey> for GroupParser {
 
 pub struct MessageStore {
     base_dir: PathBuf,
-    messenger_id: String,
     writer_tx: flume::Sender<IncomingMessage>,
     indices: DashMap<String, GroupIndex>,
     date_sets: DashMap<String, BTreeSet<String>>,
 }
 
 impl MessageStore {
-    pub fn new(base_dir: PathBuf, messenger_id: String) -> Arc<Self> {
+    pub fn new(base_dir: PathBuf, _messenger_id: String) -> Arc<Self> {
         let (tx, rx) = flume::unbounded();
         let store = Arc::new(Self {
             base_dir,
-            messenger_id,
             writer_tx: tx,
             indices: DashMap::new(),
             date_sets: DashMap::new(),
