@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, LazyLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use uuid::Uuid;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,28 +23,29 @@ use tokio::sync::RwLock;
 
 use crate::attachment::AttachmentStore;
 use crate::error::{Error, Result};
+use crate::message_store::MessageStore;
 
 // =========== SSE 分发器（给 admin 前端推送） ===========
 
 pub struct SseDispatcher {
-    senders: DashMap<String, flume::Sender<String>>,
+    senders: Arc<Mutex<HashMap<Uuid, flume::Sender<String>>>>,
 }
 
 impl SseDispatcher {
     pub fn new() -> Self {
-        Self { senders: DashMap::new() }
+        Self { senders: Arc::new(Mutex::new(HashMap::new())) }
     }
 
-    pub fn register(&self, group_id: &str) -> flume::Receiver<String> {
+    pub fn register(&self) -> flume::Receiver<String> {
         let (tx, rx) = flume::unbounded();
-        self.senders.insert(group_id.to_string(), tx);
+        let id = Uuid::new_v4();
+        self.senders.lock().unwrap().insert(id, tx);
         rx
     }
 
-    pub fn push(&self, group_id: &str, data: &str) {
-        if let Some(tx) = self.senders.get(group_id) {
-            let _ = tx.send(data.to_string());
-        }
+    pub fn push(&self, data: &str) {
+        let mut senders = self.senders.lock().unwrap();
+        senders.retain(|_, tx| tx.try_send(data.to_string()).is_ok());
     }
 }
 
@@ -80,26 +83,6 @@ pub fn admin_user_group_id(user_id: &str) -> String {
     format!("{}{}", ADMIN_USER_GROUP_PREFIX, user_id)
 }
 
-// ========== SSE 消息结构（编译检查的 JSON 序列化） ==========
-
-#[derive(Debug, Serialize)]
-struct SsePayload<'a> {
-    r#type: &'a str,
-    data: SseMessage,
-}
-
-#[derive(Debug, Serialize)]
-struct SseMessage {
-    msg_id: Arc<String>,
-    messenger_id: Arc<String>,
-    user_id: Arc<String>,
-    group_id: Arc<String>,
-    is_self: usize,
-    msg_type: Arc<String>,
-    content: Arc<String>,
-    time: Arc<String>,
-}
-
 // ========== WebMessenger ==========
 
 pub struct WebMessenger {
@@ -113,6 +96,7 @@ pub struct WebMessenger {
     on_user_remove: Weak<dyn UserRemoveHandler>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
+    pub message_store: Arc<MessageStore>,
 }
 
 impl WebMessenger {
@@ -125,6 +109,7 @@ impl WebMessenger {
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
         attachment_dir: &str,
+        message_store: Arc<MessageStore>,
     ) -> Self {
         Self {
             messenger_id,
@@ -137,6 +122,7 @@ impl WebMessenger {
             on_user_remove,
             sse: Arc::new(SseDispatcher::new()),
             attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
+            message_store,
         }
     }
 
@@ -427,23 +413,22 @@ impl WebMessenger {
             }
         }
 
-        // 推 SSE
-        let group_id = outgoing.group_id.clone();
+        // 推 SSE + 写入存储
         let response_content = new_content;
-        let sse_event = SseMessage {
+        let admin_msg = IncomingMessage {
             msg_id: msg_id.clone(),
-            messenger_id,
-            user_id: outgoing.user_id.clone(),
+            messenger_id: messenger_id.clone(),
+            user_id: ADMIN_USER_ID.clone(),
             group_id: outgoing.group_id.clone(),
             is_self: 1,
             msg_type: outgoing.msg_type.clone(),
-            content: Arc::new(serde_json::to_string(&response_content).unwrap_or_default()),
+            content: response_content.clone(),
             time: time.clone(),
         };
-        let sse_payload = SsePayload { r#type: "message", data: sse_event };
-        if let Ok(json) = serde_json::to_string(&sse_payload) {
-            self.sse.push(group_id.as_str(), &json);
+        if let Ok(json) = serde_json::to_string(&admin_msg) {
+            self.sse.push(&json);
         }
+        self.message_store.append(admin_msg);
 
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id,
@@ -517,6 +502,7 @@ pub struct WebMessengerCreator {
     repo_path: PathBuf,
     config: Arc<RwLock<WebMessengerRepo>>,
     attachment_dir: String,
+    message_store: Arc<MessageStore>,
 }
 
 impl WebMessengerCreator {
@@ -524,10 +510,14 @@ impl WebMessengerCreator {
         let path = PathBuf::from(repo_path);
         let content = std::fs::read_to_string(&path)?;
         let config: WebMessengerRepo = serde_json::from_str(&content)?;
+        let mid = config.messenger_id.clone();
+        let base_dir = path.parent().unwrap().join("messages");
+        let message_store = MessageStore::new(base_dir, mid.to_string());
         Ok(Self {
             repo_path: path,
             config: Arc::new(RwLock::new(config)),
             attachment_dir: attachment_dir.to_string(),
+            message_store,
         })
     }
 
@@ -556,6 +546,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_download_attachment_payload,
             on_user_remove,
             &self.attachment_dir,
+            self.message_store.clone(),
         ));
 
         Ok(messenger)

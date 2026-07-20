@@ -2,11 +2,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use chrono::NaiveDate;
 use dashmap::DashMap;
 use kai_date;
 use kai_file::FileIndexContext;
-use kai_file::index::{FilePathGenerator, QueryParser, Record};
+use kai_file::index::{FilePathGenerator, QueryParser};
 use kissbot_api::channel::IncomingMessage;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -67,15 +66,15 @@ impl QueryParser<TimeRangeQuery, DateKey> for GroupParser {
         let mut keys = Vec::new();
         // Add start date
         if start_date == end_date {
-            keys.push((start_date.to_string(), (query.start, query.end)));
+            keys.push((start_date.to_string(), (query.start.clone(), query.end.clone())));
         } else {
-            keys.push((start_date.to_string(), (query.start, format!("{} 23:59:59", start_date))));
+            keys.push((start_date.to_string(), (query.start.clone(), format!("{} 23:59:59", start_date))));
             // Internal dates
             let internal = kai_date::get_internal_dates(start_date, end_date).unwrap_or_default();
             for d in &internal {
                 keys.push((d.clone(), (format!("{} 00:00:00", d), format!("{} 23:59:59", d))));
             }
-            keys.push((end_date.to_string(), (format!("{} 00:00:00", end_date), query.end)));
+            keys.push((end_date.to_string(), (format!("{} 00:00:00", end_date), query.end.clone())));
         }
         keys
     }
@@ -146,7 +145,7 @@ impl MessageStore {
 
         // Mark index for incremental update
         if let Some(index) = self.indices.get(group_id) {
-            index.mark_obsolete(date_key);
+            index.mark_obsolete(&date_key);
         }
 
         Ok(())

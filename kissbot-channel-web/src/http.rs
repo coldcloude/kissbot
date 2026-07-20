@@ -381,26 +381,13 @@ async fn handle_thumbnail(
     }
 }
 
-/// GET /api/events — SSE 长连接
+/// GET /api/events — SSE 长连接（全局广播，不再按 group 注册）
 async fn handle_sse_events(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let groups = messenger.config_groups().await;
-    let sse = messenger.sse.clone();
-
-    let mut receivers = Vec::new();
-    for group in groups.iter() {
-        let rx = sse.register(&group.group_id);
-        receivers.push(rx);
-    }
-
-    let streams: Vec<_> = receivers.into_iter().map(|rx| {
-        rx.into_stream().map(|data| Ok(Event::default().data(data)))
-    }).collect();
-
-    let merged = futures::stream::select_all(streams);
-
-    Sse::new(merged).keep_alive(KeepAlive::new()
+    let rx = messenger.sse.register();
+    let stream = rx.into_stream().map(|data| Ok(Event::default().data(data)));
+    Sse::new(stream).keep_alive(KeepAlive::new()
         .interval(Duration::from_secs(15))
         .text("keep-alive"))
 }

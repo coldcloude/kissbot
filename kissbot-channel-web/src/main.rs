@@ -3,6 +3,7 @@ mod config;
 mod attachment;
 mod messenger;
 mod http;
+mod message_store;
 
 use std::sync::Arc;
 
