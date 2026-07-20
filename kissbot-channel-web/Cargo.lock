@@ -1257,6 +1257,8 @@ dependencies = [
  "flume",
  "futures",
  "image",
+ "kai-date",
+ "kai-file",
  "kai-ws",
  "kissbot-api",
  "kissbot-channel",

@@ -26,6 +26,8 @@ axum = { version = "0.7", features = ["macros", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 kai-ws = { path = "../kai-rs/kai-ws" }
+kai-file = { path = "../kai-rs/kai-file" }
+kai-date = { path = "../kai-rs/kai-date" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-channel = { path = "../kissbot-channel" }
 kissbot-config = { path = "../kissbot-config" }

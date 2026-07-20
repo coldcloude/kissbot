@@ -45,6 +45,9 @@ pub enum Error {
 
     #[error("Channel error: {0}")]
     ChannelError(#[from] kissbot_channel::Error),
+
+    #[error("KaiFile error: {0}")]
+    KaiFileError(#[from] kai_file::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -66,6 +69,7 @@ impl From<Error> for kissbot_channel::Error {
             Error::ImageError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
             Error::InternalError(msg) => kissbot_channel::Error::InternalError(msg),
             Error::ChannelError(e) => e,
+            Error::KaiFileError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
         }
     }
 }
