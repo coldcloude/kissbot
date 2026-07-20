@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use kai_file::index::Record;
 use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +128,12 @@ pub struct IncomingMessage {
     pub msg_type: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
+}
+
+impl Record for IncomingMessage {
+    fn time(&self) -> &str {
+        self.time.as_str()
+    }
 }
 
 // ========== Query & Bind ==========
