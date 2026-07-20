@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -149,5 +150,178 @@ impl MessageStore {
         }
 
         Ok(())
+    }
+
+    // ========== Index management ==========
+
+    async fn ensure_index(&self, group_id: &str) -> Result<()> {
+        if self.indices.contains_key(group_id) {
+            return Ok(());
+        }
+        let parser = GroupParser::new(&self.base_dir, group_id);
+        let index = GroupIndex::new(parser);
+        if let Some(dates) = self.date_sets.get(group_id) {
+            for date in dates.iter() {
+                index.mark_all_obsolete(date);
+            }
+        }
+        self.indices.insert(group_id.to_string(), index);
+        Ok(())
+    }
+
+    // ========== Query methods ==========
+
+    pub async fn get_recent(&self, group_id: &str, n: u32) -> Result<Vec<GroupedMessages>> {
+        self.ensure_index(group_id).await?;
+        let index = self.indices.get(group_id).unwrap();
+
+        let mut remaining = n;
+        let mut results: Vec<GroupedMessages> = Vec::new();
+
+        if let Some(dates) = self.date_sets.get(group_id) {
+            for date_key in dates.iter().rev() {
+                if remaining == 0 {
+                    break;
+                }
+                let msgs = index.query_last(date_key, remaining).await?;
+                if !msgs.is_empty() {
+                    let count = msgs.len() as u32;
+                    let messages: Vec<LineMessage> = msgs.into_iter()
+                        .map(|(line, msg)| LineMessage { line, message: msg })
+                        .collect();
+                    results.push(GroupedMessages {
+                        key: date_key.clone(),
+                        messages,
+                    });
+                    remaining = remaining.saturating_sub(count);
+                }
+            }
+        }
+
+        results.reverse();
+        Ok(results)
+    }
+
+    pub async fn get_before(&self, group_id: &str, key: &str, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
+        self.ensure_index(group_id).await?;
+        let index = self.indices.get(group_id).unwrap();
+
+        let mut remaining = n;
+        let mut results: Vec<GroupedMessages> = Vec::new();
+
+        let key_s = key.to_string();
+        let msgs = index.query_before(&key_s, line, remaining).await?;
+        let count = msgs.len() as u32;
+        if count > 0 {
+            let messages: Vec<LineMessage> = msgs.into_iter()
+                .map(|(l, msg)| LineMessage { line: l, message: msg })
+                .collect();
+            results.push(GroupedMessages {
+                key: key.to_string(),
+                messages,
+            });
+            remaining = remaining.saturating_sub(count);
+        }
+
+        if remaining > 0 {
+            if let Some(dates) = self.date_sets.get(group_id) {
+                let mut cursor = key.to_string();
+                loop {
+                    if remaining == 0 { break; }
+                    let prev = dates.range::<str, _>((Bound::Unbounded, Bound::Excluded(cursor.as_str()))).next_back();
+                    match prev {
+                        Some(prev_key) => {
+                            let msgs = index.query_last(prev_key, remaining).await?;
+                            if !msgs.is_empty() {
+                                let count = msgs.len() as u32;
+                                let messages: Vec<LineMessage> = msgs.into_iter()
+                                    .map(|(l, msg)| LineMessage { line: l, message: msg })
+                                    .collect();
+                                results.push(GroupedMessages {
+                                    key: prev_key.clone(),
+                                    messages,
+                                });
+                                remaining = remaining.saturating_sub(count);
+                            }
+                            cursor = prev_key.clone();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        results.reverse();
+        Ok(results)
+    }
+
+    pub async fn get_after(&self, group_id: &str, key: &str, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
+        self.ensure_index(group_id).await?;
+        let index = self.indices.get(group_id).unwrap();
+
+        let mut remaining = n;
+        let mut results: Vec<GroupedMessages> = Vec::new();
+
+        let key_s = key.to_string();
+        let msgs = index.query_after(&key_s, line + 1, remaining).await?;
+        let count = msgs.len() as u32;
+        if count > 0 {
+            let messages: Vec<LineMessage> = msgs.into_iter()
+                .map(|(l, msg)| LineMessage { line: l, message: msg })
+                .collect();
+            results.push(GroupedMessages { key: key.to_string(), messages });
+            remaining = remaining.saturating_sub(count);
+        }
+
+        if remaining > 0 {
+            if let Some(dates) = self.date_sets.get(group_id) {
+                let mut cursor = key.to_string();
+                loop {
+                    if remaining == 0 { break; }
+                    let next = dates.range::<str, _>((Bound::Excluded(cursor.as_str()), Bound::Unbounded)).next();
+                    match next {
+                        Some(next_key) => {
+                            let msgs = index.query_first(next_key, remaining).await?;
+                            if !msgs.is_empty() {
+                                let count = msgs.len() as u32;
+                                let messages: Vec<LineMessage> = msgs.into_iter()
+                                    .map(|(l, msg)| LineMessage { line: l, message: msg })
+                                    .collect();
+                                results.push(GroupedMessages { key: next_key.clone(), messages });
+                                remaining = remaining.saturating_sub(count);
+                            }
+                            cursor = next_key.clone();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub async fn get_range(&self, group_id: &str, start: &str, end: &str) -> Result<Vec<GroupedMessages>> {
+        self.ensure_index(group_id).await?;
+        let index = self.indices.get(group_id).unwrap();
+
+        let query = TimeRangeQuery {
+            start: start.to_string(),
+            end: end.to_string(),
+        };
+
+        let results: Vec<(DateKey, Vec<(u32, IncomingMessage)>)> = index.query_all(query).await?;
+
+        let grouped: Vec<GroupedMessages> = results.into_iter()
+            .filter(|(_, msgs)| !msgs.is_empty())
+            .map(|(key, msgs)| {
+                let messages: Vec<LineMessage> = msgs.into_iter()
+                    .map(|(line, msg)| LineMessage { line, message: msg })
+                    .collect();
+                GroupedMessages { key, messages }
+            })
+            .collect();
+
+        Ok(grouped)
     }
 }
