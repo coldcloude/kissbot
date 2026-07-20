@@ -21,6 +21,7 @@ use kissbot_api::{ApiResponse, AttachmentPayloadResponse};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
+use crate::message_store::GroupedMessages;
 use crate::messenger::{GroupConfig, UserConfig, WebMessenger};
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 
@@ -82,35 +83,16 @@ pub struct RenameAdminRequest {
     pub admin_name: Arc<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct MessageResponse {
-    pub msg_id: String,
-    pub group_id: String,
-    pub user_id: String,
-    pub user_name: String,
-    pub is_self: usize,
-    pub msg_type: String,
-    pub content: String,
-    pub time: String,
-    pub attachments: Vec<AttachmentRefResponse>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AttachmentRefResponse {
-    pub file_name: String,
-    pub mime_type: String,
-    pub size_bytes: u64,
-    pub key: String,
-    pub has_thumbnail: bool,
-}
-
 // ========== Router ==========
 
 pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
     Router::new()
         .route("/api/info", get(handle_info))
         .route("/api/message/send", post(handle_send_message))
-        .route("/api/messages", get(handle_get_messages))
+        .route("/api/messages/recent", get(handle_messages_recent))
+        .route("/api/messages/before", get(handle_messages_before))
+        .route("/api/messages/after", get(handle_messages_after))
+        .route("/api/messages/range", get(handle_messages_range))
         .route("/api/groups/create", post(handle_create_group))
         .route("/api/groups/rename", post(handle_rename_group))
         .route("/api/groups/manage-members", post(handle_manage_members))
@@ -152,16 +134,91 @@ async fn handle_send_message(
     }
 }
 
-/// GET /api/messages — 暂返回空
-async fn handle_get_messages(
-    _messenger: State<Arc<WebMessenger>>,
+/// GET /api/messages/recent?group_id=xxx&n=20
+async fn handle_messages_recent(
+    State(messenger): State<Arc<WebMessenger>>,
     Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let _group_id = match params.get("group_id") {
+) -> Json<ApiResponse<Vec<GroupedMessages>>> {
+    let group_id = match params.get("group_id") {
         Some(id) => id,
-        None => return Json(ApiResponse::<Vec<MessageResponse>>::error("Missing group_id".to_string())),
+        None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
-    Json(ApiResponse::success(Vec::<MessageResponse>::new()))
+    let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(20);
+    match messenger.message_store.get_recent(group_id, n).await {
+        Ok(msgs) => Json(ApiResponse::success(msgs)),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+/// GET /api/messages/before?group_id=xxx&key=2026-07-20&line=42&n=10
+async fn handle_messages_before(
+    State(messenger): State<Arc<WebMessenger>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ApiResponse<Vec<GroupedMessages>>> {
+    let group_id = match params.get("group_id") {
+        Some(id) => id,
+        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+    };
+    let key = match params.get("key") {
+        Some(k) => k,
+        None => return Json(ApiResponse::error("Missing key".to_string())),
+    };
+    let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
+        Some(l) => l,
+        None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
+    };
+    let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
+    match messenger.message_store.get_before(group_id, key, line, n).await {
+        Ok(msgs) => Json(ApiResponse::success(msgs)),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+/// GET /api/messages/after?group_id=xxx&key=2026-07-20&line=42&n=10
+async fn handle_messages_after(
+    State(messenger): State<Arc<WebMessenger>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ApiResponse<Vec<GroupedMessages>>> {
+    let group_id = match params.get("group_id") {
+        Some(id) => id,
+        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+    };
+    let key = match params.get("key") {
+        Some(k) => k,
+        None => return Json(ApiResponse::error("Missing key".to_string())),
+    };
+    let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
+        Some(l) => l,
+        None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
+    };
+    let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
+    match messenger.message_store.get_after(group_id, key, line, n).await {
+        Ok(msgs) => Json(ApiResponse::success(msgs)),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+/// GET /api/messages/range?group_id=xxx&start=2026-07-20T00:00:00Z&end=2026-07-20T23:59:59Z
+async fn handle_messages_range(
+    State(messenger): State<Arc<WebMessenger>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ApiResponse<Vec<GroupedMessages>>> {
+    let group_id = match params.get("group_id") {
+        Some(id) => id,
+        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+    };
+    let start = match params.get("start") {
+        Some(s) => s,
+        None => return Json(ApiResponse::error("Missing start".to_string())),
+    };
+    let end = match params.get("end") {
+        Some(e) => e,
+        None => return Json(ApiResponse::error("Missing end".to_string())),
+    };
+    match messenger.message_store.get_range(group_id, start, end).await {
+        Ok(msgs) => Json(ApiResponse::success(msgs)),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
 }
 
 /// POST /api/groups/create
