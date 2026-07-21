@@ -144,7 +144,7 @@ async fn handle_messages_recent(
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(20);
-    match messenger.message_store.get_recent(group_id, n).await {
+    match messenger.message_store.get_recent(messenger.messenger_id.as_str(), group_id, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -168,7 +168,7 @@ async fn handle_messages_before(
         None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
-    match messenger.message_store.get_before(group_id, key, line, n).await {
+    match messenger.message_store.get_before(messenger.messenger_id.as_str(), group_id, key, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -192,7 +192,7 @@ async fn handle_messages_after(
         None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
-    match messenger.message_store.get_after(group_id, key, line, n).await {
+    match messenger.message_store.get_after(messenger.messenger_id.as_str(), group_id, key, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -215,7 +215,7 @@ async fn handle_messages_range(
         Some(e) => e,
         None => return Json(ApiResponse::error("Missing end".to_string())),
     };
-    match messenger.message_store.get_range(group_id, start, end).await {
+    match messenger.message_store.get_range(messenger.messenger_id.as_str(), group_id, start, end).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }

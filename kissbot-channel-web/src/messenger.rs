@@ -428,7 +428,7 @@ impl WebMessenger {
         if let Ok(json) = serde_json::to_string(&admin_msg) {
             self.sse.push(&json);
         }
-        self.message_store.append(admin_msg);
+        self.message_store.append(admin_msg).await;
 
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id,
@@ -510,9 +510,8 @@ impl WebMessengerCreator {
         let path = PathBuf::from(repo_path);
         let content = std::fs::read_to_string(&path)?;
         let config: WebMessengerRepo = serde_json::from_str(&content)?;
-        let mid = config.messenger_id.clone();
         let base_dir = path.parent().unwrap().join("messages");
-        let message_store = MessageStore::new(base_dir, mid.to_string());
+        let message_store = MessageStore::new(base_dir);
         Ok(Self {
             repo_path: path,
             config: Arc::new(RwLock::new(config)),
