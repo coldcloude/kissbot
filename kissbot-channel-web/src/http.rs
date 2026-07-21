@@ -21,7 +21,7 @@ use kissbot_api::{ApiResponse, AttachmentPayloadResponse};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 
-use crate::message_store::GroupedMessages;
+use crate::message_store::{GroupedMessages, MsgKey, TimeRangeQuery};
 use crate::messenger::{GroupConfig, UserConfig, WebMessenger};
 use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 
@@ -144,7 +144,7 @@ async fn handle_messages_recent(
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(20);
-    match messenger.message_store.get_recent(messenger.messenger_id.as_str(), group_id, n).await {
+    match messenger.message_store.get_recent(group_id, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -156,11 +156,11 @@ async fn handle_messages_before(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
-        Some(id) => id,
+        Some(id) => id.clone(),
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
-    let key = match params.get("key") {
-        Some(k) => k,
+    let date = match params.get("date") {
+        Some(k) => k.clone(),
         None => return Json(ApiResponse::error("Missing key".to_string())),
     };
     let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
@@ -168,7 +168,7 @@ async fn handle_messages_before(
         None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
-    match messenger.message_store.get_before(messenger.messenger_id.as_str(), group_id, key, line, n).await {
+    match messenger.message_store.get_before(MsgKey { group_id, date }, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -180,11 +180,11 @@ async fn handle_messages_after(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
-        Some(id) => id,
+        Some(id) => id.clone(),
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
-    let key = match params.get("key") {
-        Some(k) => k,
+    let date = match params.get("date") {
+        Some(k) => k.clone(),
         None => return Json(ApiResponse::error("Missing key".to_string())),
     };
     let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
@@ -192,7 +192,7 @@ async fn handle_messages_after(
         None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
-    match messenger.message_store.get_after(messenger.messenger_id.as_str(), group_id, key, line, n).await {
+    match messenger.message_store.get_after(MsgKey { group_id, date }, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -204,18 +204,18 @@ async fn handle_messages_range(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
-        Some(id) => id,
+        Some(id) => Arc::new(id.clone()),
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
     let start = match params.get("start") {
-        Some(s) => s,
+        Some(s) => Arc::new(s.clone()),
         None => return Json(ApiResponse::error("Missing start".to_string())),
     };
     let end = match params.get("end") {
-        Some(e) => e,
+        Some(e) => Arc::new(e.clone()),
         None => return Json(ApiResponse::error("Missing end".to_string())),
     };
-    match messenger.message_store.get_range(messenger.messenger_id.as_str(), group_id, start, end).await {
+    match messenger.message_store.get_range(TimeRangeQuery { group_id, start, end }).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }

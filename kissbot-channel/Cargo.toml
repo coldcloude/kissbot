@@ -19,6 +19,7 @@ reqwest = { version = "0.12", features = ["json"] }
 base64 = "0.22"
 async-trait = "0.1"
 tracing = "0.1"
+kai-file = { path = "../kai-rs/kai-file" }
 kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }

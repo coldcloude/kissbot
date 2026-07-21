@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{IncomingMessage, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
@@ -609,11 +609,6 @@ impl ChannelManager {
     }
 
     pub async fn start(self: &Arc<Self>, addr: &str) -> Result<()> {
-        //start memory store client
-        let manager_for_memory_store = self.clone();
-        tokio::spawn(async move {
-            manager_for_memory_store.memory_store_client.start_send_messages().await
-        });
         //start ws server
         let span = span!(Level::INFO, "ws server start");
         let _enter = span.enter();
@@ -704,7 +699,7 @@ impl ChannelManager {
         Ok(())
     }
         
-    async fn send_to_agent(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+    async fn send_to_agent(&self, event: Arc<IncomingMessage>) -> Result<()>{
         //找到对应的connect
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
@@ -715,7 +710,7 @@ impl ChannelManager {
         let connect_context = self.connect_map.get(&bound_info.connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
 
-        let payload = serde_json::to_value(event.messages.clone())?;
+        let payload = serde_json::to_value(event)?;
         let sn = connect_context.ws_context.next_request_sn();
         connect_context.ws_context.send_json(WsMessage {
             sn,
@@ -726,7 +721,7 @@ impl ChannelManager {
         Ok(())
     }
 
-    async fn send_to_memory_store(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+    async fn send_to_memory_store(&self, event: Arc<IncomingMessage>) -> Result<()>{
         //找到对应的agent和role
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
@@ -734,7 +729,7 @@ impl ChannelManager {
         let bound_info = messenger_context.bound_map.get(event.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(format!("User not bound: user_id {}", event.user_id)))?;
 
-        self.memory_store_client.push_messages(bound_info.agent_id.clone(), bound_info.role_name.clone(), event.messages.clone()).await?;
+        self.memory_store_client.push_messages(bound_info.agent_id.clone(), bound_info.role_name.clone(), event).await?;
         Ok(())
     }
 
@@ -787,7 +782,7 @@ impl GroupChangeHandler for ChannelManager {
 
 #[async_trait]
 impl IncomingMessageHandler for ChannelManager {
-    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) {
+    async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
         let results = tokio::join!(

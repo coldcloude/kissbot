@@ -325,7 +325,8 @@ mod tests {
     }
 
     use std::sync::{Once, OnceLock};
-    use kissbot_memory::Config as MemoryConfig;
+    use kissbot_api::Content;
+use kissbot_memory::Config as MemoryConfig;
 
     static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static INIT_CONFIG: Once = Once::new();
@@ -360,7 +361,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("hello".to_string()),
+                content: Content::Text(Arc::new("hello".to_string())),
                 time: Arc::new("2026-06-25 10:00:00".to_string()),
             },
         ];
@@ -379,7 +380,7 @@ mod tests {
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let record: ChannelRecord = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(record.sn(), 1);
-        assert_eq!(*record.content, "hello");
+        assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
     }
 
     #[tokio::test]
@@ -399,7 +400,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("msg1".to_string()),
+                content: Content::Text(Arc::new("msg1".to_string())),
                 time: Arc::new("2026-06-25 10:00:00".to_string()),
             },
             ChannelRequest {
@@ -410,7 +411,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("msg2".to_string()),
+                content: Content::Text(Arc::new("msg2".to_string())),
                 time: Arc::new("2026-06-25 10:01:00".to_string()),
             },
             ChannelRequest {
@@ -421,7 +422,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("msg3".to_string()),
+                content: Content::Text(Arc::new("msg3".to_string())),
                 time: Arc::new("2026-06-25 10:02:00".to_string()),
             },
         ];
@@ -461,7 +462,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("first".to_string()),
+            content: Content::Text(Arc::new("first".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
         ctx.append_record(req1, false, NoopFileHook).await.unwrap();
@@ -475,7 +476,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("second".to_string()),
+            content: Content::Text(Arc::new("second".to_string())),
             time: Arc::new("2026-06-25 10:01:00".to_string()),
         }];
         ctx.append_record(req2, false, NoopFileHook).await.unwrap();
@@ -493,9 +494,9 @@ mod tests {
         let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
         let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(r1.sn(), 1);
-        assert_eq!(*r1.content, "first");
+        assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "first"));
         assert_eq!(r2.sn(), 2);
-        assert_eq!(*r2.content, "second");
+        assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "second"));
     }
 
     #[tokio::test]
@@ -606,7 +607,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("later".to_string()),
+            content: Content::Text(Arc::new("later".to_string())),
             time: Arc::new("2026-06-25 10:02:00".to_string()),
         }];
         ctx.append_record(req1, false, NoopFileHook).await.unwrap();
@@ -620,7 +621,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("earlier".to_string()),
+            content: Content::Text(Arc::new("earlier".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
         let result = ctx.append_record(req2, false, NoopFileHook).await;
@@ -651,7 +652,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("later".to_string()),
+            content: Content::Text(Arc::new("later".to_string())),
             time: Arc::new("2026-06-25 10:02:00".to_string()),
         }];
         ctx.append_record(req1, false, NoopFileHook).await.unwrap();
@@ -665,7 +666,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("earlier".to_string()),
+            content: Content::Text(Arc::new("earlier".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
         ctx.append_record(req2, true, NoopFileHook).await.unwrap();
@@ -683,12 +684,12 @@ mod tests {
         // 第一条 sn=1, time=10:00:00, content=earlier
         let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(r1.sn(), 1);
-        assert_eq!(*r1.content, "earlier");
+        assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "earlier"));
 
         // 第二条 sn=2, time=10:02:00, content=later
         let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(r2.sn(), 2);
-        assert_eq!(*r2.content, "later");
+        assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "later"));
     }
 
     #[tokio::test]
@@ -709,7 +710,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("second".to_string()),
+                content: Content::Text(Arc::new("second".to_string())),
                 time: Arc::new("2026-06-25 10:01:00".to_string()),
             },
             ChannelRequest {
@@ -720,7 +721,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("third".to_string()),
+                content: Content::Text(Arc::new("third".to_string())),
                 time: Arc::new("2026-06-25 10:02:00".to_string()),
             },
             ChannelRequest {
@@ -731,7 +732,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("fourth".to_string()),
+                content: Content::Text(Arc::new("fourth".to_string())),
                 time: Arc::new("2026-06-25 10:03:00".to_string()),
             },
         ];
@@ -747,7 +748,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("first".to_string()),
+                content: Content::Text(Arc::new("first".to_string())),
                 time: Arc::new("2026-06-25 09:59:00".to_string()),
             },
             ChannelRequest {
@@ -758,7 +759,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("first-half".to_string()),
+                content: Content::Text(Arc::new("first-half".to_string())),
                 time: Arc::new("2026-06-25 10:00:00".to_string()),
             },
         ];
@@ -778,7 +779,7 @@ mod tests {
         for (i, line) in lines.iter().enumerate() {
             let record: ChannelRecord = serde_json::from_str(line).unwrap();
             assert_eq!(record.sn(), (i + 1) as u64, "sn mismatch at line {}", i);
-            assert_eq!(*record.content, expected_order[i], "content mismatch at line {}", i);
+            assert!(matches!(&record.content, Content::Text(v) if v.as_str() == expected_order[i]), "content mismatch at line {}", i);
         }
     }
 
@@ -800,7 +801,7 @@ mod tests {
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("agent1-msg".to_string()),
+                content: Content::Text(Arc::new("agent1-msg".to_string())),
                 time: Arc::new("2026-06-25 10:00:00".to_string()),
             },
             ChannelRequest {
@@ -811,7 +812,7 @@ mod tests {
                 group_id: Arc::new("g2".to_string()),
                 is_self: 0,
                 msg_type: Arc::new("text".to_string()),
-                content: Arc::new("agent2-msg".to_string()),
+                content: Content::Text(Arc::new("agent2-msg".to_string())),
                 time: Arc::new("2026-06-25 10:01:00".to_string()),
             },
         ];
@@ -837,7 +838,7 @@ mod tests {
         let r2: ChannelRecord = serde_json::from_str(tokio::fs::read_to_string(&path2).await.unwrap().trim()).unwrap();
         assert_eq!(r1.sn(), 1);
         assert_eq!(r2.sn(), 1);
-        assert_eq!(*r1.content, "agent1-msg");
-        assert_eq!(*r2.content, "agent2-msg");
+        assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "agent1-msg"));
+        assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "agent2-msg"));
     }
 }

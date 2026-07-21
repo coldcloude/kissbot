@@ -8,23 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-// ========== Type aliases (kissbot_api 已直接使用 Arc<String> / Arc<DashMap<>>) ==========
-
-pub type IncomingMessages = Vec<Arc<IncomingMessage>>;
-
-// ========== Events ==========
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncomingMessageEvent {
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
-    pub messages: Arc<IncomingMessages>,
-}
-
 #[async_trait]
 pub trait IncomingMessageHandler: Send + Sync {
-    async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>);
+    async fn handle_incoming_message(&self, message: Arc<IncomingMessage>);
 }
 
 // ========== Attachment ==========
@@ -71,12 +57,12 @@ pub trait UserRemoveHandler: Send + Sync {
 }
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
-pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
+pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessage> {
     let msg_type = match message.change_type {
         GroupChangeType::Joined => MSG_TYPE_SYSTEM_GROUP_JOIN,
         GroupChangeType::Left => MSG_TYPE_SYSTEM_GROUP_LEAVE,
     };
-    let incoming = Arc::new(IncomingMessage {
+    Arc::new(IncomingMessage {
         msg_id: message.msg_id.clone(),
         messenger_id: message.notification.messenger_id.clone(),
         user_id: message.notification.user_id.clone(),
@@ -85,11 +71,5 @@ pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<I
         msg_type: Arc::new(msg_type.to_string()),
         content: Content::GroupChange(message.notification.clone()),
         time: message.time.clone(),
-    });
-    Arc::new(IncomingMessageEvent {
-        messenger_id: message.notification.messenger_id.clone(),
-        user_id: message.notification.user_id.clone(),
-        group_id: message.notification.group_id.clone(),
-        messages: Arc::new(vec![incoming]),
     })
 }

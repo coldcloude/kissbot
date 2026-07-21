@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{memory_store_client::MessagesRecord};
+use crate::{memory_store_client::MessageRecord};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -50,7 +50,7 @@ pub enum Error {
     WsError(#[from] kai_ws::Error),
 
     #[error("Flume Send error: {0}")]
-    SendError(#[from] flume::SendError<MessagesRecord>),
+    SendError(#[from] flume::SendError<MessageRecord>),
 
     #[error("Flume Recv error: {0}")]
     RecvError(#[from] flume::RecvError),

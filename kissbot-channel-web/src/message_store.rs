@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use dashmap::DashMap;
-use kai_date;
+use kai_date::{self, as_date, get_date_time_segments};
 use kai_file::FileIndexContext;
 use kai_file::appender::{FileAppendWriter, FileObjectAppender, NoopErrorHandler};
 use kai_file::index::{FilePathGenerator, QueryParser};
@@ -20,18 +20,17 @@ use crate::error::Result;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LineMessage {
     pub line: u32,
-    pub message: IncomingMessage,
+    pub message: Arc<IncomingMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupedMessages {
-    pub key: String,
+    pub key: MsgKey,
     pub messages: Vec<LineMessage>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MsgKey {
-    pub messenger_id: String,
     pub group_id: String,
     pub date: String,
 }
@@ -40,10 +39,9 @@ pub struct MsgKey {
 
 #[derive(Debug, Clone)]
 pub struct TimeRangeQuery {
-    pub messenger_id: String,
-    pub group_id: String,
-    pub start: String,
-    pub end: String,
+    pub group_id: Arc<String>,
+    pub start: Arc<String>,
+    pub end: Arc<String>,
 }
 
 type GroupIndex = FileIndexContext<TimeRangeQuery, MsgKey, IncomingMessage, MessageParser>;
@@ -64,7 +62,6 @@ impl MessageParser {
 impl FilePathGenerator<MsgKey> for MessageParser {
     async fn get_path(&self, key: &MsgKey) -> std::result::Result<PathBuf, kai_file::Error> {
         Ok(self.base_dir
-            .join(&key.messenger_id)
             .join(&key.group_id)
             .join(format!("{}.jsonl", key.date)))
     }
@@ -72,23 +69,15 @@ impl FilePathGenerator<MsgKey> for MessageParser {
 
 impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
     fn parse_query(&self, query: TimeRangeQuery) -> Vec<(MsgKey, (String, String))> {
-        let start_date = kai_date::as_date(&query.start).to_string();
-        let end_date = kai_date::as_date(&query.end).to_string();
         let mut keys = Vec::new();
-
-        fn make_key(mid: &str, gid: &str, date: &str) -> MsgKey {
-            MsgKey { messenger_id: mid.to_string(), group_id: gid.to_string(), date: date.to_string() }
-        }
-
-        if start_date == end_date {
-            keys.push((make_key(&query.messenger_id, &query.group_id, &start_date), (query.start, query.end)));
-        } else {
-            keys.push((make_key(&query.messenger_id, &query.group_id, &start_date), (query.start, format!("{} 23:59:59", start_date))));
-            let internal = kai_date::get_internal_dates(&start_date, &end_date).unwrap_or_default();
-            for d in &internal {
-                keys.push((make_key(&query.messenger_id, &query.group_id, d), (format!("{} 00:00:00", d), format!("{} 23:59:59", d))));
+        if let Ok(mut ranges) = get_date_time_segments(&query.start, &query.end) {
+            for range in ranges.drain(..) {
+                let date = as_date(range.0.as_str()).to_string();
+                keys.push((MsgKey {
+                    group_id: query.group_id.as_str().to_string(),
+                    date,
+                }, range));
             }
-            keys.push((make_key(&query.messenger_id, &query.group_id, &end_date), (format!("{} 00:00:00", end_date), query.end)));
         }
         keys
     }
@@ -99,24 +88,23 @@ impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
 struct MessageFileWriter {
     base_dir: PathBuf,
     index: Weak<GroupIndex>,
-    date_sets: Weak<DashMap<(String, String), BTreeSet<String>>>,
+    date_sets: Weak<DashMap<String, BTreeSet<String>>>,
 }
 
 impl MessageFileWriter {
     fn new(
         base_dir: PathBuf,
         index: Weak<GroupIndex>,
-        date_sets: Weak<DashMap<(String, String), BTreeSet<String>>>,
+        date_sets: Weak<DashMap<String, BTreeSet<String>>>,
     ) -> Self {
         Self { base_dir, index, date_sets }
     }
 }
 
 #[async_trait::async_trait]
-impl FileAppendWriter<MsgKey, IncomingMessage> for MessageFileWriter {
-    async fn write(&self, key: &MsgKey, records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriter<MsgKey, Arc<IncomingMessage>> for MessageFileWriter {
+    async fn write(&self, key: &MsgKey, records: Vec<Arc<IncomingMessage>>) -> std::result::Result<(), kai_file::Error> {
         let path = self.base_dir
-            .join(&key.messenger_id)
             .join(&key.group_id)
             .join(format!("{}.jsonl", key.date));
 
@@ -131,9 +119,9 @@ impl FileAppendWriter<MsgKey, IncomingMessage> for MessageFileWriter {
             .map_err(kai_file::Error::IoError)?;
 
         for record in &records {
-            let line = serde_json::to_string(record).map_err(kai_file::Error::Json)?;
-            file.write_all(line.as_bytes()).await.map_err(kai_file::Error::IoError)?;
-            file.write_all(b"\n").await.map_err(kai_file::Error::IoError)?;
+            let line = serde_json::to_string(record)?;
+            file.write_all(line.as_bytes()).await?;
+            file.write_all(b"\n").await?;
         }
 
         if let Some(index) = self.index.upgrade() {
@@ -141,7 +129,7 @@ impl FileAppendWriter<MsgKey, IncomingMessage> for MessageFileWriter {
         }
 
         if let Some(sets) = self.date_sets.upgrade() {
-            sets.entry((key.messenger_id.clone(), key.group_id.clone()))
+            sets.entry(key.group_id.clone())
                 .or_insert_with(BTreeSet::new)
                 .insert(key.date.clone());
         }
@@ -153,34 +141,33 @@ impl FileAppendWriter<MsgKey, IncomingMessage> for MessageFileWriter {
 // ========== MessageStore ==========
 
 pub struct MessageStore {
-    appender: FileObjectAppender<MsgKey, IncomingMessage, MessageFileWriter>,
+    appender: FileObjectAppender<MsgKey, Arc<IncomingMessage>, MessageFileWriter>,
     index: Arc<GroupIndex>,
-    date_sets: Arc<DashMap<(String, String), BTreeSet<String>>>,
+    date_sets: Arc<DashMap<String, BTreeSet<String>>>,
 }
 
 impl MessageStore {
     pub fn new(base_dir: PathBuf) -> Arc<Self> {
         let parser = MessageParser::new(base_dir.clone());
         let index: Arc<GroupIndex> = Arc::new(FileIndexContext::new(parser));
-        let date_sets: Arc<DashMap<(String, String), BTreeSet<String>>> = Arc::new(DashMap::new());
-        let writer = MessageFileWriter::new(
+        let date_sets: Arc<DashMap<String, BTreeSet<String>>> = Arc::new(DashMap::new());
+        let writer = Arc::new(MessageFileWriter::new(
             base_dir,
             Arc::downgrade(&index),
             Arc::downgrade(&date_sets),
-        );
+        ));
         let appender = FileObjectAppender::new(
             writer,
-            NoopErrorHandler,
+            Arc::new(NoopErrorHandler {}),
             Duration::from_secs(5),
             100,
         );
         Arc::new(Self { appender, index, date_sets })
     }
 
-    pub async fn append(&self, msg: IncomingMessage) {
+    pub async fn append(&self, msg: Arc<IncomingMessage>) {
         let date = kai_date::as_date(&msg.time).to_string();
         let key = MsgKey {
-            messenger_id: msg.messenger_id.to_string(),
             group_id: msg.group_id.to_string(),
             date,
         };
@@ -189,16 +176,14 @@ impl MessageStore {
 
     // ========== Query methods ==========
 
-    pub async fn get_recent(&self, messenger_id: &str, group_id: &str, n: u32) -> Result<Vec<GroupedMessages>> {
+    pub async fn get_recent(&self, group_id: &str, n: u32) -> Result<Vec<GroupedMessages>> {
         let mut remaining = n;
         let mut results: Vec<GroupedMessages> = Vec::new();
 
-        let group_key = (messenger_id.to_string(), group_id.to_string());
-        if let Some(dates) = self.date_sets.get(&group_key) {
+        if let Some(dates) = self.date_sets.get(group_id) {
             for date in dates.iter().rev() {
                 if remaining == 0 { break; }
                 let key = MsgKey {
-                    messenger_id: messenger_id.to_string(),
                     group_id: group_id.to_string(),
                     date: date.clone(),
                 };
@@ -208,7 +193,7 @@ impl MessageStore {
                     let messages: Vec<LineMessage> = msgs.into_iter()
                         .map(|(line, msg)| LineMessage { line, message: msg })
                         .collect();
-                    results.push(GroupedMessages { key: date.clone(), messages });
+                    results.push(GroupedMessages { key, messages });
                     remaining = remaining.saturating_sub(count);
                 }
             }
@@ -218,13 +203,7 @@ impl MessageStore {
         Ok(results)
     }
 
-    pub async fn get_before(&self, messenger_id: &str, group_id: &str, key_date: &str, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
-        let key = MsgKey {
-            messenger_id: messenger_id.to_string(),
-            group_id: group_id.to_string(),
-            date: key_date.to_string(),
-        };
-
+    pub async fn get_before(&self, key: MsgKey, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
         let mut remaining = n;
         let mut results: Vec<GroupedMessages> = Vec::new();
 
@@ -236,23 +215,21 @@ impl MessageStore {
                 let messages: Vec<LineMessage> = msgs.into_iter()
                     .map(|(l, msg)| LineMessage { line: l, message: msg })
                     .collect();
-                results.push(GroupedMessages { key: key_date.to_string(), messages });
+                results.push(GroupedMessages { key: key.clone(), messages });
                 remaining = remaining.saturating_sub(count);
             }
         }
 
         if remaining > 0 {
-            let group_key = (messenger_id.to_string(), group_id.to_string());
-            if let Some(dates) = self.date_sets.get(&group_key) {
-                let mut cursor = key_date.to_string();
+            if let Some(dates) = self.date_sets.get(key.group_id.as_str()) {
+                let mut cursor = key.date.to_string();
                 loop {
                     if remaining == 0 { break; }
                     let prev = dates.range::<str, _>((Bound::Unbounded, Bound::Excluded(cursor.as_str()))).next_back();
                     match prev {
                         Some(prev_date) => {
                             let prev_key = MsgKey {
-                                messenger_id: messenger_id.to_string(),
-                                group_id: group_id.to_string(),
+                                group_id: key.group_id.clone(),
                                 date: prev_date.clone(),
                             };
                             let msgs = self.index.query_last(&prev_key, remaining).await?;
@@ -261,7 +238,13 @@ impl MessageStore {
                                 let messages: Vec<LineMessage> = msgs.into_iter()
                                     .map(|(l, msg)| LineMessage { line: l, message: msg })
                                     .collect();
-                                results.push(GroupedMessages { key: prev_date.clone(), messages });
+                                results.push(GroupedMessages {
+                                    key: MsgKey {
+                                        group_id: key.group_id.clone(),
+                                        date: prev_date.clone(),
+                                    },
+                                    messages
+                                });
                                 remaining = remaining.saturating_sub(count);
                             }
                             cursor = prev_date.clone();
@@ -276,13 +259,7 @@ impl MessageStore {
         Ok(results)
     }
 
-    pub async fn get_after(&self, messenger_id: &str, group_id: &str, key_date: &str, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
-        let key = MsgKey {
-            messenger_id: messenger_id.to_string(),
-            group_id: group_id.to_string(),
-            date: key_date.to_string(),
-        };
-
+    pub async fn get_after(&self, key: MsgKey, line: u32, n: u32) -> Result<Vec<GroupedMessages>> {
         let mut remaining = n;
         let mut results: Vec<GroupedMessages> = Vec::new();
 
@@ -292,22 +269,20 @@ impl MessageStore {
             let messages: Vec<LineMessage> = msgs.into_iter()
                 .map(|(l, msg)| LineMessage { line: l, message: msg })
                 .collect();
-            results.push(GroupedMessages { key: key_date.to_string(), messages });
+            results.push(GroupedMessages { key: key.clone(), messages });
             remaining = remaining.saturating_sub(count);
         }
 
         if remaining > 0 {
-            let group_key = (messenger_id.to_string(), group_id.to_string());
-            if let Some(dates) = self.date_sets.get(&group_key) {
-                let mut cursor = key_date.to_string();
+            if let Some(dates) = self.date_sets.get(key.group_id.as_str()) {
+                let mut cursor = key.date.clone();
                 loop {
                     if remaining == 0 { break; }
                     let next = dates.range::<str, _>((Bound::Excluded(cursor.as_str()), Bound::Unbounded)).next();
                     match next {
                         Some(next_date) => {
                             let next_key = MsgKey {
-                                messenger_id: messenger_id.to_string(),
-                                group_id: group_id.to_string(),
+                                group_id: key.group_id.clone(),
                                 date: next_date.clone(),
                             };
                             let msgs = self.index.query_first(&next_key, remaining).await?;
@@ -316,7 +291,11 @@ impl MessageStore {
                                 let messages: Vec<LineMessage> = msgs.into_iter()
                                     .map(|(l, msg)| LineMessage { line: l, message: msg })
                                     .collect();
-                                results.push(GroupedMessages { key: next_date.clone(), messages });
+                                results.push(GroupedMessages {
+                                    key: MsgKey {
+                                        group_id: key.group_id.clone(),
+                                        date: next_date.clone()
+                                    }, messages });
                                 remaining = remaining.saturating_sub(count);
                             }
                             cursor = next_date.clone();
@@ -330,26 +309,16 @@ impl MessageStore {
         Ok(results)
     }
 
-    pub async fn get_range(&self, messenger_id: &str, group_id: &str, start: &str, end: &str) -> Result<Vec<GroupedMessages>> {
-        let query = TimeRangeQuery {
-            messenger_id: messenger_id.to_string(),
-            group_id: group_id.to_string(),
-            start: start.to_string(),
-            end: end.to_string(),
-        };
-
-        let results: Vec<(MsgKey, Vec<(u32, IncomingMessage)>)> = self.index.query_all(query).await?;
-
-        let grouped: Vec<GroupedMessages> = results.into_iter()
-            .filter(|(_, msgs)| !msgs.is_empty())
-            .map(|(key, msgs)| {
-                let messages: Vec<LineMessage> = msgs.into_iter()
-                    .map(|(line, msg)| LineMessage { line, message: msg })
-                    .collect();
-                GroupedMessages { key: key.date, messages }
-            })
-            .collect();
-
+    pub async fn get_range(&self, query: TimeRangeQuery) -> Result<Vec<GroupedMessages>> {
+        let mut results = self.index.query_all(query).await?;
+        let mut grouped = Vec::with_capacity(results.len());
+        for (key,mut msgs) in results.drain(..) {
+            let mut messages = Vec::with_capacity(msgs.len());
+            for (l, msg) in msgs.drain(..) {
+                messages.push(LineMessage { line: l, message: msg });
+            }
+            grouped.push(GroupedMessages { key, messages });
+        }
         Ok(grouped)
     }
 }

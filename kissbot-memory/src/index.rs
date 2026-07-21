@@ -1,5 +1,5 @@
 use kissbot_api::{QueryChannelRequest, QueryRequest};
-use std::sync::{OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::data::{ChannelParser, ThinkParser, ToolCallParser, ToolResultParser};
 use crate::error::Result;
@@ -62,22 +62,22 @@ impl MemoryIndexer {
         self.tool_result_indices.mark_all_obsolete(key);
     }
 
-    pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<(ChannelRecordKey, Vec<(u32, ChannelRecord)>)>> {
+    pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<(ChannelRecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
         let result = self.channel_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ThinkRecord)>)>> {
+    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ThinkRecord>)>)>> {
         let result = self.think_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ToolCallRecord)>)>> {
+    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolCallRecord>)>)>> {
         let result = self.tool_call_indices.query_all(query).await?;
         Ok(result)
     }
 
-    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, ToolResultRecord)>)>> {
+    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolResultRecord>)>)>> {
         let result = self.tool_result_indices.query_all(query).await?;
         Ok(result)
     }
@@ -86,7 +86,8 @@ impl MemoryIndexer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio;
+    use kissbot_api::Content;
+use tokio;
 
     // ========== MemoryIndexer: mark + query ==========
 
@@ -158,43 +159,43 @@ mod tests {
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"A","time":"2026-06-24 08:00:00","sn":1}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"A"},"time":"2026-06-24 08:00:00","sn":1}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"B","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":B"},"time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         // query range excludes A, includes B
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.content.as_str(), "B");
+        assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "B"));
 
         // write C (in range) after MemoryIndexer created
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"C","time":"2026-06-24 11:00:00","sn":3}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"C"},"time":"2026-06-24 11:00:00","sn":3}"#).await;
 
         // mark + query — incremental load picks up C
         indexer.mark_channel_obsolete(&key);
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.content.as_str(), "B");
-        assert_eq!(results[0].1[1].1.content.as_str(), "C");
+        assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "B"));
+        assert!(matches!(results[0].1[1].1.content.clone(), Content::Text(v) if v.as_str() == "C"));
 
         // delete file, write D(before start), E(in range), F(after end)
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(&dir).join(&filename);
         tokio::fs::remove_file(&file_path).await.unwrap();
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"D","time":"2026-06-24 08:30:00","sn":4}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"D"},"time":"2026-06-24 08:30:00","sn":4}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"E","time":"2026-06-24 10:30:00","sn":5}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"E"},"time":"2026-06-24 10:30:00","sn":5}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":"F","time":"2026-06-24 14:00:00","sn":6}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"F"},"time":"2026-06-24 14:00:00","sn":6}"#).await;
 
         // mark_all — full rebuild, only E in range
         indexer.mark_channel_all_obsolete(&key);
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.content.as_str(), "E");
+        assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "E"));
     }
 
     #[tokio::test]

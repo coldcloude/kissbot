@@ -15,7 +15,7 @@ use kissbot_api::channel::{
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
-    IncomingMessageEvent, IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
+    IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
@@ -401,21 +401,15 @@ impl WebMessenger {
                 content: new_content.clone(),
                 time: time.clone(),
             });
-            let event = Arc::new(IncomingMessageEvent {
-                messenger_id: messenger_id.clone(),
-                user_id: outgoing.user_id.clone(),
-                group_id: outgoing.group_id.clone(),
-                messages: Arc::new(vec![incoming]),
-            });
 
             if let Some(handler) = self.on_incoming_messages.upgrade() {
-                handler.handle_incoming_message(event).await;
+                handler.handle_incoming_message(incoming).await;
             }
         }
 
         // 推 SSE + 写入存储
         let response_content = new_content;
-        let admin_msg = IncomingMessage {
+        let admin_msg = Arc::new(IncomingMessage {
             msg_id: msg_id.clone(),
             messenger_id: messenger_id.clone(),
             user_id: ADMIN_USER_ID.clone(),
@@ -424,7 +418,7 @@ impl WebMessenger {
             msg_type: outgoing.msg_type.clone(),
             content: response_content.clone(),
             time: time.clone(),
-        };
+        });
         if let Ok(json) = serde_json::to_string(&admin_msg) {
             self.sse.push(&json);
         }

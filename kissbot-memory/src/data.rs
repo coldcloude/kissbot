@@ -222,7 +222,9 @@ impl QueryParser<QueryRequest, RecordKey> for ToolResultParser {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use kissbot_api::Content;
+
+use super::*;
 
     // ========== FilePathGenerator ==========
 
@@ -293,7 +295,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 1,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
+            content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
         let parser = ChannelParser;
@@ -302,7 +304,7 @@ mod tests {
         assert_eq!(*key.messenger_id, "telegram");
         assert_eq!(*key.date, "2026-06-24");
         assert_eq!(*record.user_id, "u1");
-        assert_eq!(*record.content, "hello");
+        assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
         assert_eq!(record.sn, 0);
     }
 

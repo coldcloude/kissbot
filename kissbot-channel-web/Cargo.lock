@@ -1232,6 +1232,7 @@ dependencies = [
  "dashmap",
  "flume",
  "futures",
+ "kai-file",
  "kai-ws",
  "kissbot-api",
  "kissbot-security",

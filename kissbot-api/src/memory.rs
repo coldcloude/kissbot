@@ -3,6 +3,8 @@ use std::{cmp::Ordering, sync::Arc};
 use kai_file::index::Record;
 use serde::{Deserialize, Serialize};
 
+use crate::Content;
+
 // ========== Request structures ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +16,7 @@ pub struct ChannelRequest {
     pub group_id: Arc<String>,
     pub is_self: usize,
     pub msg_type: Arc<String>,
-    pub content: Arc<String>,
+    pub content: Content,
     pub time: Arc<String>,
 }
 
@@ -99,7 +101,7 @@ pub struct ChannelRecord {
     pub user_id: Arc<String>,
     pub is_self: usize,
     pub msg_type: Arc<String>,
-    pub content: Arc<String>,
+    pub content: Content,
     pub time: Arc<String>,
     pub sn: u64,
 }
@@ -204,13 +206,13 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("Hello".to_string()),
+            content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.content, "Hello");
+        assert!(matches!(deserialized.content, Content::Text(s) if s.as_str() == "Hello"));
     }
 
     #[test]
@@ -223,7 +225,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("Hello".to_string()),
+            content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("t1".to_string()),
         };
         let obj = ChannelRequests { requests: vec![req], force: 1 };
@@ -346,7 +348,7 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
+            content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 5,
         };
@@ -371,7 +373,7 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
+            content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
         };
@@ -379,7 +381,7 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("world".to_string()),
+            content: Content::Text(Arc::new("world".to_string())),
             time: Arc::new("2026-06-24 10:00:01".to_string()),
             sn: 1,
         };
@@ -402,14 +404,14 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
             msg_type: Arc::new("text".to_string()),
-            content: Arc::new("hello".to_string()),
+            content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.user_id, "u1");
-        assert_eq!(*deserialized.content, "hello");
+        assert!(matches!(deserialized.content, Content::Text(val) if val.as_str() == "hello"));
         assert_eq!(deserialized.sn, 1);
     }
 
