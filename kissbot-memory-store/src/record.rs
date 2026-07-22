@@ -287,6 +287,7 @@ impl<K: std::fmt::Debug + Send + Sync + 'static, R: Send + Sync + 'static>
 }
 
 #[cfg(test)]
+#[derive(Clone)]
 pub(crate) struct NoopFileHook;
 
 #[cfg(test)]
@@ -389,7 +390,11 @@ impl RecordManager {
             sorted.sort_by(|a, b| a.cmp(b));
 
             let lock = self.channel_writer.get_lock(key).await;
-            let ctx = lock.lock().await;
+            let mut ctx = lock.lock().await;
+            if ctx.state.is_none() {
+                let file_path = ChannelParser {}.get_path(key).await?;
+                ctx.state = Some(load_existing_file_state(&file_path).await?);
+            }
             if let Some(ref state) = ctx.state {
                 if state.time.as_str() > sorted[0].time() {
                     if !force {
@@ -422,7 +427,11 @@ impl RecordManager {
             sorted.sort_by(|a, b| a.cmp(b));
 
             let lock = self.think_writer.get_lock(key).await;
-            let ctx = lock.lock().await;
+            let mut ctx = lock.lock().await;
+            if ctx.state.is_none() {
+                let file_path = ThinkParser {}.get_path(key).await?;
+                ctx.state = Some(load_existing_file_state(&file_path).await?);
+            }
             if let Some(ref state) = ctx.state {
                 if state.time.as_str() > sorted[0].time() {
                     if !force {
@@ -455,7 +464,11 @@ impl RecordManager {
             sorted.sort_by(|a, b| a.cmp(b));
 
             let lock = self.tool_call_writer.get_lock(key).await;
-            let ctx = lock.lock().await;
+            let mut ctx = lock.lock().await;
+            if ctx.state.is_none() {
+                let file_path = ToolCallParser {}.get_path(key).await?;
+                ctx.state = Some(load_existing_file_state(&file_path).await?);
+            }
             if let Some(ref state) = ctx.state {
                 if state.time.as_str() > sorted[0].time() {
                     if !force {
@@ -488,7 +501,11 @@ impl RecordManager {
             sorted.sort_by(|a, b| a.cmp(b));
 
             let lock = self.tool_result_writer.get_lock(key).await;
-            let ctx = lock.lock().await;
+            let mut ctx = lock.lock().await;
+            if ctx.state.is_none() {
+                let file_path = ToolResultParser {}.get_path(key).await?;
+                ctx.state = Some(load_existing_file_state(&file_path).await?);
+            }
             if let Some(ref state) = ctx.state {
                 if state.time.as_str() > sorted[0].time() {
                     if !force {
@@ -551,9 +568,11 @@ mod tests {
         assert_eq!(*state.time, "2026-06-25 10:02:00");
     }
 
+    use std::collections::HashMap;
     use std::sync::{Once, OnceLock};
+    use std::time::Duration;
     use kissbot_api::Content;
-use kissbot_memory::Config as MemoryConfig;
+    use kissbot_memory::Config as MemoryConfig;
 
     static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static INIT_CONFIG: Once = Once::new();
@@ -576,8 +595,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         let requests = vec![
             ChannelRequest {
@@ -593,7 +617,17 @@ use kissbot_memory::Config as MemoryConfig;
             },
         ];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ChannelParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 验证文件被创建
         let expected_path = root
@@ -615,8 +649,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         let requests = vec![
             ChannelRequest {
@@ -654,7 +693,17 @@ use kissbot_memory::Config as MemoryConfig;
             },
         ];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ChannelParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let expected_path = root
             .join("test_append_multi")
@@ -677,8 +726,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         // 第一次写入
         let req1 = vec![ChannelRequest {
@@ -692,7 +746,17 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("first".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
-        ctx.append_record(req1, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        for request in req1 {
+            let (key, record) = ChannelParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 第二次写入
         let req2 = vec![ChannelRequest {
@@ -706,7 +770,17 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("second".to_string())),
             time: Arc::new("2026-06-25 10:01:00".to_string()),
         }];
-        ctx.append_record(req2, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        for request in req2 {
+            let (key, record) = ChannelParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let expected_path = root
             .join("test_append_seq")
@@ -731,8 +805,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ThinkRequest, RecordKey, ThinkRecord, ThinkParser> =
-            RecordContext::new(ThinkParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ThinkParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         let requests = vec![ThinkRequest {
             agent_id: Arc::new("test_think".to_string()),
@@ -742,7 +821,17 @@ use kissbot_memory::Config as MemoryConfig;
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<RecordKey, Vec<ThinkRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ThinkParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let expected_path = root
             .join("test_think")
@@ -762,8 +851,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ToolCallRequest, RecordKey, ToolCallRecord, ToolCallParser> =
-            RecordContext::new(ToolCallParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ToolCallParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         let requests = vec![ToolCallRequest {
             agent_id: Arc::new("test_tool_call".to_string()),
@@ -774,7 +868,17 @@ use kissbot_memory::Config as MemoryConfig;
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<RecordKey, Vec<ToolCallRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ToolCallParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let expected_path = root
             .join("test_tool_call")
@@ -793,8 +897,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ToolResultRequest, RecordKey, ToolResultRecord, ToolResultParser> =
-            RecordContext::new(ToolResultParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ToolResultParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         let requests = vec![ToolResultRequest {
             agent_id: Arc::new("test_tool_result".to_string()),
@@ -804,7 +913,17 @@ use kissbot_memory::Config as MemoryConfig;
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<RecordKey, Vec<ToolResultRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ToolResultParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         let expected_path = root
             .join("test_tool_result")
@@ -822,8 +941,7 @@ use kissbot_memory::Config as MemoryConfig;
     async fn test_append_out_of_order_rejected() {
         init_test_config();
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let rm = RecordManager::new();
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
@@ -837,7 +955,8 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("later".to_string())),
             time: Arc::new("2026-06-25 10:02:00".to_string()),
         }];
-        ctx.append_record(req1, false, NoopFileHook).await.unwrap();
+        rm.append_channel_record(req1, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 再写入一条 time=10:00:00 — 早于已有记录，应该被拒绝
         let req2 = vec![ChannelRequest {
@@ -851,7 +970,7 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("earlier".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
-        let result = ctx.append_record(req2, false, NoopFileHook).await;
+        let result = rm.append_channel_record(req2, false).await;
         assert!(result.is_err());
         match result {
             Err(Error::RecordNotInOrder(latest, new)) => {
@@ -867,8 +986,7 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let rm = RecordManager::new();
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
@@ -882,7 +1000,8 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("later".to_string())),
             time: Arc::new("2026-06-25 10:02:00".to_string()),
         }];
-        ctx.append_record(req1, false, NoopFileHook).await.unwrap();
+        rm.append_channel_record(req1, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // force=true 写入一条 time=10:00:00 — 强制重排序
         let req2 = vec![ChannelRequest {
@@ -896,7 +1015,8 @@ use kissbot_memory::Config as MemoryConfig;
             content: Content::Text(Arc::new("earlier".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
-        ctx.append_record(req2, true, NoopFileHook).await.unwrap();
+        rm.append_channel_record(req2, true).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 验证文件有 2 条记录，按 time 排序，sn 重编号
         let expected_path = root
@@ -924,8 +1044,7 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let rm = RecordManager::new();
 
         // 先写入 3 条，time 分别是 10:01, 10:02, 10:03
         let req1 = vec![
@@ -963,7 +1082,8 @@ use kissbot_memory::Config as MemoryConfig;
                 time: Arc::new("2026-06-25 10:03:00".to_string()),
             },
         ];
-        ctx.append_record(req1, false, NoopFileHook).await.unwrap();
+        rm.append_channel_record(req1, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // force 写入 2 条更早的记录：09:59, 10:00
         let req2 = vec![
@@ -990,7 +1110,8 @@ use kissbot_memory::Config as MemoryConfig;
                 time: Arc::new("2026-06-25 10:00:00".to_string()),
             },
         ];
-        ctx.append_record(req2, true, NoopFileHook).await.unwrap();
+        rm.append_channel_record(req2, true).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 验证文件有 5 条记录，按 time 排序，sn 重编号
         let expected_path = root
@@ -1015,8 +1136,13 @@ use kissbot_memory::Config as MemoryConfig;
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let ctx: RecordContext<ChannelRequest, ChannelRecordKey, ChannelRecord, ChannelParser> =
-            RecordContext::new(ChannelParser {});
+        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let appender = FileObjectAppender::new(
+            writer.clone(),
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(50),
+            100,
+        );
 
         // 两个不同 key 的请求（不同 agent_id）
         let requests = vec![
@@ -1044,7 +1170,17 @@ use kissbot_memory::Config as MemoryConfig;
             },
         ];
 
-        ctx.append_record(requests, false, NoopFileHook).await.unwrap();
+        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = ChannelParser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        for (key, mut records) in records_map {
+            records.sort_by(|a, b| a.cmp(b));
+            appender.append(key, records).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 验证两个文件都存在，sn 各自从 1 开始
         let path1 = root
