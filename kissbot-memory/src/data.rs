@@ -58,6 +58,7 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
     results
 }
 
+#[derive(Clone)]
 pub struct ChannelParser;
 
 #[async_trait]
@@ -117,6 +118,7 @@ impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
     }
 }
 
+#[derive(Clone)]
 pub struct ThinkParser;
 
 #[async_trait]
@@ -151,6 +153,7 @@ impl QueryParser<QueryRequest, RecordKey> for ThinkParser {
     }
 }
 
+#[derive(Clone)]
 pub struct ToolCallParser;
 
 #[async_trait]
@@ -186,6 +189,7 @@ impl QueryParser<QueryRequest, RecordKey> for ToolCallParser {
     }
 }
 
+#[derive(Clone)]
 pub struct ToolResultParser;
 
 #[async_trait]
