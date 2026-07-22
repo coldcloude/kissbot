@@ -1,6 +1,6 @@
-﻿use dashmap::DashMap;
+﻿use async_trait::async_trait;
+use dashmap::DashMap;
 use kai_file::index::FilePathGenerator;
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -8,11 +8,13 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
-use kissbot_memory::data::{ChannelParser, FileHook, RequestParser, ThinkParser, ToolCallParser, ToolResultParser};
+use kissbot_memory::data::{ChannelParser, FileHook, ThinkParser, ToolCallParser, ToolResultParser};
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::memory::*;
 use crate::error::{Error, Result};
 use kai_file::ReverseLineReader;
+use kai_file::error::Result as FileResult;
+use kai_file::{FileAppendWriter, FileAppendWriterContext};
 
 pub(crate) struct FileState {
     pub sn: u64,
@@ -28,14 +30,6 @@ async fn write_records_to_file<R: MemoryRecord>(file: &mut tokio::fs::File, reco
         state.time = record.time_string();
     }
     Ok(())
-}
-
-type FileLock = Arc<Mutex<Option<FileState>>>;
-
-async fn get_lock<K>(files_map: &DashMap<K, FileLock>, key: &K) -> FileLock
-where K: Eq + Hash + Clone + Send + Sync,
-{
-    files_map.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(None))).clone()
 }
 
 pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
@@ -69,124 +63,165 @@ pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<File
     Ok(result)
 }
 
-struct RecordContext<Q,K,R,P> {
-    _marker: PhantomData<(Q,R)>,
-    states: DashMap<K, FileLock>,
+pub(crate) struct RecordWriterContext<K, R, P, H>
+where
+    K: Eq + Hash + Clone + Send + Sync,
+{
+    state: Option<FileState>,
     parser: P,
+    hook: H,
+    _phantom: PhantomData<(K, R)>,
 }
 
-impl<Q,K,R,P> RecordContext<Q,K,R,P>
+impl<K, R, P, H> RecordWriterContext<K, R, P, H>
 where
     K: Eq + Hash + Clone + Send + Sync,
     R: MemoryRecord,
-    P: RequestParser<Q,K,R> + FilePathGenerator<K>,
+    P: FilePathGenerator<K>,
+    H: FileHook<K>,
 {
-    pub fn new(parser: P) -> Self {
+    pub fn new(parser: P, hook: H) -> Self {
         Self {
-            _marker: PhantomData,
-            states: DashMap::new(),
+            state: None,
             parser,
+            hook,
+            _phantom: PhantomData,
         }
     }
+}
 
-    pub async fn append_record<H>(&self, requests: Vec<Q>, force: bool, hook: H) -> Result<()>
-    where
-        H: FileHook<K>,
-    {
-        //不同key对应不同文件，不同锁
-        let mut records_map = HashMap::new();
-        for request in requests {
-            let (key, record) = self.parser.parse_request(request);
-            records_map.entry(key).or_insert_with(|| Vec::new()).push(record);
+#[async_trait]
+impl<K, R, P, H> FileAppendWriterContext<K, R> for RecordWriterContext<K, R, P, H>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    R: MemoryRecord + Send + Sync + 'static,
+    P: FilePathGenerator<K> + Send + Sync + 'static,
+    H: FileHook<K> + Send + Sync + 'static,
+{
+    async fn write(&mut self, key: &K, records: Vec<R>) -> FileResult<()> {
+        let file_path = self.parser.get_path(key).await?;
+
+        let file_state = self.state.get_or_insert(
+            load_existing_file_state(&file_path).await
+                .map_err(|e| kai_file::Error::ExternalError(Box::new(e)))?
+        );
+
+        // 分配 SN
+        let mut records = records;
+        for (i, record) in records.iter_mut().enumerate() {
+            record.set_sn(file_state.sn + 1 + i as u64);
         }
-        for (key, mut records) in records_map.drain() {
-            let lock = get_lock(&self.states, &key).await;
-            let mut gaurd = lock.lock().await;
 
-            let file_path = self.parser.get_path(&key).await?;
+        // 按 time 排序（相同 time 按 sn）
+        records.sort_by(|a, b| a.cmp(b));
 
-            let mut state = if let Some(old_state) = gaurd.take() {
-                old_state
-            } else {
-                load_existing_file_state(&file_path).await?
-            };
-  
-            for i in 0..records.len() {
-                records[i].set_sn(state.sn + 1 + i as u64);
+        if file_state.time.as_str() > records[0].time() {
+            // 乱序 → 全量重写
+            let mut all_records: Vec<R> = Vec::new();
+            let file = tokio::fs::File::open(&file_path).await?;
+            let reader = tokio::io::BufReader::new(file);
+            let mut lines = reader.lines();
+            while let Some(line) = lines.next_line().await? {
+                let record: R = serde_json::from_str(&line)?;
+                all_records.push(record);
             }
-            records.sort_by(|a, b| a.cmp(b));
+            all_records.extend(records);
+            all_records.sort_by(|a, b| a.cmp(b));
 
-            if state.time.as_str() > records[0].time() {
-                if force {
-                    //强行插入，则要读入所有记录，全部排序
-                    let mut max_sn = 0 as u64;
-                    let mut all_records = Vec::new();
-                    let file = tokio::fs::File::open(&file_path).await?;
-                    let reader = tokio::io::BufReader::new(file);
-                    let mut lines = reader.lines();
-                    while let Some(line) = lines.next_line().await? {
-                        let record = serde_json::from_str::<R>(line.as_str())?;
-                        max_sn = max_sn.max(record.sn());
-                        all_records.push(record);
-                    }
-                    for record in records {
-                        all_records.push(record);
-                    }
-                    all_records.sort_by(|a, b| a.cmp(b));
-                    state.sn = 0;
-                    let mut result: Result<()> = Ok(());
-                    match tokio::fs::OpenOptions::new().create(true).write(true).open(&file_path).await {
-                        Ok(mut file) => {
-                            match write_records_to_file(&mut file, &mut all_records, &mut state).await {
-                                Ok(_) => {
-                                    *gaurd = Some(state);
-                                }
-                                Err(e) => {
-                                    result = Err(e);
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            result = Err(Error::Io(e));
-                        }
-                    }
-                    hook.on_force_append(&key);
-                    if let Err(err) = result {
-                        return Err(err);
-                    }
-                }
-                else {
-                    return Err(Error::RecordNotInOrder(state.time.as_str().to_string(), records[0].time().to_string()));
-                }
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).open(&file_path).await?;
+
+            file_state.sn = 0;
+            for record in &mut all_records {
+                file_state.sn += 1;
+                record.set_sn(file_state.sn);
+                let line = serde_json::to_string(record)? + "\n";
+                tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
             }
-            else {
-                let mut result: Result<()> = Ok(());
-                match tokio::fs::OpenOptions::new().create(true).append(true).open(&file_path).await {
-                    Ok(mut file) => {
-                        match write_records_to_file(&mut file, &mut records, &mut state).await {
-                            Ok(_) => {
-                                *gaurd = Some(state);
-                            }
-                            Err(e) => {
-                                result = Err(e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        result = Err(Error::Io(e));
-                    }
-                }
-                hook.on_append(&key);
-                if let Err(err) = result {
-                    return Err(err);
-                }
+            if let Some(last) = all_records.last() {
+                file_state.time = last.time_string();
             }
+
+            self.hook.on_force_append(key);
+        } else {
+            // 有序 → 追加
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).append(true).open(&file_path).await?;
+
+            for record in &mut records {
+                file_state.sn += 1;
+                record.set_sn(file_state.sn);
+                let line = serde_json::to_string(record)? + "\n";
+                tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
+                file_state.time = record.time_string();
+            }
+
+            self.hook.on_append(key);
         }
 
         Ok(())
     }
 }
 
+pub(crate) struct RecordAppendWriter<K, R, P, H>
+where
+    K: Eq + Hash + Clone + Send + Sync,
+{
+    map: DashMap<K, Arc<Mutex<RecordWriterContext<K, R, P, H>>>>,
+    parser: P,
+    hook: H,
+    _phantom: PhantomData<(R,)>,
+}
+
+impl<K, R, P, H> RecordAppendWriter<K, R, P, H>
+where
+    K: Eq + Hash + Clone + Send + Sync,
+    R: MemoryRecord,
+    P: FilePathGenerator<K>,
+    H: FileHook<K>,
+{
+    pub fn new(parser: P, hook: H) -> Self {
+        Self {
+            map: DashMap::new(),
+            parser,
+            hook,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<K, R, P, H> FileAppendWriter<K, R, RecordWriterContext<K, R, P, H>> for RecordAppendWriter<K, R, P, H>
+where
+    K: Eq + Hash + Clone + Send + Sync + 'static,
+    R: MemoryRecord + Send + Sync + 'static,
+    P: FilePathGenerator<K> + Send + Sync + 'static + Clone,
+    H: FileHook<K> + Send + Sync + 'static + Clone,
+{
+    async fn get_lock(&self, key: &K) -> Arc<Mutex<RecordWriterContext<K, R, P, H>>> {
+        match self.map.entry(key.clone()) {
+            dashmap::Entry::Occupied(entry) => entry.get().clone(),
+            dashmap::Entry::Vacant(entry) => {
+                let ctx = Arc::new(Mutex::new(
+                    RecordWriterContext::new(self.parser.clone(), self.hook.clone())
+                ));
+                entry.insert(ctx.clone());
+                ctx
+            }
+        }
+    }
+
+    async fn remove_lock(&self, key: &K) {
+        if let Some(entry) = self.map.get(key) {
+            if Arc::strong_count(entry.value()) == 1 {
+                drop(entry);
+                self.map.remove(key);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 struct ChannelFileIndexHook;
 
 impl FileHook<ChannelRecordKey> for ChannelFileIndexHook {
@@ -199,6 +234,7 @@ impl FileHook<ChannelRecordKey> for ChannelFileIndexHook {
     }
 }
 
+#[derive(Clone)]
 struct ThinkFileIndexHook;
 
 impl FileHook<RecordKey> for ThinkFileIndexHook {
@@ -211,6 +247,7 @@ impl FileHook<RecordKey> for ThinkFileIndexHook {
     }
 }
 
+#[derive(Clone)]
 struct ToolCallFileIndexHook;
 
 impl FileHook<RecordKey> for ToolCallFileIndexHook {
@@ -223,6 +260,7 @@ impl FileHook<RecordKey> for ToolCallFileIndexHook {
     }
 }
 
+#[derive(Clone)]
 struct ToolResultFileIndexHook;
 
 impl FileHook<RecordKey> for ToolResultFileIndexHook {

@@ -11,6 +11,7 @@ futures = "0.3"
 dashmap = { version = "6.1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["macros"] }
+async-trait = "0.1"
 thiserror = "2.0"
 kissbot-config = { path = "../kissbot-config" }
 kai-file = { path = "../kai-rs/kai-file" }
