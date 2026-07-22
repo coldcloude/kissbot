@@ -1,10 +1,11 @@
 use crate::error::Result;
 use async_trait::async_trait;
-use kai_file::{FileAppendWriter, FileObjectAppender, NoopErrorHandler};
+use kai_file::{FileAppendWriter, FileObjectAppender, NoopErrorHandler, appender::FileAppendWriterContext};
 use kissbot_api::{ChannelRequest, ChannelRequests, IncomingMessage};
 use kissbot_security::HEADER_API_KEY;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use std::{sync::Arc, time::Duration};
 
 const RECORD_QUEUE_SIZE: usize = 100;
@@ -20,23 +21,30 @@ pub struct MessageRecord {
 }
 
 pub struct MemorySender {
+    context: Arc<Mutex<MemorySenderContext>>,
+}
+
+pub struct MemorySenderContext {
     client: Client,
     base_url: String,
     api_key: Arc<String>,
 }
 
 pub struct MemoryStoreClient {
-    message_appender: FileObjectAppender<String, MessageRecord, MemorySender>,
+    message_appender: FileObjectAppender<String, MessageRecord, MemorySender, MemorySenderContext>,
 }
 
 impl MemorySender {
     pub fn new() -> Self {
         let api_config = kissbot_api::ApiConfig::get();
         let security = kissbot_security::SecurityConfig::get();
-        Self {
+        let ctx = MemorySenderContext {
             client: Client::new(),
             base_url: api_config.memory_store_url.clone(),
             api_key: security.api_key.clone(),
+        };
+        Self {
+            context: Arc::new(Mutex::new(ctx)),
         }
     }
 }
@@ -60,8 +68,18 @@ impl MemoryStoreClient {
 }
 
 #[async_trait]
-impl FileAppendWriter<String,MessageRecord> for MemorySender {
-    async fn write(&self, _key: &String, records: Vec<MessageRecord>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriter<String, MessageRecord, MemorySenderContext> for MemorySender {
+    async fn get_lock(&self, _key: &String) -> Arc<Mutex<MemorySenderContext>> {
+        self.context.clone()
+    }
+    async fn remove_lock(&self, _key: &String) {
+        // no op
+    }
+}
+
+#[async_trait]
+impl FileAppendWriterContext<String,MessageRecord> for MemorySenderContext {
+    async fn write(&mut self, _key: &String, records: Vec<MessageRecord>) -> std::result::Result<(), kai_file::Error> {
         let mut requests = Vec::with_capacity(records.len());
         for record in records {
             requests.push(ChannelRequest {
