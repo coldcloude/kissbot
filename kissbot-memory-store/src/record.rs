@@ -23,6 +23,7 @@ pub(crate) struct FileState {
     pub time: Arc<String>,
 }
 
+#[allow(dead_code)]
 async fn write_records_to_file<R: MemoryRecord>(file: &mut tokio::fs::File, records: &mut Vec<R>, state: &mut FileState) -> Result<()>{
     for record in records {
         record.set_sn(state.sn + 1);
