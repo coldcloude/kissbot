@@ -1,5 +1,6 @@
 ﻿use async_trait::async_trait;
 use dashmap::DashMap;
+use futures::future;
 use kai_file::index::{FilePathGenerator};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -279,7 +280,7 @@ where
         records_map.entry(key).or_default().push(record);
     }
 
-    for (key, mut records) in records_map.drain() {
+    for (key, records) in records_map.iter() {
         let lock = appender.get_lock(&key).await;
         let mut gaurd = lock.lock().await;
 
@@ -290,24 +291,32 @@ where
         } else {
             load_existing_file_state(&file_path).await?
         };
-        let sn = state.sn;
         let time = state.time.clone();
         gaurd.state = Some(state);
 
-        for i in 0..records.len() {
-            records[i].set_sn(sn + 1 + i as u64);
+        // 根据records生成方式，records非空
+        let mut min_time = records[0].time();
+        for record in records {
+            if record.time() < min_time {
+                min_time = record.time();
+            }
         }
-        records.sort_by(|a, b| a.cmp(b));
 
-        if time.as_str() > records[0].time() && !force {
+        if time.as_str() > min_time && !force {
             return Err(Error::RecordNotInOrder(
+                format!("{:?}", key),
                 time.as_str().to_string(),
                 records[0].time().to_string(),
             ));
         }
-
-        appender.append(key, records).await;
     }
+
+    let mut futs = Vec::new();
+    for (key, records) in records_map.drain() {
+        let f = appender.append(key, records);
+        futs.push(f);
+    }
+    future::join_all(futs).await;
 
     Ok(())
 }
@@ -868,7 +877,7 @@ mod tests {
         let result = rm.append_channel_record(req2, false).await;
         assert!(result.is_err());
         match result {
-            Err(Error::RecordNotInOrder(latest, new)) => {
+            Err(Error::RecordNotInOrder(_, latest, new)) => {
                 assert_eq!(latest, "2026-06-25 10:02:00");
                 assert_eq!(new, "2026-06-25 10:00:00");
             }

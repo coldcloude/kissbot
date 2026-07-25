@@ -17,8 +17,8 @@ pub enum Error {
     #[error("UTF8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
 
-    #[error("Record not in order: latest='{0}' new='{1}'")]
-    RecordNotInOrder(String, String),
+    #[error("Record not in order: key='{0}' latest='{1}' new='{2}'")]
+    RecordNotInOrder(String, String, String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
