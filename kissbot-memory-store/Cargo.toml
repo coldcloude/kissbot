@@ -13,6 +13,8 @@ chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["macros"] }
 async-trait = "0.1"
 thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 kissbot-config = { path = "../kissbot-config" }
 kai-file = { path = "../kai-rs/kai-file" }
 kissbot-memory = { path = "../kissbot-memory" }

@@ -1,41 +1,30 @@
 ﻿use async_trait::async_trait;
 use dashmap::DashMap;
-use kai_file::index::{FilePathGenerator, Record};
+use kai_file::index::{FilePathGenerator};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt};
 use tokio::sync::Mutex;
+use tracing::*;
 
 use kissbot_memory::data::{ChannelParser, FileHook, RequestParser, ThinkParser, ToolCallParser, ToolResultParser};
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::memory::*;
 use crate::error::{Error, Result};
 use kai_file::ReverseLineReader;
-use kai_file::error::Result as FileResult;
 use kai_file::{FileAppendWriter, FileAppendWriterContext, ErrorHandler, FileObjectAppender};
 
-pub(crate) struct FileState {
+struct FileState {
     pub sn: u64,
     pub time: Arc<String>,
 }
 
-#[allow(dead_code)]
-async fn write_records_to_file<R: MemoryRecord>(file: &mut tokio::fs::File, records: &mut Vec<R>, state: &mut FileState) -> Result<()>{
-    for record in records {
-        record.set_sn(state.sn + 1);
-        let line = serde_json::to_string(&record)? + "\n";
-        file.write_all(line.as_bytes()).await?;
-        state.sn = record.sn();
-        state.time = record.time_string();
-    }
-    Ok(())
-}
-
-pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
+async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     let mut result = FileState {
         sn: 0,
         time: Arc::new(String::from("2000-01-01 00:00:00")),
@@ -66,14 +55,11 @@ pub(crate) async fn load_existing_file_state(file_path: &PathBuf) -> Result<File
     Ok(result)
 }
 
-pub(crate) struct RecordWriterContext<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync,
-{
+struct RecordWriterContext<K, R, P, H> {
+    _marker: PhantomData<(K, R)>,
     state: Option<FileState>,
-    parser: P,
-    hook: H,
-    _phantom: PhantomData<(K, R)>,
+    parser: Arc<P>,
+    hook: Arc<H>,
 }
 
 impl<K, R, P, H> RecordWriterContext<K, R, P, H>
@@ -83,12 +69,12 @@ where
     P: FilePathGenerator<K>,
     H: FileHook<K>,
 {
-    pub fn new(parser: P, hook: H) -> Self {
+    pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
         Self {
+            _marker: PhantomData,
             state: None,
             parser,
             hook,
-            _phantom: PhantomData,
         }
     }
 }
@@ -101,7 +87,7 @@ where
     P: FilePathGenerator<K> + Send + Sync + 'static,
     H: FileHook<K> + Send + Sync + 'static,
 {
-    async fn write(&mut self, key: &K, records: Vec<R>) -> FileResult<()> {
+    async fn write(&mut self, key: &K, records: Vec<R>) -> std::result::Result<(), kai_file::Error> {
         let file_path = self.parser.get_path(key).await?;
 
         let file_state = self.state.get_or_insert(
@@ -166,14 +152,11 @@ where
     }
 }
 
-pub(crate) struct RecordAppendWriter<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync,
+struct RecordAppendWriter<K, R, P, H>
 {
     map: DashMap<K, Arc<Mutex<RecordWriterContext<K, R, P, H>>>>,
-    parser: P,
-    hook: H,
-    _phantom: PhantomData<(R,)>,
+    parser: Arc<P>,
+    hook: Arc<H>,
 }
 
 impl<K, R, P, H> RecordAppendWriter<K, R, P, H>
@@ -183,12 +166,11 @@ where
     P: FilePathGenerator<K>,
     H: FileHook<K>,
 {
-    pub fn new(parser: P, hook: H) -> Self {
+    pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
         Self {
             map: DashMap::new(),
             parser,
             hook,
-            _phantom: PhantomData,
         }
     }
 }
@@ -198,29 +180,21 @@ impl<K, R, P, H> FileAppendWriter<K, R, RecordWriterContext<K, R, P, H>> for Rec
 where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     R: MemoryRecord + Send + Sync + 'static,
-    P: FilePathGenerator<K> + Send + Sync + 'static + Clone,
-    H: FileHook<K> + Send + Sync + 'static + Clone,
+    P: FilePathGenerator<K> + Send + Sync + 'static,
+    H: FileHook<K> + Send + Sync + 'static,
 {
     async fn get_lock(&self, key: &K) -> Arc<Mutex<RecordWriterContext<K, R, P, H>>> {
-        match self.map.entry(key.clone()) {
-            dashmap::Entry::Occupied(entry) => entry.get().clone(),
-            dashmap::Entry::Vacant(entry) => {
-                let ctx = Arc::new(Mutex::new(
-                    RecordWriterContext::new(self.parser.clone(), self.hook.clone())
-                ));
-                entry.insert(ctx.clone());
-                ctx
-            }
+        if let Some(ctx) = self.map.get(key) {
+            return ctx.value().clone();
         }
+        self.map.entry(key.clone()).or_insert_with(|| {
+            let ctx = RecordWriterContext::new(self.parser.clone(), self.hook.clone());
+            Arc::new(Mutex::new(ctx))
+        }).value().clone()
     }
 
-    async fn remove_lock(&self, key: &K) {
-        if let Some(entry) = self.map.get(key) {
-            if Arc::strong_count(entry.value()) == 1 {
-                drop(entry);
-                self.map.remove(key);
-            }
-        }
+    async fn remove_lock(&self, _key: &K) {
+        // no op
     }
 }
 
@@ -279,98 +253,142 @@ impl FileHook<RecordKey> for ToolResultFileIndexHook {
 pub(crate) struct LogErrorHandler;
 
 #[async_trait]
-impl<K: std::fmt::Debug + Send + Sync + 'static, R: Send + Sync + 'static>
-    ErrorHandler<K, R> for LogErrorHandler
+impl<K, R> ErrorHandler<K, R> for LogErrorHandler
+where 
+    K: Debug + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     async fn on_write_error(&self, key: &K, _batch: Vec<R>, error: &kai_file::Error) {
-        eprintln!("[memory-store] write error for key={:?}: {}", key, error);
+        error!("[memory-store] write error for key={:?}: {}", key, error);
     }
 }
 
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct NoopFileHook;
+type RecordAppender<K,R,P,H> = FileObjectAppender<K, R, RecordAppendWriter<K, R, P, H>, RecordWriterContext<K, R, P, H>, LogErrorHandler>;
 
-#[cfg(test)]
-impl<K> FileHook<K> for NoopFileHook {
-    fn on_append(&self, _key: &K) {}
-    fn on_force_append(&self, _key: &K) {}
+async fn append_record<Q,K,R,P,H>(requests: Vec<Q>, force: bool, parser: Arc<P>, appender: Arc<RecordAppender<K, R, P, H>>) -> Result<()>
+where
+    Q: Send + Sync + 'static,
+    K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
+    R: MemoryRecord + Send + Sync + Clone + 'static,
+    P: RequestParser<Q, K, R> + FilePathGenerator<K> + Send + Sync + 'static,
+    H: FileHook<K> + Send + Sync + 'static,
+{
+    let mut records_map: HashMap<K, Vec<R>> = HashMap::new();
+    for request in requests {
+        let (key, record) = parser.parse_request(request);
+        records_map.entry(key).or_default().push(record);
+    }
+
+    for (key, mut records) in records_map.drain() {
+        let lock = appender.get_lock(&key).await;
+        let mut gaurd = lock.lock().await;
+
+        let file_path = parser.get_path(&key).await?;
+
+        let state = if let Some(old_state) = gaurd.state.take() {
+            old_state
+        } else {
+            load_existing_file_state(&file_path).await?
+        };
+        let sn = state.sn;
+        let time = state.time.clone();
+        gaurd.state = Some(state);
+
+        for i in 0..records.len() {
+            records[i].set_sn(sn + 1 + i as u64);
+        }
+        records.sort_by(|a, b| a.cmp(b));
+
+        if time.as_str() > records[0].time() && !force {
+            return Err(Error::RecordNotInOrder(
+                time.as_str().to_string(),
+                records[0].time().to_string(),
+            ));
+        }
+
+        appender.append(key, records).await;
+    }
+
+    Ok(())
 }
 
-type ChannelWriter = RecordAppendWriter<ChannelRecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
-type ChannelContext = RecordWriterContext<ChannelRecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
-type ChannelAppender = FileObjectAppender<ChannelRecordKey, ChannelRecord, ChannelWriter, ChannelContext, LogErrorHandler>;
+type ChannelAppender = RecordAppender<ChannelRecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
 
-type ThinkWriter = RecordAppendWriter<RecordKey, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
-type ThinkContext = RecordWriterContext<RecordKey, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
-type ThinkAppender = FileObjectAppender<RecordKey, ThinkRecord, ThinkWriter, ThinkContext, LogErrorHandler>;
+type ThinkAppender = RecordAppender<RecordKey, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
 
-type ToolCallWriter = RecordAppendWriter<RecordKey, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
-type ToolCallContext = RecordWriterContext<RecordKey, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
-type ToolCallAppender = FileObjectAppender<RecordKey, ToolCallRecord, ToolCallWriter, ToolCallContext, LogErrorHandler>;
+type ToolCallAppender = RecordAppender<RecordKey, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
 
-type ToolResultWriter = RecordAppendWriter<RecordKey, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
-type ToolResultContext = RecordWriterContext<RecordKey, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
-type ToolResultAppender = FileObjectAppender<RecordKey, ToolResultRecord, ToolResultWriter, ToolResultContext, LogErrorHandler>;
+type ToolResultAppender = RecordAppender<RecordKey, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
 
 pub struct RecordManager {
-    channel_writer: Arc<ChannelWriter>,
-    channel_appender: ChannelAppender,
+    channel_parser: Arc<ChannelParser>,
+    channel_appender: Arc<ChannelAppender>,
 
-    think_writer: Arc<ThinkWriter>,
-    think_appender: ThinkAppender,
+    think_parser: Arc<ThinkParser>,
+    think_appender: Arc<ThinkAppender>,
 
-    tool_call_writer: Arc<ToolCallWriter>,
-    tool_call_appender: ToolCallAppender,
+    tool_call_parser: Arc<ToolCallParser>,
+    tool_call_appender: Arc<ToolCallAppender>,
 
-    tool_result_writer: Arc<ToolResultWriter>,
-    tool_result_appender: ToolResultAppender,
+    tool_result_parser: Arc<ToolResultParser>,
+    tool_result_appender: Arc<ToolResultAppender>,
 }
 
 static RECORD_MANAGER: OnceLock<RecordManager> = OnceLock::new();
 
+fn create_record_appender<K,R,P,H>(writer: Arc<RecordAppendWriter<K, R, P, H>>) -> RecordAppender<K, R, P, H>
+where
+    K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
+    R: MemoryRecord + Send + Sync + Clone + 'static,
+    P: FilePathGenerator<K> + Send + Sync + 'static,
+    H: FileHook<K> + Send + Sync + 'static,
+{
+    FileObjectAppender::new(
+        writer.clone(),
+        Arc::new(LogErrorHandler),
+        Duration::from_millis(100),
+        10,
+    )
+}
+
 impl RecordManager {
     pub fn new() -> Self {
-        let channel_writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, ChannelFileIndexHook {}));
-        let channel_appender = FileObjectAppender::new(
-            channel_writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(100),
-            10,
-        );
+        let channel_parser = Arc::new(ChannelParser);
+        let channel_writer = Arc::new(RecordAppendWriter::new(
+            channel_parser.clone(),
+            Arc::new(ChannelFileIndexHook)
+        ));
+        let channel_appender = Arc::new(create_record_appender(channel_writer.clone()));
 
-        let think_writer = Arc::new(RecordAppendWriter::new(ThinkParser {}, ThinkFileIndexHook {}));
-        let think_appender = FileObjectAppender::new(
-            think_writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(100),
-            10,
-        );
+        let think_parser = Arc::new(ThinkParser);
+        let think_writer = Arc::new(RecordAppendWriter::new(
+            think_parser.clone(),
+            Arc::new(ThinkFileIndexHook),
+        ));
+        let think_appender = Arc::new(create_record_appender(think_writer.clone()));
 
-        let tool_call_writer = Arc::new(RecordAppendWriter::new(ToolCallParser {}, ToolCallFileIndexHook {}));
-        let tool_call_appender = FileObjectAppender::new(
-            tool_call_writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(100),
-            10,
-        );
+        let tool_call_parser = Arc::new(ToolCallParser);
+        let tool_call_writer = Arc::new(RecordAppendWriter::new(
+            tool_call_parser.clone(),
+            Arc::new(ToolCallFileIndexHook)
+        ));
+        let tool_call_appender = Arc::new(create_record_appender(tool_call_writer.clone()));
 
-        let tool_result_writer = Arc::new(RecordAppendWriter::new(ToolResultParser {}, ToolResultFileIndexHook {}));
-        let tool_result_appender = FileObjectAppender::new(
-            tool_result_writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(100),
-            10,
-        );
+        let tool_result_parser = Arc::new(ToolResultParser);
+        let tool_result_writer = Arc::new(RecordAppendWriter::new(
+            tool_result_parser.clone(),
+            Arc::new(ToolResultFileIndexHook),
+        ));
+        let tool_result_appender = Arc::new(create_record_appender(tool_result_writer.clone()));
 
         Self {
-            channel_writer,
+            channel_parser,
             channel_appender,
-            think_writer,
+            think_parser,
             think_appender,
-            tool_call_writer,
+            tool_call_parser,
             tool_call_appender,
-            tool_result_writer,
+            tool_result_parser,
             tool_result_appender,
         }
     }
@@ -380,157 +398,33 @@ impl RecordManager {
     }
 
     pub async fn append_channel_record(&self, requests: Vec<ChannelRequest>, force: bool) -> Result<()> {
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ChannelParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-
-        for (key, records) in &records_map {
-            let mut sorted = records.clone();
-            sorted.sort_by(|a, b| a.cmp(b));
-
-            let lock = self.channel_writer.get_lock(key).await;
-            let mut ctx = lock.lock().await;
-            if ctx.state.is_none() {
-                let file_path = ChannelParser {}.get_path(key).await?;
-                ctx.state = Some(load_existing_file_state(&file_path).await?);
-            }
-            if let Some(ref state) = ctx.state {
-                if state.time.as_str() > sorted[0].time() {
-                    if !force {
-                        return Err(Error::RecordNotInOrder(
-                            state.time.to_string(),
-                            sorted[0].time().to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            self.channel_appender.append(key, records).await;
-        }
-
-        Ok(())
+        append_record(requests, force, self.channel_parser.clone(), self.channel_appender.clone()).await
     }
 
     pub async fn append_think_record(&self, requests: Vec<ThinkRequest>, force: bool) -> Result<()> {
-        let mut records_map: HashMap<RecordKey, Vec<ThinkRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ThinkParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-
-        for (key, records) in &records_map {
-            let mut sorted = records.clone();
-            sorted.sort_by(|a, b| a.cmp(b));
-
-            let lock = self.think_writer.get_lock(key).await;
-            let mut ctx = lock.lock().await;
-            if ctx.state.is_none() {
-                let file_path = ThinkParser {}.get_path(key).await?;
-                ctx.state = Some(load_existing_file_state(&file_path).await?);
-            }
-            if let Some(ref state) = ctx.state {
-                if state.time.as_str() > sorted[0].time() {
-                    if !force {
-                        return Err(Error::RecordNotInOrder(
-                            state.time.to_string(),
-                            sorted[0].time().to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            self.think_appender.append(key, records).await;
-        }
-
-        Ok(())
+        append_record(requests, force, self.think_parser.clone(), self.think_appender.clone()).await
     }
 
     pub async fn append_tool_call_record(&self, requests: Vec<ToolCallRequest>, force: bool) -> Result<()> {
-        let mut records_map: HashMap<RecordKey, Vec<ToolCallRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ToolCallParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-
-        for (key, records) in &records_map {
-            let mut sorted = records.clone();
-            sorted.sort_by(|a, b| a.cmp(b));
-
-            let lock = self.tool_call_writer.get_lock(key).await;
-            let mut ctx = lock.lock().await;
-            if ctx.state.is_none() {
-                let file_path = ToolCallParser {}.get_path(key).await?;
-                ctx.state = Some(load_existing_file_state(&file_path).await?);
-            }
-            if let Some(ref state) = ctx.state {
-                if state.time.as_str() > sorted[0].time() {
-                    if !force {
-                        return Err(Error::RecordNotInOrder(
-                            state.time.to_string(),
-                            sorted[0].time().to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            self.tool_call_appender.append(key, records).await;
-        }
-
-        Ok(())
+        append_record(requests, force, self.tool_call_parser.clone(), self.tool_call_appender.clone()).await
     }
 
     pub async fn append_tool_result_record(&self, requests: Vec<ToolResultRequest>, force: bool) -> Result<()> {
-        let mut records_map: HashMap<RecordKey, Vec<ToolResultRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ToolResultParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-
-        for (key, records) in &records_map {
-            let mut sorted = records.clone();
-            sorted.sort_by(|a, b| a.cmp(b));
-
-            let lock = self.tool_result_writer.get_lock(key).await;
-            let mut ctx = lock.lock().await;
-            if ctx.state.is_none() {
-                let file_path = ToolResultParser {}.get_path(key).await?;
-                ctx.state = Some(load_existing_file_state(&file_path).await?);
-            }
-            if let Some(ref state) = ctx.state {
-                if state.time.as_str() > sorted[0].time() {
-                    if !force {
-                        return Err(Error::RecordNotInOrder(
-                            state.time.to_string(),
-                            sorted[0].time().to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            self.tool_result_appender.append(key, records).await;
-        }
-
-        Ok(())
+        append_record(requests, force, self.tool_result_parser.clone(), self.tool_result_appender.clone()).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    pub(crate) struct NoopFileHook;
+
+    impl<K> FileHook<K> for NoopFileHook {
+        fn on_append(&self, _key: &K) {}
+        fn on_force_append(&self, _key: &K) {}
+    }
 
     #[tokio::test]
     async fn test_load_state_file_not_exists() {
@@ -596,7 +490,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -650,7 +544,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -727,7 +621,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -806,7 +700,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ThinkParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ThinkParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -852,7 +746,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ToolCallParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ToolCallParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -898,7 +792,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ToolResultParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ToolResultParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -1137,7 +1031,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(ChannelParser {}, NoopFileHook));
+        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
