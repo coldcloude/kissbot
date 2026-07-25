@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::Duration;
+use flume::{Receiver, unbounded};
+use kai_file::{FileObjectAppender, NoopErrorHandler};
 use uuid::Uuid;
 
 use async_trait::async_trait;
@@ -23,7 +26,7 @@ use tokio::sync::RwLock;
 
 use crate::attachment::AttachmentStore;
 use crate::error::{Error, Result};
-use crate::message_store::MessageStore;
+use crate::message_store::{MessageFileWriterContext, MessageStore, MsgKey};
 
 // =========== SSE 分发器（给 admin 前端推送） ===========
 
@@ -97,6 +100,8 @@ pub struct WebMessenger {
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
     pub message_store: Arc<MessageStore>,
+    appender: FileObjectAppender<MsgKey, IncomingMessage, MessageStore, MessageFileWriterContext>,
+    stored_receiver: Receiver<Vec<IncomingMessage>>,
 }
 
 impl WebMessenger {
@@ -109,9 +114,19 @@ impl WebMessenger {
         on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
         on_user_remove: Weak<dyn UserRemoveHandler>,
         attachment_dir: &str,
-        message_store: Arc<MessageStore>,
-    ) -> Self {
-        Self {
+        message_base_dir: &str,
+    ) -> Arc<Self> {
+        let sse = Arc::new(SseDispatcher::new());
+        let attachment_store = Arc::new(AttachmentStore::new(attachment_dir));
+        let (tx, rx) = unbounded();
+        let message_store = Arc::new(MessageStore::new(message_base_dir, tx));
+        let appender = FileObjectAppender::new(
+            message_store.clone(),
+            Arc::new(NoopErrorHandler),
+            Duration::from_secs(3),
+            100,
+        );
+        let messenger = Arc::new(Self {
             messenger_id,
             repo_path,
             config,
@@ -120,10 +135,19 @@ impl WebMessenger {
             on_incoming_messages,
             on_download_attachment_payload,
             on_user_remove,
-            sse: Arc::new(SseDispatcher::new()),
-            attachment_store: Arc::new(AttachmentStore::new(attachment_dir)),
+            sse,
+            attachment_store,
             message_store,
-        }
+            appender,
+            stored_receiver: rx
+        });
+        let msgr = messenger.clone();
+        tokio::spawn(async move {
+            while let Ok(msgs) = msgr.stored_receiver.recv_async().await {
+                msgr.send_stored(msgs).await;
+            }
+        });
+        messenger
     }
 
     pub fn next_msg_id(&self) -> Arc<String> {
@@ -347,18 +371,14 @@ impl WebMessenger {
             return Err(Error::InvalidMessage("messenger_id mismatch".to_string()));
         }
 
-        let msg_id = self.next_msg_id();
-        let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
-
         let cfg = self.config.read().await;
 
-        // 确定群组成员（不含 admin）
-        let members: Vec<Arc<String>> = if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        // 判断用户和群组信息是否正确
+        if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            // 处理 admin-user 单聊组
             if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() {
-                // admin 对 admin-user 单聊组发消息：用 parse 验证用户存在并提取 uid
-                match Self::parse_admin_user_group_ref(&cfg, outgoing.group_id.as_str()) {
-                    Some(uid) => vec![Arc::new(uid)],
-                    None => return Err(Error::GroupNotFound(outgoing.group_id.to_string())),
+                if Self::parse_admin_user_group_ref(&cfg, outgoing.group_id.as_str()).is_none() {
+                    return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
                 }
             } else {
                 // 普通用户对 admin-user 单聊组发消息：验证 group_id == a_{user_id} 且用户存在
@@ -367,8 +387,6 @@ impl WebMessenger {
                 {
                     return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
                 }
-                // 发送者发给自己（agent 会识别 is_self）
-                vec![outgoing.user_id.clone()]
             }
         } else {
             // 普通群组：admin 和普通用户逻辑相同——检查群组存在且发送者在成员中
@@ -377,8 +395,8 @@ impl WebMessenger {
             if !group.members.contains(outgoing.user_id.as_str()) {
                 return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
             }
-            group.members.iter().filter(|m| m.as_str() != ADMIN_USER_ID.as_str()).map(|m| Arc::new(m.clone())).collect()
-        };
+        }
+
         drop(cfg);
 
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
@@ -388,48 +406,114 @@ impl WebMessenger {
         ).await.map_err(|e| Error::InternalError(e.to_string()))?;
         let new_content = attachment_item.content.clone();
 
-        let messenger_id = self.messenger_id.clone();
-        for member_id in &members {
-            let is_self = if member_id.as_str() == outgoing.user_id.as_str() { 1 } else { 0 };
-            let incoming = Arc::new(IncomingMessage {
-                msg_id: msg_id.clone(),
-                messenger_id: messenger_id.clone(),
-                user_id: outgoing.user_id.clone(),
-                group_id: outgoing.group_id.clone(),
-                is_self,
-                msg_type: outgoing.msg_type.clone(),
-                content: new_content.clone(),
-                time: time.clone(),
-            });
+        // 生成消息ID和时间戳
+        let msg_id = self.next_msg_id();
+        let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
 
-            if let Some(handler) = self.on_incoming_messages.upgrade() {
-                handler.handle_incoming_message(incoming).await;
-            }
-        }
-
-        // 推 SSE + 写入存储
-        let response_content = new_content;
-        let admin_msg = Arc::new(IncomingMessage {
+        // 写入存储
+        let is_admin = if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() { 1 } else { 0 };
+        let admin_msg = IncomingMessage {
             msg_id: msg_id.clone(),
-            messenger_id: messenger_id.clone(),
-            user_id: ADMIN_USER_ID.clone(),
+            messenger_id: self.messenger_id.clone(),
+            user_id: outgoing.user_id.clone(),
             group_id: outgoing.group_id.clone(),
-            is_self: 1,
+            is_self: is_admin,
             msg_type: outgoing.msg_type.clone(),
-            content: response_content.clone(),
+            content: new_content.clone(),
             time: time.clone(),
-        });
-        if let Ok(json) = serde_json::to_string(&admin_msg) {
-            self.sse.push(&json);
-        }
-        self.message_store.append(admin_msg).await;
+        };
+        let date = kai_date::as_date(&time).to_string();
+        let key = MsgKey {
+            group_id: admin_msg.group_id.to_string(),
+            date,
+        };
+        self.appender.append(key, vec![admin_msg]).await;
 
+        // 发送完成即返回，写入后再推送
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id,
             time,
             msg_type: outgoing.msg_type.clone(),
-            content: response_content,
+            content: new_content,
         }))
+    }
+
+    pub async fn send_stored(&self, msgs: Vec<IncomingMessage>) {
+
+        // 推 SSE + 
+        for admin_msg in msgs.iter() {
+            if let Ok(json) = serde_json::to_string(&admin_msg) {
+                self.sse.push(&json);
+            }
+        }
+
+        // 根据群组成员计算要推送的消息
+        let mut messages = Vec::new();
+
+        let cfg = self.config.read().await;
+
+        for admin_msg in msgs.iter() {
+            let members: Vec<Arc<String>> = if admin_msg.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+                if admin_msg.user_id.as_str() == ADMIN_USER_ID.as_str() {
+                    // admin 对 admin-user 单聊组发消息：用 parse 验证用户存在并提取 uid
+                    match Self::parse_admin_user_group_ref(&cfg, admin_msg.group_id.as_str()) {
+                        Some(uid) => vec![Arc::new(uid)],
+                        None => vec![],
+                    }
+                } else {
+                    // 普通用户对 admin-user 单聊组发消息：验证 group_id == a_{user_id} 且用户存在
+                    if Self::is_admin_user_group_for(admin_msg.user_id.as_str(), admin_msg.group_id.as_str())
+                        && cfg.users.contains_key(admin_msg.user_id.as_str())
+                    {
+                        // 发送者发给自己（agent 会识别 is_self）
+                        vec![admin_msg.user_id.clone()]
+                    } else {
+                        vec![]
+                    }
+                }
+            } else {
+                // 普通群组：admin 和普通用户逻辑相同——检查群组存在且发送者在成员中
+                if let Some(group) = cfg.groups.get(admin_msg.group_id.as_str()) {
+                    if group.members.contains(admin_msg.user_id.as_str()) {
+                        // admin不推送
+                        group.members.iter()
+                        .filter(|m| m.as_str() != ADMIN_USER_ID.as_str())
+                        .map(|m| Arc::new(m.clone()))
+                        .collect()
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            };
+
+            if members.is_empty() {
+                continue;
+            }
+
+            for member_id in &members {
+                let is_self = if member_id.as_str() == admin_msg.user_id.as_str() { 1 } else { 0 };
+                let incoming = Arc::new(IncomingMessage {
+                    msg_id: admin_msg.msg_id.clone(),
+                    messenger_id: admin_msg.messenger_id.clone(),
+                    user_id: admin_msg.user_id.clone(),
+                    group_id: admin_msg.group_id.clone(),
+                    is_self,
+                    msg_type: admin_msg.msg_type.clone(),
+                    content: admin_msg.content.clone(),
+                    time: admin_msg.time.clone(),
+                });
+                messages.push(incoming);
+            }
+        }
+        drop(cfg);
+
+        if let Some(handler) = self.on_incoming_messages.upgrade() {
+            for message in messages {
+                handler.handle_incoming_message(message).await;
+            }
+        }
     }
 
     async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
@@ -496,21 +580,19 @@ pub struct WebMessengerCreator {
     repo_path: PathBuf,
     config: Arc<RwLock<WebMessengerRepo>>,
     attachment_dir: String,
-    message_store: Arc<MessageStore>,
+    message_dir: String,
 }
 
 impl WebMessengerCreator {
-    pub async fn new(repo_path: &str, attachment_dir: &str) -> Result<Self> {
+    pub async fn new(repo_path: &str, attachment_dir: &str, message_dir: &str) -> Result<Self> {
         let path = PathBuf::from(repo_path);
         let content = std::fs::read_to_string(&path)?;
         let config: WebMessengerRepo = serde_json::from_str(&content)?;
-        let base_dir = path.parent().unwrap().join("messages");
-        let message_store = MessageStore::new(base_dir);
         Ok(Self {
             repo_path: path,
             config: Arc::new(RwLock::new(config)),
             attachment_dir: attachment_dir.to_string(),
-            message_store,
+            message_dir: message_dir.to_string(),
         })
     }
 
@@ -530,7 +612,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         on_user_remove: Weak<dyn UserRemoveHandler>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
-        let messenger = Arc::new(WebMessenger::new(
+        let messenger = WebMessenger::new(
             mid,
             self.repo_path.clone(),
             self.config.clone(),
@@ -539,8 +621,8 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
             on_download_attachment_payload,
             on_user_remove,
             &self.attachment_dir,
-            self.message_store.clone(),
-        ));
+            &self.message_dir,
+        );
 
         Ok(messenger)
     }

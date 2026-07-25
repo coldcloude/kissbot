@@ -2,13 +2,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use axum::async_trait;
+use chrono::Utc;
 use dashmap::DashMap;
+use flume::Sender;
 use kai_date::{self, as_date, get_date_time_segments};
 use kai_file::FileIndexContext;
-use kai_file::appender::{FileAppendWriter, FileAppendWriterContext, FileObjectAppender, NoopErrorHandler};
+use kai_file::appender::{FileAppendWriter, FileAppendWriterContext};
 use kai_file::index::{FilePathGenerator, QueryParser};
 use kissbot_api::channel::IncomingMessage;
 use serde::{Deserialize, Serialize};
@@ -87,15 +88,24 @@ impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
 
 // ========== FileAppendWriter ==========
 
-struct MessageFileWriterContext {
+pub struct MessageFileWriterContext {
     path: PathBuf,
     index: Weak<GroupIndex>,
     date_sets: Weak<DashMap<String, BTreeSet<String>>>,
+    stored_sender: Sender<Vec<IncomingMessage>>,
 }
 
 #[async_trait]
-impl FileAppendWriterContext<MsgKey, Arc<IncomingMessage>> for MessageFileWriterContext {
-    async fn write(&mut self, key: &MsgKey, records: Vec<Arc<IncomingMessage>>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterContext {
+    async fn write(&mut self, key: &MsgKey, mut records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
+        let mut time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+        if key.date.as_str() != as_date(time.as_str()) {
+            time = Arc::new(format!("{} 23:59:59", key.date.as_str()));
+        }
+        for record in records.iter_mut() {
+            record.time = time.clone();
+        }
+        
         if let Some(parent) = self.path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -106,14 +116,10 @@ impl FileAppendWriterContext<MsgKey, Arc<IncomingMessage>> for MessageFileWriter
             .open(&self.path)
             .await?;
 
-        for record in &records {
+        for record in records.iter() {
             let line = serde_json::to_string(record)?;
             file.write_all(line.as_bytes()).await?;
             file.write_all(b"\n").await?;
-        }
-
-        if let Some(index) = self.index.upgrade() {
-            index.mark_obsolete(key);
         }
 
         if let Some(sets) = self.date_sets.upgrade() {
@@ -122,32 +128,43 @@ impl FileAppendWriterContext<MsgKey, Arc<IncomingMessage>> for MessageFileWriter
                 .insert(key.date.clone());
         }
 
+        if let Some(index) = self.index.upgrade() {
+            index.mark_obsolete(key);
+        }
+
+        self.stored_sender.send_async(records).await
+        .map_err(|e| kai_file::Error::ExternalError(Box::new(e)))?;
+
         Ok(())
     }
 }
 
-struct MessageFileWriter {
+// ========== MessageStore ==========
+
+pub struct MessageStore {
     base_dir: PathBuf,
-    index: Weak<GroupIndex>,
-    date_sets: Weak<DashMap<String, BTreeSet<String>>>,
+    index: Arc<GroupIndex>,
+    date_sets: Arc<DashMap<String, BTreeSet<String>>>,
+    stored_sender: Sender<Vec<IncomingMessage>>,
     map: Arc<Mutex<HashMap<MsgKey, Weak<Mutex<MessageFileWriterContext>>>>>,
 }
 
-impl MessageFileWriter {
+impl MessageStore {
     fn create_context(&self, key: &MsgKey) -> MessageFileWriterContext {
         let path = self.base_dir
             .join(&key.group_id)
             .join(format!("{}.jsonl", key.date));
         MessageFileWriterContext {
             path,
-            index: self.index.clone(),
-            date_sets: self.date_sets.clone(),
+            index: Arc::downgrade(&self.index),
+            date_sets: Arc::downgrade(&self.date_sets),
+            stored_sender: self.stored_sender.clone()
         }
     }
 }
 
 #[async_trait]
-impl FileAppendWriter<MsgKey, Arc<IncomingMessage>, MessageFileWriterContext> for MessageFileWriter{    
+impl FileAppendWriter<MsgKey, IncomingMessage, MessageFileWriterContext> for MessageStore {
     async fn get_lock(&self, key: &MsgKey) -> Arc<Mutex<MessageFileWriterContext>> {
         let mut guard = self.map.lock().await;
         match guard.entry(key.clone()) {
@@ -183,41 +200,19 @@ impl FileAppendWriter<MsgKey, Arc<IncomingMessage>, MessageFileWriterContext> fo
     }
 }
 
-// ========== MessageStore ==========
-
-pub struct MessageStore {
-    appender: FileObjectAppender<MsgKey, Arc<IncomingMessage>, MessageFileWriter, MessageFileWriterContext>,
-    index: Arc<GroupIndex>,
-    date_sets: Arc<DashMap<String, BTreeSet<String>>>,
-}
-
 impl MessageStore {
-    pub fn new(base_dir: PathBuf) -> Arc<Self> {
+    pub fn new(base_dir: &str, stored_sender: Sender<Vec<IncomingMessage>>) -> Self {
+        let base_dir = PathBuf::from(base_dir);
         let parser = MessageParser::new(base_dir.clone());
         let index: Arc<GroupIndex> = Arc::new(FileIndexContext::new(parser));
         let date_sets: Arc<DashMap<String, BTreeSet<String>>> = Arc::new(DashMap::new());
-        let writer = Arc::new(MessageFileWriter {
+        Self {
             base_dir,
-            index: Arc::downgrade(&index),
-            date_sets: Arc::downgrade(&date_sets),
-            map: Arc::new(Mutex::new(HashMap::new()))
-        });
-        let appender = FileObjectAppender::new(
-            writer,
-            Arc::new(NoopErrorHandler {}),
-            Duration::from_secs(5),
-            100,
-        );
-        Arc::new(Self { appender, index, date_sets })
-    }
-
-    pub async fn append(&self, msg: Arc<IncomingMessage>) {
-        let date = kai_date::as_date(&msg.time).to_string();
-        let key = MsgKey {
-            group_id: msg.group_id.to_string(),
-            date,
-        };
-        let _ = self.appender.append(key, vec![msg]).await;
+            index,
+            date_sets,
+            stored_sender,
+            map: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     // ========== Query methods ==========
