@@ -29,8 +29,18 @@ docs/
 │   ├── technical-architecture.md    # 技术架构（技术栈、模块类型）
 │   ├── communication.md             # 组件间通信协议
 │   ├── authentication.md            # 认证方式
-│   ├── memory-directory.md            # 记忆存储文件结构
-│   └── memory-ego.md            # 自我认知模块文件存储
+│   ├── channel-message.md           # 消息模型
+│   ├── channel-attachment.md        # channel 附件注册与传输
+│   ├── channel.md                   # channel 通道框架
+│   ├── channel-web.md               # channel-web 设计实现的关键决策
+│   ├── channel-web-message.md       # channel-web 消息流转
+│   ├── channel-web-attachment.md    # channel-web 附件存储
+│   ├── channel-web-message-storage.md  # channel-web 消息本地存储
+│   ├── memory-directory.md          # 记忆存储文件结构
+│   ├── memory-store.md              # memory-store 记录写入
+│   ├── memory-index.md              # 记忆索引机制
+│   ├── memory-ego.md                # 自我认知模块文件存储
+│   └── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │
 └── plan/                       # 任务计划
     ├── system-plan.md       # 组件和流程的实现顺序规划

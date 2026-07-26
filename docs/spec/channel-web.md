@@ -22,6 +22,9 @@
   - admin 向群组发消息时使用 `a_{user_id}` 作为 group_id
 - 单聊群组的 group_name 即为该 user 的 user_name
 - 允许 0 人、1 人、2 人群组
+- user_id 用 `u{数字}` 格式，group_id 用 `g{数字}` 格式
+- user_id 和 group_id 即使删除也不复用，配置中保持当前最大 ID，创建时递增
+- 创建 user 和 group 不传入 id，由系统生成
 
 ### Group 的独立性
 - Group 是独立实体，有自己的 ID、名称、成员列表、消息历史
@@ -40,23 +43,9 @@
 - 群组管理 API 拆分：`rename`（改名称）和 `manage-members`（增减成员）
 - `api/info` 可以获取全部 group 和 user，不再单独设 list 接口
 
-## 四、消息处理
+## 四、消息与附件
 
-### 统一的消息格式与 ID 分配
-- 发送方不决定消息时间，由 messenger 在 out 转 in 时填入当前时间
-- 消息 ID 格式：时间（`yyyyMMddHHmmss`）+ 自增序号（固定 6 位，超过回 0）
-- user_id 用 `u{数字}` 格式，group_id 用 `g{数字}` 格式
-- admin-user 单聊群组用 `a_{user_id}` 格式
-- user_id 和 group_id 即使删除也不复用，配置中保持当前最大 ID，创建时递增
-- 创建 user 和 group 不传入 id，由系统生成
-
-### Outgoing→Incoming 转换
-- 后台统一 OutgoingMessage 转 IncomingMessage 的机制
-- admin 发消息和 WSS 接到 Outgoing 走同一套处理
-- 转换后调用 group 各成员（不含 admin）的 `on_incoming`，同时推 SSE 给 admin
-- 生成 members vec 时直接把 admin 排除
-
-### 附件
-- 图片和文件使用不同的 msg_type
-- 图片上传时后端自动生成缩略图
+- 消息流转见 [channel-web-message.md](channel-web-message.md)
+- 附件存储见 [channel-web-attachment.md](channel-web-attachment.md)
+- 消息本地存储见 [channel-web-message-storage.md](channel-web-message-storage.md)
 
