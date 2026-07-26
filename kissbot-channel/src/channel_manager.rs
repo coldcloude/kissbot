@@ -268,11 +268,14 @@ impl JsonProcessorWrapper for UnbindAgentUserProcessor {
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
 
-        //检查是否为本连接绑定
-        let bound_info = messenger_context.bound_map.get(bind_request.user_id.as_str())
-        .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;        
-        if bound_info.connect_id != connect_context.connect_id {
-            return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
+        //检查是否为本连接绑定（先取出 connect_id 再释放 Ref，后续 remove 避免 DashMap 死锁）
+        let bound_connect_id = {
+            let bound_info = messenger_context.bound_map.get(bind_request.user_id.as_str())
+                .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;
+            bound_info.connect_id
+        };
+        if bound_connect_id != connect_context.connect_id {
+            return Err(Error::UserAlreadyBound(bound_connect_id.to_string()));
         }
 
         //解除绑定

@@ -1,0 +1,21 @@
+[package]
+name = "kissbot-channel-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.11"
+dashmap = { version = "6.1", features = ["serde"] }
+async-trait = "0.1"
+thiserror = "2.0"
+tracing = "0.1"
+kai-ws = { path = "../kai-rs/kai-ws" }
+kissbot-api = { path = "../kissbot-api" }
+kissbot-security = { path = "../kissbot-security" }
+
+[dev-dependencies]
+flume = "0.12"
+kissbot-channel = { path = "../kissbot-channel" }
