@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock, Weak};
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
 use kai_ws::*;
 use kissbot_api::channel::*;
@@ -143,19 +143,44 @@ impl OutgoingMessageHandler for ChannelClient {
     }
 }
 
-// Task 3 实现，此处为 stub
 #[async_trait]
 impl AttachmentUploadHandler for ChannelClient {
-    async fn send_upload_chunk(&self, _transfer_id: u32, _pos: u64, _data: Bytes) -> Result<AttachmentPayloadResponse> {
-        Err(Error::InternalError("send_upload_chunk not implemented".to_string()))
+    async fn send_upload_chunk(&self, transfer_id: u32, pos: u64, data: Bytes) -> Result<AttachmentPayloadResponse> {
+        let context = self.get_ws_context()?;
+        let sn = context.next_request_sn();
+        // 二进制帧：sn + payload_type + status_code + transfer_id + size + pos + data
+        let mut buf = BytesMut::with_capacity(OFFSET_ATT_DATA + data.len());
+        buf.put_u32(sn);
+        buf.put_u32(TYPE_ATTACHMENT_PAYLOAD);
+        buf.put_u32(CODE_SUCCESS);
+        buf.put_u32(transfer_id);
+        buf.put_u32(data.len() as u32);
+        buf.put_u64(pos);
+        buf.extend_from_slice(&data);
+        let (tx, rx) = oneshot::channel();
+        context.send_bin_with_json_response(sn, buf.freeze(), Box::new(JsonResponseHandler { tx: Some(tx) })).await?;
+        let response = tokio::time::timeout(REQUEST_TIMEOUT, rx).await
+            .map_err(|_| Error::Timeout("upload chunk timeout".to_string()))?
+            .map_err(|_| Error::InternalError("response channel closed".to_string()))?
+            .map_err(|e| Error::WsError(e))?;
+        if response.status_code != CODE_SUCCESS {
+            return Err(Error::ResponseError(response.status_code));
+        }
+        let payload = response.payload
+            .ok_or_else(|| Error::InvalidMessage("upload chunk response payload is None".to_string()))?;
+        Ok(serde_json::from_value(payload)?)
     }
 }
 
-// Task 3 实现，此处为 stub
 #[async_trait]
 impl AttachmentDownloadHandler for ChannelClient {
-    async fn request_download(&self, _request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>> {
-        Err(Error::InternalError("request_download not implemented".to_string()))
+    async fn request_download(&self, request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>> {
+        let payload = self.request_json(TYPE_ATTACHMENT_DOWNLOAD_REQUEST, serde_json::to_value(request)?).await?
+            .ok_or_else(|| Error::InvalidMessage("download response payload is None".to_string()))?;
+        let info = Arc::new(serde_json::from_value::<AttachmentInfoResponse>(payload)?);
+        // 注册 transfer 映射，之后服务端推送的分块按 transfer_id 找到下载头
+        self.download_transfer_map.insert(info.transfer_id, info.clone());
+        Ok(info)
     }
 }
 
@@ -210,6 +235,94 @@ impl WsCloseProcessor for TerminalCloseProcessor {
     }
 }
 
+const TRANSFER_WAIT_INTERVAL: Duration = Duration::from_millis(50);
+const TRANSFER_WAIT_MAX: Duration = Duration::from_secs(2);
+
+/// 下载分块处理器：服务端推送的附件分块转接到 Terminal::download_chunk，并按结果确认
+struct DownloadChunkProcessor {
+    client: Weak<ChannelClient>,
+}
+
+impl DownloadChunkProcessor {
+    // 下载头响应与首个分块的派发存在并发竞争（kai-ws 按消息 spawn 处理任务），
+    // transfer 映射可能尚未注册，此处做有限等待
+    async fn wait_transfer_info(client: &ChannelClient, transfer_id: u32) -> Option<Arc<AttachmentInfoResponse>> {
+        let deadline = tokio::time::Instant::now() + TRANSFER_WAIT_MAX;
+        loop {
+            if let Some(info) = client.download_transfer_map.get(&transfer_id) {
+                return Some(info.clone());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(TRANSFER_WAIT_INTERVAL).await;
+        }
+    }
+}
+
+#[async_trait]
+impl WsBinaryProcessor for DownloadChunkProcessor {
+    async fn process_bin(&self, data: Bytes, context: Arc<WsContext>) {
+        let sn = match parse_bin_sn(data.as_ref()) {
+            Ok(sn) => sn,
+            Err(e) => {
+                error!("download chunk parse sn error: {:?}", e);
+                return;
+            }
+        };
+        let Some(client) = self.client.upgrade() else { return };
+        let header = match parse_attachment_payload_header(data.as_ref()) {
+            Ok(h) => h,
+            Err(e) => {
+                error!("download chunk parse header error: {:?}", e);
+                return;
+            }
+        };
+        // 检查 payload_type 是否为下载分块（而非心跳等其他二进制消息）
+        let info = Self::wait_transfer_info(&client, header.id).await;
+        let result = match &info {
+            Some(info) => match client.get_terminal() {
+                Ok(terminal) => terminal.download_chunk(info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
+                Err(e) => Err(e),
+            },
+            None => Err(Error::InvalidMessage(format!("unknown transfer_id {}", header.id))),
+        };
+        let response = match &result {
+            Ok(()) => AttachmentPayloadResponse {
+                current_pos: header.pos + header.size as u64,
+                error_code: PAYLOAD_ERRCODE_OK,
+                error_msg: None,
+            },
+            Err(e) => AttachmentPayloadResponse {
+                current_pos: header.pos,
+                error_code: 1,
+                error_msg: Some(Arc::new(e.to_string())),
+            },
+        };
+        // 最后一块或出错时清理映射
+        if let Some(info) = &info {
+            if result.is_err() || header.pos + header.size as u64 >= info.info.size_bytes {
+                client.download_transfer_map.remove(&header.id);
+            }
+        }
+        let payload = match serde_json::to_value(&response) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                error!("serialize download chunk response error: {:?}", e);
+                None
+            }
+        };
+        if let Err(e) = context.send_json(WsMessage {
+            sn,
+            status_code: CODE_SUCCESS,
+            payload_type: TYPE_RESPONSE,
+            payload,
+        }).await {
+            error!("send download chunk response error: {:?}", e);
+        }
+    }
+}
+
 struct ChannelClientInitializer;
 
 #[async_trait]
@@ -228,6 +341,8 @@ impl WsProcessorInitializer<ChannelClient> for ChannelClientInitializer {
         ws_context.set_json_processor(TYPE_JOIN_GROUP, json_processor.clone());
         ws_context.set_json_processor(TYPE_LEAVE_GROUP, json_processor.clone());
         ws_context.set_json_processor(TYPE_USER_REMOVED, json_processor);
+        // 下载分块
+        ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, Arc::new(DownloadChunkProcessor { client: Arc::downgrade(&client) }));
         Ok(())
     }
 }
