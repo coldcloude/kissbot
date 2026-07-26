@@ -1,0 +1,15 @@
+[package]
+name = "kissbot-channel-client-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.11"
+async-trait = "0.1"
+kissbot-api = { path = "../kissbot-api" }
+kissbot-channel-client = { path = "../kissbot-channel-client" }
+kissbot-config = { path = "../kissbot-config" }
+kissbot-security = { path = "../kissbot-security" }

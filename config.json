@@ -23,5 +23,8 @@
     "attachment_dir": "attachments",
     "ws_listen_addr": "127.0.0.1:8201",
     "http_listen_addr": "127.0.0.1:8301"
+  },
+  "channel-client": {
+    "channel_ws_url": "ws://127.0.0.1:8201"
   }
 }
