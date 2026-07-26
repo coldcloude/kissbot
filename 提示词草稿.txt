@@ -1,1 +1,0 @@
-使用brainstorming技能完成以下任务：修改MessageStore。1、所有Group应该用同一个FileIndexContext，key有messenger_id,group_id,date三个字段，TimeRangeQuery中应该有messenger_id和group_id字段；2、messenger_id不需要保存固定，在key中和query中自带；3、写队列不使用flume队列，改用kai-file的FileObjectAppender写入文件数据，自带队列，也是同一个appender对应所有key
