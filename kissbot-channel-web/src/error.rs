@@ -63,7 +63,7 @@ impl From<Error> for kissbot_channel::Error {
             Error::InvalidMessage(msg) => kissbot_channel::Error::InvalidMessage(msg),
             Error::IoError(e) => kissbot_channel::Error::IoError(e),
             Error::SendError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
-            Error::RecvError(e) => kissbot_channel::Error::RecvError(e),
+            Error::RecvError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
             Error::OneshotRecvError(e) => kissbot_channel::Error::OneshotRecvError(e),
             Error::JsonError(e) => kissbot_channel::Error::JsonError(e),
             Error::ImageError(e) => kissbot_channel::Error::ExternalError(Box::new(e)),
