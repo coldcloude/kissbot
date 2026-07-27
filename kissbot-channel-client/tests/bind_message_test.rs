@@ -1,11 +1,11 @@
 mod mock;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_channel::GroupChangeType;
-use kissbot_channel_client::ChannelClient;
+use kissbot_channel_client::{ChannelClient, Terminal};
 use mock::*;
 
 #[tokio::test]
@@ -15,19 +15,18 @@ async fn test_bind_send_and_notify() {
     let _manager = start_test_server(19101, messenger.clone()).await;
 
     let terminal = MockTerminal::new();
-    let client = ChannelClient::new();
-    let terminal = client.connect("ws://127.0.0.1:19101", "test-key", MockTerminalCreator { terminal })
-        .await.expect("connect failed");
+    let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
+    client.connect("ws://127.0.0.1:19101", "test-key").await.expect("connect failed");
 
     // 绑定
-    terminal.bind_handler().bind(make_bind_request("m1", "u1")).await.expect("bind failed");
+    client.bind(make_bind_request("m1", "u1")).await.expect("bind failed");
 
     // messenger info 查询
-    let info = terminal.messenger_info_handler().get_info(Arc::new("m1".to_string())).await.expect("get_info failed");
+    let info = client.get_info(Arc::new("m1".to_string())).await.expect("get_info failed");
     assert!(info.user_map.contains_key("u1"));
 
     // 发送文本消息 → mock messenger 收到
-    let response = terminal.outgoing_message_handler().send_message(OutgoingMessage {
+    let response = client.send_message(OutgoingMessage {
         messenger_id: Arc::new("m1".to_string()),
         user_id: Arc::new("u1".to_string()),
         group_id: Arc::new("g1".to_string()),
@@ -59,8 +58,8 @@ async fn test_bind_send_and_notify() {
     assert_eq!(*removed.user_id, "u1");
 
     // 重新绑定后解绑
-    terminal.bind_handler().bind(make_bind_request("m1", "u1")).await.expect("re-bind failed");
-    terminal.bind_handler().unbind(make_bind_request("m1", "u1")).await.expect("unbind failed");
+    client.bind(make_bind_request("m1", "u1")).await.expect("re-bind failed");
+    client.unbind(make_bind_request("m1", "u1")).await.expect("unbind failed");
 
     // 主动断开 → terminal.closed
     client.disconnect().await.expect("disconnect failed");

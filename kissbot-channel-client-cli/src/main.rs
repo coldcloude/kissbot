@@ -1,11 +1,12 @@
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::Bytes;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
-use kissbot_channel_client::{ChannelClient, Error, Result};
-use kissbot_channel_client::{Terminal, TerminalCreator, BindHandler, OutgoingMessageHandler, AttachmentUploadHandler, AttachmentDownloadHandler};
+use kissbot_channel_client::{ChannelClient, Result};
+use kissbot_channel_client::Terminal;
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
 #[derive(Deserialize)]
 struct CliConfig {
@@ -19,21 +20,21 @@ struct CliTerminal {
     user_id: String,
     current_group: RwLock<String>,
     download_dir: String,
-    bind_handler: RwLock<Option<Weak<dyn BindHandler>>>,
-    outgoing_handler: RwLock<Option<Weak<dyn OutgoingMessageHandler>>>,
-    upload_handler: RwLock<Option<Weak<dyn AttachmentUploadHandler>>>,
-    download_handler: RwLock<Option<Weak<dyn AttachmentDownloadHandler>>>,
+    client: RwLock<Option<Arc<ChannelClient>>>,
 }
 
 impl CliTerminal {
     fn current_group(&self) -> String {
-        self.current_group.read().unwrap().clone()
+        self.current_group.blocking_read().clone()
+    }
+
+    async fn get_client(&self) -> Arc<ChannelClient> {
+        self.client.read().await.as_ref().unwrap().clone()
     }
 
     async fn bind(&self) -> Result<()> {
-        let handler = self.bind_handler.read().unwrap().as_ref().unwrap().upgrade()
-            .ok_or_else(|| Error::InternalError("bind handler is None".to_string()))?;
-        handler.bind(BindRequest {
+        let client = self.get_client().await;
+        client.bind(BindRequest {
             agent_id: Arc::new("cli".to_string()),
             role_name: Arc::new("cli".to_string()),
             messenger_id: Arc::new(self.messenger_id.clone()),
@@ -42,9 +43,8 @@ impl CliTerminal {
     }
 
     async fn send_text(&self, text: &str) -> Result<()> {
-        let handler = self.outgoing_handler.read().unwrap().as_ref().unwrap().upgrade()
-            .ok_or_else(|| Error::InternalError("outgoing handler is None".to_string()))?;
-        let response = handler.send_message(OutgoingMessage {
+        let client = self.get_client().await;
+        let response = client.send_message(OutgoingMessage {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
             group_id: Arc::new(self.current_group()),
@@ -56,9 +56,8 @@ impl CliTerminal {
     }
 
     async fn download(&self, key: &str) -> Result<()> {
-        let handler = self.download_handler.read().unwrap().as_ref().unwrap().upgrade()
-            .ok_or_else(|| Error::InternalError("download handler is None".to_string()))?;
-        let info = handler.request_download(AttachmentDownloadRequest {
+        let client = self.get_client().await;
+        let info = client.request_download(AttachmentDownloadRequest {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
             group_id: Arc::new(self.current_group()),
@@ -77,9 +76,8 @@ impl CliTerminal {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "upload.bin".to_string());
-        let outgoing = self.outgoing_handler.read().unwrap().as_ref().unwrap().upgrade()
-            .ok_or_else(|| Error::InternalError("outgoing handler is None".to_string()))?;
-        let response = outgoing.send_message(OutgoingMessage {
+        let client = self.get_client().await;
+        let response = client.send_message(OutgoingMessage {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
             group_id: Arc::new(self.current_group()),
@@ -95,13 +93,11 @@ impl CliTerminal {
             println!("!! unexpected response content, upload aborted");
             return Ok(());
         };
-        let upload = self.upload_handler.read().unwrap().as_ref().unwrap().upgrade()
-            .ok_or_else(|| Error::InternalError("upload handler is None".to_string()))?;
         let mut pos = 0u64;
         while pos < data.len() as u64 {
             let end = (pos as usize + UPLOAD_CHUNK_SIZE).min(data.len());
             let chunk = Bytes::copy_from_slice(&data[pos as usize..end]);
-            let resp = upload.send_upload_chunk(att.transfer_id, pos, chunk).await?;
+            let resp = client.send_upload_chunk(att.transfer_id, pos, chunk).await?;
             if resp.error_code != PAYLOAD_ERRCODE_OK {
                 println!("!! upload chunk error: {:?}", resp.error_msg);
                 return Ok(());
@@ -115,25 +111,25 @@ impl CliTerminal {
 
 #[async_trait]
 impl Terminal for CliTerminal {
-    async fn incoming_message(&self, message: Arc<IncomingMessage>) {
+    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
         // 打印 content 原始 JSON 串
         let json = serde_json::to_string(&message.content).unwrap();
         println!("<< [{}:{}] {}", message.user_id, message.group_id, json);
     }
 
-    async fn join_group(&self, notification: Arc<GroupChangeNotification>) {
+    async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
         println!("<< join group: {} @ {}", notification.group_id, notification.messenger_id);
     }
 
-    async fn leave_group(&self, notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
         println!("<< leave group: {} @ {}", notification.group_id, notification.messenger_id);
     }
 
-    async fn user_removed(&self, notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(&self, _id: &str, notification: Arc<UserRemoveNotification>) {
         println!("<< user removed: {} @ {}", notification.user_id, notification.messenger_id);
     }
 
-    async fn download_chunk(&self, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()> {
+    async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()> {
         use std::io::Write;
         std::fs::create_dir_all(&self.download_dir)?;
         let path = format!("{}/{}", self.download_dir, info.info.file_name);
@@ -145,31 +141,9 @@ impl Terminal for CliTerminal {
         Ok(())
     }
 
-    async fn closed(&self) {
+    async fn closed(&self, _id: &str) {
         println!("!! connection closed");
         std::process::exit(0);
-    }
-}
-
-struct CliTerminalCreator {
-    terminal: Arc<CliTerminal>,
-}
-
-#[async_trait]
-impl TerminalCreator<CliTerminal> for CliTerminalCreator {
-    async fn create(
-        &self,
-        bind_handler: Weak<dyn BindHandler>,
-        _messenger_info_handler: Weak<dyn kissbot_channel_client::MessengerInfoHandler>,
-        outgoing_message_handler: Weak<dyn OutgoingMessageHandler>,
-        attachment_upload_handler: Weak<dyn AttachmentUploadHandler>,
-        attachment_download_handler: Weak<dyn AttachmentDownloadHandler>,
-    ) -> Result<Arc<CliTerminal>> {
-        *self.terminal.bind_handler.write().unwrap() = Some(bind_handler);
-        *self.terminal.outgoing_handler.write().unwrap() = Some(outgoing_message_handler);
-        *self.terminal.upload_handler.write().unwrap() = Some(attachment_upload_handler);
-        *self.terminal.download_handler.write().unwrap() = Some(attachment_download_handler);
-        Ok(self.terminal.clone())
     }
 }
 
@@ -188,21 +162,18 @@ async fn main() {
     let config: CliConfig = kissbot_config::Config::get().get_section("channel-client");
     let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
 
-    let terminal = Arc::new(CliTerminal {
-        messenger_id,
-        user_id,
-        current_group: RwLock::new(group_id),
+    let cli_terminal = Arc::new(CliTerminal {
+        messenger_id: messenger_id.clone(),
+        user_id: user_id.clone(),
+        current_group: RwLock::new(group_id.clone()),
         download_dir,
-        bind_handler: RwLock::new(None),
-        outgoing_handler: RwLock::new(None),
-        upload_handler: RwLock::new(None),
-        download_handler: RwLock::new(None),
+        client: RwLock::new(None),
     });
 
-    let client = ChannelClient::new();
-    let terminal = client.connect(&config.channel_ws_url, &api_key, CliTerminalCreator { terminal })
-        .await.expect("connect failed");
-    terminal.bind().await.expect("bind failed");
+    let client = ChannelClient::new("cli".to_string(), Arc::downgrade(&cli_terminal) as Weak<dyn Terminal>);
+    *cli_terminal.client.write().await = Some(client.clone());
+    client.connect(&config.channel_ws_url, &api_key).await.expect("connect failed");
+    cli_terminal.bind().await.expect("bind failed");
     println!(">> bound. 输入行发送文本；/group <id> 切换群组；/download <key>；/upload <path>");
 
     // stdin 按行读取（独立线程，避免阻塞 tokio runtime）
@@ -224,20 +195,20 @@ async fn main() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("/group ") {
-            *terminal.current_group.write().unwrap() = rest.trim().to_string();
+            *cli_terminal.current_group.write().await = rest.trim().to_string();
             println!(">> current group: {}", rest.trim());
         } else if let Some(rest) = line.strip_prefix("/download ") {
-            if let Err(e) = terminal.download(rest.trim()).await {
+            if let Err(e) = cli_terminal.download(rest.trim()).await {
                 println!("!! download error: {}", e);
             }
         } else if let Some(rest) = line.strip_prefix("/upload ") {
-            if let Err(e) = terminal.upload(rest.trim()).await {
+            if let Err(e) = cli_terminal.upload(rest.trim()).await {
                 println!("!! upload error: {}", e);
             }
         } else if line.starts_with('/') {
             println!("!! unknown command: {}", line);
         } else {
-            if let Err(e) = terminal.send_text(line).await {
+            if let Err(e) = cli_terminal.send_text(line).await {
                 println!("!! send error: {}", e);
             }
         }

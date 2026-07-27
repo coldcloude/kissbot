@@ -6,11 +6,10 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
-use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError};
-use kissbot_channel::{GroupChangeHandler, IncomingMessageHandler, UserRemoveHandler, AttachmentDownloadPayloadSender};
+use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelManager};
 use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent};
 use kissbot_channel_client::error::Result as ClientResult;
-use kissbot_channel_client::{Terminal, TerminalCreator, BindHandler, MessengerInfoHandler, OutgoingMessageHandler, AttachmentUploadHandler, AttachmentDownloadHandler};
+use kissbot_channel_client::Terminal;
 
 pub const TEST_TIME: &str = "2026-07-27 00:00:00";
 pub const DOWNLOAD_CHUNK_SIZE: usize = 4;
@@ -60,10 +59,7 @@ pub struct MockMessenger {
     pub download_data: Bytes,
     next_transfer_id: AtomicU32,
     next_msg_id: AtomicU32,
-    incoming_handler: RwLock<Option<Weak<dyn IncomingMessageHandler>>>,
-    group_change_handler: RwLock<Option<Weak<dyn GroupChangeHandler>>>,
-    user_remove_handler: RwLock<Option<Weak<dyn UserRemoveHandler>>>,
-    download_sender: RwLock<Option<Weak<dyn AttachmentDownloadPayloadSender>>>,
+    manager: RwLock<Option<Weak<ChannelManager>>>,
     pub sent_messages: flume::Sender<OutgoingMessage>,
     sent_messages_rx: flume::Receiver<OutgoingMessage>,
     pub upload_chunks: flume::Sender<(u32, u64, Bytes)>,
@@ -79,10 +75,7 @@ impl MockMessenger {
             download_data: Bytes::copy_from_slice(download_data),
             next_transfer_id: AtomicU32::new(1),
             next_msg_id: AtomicU32::new(1),
-            incoming_handler: RwLock::new(None),
-            group_change_handler: RwLock::new(None),
-            user_remove_handler: RwLock::new(None),
-            download_sender: RwLock::new(None),
+            manager: RwLock::new(None),
             sent_messages,
             sent_messages_rx,
             upload_chunks,
@@ -98,46 +91,54 @@ impl MockMessenger {
         self.upload_chunks_rx.clone()
     }
 
-    /// 模拟外部消息到达，经回调推给 ChannelManager
+    /// 模拟外部消息到达，经 ChannelManager 推送给终端
     pub fn push_incoming(&self, msg: IncomingMessage) {
-        let handler = self.incoming_handler.read().unwrap().clone().unwrap().upgrade().unwrap();
-        tokio::spawn(async move {
-            handler.handle_incoming_message(Arc::new(msg)).await;
-        });
+        let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
+        if let Some(manager) = handler {
+            tokio::spawn(async move {
+                manager.handle_incoming_message(Arc::new(msg)).await;
+            });
+        }
     }
 
     /// 模拟群组变化
     pub fn push_group_change(&self, change_type: GroupChangeType, user_id: &str, group_id: &str) {
-        let handler = self.group_change_handler.read().unwrap().clone().unwrap().upgrade().unwrap();
-        let event = Arc::new(GroupChangeEvent {
-            msg_id: Arc::new("gc-1".to_string()),
-            notification: Arc::new(GroupChangeNotification {
-                messenger_id: self.info.messenger_id.clone(),
-                group_id: Arc::new(group_id.to_string()),
-                user_id: Arc::new(user_id.to_string()),
-            }),
-            change_type,
-            time: Arc::new(TEST_TIME.to_string()),
-        });
-        tokio::spawn(async move {
-            handler.handle_group_change(event).await;
-        });
+        let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
+        if let Some(manager) = handler {
+            let messenger_id = self.info.messenger_id.clone();
+            let event = Arc::new(GroupChangeEvent {
+                msg_id: Arc::new("gc-1".to_string()),
+                notification: Arc::new(GroupChangeNotification {
+                    messenger_id,
+                    group_id: Arc::new(group_id.to_string()),
+                    user_id: Arc::new(user_id.to_string()),
+                }),
+                change_type,
+                time: Arc::new(TEST_TIME.to_string()),
+            });
+            tokio::spawn(async move {
+                manager.handle_group_change(event).await;
+            });
+        }
     }
 
     /// 模拟用户被删除
     pub fn push_user_remove(&self, user_id: &str) {
-        let handler = self.user_remove_handler.read().unwrap().clone().unwrap().upgrade().unwrap();
-        let event = Arc::new(UserRemoveEvent {
-            msg_id: Arc::new("ur-1".to_string()),
-            notification: Arc::new(UserRemoveNotification {
-                messenger_id: self.info.messenger_id.clone(),
-                user_id: Arc::new(user_id.to_string()),
-            }),
-            time: Arc::new(TEST_TIME.to_string()),
-        });
-        tokio::spawn(async move {
-            handler.handle_user_remove(event).await;
-        });
+        let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
+        if let Some(manager) = handler {
+            let messenger_id = self.info.messenger_id.clone();
+            let event = Arc::new(UserRemoveEvent {
+                msg_id: Arc::new("ur-1".to_string()),
+                notification: Arc::new(UserRemoveNotification {
+                    messenger_id,
+                    user_id: Arc::new(user_id.to_string()),
+                }),
+                time: Arc::new(TEST_TIME.to_string()),
+            });
+            tokio::spawn(async move {
+                manager.handle_user_remove(event).await;
+            });
+        }
     }
 }
 
@@ -189,9 +190,9 @@ impl Messenger for MockMessenger {
     }
 
     async fn start_send_download_attachment_payload(&self, transfer_id: u32) -> Result<(), ChannelError> {
-        let sender = self.download_sender.read().unwrap().clone()
+        let manager = self.manager.read().unwrap().clone()
             .and_then(|w| w.upgrade())
-            .ok_or_else(|| ChannelError::InternalError("download sender is None".to_string()))?;
+            .ok_or_else(|| ChannelError::InternalError("manager is None".to_string()))?;
         let data = self.download_data.clone();
         tokio::spawn(async move {
             let mut pos = 0u64;
@@ -199,10 +200,18 @@ impl Messenger for MockMessenger {
                 let end = (pos as usize + DOWNLOAD_CHUNK_SIZE).min(data.len());
                 let chunk = data.slice(pos as usize..end);
                 let size = chunk.len() as u32;
-                let (sn, mut buf) = sender.prepare_send(transfer_id, size, pos).unwrap();
+                let (sn, mut buf) = match manager.prepare_download_payload(transfer_id, size, pos) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("prepare_download_payload error: {:?}", e);
+                        break;
+                    }
+                };
                 buf.extend_from_slice(&chunk);
-                let resp = sender.send(sn, transfer_id, size, pos, buf).await.unwrap();
-                assert_eq!(resp.error_code, PAYLOAD_ERRCODE_OK);
+                if let Err(e) = manager.send_download_payload(sn, transfer_id, size, pos, buf).await {
+                    eprintln!("send_download_payload error: {:?}", e);
+                    break;
+                }
                 pos = end as u64;
             }
         });
@@ -216,17 +225,8 @@ pub struct MockMessengerCreator {
 
 #[async_trait]
 impl MessengerCreator<MockMessenger> for MockMessengerCreator {
-    async fn create(
-        &self,
-        on_group_change: Weak<dyn GroupChangeHandler>,
-        on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-        on_user_remove: Weak<dyn UserRemoveHandler>,
-    ) -> Result<Arc<MockMessenger>, ChannelError> {
-        *self.messenger.group_change_handler.write().unwrap() = Some(on_group_change);
-        *self.messenger.incoming_handler.write().unwrap() = Some(on_incoming_messages);
-        *self.messenger.download_sender.write().unwrap() = Some(on_download_attachment_payload);
-        *self.messenger.user_remove_handler.write().unwrap() = Some(on_user_remove);
+    async fn create(&self, manager: Weak<ChannelManager>) -> Result<Arc<MockMessenger>, ChannelError> {
+        *self.messenger.manager.write().unwrap() = Some(manager);
         Ok(self.messenger.clone())
     }
 }
@@ -234,11 +234,6 @@ impl MessengerCreator<MockMessenger> for MockMessengerCreator {
 // ========== Mock Terminal ==========
 
 pub struct MockTerminal {
-    bind_handler: RwLock<Option<Weak<dyn BindHandler>>>,
-    messenger_info_handler: RwLock<Option<Weak<dyn MessengerInfoHandler>>>,
-    outgoing_message_handler: RwLock<Option<Weak<dyn OutgoingMessageHandler>>>,
-    attachment_upload_handler: RwLock<Option<Weak<dyn AttachmentUploadHandler>>>,
-    attachment_download_handler: RwLock<Option<Weak<dyn AttachmentDownloadHandler>>>,
     pub incoming: flume::Sender<Arc<IncomingMessage>>,
     pub joins: flume::Sender<Arc<GroupChangeNotification>>,
     pub leaves: flume::Sender<Arc<GroupChangeNotification>>,
@@ -262,11 +257,6 @@ impl MockTerminal {
         let (chunks, chunks_rx) = flume::unbounded();
         let (closed_tx, closed_rx) = flume::unbounded();
         Arc::new(Self {
-            bind_handler: RwLock::new(None),
-            messenger_info_handler: RwLock::new(None),
-            outgoing_message_handler: RwLock::new(None),
-            attachment_upload_handler: RwLock::new(None),
-            attachment_download_handler: RwLock::new(None),
             incoming,
             joins,
             leaves,
@@ -288,76 +278,33 @@ impl MockTerminal {
     pub fn removals_rx(&self) -> flume::Receiver<Arc<UserRemoveNotification>> { self.removals_rx.clone() }
     pub fn chunks_rx(&self) -> flume::Receiver<(Arc<AttachmentInfoResponse>, u64, Bytes)> { self.chunks_rx.clone() }
     pub fn closed_rx(&self) -> flume::Receiver<()> { self.closed_rx.clone() }
-
-    pub fn bind_handler(&self) -> Arc<dyn BindHandler> {
-        self.bind_handler.read().unwrap().as_ref().unwrap().upgrade().unwrap()
-    }
-
-    pub fn messenger_info_handler(&self) -> Arc<dyn MessengerInfoHandler> {
-        self.messenger_info_handler.read().unwrap().as_ref().unwrap().upgrade().unwrap()
-    }
-
-    pub fn outgoing_message_handler(&self) -> Arc<dyn OutgoingMessageHandler> {
-        self.outgoing_message_handler.read().unwrap().as_ref().unwrap().upgrade().unwrap()
-    }
-
-    pub fn attachment_upload_handler(&self) -> Arc<dyn AttachmentUploadHandler> {
-        self.attachment_upload_handler.read().unwrap().as_ref().unwrap().upgrade().unwrap()
-    }
-
-    pub fn attachment_download_handler(&self) -> Arc<dyn AttachmentDownloadHandler> {
-        self.attachment_download_handler.read().unwrap().as_ref().unwrap().upgrade().unwrap()
-    }
 }
 
 #[async_trait]
 impl Terminal for MockTerminal {
-    async fn incoming_message(&self, message: Arc<IncomingMessage>) {
+    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
         let _ = self.incoming.send(message);
     }
 
-    async fn join_group(&self, notification: Arc<GroupChangeNotification>) {
+    async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
         let _ = self.joins.send(notification);
     }
 
-    async fn leave_group(&self, notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
         let _ = self.leaves.send(notification);
     }
 
-    async fn user_removed(&self, notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(&self, _id: &str, notification: Arc<UserRemoveNotification>) {
         let _ = self.removals.send(notification);
     }
 
-    async fn download_chunk(&self, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
+    async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
         let _ = self.chunks.send((info, pos, data));
         Ok(())
     }
 
-    async fn closed(&self) {
+    async fn closed(&self, _id: &str) {
         let _ = self.closed_tx.send(());
-    }
-}
-
-pub struct MockTerminalCreator {
-    pub terminal: Arc<MockTerminal>,
-}
-
-#[async_trait]
-impl TerminalCreator<MockTerminal> for MockTerminalCreator {
-    async fn create(
-        &self,
-        bind_handler: Weak<dyn BindHandler>,
-        messenger_info_handler: Weak<dyn MessengerInfoHandler>,
-        outgoing_message_handler: Weak<dyn OutgoingMessageHandler>,
-        attachment_upload_handler: Weak<dyn AttachmentUploadHandler>,
-        attachment_download_handler: Weak<dyn AttachmentDownloadHandler>,
-    ) -> ClientResult<Arc<MockTerminal>> {
-        *self.terminal.bind_handler.write().unwrap() = Some(bind_handler);
-        *self.terminal.messenger_info_handler.write().unwrap() = Some(messenger_info_handler);
-        *self.terminal.outgoing_message_handler.write().unwrap() = Some(outgoing_message_handler);
-        *self.terminal.attachment_upload_handler.write().unwrap() = Some(attachment_upload_handler);
-        *self.terminal.attachment_download_handler.write().unwrap() = Some(attachment_download_handler);
-        Ok(self.terminal.clone())
     }
 }
 

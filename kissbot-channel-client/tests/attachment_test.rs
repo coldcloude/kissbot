@@ -1,11 +1,11 @@
 mod mock;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use bytes::Bytes;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
-use kissbot_channel_client::ChannelClient;
+use kissbot_channel_client::{ChannelClient, Terminal};
 use mock::*;
 
 #[tokio::test]
@@ -16,14 +16,13 @@ async fn test_attachment_upload_download() {
     let _manager = start_test_server(19102, messenger.clone()).await;
 
     let terminal = MockTerminal::new();
-    let client = ChannelClient::new();
-    let terminal = client.connect("ws://127.0.0.1:19102", "test-key", MockTerminalCreator { terminal })
-        .await.expect("connect failed");
-    terminal.bind_handler().bind(make_bind_request("m1", "u1")).await.expect("bind failed");
+    let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
+    client.connect("ws://127.0.0.1:19102", "test-key").await.expect("connect failed");
+    client.bind(make_bind_request("m1", "u1")).await.expect("bind failed");
 
     // ===== 上传 =====
     let upload_data = b"0123456789";
-    let response = terminal.outgoing_message_handler().send_message(OutgoingMessage {
+    let response = client.send_message(OutgoingMessage {
         messenger_id: Arc::new("m1".to_string()),
         user_id: Arc::new("u1".to_string()),
         group_id: Arc::new("g1".to_string()),
@@ -42,12 +41,10 @@ async fn test_attachment_upload_download() {
     assert_eq!(*att.key, "key-upload.bin");
 
     // 分两块上传
-    let r1 = terminal.attachment_upload_handler()
-        .send_upload_chunk(att.transfer_id, 0, Bytes::copy_from_slice(&upload_data[..5]))
+    let r1 = client.send_upload_chunk(att.transfer_id, 0, Bytes::copy_from_slice(&upload_data[..5]))
         .await.expect("upload chunk 1 failed");
     assert_eq!(r1.error_code, PAYLOAD_ERRCODE_OK);
-    let r2 = terminal.attachment_upload_handler()
-        .send_upload_chunk(att.transfer_id, 5, Bytes::copy_from_slice(&upload_data[5..]))
+    let r2 = client.send_upload_chunk(att.transfer_id, 5, Bytes::copy_from_slice(&upload_data[5..]))
         .await.expect("upload chunk 2 failed");
     assert_eq!(r2.error_code, PAYLOAD_ERRCODE_OK);
 
@@ -58,7 +55,7 @@ async fn test_attachment_upload_download() {
     assert_eq!((tid2, pos2, data2.as_ref()), (att.transfer_id, 5, &upload_data[5..]));
 
     // ===== 下载 =====
-    let header = terminal.attachment_download_handler().request_download(AttachmentDownloadRequest {
+    let header = client.request_download(AttachmentDownloadRequest {
         messenger_id: Arc::new("m1".to_string()),
         user_id: Arc::new("u1".to_string()),
         group_id: Arc::new("g1".to_string()),
