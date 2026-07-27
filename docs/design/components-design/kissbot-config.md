@@ -20,9 +20,7 @@
 - **目标**：统一管理各组件访问其他服务的 URL 地址
 - **依赖**：kissbot-config（配置加载）
 - **用户故事**：
-  - 作为一个消息通道组件，我要从公共配置中读取 memory-store 的 URL，以初始化 MemoryStoreClient
   - 作为一个 nexus，我要从公共配置中读取 memory-store 和 memory-ego 的 URL，以初始化记忆读写和认知组件通信
-  - 作为一个 channel-web，我要从公共配置中读取 memory-store 的 URL，以初始化 ChannelManager
 
 ### Epic 3：安全配置
 - **目标**：统一管理各组件的 API key 认证密钥
