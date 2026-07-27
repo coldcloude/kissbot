@@ -629,16 +629,7 @@ impl ChannelManager {
     {
         match self.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
-                let group_change_handler = Arc::downgrade(self);
-                let incoming_messages_handler = Arc::downgrade(self);
-                let download_attachment_payload_handler = Arc::downgrade(self);
-                let user_remove_handler = Arc::downgrade(self);
-                let messenger = messenger_creator.create(
-                    group_change_handler,
-                    incoming_messages_handler,
-                    download_attachment_payload_handler,
-                    user_remove_handler,
-                ).await?;
+                let messenger = messenger_creator.create(Arc::downgrade(self)).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
                     bound_map: DashMap::new(),
@@ -767,22 +758,18 @@ impl ChannelManager {
         let response =  rx.await??;
         Ok(response)
     }
-}
 
-#[async_trait]
-impl GroupChangeHandler for ChannelManager {
-    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>){
+    // === 以下方法原为 handler trait，Messenger 通过 Weak<ChannelManager> 直接调用 ===
+
+    pub async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) {
         let span = span!(Level::INFO, "channel_manager handle group change");
         let _enter = span.enter();
         if let Err(e) = self.handle_group_change_internal(event).await {
             error!("Failed to handle group change: {:?}", e);
         }
     }
-}
 
-#[async_trait]
-impl IncomingMessageHandler for ChannelManager {
-    async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
+    pub async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
         let results = tokio::join!(
@@ -795,22 +782,16 @@ impl IncomingMessageHandler for ChannelManager {
             }
         }
     }
-}
 
-#[async_trait]
-impl UserRemoveHandler for ChannelManager {
-    async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>) {
+    pub async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>) {
         let span = span!(Level::INFO, "channel_manager handle user remove");
         let _enter = span.enter();
         if let Err(e) = self.process_user_remove(event).await {
             error!("handle_user_remove error: {:?}", e);
         }
     }
-}
 
-#[async_trait]
-impl AttachmentDownloadPayloadSender for ChannelManager {
-    fn prepare_send(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
+    pub fn prepare_download_payload(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
         let sender_info = self.attachment_sender_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
         let connect_context = sender_info.connect_context.upgrade()
@@ -829,7 +810,7 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
         Ok((sn, buf))
     }
 
-    async fn send(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
+    pub async fn send_download_payload(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let sender_info = self.attachment_sender_map.get(&transfer_id)
             .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
         let connect_context = sender_info.connect_context.upgrade()
@@ -839,16 +820,12 @@ impl AttachmentDownloadPayloadSender for ChannelManager {
 
         // 判断是否为最后一块
         let is_last = pos + size as u64 >= file_size;
-
         let result = self.send_download_attachment_payload(sn, buf, connect_context).await;
-
         let is_error = match result.as_ref() { Ok(res) => res.error_code != 0, Err(_) => true };
-
         // 错误时清理，最后一块时清理过
         if is_error || is_last {
             self.attachment_sender_map.remove(&transfer_id);
         }
-
         result
     }
 }

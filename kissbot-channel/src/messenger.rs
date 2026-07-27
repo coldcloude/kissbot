@@ -3,7 +3,7 @@ use bytes::Bytes;
 use kissbot_api::{channel::*, message::*};
 
 use crate::error::Result;
-use crate::data::*;
+use crate::channel_manager::ChannelManager;
 use std::sync::{Arc, Weak};
 
 // Messenger trait
@@ -23,11 +23,5 @@ pub trait Messenger: Send + Sync + 'static {
 /// Messenger 创建器。M 为具体 Messenger 类型，create 返回 Arc<M> 供调用方直接使用。
 #[async_trait]
 pub trait MessengerCreator<M: Messenger> {
-    async fn create(
-        &self,
-        on_group_change: Weak<dyn GroupChangeHandler>,
-        on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-        on_user_remove: Weak<dyn UserRemoveHandler>,
-    ) -> Result<Arc<M>>;
+    async fn create(&self, manager: Weak<ChannelManager>) -> Result<Arc<M>>;
 }

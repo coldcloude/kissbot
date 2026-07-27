@@ -1,25 +1,8 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::BytesMut;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
-
-use crate::error::Result;
-
-#[async_trait]
-pub trait IncomingMessageHandler: Send + Sync {
-    async fn handle_incoming_message(&self, message: Arc<IncomingMessage>);
-}
-
-// ========== Attachment ==========
-
-#[async_trait]
-pub trait AttachmentDownloadPayloadSender: Send + Sync {
-    fn prepare_send(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)>;
-    async fn send(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse>;
-}
 
 // ========== Group Change ==========
 
@@ -37,11 +20,6 @@ pub enum GroupChangeType {
     Left,
 }
 
-#[async_trait]
-pub trait GroupChangeHandler: Send + Sync {
-    async fn handle_group_change(&self, event: Arc<GroupChangeEvent>);
-}
-
 // ========== User Remove ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,11 +27,6 @@ pub struct UserRemoveEvent {
     pub msg_id: Arc<String>,
     pub notification: Arc<UserRemoveNotification>,
     pub time: Arc<String>,
-}
-
-#[async_trait]
-pub trait UserRemoveHandler: Send + Sync {
-    async fn handle_user_remove(&self, event: Arc<UserRemoveEvent>);
 }
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
