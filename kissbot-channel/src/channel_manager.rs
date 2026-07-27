@@ -1,7 +1,6 @@
 use crate::{Error, error::Result};
 use crate::messenger::{Messenger, MessengerCreator};
 use crate::data::*;
-use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
@@ -21,8 +20,6 @@ static INTERVAL: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 struct BoundInfo {
     pub connect_id: u32,
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
 }
 
 struct MessengerContext {
@@ -49,7 +46,6 @@ pub struct ChannelManager {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
-    memory_store_client: Arc<MemoryStoreClient>,
     // 上传方向：transfer_id → AttachmentReceiverContext
     attachment_receiver_map: DashMap<u32, AttachmentReceiverContext>,
     // 下载方向：transfer_id → AttachmentSenderContext
@@ -210,9 +206,6 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         let connect_context = self.connect_context.upgrade()
         .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
 
-        let agent_id = bind_request.agent_id;
-        let role_name = bind_request.role_name;
-
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
         
@@ -225,8 +218,6 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         //绑定用户
         let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert_with(|| BoundInfo {
             connect_id: connect_context.connect_id,
-            agent_id: agent_id.clone(),
-            role_name: role_name.clone(),
         });
         
         if bound_info.connect_id != connect_context.connect_id {
@@ -603,7 +594,6 @@ impl ChannelManager {
             global_connect_id: AtomicU32::new(0),
             connect_map: DashMap::new(),
             messenger_map: DashMap::new(),
-            memory_store_client: Arc::new(MemoryStoreClient::new()),
             attachment_receiver_map: DashMap::new(),
             attachment_sender_map: DashMap::new(),
         }
@@ -712,18 +702,6 @@ impl ChannelManager {
         Ok(())
     }
 
-    async fn send_to_memory_store(&self, event: Arc<IncomingMessage>) -> Result<()>{
-        //找到对应的agent和role
-        let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
-        
-        let bound_info = messenger_context.bound_map.get(event.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(format!("User not bound: user_id {}", event.user_id)))?;
-
-        self.memory_store_client.push_messages(bound_info.agent_id.clone(), bound_info.role_name.clone(), event).await?;
-        Ok(())
-    }
-
     async fn process_user_remove(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
             .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
@@ -772,14 +750,8 @@ impl ChannelManager {
     pub async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
-        let results = tokio::join!(
-            self.send_to_agent(event.clone()),
-            self.send_to_memory_store(event.clone()),
-        );
-        for result in vec![results.0, results.1] {
-            if let Err(e) = result {
-                error!("Error processing incoming message: {:?}", e);
-            }
+        if let Err(e) = self.send_to_agent(event).await {
+            error!("Error processing incoming message: {:?}", e);
         }
     }
 
