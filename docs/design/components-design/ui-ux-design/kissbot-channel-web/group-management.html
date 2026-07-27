@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kissbot Web Chat 群组管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="chat">
+  <div class="header">
+    <span class="app-name">Kissbot Web Chat</span>
+    <div class="admin-dropdown">
+      <span class="admin-trigger">管理员 ▼</span>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="main admin-panel">
+      <h3 class="admin-panel-title">
+        <button class="back-btn">←</button>
+        群组管理
+      </h3>
+
+      <!-- 新建群组 -->
+      <div class="admin-panel-section">
+        <h4>新建群组</h4>
+        <input type="text" placeholder="群组名称" value="">
+        <div class="member-select">
+          <div class="member-tag">助手小A</div>
+          <div class="member-tag selected">助手小B</div>
+        </div>
+        <button class="action-btn">创建</button>
+      </div>
+
+      <!-- 重命名群组 -->
+      <div class="admin-panel-section">
+        <h4>重命名群组</h4>
+        <select class="admin-select">
+          <option value="">选择群组</option>
+          <option value="g1" selected>开发组</option>
+          <option value="g2">项目X</option>
+        </select>
+        <input type="text" placeholder="新名称" value="开发团队">
+        <button class="action-btn">重命名</button>
+      </div>
+
+      <!-- 管理成员 -->
+      <div class="admin-panel-section">
+        <h4>管理成员</h4>
+        <select class="admin-select">
+          <option value="">选择群组</option>
+          <option value="g1" selected>开发组</option>
+          <option value="g2">项目X</option>
+        </select>
+        <div class="member-select">
+          <div class="member-tag selected">助手小A</div>
+          <div class="member-tag">助手小B</div>
+        </div>
+        <button class="action-btn">添加成员</button>
+      </div>
+
+      <!-- 群组列表 -->
+      <div class="admin-panel-section">
+        <h4>群组列表</h4>
+
+        <div class="admin-item disabled">
+          <div class="admin-item-info">
+            <span class="admin-item-name">助手小A <span class="item-tag">单聊</span></span>
+            <span class="admin-item-meta">ID: a_u0</span>
+          </div>
+          <div class="admin-item-actions">
+            <span class="disabled-note">仅可查看消息</span>
+          </div>
+        </div>
+
+        <div class="admin-item disabled">
+          <div class="admin-item-info">
+            <span class="admin-item-name">助手小B <span class="item-tag">单聊</span></span>
+            <span class="admin-item-meta">ID: a_u1</span>
+          </div>
+          <div class="admin-item-actions">
+            <span class="disabled-note">仅可查看消息</span>
+          </div>
+        </div>
+
+        <div class="admin-item">
+          <div class="admin-item-info">
+            <span class="admin-item-name">开发组</span>
+            <span class="admin-item-meta">ID: g0 | 成员: admin, 助手小A, 助手小B</span>
+          </div>
+          <div class="admin-item-actions">
+            <button class="action-btn danger">删除</button>
+          </div>
+        </div>
+
+        <div class="admin-item">
+          <div class="admin-item-info">
+            <span class="admin-item-name">项目X</span>
+            <span class="admin-item-meta">ID: g1 | 成员: 助手小A, 助手小B</span>
+          </div>
+          <div class="admin-item-actions">
+            <button class="action-btn danger">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

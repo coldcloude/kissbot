@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kissbot Web Chat 用户管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="chat">
+  <div class="header">
+    <span class="app-name">Kissbot Web Chat</span>
+    <div class="admin-dropdown">
+      <span class="admin-trigger">管理员 ▼</span>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="main admin-panel">
+      <h3 class="admin-panel-title">
+        <button class="back-btn">←</button>
+        用户管理
+      </h3>
+
+      <!-- 新建用户 -->
+      <div class="admin-panel-section">
+        <h4>新建用户</h4>
+        <input type="text" placeholder="用户名称" value="">
+        <button class="action-btn">创建</button>
+        <p class="hint-text">用户 ID 由系统自动生成，创建后自动建立与 admin 的单聊群组</p>
+      </div>
+
+      <!-- 用户列表 -->
+      <div class="admin-panel-section">
+        <h4>用户列表</h4>
+
+        <div class="admin-item">
+          <div class="admin-item-info">
+            <span class="admin-item-name">助手小A</span>
+            <span class="admin-item-meta">ID: u0</span>
+          </div>
+          <div class="admin-item-actions">
+            <button class="action-btn">✏️ 重命名</button>
+            <button class="action-btn danger">删除</button>
+          </div>
+        </div>
+
+        <div class="admin-item">
+          <div class="admin-item-info">
+            <span class="admin-item-name">助手小B</span>
+            <span class="admin-item-meta">ID: u1</span>
+          </div>
+          <div class="admin-item-actions">
+            <button class="action-btn">✏️ 重命名</button>
+            <button class="action-btn danger">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

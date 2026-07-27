@@ -8,37 +8,94 @@
 </head>
 <body>
 <div class="chat">
+  <!-- 顶部标题栏 -->
   <div class="header">
-    <span>Kissbot Web Chat</span>
-    <span>管理员 ▼</span>
-  </div>
-  <div class="body">
-    <div class="sidebar">
-      <div class="sidebar-item active">● userA</div>
-      <div class="sidebar-item">○ userB</div>
-      <div class="sidebar-item">○ 群组名</div>
-      <div class="sidebar-divider"></div>
-      <div class="sidebar-bottom">☰ 群组管理</div>
-      <div class="sidebar-bottom">☰ 用户管理</div>
+    <span class="app-name">Kissbot Web Chat</span>
+    <div class="admin-dropdown">
+      <span class="admin-trigger">管理员 ▼</span>
+      <div class="dropdown-menu">
+        <div class="dropdown-item">✏️ 重命名管理员</div>
+        <div class="dropdown-item">☰ 群组管理</div>
+        <div class="dropdown-item">☰ 用户管理</div>
+      </div>
     </div>
-    <div class="main">
-      <div class="main-title">userA</div>
-      <div class="messages">
-        <div class="msg msg-from-me">
-          <div class="msg-bubble">你好！</div>
+  </div>
+
+  <div class="body">
+    <!-- 左侧 - 会话列表 -->
+    <div class="sidebar">
+      <div class="conversation-list">
+        <div class="conversation-item active">
+          <span class="conversation-name">助手小A</span>
+          <span class="conversation-badge">3</span>
         </div>
-        <div class="msg msg-from-other">
-          <div class="msg-sender">userA</div>
-          <div class="msg-bubble">你好，有什么需要帮助的吗？</div>
+        <div class="conversation-item">
+          <span class="conversation-name">助手小B</span>
+          <span class="conversation-badge">...</span>
         </div>
-        <div class="msg msg-from-me">
-          <div class="msg-bubble">今天天气如何？</div>
+        <div class="conversation-item">
+          <span class="conversation-name">开发组 <span class="group-tag">群组</span></span>
+          <span class="conversation-badge">2</span>
+        </div>
+        <div class="conversation-item">
+          <span class="conversation-name">项目X <span class="group-tag">群组</span></span>
+          <span class="conversation-badge"></span>
         </div>
       </div>
+    </div>
+
+    <!-- 右侧 - 消息区域 -->
+    <div class="main">
+      <div class="main-title">助手小A</div>
+
+      <div class="messages">
+        <!-- Text 消息 -->
+        <div class="msg msg-from-admin">
+          <div class="msg-bubble">你好！</div>
+        </div>
+        <div class="msg msg-from-user">
+          <div class="msg-sender">助手小A</div>
+          <div class="msg-bubble">你好，有什么需要帮助的吗？</div>
+        </div>
+        <div class="msg msg-from-admin">
+          <div class="msg-bubble">今天天气如何？</div>
+        </div>
+
+        <!-- Multi 消息（同框显示多条内容） -->
+        <div class="msg msg-from-admin">
+          <div class="msg-bubble msg-multi">
+            <div class="multi-item multi-text">这是食谱</div>
+            <div class="multi-item multi-attachment">
+              <img class="multi-thumb" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='120'%3E%3Crect width='200' height='120' fill='%23ddd'/%3E%3Ctext x='100' y='65' text-anchor='middle' fill='%23666' font-size='14'%3E%E7%BC%A9%E7%95%A5%E5%9B%BE%3C/text%3E%3C/svg%3E" alt="缩略图">
+            </div>
+          </div>
+        </div>
+
+        <!-- AttachmentInfoResponse - 图片 -->
+        <div class="msg msg-from-user">
+          <div class="msg-sender">助手小A</div>
+          <div class="msg-bubble">
+            <img class="image-attachment" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='120'%3E%3Crect width='200' height='120' fill='%23ddd'/%3E%3Ctext x='100' y='65' text-anchor='middle' fill='%23666' font-size='14'%3E%E5%9B%BE%E7%89%87%3C/text%3E%3C/svg%3E" alt="图片">
+          </div>
+        </div>
+
+        <!-- AttachmentInfoResponse - 文件 -->
+        <div class="msg msg-from-user">
+          <div class="msg-sender">助手小B</div>
+          <div class="msg-bubble">汇报材料请查收</div>
+          <div class="file-attachment">📎 季度报告.pdf</div>
+        </div>
+
+        <!-- 系统消息 -->
+        <div class="msg msg-system">
+          <div class="msg-system-text">📋 助手小B 加入了群组</div>
+        </div>
+      </div>
+
       <div class="footer">
         <input type="text" placeholder="输入消息...">
-        <button>📎</button>
-        <button>发送</button>
+        <button class="attach-btn">📎</button>
+        <button class="send-btn">发送</button>
       </div>
     </div>
   </div>

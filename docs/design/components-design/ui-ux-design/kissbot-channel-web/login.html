@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kissbot Web Chat 登录</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="login-page">
+  <div class="login-card">
+    <h1>Kissbot Web Chat</h1>
+    <p class="login-subtitle">管理后台</p>
+
+    <div class="login-section">
+      <label class="login-label">选择后端</label>
+      <div class="backend-url-list">
+        <div class="backend-url-item selected">
+          <div class="backend-name">生产环境</div>
+          <div class="backend-url">https://api.kissbot.example.com</div>
+        </div>
+        <div class="backend-url-item">
+          <div class="backend-name">测试环境</div>
+          <div class="backend-url">http://localhost:8301</div>
+        </div>
+        <div class="backend-url-item">
+          <div class="backend-name">开发环境</div>
+          <div class="backend-url">http://192.168.1.100:8301</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="login-section">
+      <label class="login-label">Admin Key</label>
+      <input type="password" placeholder="输入 Admin API Key" value="sk-••••••••">
+    </div>
+
+    <button class="connect-btn">连接</button>
+  </div>
+</div>
+</body>
+</html>
