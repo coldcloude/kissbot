@@ -1,61 +1,110 @@
-// API 类型定义
+// 后端返回的管理员信息
+export interface MessengerAdminInfo {
+  messenger_id: string;
+  admin_name: string;
+  // 注意：后端返回的是 key-value 对象
+  users: Record<string, UserConfig>;
+  groups: Record<string, GroupConfig>;
+}
 
-export interface User {
+export interface UserConfig {
   user_id: string;
   user_name: string;
 }
 
-export interface Group {
+export interface GroupConfig {
   group_id: string;
   group_name: string;
   members: string[];
-  is_admin_user_group: boolean;
 }
 
-export interface ConnectResponse {
-  user_id: string;
-  user_name: string;
-  is_admin: boolean;
-  messenger: {
-    messenger_id: string;
-    messenger_name: string;
-    users: User[];
-    groups: Group[];
-  };
-}
-
-export interface MessageData {
+// 消息类型
+export interface IncomingMessage {
   msg_id: string;
-  group_id: string;
+  messenger_id: string;
   user_id: string;
-  is_self: number;
+  group_id: string;
+  is_self: number; // 1=admin, 0=user
   msg_type: string;
-  content: string;
+  content: Content; // Content 枚举
   time: string;
 }
 
-export interface SSEEvent {
-  type: 'message';
-  data: MessageData;
+// Content 枚举——serde untagged 格式
+export type Content =
+  | { Text: string }
+  | { AttachmentInfoResponse: AttachmentInfoResponse }
+  | { GroupChange: GroupChangeNotification }
+  | { UserRemove: UserRemoveNotification }
+  | { Multi: MessageItem[] };
+
+export interface AttachmentInfo {
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
 }
 
+export interface AttachmentInfoResponse {
+  key: string;
+  info: AttachmentInfo;
+  transfer_id: number;
+}
+
+export interface GroupChangeNotification {
+  messenger_id: string;
+  group_id: string;
+  user_id: string;
+}
+
+export interface UserRemoveNotification {
+  messenger_id: string;
+  user_id: string;
+}
+
+export interface MessageItem {
+  msg_type: string;
+  content: Content;
+}
+
+// 消息历史
+export interface LineMessage {
+  line: number;
+  message: IncomingMessage;
+}
+
+export interface GroupedMessages {
+  key: MsgKey;
+  messages: LineMessage[];
+}
+
+export interface MsgKey {
+  group_id: string;
+  date: string;
+}
+
+// API 请求/响应
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: string;
 }
 
-export interface SendMessageRequest {
+export interface OutgoingMessage {
+  messenger_id: string;
+  user_id: string;
   group_id: string;
-  content: string;
-  attachments?: AttachmentRef[];
+  msg_type: string;
+  content: Content;
 }
 
-export interface AttachmentRef {
-  filename: string;
-  key: string;
+export interface OutgoingMessageResponse {
+  msg_id: string;
+  time: string;
+  msg_type: string;
+  content: Content;
 }
 
+// 管理请求
 export interface CreateGroupRequest {
   group_name: string;
   member_ids: string[];
@@ -77,10 +126,27 @@ export interface DeleteGroupRequest {
 }
 
 export interface CreateUserRequest {
+  user_name: string;
+}
+
+export interface RenameUserRequest {
   user_id: string;
   user_name: string;
 }
 
 export interface DeleteUserRequest {
   user_id: string;
+}
+
+export interface RenameAdminRequest {
+  admin_name: string;
+}
+
+// 管理面板视图
+export type AdminView = 'none' | 'groups' | 'users';
+
+// 预置后端 URL
+export interface BackendUrlOption {
+  name: string;
+  url: string;
 }
