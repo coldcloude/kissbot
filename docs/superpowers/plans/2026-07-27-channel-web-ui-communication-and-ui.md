@@ -601,123 +601,189 @@ cd /home/admin/project/kissbot && git add kissbot-channel-web-ui/src/index.css &
 
 ---
 
-### Task 5: 重构 App.tsx
+### Task 5: 重构前端组件
 
 **Files:**
-- Modify: `kissbot-channel-web-ui/src/App.tsx`
+- Create: `kissbot-channel-web-ui/src/components/LoginPage.tsx`
+- Create: `kissbot-channel-web-ui/src/components/MainLayout.tsx`
+- Create: `kissbot-channel-web-ui/src/components/Header.tsx`
+- Create: `kissbot-channel-web-ui/src/components/Sidebar.tsx`
+- Create: `kissbot-channel-web-ui/src/components/MessageArea.tsx`
+- Create: `kissbot-channel-web-ui/src/components/MessageBubble.tsx`
+- Create: `kissbot-channel-web-ui/src/components/AttachmentPreview.tsx`
+- Create: `kissbot-channel-web-ui/src/components/ImageOverlay.tsx`
+- Create: `kissbot-channel-web-ui/src/components/GroupManagement.tsx`
+- Create: `kissbot-channel-web-ui/src/components/UserManagement.tsx`
+- Create: `kissbot-channel-web-ui/src/hooks/useUnreadCounts.ts`
+- Modify: `kissbot-channel-web-ui/src/App.tsx`（精简为状态切换）
 
 **Interfaces:**
 - Consumes: `types/index.ts` 类型、`api/client.ts` 方法、`api/sse.ts`、`api/config.ts` 预置 URL
 - Produces: 完整 UI
 
-这是最大的改动，建议分步完成：
+按职责拆分，每个文件一个关注点。建议分步完成：
 
-- [ ] **Step 5.1: 实现登录页面**
+- [ ] **Step 5.1: 创建 types/index.ts（已在 Task 1 完成）**
+
+- [ ] **Step 5.2: 创建 LoginPage.tsx**
 
 ```typescript
-// 状态：connected / connecting / apiKeyInput / selectedBackendUrl / connectError
-// 渲染：登录页卡片
-// - 应用名称 "Kissbot Web Chat"
-// - 后端 URL 列表（从 config.ts 取，选中高亮）
-// - Admin Key 输入框
+// 状态：connecting / apiKeyInput / selectedBackendUrl / connectError
+// Props: onConnect(backendUrl, apiKey) → Promise<void>
+// 渲染：
+// - 应用名称 "Kissbot Web Chat" + "管理后台"副标题
+// - 后端 URL 列表（从 config.ts 取，选中高亮，大字名称+小字URL）
+// - Admin Key 密码输入框
 // - 连接按钮
-// - 连接时调用 connect(backendUrl, apiKey)
 ```
 
-- [ ] **Step 5.2: 实现主界面布局框架**
+- [ ] **Step 5.3: 创建 Header.tsx**
 
 ```typescript
-// 成功后渲染：
-// - Header：app name + 管理员下拉菜单（重命名/群组管理/用户管理）
-// - Sidebar：会话列表
-// - Main：消息区域 或 管理面板（由 adminView 控制）
+// Props: adminName, onRenameAdmin(name) → void, onNavigateAdmin(view) → void
+// 渲染：
+// - 左侧："Kissbot Web Chat"
+// - 右侧：管理员名称 + "▼" 下拉菜单
+// - 下拉项：重命名管理员 / 群组管理 / 用户管理
+// - 重命名管理员：弹窗输入新名称 → onRenameAdmin(name)
 ```
 
-- [ ] **Step 5.3: 实现会话列表（sidebar）**
+- [ ] **Step 5.4: 创建 Sidebar.tsx**
 
 ```typescript
-// - 将 users 对象转数组、groups 对象转数组，合并显示
-// - admin-user 单聊组（group_id 以 "a_" 开头）→ 显示对应用户名
-// - 多人群组（group_id 以 "g" 开头）→ 显示群组名 + "群组" 标记
-// - 右对齐未读数，切换清零，>99 显示 "..."
-// - 按最新消息 time 降序
+// Props: conversations（排序后的列表）, activeGroupId, onSelect(groupId), unreadCounts
+// 每个 conversation 对象：
+//   - group_id, display_name, is_admin_user_group, latest_time, unread_count
+// 渲染：
+// - 列表项：显示名称 + 右对齐未读数（>99 显示 "..."）
+// - active 高亮
+// - admin-user 单聊组显示用户名，多人群组显示群组名 + "群组"标记
 ```
 
-- [ ] **Step 5.4: 实现消息区域**
+- [ ] **Step 5.5: 创建 MessageBubble.tsx**
 
 ```typescript
-// - 选中会话后显示消息列表
-// - 首次加载调用 getMessagesRecent，按 date 分组渲染
-// - 滚动到顶部调用 getMessagesBefore
-// - Content 枚举渲染：
-//   - Text → 直接文本
-//   - AttachmentInfoResponse(mime_type=image/*) → 缩略图，点击弹窗原图
-//   - AttachmentInfoResponse(非图片) → 文件链接
-//   - GroupChange → 居中 "XX 加入了群组"/"XX 离开了群组"
-//   - UserRemove → 居中 "XX 已被删除"
-//   - 其他 → 忽略
-// - 消息靠左/靠右（is_self）
+// Props: message（IncomingMessage）
+// 按 Content 枚举渲染：
+// - Text → 直接文本
+// - AttachmentInfoResponse(mime_type=image/*) → 缩略图，点击弹窗原图
+// - AttachmentInfoResponse(非图片) → 文件链接
+// - GroupChange → 居中 "XX 加入了群组"/"XX 离开了群组"
+// - UserRemove → 居中 "XX 已被删除"
+// - 其他 → 忽略不显示
 ```
 
-- [ ] **Step 5.5: 实现输入区 + 附件上传**
+- [ ] **Step 5.6: 创建 AttachmentPreview.tsx**
 
 ```typescript
-// - 文本输入框 + 发送按钮 + 附件按钮
-// - 附件上传两步流程：
-//   1. 调用 sendAttachmentMessage(messengerId, groupId, {file_name, mime_type, size_bytes})
-//   2. 从响应 content.AttachmentInfoResponse 中取 transfer_id
-//   3. 调用 uploadAttachmentData(transferId, file)
-// - 文本和附件始终分两条消息发送
+// Props: files（File[]）, onRemove(index) → void
+// 渲染：已选文件的名称列表，每项可移除
 ```
 
-- [ ] **Step 5.6: 实现管理员下拉菜单**
+- [ ] **Step 5.7: 创建 ImageOverlay.tsx**
 
 ```typescript
-// - 重命名管理员：弹窗输入新名称 → renameAdmin()
-// - 群组管理：设置 adminView='groups'
-// - 用户管理：设置 adminView='users'
+// Props: src（string）, onClose() → void
+// 渲染：全屏半透明背景 + 居中图片，点击关闭
 ```
 
-- [ ] **Step 5.7: 实现群组管理面板**
+- [ ] **Step 5.8: 创建 MessageArea.tsx**
 
 ```typescript
-// - 复用当前 GroupManagementPanel 思路，但按新 API 调整
-// - 新建：输入名称 + 选成员 → createGroup()
-// - 重命名：选群组 + 新名称 → renameGroup()
-// - 管理成员：选群组 + 选成员 → manageMembers()
-// - 删除：确认后 deleteGroup()
-// - admin-user 单聊组（group_id 以 "a_" 开头）在列表中禁用
-// - 返回按钮 → setAdminView('none')
+// Props:
+//   - groupName, messages（按 date 分组的 GroupedMessages[]）
+//   - loadingMore（是否正在加载更多）
+//   - canSend（是否可发送，admin 是否在群组中）
+//   - onSendText(text) → Promise<void>
+//   - onSendAttachment(file) → Promise<void>
+//   - onLoadMore() → void（滚动到顶部时调用）
+// 渲染：
+// - 顶部标题（groupName）
+// - 消息列表（MessageBubble 渲染，is_self 靠左/靠右）
+// - 附件预览（AttachmentPreview）
+// - 输入区：文本输入 + 📎 + 发送按钮（canSend 为 false 时禁用）
 ```
 
-- [ ] **Step 5.8: 实现用户管理面板**
+- [ ] **Step 5.9: 创建 GroupManagement.tsx**
 
 ```typescript
-// - 新建：只输入用户名 → createUser()
-// - 重命名：按钮弹出编辑框 → renameUser()
-// - 删除：确认后 deleteUser()
-// - 返回按钮 → setAdminView('none')
+// Props:
+//   - groups, users
+//   - onCreateGroup(name, memberIds) → void
+//   - onRenameGroup(groupId, name) → void
+//   - onDeleteGroup(groupId) → void
+//   - onManageMembers(groupId, addIds, removeIds) → void
+//   - onBack() → void
+// 渲染：
+// - 新建群组：输入名称 + 选成员 → onCreateGroup
+// - 重命名群组：选群组 + 新名称 → onRenameGroup
+// - 管理成员：选群组 + 选加/删成员 → onManageMembers
+// - 群组列表：admin-user 单聊组禁用（显示 "仅可查看消息"），多人群组可删除
 ```
 
-- [ ] **Step 5.9: 接入 SSE**
+- [ ] **Step 5.10: 创建 UserManagement.tsx**
 
 ```typescript
-// - 连接成功后注册 sseService.onMessage
-// - 收到消息后存入 messages map
-// - 更新未读计数（当前活跃会话不清零，非活跃会话增加）
-// - 离开时 sseService.disconnect()
+// Props:
+//   - users
+//   - onCreateUser(userName) → void
+//   - onRenameUser(userId, userName) → void
+//   - onDeleteUser(userId) → void
+//   - onBack() → void
+// 渲染：
+// - 新建用户：只输入用户名 → onCreateUser
+// - 用户列表：每项有重命名（弹编辑框）和删除按钮
 ```
 
-- [ ] **Step 5.10: 运行 tsc 检查并启动 dev server 验证**
+- [ ] **Step 5.11: 创建 useUnreadCounts.ts**
+
+```typescript
+// 管理未读计数 Map<string, number>
+// - increment(groupId) → void
+// - clear(groupId) → void
+// - get(groupId) → number（格式化：>99 → "..."）
+// 初始状态从 messages map 派生
+```
+
+- [ ] **Step 5.12: 创建 MainLayout.tsx**
+
+```typescript
+// Props:
+//   - adminName, groups, users, messages, unreadCounts
+//   - activeGroupId, onSelectGroup(groupId), adminView, onAdminView(view)
+//   - onSendText, onSendAttachment, onLoadMore
+//   - onCreateGroup, onRenameGroup, onDeleteGroup, onManageMembers
+//   - onCreateUser, onRenameUser, onDeleteUser
+//   - onRenameAdmin
+// 渲染：
+// - Header（adminName, 下拉菜单）
+// - Sidebar（会话列表）
+// - Main：adminView='none' → MessageArea，'groups' → GroupManagement，'users' → UserManagement
+```
+
+- [ ] **Step 5.13: 精简 App.tsx**
+
+```typescript
+// 状态：connected / adminName / messengerId / groups / users / messages / unreadCounts
+// 渲染：
+//   - 未连接 → LoginPage（onConnect 调用 connect()）
+//   - 已连接 → MainLayout
+// 管理：
+//   - connect() → 解析 MessengerAdminInfo → 填充 groups/users 状态
+//   - SSE 消息 → 按 msg_id 去重，存入 messages map，更新未读
+//   - 所有管理 API 调用 → 成功后更新本地状态
+```
+
+- [ ] **Step 5.14: 运行 tsc 检查并启动 dev server 验证**
 
 ```bash
 cd kissbot-channel-web-ui && npx tsc --noEmit && npm run dev
 ```
 
-- [ ] **Step 5.11: 提交**
+- [ ] **Step 5.15: 提交**
 
 ```bash
-cd /home/admin/project/kissbot && git add kissbot-channel-web-ui/src/App.tsx && git commit -m "channel-web-ui App: 重构主界面，对接后端 API 和设计稿"
+cd /home/admin/project/kissbot && git add kissbot-channel-web-ui/src/ && git commit -m "channel-web-ui: 按职责拆分组件，对接后端 API 和设计稿"
 ```
 
 ---

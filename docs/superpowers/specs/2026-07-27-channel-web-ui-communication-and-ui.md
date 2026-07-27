@@ -168,14 +168,51 @@ msg_type 取值：
 
 ### 文件结构（kissbot-channel-web-ui/src/）
 
+按职责拆分模块，每个文件一个关注点：
+
+```
+src/
+├── App.tsx                      # 主入口：connected 状态切换登录/主界面
+├── components/
+│   ├── LoginPage.tsx            # 登录页
+│   ├── MainLayout.tsx           # 主界面框架（header + sidebar + main）
+│   ├── Header.tsx               # 顶部标题栏 + 管理员下拉菜单
+│   ├── Sidebar.tsx              # 会话列表
+│   ├── MessageArea.tsx          # 消息区域（标题 + 消息列表 + 输入区）
+│   ├── MessageBubble.tsx        # 单条消息渲染（按 Content 类型）
+│   ├── AttachmentPreview.tsx    # 附件预览（上传前显示已选文件）
+│   ├── ImageOverlay.tsx         # 图片全屏弹窗
+│   ├── GroupManagement.tsx      # 群组管理面板
+│   └── UserManagement.tsx       # 用户管理面板
+├── hooks/
+│   └── useUnreadCounts.ts       # 未读计数管理
+├── api/
+│   ├── client.ts                # API 客户端
+│   ├── config.ts                # 预置后端 URL
+│   └── sse.ts                   # SSE 服务
+└── types/
+    └── index.ts                 # 类型定义
+```
+
 | 文件 | 改动 |
 |---|---|
 | `api/client.ts` | 所有路径加 `/api` 前缀；重写 `connect()` → `GET /api/info`；重写 `sendMessage()` → 匹配 `OutgoingMessage`；重写 `uploadAttachment()` → 两步流程；新增 `renameAdmin()`、`renameUser()`；删除不存在的 `listGroups()`、`listUsers()`；修复消息历史 API |
 | `api/sse.ts` | 去掉 `{type, data}` 包装解析，直接透传 `IncomingMessage` JSON |
+| `api/config.ts` | 预置后端 URL 列表（名称 + URL）|
 | `types/index.ts` | 匹配后端 `MessengerAdminInfo`、`UserConfig`（无 `is_admin`）、`GroupConfig`（`members` 为数组）、`Content` 枚举 |
-| `App.tsx` | 重构 header/sidebar/main 布局，管理员下拉菜单，Content 枚举渲染，分页加载，附件上传两步流程 |
-| `index.css` | 同步 style.css 设计稿样式（登录页、dropdown、会话列表、管理面板等） |
-| （新增）`api/config.ts` | 预置后端 URL 列表（名称 + URL）|
+| `App.tsx` | 精简为 connected 状态切换（登录页 ↔ 主界面）|
+| `components/LoginPage.tsx` | 登录页 |
+| `components/MainLayout.tsx` | 主界面框架，协调 header/sidebar/main/admin panel |
+| `components/Header.tsx` | 顶部标题栏 + 管理员下拉菜单 |
+| `components/Sidebar.tsx` | 会话列表渲染 |
+| `components/MessageArea.tsx` | 消息区域（标题 + 消息列表 + 输入区）|
+| `components/MessageBubble.tsx` | 按 Content 类型渲染单条消息 |
+| `components/AttachmentPreview.tsx` | 附件预览 |
+| `components/ImageOverlay.tsx` | 图片全屏弹窗 |
+| `components/GroupManagement.tsx` | 群组管理面板 |
+| `components/UserManagement.tsx` | 用户管理面板 |
+| `hooks/useUnreadCounts.ts` | 未读计数管理 |
+| `index.css` | 同步 style.css 设计稿样式 |
 
 ### 布局框架
 
@@ -206,6 +243,16 @@ msg_type 取值：
    - `UserRemove` → 居中系统消息"用户已被删除"
    - 其他 → 忽略不显示
 3. `is_self === 1` 靠右显示（admin 消息），`is_self === 0` 靠左显示（user 消息）
+
+### 消息去重
+
+admin 发送消息后前端本地添加，SSE 也会推送同一条消息。所有消息按 `msg_id` 去重，已存在则跳过。
+
+### 本地状态同步
+
+管理操作成功后，前端用请求参数 + 后端返回值更新本地状态：
+- 新建用户：响应含 `user_id`，前端同步添加 user 和对应的 admin-user 单聊组（`a_{user_id}`）到本地列表
+- 新建群组：响应含 `group_id`，前端用请求参数补全 `group_name` 和 `members` 添加到本地列表
 
 ### 会话列表排序与未读
 
