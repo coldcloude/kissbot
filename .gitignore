@@ -6,3 +6,4 @@ dist
 .claude/settings.local.json
 CLAUDE.local.md
 .superpowers
+.pi-subagents
