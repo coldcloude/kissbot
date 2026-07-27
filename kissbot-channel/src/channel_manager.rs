@@ -17,14 +17,10 @@ const MSG_QUEUE_SIZE: usize = 100;
 
 static INTERVAL: Duration = Duration::from_secs(10);
 
-#[derive(Clone)]
-struct BoundInfo {
-    pub connect_id: u32,
-}
-
 struct MessengerContext {
     pub messenger: Arc<dyn Messenger>,
-    pub bound_map: DashMap<String, BoundInfo>,
+    // user_id → connect_id
+    pub bound_map: DashMap<String, u32>,
 }
 
 struct ConnectContext {
@@ -71,7 +67,7 @@ impl ConnectCloseProcessor {
             while !finished {
                 let mut candidate_user_ids = Vec::new();
                 for bound_info in messenger_context.bound_map.iter() {
-                    if bound_info.connect_id == connect_context.connect_id {
+                    if *bound_info.value() == connect_context.connect_id {
                         candidate_user_ids.push(bound_info.key().clone());
                     }
                 }
@@ -216,12 +212,10 @@ impl JsonProcessorWrapper for BindAgentUserProcessor {
         }
 
         //绑定用户
-        let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert_with(|| BoundInfo {
-            connect_id: connect_context.connect_id,
-        });
+        let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert(connect_context.connect_id);
         
-        if bound_info.connect_id != connect_context.connect_id {
-            return Err(Error::UserAlreadyBound(bound_info.connect_id.to_string()));
+        if *bound_info != connect_context.connect_id {
+            return Err(Error::UserAlreadyBound(bound_info.to_string()));
         }
 
         Ok(None)
@@ -263,7 +257,7 @@ impl JsonProcessorWrapper for UnbindAgentUserProcessor {
         let bound_connect_id = {
             let bound_info = messenger_context.bound_map.get(bind_request.user_id.as_str())
                 .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;
-            bound_info.connect_id
+            *bound_info
         };
         if bound_connect_id != connect_context.connect_id {
             return Err(Error::UserAlreadyBound(bound_connect_id.to_string()));
@@ -326,10 +320,10 @@ impl JsonProcessorWrapper for OutgoingMessageProcessor {
         let messenger_context = manager.messenger_map.get(outgoing_message.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.to_string()))?;
 
-        let bound_info = messenger_context.bound_map.get(outgoing_message.user_id.as_str())
+        let bound_connect_id = *messenger_context.bound_map.get(outgoing_message.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.to_string()))?;
 
-        if bound_info.connect_id != self.connect_id {
+        if bound_connect_id != self.connect_id {
             return Err(Error::UserNotBound(outgoing_message.user_id.to_string()));
         }
 
@@ -446,9 +440,9 @@ impl AttachmentDownloadRequestProcessor {
         let messenger_context = manager.messenger_map.get(request.messenger_id.as_str())
             .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.to_string()))?;
 
-        let bound_info = messenger_context.bound_map.get(request.user_id.as_str())
+        let bound_connect_id = *messenger_context.bound_map.get(request.user_id.as_str())
             .ok_or_else(|| Error::UserNotFound(request.user_id.to_string()))?;
-        if bound_info.connect_id != connect_context.connect_id {
+        if bound_connect_id != connect_context.connect_id {
             return Err(Error::UserNotBound(request.user_id.to_string()));
         }
         let messenger = messenger_context.messenger.clone();
@@ -638,11 +632,11 @@ impl ChannelManager {
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
 
-        let bound_info = messenger_context.bound_map.get(event.notification.user_id.as_str())
+        let bound_connect_id = *messenger_context.bound_map.get(event.notification.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
-        let connect_context = self.connect_map.get(&bound_info.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
+        let connect_context = self.connect_map.get(&bound_connect_id)
+        .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
 
         //处理group变更事件
         match event.change_type {
@@ -685,11 +679,11 @@ impl ChannelManager {
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
 
-        let bound_info = messenger_context.bound_map.get(event.user_id.as_str())
+        let bound_connect_id = *messenger_context.bound_map.get(event.user_id.as_str())
         .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
 
-        let connect_context = self.connect_map.get(&bound_info.connect_id)
-        .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
+        let connect_context = self.connect_map.get(&bound_connect_id)
+        .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
 
         let payload = serde_json::to_value(event)?;
         let sn = connect_context.ws_context.next_request_sn();
@@ -706,11 +700,11 @@ impl ChannelManager {
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
             .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
 
-        let (_,bound_info) = messenger_context.bound_map.remove(event.notification.user_id.as_str())
+        let (_,bound_connect_id) = messenger_context.bound_map.remove(event.notification.user_id.as_str())
             .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
 
-        let connect_context = self.connect_map.get(&bound_info.connect_id)
-            .ok_or_else(|| Error::ConnectNotFound(bound_info.connect_id))?;
+        let connect_context = self.connect_map.get(&bound_connect_id)
+            .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
 
         //通知 agent 用户已删除
         let payload = serde_json::to_value(event.notification.as_ref())?;
