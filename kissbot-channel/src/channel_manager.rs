@@ -5,7 +5,7 @@ use crate::memory_store_client::MemoryStoreClient;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
-use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorInitializer, parse_bin_sn, ws_handle_connection_with_filter};
+use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorContext, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{IncomingMessage, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
@@ -538,60 +538,58 @@ impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
     }
 }
 
-struct ChannelManagerInitializer;
-
 #[async_trait]
-impl WsProcessorInitializer<ChannelManager> for ChannelManagerInitializer {
-    async fn init(&self, ws_context: Arc<WsContext>, manager: Arc<ChannelManager>) -> std::result::Result<(), kai_ws::Error> {
+impl WsProcessorContext for ChannelManager {
+    async fn init(self: Arc<Self>, ws_context: Arc<WsContext>) -> std::result::Result<(), kai_ws::Error> {
         //保存context
-        let connect_id = manager.global_connect_id.fetch_add(1, Ordering::Relaxed);
+        let connect_id = self.global_connect_id.fetch_add(1, Ordering::Relaxed);
         let connect_context = Arc::new(ConnectContext {
             connect_id,
             ws_context: ws_context.clone(),
         });
-        manager.connect_map.insert(connect_id, connect_context.clone());
+        self.connect_map.insert(connect_id, connect_context.clone());
         //处理心跳
         let heartbeat_handler = Arc::new(WsHeartbeatHandler::new(INTERVAL, ws_context.clone()));
         ws_context.set_bin_processor(TYPE_HEARTBEAT, heartbeat_handler.clone());
         tokio::spawn(async move { heartbeat_handler.start().await });
         //处理关闭
         let close_handler = Arc::new(ConnectCloseProcessor {
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
             connect_id,
         });
         ws_context.set_close_processor(close_handler);
         //messenger info request
         let messenger_info_request_handler = Arc::new(MessengerInfoRequestProcessor {
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
         });
         ws_context.set_json_processor(TYPE_MESSENGER_INFO_REQUEST, messenger_info_request_handler);
         //agent绑定
         let bind_agent_handler = Arc::new(BindAgentUserProcessor {
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
             connect_context: Arc::downgrade(&connect_context),
         });
         ws_context.set_json_processor(TYPE_BIND_AGENT_USER, bind_agent_handler);
         //agent解绑
         let unbind_agent_handler = Arc::new(UnbindAgentUserProcessor {
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
             connect_context: Arc::downgrade(&connect_context),
         });
         ws_context.set_json_processor(TYPE_UNBIND_AGENT_USER, unbind_agent_handler);
         //outgoing message
         let outgoing_message_handler = Arc::new(OutgoingMessageProcessor {
             connect_id,
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
         });
         ws_context.set_json_processor(TYPE_OUTGOING_MESSAGE, outgoing_message_handler);
         //attachment payload
         let attachment_payload_handler = Arc::new(AttachmentPayloadProcessor {
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
         });
         ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, attachment_payload_handler);
         //attachment download request
         let attachment_download_request_handler = Arc::new(AttachmentDownloadRequestProcessor {
             connect_context: Arc::downgrade(&connect_context),
-            manager: Arc::downgrade(&manager),
+            manager: Arc::downgrade(&self),
         });
         ws_context.set_json_processor(TYPE_ATTACHMENT_DOWNLOAD_REQUEST, attachment_download_request_handler);
         Ok(())
@@ -617,10 +615,9 @@ impl ChannelManager {
         let _enter = span.enter();
         let listener = TcpListener::bind(addr).await?;
         info!("WS Server listening on: {}", addr);
-        let initializer = ChannelManagerInitializer {};
         let filter = kissbot_security::ApiKeyWsFilter::new(std::sync::Arc::new(kissbot_security::SimpleApiKeyValidator::new(kissbot_security::SecurityConfig::get().api_key.clone())));
         while let Ok((stream, _)) = listener.accept().await {
-            ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, self.clone(), &initializer, &[&filter]).await?;
+            ws_handle_connection_with_filter(stream, MSG_QUEUE_SIZE, self.clone(), &[&filter]).await?;
         }
         Ok(())
     }

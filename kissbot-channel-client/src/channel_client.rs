@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -6,6 +6,7 @@ use kai_ws::*;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_security::HEADER_API_KEY;
+use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tracing::error;
@@ -47,12 +48,12 @@ impl ChannelClient {
         })
     }
 
-    fn get_ws_context(&self) -> Result<Arc<WsContext>> {
-        self.ws_context.read().unwrap().clone().ok_or(Error::NotConnected)
+    async fn get_ws_context(&self) -> Result<Arc<WsContext>> {
+        self.ws_context.read().await.clone().ok_or(Error::NotConnected)
     }
 
-    fn get_terminal(&self) -> Result<Arc<dyn Terminal>> {
-        self.terminal.read().unwrap().clone()
+    async fn get_terminal(&self) -> Result<Arc<dyn Terminal>> {
+        self.terminal.read().await.clone()
             .ok_or_else(|| Error::InternalError("terminal is None".to_string()))
     }
 
@@ -74,22 +75,22 @@ impl ChannelClient {
             Arc::downgrade(&attachment_upload_handler),
             Arc::downgrade(&attachment_download_handler),
         ).await?;
-        *self.terminal.write().unwrap() = Some(terminal.clone());
+        *self.terminal.write().await = Some(terminal.clone());
 
         let headers = [(HEADER_API_KEY.to_string(), api_key.to_string())];
-        kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone(), &ChannelClientInitializer).await?;
+        kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone()).await?;
         Ok(terminal)
     }
 
     /// 主动断开连接
     pub async fn disconnect(&self) -> Result<()> {
-        self.get_ws_context()?.send_close().await?;
+        self.get_ws_context().await?.send_close().await?;
         Ok(())
     }
 
     /// 发送 JSON 请求并等待响应（带超时）
     async fn request_json(&self, payload_type: u32, payload: serde_json::Value) -> Result<Option<serde_json::Value>> {
-        let context = self.get_ws_context()?;
+        let context = self.get_ws_context().await?;
         let (tx, rx) = oneshot::channel();
         let msg = WsMessage {
             sn: context.next_request_sn(),
@@ -146,7 +147,7 @@ impl OutgoingMessageHandler for ChannelClient {
 #[async_trait]
 impl AttachmentUploadHandler for ChannelClient {
     async fn send_upload_chunk(&self, transfer_id: u32, pos: u64, data: Bytes) -> Result<AttachmentPayloadResponse> {
-        let context = self.get_ws_context()?;
+        let context = self.get_ws_context().await?;
         let sn = context.next_request_sn();
         // 二进制帧：sn + payload_type + status_code + transfer_id + size + pos + data
         let mut buf = BytesMut::with_capacity(OFFSET_ATT_DATA + data.len());
@@ -193,7 +194,7 @@ struct TerminalJsonProcessor {
 impl WsJsonProcessor for TerminalJsonProcessor {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         let Some(client) = self.client.upgrade() else { return };
-        let Ok(terminal) = client.get_terminal() else { return };
+        let Ok(terminal) = client.get_terminal().await else { return };
         let Some(payload) = data.payload else {
             error!("TerminalJsonProcessor: payload is None, type {:#x}", data.payload_type);
             return;
@@ -229,7 +230,7 @@ struct TerminalCloseProcessor {
 impl WsCloseProcessor for TerminalCloseProcessor {
     async fn process_close(&self, _context: Arc<WsContext>) {
         let Some(client) = self.client.upgrade() else { return };
-        if let Ok(terminal) = client.get_terminal() {
+        if let Ok(terminal) = client.get_terminal().await {
             terminal.closed().await;
         }
     }
@@ -281,7 +282,7 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
         // 检查 payload_type 是否为下载分块（而非心跳等其他二进制消息）
         let info = Self::wait_transfer_info(&client, header.id).await;
         let result = match &info {
-            Some(info) => match client.get_terminal() {
+            Some(info) => match client.get_terminal().await {
                 Ok(terminal) => terminal.download_chunk(info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
                 Err(e) => Err(e),
             },
@@ -323,26 +324,24 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
     }
 }
 
-struct ChannelClientInitializer;
-
 #[async_trait]
-impl WsProcessorInitializer<ChannelClient> for ChannelClientInitializer {
-    async fn init(&self, ws_context: Arc<WsContext>, client: Arc<ChannelClient>) -> std::result::Result<(), kai_ws::Error> {
-        *client.ws_context.write().unwrap() = Some(ws_context.clone());
+impl WsProcessorContext for ChannelClient {
+    async fn init(self: Arc<Self>, ws_context: Arc<WsContext>) -> std::result::Result<(), kai_ws::Error> {
+        *self.ws_context.write().await = Some(ws_context.clone());
         // 心跳
         let heartbeat = Arc::new(WsHeartbeatHandler::new(HEARTBEAT_INTERVAL, ws_context.clone()));
         ws_context.set_bin_processor(TYPE_HEARTBEAT, heartbeat.clone());
         tokio::spawn(async move { let _ = heartbeat.start().await; });
         // 关闭通知
-        ws_context.set_close_processor(Arc::new(TerminalCloseProcessor { client: Arc::downgrade(&client) }));
+        ws_context.set_close_processor(Arc::new(TerminalCloseProcessor { client: Arc::downgrade(&self) }));
         // 服务端推送的 JSON 消息
-        let json_processor = Arc::new(TerminalJsonProcessor { client: Arc::downgrade(&client) });
+        let json_processor = Arc::new(TerminalJsonProcessor { client: Arc::downgrade(&self) });
         ws_context.set_json_processor(TYPE_INCOMING_MESSAGE, json_processor.clone());
         ws_context.set_json_processor(TYPE_JOIN_GROUP, json_processor.clone());
         ws_context.set_json_processor(TYPE_LEAVE_GROUP, json_processor.clone());
         ws_context.set_json_processor(TYPE_USER_REMOVED, json_processor);
         // 下载分块
-        ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, Arc::new(DownloadChunkProcessor { client: Arc::downgrade(&client) }));
+        ws_context.set_bin_processor(TYPE_ATTACHMENT_PAYLOAD, Arc::new(DownloadChunkProcessor { client: Arc::downgrade(&self) }));
         Ok(())
     }
 }
