@@ -8,7 +8,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use kissbot_api::{AttachmentPayloadResponse, PAYLOAD_ERRCODE_POSITION_OUT_OF_ORDER};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse};
-use kissbot_channel::AttachmentDownloadPayloadSender;
+
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -201,36 +201,14 @@ impl AttachmentStore {
 
     // ===== 下载 =====
 
-    /// 发送下载 payload（内部按 CHUNK_SIZE 分块读取并调用 sender）
-    pub async fn send_download_payload(&self, transfer_id: u32, sender: Arc<dyn AttachmentDownloadPayloadSender>) -> Result<()> {
-        use kissbot_api::channel::OFFSET_ATT_DATA;
-        const CHUNK_SIZE: u64 = 65536;
+    /// 根据 transfer_id 获取附件 key
+    pub fn get_transfer_key(&self, transfer_id: u32) -> Option<Arc<String>> {
+        self.transfer_key_map.get(&transfer_id).map(|r| r.clone())
+    }
 
-        let key = self.transfer_key_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?
-            .clone();
-        let (group_id, uuid) = Self::parse_key(key.as_str())?;
-        let file_path = self.base_path.join(group_id).join(uuid);
-        let file_len = std::fs::metadata(&file_path)?.len();
-        let mut file = std::fs::File::open(&file_path)?;
-
-        let mut pos = 0u64;
-        let mut ok = true;
-        while pos < file_len && ok {
-            let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
-            let chunk_size = (end - pos) as usize;
-            let (sn, mut buf) = sender.prepare_send(transfer_id, chunk_size as u32, pos)?;
-            // 读取到 payload 偏移处
-            if let Err(e) = (&mut file).read_exact(&mut buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size]) {
-                return Err(Error::InternalError(format!("Failed to read file chunk: {}", e)));
-            }
-            ok = sender.send(sn, transfer_id, chunk_size as u32, pos, buf).await.is_ok();
-            pos = end;
-        }
-        // 下载完成，清理 transfer_key_map
+    /// 移除 transfer_id → key 映射（下载完成时清理）
+    pub fn remove_transfer_key(&self, transfer_id: u32) {
         self.transfer_key_map.remove(&transfer_id);
-
-        Ok(())
     }
 
     /// 根据 key 和范围读取附件数据

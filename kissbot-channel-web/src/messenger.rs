@@ -17,8 +17,7 @@ use kissbot_api::channel::{
 };
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
-    AttachmentDownloadPayloadSender, GroupChangeEvent, GroupChangeHandler, GroupChangeType,
-    IncomingMessageHandler, UserRemoveEvent, UserRemoveHandler,
+    ChannelManager, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
@@ -93,10 +92,7 @@ pub struct WebMessenger {
     repo_path: PathBuf,
     config: Arc<RwLock<WebMessengerRepo>>,
     msg_id_seq: AtomicU32,
-    on_group_change: Weak<dyn GroupChangeHandler>,
-    on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-    on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-    on_user_remove: Weak<dyn UserRemoveHandler>,
+    manager: Weak<ChannelManager>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
     pub message_store: Arc<MessageStore>,
@@ -109,10 +105,7 @@ impl WebMessenger {
         messenger_id: Arc<String>,
         repo_path: PathBuf,
         config: Arc<RwLock<WebMessengerRepo>>,
-        on_group_change: Weak<dyn GroupChangeHandler>,
-        on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-        on_user_remove: Weak<dyn UserRemoveHandler>,
+        manager: Weak<ChannelManager>,
         attachment_dir: &str,
         message_base_dir: &str,
     ) -> Arc<Self> {
@@ -131,10 +124,7 @@ impl WebMessenger {
             repo_path,
             config,
             msg_id_seq: AtomicU32::new(0),
-            on_group_change,
-            on_incoming_messages,
-            on_download_attachment_payload,
-            on_user_remove,
+            manager,
             sse,
             attachment_store,
             message_store,
@@ -237,7 +227,7 @@ impl WebMessenger {
         drop(cfg);
 
         // 通知 agent 用户已删除
-        if let Some(handler) = self.on_user_remove.upgrade() {
+        if let Some(manager) = self.manager.upgrade() {
             let event = Arc::new(UserRemoveEvent {
                 msg_id: self.next_msg_id(),
                 notification: Arc::new(UserRemoveNotification {
@@ -246,7 +236,7 @@ impl WebMessenger {
                 }),
                 time: Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
             });
-            handler.handle_user_remove(event).await;
+            manager.handle_user_remove(event).await;
         }
 
         Ok(())
@@ -352,11 +342,6 @@ impl WebMessenger {
         }
 
         Ok(())
-    }
-
-    fn get_on_group_change(&self) -> Result<Arc<dyn GroupChangeHandler>> {
-        self.on_group_change.upgrade()
-            .ok_or_else(|| Error::InternalError("group change handler is None".to_string()))
     }
 
     /// 发送消息（统一入口）。接收 OutgoingMessage 并：
@@ -509,18 +494,15 @@ impl WebMessenger {
         }
         drop(cfg);
 
-        if let Some(handler) = self.on_incoming_messages.upgrade() {
+        if let Some(manager) = self.manager.upgrade() {
             for message in messages {
-                handler.handle_incoming_message(message).await;
+                manager.handle_incoming_message(message).await;
             }
         }
     }
 
     async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
-        let handler = match self.get_on_group_change() {
-            Ok(h) => h,
-            Err(_) => return,
-        };
+        let Some(manager) = self.manager.upgrade() else { return; };
         let event = Arc::new(GroupChangeEvent {
             msg_id: self.next_msg_id(),
             notification: Arc::new(GroupChangeNotification {
@@ -531,7 +513,7 @@ impl WebMessenger {
             change_type,
             time: Arc::new(time.to_string()),
         });
-        handler.handle_group_change(event).await;
+        manager.handle_group_change(event).await;
     }
 
     pub async fn build_messenger_info(&self) -> MessengerInfo {
@@ -606,20 +588,14 @@ impl WebMessengerCreator {
 impl MessengerCreator<WebMessenger> for WebMessengerCreator {
     async fn create(
         &self,
-        on_group_change: Weak<dyn GroupChangeHandler>,
-        on_incoming_messages: Weak<dyn IncomingMessageHandler>,
-        on_download_attachment_payload: Weak<dyn AttachmentDownloadPayloadSender>,
-        on_user_remove: Weak<dyn UserRemoveHandler>,
+        manager: Weak<ChannelManager>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
         let messenger = WebMessenger::new(
             mid,
             self.repo_path.clone(),
             self.config.clone(),
-            on_group_change,
-            on_incoming_messages,
-            on_download_attachment_payload,
-            on_user_remove,
+            manager,
             &self.attachment_dir,
             &self.message_dir,
         );
@@ -659,14 +635,64 @@ impl Messenger for WebMessenger {
     }
 
     async fn start_send_download_attachment_payload(&self, transfer_id: u32) -> std::result::Result<(), kissbot_channel::Error> {
-        let sender = self.on_download_attachment_payload.upgrade()
-            .ok_or_else(|| kissbot_channel::Error::InternalError("download payload sender unavailable".to_string()))?;
+        use kissbot_api::channel::OFFSET_ATT_DATA;
+        const CHUNK_SIZE: u64 = 65536;
+
+        let manager = self.manager.upgrade()
+            .ok_or_else(|| kissbot_channel::Error::InternalError("manager unavailable".to_string()))?;
         let store = self.attachment_store.clone();
 
+        // 获取附件 key
+        let key = store.get_transfer_key(transfer_id)
+            .ok_or_else(|| kissbot_channel::Error::AttachmentNotFound(transfer_id.to_string()))?;
+
+        let meta = store.get_meta(key.as_str())
+            .map_err(|e| kissbot_channel::Error::AttachmentNotFound(e.to_string()))?;
+        let file_len = meta.info.size_bytes;
+
         tokio::spawn(async move {
-            if let Err(e) = store.send_download_payload(transfer_id, sender).await {
-                tracing::error!("Failed to send download payload: {}", e);
+            let mut pos = 0u64;
+            let mut ok = true;
+            while pos < file_len && ok {
+                let end = std::cmp::min(pos + CHUNK_SIZE, file_len);
+                let chunk_size = (end - pos) as u32;
+
+                let (sn, mut buf) = match manager.prepare_download_payload(transfer_id, chunk_size, pos) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("Failed to prepare download payload: {}", e);
+                        break;
+                    }
+                };
+
+                // 读取文件数据
+                let data = match store.read_attachment_range(key.as_str(), pos, chunk_size as u64) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::error!("Failed to read attachment range: {}", e);
+                        break;
+                    }
+                };
+
+                // 扩展 buffer 并填充 payload 数据
+                buf.resize(OFFSET_ATT_DATA + chunk_size as usize, 0);
+                buf[OFFSET_ATT_DATA..OFFSET_ATT_DATA + chunk_size as usize].copy_from_slice(&data);
+
+                let response = manager.send_download_payload(sn, transfer_id, chunk_size, pos, buf).await;
+                match response {
+                    Ok(resp) => {
+                        ok = resp.error_code == 0;
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to send download payload: {}", e);
+                        break;
+                    }
+                }
+                pos = end;
             }
+
+            // 下载完成，清理 transfer_key_map
+            store.remove_transfer_key(transfer_id);
         });
 
         Ok(())
