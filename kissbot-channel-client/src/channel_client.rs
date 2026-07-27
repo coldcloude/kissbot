@@ -12,15 +12,16 @@ use tokio::time::Duration;
 use tracing::error;
 
 use crate::error::{Error, Result};
-use crate::terminal::*;
+use crate::terminal::Terminal;
 
 const QUEUE_SIZE: usize = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ChannelClient {
+    id: String,
+    terminal: Weak<dyn Terminal>,
     ws_context: RwLock<Option<Arc<WsContext>>>,
-    terminal: RwLock<Option<Arc<dyn Terminal>>>,
     // 下载方向：transfer_id → 下载头信息
     download_transfer_map: DashMap<u32, Arc<AttachmentInfoResponse>>,
 }
@@ -40,46 +41,32 @@ impl WsJsonProcessorMut for JsonResponseHandler {
 }
 
 impl ChannelClient {
-    pub fn new() -> Arc<Self> {
+    pub fn new(id: String, terminal: Weak<dyn Terminal>) -> Arc<Self> {
         Arc::new(Self {
+            id,
+            terminal,
             ws_context: RwLock::new(None),
-            terminal: RwLock::new(None),
             download_transfer_map: DashMap::new(),
         })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     async fn get_ws_context(&self) -> Result<Arc<WsContext>> {
         self.ws_context.read().await.clone().ok_or(Error::NotConnected)
     }
 
-    async fn get_terminal(&self) -> Result<Arc<dyn Terminal>> {
-        self.terminal.read().await.clone()
-            .ok_or_else(|| Error::InternalError("terminal is None".to_string()))
+    fn get_terminal(&self) -> Option<Arc<dyn Terminal>> {
+        self.terminal.upgrade()
     }
 
-    /// 连接 channel 的 ws 服务：创建 Terminal、注入 handler、建立连接。
-    pub async fn connect<T, TC>(self: &Arc<Self>, url: &str, api_key: &str, creator: TC) -> Result<Arc<T>>
-    where
-        T: Terminal,
-        TC: TerminalCreator<T>,
-    {
-        let bind_handler: Arc<dyn BindHandler> = self.clone();
-        let messenger_info_handler: Arc<dyn MessengerInfoHandler> = self.clone();
-        let outgoing_message_handler: Arc<dyn OutgoingMessageHandler> = self.clone();
-        let attachment_upload_handler: Arc<dyn AttachmentUploadHandler> = self.clone();
-        let attachment_download_handler: Arc<dyn AttachmentDownloadHandler> = self.clone();
-        let terminal = creator.create(
-            Arc::downgrade(&bind_handler),
-            Arc::downgrade(&messenger_info_handler),
-            Arc::downgrade(&outgoing_message_handler),
-            Arc::downgrade(&attachment_upload_handler),
-            Arc::downgrade(&attachment_download_handler),
-        ).await?;
-        *self.terminal.write().await = Some(terminal.clone());
-
+    /// 连接 channel 的 ws 服务
+    pub async fn connect(self: &Arc<Self>, url: &str, api_key: &str) -> Result<()> {
         let headers = [(HEADER_API_KEY.to_string(), api_key.to_string())];
         kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone()).await?;
-        Ok(terminal)
+        Ok(())
     }
 
     /// 主动断开连接
@@ -108,24 +95,18 @@ impl ChannelClient {
         }
         Ok(response.payload)
     }
-}
 
-#[async_trait]
-impl BindHandler for ChannelClient {
-    async fn bind(&self, request: BindRequest) -> Result<()> {
+    pub async fn bind(&self, request: BindRequest) -> Result<()> {
         self.request_json(TYPE_BIND_AGENT_USER, serde_json::to_value(request)?).await?;
         Ok(())
     }
 
-    async fn unbind(&self, request: BindRequest) -> Result<()> {
+    pub async fn unbind(&self, request: BindRequest) -> Result<()> {
         self.request_json(TYPE_UNBIND_AGENT_USER, serde_json::to_value(request)?).await?;
         Ok(())
     }
-}
 
-#[async_trait]
-impl MessengerInfoHandler for ChannelClient {
-    async fn get_info(&self, messenger_id: Arc<String>) -> Result<Arc<MessengerInfo>> {
+    pub async fn get_info(&self, messenger_id: Arc<String>) -> Result<Arc<MessengerInfo>> {
         let payload = self.request_json(
             TYPE_MESSENGER_INFO_REQUEST,
             serde_json::to_value(MessengerInfoRequest { messenger_id })?,
@@ -133,20 +114,14 @@ impl MessengerInfoHandler for ChannelClient {
         .ok_or_else(|| Error::InvalidMessage("messenger info response payload is None".to_string()))?;
         Ok(Arc::new(serde_json::from_value(payload)?))
     }
-}
 
-#[async_trait]
-impl OutgoingMessageHandler for ChannelClient {
-    async fn send_message(&self, message: OutgoingMessage) -> Result<Arc<OutgoingMessageResponse>> {
+    pub async fn send_message(&self, message: OutgoingMessage) -> Result<Arc<OutgoingMessageResponse>> {
         let payload = self.request_json(TYPE_OUTGOING_MESSAGE, serde_json::to_value(message)?).await?
             .ok_or_else(|| Error::InvalidMessage("outgoing message response payload is None".to_string()))?;
         Ok(Arc::new(serde_json::from_value(payload)?))
     }
-}
 
-#[async_trait]
-impl AttachmentUploadHandler for ChannelClient {
-    async fn send_upload_chunk(&self, transfer_id: u32, pos: u64, data: Bytes) -> Result<AttachmentPayloadResponse> {
+    pub async fn send_upload_chunk(&self, transfer_id: u32, pos: u64, data: Bytes) -> Result<AttachmentPayloadResponse> {
         let context = self.get_ws_context().await?;
         let sn = context.next_request_sn();
         // 二进制帧：sn + payload_type + status_code + transfer_id + size + pos + data
@@ -171,11 +146,8 @@ impl AttachmentUploadHandler for ChannelClient {
             .ok_or_else(|| Error::InvalidMessage("upload chunk response payload is None".to_string()))?;
         Ok(serde_json::from_value(payload)?)
     }
-}
 
-#[async_trait]
-impl AttachmentDownloadHandler for ChannelClient {
-    async fn request_download(&self, request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>> {
+    pub async fn request_download(&self, request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>> {
         let payload = self.request_json(TYPE_ATTACHMENT_DOWNLOAD_REQUEST, serde_json::to_value(request)?).await?
             .ok_or_else(|| Error::InvalidMessage("download response payload is None".to_string()))?;
         let info = Arc::new(serde_json::from_value::<AttachmentInfoResponse>(payload)?);
@@ -194,26 +166,26 @@ struct TerminalJsonProcessor {
 impl WsJsonProcessor for TerminalJsonProcessor {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         let Some(client) = self.client.upgrade() else { return };
-        let Ok(terminal) = client.get_terminal().await else { return };
+        let Some(terminal) = client.get_terminal() else { return };
         let Some(payload) = data.payload else {
             error!("TerminalJsonProcessor: payload is None, type {:#x}", data.payload_type);
             return;
         };
         match data.payload_type {
             TYPE_INCOMING_MESSAGE => match serde_json::from_value::<IncomingMessage>(payload) {
-                Ok(m) => terminal.incoming_message(Arc::new(m)).await,
+                Ok(m) => terminal.incoming_message(client.id(), Arc::new(m)).await,
                 Err(e) => error!("parse incoming message error: {:?}", e),
             },
             TYPE_JOIN_GROUP => match serde_json::from_value::<GroupChangeNotification>(payload) {
-                Ok(n) => terminal.join_group(Arc::new(n)).await,
+                Ok(n) => terminal.join_group(client.id(), Arc::new(n)).await,
                 Err(e) => error!("parse join group error: {:?}", e),
             },
             TYPE_LEAVE_GROUP => match serde_json::from_value::<GroupChangeNotification>(payload) {
-                Ok(n) => terminal.leave_group(Arc::new(n)).await,
+                Ok(n) => terminal.leave_group(client.id(), Arc::new(n)).await,
                 Err(e) => error!("parse leave group error: {:?}", e),
             },
             TYPE_USER_REMOVED => match serde_json::from_value::<UserRemoveNotification>(payload) {
-                Ok(n) => terminal.user_removed(Arc::new(n)).await,
+                Ok(n) => terminal.user_removed(client.id(), Arc::new(n)).await,
                 Err(e) => error!("parse user removed error: {:?}", e),
             },
             _ => {}
@@ -230,8 +202,8 @@ struct TerminalCloseProcessor {
 impl WsCloseProcessor for TerminalCloseProcessor {
     async fn process_close(&self, _context: Arc<WsContext>) {
         let Some(client) = self.client.upgrade() else { return };
-        if let Ok(terminal) = client.get_terminal().await {
-            terminal.closed().await;
+        if let Some(terminal) = client.get_terminal() {
+            terminal.closed(client.id()).await;
         }
     }
 }
@@ -282,9 +254,9 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
         // 检查 payload_type 是否为下载分块（而非心跳等其他二进制消息）
         let info = Self::wait_transfer_info(&client, header.id).await;
         let result = match &info {
-            Some(info) => match client.get_terminal().await {
-                Ok(terminal) => terminal.download_chunk(info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
-                Err(e) => Err(e),
+            Some(info) => match client.get_terminal() {
+                Some(terminal) => terminal.download_chunk(client.id(), info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
+                None => Err(Error::InternalError("terminal is None".to_string())),
             },
             None => Err(Error::InvalidMessage(format!("unknown transfer_id {}", header.id))),
         };
