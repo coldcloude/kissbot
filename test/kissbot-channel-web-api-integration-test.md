@@ -96,9 +96,10 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 
 ### TC-05：获取最近消息
 
-**前置**：TC-03 已执行
+**前置**：TC-03 已执行（消息存储有 3 秒缓冲延迟，查询前等待 4 秒）
 
 ```bash
+sleep 4
 curl -s -H "X-Api-Key: admin-key-123" \
   "http://127.0.0.1:8301/api/messages/recent?group_id=dev-team&n=5"
 ```
@@ -111,35 +112,40 @@ curl -s -H "X-Api-Key: admin-key-123" \
 ### TC-06：创建群组
 
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
+RESP=$(curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
   -X POST -d '{"group_name": "新群组", "member_ids": ["user-1"]}' \
-  http://127.0.0.1:8301/api/groups/create
+  http://127.0.0.1:8301/api/groups/create)
+echo "$RESP"
+GROUP_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['group_id'])")
+echo "GROUP_ID=$GROUP_ID"
 ```
 
 **预期结果**：
 - `success: true`
-- `data.group_id` 非空（格式如 `"g3"`）
+- `data.group_id` 非空（首次创建为 `"g2"`）
+
+记录 `GROUP_ID` 值用于后续测试。
 
 ### TC-07：创建群组后自动出现在会话列表
 
-**前置**：TC-06 已执行
+**前置**：TC-06 已执行，记录 `GROUP_ID`（如 `g2`）
 
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info
+curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json,os; d=json.load(sys.stdin); gid=os.environ['GROUP_ID']; g=d['data']['groups'][gid]; print(f'group_name={g[\"group_name\"]}, members={g[\"members\"]}')"
 ```
 
 **预期结果**：
-- `data.groups` 对象包含新增的 `group_id`（如 `"g3"`）
+- `data.groups` 对象包含新增的 `group_id`（如 `"g2"`）
 - 该 group 的 `group_name` = `"新群组"`
 - `members` 包含 `"user-1"`
 
 ### TC-08：重命名群组
 
-**前置**：TC-06 已执行
+**前置**：TC-06 已执行，记录 `GROUP_ID`（如 `g2`）
 
 ```bash
 curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
-  -X POST -d '{"group_id": "g3", "group_name": "重命名后的群组"}' \
+  -X POST -d "{\"group_id\": \"$GROUP_ID\", \"group_name\": \"重命名后的群组\"}" \
   http://127.0.0.1:8301/api/groups/rename
 ```
 
@@ -147,18 +153,18 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 
 验证：
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['groups']['g3']['group_name'])"
+curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json,os; d=json.load(sys.stdin); gid=os.environ['GROUP_ID']; print(d['data']['groups'][gid]['group_name'])"
 ```
 
 预期输出：`重命名后的群组`
 
 ### TC-09：管理成员——添加成员
 
-**前置**：TC-06 已执行
+**前置**：TC-06 已执行，记录 `GROUP_ID`（如 `g2`）
 
 ```bash
 curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
-  -X POST -d '{"group_id": "g3", "add_ids": ["user-2"], "remove_ids": []}' \
+  -X POST -d "{\"group_id\": \"$GROUP_ID\", \"add_ids\": [\"user-2\"], \"remove_ids\": []}" \
   http://127.0.0.1:8301/api/groups/manage-members
 ```
 
@@ -166,18 +172,18 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 
 验证：
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json; d=json.load(sys.stdin); print(sorted(d['data']['groups']['g3']['members']))"
+curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json,os; d=json.load(sys.stdin); gid=os.environ['GROUP_ID']; print(sorted(d['data']['groups'][gid]['members']))"
 ```
 
 预期输出：`['user-1', 'user-2']`
 
 ### TC-10：管理成员——移除成员
 
-**前置**：TC-09 已执行
+**前置**：TC-09 已执行，记录 `GROUP_ID`（如 `g2`）
 
 ```bash
 curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
-  -X POST -d '{"group_id": "g3", "add_ids": [], "remove_ids": ["user-2"]}' \
+  -X POST -d "{\"group_id\": \"$GROUP_ID\", \"add_ids\": [], \"remove_ids\": [\"user-2\"]}" \
   http://127.0.0.1:8301/api/groups/manage-members
 ```
 
@@ -185,7 +191,7 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 
 验证：
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json; d=json.load(sys.stdin); print(sorted(d['data']['groups']['g3']['members']))"
+curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json,os; d=json.load(sys.stdin); gid=os.environ['GROUP_ID']; print(sorted(d['data']['groups'][gid]['members']))"
 ```
 
 预期输出：`['user-1']`
@@ -250,11 +256,11 @@ curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -
 
 ### TC-15：删除群组
 
-**前置**：TC-06 已执行
+**前置**：TC-06 已执行，记录 `GROUP_ID`（如 `g2`）
 
 ```bash
 curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
-  -X POST -d '{"group_id": "g3"}' \
+  -X POST -d "{\"group_id\": \"$GROUP_ID\"}" \
   http://127.0.0.1:8301/api/groups/delete
 ```
 
@@ -262,7 +268,7 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 
 验证：
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json; d=json.load(sys.stdin); print('g3' in d['data']['groups'])"
+curl -s -H "X-Api-Key: admin-key-123" http://127.0.0.1:8301/api/info | python3 -c "import sys,json,os; d=json.load(sys.stdin); gid=os.environ['GROUP_ID']; print(gid in d['data']['groups'])"
 ```
 
 预期输出：`False`
@@ -327,7 +333,7 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 ### TC-20：附件上传——发消息获取 transfer_id
 
 ```bash
-curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
+RESP=$(curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
   -X POST -d '{
     "messenger_id": "web",
     "user_id": "admin",
@@ -335,7 +341,11 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
     "msg_type": "attachment",
     "content": {"AttachmentInfo": {"file_name": "photo.png", "mime_type": "image/png", "size_bytes": 4}}
   }' \
-  http://127.0.0.1:8301/api/message/send
+  http://127.0.0.1:8301/api/message/send)
+echo "$RESP"
+TRANSFER_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['content']['AttachmentInfoResponse']['transfer_id'])")
+ATT_KEY=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['content']['AttachmentInfoResponse']['key'])")
+echo "TRANSFER_ID=$TRANSFER_ID, KEY=$ATT_KEY"
 ```
 
 **预期结果**：
@@ -343,16 +353,16 @@ curl -s -H "X-Api-Key: admin-key-123" -H "Content-Type: application/json" \
 - `data.content.AttachmentInfoResponse.key` 非空
 - `data.content.AttachmentInfoResponse.transfer_id` 为数字
 
-记录 `transfer_id` 值用于下一步。
+记录 `TRANSFER_ID` 和 `ATT_KEY` 值用于后续测试。
 
 ### TC-21：附件上传——上传文件数据
 
-**前置**：TC-20 已执行，假设 `transfer_id=0`
+**前置**：TC-20 已执行，记录 `TRANSFER_ID`
 
 ```bash
 echo "test" > /tmp/testfile.txt
 curl -s -H "X-Api-Key: admin-key-123" \
-  -F "transfer_id=0" \
+  -F "transfer_id=$TRANSFER_ID" \
   -F "file=@/tmp/testfile.txt" \
   http://127.0.0.1:8301/api/attachment/upload
 ```
@@ -361,24 +371,22 @@ curl -s -H "X-Api-Key: admin-key-123" \
 
 ### TC-22：附件下载
 
-**前置**：TC-20 已执行，记录返回的 `key`（格式如 `dev-team/uuid`）
+**前置**：TC-20 已执行，记录 `ATT_KEY`（格式如 `dev-team/uuid`）
 
 ```bash
-# 将 <key> 替换为 TC-20 返回的实际 key
 curl -s -H "X-Api-Key: admin-key-123" \
-  "http://127.0.0.1:8301/api/attachment/download?key=dev-team/uuid"
+  "http://127.0.0.1:8301/api/attachment/download?key=$ATT_KEY"
 ```
 
 **预期结果**：返回文件内容（本例中应为 `test`）
 
 ### TC-23：附件缩略图（图片）
 
-**前置**：TC-20 已执行
+**前置**：TC-20 已执行，记录 `ATT_KEY`
 
 ```bash
-# 将 <key> 替换为 TC-20 返回的实际 key
 curl -s -H "X-Api-Key: admin-key-123" -o /tmp/thumb.jpg \
-  "http://127.0.0.1:8301/api/attachment/thumbnail?key=dev-team/uuid"
+  "http://127.0.0.1:8301/api/attachment/thumbnail?key=$ATT_KEY"
 file /tmp/thumb.jpg
 ```
 

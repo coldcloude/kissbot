@@ -46,7 +46,6 @@ export default function GroupManagement({
     setList(list.includes(id) ? list.filter(m => m !== id) : [...list, id]);
   };
 
-  const adminUserGroups = groups.filter(g => g.group_id.startsWith('a_'));
   const multiGroups = groups.filter(g => !g.group_id.startsWith('a_'));
 
   return (
@@ -117,17 +116,6 @@ export default function GroupManagement({
       {/* 群组列表 */}
       <div className="admin-panel-section">
         <h4>群组列表</h4>
-        {adminUserGroups.map(g => (
-          <div key={g.group_id} className="admin-item disabled">
-            <div className="admin-item-info">
-              <span className="admin-item-name">{g.group_name} <span className="item-tag">单聊</span></span>
-              <span className="admin-item-meta">ID: {g.group_id}</span>
-            </div>
-            <div className="admin-item-actions">
-              <span className="disabled-note">仅可查看消息</span>
-            </div>
-          </div>
-        ))}
         {multiGroups.map(g => (
           <div key={g.group_id} className="admin-item">
             <div className="admin-item-info">

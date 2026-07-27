@@ -207,22 +207,16 @@ file /tmp/downloaded.png
 
 **预期**：浏览器触发文件下载
 
-### TC-13：web 发消息 → cli 收到 GroupChange 通知
+### TC-13：（已合并到 TC-02，移除）
 
-**前置**：TC-01 通过，cli 已启动并绑定
+### TC-13：群组管理 → 新成员 CLI 收到 JoinGroup 通知
 
-**步骤**：
-1. web 端选中 `开发组 群组`
-2. 在输入框输入 `group-change 测试`
-3. 点击发送
+**前置**：TC-01 通过，需要再启动一个 cli 绑定 user-2 到 project-x
 
-**预期**：
-- web 端：消息显示在消息区域
-- cli 端：终端输出 `<< [admin:dev-team] {"Text":"group-change 测试"}`
-
-### TC-14：群组管理 → cli 收到 JoinGroup 通知
-
-**前置**：TC-01 通过，cli 已启动并绑定到 dev-team
+```bash
+cd /home/admin/project/kissbot/test/workspace
+../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-2 project-x ./downloads
+```
 
 **步骤**：
 1. web 端点击 `管理员 ▼` → `群组管理`
@@ -231,13 +225,12 @@ file /tmp/downloaded.png
 4. 点击 "添加成员"
 
 **预期**：
-- web 端：dev-team 成员列表更新
-- cli 端（user-1）：终端输出 `<< join group: dev-team @ web`
-  （注：user-1 原本已在 dev-team 中，此通知可能不触发，取决于实现）
+- web 端：dev-team 成员列表更新（包含 user-2）
+- cli（user-2）：终端输出 `<< join group: dev-team @ web`
 
-### TC-15：web 端消息历史持久化
+### TC-14：web 端消息历史持久化
 
-**前置**：TC-02 ~ TC-12 已执行
+**前置**：TC-02 ~ TC-12 已执行，等待 4 秒确保消息存储
 
 **步骤**：
 1. 刷新浏览器页面（F5 或 Ctrl+R）
@@ -248,7 +241,7 @@ file /tmp/downloaded.png
 - 消息区域显示之前的所有消息（TC-02 到 TC-12 的消息都在）
 - 消息顺序正确
 
-### TC-16：web 端 SSE 断线重连
+### TC-15：web 端 SSE 断线重连
 
 **前置**：TC-01 通过
 
@@ -257,7 +250,12 @@ file /tmp/downloaded.png
 2. 停止 web 后端（`pkill -f kissbot-channel-web`）
 3. 等待 5 秒
 4. 重新启动 web 后端
-5. 在 cli 终端输入 `reconnect 测试`，按 Enter
+5. 重新启动 cli（原进程已退出）：
+   ```bash
+   cd /home/admin/project/kissbot/test/workspace
+   ../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-1 dev-team ./downloads
+   ```
+6. 在 cli 终端输入 `reconnect 测试`，按 Enter
 
 **预期**：
 - 浏览器自动重连 SSE

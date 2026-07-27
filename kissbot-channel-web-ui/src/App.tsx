@@ -67,7 +67,14 @@ export default function App() {
       setAdminName(info.admin_name);
       setMessengerId(info.messenger_id);
       setUsers(entriesToArray(info.users));
-      setGroups(entriesToArray(info.groups));
+      const configGroups = entriesToArray(info.groups);
+      // 为每个 user 构造虚拟 admin-user 单聊组（后端不返回，前端构造）
+      const virtualGroups: GroupConfig[] = entriesToArray(info.users).map(u => ({
+        group_id: `a_${u.user_id}`,
+        group_name: u.user_name,
+        members: ['admin', u.user_id],
+      }));
+      setGroups([...virtualGroups, ...configGroups]);
       setConnected(true);
       sseService.onMessage(handleSSEMessage);
       sseService.connect();
