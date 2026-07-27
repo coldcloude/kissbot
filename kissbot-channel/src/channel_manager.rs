@@ -627,7 +627,7 @@ impl ChannelManager {
         }
     }
 
-    async fn handle_group_change_internal(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
+    async fn process_group_change(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
         //找到对应的group
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
@@ -674,7 +674,7 @@ impl ChannelManager {
         Ok(())
     }
         
-    async fn send_to_agent(&self, event: Arc<IncomingMessage>) -> Result<()>{
+    async fn process_incoming_message(&self, event: Arc<IncomingMessage>) -> Result<()>{
         //找到对应的connect
         let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
         .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
@@ -736,7 +736,7 @@ impl ChannelManager {
     pub async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) {
         let span = span!(Level::INFO, "channel_manager handle group change");
         let _enter = span.enter();
-        if let Err(e) = self.handle_group_change_internal(event).await {
+        if let Err(e) = self.process_group_change(event).await {
             error!("Failed to handle group change: {:?}", e);
         }
     }
@@ -744,7 +744,7 @@ impl ChannelManager {
     pub async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
-        if let Err(e) = self.send_to_agent(event).await {
+        if let Err(e) = self.process_incoming_message(event).await {
             error!("Error processing incoming message: {:?}", e);
         }
     }
