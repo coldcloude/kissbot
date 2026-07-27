@@ -1,11 +1,12 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source';
-import { getApiKey } from './client';
-import type { MessageData } from '../types';
+import { getApiKey, getApiBase } from './client';
+import type { IncomingMessage } from '../types';
 
-type MessageCallback = (message: MessageData) => void;
+type MessageCallback = (message: IncomingMessage) => void;
 
 class SSEService {
   private callbacks: MessageCallback[] = [];
+  private abortController: AbortController | null = null;
   private connected = false;
 
   onMessage(callback: MessageCallback) {
@@ -18,48 +19,47 @@ class SSEService {
 
   async connect() {
     if (this.connected) return;
+    this.disconnect(); // 清理旧连接
 
     const apiKey = getApiKey();
-    if (!apiKey) return;
+    const apiBase = getApiBase();
+    if (!apiKey || !apiBase) return;
+
+    this.abortController = new AbortController();
+    this.connected = true;
 
     try {
-      this.connected = true;
-      await fetchEventSource('/api/events', {
+      await fetchEventSource(`${apiBase}/api/events`, {
         method: 'GET',
-        headers: {
-          'X-Api-Key': apiKey,
-        },
-        onopen: async () => {
-          console.log('SSE connected');
-        },
+        headers: { 'X-Api-Key': apiKey },
+        signal: this.abortController.signal,
         onmessage: (event) => {
           try {
-            const parsed = JSON.parse(event.data);
-            if (parsed.type === 'message') {
-              const messageData = parsed.data as MessageData;
-              this.callbacks.forEach(cb => cb(messageData));
-            }
-          } catch (e) {
-            console.error('Failed to parse SSE message', e);
+            // 后端直接推送 IncomingMessage JSON
+            const message = JSON.parse(event.data) as IncomingMessage;
+            this.callbacks.forEach(cb => cb(message));
+          } catch {
+            // 忽略解析失败的 event（如 keep-alive）
           }
         },
-        onerror: (error) => {
-          console.error('SSE error:', error);
+        onerror: () => {
           this.connected = false;
-          // 自动重连由库处理
+          // fetch-event-source 会自动重连
         },
         onclose: () => {
-          console.log('SSE connection closed');
           this.connected = false;
         },
       });
-    } catch (e) {
-      console.error('SSE connection failed:', e);
+    } catch {
       this.connected = false;
     }
   }
 
   disconnect() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
     this.connected = false;
   }
 }
