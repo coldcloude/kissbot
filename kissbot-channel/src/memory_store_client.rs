@@ -80,6 +80,11 @@ impl FileAppendWriter<String, MessageRecord, MemorySenderContext> for MemorySend
 #[async_trait]
 impl FileAppendWriterContext<String,MessageRecord> for MemorySenderContext {
     async fn write(&mut self, _key: &String, records: Vec<MessageRecord>) -> std::result::Result<(), kai_file::Error> {
+        // base_url 为空时跳过发送，允许不依赖记忆系统独立运行
+        if self.base_url.is_empty() {
+            return Ok(());
+        }
+
         let mut requests = Vec::with_capacity(records.len());
         for record in records {
             requests.push(ChannelRequest {

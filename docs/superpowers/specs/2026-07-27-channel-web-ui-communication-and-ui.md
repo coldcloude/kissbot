@@ -214,6 +214,42 @@ msg_type 取值：
 - 点击会话时该会话未读清零
 - 超过 99 显示 `...`
 
+## 前端单元测试
+
+使用 Vitest + React Testing Library 编写前端单元测试，覆盖以下模块：
+
+### api/client.ts 测试
+
+- `connect()` — 验证 `GET /api/info` 调用与响应解析
+- `sendMessage()` — 验证 `POST /api/message/send` 请求体格式（`Content` 枚举）
+- `uploadAttachment()` — 验证两步上传流程（先发消息→取 transfer_id→上传文件）
+- `renameAdmin()` / `renameUser()` — 验证请求体字段
+- `getMessagesRecent()` / `getMessagesBefore()` — 验证 query 参数拼装
+
+### SSE 解析测试
+
+- 验证原始 `IncomingMessage` JSON 的正确解析（无 `{type,data}` 包装）
+- 验证 `Content` 枚举各变体的 JSON 反序列化
+
+### Content 渲染测试
+
+- `Content::Text` → 文本正确渲染
+- `Content::AttachmentInfoResponse`（图片）→ 缩略图组件渲染
+- `Content::AttachmentInfoResponse`（非图片）→ 文件链接渲染
+- `Content::GroupChange` / `Content::UserRemove` → 系统消息样式
+- `Content::Multi` → 同框多条内容渲染（当前后端不产生，但解析器应支持）
+- 未知类型 → 忽略
+
+### 会话列表逻辑测试
+
+- 按最新消息时间降序排列
+- 未读计数增加/清零
+- 超过 99 显示 `...`
+
+## 集成测试
+
+集成测试用例见 `test/kissbot-channel-web-integration-test.md`，包含前后端联调的完整流程。测试时启动后端服务 + 前端 dev server，使用 agent-browser 技能模拟浏览器操作验证前端行为。
+
 ## 设计稿参考文件
 
 - `docs/design/components-design/ui-ux-design/kissbot-channel-web/login.html` — 登录页
