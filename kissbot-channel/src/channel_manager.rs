@@ -67,7 +67,7 @@ impl ConnectCloseProcessor {
             while !finished {
                 let mut candidate_user_ids = Vec::new();
                 for bound_info in messenger_context.bound_map.iter() {
-                    if *bound_info.value() == connect_context.connect_id {
+                    if *bound_info == connect_context.connect_id {
                         candidate_user_ids.push(bound_info.key().clone());
                     }
                 }
