@@ -140,8 +140,6 @@ impl Record for IncomingMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BindRequest {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
 }
@@ -341,14 +339,12 @@ mod tests {
     #[test]
     fn test_serde_bind_request() {
         let obj = BindRequest {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("admin".to_string()),
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: BindRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.role_name, "admin");
+        assert_eq!(*deserialized.messenger_id, "m1");
+        assert_eq!(*deserialized.user_id, "u1");
     }
 }
