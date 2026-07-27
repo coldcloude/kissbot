@@ -10,6 +10,7 @@ use std::sync::Arc;
 use kissbot_channel::ChannelManager;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
+use tower_http::cors::CorsLayer;
 
 use crate::config::Config;
 use crate::messenger::WebMessengerCreator;
@@ -45,7 +46,8 @@ async fn main() {
 
     // 6. 创建 HTTP 服务器
     let app = http::create_router(messenger.clone())
-        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(security.admin_api_key.clone()))));
+        .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(security.admin_api_key.clone()))))
+        .layer(CorsLayer::permissive());
 
     let addr = config.http_listen_addr.clone();
     let listener = TcpListener::bind(&addr).await.unwrap();

@@ -1,31 +1,42 @@
 {
   "messenger_id": "web",
-  "admin_name": "newadmin",
+  "admin_name": "管理员",
   "users": {
-    "user-2": {
-      "user_id": "user-2",
-      "user_name": "助手小B"
-    },
-    "u3": {
-      "user_id": "u3",
-      "user_name": "newuser"
-    },
     "user-1": {
       "user_id": "user-1",
       "user_name": "助手小A"
+    },
+    "user-2": {
+      "user_id": "user-2",
+      "user_name": "助手小B"
     }
   },
   "groups": {
     "dev-team": {
       "group_id": "dev-team",
-      "group_name": "改名",
+      "group_name": "开发组",
+      "members": [
+        "admin",
+        "user-1",
+        "user-2"
+      ]
+    },
+    "project-x": {
+      "group_id": "project-x",
+      "group_name": "项目X",
       "members": [
         "user-2",
-        "admin",
         "user-1"
+      ]
+    },
+    "g2": {
+      "group_id": "g2",
+      "group_name": "测试组",
+      "members": [
+        "admin"
       ]
     }
   },
-  "next_user_seq": 4,
-  "next_group_seq": 2
+  "next_user_seq": 3,
+  "next_group_seq": 3
 }
