@@ -21,6 +21,7 @@ export default function App() {
   const [groupedMessagesMap, setGroupedMessagesMap] = useState<Record<string, GroupedMessages[]>>({});
   const [loadingMore, setLoadingMore] = useState(false);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const activeGroupIdRef = useRef(activeGroupId);
   const [adminView, setAdminView] = useState<AdminView>('none');
 
   // 游标追踪：{ groupId: { date, line } } 用于分页
@@ -75,6 +76,9 @@ export default function App() {
     }
   };
 
+  // 同步 ref 保持最新
+  useEffect(() => { activeGroupIdRef.current = activeGroupId; }, [activeGroupId]);
+
   // ===== SSE 消息处理 =====
   const handleSSEMessage = useCallback((msg: IncomingMessage) => {
     if (loadedMsgIdsRef.current.has(msg.msg_id)) return;
@@ -88,11 +92,11 @@ export default function App() {
     };
     addMessages(msg.group_id, [grouped]);
 
-    // 更新未读（活跃群组不清零，非活跃群组增加）
-    if (msg.group_id !== activeGroupId) {
+    // 通过 ref 读取当前活跃群组，避免闭包过期
+    if (msg.group_id !== activeGroupIdRef.current) {
       incUnread(msg.group_id);
     }
-  }, [activeGroupId, addMessages, incUnread]);
+  }, [addMessages, incUnread]);
 
   // ===== 发送文本消息 =====
   const handleSendText = async (groupId: string, text: string) => {
@@ -257,9 +261,24 @@ export default function App() {
   };
 
   const handleManageMembers = async (groupId: string, addIds: string[], removeIds: string[]) => {
-    await api.manageMembers(groupId, addIds, removeIds);
-    // 管理成员成功后刷新本地 groups
-    // 简单做法：直接从 /api/info 重新获取
+    const res = await api.manageMembers(groupId, addIds, removeIds);
+    if (res.success) {
+      // 本地更新成员列表，避免重新请求
+      setGroups(prev => prev.map(g => {
+        if (g.group_id === groupId) {
+          const members = [...g.members];
+          for (const id of removeIds) {
+            const idx = members.indexOf(id);
+            if (idx >= 0) members.splice(idx, 1);
+          }
+          for (const id of addIds) {
+            if (!members.includes(id)) members.push(id);
+          }
+          return { ...g, members };
+        }
+        return g;
+      }));
+    }
   };
 
   const handleCreateUser = async (userName: string) => {
@@ -313,7 +332,6 @@ export default function App() {
   return (
     <MainLayout
       adminName={adminName}
-      messengerId={messengerId}
       users={users}
       groups={groups}
       groupedMessagesMap={groupedMessagesMap}

@@ -7,7 +7,6 @@ import type { UserConfig, GroupConfig, GroupedMessages, AdminView } from '../typ
 
 interface MainLayoutProps {
   adminName: string;
-  messengerId: string;
   users: UserConfig[];
   groups: GroupConfig[];
   groupedMessagesMap: Record<string, GroupedMessages[]>;
