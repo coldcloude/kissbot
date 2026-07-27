@@ -36,8 +36,6 @@ impl CliTerminal {
     async fn bind(&self) -> Result<()> {
         let client = self.get_client().await?;
         client.bind(BindRequest {
-            agent_id: Arc::new("cli".to_string()),
-            role_name: Arc::new("cli".to_string()),
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
         }).await

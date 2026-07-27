@@ -326,8 +326,6 @@ pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<
 
 pub fn make_bind_request(messenger_id: &str, user_id: &str) -> BindRequest {
     BindRequest {
-        agent_id: Arc::new("test-agent".to_string()),
-        role_name: Arc::new("test-role".to_string()),
         messenger_id: Arc::new(messenger_id.to_string()),
         user_id: Arc::new(user_id.to_string()),
     }
