@@ -30,9 +30,10 @@ export interface IncomingMessage {
   time: string;
 }
 
-// Content 枚举——serde untagged 格式
+// Content 枚举——serde external tagging 格式
 export type Content =
   | { Text: string }
+  | { AttachmentInfo: AttachmentInfo }
   | { AttachmentInfoResponse: AttachmentInfoResponse }
   | { GroupChange: GroupChangeNotification }
   | { UserRemove: UserRemoveNotification }
