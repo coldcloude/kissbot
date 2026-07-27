@@ -101,6 +101,27 @@ body {
   background: var(--accent-hover);
 }
 
+.connect-btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg-primary);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.connect-btn:hover {
+  background: var(--accent-hover);
+}
+
+.connect-btn:active {
+  background: var(--accent-hover);
+}
+
 .login-error {
   color: var(--danger);
   font-size: 14px;
@@ -123,61 +144,6 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
-}
-
-.sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.sidebar-header h2 {
-  font-size: 16px;
-  color: var(--accent);
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  position: relative;
-}
-
-.user-name {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.user-menu {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 4px;
-  z-index: 10;
-  min-width: 120px;
-}
-
-.user-menu button {
-  display: block;
-  width: 100%;
-  padding: 8px 16px;
-  border: none;
-  background: none;
-  color: var(--text-primary);
-  cursor: pointer;
-  text-align: left;
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-.user-menu button:hover {
-  background: var(--bg-secondary);
 }
 
 /* 会话列表 */
@@ -230,29 +196,15 @@ body {
   text-align: center;
 }
 
-/* 底部管理按钮 */
-.sidebar-bottom {
-  border-top: 1px solid var(--border);
-  padding: 8px;
+.conversation-badge:empty {
+  display: none;
 }
 
-.sidebar-bottom button {
-  display: block;
-  width: 100%;
-  padding: 10px;
-  border: none;
-  background: none;
+.group-tag {
+  font-size: 11px;
   color: var(--text-secondary);
-  cursor: pointer;
-  text-align: left;
-  border-radius: 8px;
-  font-size: 14px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.sidebar-bottom button:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
+  margin-left: 4px;
+  font-weight: 400;
 }
 
 /* 右侧主区域 */
@@ -265,6 +217,70 @@ body {
 }
 
 /* 消息区域标题 */
+.header {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+}
+
+.app-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.admin-dropdown {
+  position: relative;
+  cursor: pointer;
+}
+
+.admin-trigger {
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.admin-trigger:hover {
+  background: rgba(255,255,255,0.1);
+}
+
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  min-width: 160px;
+  padding: 4px;
+  z-index: 10;
+}
+
+.admin-dropdown:hover .dropdown-menu {
+  display: block;
+}
+
+.dropdown-item {
+  padding: 10px 14px;
+  color: var(--text-primary);
+  font-size: 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-tertiary);
+}
+
 .chat-header {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
@@ -386,8 +402,72 @@ body {
   background: var(--bg-secondary);
 }
 
+/* 独立文件附件（不在 Multi 内） */
+.file-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+  margin-top: 4px;
+  cursor: pointer;
+}
+
+.file-attachment:hover {
+  background: var(--bg-secondary);
+}
+
 .message-content .text-content {
   white-space: pre-wrap;
+}
+
+/* Multi 消息（同框多条） */
+.msg-multi {
+  padding: 0;
+  overflow: hidden;
+}
+
+.multi-item {
+  padding: 8px 14px;
+}
+
+.multi-item + .multi-item {
+  border-top: 1px solid var(--border);
+}
+
+.multi-text {
+  white-space: pre-wrap;
+}
+
+.multi-thumb {
+  max-width: 180px;
+  max-height: 120px;
+  border-radius: 6px;
+  display: block;
+  cursor: pointer;
+}
+
+.multi-attachment {
+  padding: 6px 14px 10px;
+}
+
+/* 系统消息 */
+.msg-system {
+  text-align: center;
+  margin: 8px 0;
+}
+
+.msg-system-text {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  padding: 4px 12px;
+  border-radius: 10px;
 }
 
 /* 时间搜索 */
@@ -549,10 +629,27 @@ body {
   overflow-y: auto;
 }
 
-.admin-panel h3 {
+.admin-panel-title {
   font-size: 18px;
-  margin-bottom: 16px;
   color: var(--accent);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.back-btn:hover {
+  background: var(--bg-tertiary);
 }
 
 .admin-panel-section {
@@ -609,6 +706,29 @@ body {
   background: #e84050;
 }
 
+.hint-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+.admin-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  margin-bottom: 8px;
+  outline: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.admin-select:focus {
+  border-color: var(--accent);
+}
+
 .admin-item {
   display: flex;
   align-items: center;
@@ -624,6 +744,18 @@ body {
 
 .admin-item.disabled {
   opacity: 0.5;
+}
+
+.item-tag {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.disabled-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  opacity: 0.6;
 }
 
 .admin-item-info {
