@@ -64,8 +64,8 @@ pub struct WebMessengerRepo {
     pub admin_name: Arc<String>,
     pub users: Arc<DashMap<String, Arc<UserConfig>>>,
     pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
-    pub next_user_seq: u32,
-    pub next_group_seq: u32,
+    pub next_user_seq: Arc<AtomicU32>,
+    pub next_group_seq: Arc<AtomicU32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +90,7 @@ pub fn admin_user_group_id(user_id: &str) -> String {
 pub struct WebMessenger {
     pub messenger_id: Arc<String>,
     repo_path: PathBuf,
-    config: Arc<RwLock<WebMessengerRepo>>,
+    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
     msg_id_seq: AtomicU32,
     manager: Weak<ChannelManager>,
     pub sse: Arc<SseDispatcher>,
@@ -104,7 +104,7 @@ impl WebMessenger {
     pub fn new(
         messenger_id: Arc<String>,
         repo_path: PathBuf,
-        config: Arc<RwLock<WebMessengerRepo>>,
+        config: Arc<RwLock<Arc<WebMessengerRepo>>>,
         manager: Weak<ChannelManager>,
         attachment_dir: &str,
         message_base_dir: &str,
@@ -153,9 +153,9 @@ impl WebMessenger {
         F: FnOnce(Arc<WebMessengerRepo>) -> Result<Arc<WebMessengerRepo>>,
     {
         let mut cfg = self.config.write().await;
-        let new_cfg = op(Arc::new(cfg.clone()))?;
-        *cfg = (*new_cfg).clone();
-        let json = serde_json::to_string_pretty(&*cfg)?;
+        let new_cfg = op(cfg.clone())?;
+        *cfg = new_cfg;
+        let json = serde_json::to_string_pretty(&**cfg)?;
         tokio::fs::write(&self.repo_path, json.as_bytes()).await?;
         Ok(())
     }
@@ -208,24 +208,21 @@ impl WebMessenger {
                     user_name: Arc::new(new_name.to_string()),
                 })
             };
-            let new_cfg = (*cfg).clone();
-            new_cfg.users.insert(uid, new_user);
-            Ok(Arc::new(new_cfg))
+            cfg.users.insert(uid, new_user);
+            Ok(cfg)
         }).await
     }
 
     pub async fn add_user(&self, user_name: &str) -> Result<String> {
         let mut user_id = String::new();
         self.write_config(|cfg| {
-            let n = cfg.next_user_seq;
+            let n = cfg.next_user_seq.fetch_add(1, Ordering::SeqCst);
             user_id = format!("{}{}", USER_ID_PREFIX, n);
             cfg.users.insert(user_id.clone(), Arc::new(UserConfig {
                 user_id: Arc::new(user_id.clone()),
                 user_name: Arc::new(user_name.to_string()),
             }));
-            let mut new_cfg = (*cfg).clone();
-            new_cfg.next_user_seq = n + 1;
-            Ok(Arc::new(new_cfg))
+            Ok(cfg)
         }).await?;
         Ok(user_id)
     }
@@ -261,16 +258,14 @@ impl WebMessenger {
     pub async fn add_group(&self, group_name: &str, member_ids: Vec<String>) -> Result<String> {
         let mut group_id = String::new();
         self.write_config(|cfg| {
-            let n = cfg.next_group_seq;
+            let n = cfg.next_group_seq.fetch_add(1, Ordering::SeqCst);
             group_id = format!("{}{}", GROUP_ID_PREFIX, n);
             cfg.groups.insert(group_id.clone(), Arc::new(GroupConfig {
                 group_id: Arc::new(group_id.clone()),
                 group_name: Arc::new(group_name.to_string()),
                 members: Arc::new(member_ids.clone().into_iter().collect()),
             }));
-            let mut new_cfg = (*cfg).clone();
-            new_cfg.next_group_seq = n + 1;
-            Ok(Arc::new(new_cfg))
+            Ok(cfg)
         }).await?;
 
         // 通知新成员
@@ -579,7 +574,7 @@ impl WebMessenger {
 /// 持有完整配置和路径，create() 时用预读的配置构造 WebMessenger。
 pub struct WebMessengerCreator {
     repo_path: PathBuf,
-    config: Arc<RwLock<WebMessengerRepo>>,
+    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
     attachment_dir: String,
     message_dir: String,
 }
@@ -591,7 +586,7 @@ impl WebMessengerCreator {
         let config: WebMessengerRepo = serde_json::from_str(&content)?;
         Ok(Self {
             repo_path: path,
-            config: Arc::new(RwLock::new(config)),
+            config: Arc::new(RwLock::new(Arc::new(config))),
             attachment_dir: attachment_dir.to_string(),
             message_dir: message_dir.to_string(),
         })

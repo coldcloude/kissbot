@@ -6,13 +6,13 @@
       "user_id": "user-1",
       "user_name": "助手小A"
     },
-    "user-2": {
-      "user_id": "user-2",
-      "user_name": "助手小B"
-    },
     "u3": {
       "user_id": "u3",
       "user_name": "新用户"
+    },
+    "user-2": {
+      "user_id": "user-2",
+      "user_name": "助手小B"
     }
   },
   "groups": {
@@ -21,8 +21,8 @@
       "group_name": "改名",
       "members": [
         "admin",
-        "user-1",
-        "user-2"
+        "user-2",
+        "user-1"
       ]
     },
     "g2": {
