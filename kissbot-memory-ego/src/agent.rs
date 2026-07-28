@@ -47,13 +47,13 @@ impl AgentManager {
             .clone()
     }
 
-    async fn read_agent_metadata_ref(&self, agent_id: &str, mut op: impl FnMut(Arc<AgentMetadata>) -> Result<()>) -> Result<()> {
+    async fn read_agent_metadata(&self, agent_id: &str) -> Result<Arc<AgentMetadata>> {
         let lock = self.get_or_create_lock(agent_id).await;
 
         {
             let guard = lock.read().await;
             if let Some(metadata) = guard.as_ref() {
-                return op(metadata.clone());
+                return Ok(metadata.clone());
             }
         }
 
@@ -61,7 +61,7 @@ impl AgentManager {
             let mut guard = lock.write().await;
 
             if let Some(metadata) = guard.as_ref() {
-                return op(metadata.clone());
+                return Ok(metadata.clone());
             }
 
             let metadata_path = agent_metadata_path(agent_id).await?;
@@ -77,7 +77,7 @@ impl AgentManager {
 
         let guard = lock.read().await;
         match guard.as_ref() {
-            Some(metadata) => return op(metadata.clone()),
+            Some(metadata) => return Ok(metadata.clone()),
             None => return Err(Error::AgentNotFound(agent_id.to_string())),
         }
     }
@@ -138,16 +138,11 @@ impl AgentManager {
     }
 
     pub async fn get_agent_arc(&self, agent_id: Arc<String>) -> Result<Arc<AgentMetadata>> {
-        self.get_agent(agent_id.as_str()).await
+        self.read_agent_metadata(agent_id.as_str()).await
     }
 
     pub async fn get_agent(&self, agent_id: &str) -> Result<Arc<AgentMetadata>> {
-        let mut result = Err(Error::AgentNotFound(agent_id.to_string()));
-        self.read_agent_metadata_ref(agent_id, |metadata| {
-            result = Ok(metadata.clone());
-            Ok(())
-        }).await?;
-        result
+        self.read_agent_metadata(agent_id).await
     }
 
     pub async fn copy_agent(&self, agent_id: &str) -> Result<Arc<String>> {

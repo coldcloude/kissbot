@@ -51,16 +51,13 @@ impl RolePlayManager {
             .clone()
     }
 
-    async fn read_role_play_ref<F>(&self, agent_id: &str, role_name: &str, mut op: F) -> Result<()>
-    where
-        F: FnMut(Arc<RolePlay>) -> Result<()>,
-    {
+    async fn read_role_play(&self, agent_id: &str, role_name: &str) -> Result<Arc<RolePlay>> {
         let lock = self.get_or_create_lock(agent_id, role_name).await;
 
         {
             let guard = lock.read().await;
             if let Some(roles) = guard.as_ref() {
-                return op(roles.clone());
+                return Ok(roles.clone());
             }
         }
 
@@ -68,7 +65,7 @@ impl RolePlayManager {
             let mut guard = lock.write().await;
 
             if let Some(roles) = guard.as_ref() {
-                return op(roles.clone());
+                return Ok(roles.clone());
             }
 
             let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
@@ -85,21 +82,15 @@ impl RolePlayManager {
 
         let guard = lock.read().await;
         match guard.as_ref() {
-            Some(role) => return op(role.clone()),
+            Some(role) => return Ok(role.clone()),
             None => return Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string())),
         }
     }
 
-    async fn read_role_play_other_role_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut op: F) -> Result<()>
-    where
-        F: FnMut(Arc<OtherRole>) -> Result<()>,
-    {
-        self.read_role_play_ref(agent_id, role_name, |role| {
-            if let Some(other_role) = role.other_roles.get(other_role_name) {
-                op(other_role.clone())?;
-            }
-            Ok(())
-        }).await
+    async fn read_role_play_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
+        let role = self.read_role_play(agent_id, role_name).await?;
+        let other_role = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))?;
+        Ok(other_role.clone())
     }
 
     async fn remove_role_play_ref(&self, agent_id: &str, role_name: &str) -> Result<()> {
@@ -202,12 +193,7 @@ impl RolePlayManager {
     }
 
     pub async fn get_role(&self, agent_id: &str, role_name: &str) -> Result<Arc<RolePlay>> {
-        let mut result = Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()));
-        self.read_role_play_ref(agent_id, role_name, |role| {
-            result = Ok(role.clone());
-            Ok(())
-        }).await?;
-        result
+        self.read_role_play(agent_id, role_name).await
     }
 
     pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
@@ -291,12 +277,7 @@ impl RolePlayManager {
     }
 
     pub async fn get_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
-        let mut result = Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()));
-        self.read_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
-            result = Ok(other_role.clone());
-            Ok(())
-        }).await?;
-        result
+        self.read_role_play_other_role(agent_id, role_name, other_role_name).await
     }
 
     pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<Arc<String>>, mut insert_other_roles: Vec<(Arc<String>, Arc<OtherRole>)>) -> Result<()> {

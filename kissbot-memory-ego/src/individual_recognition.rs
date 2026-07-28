@@ -43,16 +43,13 @@ impl IndividualRecognitionManager {
             .clone()
     }
 
-    async fn read_individual_recognition_ref<F>(&self, agent_id: &str, mut op: F) -> Result<()>
-    where
-        F: FnMut(Arc<IndividualRecognition>) -> Result<()>,
-    {
+    async fn read_individual_recognition(&self, agent_id: &str) -> Result<Arc<IndividualRecognition>> {
         let lock = self.get_or_create_lock(agent_id).await;
 
         {
             let guard = lock.read().await;
             if let Some(individuals) = guard.as_ref() {
-                return op(individuals.clone());
+                return Ok(individuals.clone());
             }
         }
 
@@ -60,7 +57,7 @@ impl IndividualRecognitionManager {
             let mut guard = lock.write().await;
 
             if let Some(individuals) = guard.as_ref() {
-                return op(individuals.clone());
+                return Ok(individuals.clone());
             }
 
             let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
@@ -86,7 +83,7 @@ impl IndividualRecognitionManager {
 
         let guard = lock.read().await;
         match guard.as_ref() {
-            Some(individuals) => op(individuals.clone()),
+            Some(individuals) => Ok(individuals.clone()),
             None => Err(Error::AgentNotFound(agent_id.to_string())),
         }
     }
@@ -148,23 +145,14 @@ impl IndividualRecognitionManager {
     }
 
     pub async fn get_individuals(&self, agent_id: &str) -> Result<Arc<IndividualRecognition>> {
-        let mut result = Err(Error::AgentNotFound(agent_id.to_string()));
-        self.read_individual_recognition_ref(agent_id, |individuals| {
-            result = Ok(individuals.clone());
-            Ok(())
-        }).await?;
-        result
+        self.read_individual_recognition(agent_id).await
     }
 
     pub async fn get_individual(&self, agent_id: &str, individual_name: &str) -> Result<Arc<Individual>> {
-        let mut result = Err(Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()));
-        self.read_individual_recognition_ref(agent_id, |individuals| {
-            if let Some(individual) = individuals.individual_map.get(individual_name) {
-                result = Ok(individual.clone());
-            }
-            Ok(())
-        }).await?;
-        result
+        let individuals = self.read_individual_recognition(agent_id).await?;
+        let individual = individuals.individual_map.get(individual_name)
+        .ok_or_else(|| Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))?;
+        Ok(individual.clone())
     }
 
     pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<Arc<String>>, mut insert_individuals: Vec<(Arc<String>, Arc<Individual>)>) -> Result<()> {
