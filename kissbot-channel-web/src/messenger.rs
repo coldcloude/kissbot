@@ -494,7 +494,7 @@ impl WebMessenger {
                 let incoming = Arc::new(IncomingMessage {
                     msg_id: admin_msg.msg_id.clone(),
                     messenger_id: admin_msg.messenger_id.clone(),
-                    user_id: admin_msg.user_id.clone(),
+                    user_id: member_id.clone(),
                     group_id: admin_msg.group_id.clone(),
                     is_self,
                     msg_type: admin_msg.msg_type.clone(),

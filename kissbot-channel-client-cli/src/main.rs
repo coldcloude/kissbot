@@ -24,8 +24,8 @@ struct CliTerminal {
 }
 
 impl CliTerminal {
-    fn current_group(&self) -> Arc<String> {
-        self.current_group.blocking_read().clone()
+    async fn current_group(&self) -> Arc<String> {
+        self.current_group.read().await.clone()
     }
 
     async fn get_client(&self) -> Result<Arc<ChannelClient>> {
@@ -46,7 +46,7 @@ impl CliTerminal {
         let response = client.send_message(OutgoingMessage {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
-            group_id: self.current_group(),
+            group_id: self.current_group().await,
             msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
             content: Content::Text(Arc::new(text.to_string())),
         }).await?;
@@ -59,7 +59,7 @@ impl CliTerminal {
         let info = client.request_download(AttachmentDownloadRequest {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
-            group_id: self.current_group(),
+            group_id: self.current_group().await,
             key: Arc::new(key.to_string()),
         }).await?;
         // 重新下载时先删除旧文件，避免 append 叠加
@@ -79,7 +79,7 @@ impl CliTerminal {
         let response = client.send_message(OutgoingMessage {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
-            group_id: self.current_group(),
+            group_id: self.current_group().await,
             msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
             content: Content::AttachmentInfo(Arc::new(AttachmentInfo {
                 file_name: Arc::new(file_name.clone()),
