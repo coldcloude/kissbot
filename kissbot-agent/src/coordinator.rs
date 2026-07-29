@@ -33,6 +33,8 @@ pub struct AgentCoordinator {
     llm_client: Arc<tokio::sync::Mutex<LlmClient>>,
     /// 按 messenger_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
+    /// 断线通知：messenger_id → Notify，closed() 通知重连循环
+    disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
 impl AgentCoordinator {
@@ -75,6 +77,7 @@ impl AgentCoordinator {
             context_builder: Arc::new(tokio::sync::Mutex::new(context_builder)),
             llm_client,
             channel_clients: Arc::new(DashMap::new()),
+            disconnect_notify: Arc::new(DashMap::new()),
         });
 
         // 连接所有 channel
@@ -99,6 +102,10 @@ impl AgentCoordinator {
             let client = ChannelClient::new(messenger_id.clone(), Arc::downgrade(&terminal));
             let client_clone = client.clone();
 
+            // 断线通知
+            let notify = Arc::new(tokio::sync::Notify::new());
+            self.disconnect_notify.insert(messenger_id.clone(), notify.clone());
+
             let ws_url = ws_url.clone();
             let api_key = api_key.clone();
             self.channel_clients.insert(messenger_id.clone(), client);
@@ -113,8 +120,8 @@ impl AgentCoordinator {
                                 messenger_id: Arc::new(messenger_id.clone()),
                                 user_id: Arc::new(user_id.clone()),
                             }).await;
-                            // 连接会保持直到断开，等待 pending 永不返回
-                            std::future::pending::<()>().await;
+                            // 等待断线通知（closed() 回调中 notify_one）
+                            notify.notified().await;
                         }
                         Err(e) => {
                             warn!("连接 channel {} 失败: {:?}，5秒后重连", messenger_id, e);
@@ -178,7 +185,11 @@ impl Terminal for AgentCoordinator {
     }
 
     async fn closed(&self, id: &str) {
-        info!("channel 连接关闭: {}，重连循环将自动恢复", id);
+        info!("channel 连接关闭: {}，准备重连", id);
+        // 通知重连循环
+        if let Some(notify) = self.disconnect_notify.get(id) {
+            notify.notify_one();
+        }
     }
 }
 
