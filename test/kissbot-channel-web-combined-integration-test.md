@@ -5,7 +5,7 @@
 ### 1. 初始化 workspace
 
 ```bash
-cd /home/admin/project/kissbot
+# 在项目根目录下执行
 rm -rf test/workspace && mkdir -p test/workspace
 cp -r test/workspace-template/* test/workspace/
 ```
@@ -13,7 +13,7 @@ cp -r test/workspace-template/* test/workspace/
 ### 2. 启动 web 后端
 
 ```bash
-cd /home/admin/project/kissbot/test/workspace
+cd ./test/workspace
 ../../kissbot-channel-web/target/debug/kissbot-channel-web
 ```
 
@@ -28,7 +28,7 @@ INFO ws server start: WS Server listening on: 127.0.0.1:8201
 新开一个终端：
 
 ```bash
-cd /home/admin/project/kissbot/test/workspace
+cd ./test/workspace
 ../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-1 dev-team ./downloads
 ```
 
@@ -42,7 +42,7 @@ cd /home/admin/project/kissbot/test/workspace
 新开一个终端：
 
 ```bash
-cd /home/admin/project/kissbot/kissbot-channel-web-ui
+cd ./kissbot-channel-web-ui
 npm run dev
 ```
 
@@ -214,7 +214,7 @@ file /tmp/downloaded.png
 **前置**：TC-01 通过，需要再启动一个 cli 绑定 user-2 到 project-x
 
 ```bash
-cd /home/admin/project/kissbot/test/workspace
+cd ./test/workspace
 ../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-2 project-x ./downloads
 ```
 
@@ -252,7 +252,7 @@ cd /home/admin/project/kissbot/test/workspace
 4. 重新启动 web 后端
 5. 重新启动 cli（原进程已退出）：
    ```bash
-   cd /home/admin/project/kissbot/test/workspace
+   cd ./test/workspace
    ../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-1 dev-team ./downloads
    ```
 6. 在 cli 终端输入 `reconnect 测试`，按 Enter

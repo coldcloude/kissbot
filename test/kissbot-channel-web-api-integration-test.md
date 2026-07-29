@@ -5,7 +5,7 @@
 ### 1. 初始化 workspace
 
 ```bash
-cd /home/admin/project/kissbot
+# 在项目根目录下执行
 rm -rf test/workspace && mkdir -p test/workspace
 cp -r test/workspace-template/* test/workspace/
 ```
@@ -13,7 +13,7 @@ cp -r test/workspace-template/* test/workspace/
 ### 2. 启动后端服务
 
 ```bash
-cd /home/admin/project/kissbot/test/workspace
+cd ./test/workspace
 ../../kissbot-channel-web/target/debug/kissbot-channel-web
 ```
 
