@@ -1,11 +1,15 @@
 use std::sync::Arc;
+use std::sync::Weak;
+use std::time::Duration;
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::Local;
-use flume::Receiver;
+use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::types::{
-    Mode, WriteTask, ContextMessage, AdminCommand, Result,
+    Mode, WriteTask, ContextMessage, AdminCommand, Result, Error,
 };
 use crate::config_manager::ConfigManager;
 use crate::mode_manager::ModeManager;
@@ -14,32 +18,34 @@ use crate::llm_client::LlmClient;
 use crate::context_builder::ContextBuilder;
 use crate::memory_reader::MemoryReader;
 use crate::memory_writer::MemoryWriter;
-use crate::ws_client::{ExternalMessage, WSClient};
+use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
+
+use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
+use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+use kissbot_channel_client::{ChannelClient, Terminal};
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
     mode_manager: Arc<ModeManager>,
     memory_reader: Arc<MemoryReader>,
     memory_writer: Arc<MemoryWriter>,
+    memory_store_client: Arc<MemoryStoreClient>,
     context_builder: Arc<tokio::sync::Mutex<ContextBuilder>>,
     llm_client: Arc<tokio::sync::Mutex<LlmClient>>,
-    /// 从 WSClient 接收上行消息
-    external_rx: Receiver<ExternalMessage>,
-    /// WSClient 用于发送回复
-    ws_client: Arc<WSClient>,
+    /// 按 messenger_id 索引的 ChannelClient
+    channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
 }
 
 impl AgentCoordinator {
     pub async fn new(
         config: Arc<ConfigManager>,
-        external_rx: Receiver<ExternalMessage>,
-        ws_client: Arc<WSClient>,
         memory_writer: MemoryWriter,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let mode = config.current_mode().await;
         let mode_manager = Arc::new(ModeManager::new(mode.clone()));
         let memory_reader = Arc::new(MemoryReader::new());
         let memory_writer = Arc::new(memory_writer);
+        let memory_store_client = Arc::new(MemoryStoreClient::new());
 
         // 初始化 LLMClient
         let llm_config = config.llm_config().await;
@@ -61,68 +67,151 @@ impl AgentCoordinator {
         // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
         let _ = memory_reader.read_memory_struct_index(&config, &mode).await;
 
-        info!("AgentCoordinator 初始化完成，当前模式: {:?}", mode);
-
-        Ok(Self {
+        let coordinator = Arc::new(Self {
             config,
             mode_manager,
             memory_reader,
             memory_writer,
+            memory_store_client,
             context_builder: Arc::new(tokio::sync::Mutex::new(context_builder)),
             llm_client,
-            external_rx,
-            ws_client,
-        })
+            channel_clients: Arc::new(DashMap::new()),
+        });
+
+        // 连接所有 channel
+        coordinator.connect_all_channels().await;
+
+        info!("AgentCoordinator 初始化完成");
+        Ok(coordinator)
     }
 
-    /// 启动主循环
-    pub async fn run(&self) {
-        info!("AgentCoordinator 启动，等待外部输入...");
+    /// 连接所有已配置的 channel
+    async fn connect_all_channels(self: &Arc<Self>) {
+        let config = &self.config;
+        let bindings = config.channel_bindings().await;
+        // 从配置获取 WS URL 和 API key
+        let ws_url = format!("ws://localhost:8080/ws");
+        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
 
-        loop {
-            let msg = self.external_rx.recv_async().await;
-            match msg {
-                Ok(ExternalMessage::Incoming(incoming)) => {
-                    self.handle_incoming(incoming).await;
+        for binding in &bindings {
+            let messenger_id = binding.messenger_id.clone();
+            let user_id = binding.user_id.clone();
+            let client = ChannelClient::new(messenger_id.clone(), Arc::downgrade(self));
+            let client_clone = client.clone();
+
+            let ws_url = ws_url.clone();
+            let api_key = api_key.clone();
+            let coordinator = self.clone();
+            self.channel_clients.insert(messenger_id.clone(), client);
+
+            tokio::spawn(async move {
+                loop {
+                    match client_clone.connect(&ws_url, &api_key).await {
+                        Ok(()) => {
+                            info!("已连接 channel: {}", messenger_id);
+                            // 绑定用户
+                            let _ = client_clone.bind(BindRequest {
+                                messenger_id: Arc::new(messenger_id.clone()),
+                                user_id: Arc::new(user_id.clone()),
+                            }).await;
+                            // 连接会保持直到断开，等待 pending 永不返回
+                            std::future::pending::<()>().await;
+                        }
+                        Err(e) => {
+                            warn!("连接 channel {} 失败: {:?}，5秒后重连", messenger_id, e);
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
                 }
-                Err(e) => {
-                    warn!("接收外部消息失败: {:?}，退出主循环", e);
-                    break;
-                }
-            }
+            });
         }
     }
 
-    async fn handle_incoming(&self, incoming: kissbot_api::channel::IncomingMessage) {
+    /// 启动主循环（保持进程运行）
+    pub async fn run(&self) {
+        info!("AgentCoordinator 启动，等待外部输入...");
+        // channel-client 通过 Terminal 回调驱动，此处保持进程不退出
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
+}
+
+// ==================== Terminal trait 实现 ====================
+
+#[async_trait]
+impl Terminal for AgentCoordinator {
+    /// 收到上行消息
+    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
+        // 1. 推上行消息到记忆（使用 Arc 引用避免深复制）
+        let agent_id = Arc::new(self.config.agent_id().await);
+        let role_name = Arc::new(self.config.current_role().await);
+        self.memory_store_client.push_channel_record(ChannelRecord {
+            agent_id,
+            role_name,
+            messenger_id: message.messenger_id.clone(),
+            user_id: message.user_id.clone(),
+            group_id: message.group_id.clone(),
+            is_self: message.is_self,
+            content: message.content.clone(),
+            time: message.time.clone(),
+        }).await;
+
+        // 2. 处理消息
+        self.handle_incoming(message).await;
+    }
+
+    async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
+        // 群组加入事件，当前暂不处理
+    }
+
+    async fn leave_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
+        // 群组离开事件，当前暂不处理
+    }
+
+    async fn user_removed(&self, _id: &str, _notification: Arc<UserRemoveNotification>) {
+        // 用户删除事件，当前暂不处理
+    }
+
+    async fn download_chunk(&self, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
+        // 当前未使用附件下载
+        Ok(())
+    }
+
+    async fn closed(&self, id: &str) {
+        info!("channel 连接关闭: {}，重连循环将自动恢复", id);
+    }
+}
+
+// ==================== 消息处理 ====================
+
+impl AgentCoordinator {
+    async fn handle_incoming(&self, incoming: Arc<IncomingMessage>) {
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
         let group_id = incoming.group_id.to_string();
-        let content = incoming.content.to_string();
-        let _time = incoming.time.to_string();
         let is_self = incoming.is_self;
+        let content_text = extract_text(&incoming.content);
 
         // 1. 检查群组是否在绑定范围内
         let bindings = self.config.channel_bindings().await;
-        let in_bound_group = bindings.iter().any(|b| {
-            b.messenger_id == messenger_id
-        });
-        if !in_bound_group {
+        if !bindings.iter().any(|b| b.messenger_id == messenger_id) {
             return; // 非绑定 channel 的消息丢弃
         }
 
         // 2. 检查 is_self
         if is_self == 1 {
             let ctx = self.context_builder.lock().await;
-            if ctx.is_self_echo(&content) {
+            if ctx.is_self_echo(&content_text) {
                 return; // 自己发出的回显，丢弃
             }
             return;
         }
 
         // 3. 检查管理命令
-        if CommandRouter::is_command(&content) {
+        if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, &messenger_id, &user_id).await {
-                self.handle_admin_command(&content, &messenger_id, &user_id, &group_id).await;
+                self.handle_admin_command(&content_text, &messenger_id, &user_id, &group_id).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
@@ -193,8 +282,8 @@ impl AgentCoordinator {
         }
     }
 
-    async fn run_agentic_loop(&self, incoming: kissbot_api::channel::IncomingMessage) {
-        let content = incoming.content.to_string();
+    async fn run_agentic_loop(&self, incoming: Arc<IncomingMessage>) {
+        let content_text = extract_text(&incoming.content);
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
         let group_id = incoming.group_id.to_string();
@@ -207,7 +296,7 @@ impl AgentCoordinator {
                 messenger_id: messenger_id.clone(),
                 user_id: user_id.clone(),
                 group_id: group_id.clone(),
-                content: content.clone(),
+                content: content_text.clone(),
                 time: time.clone(),
             });
         }
@@ -258,6 +347,46 @@ impl AgentCoordinator {
                 warn!("LLM 调用失败: {:?}", e);
                 self.send_reply(&messenger_id, &user_id, &group_id,
                     format!("❌ LLM 调用失败: {}", e)).await;
+            }
+        }
+    }
+
+    /// 发送回复消息到通道，成功后推记忆（is_self=1）
+    async fn send_reply(&self, messenger_id: &str, user_id: &str, group_id: &str, content: String) {
+        let Some(client) = self.channel_clients.get(messenger_id) else {
+            warn!("send_reply: 未找到 channel client: {}", messenger_id);
+            return;
+        };
+
+        let msg = OutgoingMessage {
+            messenger_id: Arc::new(messenger_id.to_string()),
+            user_id: Arc::new(user_id.to_string()),
+            group_id: Arc::new(group_id.to_string()),
+            content: Content::Text(Arc::new(content.clone())),
+        };
+
+        match client.send_message(msg).await {
+            Ok(response) => {
+                // 下行成功后推记忆（is_self=1，使用返回的 content）
+                let agent_id = Arc::new(self.config.agent_id().await);
+                let role_name = Arc::new(self.config.current_role().await);
+                self.memory_store_client.push_channel_record(ChannelRecord {
+                    agent_id,
+                    role_name,
+                    messenger_id: Arc::new(messenger_id.to_string()),
+                    user_id: Arc::new(user_id.to_string()),
+                    group_id: Arc::new(group_id.to_string()),
+                    is_self: 1,
+                    content: response.content.clone(),
+                    time: response.time.clone(),
+                }).await;
+
+                // 记录已发送内容（用于 is_self echo 检测）
+                let mut ctx = self.context_builder.lock().await;
+                ctx.record_sent_content(content);
+            }
+            Err(e) => {
+                warn!("send_reply 失败: {:?}", e);
             }
         }
     }
@@ -338,16 +467,15 @@ impl AgentCoordinator {
 
         Ok(system_parts.join("\n"))
     }
+}
 
-    async fn send_reply(&self, messenger_id: &str, user_id: &str, group_id: &str, content: String) {
-        let msg = kissbot_api::channel::OutgoingMessage {
-            messenger_id: std::sync::Arc::new(messenger_id.to_string()),
-            user_id: std::sync::Arc::new(user_id.to_string()),
-            group_id: std::sync::Arc::new(group_id.to_string()),
-            msg_type: std::sync::Arc::new("text".to_string()),
-            content: std::sync::Arc::new(content),
-            attachment_map: std::sync::Arc::new(dashmap::DashMap::new()),
-        };
-        let _ = self.ws_client.send_reply(messenger_id, msg).await;
+/// 从 Content 枚举中提取文本
+fn extract_text(content: &Content) -> String {
+    match content {
+        Content::Text(t) => t.as_str().to_string(),
+        Content::Multi(items) => items.iter()
+            .filter_map(|c| match c { Content::Text(t) => Some(t.as_str().to_string()), _ => None })
+            .collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
     }
 }
