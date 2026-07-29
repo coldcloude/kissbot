@@ -1,8 +1,11 @@
 import { execSync, spawn, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import net from 'net';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const BACKEND_BINARY = join(REPO_ROOT, 'kissbot-channel-web', 'target', 'debug', 'kissbot-channel-web');
 

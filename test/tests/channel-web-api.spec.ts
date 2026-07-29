@@ -1,11 +1,14 @@
 import { test, expect } from '@playwright/test';
 import { APIRequestContext } from '@playwright/test';
 import { resetWorkspace, startBackend, stopBackend, waitForPort } from './helpers/server';
+import { fileURLToPath } from 'url';
 import { ChildProcess } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
 
 const BASE = 'http://127.0.0.1:8301';
 const API_KEY = 'admin-key-123';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const WORKSPACE = join(__dirname, '..', 'workspace');
 
 let backend: ChildProcess;

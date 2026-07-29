@@ -1,6 +1,9 @@
 import { spawn, type ChildProcess } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const CLI_BINARY = join(REPO_ROOT, 'kissbot-channel-client-cli', 'target', 'debug', 'kissbot-channel-client-cli');
 

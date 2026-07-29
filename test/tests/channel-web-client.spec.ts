@@ -2,13 +2,16 @@ import { test, expect } from '@playwright/test';
 import { resetWorkspace, startBackend, stopBackend, waitForPort } from './helpers/server';
 import { spawnCli, type SpawnedCli } from './helpers/cli';
 import { generateSmallPng, generateTextFile } from './helpers/assets';
+import { fileURLToPath } from 'url';
 import { ChildProcess } from 'child_process';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { writeFileSync, mkdtempSync, readdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 
 const BASE = 'http://127.0.0.1:8301';
 const API_KEY = 'admin-key-123';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const WORKSPACE = join(__dirname, '..', 'workspace');
 const UI = 'http://localhost:5173';
 

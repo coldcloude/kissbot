@@ -1,4 +1,8 @@
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function globalSetup() {
   console.log('[global-setup] Building channel-web...');
