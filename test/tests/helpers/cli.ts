@@ -30,15 +30,21 @@ export function spawnCli(args: string[], cwd: string): SpawnedCli {
   const waitForOutput = (regex: RegExp, timeout = 8000): Promise<string> => {
     return new Promise((resolve, reject) => {
       const start = Date.now();
+      let timer: ReturnType<typeof setTimeout>;
       const check = () => {
         const match = stdoutBuf.match(regex);
-        if (match) return resolve(match[0]);
+        if (match) {
+          proc.stdout?.removeListener('data', onData);
+          return resolve(match[0]);
+        }
         if (Date.now() - start > timeout) {
+          proc.stdout?.removeListener('data', onData);
           return reject(new Error(`CLI output timed out after ${timeout}ms. Expected /${regex.source}/. Buffer:\n${stdoutBuf}`));
         }
-        setTimeout(check, 100);
+        timer = setTimeout(check, 100);
       };
-      proc.stdout?.on('data', check);
+      const onData = () => { clearTimeout(timer); check(); };
+      proc.stdout?.on('data', onData);
       check();
     });
   };
