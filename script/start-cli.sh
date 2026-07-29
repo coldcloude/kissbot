@@ -9,10 +9,6 @@ GROUP_ID="${2:-dev-team}"
 DOWNLOAD_DIR="${3:-$SCRIPT_DIR/downloads}"
 mkdir -p "$DOWNLOAD_DIR"
 
-echo "==> 编译 release 版本..."
-cd "$PROJECT_DIR/kissbot-channel-client-cli"
-cargo build --release 2>&1 | tail -3
-
 echo "==> 启动 CLI (user=$USER_ID, group=$GROUP_ID)..."
 cd "$SCRIPT_DIR"
-"$PROJECT_DIR/kissbot-channel-client-cli/target/release/kissbot-channel-client-cli" web "$USER_ID" "$GROUP_ID" "$DOWNLOAD_DIR"
+cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-client-cli/Cargo.toml" -- web "$USER_ID" "$GROUP_ID" "$DOWNLOAD_DIR"
