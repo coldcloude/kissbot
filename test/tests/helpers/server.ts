@@ -1,5 +1,5 @@
 import { execSync, spawn, type ChildProcess } from 'child_process';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 import net from 'net';
 
