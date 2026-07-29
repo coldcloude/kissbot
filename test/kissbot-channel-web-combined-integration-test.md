@@ -14,7 +14,7 @@ cp -r test/workspace-template/* test/workspace/
 
 ```bash
 cd ./test/workspace
-../../kissbot-channel-web/target/debug/kissbot-channel-web
+cargo run --manifest-path ../../kissbot-channel-web/Cargo.toml
 ```
 
 确认输出包含：
@@ -29,7 +29,7 @@ INFO ws server start: WS Server listening on: 127.0.0.1:8201
 
 ```bash
 cd ./test/workspace
-../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-1 dev-team ./downloads
+cargo run --manifest-path ../../kissbot-channel-client-cli/Cargo.toml -- web user-1 dev-team ./downloads
 ```
 
 确认输出包含：
@@ -215,7 +215,7 @@ file /tmp/downloaded.png
 
 ```bash
 cd ./test/workspace
-../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-2 project-x ./downloads
+cargo run --manifest-path ../../kissbot-channel-client-cli/Cargo.toml -- web user-2 project-x ./downloads
 ```
 
 **步骤**：
@@ -253,7 +253,7 @@ cd ./test/workspace
 5. 重新启动 cli（原进程已退出）：
    ```bash
    cd ./test/workspace
-   ../../kissbot-channel-client-cli/target/debug/kissbot-channel-client-cli web user-1 dev-team ./downloads
+   cargo run --manifest-path ../../kissbot-channel-client-cli/Cargo.toml -- web user-1 dev-team ./downloads
    ```
 6. 在 cli 终端输入 `reconnect 测试`，按 Enter
 

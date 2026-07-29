@@ -14,7 +14,7 @@ cp -r test/workspace-template/* test/workspace/
 
 ```bash
 cd ./test/workspace
-../../kissbot-channel-web/target/debug/kissbot-channel-web
+cargo run --manifest-path ../../kissbot-channel-web/Cargo.toml
 ```
 
 确认输出包含：
