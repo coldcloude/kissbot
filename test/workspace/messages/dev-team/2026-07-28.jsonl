@@ -1,0 +1,8 @@
+{"msg_id":"20260728165641000000","messenger_id":"web","user_id":"user-1","group_id":"dev-team","is_self":0,"msg_type":"text","content":{"Text":"hello"},"time":"2026-07-28T16:56:44.597Z"}
+{"msg_id":"20260728165649000001","messenger_id":"web","user_id":"user-1","group_id":"dev-team","is_self":0,"msg_type":"text","content":{"Text":"hello"},"time":"2026-07-28T16:56:52.234Z"}
+{"msg_id":"20260728165654000002","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"web-to-cli 测试"},"time":"2026-07-28T16:56:57.221Z"}
+{"msg_id":"20260728165719000003","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"第二次测试"},"time":"2026-07-28T16:57:22.623Z"}
+{"msg_id":"20260728165733000004","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"三次测试"},"time":"2026-07-28T16:57:36.490Z"}
+{"msg_id":"20260728165803000002","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"message 3"},"time":"2026-07-28T16:58:06.202Z"}
+{"msg_id":"20260728165803000001","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"message 2"},"time":"2026-07-28T16:58:06.202Z"}
+{"msg_id":"20260728165803000000","messenger_id":"web","user_id":"admin","group_id":"dev-team","is_self":1,"msg_type":"text","content":{"Text":"message 1"},"time":"2026-07-28T16:58:06.202Z"}

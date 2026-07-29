@@ -4,6 +4,16 @@ use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
 
+// ========== IncomingMessageEvent ==========
+
+/// 通道内统一的消息分发事件。recipient_user_id 为接收者（用于 bound_map）。
+/// incoming_message.user_id 为**发送者**。两者不同时表示转发（如 admin → agent）。
+#[derive(Debug, Clone)]
+pub struct IncomingMessageEvent {
+    pub recipient_user_id: Arc<String>,
+    pub incoming_message: Arc<IncomingMessage>,
+}
+
 // ========== Group Change ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,12 +40,12 @@ pub struct UserRemoveEvent {
 }
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
-pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessage> {
+pub fn group_change_to_incoming_message_event(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
     let msg_type = match message.change_type {
         GroupChangeType::Joined => MSG_TYPE_SYSTEM_GROUP_JOIN,
         GroupChangeType::Left => MSG_TYPE_SYSTEM_GROUP_LEAVE,
     };
-    Arc::new(IncomingMessage {
+    let incoming = Arc::new(IncomingMessage {
         msg_id: message.msg_id.clone(),
         messenger_id: message.notification.messenger_id.clone(),
         user_id: message.notification.user_id.clone(),
@@ -44,5 +54,10 @@ pub fn group_change_to_incoming_message(message: Arc<GroupChangeEvent>) -> Arc<I
         msg_type: Arc::new(msg_type.to_string()),
         content: Content::GroupChange(message.notification.clone()),
         time: message.time.clone(),
+    });
+    // 接收者即被通知的用户
+    Arc::new(IncomingMessageEvent {
+        recipient_user_id: message.notification.user_id.clone(),
+        incoming_message: incoming,
     })
 }

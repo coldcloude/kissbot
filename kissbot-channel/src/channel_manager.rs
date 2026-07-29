@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorContext, parse_bin_sn, ws_handle_connection_with_filter};
-use kissbot_api::{IncomingMessage, TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
+use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
 use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
@@ -652,14 +652,14 @@ impl ChannelManager {
                     payload: Some(payload),
                 }).await?;
                 //发channel变更消息
-                let msg_event = group_change_to_incoming_message(event.clone());
+                let msg_event = group_change_to_incoming_message_event(event.clone());
                 self.handle_incoming_message(msg_event).await;
             }
             GroupChangeType::Left => {
                 let span = span!(Level::INFO, "handle leave group");
                 let _enter = span.enter();
                 //发channel变更消息
-                let msg_event = group_change_to_incoming_message(event.clone());
+                let msg_event = group_change_to_incoming_message_event(event.clone());
                 self.handle_incoming_message(msg_event).await;
                 //通知agent退出channel
                 let payload = serde_json::to_value(event.notification.as_ref())?;
@@ -674,18 +674,18 @@ impl ChannelManager {
         Ok(())
     }
         
-    async fn process_incoming_message(&self, event: Arc<IncomingMessage>) -> Result<()>{
-        //找到对应的connect
-        let messenger_context = self.messenger_map.get(event.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(event.messenger_id.to_string()))?;
+    async fn process_incoming_message(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
+        //找到对应的connect（通过接收者 user_id）
+        let messenger_context = self.messenger_map.get(event.incoming_message.messenger_id.as_str())
+        .ok_or_else(|| Error::MessengerNotFound(event.incoming_message.messenger_id.to_string()))?;
 
-        let bound_connect_id = *messenger_context.bound_map.get(event.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(event.user_id.to_string()))?;
+        let bound_connect_id = *messenger_context.bound_map.get(event.recipient_user_id.as_str())
+        .ok_or_else(|| Error::UserNotFound(event.recipient_user_id.to_string()))?;
 
         let connect_context = self.connect_map.get(&bound_connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
 
-        let payload = serde_json::to_value(event)?;
+        let payload = serde_json::to_value(event.incoming_message.as_ref())?;
         let sn = connect_context.ws_context.next_request_sn();
         connect_context.ws_context.send_json(WsMessage {
             sn,
@@ -741,7 +741,7 @@ impl ChannelManager {
         }
     }
 
-    pub async fn handle_incoming_message(&self, event: Arc<IncomingMessage>) {
+    pub async fn handle_incoming_message(&self, event: Arc<IncomingMessageEvent>) {
         let span = span!(Level::INFO, "channel_manager handle incoming message");
         let _enter = span.enter();
         if let Err(e) = self.process_incoming_message(event).await {

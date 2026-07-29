@@ -18,6 +18,7 @@ use kissbot_api::channel::{
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     ChannelManager, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
+    IncomingMessageEvent,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
@@ -494,14 +495,17 @@ impl WebMessenger {
                 let incoming = Arc::new(IncomingMessage {
                     msg_id: admin_msg.msg_id.clone(),
                     messenger_id: admin_msg.messenger_id.clone(),
-                    user_id: member_id.clone(),
+                    user_id: admin_msg.user_id.clone(),
                     group_id: admin_msg.group_id.clone(),
                     is_self,
                     msg_type: admin_msg.msg_type.clone(),
                     content: admin_msg.content.clone(),
                     time: admin_msg.time.clone(),
                 });
-                messages.push(incoming);
+                messages.push(Arc::new(IncomingMessageEvent {
+                    recipient_user_id: member_id.clone(),
+                    incoming_message: incoming,
+                }));
             }
         }
         drop(cfg);
