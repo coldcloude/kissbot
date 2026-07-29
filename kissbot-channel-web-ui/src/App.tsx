@@ -116,8 +116,7 @@ export default function App() {
         user_id: 'admin',
         group_id: groupId,
         is_self: 1,
-        msg_type: 'text',
-        content: { Text: text },
+        content: { msg_type: 'Text', data: text },
         time: res.data.time,
       };
       loadedMsgIdsRef.current.add(msg.msg_id);
@@ -142,8 +141,8 @@ export default function App() {
     // 从响应提取 transfer_id
     const content = res.data.content;
     let transferId = 0;
-    if ('AttachmentInfoResponse' in content) {
-      transferId = content.AttachmentInfoResponse.transfer_id;
+    if (content.msg_type === 'AttachmentInfoResponse') {
+      transferId = content.data.transfer_id;
     }
 
     // 本地添加已发送消息
@@ -153,7 +152,6 @@ export default function App() {
       user_id: 'admin',
       group_id: groupId,
       is_self: 1,
-      msg_type: 'attachment',
       content: res.data.content,
       time: res.data.time,
     };

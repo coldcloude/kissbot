@@ -25,19 +25,20 @@ export interface IncomingMessage {
   user_id: string;
   group_id: string;
   is_self: number; // 1=admin, 0=user
-  msg_type: string;
   content: Content; // Content 枚举
   time: string;
 }
 
-// Content 枚举——serde external tagging 格式
+// Content 枚举——serde internally tagged 格式
+// JSON: { "msg_type": "Text", "data": "hello" }
 export type Content =
-  | { Text: string }
-  | { AttachmentInfo: AttachmentInfo }
-  | { AttachmentInfoResponse: AttachmentInfoResponse }
-  | { GroupChange: GroupChangeNotification }
-  | { UserRemove: UserRemoveNotification }
-  | { Multi: MessageItem[] };
+  | { msg_type: 'Text'; data: string }
+  | { msg_type: 'AttachmentInfo'; data: AttachmentInfo }
+  | { msg_type: 'AttachmentInfoResponse'; data: AttachmentInfoResponse }
+  | { msg_type: 'GroupJoin'; data: GroupChangeNotification }
+  | { msg_type: 'GroupLeave'; data: GroupChangeNotification }
+  | { msg_type: 'UserRemove'; data: UserRemoveNotification }
+  | { msg_type: 'Multi'; data: Content[] };
 
 export interface AttachmentInfo {
   file_name: string;
@@ -60,11 +61,6 @@ export interface GroupChangeNotification {
 export interface UserRemoveNotification {
   messenger_id: string;
   user_id: string;
-}
-
-export interface MessageItem {
-  msg_type: string;
-  content: Content;
 }
 
 // 消息历史
@@ -94,14 +90,12 @@ export interface OutgoingMessage {
   messenger_id: string;
   user_id: string;
   group_id: string;
-  msg_type: string;
   content: Content;
 }
 
 export interface OutgoingMessageResponse {
   msg_id: string;
   time: string;
-  msg_type: string;
   content: Content;
 }
 

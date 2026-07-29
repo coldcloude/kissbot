@@ -71,8 +71,7 @@ export async function sendTextMessage(
     messenger_id: messengerId,
     user_id: 'admin',
     group_id: groupId,
-    msg_type: 'text',
-    content: { Text: text },
+    content: { msg_type: 'Text', data: text },
   };
   return request<OutgoingMessageResponse>('POST', '/message/send', msg);
 }
@@ -87,8 +86,7 @@ export async function sendAttachmentMessage(
     messenger_id: messengerId,
     user_id: 'admin',
     group_id: groupId,
-    msg_type: 'attachment',
-    content: { AttachmentInfo: info },
+    content: { msg_type: 'AttachmentInfo', data: info },
   };
   return request<OutgoingMessageResponse>('POST', '/message/send', msg);
 }

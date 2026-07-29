@@ -24,43 +24,45 @@ function formatTime(timeStr: string): string {
   }
 }
 
-function renderContent(content: Content, apiBase: string) {
-  if ('Text' in content) {
-    return <div className="text-content">{content.Text}</div>;
+function renderContent(content: Content, apiBase: string): React.ReactNode {
+  switch (content.msg_type) {
+    case 'Text':
+      return <div className="text-content">{content.data}</div>;
+
+    case 'AttachmentInfoResponse': {
+      const resp = content.data;
+      return renderAttachment(resp.key, resp.info.file_name, resp.info.mime_type, apiBase);
+    }
+
+    case 'GroupJoin':
+      return (
+        <div className="msg-system-text">📋 用户 {content.data.user_id} 加入了群组</div>
+      );
+
+    case 'GroupLeave':
+      return (
+        <div className="msg-system-text">📋 用户 {content.data.user_id} 离开了群组</div>
+      );
+
+    case 'UserRemove':
+      return (
+        <div className="msg-system-text">📋 用户 {content.data.user_id} 已被删除</div>
+      );
+
+    case 'Multi':
+      return (
+        <div className="msg-multi">
+          {content.data.map((item, i) => (
+            <div key={i} className="multi-item">
+              {renderContent(item, apiBase)}
+            </div>
+          ))}
+        </div>
+      );
+
+    default:
+      return null;
   }
-  if ('AttachmentInfoResponse' in content) {
-    const resp = content.AttachmentInfoResponse;
-    return renderAttachment(resp.key, resp.info.file_name, resp.info.mime_type, apiBase);
-  }
-  if ('GroupChange' in content) {
-    const notif = content.GroupChange;
-    return (
-      <div className="msg-system">
-        <span className="msg-system-text">📋 用户 {notif.user_id} 加入了群组</span>
-      </div>
-    );
-  }
-  if ('UserRemove' in content) {
-    const notif = content.UserRemove;
-    return (
-      <div className="msg-system">
-        <span className="msg-system-text">📋 用户 {notif.user_id} 已被删除</span>
-      </div>
-    );
-  }
-  if ('Multi' in content) {
-    const items = content.Multi;
-    return (
-      <div className="msg-multi">
-        {items.map((item, i) => (
-          <div key={i} className="multi-item">
-            {renderContent(item.content, apiBase)}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return null;
 }
 
 function renderAttachment(key: string, fileName: string, mimeType: string, apiBase: string) {
@@ -103,10 +105,12 @@ function ImageAttachment({ keyStr, fileName, apiBase }: { keyStr: string; fileNa
 export default function MessageBubble({ message }: MessageBubbleProps) {
   const apiBase = getApiBase();
   const rendered = renderContent(message.content, apiBase);
-  // 系统消息已在 renderContent 中渲染完整内容，直接返回
-  if ('GroupChange' in message.content || 'UserRemove' in message.content) {
+
+  // 系统消息（GroupJoin / GroupLeave / UserRemove）居中显示
+  if (message.content.msg_type === 'GroupJoin' || message.content.msg_type === 'GroupLeave' || message.content.msg_type === 'UserRemove') {
     return <div className="msg msg-system">{rendered}</div>;
   }
+
   return (
     <div className={`message ${message.is_self === 1 ? 'self' : 'other'}`}>
       {message.is_self === 0 && <div className="message-sender">{message.user_id}</div>}
