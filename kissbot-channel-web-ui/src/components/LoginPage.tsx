@@ -1,22 +1,75 @@
-import { useState } from 'react';
-import { DEFAULT_BACKEND_URLS } from '../api/config';
+import { useState, useEffect, useCallback } from 'react';
+import { loadBackendConfig } from '../api/backendConfig';
+import type { BackendUrlOption } from '../types';
 
 interface LoginPageProps {
   onConnect: (backendUrl: string, apiKey: string) => Promise<void>;
 }
 
+type Selection =
+  | { kind: 'preset'; url: string }
+  | { kind: 'custom'; url: string };
+
 export default function LoginPage({ onConnect }: LoginPageProps) {
-  const [selectedUrl, setSelectedUrl] = useState(DEFAULT_BACKEND_URLS[1].url);
+  const [presetBackends, setPresetBackends] = useState<BackendUrlOption[]>([]);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [selection, setSelection] = useState<Selection>({ kind: 'custom', url: '' });
+  const [customUrl, setCustomUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState('');
 
+  // 加载预置后端配置
+  useEffect(() => {
+    (async () => {
+      const backends = await loadBackendConfig();
+      setPresetBackends(backends);
+      setConfigLoading(false);
+      // 默认选中第一个预置项；无预置时默认选中自定义
+      if (backends.length > 0) {
+        setSelection({ kind: 'preset', url: backends[0].url });
+      }
+    })();
+  }, []);
+
+  const handleCustomFocus = useCallback(() => {
+    setSelection({ kind: 'custom', url: customUrl.trim() });
+  }, [customUrl]);
+
+  const handleCustomInput = useCallback((value: string) => {
+    setCustomUrl(value);
+    setSelection({ kind: 'custom', url: value.trim() });
+  }, []);
+
+  const handlePresetClick = useCallback((url: string) => {
+    setSelection({ kind: 'preset', url });
+  }, []);
+
   const handleConnect = async () => {
-    if (!apiKey.trim()) { setError('请输入 Admin Key'); return; }
-    setConnecting(true);
     setError('');
+
+    // 校验：自定义选中但 URL 为空
+    if (selection.kind === 'custom') {
+      const trimmed = customUrl.trim();
+      if (!trimmed) {
+        setError('请输入后端 URL');
+        return;
+      }
+      if (!/^https?:\/\//i.test(trimmed)) {
+        setError('URL 必须以 http:// 或 https:// 开头');
+        return;
+      }
+    }
+
+    if (!apiKey.trim()) {
+      setError('请输入 Admin Key');
+      return;
+    }
+
+    setConnecting(true);
     try {
-      await onConnect(selectedUrl, apiKey.trim());
+      const url = selection.kind === 'custom' ? customUrl.trim() : selection.url;
+      await onConnect(url, apiKey.trim());
     } catch {
       setError('连接失败');
     } finally {
@@ -33,11 +86,33 @@ export default function LoginPage({ onConnect }: LoginPageProps) {
         <div className="login-section">
           <label className="login-label">选择后端</label>
           <div className="backend-url-list">
-            {DEFAULT_BACKEND_URLS.map(opt => (
+            {/* 自定义项 — 始终显示在最上方 */}
+            <div
+              className={`backend-url-item backend-url-custom${selection.kind === 'custom' ? ' selected' : ''}`}
+            >
+              <div className="backend-name">自定义</div>
+              <input
+                type="url"
+                placeholder="输入自定义后端 URL，如 https://api.example.com"
+                value={customUrl}
+                onFocus={handleCustomFocus}
+                onChange={e => handleCustomInput(e.target.value)}
+              />
+            </div>
+
+            {/* 加载中状态 */}
+            {configLoading && (
+              <div className="backend-url-item backend-url-loading">
+                <div className="backend-name">加载配置中...</div>
+              </div>
+            )}
+
+            {/* 预置后端列表 */}
+            {!configLoading && presetBackends.map(opt => (
               <div
                 key={opt.url}
-                className={`backend-url-item${selectedUrl === opt.url ? ' selected' : ''}`}
-                onClick={() => setSelectedUrl(opt.url)}
+                className={`backend-url-item${selection.kind === 'preset' && selection.url === opt.url ? ' selected' : ''}`}
+                onClick={() => handlePresetClick(opt.url)}
               >
                 <div className="backend-name">{opt.name}</div>
                 <div className="backend-url">{opt.url}</div>
@@ -53,7 +128,7 @@ export default function LoginPage({ onConnect }: LoginPageProps) {
             placeholder="输入 Admin API Key"
             value={apiKey}
             onChange={e => setApiKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleConnect()}
+            onKeyDown={e => e.key === 'Enter' && !connecting && handleConnect()}
           />
         </div>
 
