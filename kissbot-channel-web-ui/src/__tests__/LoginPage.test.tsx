@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import LoginPage from '../components/LoginPage';
 
-const mockOnConnect = vi.fn<[string, string], Promise<void>>();
+const mockOnConnect = vi.fn<(backendUrl: string, apiKey: string) => Promise<void>>();
+mockOnConnect.mockResolvedValue();
 
 function mockFetchBackends(backends: Array<{name: string; url: string}>) {
   vi.stubGlobal('fetch', () =>
@@ -53,6 +54,27 @@ describe('LoginPage', () => {
 
     const itemA = screen.getByText('EnvA').closest('.backend-url-item')!;
     expect(itemA.classList.contains('selected')).toBe(false);
+  });
+
+  it('点击自定义项的标签文字应选中自定义', async () => {
+    mockFetchBackends([
+      { name: 'EnvA', url: 'http://a.com' },
+    ]);
+    render(<LoginPage onConnect={mockOnConnect} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('EnvA')).toBeInTheDocument();
+    });
+
+    // 点击自定义项的 "自定义" 文字（不是 input）
+    const customItem = document.querySelector('.backend-url-custom')!;
+    const customLabel = customItem.querySelector('.backend-name')!;
+    fireEvent.click(customLabel);
+
+    expect(customItem.classList.contains('selected')).toBe(true);
+
+    const presetItem = screen.getByText('EnvA').closest('.backend-url-item')!;
+    expect(presetItem.classList.contains('selected')).toBe(false);
   });
 
   it('聚焦自定义 URL 取消预置选中并选中自定义', async () => {

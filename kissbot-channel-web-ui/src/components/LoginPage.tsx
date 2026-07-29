@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { loadBackendConfig } from '../api/backendConfig';
 import type { BackendUrlOption } from '../types';
 
@@ -32,7 +32,15 @@ export default function LoginPage({ onConnect }: LoginPageProps) {
     })();
   }, []);
 
+  const customInputRef = useRef<HTMLInputElement>(null);
+
   const handleCustomFocus = useCallback(() => {
+    setSelection({ kind: 'custom', url: customUrl.trim() });
+  }, [customUrl]);
+
+  const handleCustomClick = useCallback(() => {
+    // 点击自定义项外部区域时，聚焦 input 并选中自定义
+    customInputRef.current?.focus();
     setSelection({ kind: 'custom', url: customUrl.trim() });
   }, [customUrl]);
 
@@ -89,9 +97,11 @@ export default function LoginPage({ onConnect }: LoginPageProps) {
             {/* 自定义项 — 始终显示在最上方 */}
             <div
               className={`backend-url-item backend-url-custom${selection.kind === 'custom' ? ' selected' : ''}`}
+              onClick={handleCustomClick}
             >
               <div className="backend-name">自定义</div>
               <input
+                ref={customInputRef}
                 type="url"
                 placeholder="输入自定义后端 URL，如 https://api.example.com"
                 value={customUrl}
