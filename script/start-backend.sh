@@ -3,6 +3,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+mkdir -p "$SCRIPT_DIR/attachments" "$SCRIPT_DIR/messages"
+
 echo "==> 编译 release 版本..."
 cd "$PROJECT_DIR/kissbot-channel-web"
 cargo build --release 2>&1 | tail -3

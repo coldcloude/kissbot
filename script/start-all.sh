@@ -2,6 +2,8 @@
 # 启动全部服务（后端 + 前端 + CLI）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+mkdir -p "$SCRIPT_DIR/attachments" "$SCRIPT_DIR/messages"
+
 echo "========================================"
 echo "  Kissbot Channel Web — 全部启动"
 echo "========================================"
@@ -12,12 +14,12 @@ kill $(ps aux | grep "vite" | grep -v grep | awk '{print $2}') 2>/dev/null
 
 # 编译后端
 echo ""
-echo "[1/3] 编译后端..."
+echo "[2/4] 编译后端..."
 cd "$SCRIPT_DIR/../kissbot-channel-web"
 cargo build --release 2>&1 | tail -3
 
 # 启动后端
-echo "[2/3] 启动后端 (http://127.0.0.1:8301)..."
+echo "[3/4] 启动后端 (http://127.0.0.1:8301)..."
 cd "$SCRIPT_DIR"
 KISSBOT_CONFIG=config.json "$SCRIPT_DIR/../kissbot-channel-web/target/release/kissbot-channel-web" > /tmp/kissbot-backend.log 2>&1 &
 BACKEND_PID=$!
@@ -34,7 +36,7 @@ else
 fi
 
 # 启动前端
-echo "[3/3] 启动前端 (http://localhost:5173)..."
+echo "[4/4] 启动前端 (http://localhost:5173)..."
 cd "$SCRIPT_DIR/../kissbot-channel-web-ui"
 npm install 2>&1 | tail -1
 npm run dev > /tmp/kissbot-frontend.log 2>&1 &
