@@ -4,5 +4,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "==> 启动后端 (debug)..."
+mkdir -p "$PROJECT_DIR/workspace"
 cd "$SCRIPT_DIR"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-web/Cargo.toml"

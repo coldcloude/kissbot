@@ -6,9 +6,9 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 USER_ID="${1:-user-1}"
 GROUP_ID="${2:-dev-team}"
-DOWNLOAD_DIR="${3:-$SCRIPT_DIR/downloads}"
+DOWNLOAD_DIR="${3:-$PROJECT_DIR/workspace/downloads}"
 mkdir -p "$DOWNLOAD_DIR"
 
 echo "==> 启动 CLI (user=$USER_ID, group=$GROUP_ID)..."
 cd "$SCRIPT_DIR"
-cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-client-cli/Cargo.toml" -- web "$USER_ID" "$GROUP_ID" "$DOWNLOAD_DIR"
+KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-client-cli/Cargo.toml" -- web "$USER_ID" "$GROUP_ID" "$DOWNLOAD_DIR"

@@ -21,9 +21,9 @@
   "channel-web": {
     "messenger_id": "web",
     "admin_name": "管理员",
-    "messenger_repo": "channel-web-repo.json",
-    "attachment_dir": "attachments",
-    "message_dir": "messages",
+    "messenger_repo": "../workspace/channel-web-repo.json",
+    "attachment_dir": "../workspace/attachments",
+    "message_dir": "../workspace/messages",
     "ws_listen_addr": "127.0.0.1:8201",
     "http_listen_addr": "127.0.0.1:8301"
   },
