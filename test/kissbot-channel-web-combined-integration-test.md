@@ -62,6 +62,7 @@ npm run dev
 
 **步骤**：
 1. 点击 "测试环境" 选项
+   - 确认选中态：agent-browser 执行 `getComputedStyle` 检查该项的 `border-color === 'rgb(74, 144, 217)'` 且 `background-color === 'rgb(236, 243, 250)'`
 2. 输入 Admin Key `admin-key-123`
 3. 点击 "连接"
 
