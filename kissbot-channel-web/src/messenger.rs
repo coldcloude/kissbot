@@ -515,10 +515,26 @@ pub struct WebMessengerCreator {
     message_dir: String,
 }
 impl WebMessengerCreator {
-    pub async fn new(repo_path: &str, attachment_dir: &str, message_dir: &str) -> Result<Self> {
+    pub async fn new(repo_path: &str, attachment_dir: &str, message_dir: &str,
+                     messenger_id: &str, admin_name: &str) -> Result<Self> {
         let path = PathBuf::from(repo_path);
-        let content = std::fs::read_to_string(&path)?;
-        let config: WebMessengerRepo = serde_json::from_str(&content)?;
+        let config = if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&content)?
+        } else {
+            // repo 文件不存在时根据 config 创建初始结构
+            let repo = WebMessengerRepo {
+                messenger_id: Arc::new(messenger_id.to_string()),
+                admin_name: Arc::new(admin_name.to_string()),
+                users: Arc::new(DashMap::new()),
+                groups: Arc::new(DashMap::new()),
+                next_user_seq: Arc::new(AtomicU32::new(0)),
+                next_group_seq: Arc::new(AtomicU32::new(0)),
+            };
+            let json = serde_json::to_string_pretty(&repo)?;
+            std::fs::write(&path, json)?;
+            repo
+        };
         Ok(Self {
             repo_path: path,
             config: Arc::new(RwLock::new(Arc::new(config))),

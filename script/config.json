@@ -19,6 +19,8 @@
     "memory_ego_url": ""
   },
   "channel-web": {
+    "messenger_id": "web",
+    "admin_name": "管理员",
     "messenger_repo": "channel-web-repo.json",
     "attachment_dir": "attachments",
     "message_dir": "messages",

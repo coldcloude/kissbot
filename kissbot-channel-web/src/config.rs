@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    pub messenger_id: String,
+    pub admin_name: String,
     pub messenger_repo: String,
     pub attachment_dir: String,
     pub message_dir: String,

@@ -24,7 +24,10 @@ async fn main() {
     let security = SecurityConfig::get();
 
     // 2. 读取 messenger 配置，构造 Creator
-    let creator = WebMessengerCreator::new(&config.messenger_repo, &config.attachment_dir, &config.message_dir).await
+    let creator = WebMessengerCreator::new(
+        &config.messenger_repo, &config.attachment_dir, &config.message_dir,
+        &config.messenger_id, &config.admin_name,
+    ).await
     .expect("Failed to load messenger config");
 
     // 3. 创建 ChannelManager
