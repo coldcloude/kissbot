@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::Weak;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -9,7 +8,7 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::types::{
-    Mode, WriteTask, ContextMessage, AdminCommand, Result, Error,
+    Mode, WriteTask, ContextMessage, AdminCommand, Result,
 };
 use crate::config_manager::ConfigManager;
 use crate::mode_manager::ModeManager;
@@ -96,12 +95,12 @@ impl AgentCoordinator {
         for binding in &bindings {
             let messenger_id = binding.messenger_id.clone();
             let user_id = binding.user_id.clone();
-            let client = ChannelClient::new(messenger_id.clone(), Arc::downgrade(self));
+            let terminal: Arc<dyn Terminal> = self.clone();
+            let client = ChannelClient::new(messenger_id.clone(), Arc::downgrade(&terminal));
             let client_clone = client.clone();
 
             let ws_url = ws_url.clone();
             let api_key = api_key.clone();
-            let coordinator = self.clone();
             self.channel_clients.insert(messenger_id.clone(), client);
 
             tokio::spawn(async move {

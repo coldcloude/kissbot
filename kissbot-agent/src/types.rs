@@ -23,6 +23,7 @@ pub enum Error {
     #[error("Memory ego error: {0}")]
     MemoryEgoError(String),
 
+    #[allow(dead_code)]
     #[error("WS connection error: {0}")]
     WsConnectionError(String),
 
@@ -49,6 +50,7 @@ pub enum Error {
     #[error("Context overflow")]
     ContextOverflow,
 
+    #[allow(dead_code)]
     #[error("Serialization error: {0}")]
     SerializationError(String),
 

@@ -18,6 +18,7 @@ dashmap = { version = "6.1", features = ["serde"] }
 flume = "0.12"
 kai-ws = { path = "../kai-rs/kai-ws" }
 kai-file = { path = "../kai-rs/kai-file" }
+bytes = "1.11"
 kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }
 kissbot-channel-client = { path = "../kissbot-channel-client" }
