@@ -27,6 +27,10 @@ Keep It Simple Stupid BOT - kissbot
   - **kai-\*** kai-rs各组件实现
 - **kai** （未建立）本地TypeScript基础库
 - **blog** 一些形而上的思考
+- **test** 自动化测试用例
+  - **workspace** 自动化测试中使用的配置和数据目录
+- **script** 手动测试用启动脚本和配置文件
+- **workspace** 手动测试用数据目录
 - **CLAUDE.md** 项目基本原则（Claude Code默认位置）
 - **.claude/rules** 项目规范（Claude Code默认位置）
 
