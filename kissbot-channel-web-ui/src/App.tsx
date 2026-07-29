@@ -163,7 +163,7 @@ export default function App() {
     }]);
 
     // Step 2: upload file data
-    if (transferId > 0) {
+    if (transferId >= 0) {
       await api.uploadAttachmentData(transferId, file);
     }
   };

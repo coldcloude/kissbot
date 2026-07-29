@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { join } from 'path';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-const CLI_BINARY = join(REPO_ROOT, 'target', 'debug', 'kissbot-channel-client-cli');
+const CLI_BINARY = join(REPO_ROOT, 'kissbot-channel-client-cli', 'target', 'debug', 'kissbot-channel-client-cli');
 
 export interface SpawnedCli {
   proc: ChildProcess;
