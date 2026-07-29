@@ -3,7 +3,8 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-mkdir -p "$SCRIPT_DIR/attachments" "$SCRIPT_DIR/messages"
+# 重置 workspace 到初始状态
+bash "$SCRIPT_DIR/reset-workspace.sh"
 
 echo "==> 编译 release 版本..."
 cd "$PROJECT_DIR/kissbot-channel-web"

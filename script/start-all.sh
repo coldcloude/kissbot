@@ -2,7 +2,8 @@
 # 启动全部服务（后端 + 前端 + CLI）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-mkdir -p "$SCRIPT_DIR/attachments" "$SCRIPT_DIR/messages"
+# 重置 workspace 到初始状态
+bash "$SCRIPT_DIR/reset-workspace.sh"
 
 echo "========================================"
 echo "  Kissbot Channel Web — 全部启动"
