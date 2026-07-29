@@ -98,7 +98,7 @@ pub struct MessageFileWriterContext {
 #[async_trait]
 impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterContext {
     async fn write(&mut self, key: &MsgKey, mut records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
-        let mut time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+        let mut time = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         if key.date.as_str() != as_date(time.as_str()) {
             time = Arc::new(format!("{} 23:59:59", key.date.as_str()));
         }

@@ -220,7 +220,7 @@ impl WebMessenger {
                     messenger_id: self.messenger_id.clone(),
                     user_id: Arc::new(user_id.to_string()),
                 }),
-                time: Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+                time: Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
             });
             manager.handle_user_remove(event).await;
         }
@@ -239,7 +239,7 @@ impl WebMessenger {
             Ok(cfg)
         }).await?;
         // 通知新成员
-        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         for m in &member_ids {
             if m != ADMIN_USER_ID.as_str() {
                 self.notify_group_change(m, &group_id, GroupChangeType::Joined, &time).await;
@@ -283,7 +283,7 @@ impl WebMessenger {
             Ok(cfg)
         }).await?;
         // 通知成员变更
-        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         for add_id in add_ids {
             self.notify_group_change(add_id, group_id, GroupChangeType::Joined, &time).await;
         }
@@ -309,7 +309,7 @@ impl WebMessenger {
             Ok(cfg)
         }).await?;
         // 通知成员退出
-        let time = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         for m in members.iter() {
             if m.key().as_str() != ADMIN_USER_ID.as_str() {
                 self.notify_group_change(m.key(), group_id, GroupChangeType::Left, &time).await;
@@ -360,7 +360,7 @@ impl WebMessenger {
         ).await.map_err(|e| Error::InternalError(e.to_string()))?;
         // 生成消息ID和时间戳
         let msg_id = self.next_msg_id();
-        let time = Arc::new(Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string());
+        let time = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         // 写入存储
         let is_admin = if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() { 1 } else { 0 };
         let admin_msg = IncomingMessage {
