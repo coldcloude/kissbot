@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, error};
 
-use crate::nexus::config_manager::ConfigManager;
-use crate::nexus::types::Result;
+use crate::config_manager::ConfigManager;
+use crate::types::Result;
 
 /// 管理 REST API 服务器（本期骨架，供管理界面对接）
 pub struct HttpServer {
@@ -22,7 +22,7 @@ impl HttpServer {
     pub async fn start(&self) -> Result<()> {
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await
-            .map_err(|e| crate::nexus::types::Error::IoError(e.to_string()))?;
+            .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
 
         info!("管理 API 服务器启动: {}", addr);
 

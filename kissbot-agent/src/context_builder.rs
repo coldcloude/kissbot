@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use crate::nexus::types::ContextMessage;
-use crate::nexus::llm_client::MessageItem;
+use crate::types::ContextMessage;
+use crate::llm_client::MessageItem;
 
 /// 最大上下文消息数量，超过时触发重置
 const MAX_CONTEXT_MESSAGES: usize = 100;

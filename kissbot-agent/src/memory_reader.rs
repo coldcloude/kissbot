@@ -1,7 +1,7 @@
 use serde_json::json;
 
-use crate::nexus::types::{Mode, ContextMessage, Result, Error};
-use crate::nexus::config_manager::ConfigManager;
+use crate::types::{Mode, ContextMessage, Result, Error};
+use crate::config_manager::ConfigManager;
 
 /// 最近读取的最大记录数
 const MAX_RECENT_RECORDS: usize = 50;

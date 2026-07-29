@@ -3,8 +3,8 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::time::sleep;
 
-use crate::nexus::types::{LlmResponse, Result, Error};
-use crate::nexus::config_manager::LlmConfig;
+use crate::types::{LlmResponse, Result, Error};
+use crate::config_manager::LlmConfig;
 
 pub struct LlmClient {
     config: LlmConfig,

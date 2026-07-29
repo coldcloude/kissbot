@@ -1,5 +1,5 @@
-use crate::nexus::types::{AdminCommand, Error, Result};
-use crate::nexus::config_manager::{ConfigManager, ChannelBinding, AdminUser};
+use crate::types::{AdminCommand, Error, Result};
+use crate::config_manager::{ConfigManager, ChannelBinding, AdminUser};
 
 pub struct CommandRouter;
 

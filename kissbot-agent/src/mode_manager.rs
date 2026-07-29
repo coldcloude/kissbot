@@ -1,6 +1,6 @@
 use tokio::sync::RwLock;
 
-use crate::nexus::types::Mode;
+use crate::types::Mode;
 
 pub struct ModeManager {
     mode: RwLock<Mode>,

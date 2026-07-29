@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::nexus::types::{Mode, Result, Error};
+use crate::types::{Mode, Result, Error};
 
 // ========== 配置数据结构 ==========
 

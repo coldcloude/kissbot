@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::nexus::types::{Result, Error};
+use crate::types::{Result, Error};
 
 /// Station 通信客户端
 #[allow(dead_code)]

@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
-use crate::nexus::types::{WriteTask, Result, Error};
+use crate::types::{WriteTask, Result, Error};
 
 const DEFAULT_QUEUE_CAPACITY: usize = 1024;
 

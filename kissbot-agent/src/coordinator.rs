@@ -4,17 +4,17 @@ use chrono::Local;
 use flume::Receiver;
 use tracing::{info, warn};
 
-use crate::nexus::types::{
+use crate::types::{
     Mode, WriteTask, ContextMessage, AdminCommand, Result,
 };
-use crate::nexus::config_manager::ConfigManager;
-use crate::nexus::mode_manager::ModeManager;
-use crate::nexus::command_router::CommandRouter;
-use crate::nexus::llm_client::LlmClient;
-use crate::nexus::context_builder::ContextBuilder;
-use crate::nexus::memory_reader::MemoryReader;
-use crate::nexus::memory_writer::MemoryWriter;
-use crate::nexus::ws_client::{ExternalMessage, WSClient};
+use crate::config_manager::ConfigManager;
+use crate::mode_manager::ModeManager;
+use crate::command_router::CommandRouter;
+use crate::llm_client::LlmClient;
+use crate::context_builder::ContextBuilder;
+use crate::memory_reader::MemoryReader;
+use crate::memory_writer::MemoryWriter;
+use crate::ws_client::{ExternalMessage, WSClient};
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
