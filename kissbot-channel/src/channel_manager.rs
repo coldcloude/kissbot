@@ -15,7 +15,7 @@ use tokio::{net::TcpListener, time::{Duration}};
 
 const MSG_QUEUE_SIZE: usize = 100;
 
-static INTERVAL: Duration = Duration::from_secs(10);
+static INTERVAL: Duration = Duration::from_secs(5);
 
 struct MessengerContext {
     pub messenger: Arc<dyn Messenger>,

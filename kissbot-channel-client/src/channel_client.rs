@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::terminal::Terminal;
 
 const QUEUE_SIZE: usize = 100;
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ChannelClient {

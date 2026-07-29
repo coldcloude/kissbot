@@ -149,7 +149,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await page.getByText('上传附件').click();
 
     // 验证 CLI 端收到 AttachmentInfoResponse（含 key 和 transfer_id）
-    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*AttachmentInfoResponse.*/);
+    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*test-photo\.png.*/);
     const keyMatch = output.match(/"key":"([^"]+)"/);
     if (keyMatch) {
       sharedAttKey = keyMatch[1];
@@ -174,7 +174,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await cli1.waitForOutput(/>> downloading .*\.png \(\d+ bytes\)/);
 
     // 验证下载完成（接收完所有 chunk 后自动打印）
-    await cli1.waitForOutput(/>> downloaded to/);
+    await cli1.waitForOutput(/>> downloaded to .*test-photo\.png/);
 
     // 验证文件存在于 WORKSPACE/downloads/
     const downloadDir = join(WORKSPACE, 'downloads');
@@ -273,8 +273,8 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     // 发送
     await page.getByText('上传附件').click();
 
-    // 验证 CLI 收到 AttachmentInfoResponse
-    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*AttachmentInfoResponse.*/);
+    // 验证 CLI 收到 AttachmentInfoResponse（用 file_name 区分 TC-04 图片的行）
+    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*test-document\.txt.*/);
     const keyMatch = output.match(/"key":"([^"]+)"/);
     if (keyMatch) {
       sharedAttKey = keyMatch[1]; // 用于 TC-10
@@ -295,7 +295,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     cli1.stdin(`/download ${sharedAttKey}`);
 
     await cli1.waitForOutput(/>> downloading .*\.txt \(\d+ bytes\)/);
-    await cli1.waitForOutput(/>> downloaded to/);
+    await cli1.waitForOutput(/>> downloaded to .*test-document\.txt/);
 
     const downloadDir = join(WORKSPACE, 'downloads');
     const files = readdirSync(downloadDir);
@@ -440,6 +440,42 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     // 验证 web 页面出现该消息（SSE 自动重连后收到）
     const msg = page.locator('.message-bubble').filter({ hasText: 'reconnect 测试' }).last();
     await expect(msg).toBeVisible({ timeout: 15000 });
+  });
+
+  // ================================================================
+  // TC-16 心跳保活——长时间空闲后仍可收发（heartbeat interval=5s, timeout=15s）
+  // ================================================================
+  test('TC-16: 心跳保活——长时间空闲连接不中断', async ({ page, }) => {
+    test.setTimeout(35000);
+    await login(page);
+    await page.locator('.conversation-name').filter({ hasText: '开发组' }).click();
+    await page.waitForTimeout(500);
+
+    // 清理旧 CLI 连接，重新绑定
+    if (cli1) cli1.proc.kill();
+    cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+    await cli1.waitForOutput(/bound\./);
+
+    // 先发一条消息确认连通
+    cli1.stdin('心跳前测试');
+    await cli1.waitForOutput(/>> sent msg_id=/);
+    await expect(page.locator('.message-bubble').filter({ hasText: '心跳前测试' }).last())
+      .toBeVisible({ timeout: 5000 });
+
+    // 等待 20 秒（> 15s 心跳超时，余量 5s），期间无任何用户交互
+    // 若心跳有 bug，连接将断开，CLI 进程退出
+    await new Promise(r => setTimeout(r, 20000));
+
+    // 验证 CLI 进程仍在运行
+    expect(cli1.proc.exitCode).toBeNull();
+
+    // 再发一条消息验证连接仍然畅通
+    cli1.stdin('心跳后测试');
+    await cli1.waitForOutput(/>> sent msg_id=/);
+
+    // web 页面也应收到该消息
+    const afterMsg = page.locator('.message-bubble').filter({ hasText: '心跳后测试' }).last();
+    await expect(afterMsg).toBeVisible({ timeout: 10000 });
   });
 
 });
