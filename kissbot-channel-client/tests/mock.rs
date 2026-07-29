@@ -158,12 +158,10 @@ impl Messenger for MockMessenger {
             })),
             other => other.clone(),
         };
-        let msg_type = message.msg_type.clone();
         let _ = self.sent_messages.send(message);
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id: Arc::new(format!("msg-{}", self.next_msg_id.fetch_add(1, Ordering::Relaxed))),
             time: Arc::new(TEST_TIME.to_string()),
-            msg_type,
             content,
         }))
     }
@@ -338,7 +336,6 @@ pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, tex
         user_id: Arc::new(user_id.to_string()),
         group_id: Arc::new(group_id.to_string()),
         is_self: 0,
-        msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
         content: Content::Text(Arc::new(text.to_string())),
         time: Arc::new(TEST_TIME.to_string()),
     }

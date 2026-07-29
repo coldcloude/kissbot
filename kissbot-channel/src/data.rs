@@ -41,9 +41,9 @@ pub struct UserRemoveEvent {
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
 pub fn group_change_to_incoming_message_event(message: Arc<GroupChangeEvent>) -> Arc<IncomingMessageEvent> {
-    let msg_type = match message.change_type {
-        GroupChangeType::Joined => MSG_TYPE_SYSTEM_GROUP_JOIN,
-        GroupChangeType::Left => MSG_TYPE_SYSTEM_GROUP_LEAVE,
+    let content = match message.change_type {
+        GroupChangeType::Joined => Content::GroupJoin(message.notification.clone()),
+        GroupChangeType::Left => Content::GroupLeave(message.notification.clone()),
     };
     let incoming = Arc::new(IncomingMessage {
         msg_id: message.msg_id.clone(),
@@ -51,8 +51,7 @@ pub fn group_change_to_incoming_message_event(message: Arc<GroupChangeEvent>) ->
         user_id: message.notification.user_id.clone(),
         group_id: message.notification.group_id.clone(),
         is_self: 1,
-        msg_type: Arc::new(msg_type.to_string()),
-        content: Content::GroupChange(message.notification.clone()),
+        content,
         time: message.time.clone(),
     });
     // 接收者即被通知的用户

@@ -15,7 +15,6 @@ pub struct ChannelRequest {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
 }
@@ -100,7 +99,6 @@ pub struct QueryRequest {
 pub struct ChannelRecord {
     pub user_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
     pub sn: u64,
@@ -205,7 +203,6 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
@@ -224,7 +221,6 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("t1".to_string()),
         };
@@ -347,7 +343,6 @@ mod tests {
         let mut channel = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 5,
@@ -372,7 +367,6 @@ mod tests {
         let r1 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
@@ -380,7 +374,6 @@ mod tests {
         let r2 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("world".to_string())),
             time: Arc::new("2026-06-24 10:00:01".to_string()),
             sn: 1,
@@ -403,7 +396,6 @@ mod tests {
         let obj = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,

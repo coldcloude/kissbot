@@ -30,7 +30,6 @@ async fn test_bind_send_and_notify() {
         messenger_id: Arc::new("m1".to_string()),
         user_id: Arc::new("u1".to_string()),
         group_id: Arc::new("g1".to_string()),
-        msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
         content: Content::Text(Arc::new("hello".to_string())),
     }).await.expect("send_message failed");
     let sent = tokio::time::timeout(Duration::from_secs(2), messenger.sent_messages_rx().recv_async()).await.unwrap().unwrap();

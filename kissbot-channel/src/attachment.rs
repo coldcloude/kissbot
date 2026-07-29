@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kissbot_api::channel::OutgoingMessage;
-use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content, MessageItem};
+use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 
 use crate::error::Result;
 
@@ -24,23 +24,18 @@ pub trait AttachmentRegistry: Send + Sync {
 ///
 /// 递归遍历 content，将所有 AttachmentInfo 替换为 AttachmentInfoResponse（嵌入 key 和 transfer_id）。
 /// 注册过程由 AttachmentRegistry 完成。
-/// 返回顶层 MessageItem，调用方将其与其他消息类型组装。
+/// 返回处理后的 Content，调用方直接使用。
 pub async fn process_attachment_message(
     outgoing: Arc<OutgoingMessage>,
     registry: &dyn AttachmentRegistry,
-) -> Result<Arc<MessageItem>> {
-    let new_content = process_content(
+) -> Result<Content> {
+    process_content(
         &outgoing.content,
         outgoing.messenger_id.as_str(),
         outgoing.user_id.as_str(),
         outgoing.group_id.as_str(),
         registry,
-    ).await?;
-
-    Ok(Arc::new(MessageItem {
-        msg_type: outgoing.msg_type.clone(),
-        content: new_content,
-    }))
+    ).await
 }
 
 /// 递归处理 Content，将 AttachmentInfo 替换为 AttachmentInfoResponse。
@@ -60,16 +55,13 @@ async fn process_content(
             let mut new_items = Vec::with_capacity(items.len());
             for item in items.iter() {
                 let new_content = Box::pin(process_content(
-                    &item.content,
+                    item,
                     messenger_id,
                     user_id,
                     group_id,
                     registry,
                 )).await?;
-                new_items.push(Arc::new(MessageItem {
-                    msg_type: item.msg_type.clone(),
-                    content: new_content,
-                }));
+                new_items.push(new_content);
             }
             Ok(Content::Multi(new_items))
         }

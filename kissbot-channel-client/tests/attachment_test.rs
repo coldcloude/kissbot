@@ -26,7 +26,6 @@ async fn test_attachment_upload_download() {
         messenger_id: Arc::new("m1".to_string()),
         user_id: Arc::new("u1".to_string()),
         group_id: Arc::new("g1".to_string()),
-        msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
         content: Content::AttachmentInfo(Arc::new(AttachmentInfo {
             file_name: Arc::new("upload.bin".to_string()),
             mime_type: Arc::new("application/octet-stream".to_string()),

@@ -50,7 +50,6 @@ pub struct OutgoingMessage {
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
-    pub msg_type: Arc<String>,
     pub content: Content,
 }
 
@@ -58,7 +57,6 @@ pub struct OutgoingMessage {
 pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
-    pub msg_type: Arc<String>,
     pub content: Content,  // 转换后的 content（已嵌入 key）
 }
 
@@ -125,7 +123,6 @@ pub struct IncomingMessage {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
-    pub msg_type: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
 }
@@ -148,7 +145,6 @@ pub struct BindRequest {
 mod tests {
     use super::*;
     use crate::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
-    use crate::{AttachmentInfo, MSG_TYPE_ATTACHMENT};
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
         let mut buf = Vec::with_capacity(28);
@@ -260,13 +256,11 @@ mod tests {
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
-            msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
             content,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessage = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.messenger_id, "m1");
-        assert_eq!(*deserialized.msg_type, MSG_TYPE_ATTACHMENT);
     }
 
     #[test]
@@ -275,14 +269,12 @@ mod tests {
 
         let obj = OutgoingMessageResponse {
             msg_id: Arc::new("msg1".to_string()),
-            msg_type: Arc::new("text".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
             content,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
-        assert_eq!(*deserialized.msg_type, "text");
         assert_eq!(deserialized.content, Content::Text(Arc::new("response content".to_string())));
     }
 
@@ -326,7 +318,6 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
-            msg_type: Arc::new("text".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };

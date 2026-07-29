@@ -47,7 +47,6 @@ impl CliTerminal {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
             group_id: self.current_group().await,
-            msg_type: Arc::new(MSG_TYPE_TEXT.to_string()),
             content: Content::Text(Arc::new(text.to_string())),
         }).await?;
         println!(">> sent msg_id={}", response.msg_id);
@@ -80,7 +79,6 @@ impl CliTerminal {
             messenger_id: Arc::new(self.messenger_id.clone()),
             user_id: Arc::new(self.user_id.clone()),
             group_id: self.current_group().await,
-            msg_type: Arc::new(MSG_TYPE_ATTACHMENT.to_string()),
             content: Content::AttachmentInfo(Arc::new(AttachmentInfo {
                 file_name: Arc::new(file_name.clone()),
                 mime_type: Arc::new("application/octet-stream".to_string()),

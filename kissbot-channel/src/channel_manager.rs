@@ -299,7 +299,7 @@ fn register_attachment_receivers(
         }
         Content::Multi(items) => {
             for item in items.iter() {
-                register_attachment_receivers(&item.content, manager, messenger.clone());
+                register_attachment_receivers(item, manager, messenger.clone());
             }
         }
         _ => {}
