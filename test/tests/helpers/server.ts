@@ -4,7 +4,7 @@ import { join } from 'path';
 import net from 'net';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-const BACKEND_BINARY = join(REPO_ROOT, 'target', 'debug', 'kissbot-channel-web');
+const BACKEND_BINARY = join(REPO_ROOT, 'kissbot-channel-web', 'target', 'debug', 'kissbot-channel-web');
 
 export function resetWorkspace(): void {
   const ws = join(REPO_ROOT, 'test', 'workspace');
