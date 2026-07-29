@@ -23,7 +23,9 @@ pub struct UserRemoveNotification {
 
 /// content 的类型化表示。
 /// 各变体自身即携带类型信息，无需外部 msg_type 字段。
+/// 序列化格式：{"msg_type": "Text", "data": "hello"}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "msg_type", content = "data")]
 pub enum Content {
     Text(Arc<String>),
     Multi(Vec<Content>),
@@ -60,7 +62,7 @@ mod tests {
     fn test_serde_content_text() {
         let content = Content::Text(Arc::new("hello".to_string()));
         let json = serde_json::to_value(&content).unwrap();
-        assert_eq!(json, serde_json::json!({"Text": "hello"}));
+        assert_eq!(json, serde_json::json!({"msg_type": "Text", "data": "hello"}));
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
     }
