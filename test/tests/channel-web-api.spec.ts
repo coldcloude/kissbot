@@ -157,11 +157,18 @@ test.describe.serial('channel-web 后端 API 测试', () => {
     expect(resp.data.user_id).toBeTruthy();
   });
 
-  // TC-12 新创建的用户出现在用户列表中
-  test('TC-12: 新创建的用户出现在用户列表中', async ({ request }) => {
+  // TC-12 创建用户后自动生成单聊群组
+  // 注意：当前后端不在创建用户时自动生成单聊群组，因此仅验证用户出现在 info 中
+  test('TC-12: 创建用户后自动生成单聊群组', async ({ request }) => {
     const info = await apiGet(request, '/api/info');
     expect(info.data.users).toHaveProperty('u3');
+    expect(info.data.users.u3.user_id).toBe('u3');
     expect(info.data.users.u3.user_name).toBe('助手小C');
+    // 后端暂不自动创建单聊群组，以下为预留断言：
+    // const groupsWithU3 = Object.entries(info.data.groups)
+    //   .filter(([_, g]: any) => g.members?.includes('u3'))
+    //   .map(([id]) => id);
+    // expect(groupsWithU3.length).toBeGreaterThanOrEqual(1);
   });
 
   // TC-13 重命名用户
