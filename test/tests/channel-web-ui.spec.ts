@@ -142,6 +142,19 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await expect(page.locator('.app-name')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('.app-name')).toHaveText('Kissbot Web Chat');
 
+    // 验证标题栏蓝色背景
+    await expect(page.locator('.header')).toHaveCSS('background-color', 'rgb(74, 144, 217)');
+
+    // 验证标题栏 flex 布局：app-name 居左，admin-dropdown 居右
+    await expect(page.locator('.header')).toHaveCSS('display', 'flex');
+    await expect(page.locator('.header')).toHaveCSS('justify-content', 'space-between');
+    // app-name 在左，admin-trigger 在右
+    await expect(page.locator('.header .app-name')).toBeVisible();
+    await expect(page.locator('.header .admin-dropdown')).toBeVisible();
+
+    // 验证管理员下拉菜单初始为隐藏
+    await expect(page.locator('.dropdown-menu')).not.toBeVisible();
+
     // 顶部右侧显示"管理员 ▼"
     await expect(page.locator('.admin-trigger')).toBeVisible();
     await expect(page.locator('.admin-trigger')).toContainText('管理员');
@@ -401,16 +414,23 @@ test.describe.serial('channel-web 前后端集成测试', () => {
   test('TC-12: 管理员下拉菜单', async ({ page }) => {
     await login(page);
 
-    // 悬停或点击管理员触发下拉
+    // 验证下拉菜单初始为隐藏
+    const menu = page.locator('.dropdown-menu');
+    await expect(menu).not.toBeVisible();
+
+    // 悬停管理员触发下拉
     const trigger = page.locator('.admin-trigger');
     await trigger.hover();
 
-    // 验证下拉菜单项
-    const menu = page.locator('.dropdown-menu');
+    // 验证下拉菜单项出现
     await expect(menu).toBeVisible({ timeout: 2000 });
     await expect(menu.locator('text=重命名管理员')).toBeVisible();
     await expect(menu.locator('text=群组管理')).toBeVisible();
     await expect(menu.locator('text=用户管理')).toBeVisible();
+
+    // 移出下拉区域后菜单收回
+    await page.locator('.sidebar').hover();
+    await expect(menu).not.toBeVisible({ timeout: 2000 });
   });
 
   // ================================================================
