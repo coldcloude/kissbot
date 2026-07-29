@@ -15,6 +15,10 @@
     <div class="login-section">
       <label class="login-label">选择后端</label>
       <div class="backend-url-list">
+        <div class="backend-url-item backend-url-custom" id="custom-backend-item">
+          <div class="backend-name">自定义</div>
+          <input type="url" id="custom-backend-url" placeholder="输入自定义后端 URL，如 https://api.example.com">
+        </div>
         <div class="backend-url-item selected">
           <div class="backend-name">生产环境</div>
           <div class="backend-url">https://api.kissbot.example.com</div>
@@ -38,5 +42,36 @@
     <button class="connect-btn">连接</button>
   </div>
 </div>
+<script>
+// 原型交互：选中某个后端或输入自定义 URL 时，高亮对应选项
+(function () {
+  var list = document.querySelector('.backend-url-list');
+  var customItem = document.getElementById('custom-backend-item');
+  var customInput = document.getElementById('custom-backend-url');
+
+  function clearSelection() {
+    list.querySelectorAll('.backend-url-item').forEach(function (item) {
+      item.classList.remove('selected');
+    });
+  }
+
+  // 点击预制后端项时高亮该项
+  list.querySelectorAll('.backend-url-item').forEach(function (item) {
+    if (item === customItem) return;
+    item.addEventListener('click', function () {
+      clearSelection();
+      item.classList.add('selected');
+    });
+  });
+
+  // 聚焦或输入自定义 URL 时高亮自定义项
+  ['focus', 'input'].forEach(function (evt) {
+    customInput.addEventListener(evt, function () {
+      clearSelection();
+      customItem.classList.add('selected');
+    });
+  });
+})();
+</script>
 </body>
 </html>

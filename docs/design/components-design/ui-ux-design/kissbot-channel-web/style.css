@@ -24,6 +24,12 @@ body { background: #f0f0f0; padding: 20px; font-family: -apple-system, BlinkMacS
 }
 .backend-url-item:hover { border-color: #b0cfe6; background: #f5f9fc; }
 .backend-url-item.selected { border-color: #4a90d9; background: #ecf3fa; }
+.backend-url-custom input[type="url"] {
+  width: 100%; margin-top: 6px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 6px;
+  font-size: 14px; outline: none; transition: border-color 0.15s; box-sizing: border-box;
+}
+.backend-url-custom input[type="url"]:focus { border-color: #4a90d9; }
+
 .backend-name { font-size: 16px; font-weight: 600; color: #333; }
 .backend-url { font-size: 13px; color: #888; margin-top: 2px; word-break: break-all; }
 
