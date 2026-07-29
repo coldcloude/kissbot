@@ -7,5 +7,5 @@ dist
 CLAUDE.local.md
 .superpowers
 .pi-subagents
-workspace/
-test/workspace/
+workspace
+test/workspace
