@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
 pub trait ArcUnwrapOrClone<T> {
@@ -40,6 +43,18 @@ impl<T> ApiResponse<T> {
             error: Some(message),
         }
     }
+}
+
+/// 手动深复制 HashMap<K, ArcSwap<V>>，逐个 load_full 后 ArcSwap::from 重建。
+/// 因 ArcSwap 不实现 Clone，无法直接 .clone() HashMap。
+pub fn clone_arcswap_map<K, V>(map: &HashMap<K, ArcSwap<V>>) -> HashMap<K, ArcSwap<V>>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    map.iter().map(|(k, v)| {
+        (k.clone(), ArcSwap::from(v.load().clone()))
+    }).collect()
 }
 
 #[cfg(test)]
