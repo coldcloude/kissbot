@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::ops::DerefMut;
+use std::{collections::HashMap, ops::Deref};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -45,16 +46,72 @@ impl<T> ApiResponse<T> {
     }
 }
 
-/// 手动深复制 HashMap<K, ArcSwap<V>>，逐个 load().clone() 后 ArcSwap::from 重建。
-/// 因 ArcSwap 不实现 Clone，无法直接 .clone() HashMap。
-pub fn clone_arcswap_map<K, V>(map: &HashMap<K, ArcSwap<V>>) -> HashMap<K, ArcSwap<V>>
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ArcSwapHashMap<K, T>
 where
-    K: Clone + Eq + Hash,
-    V: Clone,
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
 {
-    map.iter().map(|(k, v)| {
-        (k.clone(), ArcSwap::from(v.load().clone()))
-    }).collect()
+    base: HashMap<K, ArcSwap<T>>
+}
+
+impl<K, T> ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    pub fn new() -> Self {
+        Self {
+            base: HashMap::new(),
+        }
+    }
+}
+
+impl<K, T> From<HashMap<K, ArcSwap<T>>> for ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    fn from(base: HashMap<K, ArcSwap<T>>) -> Self {
+        ArcSwapHashMap { base }
+    }
+}
+
+// 实现 Clone（你已有的方案）
+impl<K, T> Clone for ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    fn clone(&self) -> Self {
+        let mut new_map = HashMap::new();
+        for (k, arc_swap) in self.base.iter() {
+            let inner = arc_swap.load_full();
+            new_map.insert(k.clone(), ArcSwap::new(inner));
+        }
+        ArcSwapHashMap::from(new_map)
+    }
+}
+
+impl<K, T> Deref for ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    type Target = HashMap<K, ArcSwap<T>>;
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl<K, T> DerefMut for ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.base
+    }
 }
 
 #[cfg(test)]
