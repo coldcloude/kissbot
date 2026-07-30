@@ -154,12 +154,14 @@ impl AgentManager {
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
-                    Ok(Arc::new(AgentMetadata {
-                        agent_id: metadata.agent_id.clone(),
-                        individual_name,
-                        description: metadata.description.clone(),
-                        created_at: metadata.created_at.clone(),
-                    }))
+                    if individual_name.as_str() != metadata.individual_name.as_str() {
+                        let mut metadata_new_arc = metadata.clone();
+                        let metadata_new = Arc::make_mut(&mut metadata_new_arc);
+                        metadata_new.individual_name = individual_name.clone();
+                        Ok(metadata_new_arc)
+                    } else {
+                        Ok(metadata)
+                    }
                 }
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }
@@ -172,12 +174,14 @@ impl AgentManager {
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
-                    Ok(Arc::new(AgentMetadata {
-                        agent_id: metadata.agent_id.clone(),
-                        individual_name: metadata.individual_name.clone(),
-                        description,
-                        created_at: metadata.created_at.clone(),
-                    }))
+                    if description.as_str() != metadata.description.as_str() {
+                        let mut metadata_new_arc = metadata.clone();
+                        let metadata_new = Arc::make_mut(&mut metadata_new_arc);
+                        metadata_new.description = description;
+                        Ok(metadata_new_arc)
+                    } else {
+                        Ok(metadata)
+                    }
                 }
                 None => Err(Error::AgentNotFound(agent_id.to_string()))
             }

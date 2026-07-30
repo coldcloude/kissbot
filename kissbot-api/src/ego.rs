@@ -1,8 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
+
+use crate::ArcSwapHashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
@@ -37,13 +38,13 @@ pub struct IndividualRelation {
 pub struct Individual {
     pub identifiers: Arc<HashSet<IndividualIdentifier>>,
     pub relation: Arc<IndividualRelation>,
-    pub other_relations: Arc<HashMap<String, ArcSwap<IndividualRelation>>>,
+    pub other_relations: Arc<ArcSwapHashMap<String, IndividualRelation>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndividualRecognition {
     pub agent_id: Arc<String>,
-    pub individual_map: Arc<HashMap<String, ArcSwap<Individual>>>,
+    pub individual_map: Arc<ArcSwapHashMap<String, Individual>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,14 +72,14 @@ pub struct Role {
 pub struct OtherRole {
     pub individual_name: Arc<String>,
     pub role_relation: Arc<RoleRelation>,
-    pub other_role_relations: Arc<HashMap<String, ArcSwap<RoleRelation>>>,
+    pub other_role_relations: Arc<ArcSwapHashMap<String, RoleRelation>>,
     pub description: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolePlay {
     pub role: Arc<Role>,
-    pub other_roles: Arc<HashMap<String, ArcSwap<OtherRole>>>,
+    pub other_roles: Arc<ArcSwapHashMap<String, OtherRole>>,
 }
 
 // ========== Request Structures ==========
@@ -174,16 +175,22 @@ pub struct RenameIndividualRequest {
 pub struct ReplaceIndividualIdentifiersRequest {
     pub agent_id: Arc<String>,
     pub individual_name: Arc<String>,
-    pub remove_identifiers: Vec<Arc<IndividualIdentifier>>,
-    pub insert_identifiers: Vec<Arc<IndividualIdentifier>>,
+    pub remove_identifiers: Vec<IndividualIdentifier>,
+    pub insert_identifiers: Vec<IndividualIdentifier>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IndividualRelationEntry {
+    pub individual_name: String,
+    pub relation: Arc<IndividualRelation>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceIndividualRelationsRequest {
     pub agent_id: Arc<String>,
     pub individual_name: Arc<String>,
-    pub remove_relations: Vec<Arc<String>>,
-    pub insert_relations: Vec<(Arc<String>, Arc<IndividualRelation>)>,
+    pub remove_relations: Vec<String>,
+    pub insert_relations: Vec<IndividualRelationEntry>,
 }
 
 // Role Play Requests
@@ -240,11 +247,17 @@ pub struct GetOtherRoleRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct OtherRoleEntry {
+    pub role_name: String,
+    pub other_role: Arc<OtherRole>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRolesRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
-    pub remove_other_roles: Vec<Arc<String>>,
-    pub insert_other_roles: Vec<(Arc<String>, Arc<OtherRole>)>,
+    pub remove_other_roles: Vec<String>,
+    pub insert_other_roles: Vec<OtherRoleEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -280,12 +293,18 @@ pub struct UpdateOtherRoleRelationRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RoleRelationEntry {
+    pub role_name: String,
+    pub relation: Arc<RoleRelation>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceOtherRoleRelationsRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub other_role_name: Arc<String>,
-    pub remove_relations: Vec<Arc<String>>,
-    pub insert_relations: Vec<(Arc<String>, Arc<RoleRelation>)>,
+    pub remove_relations: Vec<String>,
+    pub insert_relations: Vec<RoleRelationEntry>,
 }
 
 #[cfg(test)]
@@ -444,7 +463,7 @@ mod tests {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("best friend".to_string()),
             }),
-            other_relations: Arc::new(HashMap::new()),
+            other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         let obj = ReplaceIndividualsRequest {
             agent_id: Arc::new("a1".to_string()),
@@ -471,11 +490,11 @@ mod tests {
 
     #[test]
     fn test_serde_replace_individual_identifiers_request() {
-        let identifier = Arc::new(IndividualIdentifier {
+        let identifier = IndividualIdentifier {
             messenger_id: "m1".to_string(),
             user_id: "u1".to_string(),
             group_id: "g1".to_string(),
-        });
+        };
         let obj = ReplaceIndividualIdentifiersRequest {
             agent_id: Arc::new("a1".to_string()),
             individual_name: Arc::new("Alice".to_string()),
@@ -496,8 +515,8 @@ mod tests {
         let obj = ReplaceIndividualRelationsRequest {
             agent_id: Arc::new("a1".to_string()),
             individual_name: Arc::new("Alice".to_string()),
-            remove_relations: vec![Arc::new("enemy".to_string())],
-            insert_relations: vec![(Arc::new("friend".to_string()), relation)],
+            remove_relations: vec!["enemy".to_string()],
+            insert_relations: vec![IndividualRelationEntry { individual_name: "friend".to_string(), relation }],
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ReplaceIndividualRelationsRequest = serde_json::from_value(json).unwrap();
@@ -605,14 +624,14 @@ mod tests {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("works together".to_string()),
             }),
-            other_role_relations: Arc::new(HashMap::new()),
+            other_role_relations: Arc::new(ArcSwapHashMap::new()),
             description: Arc::new("A colleague".to_string()),
         });
         let obj = ReplaceOtherRolesRequest {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("admin".to_string()),
             remove_other_roles: vec![],
-            insert_other_roles: vec![(Arc::new("Bob".to_string()), other_role)],
+            insert_other_roles: vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ReplaceOtherRolesRequest = serde_json::from_value(json).unwrap();
@@ -686,7 +705,7 @@ mod tests {
             role_name: Arc::new("admin".to_string()),
             other_role_name: Arc::new("Bob".to_string()),
             remove_relations: vec![],
-            insert_relations: vec![(Arc::new("friend".to_string()), relation)],
+            insert_relations: vec![RoleRelationEntry { role_name: "friend".to_string(), relation }],
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ReplaceOtherRoleRelationsRequest = serde_json::from_value(json).unwrap();
