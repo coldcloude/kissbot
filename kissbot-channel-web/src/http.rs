@@ -30,8 +30,8 @@ use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 pub struct MessengerAdminInfo {
     pub messenger_id: String,
     pub admin_name: String,
-    pub users: HashMap<String, UserConfig>,
-    pub groups: HashMap<String, GroupConfig>,
+    pub users: HashMap<String, Arc<UserConfig>>,
+    pub groups: HashMap<String, Arc<GroupConfig>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,7 +115,7 @@ async fn handle_info(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
     let messenger_id = messenger.messenger_id.to_string();
-    let admin_name = messenger.admin_name().await;
+    let admin_name = messenger.admin_name().await.to_string();
     let users = messenger.config_users().await;
     let groups = messenger.config_groups().await;
     Json(ApiResponse::success(MessengerAdminInfo {

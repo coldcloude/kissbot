@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -51,23 +50,23 @@ const GROUP_ID_PREFIX: &str = "g";
 // ========== JSON 配置 ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebMessengerRepo {
-    pub messenger_id: String,
-    pub admin_name: String,
-    pub users: HashMap<String, UserConfig>,
-    pub groups: HashMap<String, GroupConfig>,
+    pub messenger_id: Arc<String>,
+    pub admin_name: Arc<String>,
+    pub users: Arc<HashMap<String, Arc<UserConfig>>>,
+    pub groups: Arc<HashMap<String, Arc<GroupConfig>>>,
     pub next_user_seq: u32,
     pub next_group_seq: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
-    pub user_id: String,
-    pub user_name: String,
+    pub user_id: Arc<String>,
+    pub user_name: Arc<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupConfig {
-    pub group_id: String,
-    pub group_name: String,
-    pub members: HashSet<String>,
+    pub group_id: Arc<String>,
+    pub group_name: Arc<String>,
+    pub members: Arc<HashSet<String>>,
 }
 pub fn admin_user_group_id(user_id: &str) -> String {
     format!("{}{}", ADMIN_USER_GROUP_PREFIX, user_id)
@@ -76,7 +75,7 @@ pub fn admin_user_group_id(user_id: &str) -> String {
 pub struct WebMessenger {
     pub messenger_id: Arc<String>,
     repo_path: PathBuf,
-    config: Arc<RwLock<Cow<'static, WebMessengerRepo>>>,
+    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
     msg_id_seq: AtomicU32,
     manager: Weak<ChannelManager>,
     pub sse: Arc<SseDispatcher>,
@@ -89,7 +88,7 @@ impl WebMessenger {
     pub fn new(
         messenger_id: Arc<String>,
         repo_path: PathBuf,
-        config: Arc<RwLock<Cow<'static, WebMessengerRepo>>>,
+        config: Arc<RwLock<Arc<WebMessengerRepo>>>,
         manager: Weak<ChannelManager>,
         attachment_dir: &str,
         message_base_dir: &str,
@@ -135,20 +134,20 @@ impl WebMessenger {
         F: FnOnce(&mut WebMessengerRepo) -> Result<()>,
     {
         let mut guard = self.config.write().await;
-        let repo = Cow::to_mut(&mut guard);
+        let repo = Arc::make_mut(&mut guard);
         op(repo)?;
         let json = serde_json::to_string_pretty(repo)?;
         tokio::fs::write(&self.repo_path, json.as_bytes()).await?;
         Ok(())
     }
-    pub async fn admin_name(&self) -> String {
+    pub async fn admin_name(&self) -> Arc<String> {
         self.config.read().await.admin_name.clone()
     }
-    pub async fn config_users(&self) -> HashMap<String, UserConfig> {
-        self.config.read().await.users.clone()
+    pub async fn config_users(&self) -> HashMap<String, Arc<UserConfig>> {
+        self.config.read().await.users.as_ref().clone()
     }
-    pub async fn config_groups(&self) -> HashMap<String, GroupConfig> {
-        self.config.read().await.groups.clone()
+    pub async fn config_groups(&self) -> HashMap<String, Arc<GroupConfig>> {
+        self.config.read().await.groups.as_ref().clone()
     }
     /// 判断 group_id 是否为 user_id 的 admin-user 单聊组（a_{user_id}）。
     /// 纯格式判断，不读 config。
@@ -167,15 +166,17 @@ impl WebMessenger {
     }
     pub async fn update_admin_name(&self, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
-            repo.admin_name = new_name.to_string();
+            repo.admin_name = Arc::new(new_name.to_string());
             Ok(())
         }).await
     }
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
-            let user = repo.users.get_mut(user_id)
+            let users = Arc::make_mut(&mut repo.users);
+            let user = users.get_mut(user_id)
                 .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
-            user.user_name = new_name.to_string();
+            let user = Arc::make_mut(user);
+            user.user_name = Arc::new(new_name.to_string());
             Ok(())
         }).await
     }
@@ -185,22 +186,27 @@ impl WebMessenger {
             let n = repo.next_user_seq;
             repo.next_user_seq += 1;
             user_id = format!("{}{}", USER_ID_PREFIX, n);
-            repo.users.insert(user_id.clone(), UserConfig {
-                user_id: user_id.clone(),
-                user_name: user_name.to_string(),
-            });
+            let users = Arc::make_mut(&mut repo.users);
+            users.insert(user_id.clone(), Arc::new(UserConfig {
+                user_id: Arc::new(user_id.clone()),
+                user_name: Arc::new(user_name.to_string()),
+            }));
             Ok(())
         }).await?;
         Ok(user_id)
     }
     pub async fn remove_user(&self, user_id: &str) -> Result<()> {
         self.write_config(|repo| {
-            if repo.users.remove(user_id).is_none() {
+            let users = Arc::make_mut(&mut repo.users);
+            if users.remove(user_id).is_none() {
                 return Err(Error::UserNotFound(user_id.to_string()));
             }
             // 从所有群组中移除该成员
-            for g in repo.groups.values_mut() {
-                g.members.remove(user_id);
+            let groups = Arc::make_mut(&mut repo.groups);
+            for g in groups.values_mut() {
+                let g = Arc::make_mut(g);
+                let members = Arc::make_mut(&mut g.members);
+                members.remove(user_id);
             }
             Ok(())
         }).await?;
@@ -224,11 +230,12 @@ impl WebMessenger {
             let n = repo.next_group_seq;
             repo.next_group_seq += 1;
             group_id = format!("{}{}", GROUP_ID_PREFIX, n);
-            repo.groups.insert(group_id.clone(), GroupConfig {
-                group_id: group_id.clone(),
-                group_name: group_name.to_string(),
-                members: member_ids.iter().cloned().collect(),
-            });
+            let groups = Arc::make_mut(&mut repo.groups);
+            groups.insert(group_id.clone(), Arc::new(GroupConfig {
+                group_id: Arc::new(group_id.clone()),
+                group_name: Arc::new(group_name.to_string()),
+                members: Arc::new(member_ids.iter().cloned().collect()),
+            }));
             Ok(())
         }).await?;
         // 通知新成员
@@ -245,9 +252,11 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         self.write_config(|repo| {
-            let g = repo.groups.get_mut(group_id)
+            let groups = Arc::make_mut(&mut repo.groups);
+            let g = groups.get_mut(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            g.group_name = new_name.to_string();
+            let g = Arc::make_mut(g);
+            g.group_name = Arc::new(new_name.to_string());
             Ok(())
         }).await
     }
@@ -256,13 +265,16 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
         self.write_config(|repo| {
-            let g = repo.groups.get_mut(group_id)
+            let groups = Arc::make_mut(&mut repo.groups);
+            let g = groups.get_mut(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+            let g = Arc::make_mut(g);
+            let members = Arc::make_mut(&mut g.members);
             for id in add_ids {
-                g.members.insert(id.clone());
+                members.insert(id.clone());
             }
             for id in remove_ids {
-                g.members.remove(id);
+                members.remove(id);
             }
             Ok(())
         }).await?;
@@ -280,19 +292,20 @@ impl WebMessenger {
         if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
             return Err(Error::GroupNotFound(group_id.to_string()));
         }
-        let members: HashSet<String> = {
+        let members = {
             let config = self.config.read().await;
             config.groups.get(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))
                 .map(|g| g.members.clone())?
         };
         self.write_config(|repo| {
-            repo.groups.remove(group_id).ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
+            let groups = Arc::make_mut(&mut repo.groups);
+            groups.remove(group_id).ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
             Ok(())
         }).await?;
         // 通知成员退出
         let time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        for m in &members {
+        for m in members.iter() {
             if m.as_str() != ADMIN_USER_ID.as_str() {
                 self.notify_group_change(m, group_id, GroupChangeType::Left, &time).await;
             }
@@ -456,13 +469,13 @@ impl WebMessenger {
     pub async fn build_messenger_info(&self) -> MessengerInfo {
         let cfg = self.config.read().await;
         let full_user_map = dashmap::DashMap::new();
-        for (uid, user) in &cfg.users {
+        for (uid, user) in cfg.users.iter() {
             let ug_map = dashmap::DashMap::new();
-            for (gid, group) in &cfg.groups {
+            for (gid, group) in cfg.groups.iter() {
                 if group.members.contains(uid) {
                     ug_map.insert(gid.clone(), Arc::new(GroupInfo {
                         group_id: Arc::new(gid.clone()),
-                        group_name: Arc::new(group.group_name.clone()),
+                        group_name: group.group_name.clone(),
                     }));
                 }
             }
@@ -470,12 +483,12 @@ impl WebMessenger {
             if !cfg.groups.contains_key(&gid) {
                 ug_map.insert(gid.clone(), Arc::new(GroupInfo {
                     group_id: Arc::new(gid),
-                    group_name: Arc::new(user.user_name.clone()),
+                    group_name: user.user_name.clone(),
                 }));
             }
             full_user_map.insert(uid.clone(), Arc::new(UserInfo {
-                user_id: Arc::new(user.user_id.clone()),
-                user_name: Arc::new(user.user_name.clone()),
+                user_id: user.user_id.clone(),
+                user_name: user.user_name.clone(),
                 group_map: Arc::new(ug_map),
             }));
         }
@@ -490,7 +503,7 @@ impl WebMessenger {
 /// 持有完整配置和路径，create() 时用预读的配置构造 WebMessenger。
 pub struct WebMessengerCreator {
     repo_path: PathBuf,
-    config: Arc<RwLock<Cow<'static, WebMessengerRepo>>>,
+    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
     attachment_dir: String,
     message_dir: String,
 }
@@ -504,23 +517,23 @@ impl WebMessengerCreator {
         } else {
             // repo 文件不存在时根据 config 创建初始结构
             WebMessengerRepo {
-                messenger_id: messenger_id.to_string(),
-                admin_name: admin_name.to_string(),
-                users: HashMap::new(),
-                groups: HashMap::new(),
+                messenger_id: Arc::new(messenger_id.to_string()),
+                admin_name: Arc::new(admin_name.to_string()),
+                users: Arc::new(HashMap::new()),
+                groups: Arc::new(HashMap::new()),
                 next_user_seq: 0,
                 next_group_seq: 0,
             }
         };
         Ok(Self {
             repo_path: path,
-            config: Arc::new(RwLock::new(Cow::Owned(config))),
+            config: Arc::new(RwLock::new(Arc::new(config))),
             attachment_dir: attachment_dir.to_string(),
             message_dir: message_dir.to_string(),
         })
     }
     pub async fn messenger_id(&self) -> Arc<String> {
-        Arc::new(self.config.read().await.messenger_id.clone())
+        self.config.read().await.messenger_id.clone()
     }
 }
 #[async_trait]
@@ -529,7 +542,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         &self,
         manager: Weak<ChannelManager>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
-        let mid = Arc::new(self.config.read().await.messenger_id.clone());
+        let mid = self.config.read().await.messenger_id.clone();
         let messenger = WebMessenger::new(
             mid,
             self.repo_path.clone(),
