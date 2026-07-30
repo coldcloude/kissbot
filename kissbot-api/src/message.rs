@@ -170,10 +170,9 @@ mod tests {
             ]),
         ];
         for content in variants {
-            let item = MessageItem { content };
-            let json = serde_json::to_value(&item).unwrap();
-            let deserialized: MessageItem = serde_json::from_value(json).unwrap();
-            assert_eq!(deserialized.content, item.content);
+            let json = serde_json::to_value(&content).unwrap();
+            let deserialized: Content = serde_json::from_value(json).unwrap();
+            assert_eq!(deserialized, content);
         }
     }
 }

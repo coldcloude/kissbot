@@ -144,7 +144,7 @@ pub struct BindRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+    use crate::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
         let mut buf = Vec::with_capacity(28);

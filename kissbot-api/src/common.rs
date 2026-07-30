@@ -45,7 +45,7 @@ impl<T> ApiResponse<T> {
     }
 }
 
-/// 手动深复制 HashMap<K, ArcSwap<V>>，逐个 load_full 后 ArcSwap::from 重建。
+/// 手动深复制 HashMap<K, ArcSwap<V>>，逐个 load().clone() 后 ArcSwap::from 重建。
 /// 因 ArcSwap 不实现 Clone，无法直接 .clone() HashMap。
 pub fn clone_arcswap_map<K, V>(map: &HashMap<K, ArcSwap<V>>) -> HashMap<K, ArcSwap<V>>
 where

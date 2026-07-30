@@ -66,10 +66,10 @@ impl Clone for WebMessengerRepo {
             messenger_id: self.messenger_id.clone(),
             admin_name: self.admin_name.clone(),
             users: Arc::new(self.users.iter().map(|(k, v)| {
-                (k.clone(), ArcSwap::from(v.load_full()))
+                (k.clone(), ArcSwap::from(v.load().clone()))
             }).collect()),
             groups: Arc::new(self.groups.iter().map(|(k, v)| {
-                (k.clone(), ArcSwap::from(v.load_full()))
+                (k.clone(), ArcSwap::from(v.load().clone()))
             }).collect()),
             next_user_seq: self.next_user_seq,
             next_group_seq: self.next_group_seq,
@@ -164,12 +164,12 @@ impl WebMessenger {
     }
     pub async fn config_users(&self) -> HashMap<String, Arc<UserConfig>> {
         self.config.read().await.users.as_ref().iter().map(|(k, v)| {
-            (k.clone(), v.load_full())
+            (k.clone(), v.load().clone())
         }).collect()
     }
     pub async fn config_groups(&self) -> HashMap<String, Arc<GroupConfig>> {
         self.config.read().await.groups.as_ref().iter().map(|(k, v)| {
-            (k.clone(), v.load_full())
+            (k.clone(), v.load().clone())
         }).collect()
     }
     /// 判断 group_id 是否为 user_id 的 admin-user 单聊组（a_{user_id}）。
@@ -197,9 +197,9 @@ impl WebMessenger {
         self.write_config(|repo| {
             let user_swap = repo.users.get(user_id)
                 .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
-            let mut user = (**user_swap.load()).clone();
-            user.user_name = Arc::new(new_name.to_string());
-            user_swap.store(Arc::new(user));
+            let mut user_arc = user_swap.load().clone();
+            Arc::make_mut(&mut user_arc).user_name = Arc::new(new_name.to_string());
+            user_swap.store(user_arc);
             Ok(())
         }).await
     }
@@ -229,10 +229,13 @@ impl WebMessenger {
             // 从所有群组中移除该成员
             let mut groups = clone_arcswap_map(&repo.groups);
             for g_swap in groups.values_mut() {
-                let mut g = (**g_swap.load()).clone();
-                let members = Arc::make_mut(&mut g.members);
-                members.remove(user_id);
-                g_swap.store(Arc::new(g));
+                let mut g = g_swap.load().clone();
+                if g.members.contains(user_id) {
+                    let g_mut = Arc::make_mut(&mut g);
+                    let members = Arc::make_mut(&mut g_mut.members);
+                    members.remove(user_id);
+                    g_swap.store(g);
+                }
             }
             repo.groups = Arc::new(groups);
             Ok(())
@@ -282,9 +285,9 @@ impl WebMessenger {
         self.write_config(|repo| {
             let group_swap = repo.groups.get(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            let mut g = (**group_swap.load()).clone();
-            g.group_name = Arc::new(new_name.to_string());
-            group_swap.store(Arc::new(g));
+            let mut g_arc = group_swap.load().clone();
+            Arc::make_mut(&mut g_arc).group_name = Arc::new(new_name.to_string());
+            group_swap.store(g_arc);
             Ok(())
         }).await
     }
@@ -295,15 +298,15 @@ impl WebMessenger {
         self.write_config(|repo| {
             let group_swap = repo.groups.get(group_id)
                 .ok_or_else(|| Error::GroupNotFound(group_id.to_string()))?;
-            let mut g = (**group_swap.load()).clone();
-            let members = Arc::make_mut(&mut g.members);
+            let mut g_arc = group_swap.load().clone();
+            let members = Arc::make_mut(&mut Arc::make_mut(&mut g_arc).members);
             for id in add_ids {
                 members.insert(id.clone());
             }
             for id in remove_ids {
                 members.remove(id);
             }
-            group_swap.store(Arc::new(g));
+            group_swap.store(g_arc);
             Ok(())
         }).await?;
         // 通知成员变更
@@ -382,7 +385,7 @@ impl WebMessenger {
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
         let new_content = kissbot_channel::process_attachment_message(
             outgoing.clone(),
-            &*self.attachment_store,
+            self.attachment_store.as_ref(),
         ).await.map_err(|e| Error::InternalError(e.to_string()))?;
         // 生成消息ID和时间戳
         let msg_id = self.next_msg_id();
