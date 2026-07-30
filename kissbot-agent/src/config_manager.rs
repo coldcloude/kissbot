@@ -63,6 +63,7 @@ struct RawConfig {
     channel_bindings: Vec<ChannelBinding>,
     admin_users: Vec<AdminUser>,
     stations: Vec<StationConfig>,
+    channel_ws_url: Option<String>,
     memory_struct_url: Option<String>,
     ws_reconnect_interval_secs: u64,
 }
@@ -93,6 +94,7 @@ struct ConfigInner {
     channel_bindings: Vec<ChannelBinding>,
     admin_users: Vec<AdminUser>,
     stations: Vec<StationConfig>,
+    channel_ws_url: Option<String>,
     memory_struct_url: Option<String>,
     ws_reconnect_interval_secs: u64,
 }
@@ -119,6 +121,7 @@ impl ConfigManager {
             channel_bindings: raw.channel_bindings,
             admin_users: raw.admin_users,
             stations: raw.stations,
+            channel_ws_url: raw.channel_ws_url,
             memory_struct_url: raw.memory_struct_url,
             ws_reconnect_interval_secs: raw.ws_reconnect_interval_secs,
         };
@@ -145,6 +148,7 @@ impl ConfigManager {
             channel_bindings: inner.channel_bindings.clone(),
             admin_users: inner.admin_users.clone(),
             stations: inner.stations.clone(),
+            channel_ws_url: inner.channel_ws_url.clone(),
             memory_struct_url: inner.memory_struct_url.clone(),
             ws_reconnect_interval_secs: inner.ws_reconnect_interval_secs,
         };
@@ -203,6 +207,10 @@ impl ConfigManager {
     #[allow(dead_code)]
     pub async fn ws_reconnect_interval_secs(&self) -> u64 {
         self.inner.read().await.ws_reconnect_interval_secs
+    }
+
+    pub async fn channel_ws_url(&self) -> String {
+        self.inner.read().await.channel_ws_url.clone().unwrap_or_else(|| "ws://localhost:8080/ws".to_string())
     }
 
     pub async fn memory_struct_url(&self) -> String {

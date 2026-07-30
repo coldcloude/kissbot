@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelManager};
-use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent};
+use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent, IncomingMessageEvent};
 use kissbot_channel_client::error::Result as ClientResult;
 use kissbot_channel_client::Terminal;
 
@@ -95,8 +95,13 @@ impl MockMessenger {
     pub fn push_incoming(&self, msg: IncomingMessage) {
         let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
         if let Some(manager) = handler {
+            let user_id = msg.user_id.clone();
             tokio::spawn(async move {
-                manager.handle_incoming_message(Arc::new(msg)).await;
+                let event = Arc::new(IncomingMessageEvent {
+                    recipient_user_id: user_id,
+                    incoming_message: Arc::new(msg),
+                });
+                manager.handle_incoming_message(event).await;
             });
         }
     }

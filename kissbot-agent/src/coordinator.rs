@@ -91,8 +91,8 @@ impl AgentCoordinator {
     async fn connect_all_channels(self: &Arc<Self>) {
         let config = &self.config;
         let bindings = config.channel_bindings().await;
-        // 从配置获取 WS URL 和 API key
-        let ws_url = format!("ws://localhost:8080/ws");
+        let ws_url = config.channel_ws_url().await;
+        let reconnect_secs = config.ws_reconnect_interval_secs().await;
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
 
         for binding in &bindings {
@@ -124,8 +124,8 @@ impl AgentCoordinator {
                             notify.notified().await;
                         }
                         Err(e) => {
-                            warn!("连接 channel {} 失败: {:?}，5秒后重连", messenger_id, e);
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", messenger_id, e, reconnect_secs);
+                            tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
                         }
                     }
                 }
