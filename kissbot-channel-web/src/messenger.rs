@@ -94,7 +94,7 @@ pub fn admin_user_group_id(user_id: &str) -> String {
 pub struct WebMessenger {
     pub messenger_id: Arc<String>,
     repo_path: PathBuf,
-    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
+    config: Arc<RwLock<WebMessengerRepo>>,
     msg_id_seq: AtomicU32,
     manager: Weak<ChannelManager>,
     pub sse: Arc<SseDispatcher>,
@@ -107,7 +107,7 @@ impl WebMessenger {
     pub fn new(
         messenger_id: Arc<String>,
         repo_path: PathBuf,
-        config: Arc<RwLock<Arc<WebMessengerRepo>>>,
+        config: Arc<RwLock<WebMessengerRepo>>,
         manager: Weak<ChannelManager>,
         attachment_dir: &str,
         message_base_dir: &str,
@@ -153,9 +153,8 @@ impl WebMessenger {
         F: FnOnce(&mut WebMessengerRepo) -> Result<()>,
     {
         let mut guard = self.config.write().await;
-        let repo = Arc::make_mut(&mut guard);
-        op(repo)?;
-        let json = serde_json::to_string_pretty(repo)?;
+        op(&mut *guard)?;
+        let json = serde_json::to_string_pretty(&*guard)?;
         tokio::fs::write(&self.repo_path, json.as_bytes()).await?;
         Ok(())
     }
@@ -540,7 +539,7 @@ impl WebMessenger {
 /// 持有完整配置和路径，create() 时用预读的配置构造 WebMessenger。
 pub struct WebMessengerCreator {
     repo_path: PathBuf,
-    config: Arc<RwLock<Arc<WebMessengerRepo>>>,
+    config: Arc<RwLock<WebMessengerRepo>>,
     attachment_dir: String,
     message_dir: String,
 }
@@ -564,7 +563,7 @@ impl WebMessengerCreator {
         };
         Ok(Self {
             repo_path: path,
-            config: Arc::new(RwLock::new(Arc::new(config))),
+            config: Arc::new(RwLock::new(config)),
             attachment_dir: attachment_dir.to_string(),
             message_dir: message_dir.to_string(),
         })
@@ -580,6 +579,7 @@ impl MessengerCreator<WebMessenger> for WebMessengerCreator {
         manager: Weak<ChannelManager>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
+
         let messenger = WebMessenger::new(
             mid,
             self.repo_path.clone(),
