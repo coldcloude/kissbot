@@ -54,12 +54,13 @@ pub struct StationConfig {
     pub timeout_secs: u64,
 }
 
+/// JSON 文件完整配置结构：仅用于序列化/反序列化，加载后拆分为只读+可变两部分
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RawConfig {
+struct AgentConfigFile {
     agent_id: String,
     llm: LlmConfig,
     current_role: String,
-    current_mode: RawMode,
+    current_mode: AgentModeFile,
     channel_bindings: Vec<ChannelBinding>,
     admin_users: Vec<AdminUser>,
     stations: Vec<StationConfig>,
@@ -69,10 +70,30 @@ struct RawConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RawMode {
+struct AgentModeFile {
     #[serde(rename = "type")]
     mode_type: String,
     event_id: Option<String>,
+}
+
+/// 只读配置（从 JSON 加载后不变）
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub agent_id: String,
+    pub llm: LlmConfig,
+    pub stations: Vec<StationConfig>,
+    channel_ws_url: Option<String>,
+    memory_struct_url: Option<String>,
+    ws_reconnect_interval_secs: u64,
+}
+
+/// 可变运行时配置（管理命令修改，持久化到同一 JSON 文件）
+#[derive(Debug, Clone)]
+pub struct AgentRuntimeConfig {
+    pub current_role: String,
+    pub current_mode: Mode,
+    pub channel_bindings: Vec<ChannelBinding>,
+    pub admin_users: Vec<AdminUser>,
 }
 
 /// 配置变更监听器：当配置被管理命令修改时，通知外部协调器
@@ -82,21 +103,11 @@ pub trait ConfigChangeListener: Send + Sync {
 
 pub struct ConfigManager {
     config_path: String,
-    inner: RwLock<ConfigInner>,
+    /// 只读配置，加载后不变
+    agent_config: AgentConfig,
+    /// 可变运行时配置
+    runtime_config: RwLock<AgentRuntimeConfig>,
     listeners: DashMap<String, Arc<dyn ConfigChangeListener>>,
-}
-
-struct ConfigInner {
-    agent_id: String,
-    llm: LlmConfig,
-    current_role: String,
-    current_mode: Mode,
-    channel_bindings: Vec<ChannelBinding>,
-    admin_users: Vec<AdminUser>,
-    stations: Vec<StationConfig>,
-    channel_ws_url: Option<String>,
-    memory_struct_url: Option<String>,
-    ws_reconnect_interval_secs: u64,
 }
 
 impl ConfigManager {
@@ -104,55 +115,59 @@ impl ConfigManager {
     pub async fn load(config_path: &str) -> Result<Self> {
         let content = tokio::fs::read_to_string(config_path).await
             .map_err(|e| Error::ConfigNotFound(format!("{}: {}", config_path, e)))?;
-        let raw: RawConfig = serde_json::from_str(&content)
+        let file: AgentConfigFile = serde_json::from_str(&content)
             .map_err(|e| Error::ConfigParseError(e.to_string()))?;
 
-        let mode = match raw.current_mode.mode_type.as_str() {
+        let mode = match file.current_mode.mode_type.as_str() {
             "role" => Mode::Role,
-            "event" => Mode::Event(raw.current_mode.event_id.unwrap_or_default()),
+            "event" => Mode::Event(file.current_mode.event_id.unwrap_or_default()),
             _ => Mode::Role,
         };
 
-        let inner = ConfigInner {
-            agent_id: raw.agent_id,
-            llm: raw.llm,
-            current_role: raw.current_role,
+        let agent_config = AgentConfig {
+            agent_id: file.agent_id,
+            llm: file.llm,
+            stations: file.stations,
+            channel_ws_url: file.channel_ws_url,
+            memory_struct_url: file.memory_struct_url,
+            ws_reconnect_interval_secs: file.ws_reconnect_interval_secs,
+        };
+
+        let runtime_config = AgentRuntimeConfig {
+            current_role: file.current_role,
             current_mode: mode,
-            channel_bindings: raw.channel_bindings,
-            admin_users: raw.admin_users,
-            stations: raw.stations,
-            channel_ws_url: raw.channel_ws_url,
-            memory_struct_url: raw.memory_struct_url,
-            ws_reconnect_interval_secs: raw.ws_reconnect_interval_secs,
+            channel_bindings: file.channel_bindings,
+            admin_users: file.admin_users,
         };
 
         Ok(Self {
             config_path: config_path.to_string(),
-            inner: RwLock::new(inner),
+            agent_config,
+            runtime_config: RwLock::new(runtime_config),
             listeners: DashMap::new(),
         })
     }
 
     /// 持久化当前配置到文件
     pub async fn save(&self) -> Result<()> {
-        let inner = self.inner.read().await;
-        let mode = match &inner.current_mode {
-            Mode::Role => RawMode { mode_type: "role".to_string(), event_id: None },
-            Mode::Event(id) => RawMode { mode_type: "event".to_string(), event_id: Some(id.clone()) },
+        let runtime = self.runtime_config.read().await;
+        let mode = match &runtime.current_mode {
+            Mode::Role => AgentModeFile { mode_type: "role".to_string(), event_id: None },
+            Mode::Event(id) => AgentModeFile { mode_type: "event".to_string(), event_id: Some(id.clone()) },
         };
-        let raw = RawConfig {
-            agent_id: inner.agent_id.clone(),
-            llm: inner.llm.clone(),
-            current_role: inner.current_role.clone(),
+        let file = AgentConfigFile {
+            agent_id: self.agent_config.agent_id.clone(),
+            llm: self.agent_config.llm.clone(),
+            current_role: runtime.current_role.clone(),
             current_mode: mode,
-            channel_bindings: inner.channel_bindings.clone(),
-            admin_users: inner.admin_users.clone(),
-            stations: inner.stations.clone(),
-            channel_ws_url: inner.channel_ws_url.clone(),
-            memory_struct_url: inner.memory_struct_url.clone(),
-            ws_reconnect_interval_secs: inner.ws_reconnect_interval_secs,
+            channel_bindings: runtime.channel_bindings.clone(),
+            admin_users: runtime.admin_users.clone(),
+            stations: self.agent_config.stations.clone(),
+            channel_ws_url: self.agent_config.channel_ws_url.clone(),
+            memory_struct_url: self.agent_config.memory_struct_url.clone(),
+            ws_reconnect_interval_secs: self.agent_config.ws_reconnect_interval_secs,
         };
-        let json = serde_json::to_string_pretty(&raw)?;
+        let json = serde_json::to_string_pretty(&file)?;
         tokio::fs::write(&self.config_path, json).await
             .map_err(|e| Error::IoError(e.to_string()))?;
         Ok(())
@@ -173,89 +188,90 @@ impl ConfigManager {
         }
     }
 
-    // ========== Getter ==========
+    // ========== 只读配置 Getter（直接读，无锁） ==========
 
-    pub async fn agent_id(&self) -> String {
-        self.inner.read().await.agent_id.clone()
+    pub fn agent_id(&self) -> &str {
+        &self.agent_config.agent_id
     }
 
-    pub async fn llm_config(&self) -> LlmConfig {
-        self.inner.read().await.llm.clone()
+    pub fn llm_config(&self) -> &LlmConfig {
+        &self.agent_config.llm
     }
+
+    #[allow(dead_code)]
+    pub fn stations(&self) -> &[StationConfig] {
+        &self.agent_config.stations
+    }
+
+    pub fn ws_reconnect_interval_secs(&self) -> u64 {
+        self.agent_config.ws_reconnect_interval_secs
+    }
+
+    pub fn channel_ws_url(&self) -> &str {
+        self.agent_config.channel_ws_url.as_deref().unwrap_or("ws://localhost:8080/ws")
+    }
+
+    pub fn memory_struct_url(&self) -> &str {
+        self.agent_config.memory_struct_url.as_deref().unwrap_or("")
+    }
+
+    // ========== 可变配置 Getter（读锁） ==========
 
     pub async fn current_role(&self) -> String {
-        self.inner.read().await.current_role.clone()
+        self.runtime_config.read().await.current_role.clone()
     }
 
     pub async fn current_mode(&self) -> Mode {
-        self.inner.read().await.current_mode.clone()
+        self.runtime_config.read().await.current_mode.clone()
     }
 
     pub async fn channel_bindings(&self) -> Vec<ChannelBinding> {
-        self.inner.read().await.channel_bindings.clone()
+        self.runtime_config.read().await.channel_bindings.clone()
     }
 
     pub async fn admin_users(&self) -> Vec<AdminUser> {
-        self.inner.read().await.admin_users.clone()
-    }
-
-    #[allow(dead_code)]
-    pub async fn stations(&self) -> Vec<StationConfig> {
-        self.inner.read().await.stations.clone()
-    }
-
-    #[allow(dead_code)]
-    pub async fn ws_reconnect_interval_secs(&self) -> u64 {
-        self.inner.read().await.ws_reconnect_interval_secs
-    }
-
-    pub async fn channel_ws_url(&self) -> String {
-        self.inner.read().await.channel_ws_url.clone().unwrap_or_else(|| "ws://localhost:8080/ws".to_string())
-    }
-
-    pub async fn memory_struct_url(&self) -> String {
-        self.inner.read().await.memory_struct_url.clone().unwrap_or_default()
+        self.runtime_config.read().await.admin_users.clone()
     }
 
     // ========== Setter（管理命令调用，自动持久化） ==========
 
     pub async fn set_current_role(&self, role: Option<String>) -> Result<()> {
-        self.inner.write().await.current_role = role.unwrap_or_default();
+        self.runtime_config.write().await.current_role = role.unwrap_or_default();
         self.save().await?;
         self.notify_listeners().await;
         Ok(())
     }
 
     pub async fn set_current_mode(&self, mode: Mode) -> Result<()> {
-        self.inner.write().await.current_mode = mode;
+        self.runtime_config.write().await.current_mode = mode;
         self.save().await?;
         self.notify_listeners().await;
         Ok(())
     }
 
     pub async fn add_binding(&self, binding: ChannelBinding) -> Result<()> {
-        self.inner.write().await.channel_bindings.push(binding);
+        self.runtime_config.write().await.channel_bindings.push(binding);
         self.save().await?;
         self.notify_listeners().await;
         Ok(())
     }
 
     pub async fn remove_binding(&self, messenger_id: &str) -> Result<()> {
-        self.inner.write().await.channel_bindings.retain(|b| b.messenger_id != messenger_id);
+        self.runtime_config.write().await.channel_bindings.retain(|b| b.messenger_id != messenger_id);
         self.save().await?;
         self.notify_listeners().await;
         Ok(())
     }
 
     pub async fn add_admin(&self, admin: AdminUser) -> Result<()> {
-        self.inner.write().await.admin_users.push(admin);
+        self.runtime_config.write().await.admin_users.push(admin);
         self.save().await?;
         self.notify_listeners().await;
         Ok(())
     }
 
     pub async fn remove_admin(&self, messenger_id: &str, user_id: &str) -> Result<()> {
-        self.inner.write().await.admin_users
+        self.runtime_config.write().await.admin_users
             .retain(|a| !(a.messenger_id == messenger_id && a.user_id == user_id));
         self.save().await?;
         self.notify_listeners().await;

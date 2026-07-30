@@ -49,7 +49,7 @@ impl AgentCoordinator {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
 
         // 初始化 LLMClient
-        let llm_config = config.llm_config().await;
+        let llm_config = config.llm_config().clone();
         let llm_client = Arc::new(tokio::sync::Mutex::new(LlmClient::new(llm_config)));
 
         // 初始化 ContextBuilder
@@ -81,34 +81,36 @@ impl AgentCoordinator {
         });
 
         // 连接所有 channel
-        coordinator.connect_all_channels().await;
+        coordinator.connect_channels().await;
 
         info!("AgentCoordinator 初始化完成");
         Ok(coordinator)
     }
 
     /// 连接所有已配置的 channel
-    async fn connect_all_channels(self: &Arc<Self>) {
-        let config = &self.config;
-        let bindings = config.channel_bindings().await;
-        let ws_url = config.channel_ws_url().await;
-        let reconnect_secs = config.ws_reconnect_interval_secs().await;
+    async fn connect_channels(self: &Arc<Self>) {
+        let bindings = self.config.channel_bindings().await;
+        let ws_url = self.config.channel_ws_url().to_string();
+        let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
+        let coordinator = self.clone();
 
         for binding in &bindings {
             let messenger_id = binding.messenger_id.clone();
             let user_id = binding.user_id.clone();
-            let terminal: Arc<dyn Terminal> = self.clone();
-            let client = ChannelClient::new(messenger_id.clone(), Arc::downgrade(&terminal));
-            let client_clone = client.clone();
+            let client = ChannelClient::new(
+                messenger_id.clone(),
+                Arc::downgrade(&(coordinator.clone() as Arc<dyn Terminal>)),
+            );
 
             // 断线通知
             let notify = Arc::new(tokio::sync::Notify::new());
-            self.disconnect_notify.insert(messenger_id.clone(), notify.clone());
+            coordinator.disconnect_notify.insert(messenger_id.clone(), notify.clone());
+            coordinator.channel_clients.insert(messenger_id.clone(), client);
 
+            let client_clone = coordinator.channel_clients.get(&messenger_id).unwrap().clone();
             let ws_url = ws_url.clone();
             let api_key = api_key.clone();
-            self.channel_clients.insert(messenger_id.clone(), client);
 
             tokio::spawn(async move {
                 loop {
@@ -150,7 +152,7 @@ impl Terminal for AgentCoordinator {
     /// 收到上行消息
     async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
         // 1. 推上行消息到记忆（使用 Arc 引用避免深复制）
-        let agent_id = Arc::new(self.config.agent_id().await);
+        let agent_id = Arc::new(self.config.agent_id().to_string());
         let role_name = Arc::new(self.config.current_role().await);
         self.memory_store_client.push_channel_record(ChannelRecord {
             agent_id,
@@ -331,7 +333,7 @@ impl AgentCoordinator {
                 }
 
                 // 4. 推送 think 到 MemoryWriter
-                let agent_id = self.config.agent_id().await;
+                let agent_id = self.config.agent_id().to_string();
                 let role_name = self.config.current_role().await;
                 let _ = self.memory_writer.push(WriteTask::Think {
                     agent_id,
@@ -378,7 +380,7 @@ impl AgentCoordinator {
         match client.send_message(msg).await {
             Ok(response) => {
                 // 下行成功后推记忆（is_self=1，使用返回的 content）
-                let agent_id = Arc::new(self.config.agent_id().await);
+                let agent_id = Arc::new(self.config.agent_id().to_string());
                 let role_name = Arc::new(self.config.current_role().await);
                 self.memory_store_client.push_channel_record(ChannelRecord {
                     agent_id,
@@ -429,7 +431,7 @@ impl AgentCoordinator {
     }
 
     async fn load_ego_info(config: &ConfigManager) -> Result<String> {
-        let agent_id = config.agent_id().await;
+        let agent_id = config.agent_id();
         let role_name = config.current_role().await;
         let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
 

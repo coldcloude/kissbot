@@ -26,12 +26,12 @@ impl MemoryReader {
         config: &ConfigManager,
         _mode: &Mode,
     ) -> Result<Vec<String>> {
-        let struct_url = config.memory_struct_url().await;
+        let struct_url = config.memory_struct_url();
         if struct_url.is_empty() {
             return Ok(Vec::new()); // memory-struct 未配置，忽略
         }
 
-        let agent_id = config.agent_id().await;
+        let agent_id = config.agent_id();
         let role_name = config.current_role().await;
 
         let url = format!("{}/index", struct_url.trim_end_matches('/'));
@@ -65,7 +65,7 @@ impl MemoryReader {
         config: &ConfigManager,
         mode: &Mode,
     ) -> Result<Vec<ContextMessage>> {
-        let agent_id = config.agent_id().await;
+        let agent_id = config.agent_id();
         let role_name = config.current_role().await;
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
@@ -114,7 +114,7 @@ impl MemoryReader {
         &self,
         config: &ConfigManager,
     ) -> Result<Vec<String>> {
-        let agent_id = config.agent_id().await;
+        let agent_id = config.agent_id();
         let role_name = config.current_role().await;
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 

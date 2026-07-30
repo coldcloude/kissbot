@@ -34,7 +34,7 @@ async fn main() {
             .expect("加载配置失败")
     );
 
-    info!("Agent ID: {}", config.agent_id().await);
+    info!("Agent ID: {}", config.agent_id());
 
     // 2. 初始化 MemoryWriter（思考/工具调用推送，非 channel 消息）
     let memory_writer = memory_writer::MemoryWriter::start();
