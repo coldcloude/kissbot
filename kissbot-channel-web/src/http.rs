@@ -3,7 +3,6 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use bytes::Bytes;
 use std::time::Duration;
-use dashmap::DashMap;
 
 use axum::{
     extract::{Query, State},
@@ -29,10 +28,10 @@ use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 
 #[derive(Debug, Serialize)]
 pub struct MessengerAdminInfo {
-    pub messenger_id: Arc<String>,
-    pub admin_name: Arc<String>,
-    pub users: Arc<DashMap<String, Arc<UserConfig>>>,
-    pub groups: Arc<DashMap<String, Arc<GroupConfig>>>,
+    pub messenger_id: String,
+    pub admin_name: String,
+    pub users: HashMap<String, UserConfig>,
+    pub groups: HashMap<String, GroupConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,11 +114,15 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
 async fn handle_info(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
+    let messenger_id = messenger.messenger_id.to_string();
+    let admin_name = messenger.admin_name().await;
+    let users = messenger.config_users().await;
+    let groups = messenger.config_groups().await;
     Json(ApiResponse::success(MessengerAdminInfo {
-        messenger_id: messenger.messenger_id.clone(),
-        admin_name: messenger.admin_name().await,
-        users: messenger.config_users().await,
-        groups: messenger.config_groups().await,
+        messenger_id,
+        admin_name,
+        users,
+        groups,
     }))
 }
 
