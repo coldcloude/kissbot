@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use arc_swap::ArcSwap;
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
 
@@ -66,7 +68,7 @@ impl IndividualRecognitionManager {
             if !json_path.exists() {
                 let individuals = IndividualRecognition {
                     agent_id: Arc::new(agent_id.to_string()),
-                    individual_map: Arc::new(dashmap::DashMap::new()),
+                    individual_map: Arc::new(HashMap::new()),
                 };
                 let content = serde_json::to_string_pretty(&individuals)?;
                 tokio::fs::write(&json_path, content).await?;
@@ -134,8 +136,10 @@ impl IndividualRecognitionManager {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             match individuals_or_none {
                 Some(individuals) => {
-                    if let Some(mut individual) = individuals.individual_map.get_mut(individual_name) {
-                        *individual = op(individual.clone())?;
+                    if let Some(entry) = individuals.individual_map.get(individual_name) {
+                        let current = entry.load().clone();
+                        let updated = op(current)?;
+                        entry.store(updated);
                     }
                     Ok(individuals)
                 },
@@ -150,21 +154,25 @@ impl IndividualRecognitionManager {
 
     pub async fn get_individual(&self, agent_id: &str, individual_name: &str) -> Result<Arc<Individual>> {
         let individuals = self.read_individual_recognition(agent_id).await?;
-        let individual = individuals.individual_map.get(individual_name)
+        let entry = individuals.individual_map.get(individual_name)
         .ok_or_else(|| Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))?;
-        Ok(individual.clone())
+        Ok(entry.load().clone())
     }
 
     pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<Arc<String>>, mut insert_individuals: Vec<(Arc<String>, Arc<Individual>)>) -> Result<()> {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
+                let mut cloned_map = kissbot_api::clone_arcswap_map(&individuals.individual_map);
                 for name in remove_individual_names.drain(..) {
-                    individuals.individual_map.remove(name.as_str());
+                    cloned_map.remove(name.as_str());
                 }
                 for (name, individual) in insert_individuals.drain(..) {
-                    individuals.individual_map.insert(name.unwrap_or_clone(), individual);
+                    cloned_map.insert(name.unwrap_or_clone(), ArcSwap::new(individual));
                 }
-                Ok(individuals)
+                Ok(Arc::new(IndividualRecognition {
+                    agent_id: individuals.agent_id.clone(),
+                    individual_map: Arc::new(cloned_map),
+                }))
             }
             else {
                 Err(Error::AgentNotFound(agent_id.to_string()))
@@ -175,11 +183,16 @@ impl IndividualRecognitionManager {
     pub async fn rename_individual(&self, agent_id: &str, individual_name: &str, new_name: &str) -> Result<()> {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
-                if individuals.individual_map.contains_key(new_name) {
+                let mut cloned_map = kissbot_api::clone_arcswap_map(&individuals.individual_map);
+                if cloned_map.contains_key(new_name) {
                     Err(Error::AgentIndividualAlreadyExists(agent_id.to_string(), new_name.to_string()))
-                } else if let Some((_, individual)) = individuals.individual_map.remove(individual_name) {
-                    individuals.individual_map.insert(new_name.to_string(), individual);
-                    Ok(individuals)
+                } else if let Some(entry) = cloned_map.remove(individual_name) {
+                    let individual = entry.load().clone();
+                    cloned_map.insert(new_name.to_string(), ArcSwap::new(individual));
+                    Ok(Arc::new(IndividualRecognition {
+                        agent_id: individuals.agent_id.clone(),
+                        individual_map: Arc::new(cloned_map),
+                    }))
                 } else {
                     Err(Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))
                 }
@@ -192,25 +205,30 @@ impl IndividualRecognitionManager {
 
     pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<Arc<IndividualIdentifier>>, mut insert_identifiers: Vec<Arc<IndividualIdentifier>>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |individual| {
+            let mut individual = (*individual).clone();
+            let identifiers = Arc::make_mut(&mut individual.identifiers);
             for identifier in remove_identifiers.drain(..) {
-                individual.identifiers.remove(identifier.as_ref());
+                identifiers.remove(identifier.as_ref());
             }
             for identifier in insert_identifiers.drain(..) {
-                individual.identifiers.insert(identifier.unwrap_or_clone());
+                identifiers.insert(identifier.unwrap_or_clone());
             }
-            Ok(individual)
+            Ok(Arc::new(individual))
         }).await
     }
 
     pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<Arc<String>>, mut insert_relations: Vec<(Arc<String>, Arc<IndividualRelation>)>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |individual| {
-            for relation in remove_relations.drain(..) {
-                individual.other_relations.remove(relation.as_str());
+            let mut individual = (*individual).clone();
+            let mut cloned_rels = kissbot_api::clone_arcswap_map(&individual.other_relations);
+            for name in remove_relations.drain(..) {
+                cloned_rels.remove(name.as_str());
             }
             for (name, relation) in insert_relations.drain(..) {
-                individual.other_relations.insert(name.unwrap_or_clone(), relation);
+                cloned_rels.insert(name.unwrap_or_clone(), ArcSwap::new(relation));
             }
-            Ok(individual)
+            individual.other_relations = Arc::new(cloned_rels);
+            Ok(Arc::new(individual))
         }).await
     }
 }
@@ -218,7 +236,7 @@ impl IndividualRecognitionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dashmap::{DashMap, DashSet};
+    use std::collections::{HashMap, HashSet};
 
     async fn setup() {
         crate::test_util::init_test_config();
@@ -262,12 +280,12 @@ mod tests {
         // 先触发文件自动创建
         manager.get_individuals("agent1").await.unwrap();
         let individual = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("best friend".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent1",
@@ -286,12 +304,12 @@ mod tests {
         // 先触发文件自动创建
         manager.get_individuals("agent-remove").await.unwrap();
         let individual = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("best friend".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-remove",
@@ -315,12 +333,12 @@ mod tests {
         // 先触发文件自动创建
         manager.get_individuals("agent-rename").await.unwrap();
         let individual = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("best friend".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-rename",
@@ -342,20 +360,20 @@ mod tests {
         // 先触发文件自动创建
         manager.get_individuals("agent-rename-exists").await.unwrap();
         let alice = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         let bob = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-rename-exists",

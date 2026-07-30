@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+use arc_swap::ArcSwap;
 use kissbot_api::RoleKey;
 use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation, ArcUnwrapOrClone};
 use kissbot_memory::DirectoryManager;
@@ -89,8 +91,8 @@ impl RolePlayManager {
 
     async fn read_role_play_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
         let role = self.read_role_play(agent_id, role_name).await?;
-        let other_role = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))?;
-        Ok(other_role.clone())
+        let entry = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))?;
+        Ok(entry.load().clone())
     }
 
     async fn remove_role_play_ref(&self, agent_id: &str, role_name: &str) -> Result<()> {
@@ -155,8 +157,10 @@ impl RolePlayManager {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
-                    if let Some(mut other_role) = role.other_roles.get_mut(other_role_name) {
-                        *other_role = op(other_role.clone())?;
+                    if let Some(entry) = role.other_roles.get(other_role_name) {
+                        let current = entry.load().clone();
+                        let updated = op(current)?;
+                        entry.store(updated);
                     }
                     Ok(role)
                 },
@@ -209,7 +213,7 @@ impl RolePlayManager {
                             role_name: role_name.clone(),
                             description,
                         }),
-                        other_roles: Arc::new(dashmap::DashMap::new()),
+                        other_roles: Arc::new(HashMap::new()),
                     }))
                 }
             }
@@ -283,13 +287,17 @@ impl RolePlayManager {
     pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<Arc<String>>, mut insert_other_roles: Vec<(Arc<String>, Arc<OtherRole>)>) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
+                let mut cloned_map = kissbot_api::clone_arcswap_map(&role.other_roles);
                 for name in remove_other_roles.drain(..) {
-                    role.other_roles.remove(name.as_str());
+                    cloned_map.remove(name.as_str());
                 }
                 for (name, other_role) in insert_other_roles.drain(..) {
-                    role.other_roles.insert(name.unwrap_or_clone(), other_role);
+                    cloned_map.insert(name.unwrap_or_clone(), ArcSwap::new(other_role));
                 }
-                Ok(role)
+                Ok(Arc::new(RolePlay {
+                    role: role.role.clone(),
+                    other_roles: Arc::new(cloned_map),
+                }))
             }
             else {
                 Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
@@ -300,11 +308,16 @@ impl RolePlayManager {
     pub async fn rename_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_name: &str) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
-                if role.other_roles.contains_key(new_name) {
+                let mut cloned_map = kissbot_api::clone_arcswap_map(&role.other_roles);
+                if cloned_map.contains_key(new_name) {
                     Err(Error::AgentRoleOtherRoleAlreadyExists(agent_id.to_string(), role_name.to_string(), new_name.to_string()))
-                } else if let Some((_, other_role)) = role.other_roles.remove(other_role_name) {
-                    role.other_roles.insert(new_name.to_string(), other_role);
-                    Ok(role)
+                } else if let Some(entry) = cloned_map.remove(other_role_name) {
+                    let other_role = entry.load().clone();
+                    cloned_map.insert(new_name.to_string(), ArcSwap::new(other_role));
+                    Ok(Arc::new(RolePlay {
+                        role: role.role.clone(),
+                        other_roles: Arc::new(cloned_map),
+                    }))
                 } else {
                     Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()))
                 }
@@ -350,13 +363,16 @@ impl RolePlayManager {
 
     pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<Arc<String>>, mut insert_relations: Vec<(Arc<String>, Arc<RoleRelation>)>) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
+            let mut other_role = (*other_role).clone();
+            let mut cloned_rels = kissbot_api::clone_arcswap_map(&other_role.other_role_relations);
             for name in remove_relations.drain(..) {
-                other_role.other_role_relations.remove(name.as_str());
+                cloned_rels.remove(name.as_str());
             }
             for (name, relation) in insert_relations.drain(..) {
-                other_role.other_role_relations.insert(name.unwrap_or_clone(), relation);
+                cloned_rels.insert(name.unwrap_or_clone(), ArcSwap::new(relation));
             }
-            Ok(other_role)
+            other_role.other_role_relations = Arc::new(cloned_rels);
+            Ok(Arc::new(other_role))
         }).await
     }
 }
@@ -499,7 +515,7 @@ mod tests {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("Works together".to_string()),
             }),
-            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: Arc::new("A colleague".to_string()),
         });
         manager.replace_other_roles(
@@ -525,7 +541,7 @@ mod tests {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("".to_string()),
             }),
-            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: Arc::new("".to_string()),
         });
         manager.replace_other_roles(
@@ -537,7 +553,7 @@ mod tests {
         let robert = manager.get_other_role("agent-other-rename", "admin", "Robert").await.unwrap();
         assert_eq!(*robert.individual_name, "Bob");
         let result = manager.get_other_role("agent-other-rename", "admin", "Bob").await;
-        assert!(matches!(result, Err(Error::AgentRoleOtherRoleNotFound(_, _, _))));
+        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
     }
 
     #[tokio::test]
@@ -554,7 +570,7 @@ mod tests {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("".to_string()),
             }),
-            other_role_relations: Arc::new(dashmap::DashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: Arc::new("".to_string()),
         });
         manager.replace_other_roles(
@@ -572,7 +588,8 @@ mod tests {
             vec![(Arc::new("enemy".to_string()), relation)],
         ).await.unwrap();
         let bob = manager.get_other_role("agent-other-rel", "admin", "Bob").await.unwrap();
-        let rel = bob.other_role_relations.get("enemy").unwrap();
+        let entry = bob.other_role_relations.get("enemy").unwrap();
+        let rel = entry.load();
         assert_eq!(*rel.relation, "friend");
     }
 }

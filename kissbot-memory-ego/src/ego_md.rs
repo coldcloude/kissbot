@@ -1,8 +1,6 @@
-use std::{collections::HashSet};
+use std::collections::HashSet;
 
-use kissbot_api::IndividualIdentifier;
-
-use kissbot_api::{AgentMetadata, RolePlay, IndividualRecognition};
+use kissbot_api::{AgentMetadata, IndividualIdentifier, IndividualRecognition, RolePlay};
 
 #[allow(dead_code)]
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
@@ -15,17 +13,18 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
 #[allow(dead_code)]
 pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: &HashSet<IndividualIdentifier>) -> String {
     let mut content = String::from("# Individual Recognition\n\n");
-    for individual in individuals.individual_map.iter() {
+    for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
+        let individual = individual_arcswap.load();
 
         let mut identifiers = String::new();
         for id in individual.identifiers.iter() {
-            if ids.contains(id.key()) {
+            if ids.contains(id) {
                 identifiers.push_str(&format!("- {} {} {}\n", id.messenger_id, id.user_id, id.group_id));
             }
         }
 
         if !identifiers.is_empty() {
-            content.push_str(&format!("## {}\n\n", individual.key()));
+            content.push_str(&format!("## {}\n\n", individual_name));
 
             content.push_str(&format!("- **Relation with Agent**: {} - {}\n", individual.relation.relation, individual.relation.description));
 
@@ -33,10 +32,11 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
             content.push_str(&identifiers);
 
             content.push_str("### Relations with Others\n");
-            for rel in individual.other_relations.iter() {
-                content.push_str(&format!("#### {}\n", rel.key()));
-                content.push_str(&format!("- **Relation**: {}\n", rel.value().relation));
-                content.push_str(&format!("- **Description**: {}\n", rel.value().description));
+            for (rel_name, rel_arcswap) in individual.other_relations.iter() {
+                let rel = rel_arcswap.load();
+                content.push_str(&format!("#### {}\n", rel_name));
+                content.push_str(&format!("- **Relation**: {}\n", rel.relation));
+                content.push_str(&format!("- **Description**: {}\n", rel.description));
             }
         }
 
@@ -51,17 +51,19 @@ pub fn build_role_play_md(role: &RolePlay, individual_names: &HashSet<String>) -
     content.push_str(&format!("- **Self Role**: {}\n\n", role.role.role_name));
     content.push_str(&format!("- **Self Description**: {}\n", role.role.description));
 
-    for relation in role.other_roles.iter() {
-        if individual_names.contains(relation.individual_name.as_str()) {
-            content.push_str(&format!("## Known role: {}\n\n", relation.key()));
-            content.push_str(&format!("- **Belong to**: {}\n", relation.individual_name));
-            content.push_str(&format!("- **Description**: {}\n", relation.description));
-            content.push_str(&format!("- **Relation with {}**: {}\n", role.role.role_name, relation.role_relation.relation));
-            content.push_str(&format!("- **Relation with {} Description**: {}\n", role.role.role_name, relation.role_relation.description));
+    for (other_role_name, other_role_arcswap) in role.other_roles.iter() {
+        let other_role = other_role_arcswap.load();
+        if individual_names.contains(other_role.individual_name.as_str()) {
+            content.push_str(&format!("## Known role: {}\n\n", other_role_name));
+            content.push_str(&format!("- **Belong to**: {}\n", other_role.individual_name));
+            content.push_str(&format!("- **Description**: {}\n", other_role.description));
+            content.push_str(&format!("- **Relation with {}**: {}\n", role.role.role_name, other_role.role_relation.relation));
+            content.push_str(&format!("- **Relation with {} Description**: {}\n", role.role.role_name, other_role.role_relation.description));
 
-            content.push_str(&format!("### {}'s relation with Others\n", relation.key()));
-            for rel in relation.other_role_relations.iter() {
-                content.push_str(&format!("#### With {}\n\n", rel.key()));
+            content.push_str(&format!("### {}'s relation with Others\n", other_role_name));
+            for (rel_name, rel_arcswap) in other_role.other_role_relations.iter() {
+                let rel = rel_arcswap.load();
+                content.push_str(&format!("#### With {}\n\n", rel_name));
                 content.push_str(&format!("- **Relation**: {}\n", rel.relation));
                 content.push_str(&format!("- **Relation Description**: {}\n", rel.description));
             }

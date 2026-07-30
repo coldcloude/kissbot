@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use dashmap::{DashMap, DashSet};
+use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -34,15 +35,15 @@ pub struct IndividualRelation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Individual {
-    pub identifiers: Arc<DashSet<IndividualIdentifier>>,
+    pub identifiers: Arc<HashSet<IndividualIdentifier>>,
     pub relation: Arc<IndividualRelation>,
-    pub other_relations: Arc<DashMap<String, Arc<IndividualRelation>>>,
+    pub other_relations: Arc<HashMap<String, ArcSwap<IndividualRelation>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndividualRecognition {
     pub agent_id: Arc<String>,
-    pub individual_map: Arc<DashMap<String, Arc<Individual>>>,
+    pub individual_map: Arc<HashMap<String, ArcSwap<Individual>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,14 +71,14 @@ pub struct Role {
 pub struct OtherRole {
     pub individual_name: Arc<String>,
     pub role_relation: Arc<RoleRelation>,
-    pub other_role_relations: Arc<DashMap<String, Arc<RoleRelation>>>,
+    pub other_role_relations: Arc<HashMap<String, ArcSwap<RoleRelation>>>,
     pub description: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolePlay {
     pub role: Arc<Role>,
-    pub other_roles: Arc<DashMap<String, Arc<OtherRole>>>,
+    pub other_roles: Arc<HashMap<String, ArcSwap<OtherRole>>>,
 }
 
 // ========== Request Structures ==========
@@ -438,12 +439,12 @@ mod tests {
     #[test]
     fn test_serde_replace_individuals_request() {
         let individual = Arc::new(Individual {
-            identifiers: Arc::new(DashSet::new()),
+            identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
                 relation: Arc::new("friend".to_string()),
                 description: Arc::new("best friend".to_string()),
             }),
-            other_relations: Arc::new(DashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         let obj = ReplaceIndividualsRequest {
             agent_id: Arc::new("a1".to_string()),
@@ -604,7 +605,7 @@ mod tests {
                 relation: Arc::new("colleague".to_string()),
                 description: Arc::new("works together".to_string()),
             }),
-            other_role_relations: Arc::new(DashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: Arc::new("A colleague".to_string()),
         });
         let obj = ReplaceOtherRolesRequest {
