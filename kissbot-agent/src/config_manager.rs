@@ -190,6 +190,7 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
     }
+    #[allow(dead_code)]
     pub async fn channel_ws_url(&self, messenger_id: &str) -> Option<String> {
         let repo = self.nexus_repo.read().await;
         repo.channels.get(messenger_id).map(|s| s.load().ws_url.to_string())
@@ -251,30 +252,30 @@ impl ConfigManager {
             })
             .collect()
     }
-    /// 添加管理权限（回写 NexusRepo）
+    /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, admin: ChannelUser) -> Result<()> {
         {
             let repo = self.nexus_repo.write().await;
-            if let Some(swap) = repo.channels.get(&admin.messenger_id.to_string()) {
-                let mut ch = swap.load().clone();
-                let ch_mut = Arc::make_mut(&mut ch);
-                Arc::make_mut(&mut ch_mut.admins).insert(admin);
-                swap.store(ch);
-            }
+            let swap = repo.channels.get(&admin.messenger_id.to_string())
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", admin.messenger_id)))?;
+            let mut ch = swap.load().clone();
+            let ch_mut = Arc::make_mut(&mut ch);
+            Arc::make_mut(&mut ch_mut.admins).insert(admin);
+            swap.store(ch);
         }
         self.save_nexus().await
     }
-    /// 移除管理权限（回写 NexusRepo）
+    /// 移除管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn remove_admin(&self, messenger_id: &str, user_id: &str) -> Result<()> {
         {
             let repo = self.nexus_repo.write().await;
-            if let Some(swap) = repo.channels.get(messenger_id) {
-                let mut ch = swap.load().clone();
-                let ch_mut = Arc::make_mut(&mut ch);
-                let target = ChannelUser { messenger_id: Arc::new(messenger_id.into()), user_id: Arc::new(user_id.into()) };
-                Arc::make_mut(&mut ch_mut.admins).remove(&target);
-                swap.store(ch);
-            }
+            let swap = repo.channels.get(messenger_id)
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", messenger_id)))?;
+            let mut ch = swap.load().clone();
+            let ch_mut = Arc::make_mut(&mut ch);
+            let target = ChannelUser { messenger_id: Arc::new(messenger_id.into()), user_id: Arc::new(user_id.into()) };
+            Arc::make_mut(&mut ch_mut.admins).remove(&target);
+            swap.store(ch);
         }
         self.save_nexus().await
     }
@@ -334,5 +335,25 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         let back: NexusRepo = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(*back.default_agent_id, "agent-1");
+    }
+
+    #[tokio::test]
+    async fn add_remove_admin_missing_channel_errors() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        // channel 不存在：add_admin / remove_admin 都应返回 ConfigNotFound 而非静默成功
+        let admin = ChannelUser { messenger_id: Arc::new("nope".into()), user_id: Arc::new("u1".into()) };
+        let err = manager.add_admin(admin).await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+        let err = manager.remove_admin("nope", "u1").await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
     }
 }

@@ -19,7 +19,7 @@ use crate::context_builder::ContextBuilder;
 use crate::memory_reader::MemoryReader;
 use crate::memory_writer::MemoryWriter;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
-use crate::repo::ChannelUser;
+use crate::repo::{ChannelConfig, ChannelUser};
 
 use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
@@ -72,6 +72,9 @@ impl AgentCoordinator {
         // 初始化 ContextBuilder
         let context_builder = ContextBuilder::new();
 
+        // 初始化 bound_channels：enabled_by_default 且 default_bind_user 非空（绑定集合）
+        let bound_channels = Arc::new(Self::bound_channels_from_channels(config.channels().await));
+
         let coordinator = Arc::new(Self {
             config: config.clone(),
             mode_manager,
@@ -83,20 +86,11 @@ impl AgentCoordinator {
             current_agent_id: Arc::new(ArcSwap::from_pointee(default_agent_id)),
             current_role: Arc::new(ArcSwap::from_pointee(default_role)),
             current_model: Arc::new(ArcSwap::from_pointee(default_model)),
-            bound_channels: Arc::new(DashMap::new()),
+            bound_channels,
             selected_memory_structs: Arc::new(DashMap::new()),
             channel_clients: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
         });
-
-        // 初始化 bound_channels：enabled_by_default 且 default_bind_user 非空
-        for (_, ch) in config.channels().await {
-            if ch.enabled_by_default {
-                if let Some(bu) = &ch.default_bind_user {
-                    coordinator.bound_channels.insert(ch.messenger_id.to_string(), Arc::new(bu.clone()));
-                }
-            }
-        }
 
         // 读取自我认知
         if let Ok(ego_info) = coordinator.load_ego_info().await {
@@ -160,6 +154,8 @@ impl AgentCoordinator {
         self.reset_context().await;
     }
 
+    // 运行时 /bind /unbind 目前仅修改 bound_channels（消息过滤），
+    // 连接/绑定请求的运行期管理（自动连断）推迟到后续轮次：本轮不自动连断。
     /// 绑定 channel 用户（仅运行状态，不回写）
     pub async fn bind_channel(&self, binding: ChannelUser) {
         self.bound_channels.insert(binding.messenger_id.to_string(), Arc::new(binding));
@@ -170,22 +166,40 @@ impl AgentCoordinator {
         self.bound_channels.remove(messenger_id);
     }
 
-    /// 连接所有已配置的 channel
+    /// 计算启动时绑定集合：enabled_by_default 且 default_bind_user 非空的 channel
+    /// （连接由 connect_channels 按 enabled_by_default 独立控制，此处只算绑定集合）
+    fn bound_channels_from_channels(
+        channels: Vec<(String, Arc<ChannelConfig>)>,
+    ) -> DashMap<String, Arc<ChannelUser>> {
+        let map = DashMap::new();
+        for (_, ch) in channels {
+            if ch.enabled_by_default {
+                if let Some(bu) = &ch.default_bind_user {
+                    map.insert(ch.messenger_id.to_string(), Arc::new(bu.clone()));
+                }
+            }
+        }
+        map
+    }
+
+    /// 连接所有 enabled_by_default 的 channel（NexusRepo channel 配置为连接来源）
+    /// 连接与绑定两轴分离：enabled_by_default 控制连接，bound_channels 控制绑定
     async fn connect_channels(self: &Arc<Self>) {
-        // 绑定范围从运行状态 bound_channels 读取
-        let bindings: Vec<Arc<ChannelUser>> = self.bound_channels.iter().map(|e| e.value().clone()).collect();
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         let coordinator = self.clone();
 
-        for binding in &bindings {
-            let messenger_id = binding.messenger_id.to_string();
-            let user_id = binding.user_id.to_string();
-            // ws_url 从 NexusRepo 按 channel 读取
-            let ws_url = match self.config.channel_ws_url(&messenger_id).await {
-                Some(u) => u,
-                None => { warn!("channel {} 无 ws_url，跳过", messenger_id); continue; }
-            };
+        // 遍历 NexusRepo 中所有 channel，enabled_by_default 才连接
+        for (_, ch) in self.config.channels().await {
+            if !ch.enabled_by_default {
+                continue; // 未启用：不连接
+            }
+            let messenger_id = ch.messenger_id.to_string();
+            let ws_url = ch.ws_url.to_string();
+            // 绑定身份来自运行状态 bound_channels；不在绑定集合则仅连接不绑定
+            let bound_user_id = self.bound_channels.get(&messenger_id)
+                .map(|e| e.value().user_id.to_string());
+
             let client = ChannelClient::new(
                 messenger_id.clone(),
                 Arc::downgrade(&(coordinator.clone() as Arc<dyn Terminal>)),
@@ -204,11 +218,13 @@ impl AgentCoordinator {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
                             info!("已连接 channel: {}", messenger_id);
-                            // 绑定用户
-                            let _ = client_clone.bind(BindRequest {
-                                messenger_id: Arc::new(messenger_id.clone()),
-                                user_id: Arc::new(user_id.clone()),
-                            }).await;
+                            // 绑定用户（仅 bound_channels 中存在的 channel 发送绑定请求）
+                            if let Some(user_id) = &bound_user_id {
+                                let _ = client_clone.bind(BindRequest {
+                                    messenger_id: Arc::new(messenger_id.clone()),
+                                    user_id: Arc::new(user_id.clone()),
+                                }).await;
+                            }
                             // 等待断线通知（closed() 回调中 notify_one）
                             notify.notified().await;
                         }
@@ -580,10 +596,13 @@ mod tests {
     use crate::repo::ChannelConfig;
 
     // 注：ConfigManager::new 依赖 KISSBOT_CONFIG 全局单例，单元测试难注入。
-    // bound_channels 初始化逻辑用直接构造验证：
+    // bound_channels 初始化逻辑用直接构造验证（连接/绑定两轴分离）：
     #[test]
     fn bound_channels_init_logic() {
-        // 模拟：enabled + default_bind_user 非空才入 bound_channels
+        // 模拟三个 channel：
+        // 1) m1: enabled + default_bind_user 非空 → 连接且绑定
+        // 2) m3: enabled + default_bind_user 为空 → 连接但不绑定（消息被过滤直到运行时 /bind）
+        // 3) m2: disabled + default_bind_user 非空 → 不连接也不绑定
         let enabled_with_bind = ChannelConfig {
             messenger_id: Arc::new("m1".into()), ws_url: Arc::new("ws://x".into()),
             admins: Arc::new(HashSet::new()),
@@ -591,17 +610,37 @@ mod tests {
             enabled_by_default: true,
         };
         let enabled_no_bind = ChannelConfig {
+            messenger_id: Arc::new("m3".into()),
             default_bind_user: None, ..enabled_with_bind.clone()
         };
         let disabled_with_bind = ChannelConfig {
             messenger_id: Arc::new("m2".into()), enabled_by_default: false, ..enabled_with_bind.clone()
         };
-        let all = vec![enabled_with_bind.clone(), enabled_no_bind, disabled_with_bind];
-        let bound: Vec<_> = all.iter()
-            .filter(|c| c.enabled_by_default)
-            .filter_map(|c| c.default_bind_user.clone())
+        let all = vec![
+            (enabled_with_bind.messenger_id.to_string(), Arc::new(enabled_with_bind.clone())),
+            (enabled_no_bind.messenger_id.to_string(), Arc::new(enabled_no_bind.clone())),
+            (disabled_with_bind.messenger_id.to_string(), Arc::new(disabled_with_bind.clone())),
+        ];
+
+        // 绑定集合：仅 enabled_by_default 且 default_bind_user 非空的 channel
+        let bound = AgentCoordinator::bound_channels_from_channels(all);
+        assert_eq!(bound.len(), 1, "只有 m1 应入绑定集合");
+        let entry = bound.get("m1").unwrap();
+        assert_eq!(*entry.value().messenger_id, "m1");
+        assert_eq!(*entry.value().user_id, "u1");
+        // enabled 但无 default_bind_user：连接（见下）但不绑定
+        assert!(!bound.contains_key("m3"), "enabled 无 default_bind_user 不应入绑定集合");
+        // disabled：不连接也不绑定
+        assert!(!bound.contains_key("m2"), "disabled 不应入绑定集合");
+
+        // 连接集合：enabled_by_default 控制，与绑定无关
+        let connect_set: Vec<String> = [
+            enabled_with_bind, enabled_no_bind, disabled_with_bind,
+        ].iter().filter(|c| c.enabled_by_default)
+            .map(|c| c.messenger_id.to_string())
             .collect();
-        assert_eq!(bound.len(), 1);
-        assert_eq!(*bound[0].messenger_id, "m1");
+        assert!(connect_set.contains(&"m1".to_string()), "m1 应连接");
+        assert!(connect_set.contains(&"m3".to_string()), "m3 应连接（仅连接不绑定）");
+        assert!(!connect_set.contains(&"m2".to_string()), "m2 不应连接");
     }
 }
