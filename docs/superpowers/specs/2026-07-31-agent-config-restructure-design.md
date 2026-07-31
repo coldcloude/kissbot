@@ -87,7 +87,7 @@ struct AgentConfig {
 
 ```rust
 struct NexusRepo {
-    channels: Arc<ArcSwapHashMap<String, ChannelDef>>,              // key = messenger_id
+    channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,            // key = messenger_id
     models: Arc<ArcSwapHashMap<String, ModelConfig>>,               // key = name
     memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>, // key = name
     default_agent_id: Arc<String>,
@@ -95,7 +95,7 @@ struct NexusRepo {
     default_model: Arc<String>,    // 指向 models[].name 的名字，非配置对象
 }
 
-struct ChannelDef {
+struct ChannelConfig {
     messenger_id: Arc<String>,
     ws_url: Arc<String>,
     admins: Arc<HashSet<ChannelUser>>,        // 集合语义；ChannelUser = { messenger_id, user_id }，需 Hash/Eq
