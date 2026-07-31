@@ -193,8 +193,8 @@ impl AgentCoordinator {
             let channel_id = ch.channel_id.to_string();
             let ws_url = ch.ws_url.to_string();
             // 绑定身份来自运行状态 bound_channels；不在绑定集合则仅连接不绑定
-            let bound_user_id = self.bound_channels.get(&channel_id)
-                .map(|e| e.value().user_id.to_string());
+            // ChannelUser 携带对端 messenger 标识（如 "web"）与 user 标识，bind 需用它们向通道服务注册身份
+            let bound_user = self.bound_channels.get(&channel_id).map(|e| e.value().clone());
 
             let client = ChannelClient::new(
                 channel_id.clone(),
@@ -215,11 +215,11 @@ impl AgentCoordinator {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
                             // 绑定用户（仅 bound_channels 中存在的 channel 发送绑定请求）
-                            // BindRequest.messenger_id 承载 agent 内部 channel_id（与消息方 messenger 无强绑定）
-                            if let Some(user_id) = &bound_user_id {
+                            // BindRequest.messenger_id 用绑定身份的 messenger 标识（channel-web 注册的 messenger，如 "web"）
+                            if let Some(bu) = &bound_user {
                                 let _ = client_clone.bind(BindRequest {
-                                    messenger_id: Arc::new(channel_id.clone()),
-                                    user_id: Arc::new(user_id.clone()),
+                                    messenger_id: bu.messenger_id.clone(),
+                                    user_id: bu.user_id.clone(),
                                 }).await;
                             }
                             // 等待断线通知（closed() 回调中 notify_one）
@@ -322,7 +322,7 @@ impl AgentCoordinator {
         // 3. 检查管理命令
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, &messenger_id, &user_id).await {
-                self.handle_admin_command(channel_id, &content_text, &messenger_id, &user_id, &group_id).await;
+                self.handle_admin_command(channel_id, &content_text, &group_id).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
@@ -336,15 +336,13 @@ impl AgentCoordinator {
         &self,
         channel_id: &str,
         content: &str,
-        messenger_id: &str,
-        user_id: &str,
         group_id: &str,
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
                 match CommandRouter::execute(&cmd, &self.config, self, channel_id).await {
                     Ok((reply, cmd_needs_reset)) => {
-                        self.send_reply(channel_id, messenger_id, user_id, group_id, reply).await;
+                        self.send_reply(channel_id, group_id, reply).await;
 
                         // 处理需要触发上下文重建的命令
                         if cmd_needs_reset {
@@ -371,13 +369,13 @@ impl AgentCoordinator {
                         }
                     }
                     Err(e) => {
-                        self.send_reply(channel_id, messenger_id, user_id, group_id,
+                        self.send_reply(channel_id, group_id,
                             format!("❌ 命令执行失败: {}", e)).await;
                     }
                 }
             }
             Err(e) => {
-                self.send_reply(channel_id, messenger_id, user_id, group_id,
+                self.send_reply(channel_id, group_id,
                     format!("⚠️ {}", e)).await;
             }
         }
@@ -432,7 +430,7 @@ impl AgentCoordinator {
                 });
 
                 // 5. 发送回复到通道
-                self.send_reply(channel_id, &messenger_id, &user_id, &group_id, model_resp.content).await;
+                self.send_reply(channel_id, &group_id, model_resp.content).await;
 
                 // 6. 检查上下文超长
                 let overflow = {
@@ -446,7 +444,7 @@ impl AgentCoordinator {
             }
             Err(e) => {
                 warn!("模型调用失败: {:?}", e);
-                self.send_reply(channel_id, &messenger_id, &user_id, &group_id,
+                self.send_reply(channel_id, &group_id,
                     format!("❌ 模型调用失败: {}", e)).await;
             }
         }
@@ -454,15 +452,21 @@ impl AgentCoordinator {
 
     /// 发送回复消息到通道，成功后推记忆（is_self=1）
     /// channel_id 定位连接（agent 内部标识），messenger_id 为消息方身份（回复目标）
-    async fn send_reply(&self, channel_id: &str, messenger_id: &str, user_id: &str, group_id: &str, content: String) {
+    /// 发送回复消息到通道，成功后推记忆（is_self=1）
+    /// 发件人身份为 agent 绑定的用户（bound_channels[channel_id] 的 ChannelUser），回复到原群组
+    async fn send_reply(&self, channel_id: &str, group_id: &str, content: String) {
         let Some(client) = self.channel_clients.get(channel_id) else {
             warn!("send_reply: 未找到 channel client: {}", channel_id);
             return;
         };
+        let Some(bound) = self.bound_channels.get(channel_id).map(|e| e.value().clone()) else {
+            warn!("send_reply: channel 未绑定: {}", channel_id);
+            return;
+        };
 
         let msg = OutgoingMessage {
-            messenger_id: Arc::new(messenger_id.to_string()),
-            user_id: Arc::new(user_id.to_string()),
+            messenger_id: bound.messenger_id.clone(),   // 对端 messenger 标识（如 "web"）
+            user_id: bound.user_id.clone(),             // agent 绑定的用户（如 "u1"）
             group_id: Arc::new(group_id.to_string()),
             content: Content::Text(Arc::new(content.clone())),
         };
@@ -475,8 +479,8 @@ impl AgentCoordinator {
                 self.memory_store_client.push_channel_record(ChannelRecord {
                     agent_id,
                     role_name,
-                    messenger_id: Arc::new(messenger_id.to_string()),
-                    user_id: Arc::new(user_id.to_string()),
+                    messenger_id: bound.messenger_id.clone(),
+                    user_id: bound.user_id.clone(),
                     group_id: Arc::new(group_id.to_string()),
                     is_self: 1,
                     content: response.content.clone(),

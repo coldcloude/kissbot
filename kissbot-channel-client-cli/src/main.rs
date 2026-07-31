@@ -171,7 +171,7 @@ async fn main() {
     *cli_terminal.client.write().await = Some(client.clone());
     client.connect(&config.channel_ws_url, &api_key).await.expect("connect failed");
     cli_terminal.bind().await.expect("bind failed");
-    println!(">> bound. 输入行发送文本；/group <id> 切换群组；/download <key>；/upload <path>");
+    println!(">> bound. 输入行发送文本；/group <id> 切换群组；/download <key>；/upload <path>；/send <text> 透传发送");
 
     // stdin 按行读取（独立线程，避免阻塞 tokio runtime）
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -201,6 +201,11 @@ async fn main() {
         } else if let Some(rest) = line.strip_prefix("/upload ") {
             if let Err(e) = cli_terminal.upload(rest.trim()).await {
                 println!("!! upload error: {}", e);
+            }
+        } else if let Some(rest) = line.strip_prefix("/send ") {
+            // 透传命令：把剩余内容原样作为文本发送（用于发送 / 开头的管理命令文本）
+            if let Err(e) = cli_terminal.send_text(rest.trim()).await {
+                println!("!! send error: {}", e);
             }
         } else if line.starts_with('/') {
             println!("!! unknown command: {}", line);

@@ -13,6 +13,8 @@ export interface SpawnedCli {
   waitForOutput(regex: RegExp, timeout?: number): Promise<string>;
   /** 检查已累积的 stdout 是否匹配（不等待） */
   hasOutput(regex: RegExp): boolean;
+  /** 返回已累积的 stdout 快照（用于对比基线之后的新输出） */
+  getOutput(): string;
 }
 
 export function spawnCli(args: string[], cwd: string): SpawnedCli {
@@ -56,5 +58,7 @@ export function spawnCli(args: string[], cwd: string): SpawnedCli {
 
   const hasOutput = (regex: RegExp): boolean => regex.test(stdoutBuf);
 
-  return { proc, stdin, waitForOutput, hasOutput };
+  const getOutput = (): string => stdoutBuf;
+
+  return { proc, stdin, waitForOutput, hasOutput, getOutput };
 }
