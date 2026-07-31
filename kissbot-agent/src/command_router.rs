@@ -160,7 +160,7 @@ impl CommandRouter {
                 Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
-                config.remove_admin(channel_id, user_id).await?;
+                config.remove_admin(channel_id, messenger_id, user_id).await?;
                 Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::SetRole(role) => {
