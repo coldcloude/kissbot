@@ -9,17 +9,11 @@ use crate::config_manager::ModelConfig;
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexusRepo {
-    #[serde(default)]
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
-    #[serde(default)]
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,
-    #[serde(default)]
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
-    #[serde(default)]
     pub default_agent_id: Arc<String>,
-    #[serde(default)]
     pub default_role: Arc<String>,
-    #[serde(default)]
     pub default_model: Arc<String>,
 }
 
@@ -40,11 +34,8 @@ impl Default for NexusRepo {
 pub struct ChannelConfig {
     pub messenger_id: Arc<String>,
     pub ws_url: Arc<String>,
-    #[serde(default)]
     pub admins: Arc<HashSet<ChannelUser>>,
-    #[serde(default)]
     pub default_bind_user: Option<ChannelUser>,
-    #[serde(default)]
     pub enabled_by_default: bool,
 }
 
@@ -64,7 +55,6 @@ pub struct MemoryStructConfig {
 /// station 可改配置，持久化到 <data_dir>/station.json（本轮占位）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StationRepo {
-    #[serde(default)]
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
 }
 

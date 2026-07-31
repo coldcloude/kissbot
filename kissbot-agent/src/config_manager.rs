@@ -11,10 +11,9 @@ use crate::types::{Result, Error};
 // ========== 配置数据结构 ==========
 
 // ModelConfig 仍定义在本文件（Task 2 已改名），供 model_client 与 repo.rs 共用
-// （ModelConfig 定义保留在原处，含 #[serde(default)] name 字段）
+// （ModelConfig 定义保留在原处）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    #[serde(default)]
     pub name: Arc<String>,
     pub provider: String,
     pub endpoint: String,
@@ -49,11 +48,8 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
-    #[serde(default)]
     pub init_agent_id: Arc<String>,
-    #[serde(default)]
     pub init_role: Arc<String>,
-    #[serde(default)]
     pub init_model: Arc<String>,
 }
 
