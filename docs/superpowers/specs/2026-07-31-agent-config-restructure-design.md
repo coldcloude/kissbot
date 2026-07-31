@@ -88,7 +88,7 @@ struct AgentConfig {
 ```rust
 struct NexusRepo {
     channels: Arc<ArcSwapHashMap<String, ChannelDef>>,              // key = messenger_id
-    models: Arc<ArcSwapHashMap<String, NamedModelConfig>>,          // key = name
+    models: Arc<ArcSwapHashMap<String, ModelConfig>>,               // key = name
     memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>, // key = name
     default_agent_id: Arc<String>,
     default_role: Arc<String>,
@@ -98,15 +98,20 @@ struct NexusRepo {
 struct ChannelDef {
     messenger_id: Arc<String>,
     ws_url: Arc<String>,
-    admins: Arc<ArcSwapHashMap<String, AdminUser>>,   // key = user_id；AdminUser = { messenger_id, user_id }
-    default_bind_user: Arc<ChannelBinding>,            // ChannelBinding = { messenger_id, user_id }
-    enabled_by_default: bool,                          // 启动是否默认连接
+    admins: Arc<HashSet<ChannelUser>>,        // 集合语义；ChannelUser = { messenger_id, user_id }，需 Hash/Eq
+    default_bind_user: Arc<ChannelUser>,       // ChannelUser = { messenger_id, user_id }
+    enabled_by_default: bool,                  // 启动是否默认连接
 }
 
-struct NamedModelConfig {
+struct ModelConfig {
     name: Arc<String>,
-    // 现有 ModelConfig（原 LlmConfig，程序范围改名）全部字段：
+    // 原 LlmConfig（程序范围改名）的全部字段：
     // provider, endpoint, api_key, model, max_tokens, temperature, timeout_secs, retry_count
+}
+
+struct ChannelUser {
+    messenger_id: Arc<String>,
+    user_id: Arc<String>,
 }
 
 struct MemoryStructConfig {
@@ -115,8 +120,9 @@ struct MemoryStructConfig {
 }
 ```
 
-> `AdminUser` 与 `ChannelBinding` 都保留 `{ messenger_id, user_id }` 二元组（admin 归属 channel，但条目自带 messenger_id 以保持自描述）。
+> 原 `AdminUser` 与 `ChannelBinding` 结构相同，合并为 `ChannelUser`（`{ messenger_id, user_id }`，需 `Hash`/`Eq`）。admin 归属 channel，但条目自带 messenger_id 以保持自描述。
 > `ArcSwapHashMap<K, V>` 内部为 `HashMap<K, ArcSwap<V>>`，读用 `.get(k).load()` 返回 `Arc<V>`，写用 `Arc::make_mut` 后 `insert(k, ArcSwap::new(Arc::new(v)))`。
+> `admins` 为集合语义，用 `Arc<HashSet<ChannelUser>>`（参考 channel-web `GroupConfig.members`），写时 `Arc::make_mut` 做写时复制。
 
 ## Part2b：`StationRepo`（与 `NexusRepo` 平级，本轮占位）
 
@@ -145,7 +151,7 @@ struct StationConfig {
 current_agent_id: ArcSwap<String>,                          // init <- NexusRepo.default_agent_id
 current_role: ArcSwap<String>,                              // init <- NexusRepo.default_role
 current_model: ArcSwap<String>,                             // init <- NexusRepo.default_model
-bound_channels: Arc<DashMap<String, Arc<ChannelBinding>>>,  // key = messenger_id
+bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,     // key = messenger_id
 selected_memory_structs: Arc<DashMap<String, ()>>,           // key = name，选中集合
 // current_mode 仍由 ModeManager 持有（init <- Role）
 ```
@@ -161,7 +167,7 @@ selected_memory_structs: Arc<DashMap<String, ()>>,           // key = name，选
 | 启动后只读 | `Arc<T>` |
 | 确需运行时变更的标量（运行状态） | `ArcSwap<T>` |
 | 运行状态 Map / 集合 | `Arc<DashMap<K, Arc<V>>>`，V 的方法全 `&self`（V 不可变；改 V 标量就换整个 `Arc<V>`；V 内可含嵌套 `DashMap` 做子集合） |
-| Repo 及其下属 struct 的 Map（需写文件） | `Arc<ArcSwapHashMap<K, V>>`（参考 channel-web / memory-ego），外层 `Arc<RwLock<XxxRepo>>` 串行化"改-COW-写文件"，写时 `Arc::make_mut`；Repo 标量用 `Arc<String>`（在写锁内改） |
+| Repo 及其下属 struct 的 Map / 集合（需写文件） | Map 用 `Arc<ArcSwapHashMap<K, V>>`，集合（如 `admins`）用 `Arc<HashSet<V>>`（参考 channel-web `GroupConfig.members`）；外层 `Arc<RwLock<XxxRepo>>` 串行化“改-COW-写文件”，写时 `Arc::make_mut`；Repo 标量用 `Arc<String>`（在写锁内改） |
 
 运行状态不使用 `ArcSwapHashMap`（用 `DashMap`）；Repo 的 Map 使用 `Arc<ArcSwapHashMap<K, V>>`。字符串统一用 `Arc<String>`。
 
@@ -190,13 +196,14 @@ selected_memory_structs: Arc<DashMap<String, ()>>,           // key = name，选
 - `<data_dir>/station.json` 不存在：创建空 `StationRepo`（`stations` 为空），写文件。
 - 文件存在：反序列化加载。
 - 首次创建后，`nexus.json` / `station.json` 为唯一权威来源，`init_*` 字段此后忽略。
-- 边界：首次创建时 `models` 集合为空，`default_model`（由 `init_model` 种子）可能指向尚不存在的 model 名字--此时 agent 无法调用模型，需经管理 API 添加匹配该名字的 `NamedModelConfig` 后方可思考。`default_agent_id` 同理需指向 memory-ego 中已存在的 agent。
+- 边界：首次创建时 `models` 集合为空，`default_model`（由 `init_model` 种子）可能指向尚不存在的 model 名字--此时 agent 无法调用模型，需经管理 API 添加匹配该名字的 `ModelConfig` 后方可思考。`default_agent_id` 同理需指向 memory-ego 中已存在的 agent。
 
 ## 代码影响
 
 ### 程序范围统一 `llm` -> `model` 改名
 
-- `LlmConfig` -> `ModelConfig`；新增 `NamedModelConfig`（`ModelConfig` + `name`）。
+- `LlmConfig` -> `ModelConfig`（在原 `LlmConfig` 字段基础上增加 `name` 字段，即原计划的 `NamedModelConfig` 直接命名为 `ModelConfig`）。
+- 原 `AdminUser` 与 `ChannelBinding` 合并为 `ChannelUser`（`{ messenger_id, user_id }`）。
 - `LlmClient` -> `ModelClient`，文件 `llm_client.rs` -> `model_client.rs`。
 - `types.rs`：`LlmResponse` -> `ModelResponse`；`Error::LlmApiError` -> `ModelApiError`、`LlmProviderNotSupported` -> `ModelProviderNotSupported`。
 - `coordinator.rs`：`llm_client` 字段 -> `model_client`，相关调用改名。
@@ -226,7 +233,7 @@ selected_memory_structs: Arc<DashMap<String, ()>>,           // key = name，选
 - `agent_id()`：改为 `ArcSwap::load`（仍同步无锁读，返回 `Arc<String>` 快照）；agentic loop 内用快照。
 - `current_role()`：改读 `ArcSwap`。
 - channel 列表：从 `bound_channels` 读；`ws_url` 从 `NexusRepo.channels[messenger_id].ws_url` 读（每 channel 独立）。
-- 模型配置：按 `current_model` 名字查 `NexusRepo.models` 得 `NamedModelConfig`，初始化 / 热更新 `ModelClient`。
+- 模型配置：按 `current_model` 名字查 `NexusRepo.models` 得 `ModelConfig`，初始化 / 热更新 `ModelClient`。
 - `/bind` `/unbind` `/role` `/model` `/agent` 改为 coordinator 方法（不回写）。
 
 ### `command_router.rs`
