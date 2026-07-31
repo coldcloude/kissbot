@@ -451,9 +451,8 @@ impl AgentCoordinator {
     }
 
     /// 发送回复消息到通道，成功后推记忆（is_self=1）
-    /// channel_id 定位连接（agent 内部标识），messenger_id 为消息方身份（回复目标）
-    /// 发送回复消息到通道，成功后推记忆（is_self=1）
-    /// 发件人身份为 agent 绑定的用户（bound_channels[channel_id] 的 ChannelUser），回复到原群组
+    /// channel_id 定位连接（agent 内部标识）；发件人身份为 agent 绑定的用户
+    /// （bound_channels[channel_id] 的 ChannelUser），回复到原群组
     async fn send_reply(&self, channel_id: &str, group_id: &str, content: String) {
         let Some(client) = self.channel_clients.get(channel_id) else {
             warn!("send_reply: 未找到 channel client: {}", channel_id);

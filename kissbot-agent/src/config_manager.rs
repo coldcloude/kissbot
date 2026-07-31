@@ -317,7 +317,6 @@ impl ConfigManager {
 
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
-    #[allow(dead_code)] // 管理 API（http_server）消费后移除
     pub async fn add_provider(&self, cfg: ProviderConfig) -> Result<()> {
         {
             let mut repo = self.nexus_repo.write().await;
@@ -330,7 +329,6 @@ impl ConfigManager {
         self.save_nexus().await
     }
     /// 删除 provider（不存在报 ConfigNotFound），落盘
-    #[allow(dead_code)] // 管理 API（http_server）消费后移除
     pub async fn remove_provider(&self, name: &str) -> Result<()> {
         {
             let mut repo = self.nexus_repo.write().await;
@@ -343,7 +341,6 @@ impl ConfigManager {
         self.save_nexus().await
     }
     /// 返回 NexusRepo 快照（管理 API GET /config 使用）
-    #[allow(dead_code)] // 管理 API（http_server）消费后移除
     pub async fn nexus_snapshot(&self) -> NexusRepo {
         self.nexus_repo.read().await.clone()
     }
@@ -360,7 +357,6 @@ impl ConfigManager {
     pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
     pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
     /// 设置默认模型（(provider, model) 打包），落盘
-    #[allow(dead_code)] // 管理 API（http_server）消费后移除
     pub async fn set_default_model(&self, pm: ProviderModel) -> Result<()> {
         {
             let mut repo = self.nexus_repo.write().await;
