@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::time::sleep;
 
-use crate::types::{ModelResponse, Result, Error};
+use crate::types::{Error, MessageItem, ModelResponse, Result};
 use crate::config_manager::ModelConfig;
 
 pub struct ModelClient {
@@ -153,11 +153,4 @@ impl ModelClient {
 
         Ok(ModelResponse { content, tool_calls: Vec::new(), finish_reason })
     }
-}
-
-/// 模型上下文中的单条消息
-#[derive(Debug, Clone)]
-pub struct MessageItem {
-    pub role: String,
-    pub content: String,
 }

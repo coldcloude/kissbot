@@ -8,6 +8,7 @@ mod context_builder;
 mod coordinator;
 mod http_server;
 mod model_client;
+mod provider;
 mod memory_reader;
 mod memory_store_client;
 mod memory_writer;

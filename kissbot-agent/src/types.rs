@@ -117,6 +117,13 @@ pub struct ModelResponse {
     pub finish_reason: String,
 }
 
+/// 模型上下文中的单条消息
+#[derive(Debug, Clone)]
+pub struct MessageItem {
+    pub role: String,
+    pub content: String,
+}
+
 // ========== MemoryWriter 写入队列 ==========
 
 #[derive(Debug, Clone)]
