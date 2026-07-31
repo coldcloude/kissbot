@@ -50,6 +50,12 @@ graph TB
 
 详见 [kissbot-memory 组件设计](kissbot-memory.md)
 
+### 配置管理器
+配置按三分结构管理：
+- **AgentConfig（静态）**：从 KISSBOT_CONFIG 的 `agent` 段加载，启动后不变，含 `data_dir`、`mgmt_host`、`mgmt_port`、`ws_reconnect_interval_secs`，以及 `init_agent_id`/`init_role`/`init_model`（首次引导 NexusRepo 默认值）
+- **NexusRepo / StationRepo（可改、落盘）**：持久化到 `<data_dir>/nexus.json` 与 `<data_dir>/station.json`，修改经 COW 写回；NexusRepo 存 channels / models / memory_structs 与 3 个 default 值，StationRepo 存 stations（本轮占位）
+- **运行状态（不落盘）**：作为 AgentCoordinator 字段，标量用 `ArcSwap`、集合用 `DashMap`，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
+
 ## 组合模式
 
 Agent 启用不同的内部模块和记忆模式，形成多种工作方式：

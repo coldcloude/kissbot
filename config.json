@@ -26,5 +26,14 @@
   },
   "channel-client": {
     "channel_ws_url": "ws://127.0.0.1:8201"
+  },
+  "agent": {
+    "data_dir": "data",
+    "mgmt_host": "127.0.0.1",
+    "mgmt_port": 9090,
+    "ws_reconnect_interval_secs": 5,
+    "init_agent_id": "",
+    "init_role": "",
+    "init_model": ""
   }
 }
