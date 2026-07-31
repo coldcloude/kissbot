@@ -315,6 +315,39 @@ impl ConfigManager {
         })
     }
 
+    // ---------- providers CRUD（管理 API 使用，落盘） ----------
+    /// 添加 provider（重名报 ConfigNotFound），落盘
+    #[allow(dead_code)] // 管理 API（http_server）消费后移除
+    pub async fn add_provider(&self, cfg: ProviderConfig) -> Result<()> {
+        {
+            let mut repo = self.nexus_repo.write().await;
+            let map = Arc::make_mut(&mut repo.providers);
+            if map.contains_key(&cfg.name.to_string()) {
+                return Err(Error::ConfigNotFound(format!("provider 已存在: {}", cfg.name)));
+            }
+            map.insert(cfg.name.to_string(), ArcSwap::new(Arc::new(cfg)));
+        }
+        self.save_nexus().await
+    }
+    /// 删除 provider（不存在报 ConfigNotFound），落盘
+    #[allow(dead_code)] // 管理 API（http_server）消费后移除
+    pub async fn remove_provider(&self, name: &str) -> Result<()> {
+        {
+            let mut repo = self.nexus_repo.write().await;
+            let map = Arc::make_mut(&mut repo.providers);
+            if !map.contains_key(name) {
+                return Err(Error::ConfigNotFound(format!("provider 不存在: {}", name)));
+            }
+            map.remove(name);
+        }
+        self.save_nexus().await
+    }
+    /// 返回 NexusRepo 快照（管理 API GET /config 使用）
+    #[allow(dead_code)] // 管理 API（http_server）消费后移除
+    pub async fn nexus_snapshot(&self) -> NexusRepo {
+        self.nexus_repo.read().await.clone()
+    }
+
     // ---------- memory_structs ----------
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
@@ -326,6 +359,15 @@ impl ConfigManager {
     pub async fn default_agent_id(&self) -> String { self.nexus_repo.read().await.default_agent_id.to_string() }
     pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
     pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
+    /// 设置默认模型（(provider, model) 打包），落盘
+    #[allow(dead_code)] // 管理 API（http_server）消费后移除
+    pub async fn set_default_model(&self, pm: ProviderModel) -> Result<()> {
+        {
+            let mut repo = self.nexus_repo.write().await;
+            *Arc::make_mut(&mut repo.default_model) = pm;
+        }
+        self.save_nexus().await
+    }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
     /// 聚合所有 channel 的 admins
@@ -593,5 +635,49 @@ mod tests {
         };
         assert!(manager.resolve_effective_config(&ProviderModel { provider: "nope".into(), model: "m".into() }).await.is_none());
         assert!(manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "nope".into() }).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_crud_and_default_set() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        // add_provider → resolve 可见
+        manager.add_provider(sample_provider("deepseek")).await.unwrap();
+        let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() }).await;
+        assert!(eff.is_none(), "provider 无 models 时 model 不存在返回 None");
+        // 带 models 的 provider
+        let mut provider = sample_provider("openai");
+        {
+            let map = Arc::make_mut(&mut provider.models);
+            map.insert("gpt-4o".into(), ArcSwap::new(Arc::new(ModelConfig {
+                model: "gpt-4o".into(), max_tokens: None, temperature: None,
+                timeout_secs: None, retry_count: None, context_length: None,
+            })));
+        }
+        manager.add_provider(provider).await.unwrap();
+        // 重名报错
+        let err = manager.add_provider(sample_provider("openai")).await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+        // set_default_model → getter 可见 + 落盘
+        let pm = ProviderModel { provider: "openai".into(), model: "gpt-4o".into() };
+        manager.set_default_model(pm.clone()).await.unwrap();
+        assert_eq!(manager.default_model().await, pm);
+        // remove_provider → resolve 返回 None；不存在报错
+        manager.remove_provider("openai").await.unwrap();
+        assert!(manager.resolve_effective_config(&pm).await.is_none());
+        let err = manager.remove_provider("nope").await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+        // nexus_snapshot 反映变更
+        let snap = manager.nexus_snapshot().await;
+        assert_eq!(*snap.default_model, pm);
+        assert!(!snap.providers.contains_key("openai"));
     }
 }
