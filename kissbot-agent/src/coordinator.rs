@@ -34,9 +34,9 @@ pub struct AgentCoordinator {
     context_builder: Arc<tokio::sync::Mutex<ContextBuilder>>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
     /// 运行状态：当前 agent / 角色 / 模型（启动从 NexusRepo 默认值初始化，运行期不回写）
-    current_agent_id: Arc<ArcSwap<String>>,
-    current_role: Arc<ArcSwap<String>>,
-    current_model: Arc<ArcSwap<String>>,
+    current_agent_id: ArcSwap<String>,
+    current_role: ArcSwap<String>,
+    current_model: ArcSwap<String>,
     /// 运行状态：已绑定 channel（messenger_id → ChannelUser），/bind /unbind 修改
     bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,
     /// 运行状态：当前选中的 memory-struct（本期未实现，先占位）
@@ -83,9 +83,9 @@ impl AgentCoordinator {
             memory_store_client,
             context_builder: Arc::new(tokio::sync::Mutex::new(context_builder)),
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
-            current_agent_id: Arc::new(ArcSwap::from_pointee(default_agent_id)),
-            current_role: Arc::new(ArcSwap::from_pointee(default_role)),
-            current_model: Arc::new(ArcSwap::from_pointee(default_model)),
+            current_agent_id: ArcSwap::from_pointee(default_agent_id),
+            current_role: ArcSwap::from_pointee(default_role),
+            current_model: ArcSwap::from_pointee(default_model),
             bound_channels,
             selected_memory_structs: Arc::new(DashMap::new()),
             channel_clients: Arc::new(DashMap::new()),
