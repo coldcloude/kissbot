@@ -12,6 +12,8 @@ pub struct NexusRepo {
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
+    // nexus 可对接的 station 列表
+    pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
     pub default_agent_id: Arc<String>,
     pub default_role: Arc<String>,
     pub default_model: Arc<String>,
@@ -23,6 +25,7 @@ impl Default for NexusRepo {
             channels: Arc::new(ArcSwapHashMap::new()),
             models: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
+            stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new(String::new()),
             default_role: Arc::new(String::new()),
             default_model: Arc::new(String::new()),
@@ -52,11 +55,9 @@ pub struct MemoryStructConfig {
     pub url: Arc<String>,
 }
 
-/// station 可改配置，持久化到 <data_dir>/station.json（本轮占位）
+/// station 可改配置，持久化到 <data_dir>/station.json（本轮占位，暂无字段）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StationRepo {
-    pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
-}
+pub struct StationRepo {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationConfig {
@@ -84,6 +85,7 @@ mod tests {
             channels: Arc::new(ArcSwapHashMap::new()),
             models: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
+            stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new("agent-1".into()),
             default_role: Arc::new("dev".into()),
             default_model: Arc::new("gpt-4o".into()),
@@ -101,6 +103,7 @@ mod tests {
         assert!(repo.channels.is_empty());
         assert!(repo.models.is_empty());
         assert!(repo.memory_structs.is_empty());
+        assert!(repo.stations.is_empty());
         assert!(repo.default_agent_id.is_empty());
     }
 }
