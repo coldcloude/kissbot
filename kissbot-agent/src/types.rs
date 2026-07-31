@@ -88,6 +88,8 @@ pub enum Mode {
 #[derive(Debug)]
 pub enum AdminCommand {
     Bind { messenger_id: String, user_id: String },
+    // messenger_id 字段为命令解析兼容保留（执行侧按 channel_id 定位，不再读取）
+    #[allow(dead_code)]
     Unbind { messenger_id: String },
     Admin { messenger_id: String, user_id: String },
     Unadmin { messenger_id: String, user_id: String },

@@ -51,6 +51,8 @@ impl ModelClient {
         for attempt in 0..=max_retries {
             match provider.send(effective, messages).await {
                 Ok(response) => return Ok(response),
+                // 配置类错误（如未知 provider_type）是永久性错误，重试无意义，直接返回
+                Err(e @ Error::ModelProviderNotSupported(_)) => return Err(e),
                 Err(e) => {
                     last_error = Some(e);
                     if attempt < max_retries {

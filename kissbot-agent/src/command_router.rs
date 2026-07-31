@@ -150,9 +150,9 @@ impl CommandRouter {
                 }).await;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), false))
             }
-            AdminCommand::Unbind { messenger_id } => {
+            AdminCommand::Unbind { .. } => {
                 coordinator.unbind_channel(channel_id).await;
-                Ok((format!("✅ 已解绑 channel: {}", messenger_id), false))
+                Ok((format!("✅ 已解绑 channel: {}", channel_id), false))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
                 config.add_admin(channel_id, &ChannelUser {
