@@ -67,6 +67,16 @@ where
     }
 }
 
+impl<K, T> Default for ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Sized + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, T> From<HashMap<K, ArcSwap<T>>> for ArcSwapHashMap<K, T>
 where
     K: Eq + Hash + Clone + 'static,
