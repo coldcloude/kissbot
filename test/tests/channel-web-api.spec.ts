@@ -52,11 +52,11 @@ test.describe.serial('channel-web 后端 API 测试', () => {
     expect(resp.success).toBe(true);
     expect(resp.data.messenger_id).toBe('web');
     expect(resp.data.admin_name).toBe('管理员');
-    expect(resp.data.users).toHaveProperty('user-1');
-    expect(resp.data.users['user-1'].user_id).toBe('user-1');
-    expect(resp.data.users).toHaveProperty('user-2');
-    expect(resp.data.groups).toHaveProperty('dev-team');
-    expect(resp.data.groups).toHaveProperty('project-x');
+    expect(resp.data.users).toHaveProperty('u1');
+    expect(resp.data.users['u1'].user_id).toBe('u1');
+    expect(resp.data.users).toHaveProperty('u2');
+    expect(resp.data.groups).toHaveProperty('g1');
+    expect(resp.data.groups).toHaveProperty('g2');
   });
 
   // TC-02 错误 API Key
@@ -72,7 +72,7 @@ test.describe.serial('channel-web 后端 API 测试', () => {
     const resp = await apiPost(request, '/api/message/send', {
       messenger_id: 'web',
       user_id: 'admin',
-      group_id: 'dev-team',
+      group_id: 'g1',
       content: { msg_type: 'Text', data: '你好！' },
     });
     expect(resp.success).toBe(true);
@@ -96,7 +96,7 @@ test.describe.serial('channel-web 后端 API 测试', () => {
   test('TC-05: 获取最近消息', async ({ request }) => {
     // 消息存储有 1 秒缓冲延迟，等待 4 秒
     await new Promise(r => setTimeout(r, 4000));
-    const resp = await apiGet(request, '/api/messages/recent?group_id=dev-team&n=5');
+    const resp = await apiGet(request, '/api/messages/recent?group_id=g1&n=5');
     expect(resp.success).toBe(true);
     expect(Array.isArray(resp.data)).toBe(true);
     expect(resp.data.length).toBeGreaterThanOrEqual(1);
@@ -106,7 +106,7 @@ test.describe.serial('channel-web 后端 API 测试', () => {
   // TC-06 创建群组
   test('TC-06: 创建群组', async ({ request }) => {
     const resp = await apiPost(request, '/api/groups/create', {
-      group_name: '新群组', member_ids: ['user-1'],
+      group_name: '新群组', member_ids: ['u1'],
     });
     expect(resp.success).toBe(true);
     expect(resp.data.group_id).toBeTruthy();
@@ -120,7 +120,7 @@ test.describe.serial('channel-web 后端 API 测试', () => {
     const g = resp.data.groups[sharedGroupId];
     expect(g).toBeTruthy();
     expect(g.group_name).toBe('新群组');
-    expect(g.members).toContain('user-1');
+    expect(g.members).toContain('u1');
   });
 
   // TC-08 重命名群组
@@ -136,21 +136,21 @@ test.describe.serial('channel-web 后端 API 测试', () => {
   // TC-09 管理成员——添加成员
   test('TC-09: 管理成员——添加成员', async ({ request }) => {
     const resp = await apiPost(request, '/api/groups/manage-members', {
-      group_id: sharedGroupId, add_ids: ['user-2'], remove_ids: [],
+      group_id: sharedGroupId, add_ids: ['u2'], remove_ids: [],
     });
     expect(resp.success).toBe(true);
     const info = await apiGet(request, '/api/info');
-    expect(info.data.groups[sharedGroupId].members.sort()).toEqual(['user-1', 'user-2']);
+    expect(info.data.groups[sharedGroupId].members.sort()).toEqual(['u1', 'u2']);
   });
 
   // TC-10 管理成员——移除成员
   test('TC-10: 管理成员——移除成员', async ({ request }) => {
     const resp = await apiPost(request, '/api/groups/manage-members', {
-      group_id: sharedGroupId, add_ids: [], remove_ids: ['user-2'],
+      group_id: sharedGroupId, add_ids: [], remove_ids: ['u2'],
     });
     expect(resp.success).toBe(true);
     const info = await apiGet(request, '/api/info');
-    expect(info.data.groups[sharedGroupId].members).toEqual(['user-1']);
+    expect(info.data.groups[sharedGroupId].members).toEqual(['u1']);
   });
 
   // TC-11 创建用户
@@ -164,22 +164,22 @@ test.describe.serial('channel-web 后端 API 测试', () => {
   // 注意：当前后端不在创建用户时自动生成单聊群组，因此仅验证用户出现在 info 中
   test('TC-12: 创建用户后自动生成单聊群组', async ({ request }) => {
     const info = await apiGet(request, '/api/info');
-    expect(info.data.users).toHaveProperty('u3');
-    expect(info.data.users.u3.user_id).toBe('u3');
-    expect(info.data.users.u3.user_name).toBe('助手小C');
+    expect(info.data.users).toHaveProperty('u4');
+    expect(info.data.users.u4.user_id).toBe('u4');
+    expect(info.data.users.u4.user_name).toBe('助手小C');
     // 后端暂不自动创建单聊群组，以下为预留断言：
-    // const groupsWithU3 = Object.entries(info.data.groups)
-    //   .filter(([_, g]: any) => g.members?.includes('u3'))
+    // const groupsWithU4 = Object.entries(info.data.groups)
+    //   .filter(([_, g]: any) => g.members?.includes('u4'))
     //   .map(([id]) => id);
-    // expect(groupsWithU3.length).toBeGreaterThanOrEqual(1);
+    // expect(groupsWithU4.length).toBeGreaterThanOrEqual(1);
   });
 
   // TC-13 重命名用户
   test('TC-13: 重命名用户', async ({ request }) => {
-    const resp = await apiPost(request, '/api/users/rename', { user_id: 'u3', user_name: '助手小C（改）' });
+    const resp = await apiPost(request, '/api/users/rename', { user_id: 'u4', user_name: '助手小C（改）' });
     expect(resp.success).toBe(true);
     const info = await apiGet(request, '/api/info');
-    expect(info.data.users.u3.user_name).toBe('助手小C（改）');
+    expect(info.data.users.u4.user_name).toBe('助手小C（改）');
   });
 
   // TC-14 管理员改名
@@ -200,10 +200,10 @@ test.describe.serial('channel-web 后端 API 测试', () => {
 
   // TC-16 删除用户
   test('TC-16: 删除用户', async ({ request }) => {
-    const resp = await apiPost(request, '/api/users/delete', { user_id: 'u3' });
+    const resp = await apiPost(request, '/api/users/delete', { user_id: 'u4' });
     expect(resp.success).toBe(true);
     const info = await apiGet(request, '/api/info');
-    expect(info.data.users).not.toHaveProperty('u3');
+    expect(info.data.users).not.toHaveProperty('u4');
   });
 
   // TC-17 删除不存在的群组
@@ -220,16 +220,16 @@ test.describe.serial('channel-web 后端 API 测试', () => {
 
   // TC-19 admin-user 单聊群组不可操作
   test('TC-19: admin-user 单聊群组不可操作', async ({ request }) => {
-    const r1 = await apiPost(request, '/api/groups/rename', { group_id: 'a_user-1', group_name: '改名' });
+    const r1 = await apiPost(request, '/api/groups/rename', { group_id: 'a_u1', group_name: '改名' });
     expect(r1.success).toBe(false);
-    const r2 = await apiPost(request, '/api/groups/delete', { group_id: 'a_user-1' });
+    const r2 = await apiPost(request, '/api/groups/delete', { group_id: 'a_u1' });
     expect(r2.success).toBe(false);
   });
 
   // TC-20 附件上传——发消息获取 transfer_id
   test('TC-20: 附件上传——发消息获取 transfer_id', async ({ request }) => {
     const resp = await apiPost(request, '/api/message/send', {
-      messenger_id: 'web', user_id: 'admin', group_id: 'dev-team',
+      messenger_id: 'web', user_id: 'admin', group_id: 'g1',
       content: {
         msg_type: 'AttachmentInfo',
         data: { file_name: 'photo.png', mime_type: 'image/png', size_bytes: 68 },
@@ -288,12 +288,12 @@ test.describe.serial('channel-web 后端 API 测试', () => {
 
   // TC-24 分页加载历史消息
   test('TC-24: 分页加载历史消息', async ({ request }) => {
-    const recent = await apiGet(request, '/api/messages/recent?group_id=dev-team&n=1');
+    const recent = await apiGet(request, '/api/messages/recent?group_id=g1&n=1');
     const group = recent.data[0];
     if (!group) return; // 无消息不报错
     const firstMsg = group.messages[0];
     if (!firstMsg) return;
-    const before = await apiGet(request, '/api/messages/before?group_id=dev-team&date=' + group.key.date + '&line=' + firstMsg.line + '&n=10');
+    const before = await apiGet(request, '/api/messages/before?group_id=g1&date=' + group.key.date + '&line=' + firstMsg.line + '&n=10');
     expect(before.success).toBe(true);
   });
 });

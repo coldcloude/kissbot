@@ -34,7 +34,7 @@ test.describe.serial('channel-web 前后端集成测试', () => {
       await request.post(`${BASE}/api/message/send`, {
         headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
         data: {
-          messenger_id: 'web', user_id: 'admin', group_id: 'dev-team',
+          messenger_id: 'web', user_id: 'admin', group_id: 'g1',
           content: { msg_type: 'Text', data: `批量消息第 ${i} 条` },
         },
       });
@@ -469,7 +469,7 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.locator('.dropdown-item').filter({ hasText: '群组管理' }).click();
     await page.waitForTimeout(300);
 
-    // 群组列表应包含 dev-team 和 project-x
+    // 群组列表应包含 g1 和 g2
     const groupList = page.locator('.admin-panel-section').filter({ hasText: '群组列表' });
     await expect(groupList.locator('text=开发组')).toBeVisible();
     await expect(groupList.locator('text=项目X')).toBeVisible();
@@ -563,7 +563,7 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.waitForTimeout(500);
 
     // 验证成员更新（群组列表中应显示成员变更）
-    // 核心开发组的 members 应包含 admin, user-1, user-2
+    // 核心开发组的 members 应包含 admin, u1, u2
     const groupList = page.locator('.admin-panel-section').filter({ hasText: '群组列表' });
     const groupItem = groupList.locator('.admin-item').filter({ hasText: '核心开发组' });
     await expect(groupItem).toBeVisible();
@@ -628,20 +628,21 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.waitForTimeout(300);
 
     // 在"新建用户"区域输入名称
+    // 注意：新建用户用"助手小D"，与静态用户 u3（助手小C）区分，避免文本定位器重复匹配
     const createSection = page.locator('.admin-panel-section').filter({ hasText: '新建用户' }).first();
     const nameInput = createSection.locator('input[type="text"]');
-    await nameInput.fill('助手小C');
+    await nameInput.fill('助手小D');
 
     // 点击创建
     await createSection.getByRole('button', { name: '创建' }).click();
     await page.waitForTimeout(500);
 
-    // 验证用户列表中新增"助手小C"
+    // 验证用户列表中新增"助手小D"
     const userList = page.locator('.admin-panel-section').filter({ hasText: '用户列表' });
-    await expect(userList.locator('text=助手小C')).toBeVisible({ timeout: 3000 });
+    await expect(userList.locator('text=助手小D')).toBeVisible({ timeout: 3000 });
 
-    // 验证会话列表新增"助手小C"（单聊组）
-    await expect(page.locator('.conversation-name').filter({ hasText: '助手小C' })).toBeVisible({ timeout: 3000 });
+    // 验证会话列表新增"助手小D"（单聊组）
+    await expect(page.locator('.conversation-name').filter({ hasText: '助手小D' })).toBeVisible({ timeout: 3000 });
   });
 
   // ================================================================
@@ -654,9 +655,9 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.locator('.dropdown-item').filter({ hasText: '用户管理' }).click();
     await page.waitForTimeout(300);
 
-    // 在用户列表中找到"助手小C"并点击重命名
+    // 在用户列表中找到"助手小D"并点击重命名
     const userList = page.locator('.admin-panel-section').filter({ hasText: '用户列表' });
-    const userItem = userList.locator('.admin-item').filter({ hasText: '助手小C' });
+    const userItem = userList.locator('.admin-item').filter({ hasText: '助手小D' });
 
     // 获取 user_id（从 meta 文本提取）
     const renameBtn = userItem.locator('button').filter({ hasText: '重命名' });
@@ -666,19 +667,19 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     // 弹出重命名对话框
     const dialog = page.locator('.image-overlay');
     const dialogInput = dialog.locator('input[type="text"]');
-    await dialogInput.fill('助手小C（改）');
+    await dialogInput.fill('助手小D（改）');
 
     // 点击确认
     await dialog.getByRole('button', { name: '确认' }).click();
     await page.waitForTimeout(500);
 
     // 验证用户列表中名称已更新
-    await expect(userList.locator('text=助手小C（改）')).toBeVisible({ timeout: 3000 });
-    // 精确匹配：确保旧名称已不在列表中（使用 exact match 避免误匹配"助手小C（改）"）
-    await expect(userList.locator('.admin-item-name').filter({ hasText: /^助手小C$/ })).not.toBeVisible();
+    await expect(userList.locator('text=助手小D（改）')).toBeVisible({ timeout: 3000 });
+    // 精确匹配：确保旧名称已不在列表中（使用 exact match 避免误匹配"助手小D（改）"）
+    await expect(userList.locator('.admin-item-name').filter({ hasText: /^助手小D$/ })).not.toBeVisible();
 
     // 验证会话列表中对应单聊组名称同步更新
-    await expect(page.locator('.conversation-name').filter({ hasText: '助手小C（改）' })).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.conversation-name').filter({ hasText: '助手小D（改）' })).toBeVisible({ timeout: 3000 });
   });
 
   // ================================================================
@@ -691,9 +692,9 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.locator('.dropdown-item').filter({ hasText: '用户管理' }).click();
     await page.waitForTimeout(300);
 
-    // 在用户列表中找到"助手小C（改）"并点击删除（不存在则测试失败——TC-21 应已创建）
+    // 在用户列表中找到"助手小D（改）"并点击删除（不存在则测试失败——TC-21 应已创建）
     const userList = page.locator('.admin-panel-section').filter({ hasText: '用户列表' });
-    const userItem = userList.locator('.admin-item').filter({ hasText: '助手小C（改）' });
+    const userItem = userList.locator('.admin-item').filter({ hasText: '助手小D（改）' });
     await expect(userItem).toBeVisible({ timeout: 3000 });
 
     // 设置 dialog handler 接受 confirm
@@ -704,10 +705,10 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     await page.waitForTimeout(500);
 
     // 验证用户从列表中消失
-    await expect(userList.locator('text=助手小C（改）')).not.toBeVisible({ timeout: 3000 });
+    await expect(userList.locator('text=助手小D（改）')).not.toBeVisible({ timeout: 3000 });
 
     // 验证会话列表中对应的单聊组同步移除
-    await expect(page.locator('.conversation-name').filter({ hasText: '助手小C（改）' })).not.toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.conversation-name').filter({ hasText: '助手小D（改）' })).not.toBeVisible({ timeout: 3000 });
   });
 
   // ================================================================

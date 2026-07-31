@@ -40,7 +40,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
   // ===== 辅助：如果 CLI 已断开则重启 =====
   async function ensureCli() {
     if (cli1 && (cli1.proc.exitCode !== null || cli1.proc.killed)) {
-      cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+      cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
       await cli1.waitForOutput(/bound\./);
     }
   }
@@ -88,8 +88,8 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
   // TC-02 web → cli 发送文本消息
   // ================================================================
   test('TC-02: web → cli 发送文本消息', async ({ page }) => {
-    // 启动 CLI，绑定 user-1 到 dev-team
-    cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+    // 启动 CLI，绑定 u1 到 g1
+    cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
     await cli1.waitForOutput(/bound\./);
 
     // web 登录并选中开发组
@@ -103,7 +103,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await page.keyboard.press('Enter');
 
     // 验证 CLI 端收到消息
-    await cli1.waitForOutput(/<< \[admin:dev-team\].*web-to-cli 测试消息/);
+    await cli1.waitForOutput(/<< \[admin:g1\].*web-to-cli 测试消息/);
   });
 
   // ================================================================
@@ -121,7 +121,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     // 验证 CLI 输出发送确认
     await cli1.waitForOutput(/>> sent msg_id=/);
 
-    // 验证 web 端收到灰色气泡（靠左，发送者为 user-1）
+    // 验证 web 端收到灰色气泡（靠左，发送者为 u1）
     const msg = page.locator('.message.other .message-bubble').filter({ hasText: 'cli-to-web 测试消息' });
     await expect(msg).toBeVisible({ timeout: 5000 });
   });
@@ -149,7 +149,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await page.getByText('上传附件').click();
 
     // 验证 CLI 端收到 AttachmentInfoResponse（含 key 和 transfer_id）
-    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*test-photo\.png.*/);
+    const output = await cli1.waitForOutput(/<< \[admin:g1\] .*test-photo\.png.*/);
     const keyMatch = output.match(/"key":"([^"]+)"/);
     if (keyMatch) {
       sharedAttKey = keyMatch[1];
@@ -274,7 +274,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await page.getByText('上传附件').click();
 
     // 验证 CLI 收到 AttachmentInfoResponse（用 file_name 区分 TC-04 图片的行）
-    const output = await cli1.waitForOutput(/<< \[admin:dev-team\] .*test-document\.txt.*/);
+    const output = await cli1.waitForOutput(/<< \[admin:g1\] .*test-document\.txt.*/);
     const keyMatch = output.match(/"key":"([^"]+)"/);
     if (keyMatch) {
       sharedAttKey = keyMatch[1]; // 用于 TC-10
@@ -349,11 +349,11 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
   });
 
   // ================================================================
-  // TC-13 群组管理添加成员 → cli user-2 收到 JoinGroup 通知
+  // TC-13 群组管理添加成员 → cli u2 收到 JoinGroup 通知
   // ================================================================
   test('TC-13: 群组管理添加成员 → cli 收到 JoinGroup 通知', async ({ page }) => {
-    // 启动 user-2 的 CLI，绑定到 project-x（待会会收到 dev-team join 通知）
-    const cli2 = spawnCli(['web', 'user-2', 'project-x', './downloads'], WORKSPACE);
+    // 启动 u2 的 CLI，绑定到 g2（待会会收到 g1 join 通知）
+    const cli2 = spawnCli(['web', 'u2', 'g2', './downloads'], WORKSPACE);
     await cli2.waitForOutput(/bound\./);
 
     // web 登录
@@ -365,13 +365,13 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await page.locator('.dropdown-item').filter({ hasText: '群组管理' }).click();
     await page.waitForTimeout(500);
 
-    // 在"管理成员"区域选择"开发组"（dev-team）
+    // 在"管理成员"区域选择"开发组"（g1）
     const manageSection = page.locator('.admin-panel-section').filter({ hasText: '管理成员' }).first();
     const select = manageSection.locator('select');
     await select.selectOption({ label: '开发组' });
     await page.waitForTimeout(200);
 
-    // 点击"助手小B"（user-2）member-tag 添加
+    // 点击"助手小B"（u2）member-tag 添加
     const memberTag = manageSection.locator('.member-tag').filter({ hasText: '助手小B' });
     await memberTag.click();
 
@@ -379,8 +379,8 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
     await manageSection.getByRole('button', { name: '添加成员' }).click();
     await page.waitForTimeout(500);
 
-    // 验证 cli2（user-2）收到 join group 通知
-    await cli2.waitForOutput(/<< join group: dev-team @ web/);
+    // 验证 cli2（u2）收到 join group 通知
+    await cli2.waitForOutput(/<< join group: g1 @ web/);
 
     // 清理 cli2
     cli2.proc.kill();
@@ -428,7 +428,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
 
     // 重启 CLI（旧进程已断连退出）
     if (cli1) cli1.proc.kill();
-    cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+    cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
     await cli1.waitForOutput(/bound\./);
 
     // CLI 发消息
@@ -453,7 +453,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
 
     // 清理旧 CLI 连接，重新绑定
     if (cli1) cli1.proc.kill();
-    cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+    cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
     await cli1.waitForOutput(/bound\./);
 
     // 先发一条消息确认连通

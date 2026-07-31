@@ -16,8 +16,8 @@ const __dirname = dirname(__filename);
 const WORKSPACE = join(__dirname, '..', 'workspace');
 
 let backend: ChildProcess;
-let cli1: SpawnedCli;   // user-1 绑定 dev-team（channel-client 侧）
-let cli2: SpawnedCli;   // user-2 绑定 project-x（channel-client 侧）
+let cli1: SpawnedCli;   // u1 绑定 g1（channel-client 侧）
+let cli2: SpawnedCli;   // u2 绑定 g2（channel-client 侧）
 let tmpDir: string;
 
 // 测试间共享变量
@@ -109,7 +109,7 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
   // ===== 辅助：如果 CLI 已断开则重启 =====
   async function ensureCli1() {
     if (cli1 && (cli1.proc.exitCode !== null || cli1.proc.killed)) {
-      cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+      cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
       await cli1.waitForOutput(/bound\./);
     }
   }
@@ -123,10 +123,10 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
     expect(info.success).toBe(true);
     expect(info.data.messenger_id).toBe('web');
 
-    // user-1 绑定 dev-team、user-2 绑定 project-x
-    cli1 = spawnCli(['web', 'user-1', 'dev-team', './downloads'], WORKSPACE);
+    // u1 绑定 g1、u2 绑定 g2
+    cli1 = spawnCli(['web', 'u1', 'g1', './downloads'], WORKSPACE);
     await cli1.waitForOutput(/bound\./);
-    cli2 = spawnCli(['web', 'user-2', 'project-x', './downloads'], WORKSPACE);
+    cli2 = spawnCli(['web', 'u2', 'g2', './downloads'], WORKSPACE);
     await cli2.waitForOutput(/bound\./);
   });
 
@@ -135,14 +135,14 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
   // ================================================================
   test('TC-02: API 发文本消息 → client-cli 收到（channelmanager 下行分发）', async ({ request }) => {
     const resp = await apiPost(request, '/api/message/send', {
-      messenger_id: 'web', user_id: 'admin', group_id: 'dev-team',
+      messenger_id: 'web', user_id: 'admin', group_id: 'g1',
       content: { msg_type: 'Text', data: 'api-to-cli 测试消息' },
     });
     expect(resp.success).toBe(true);
 
-    // dev-team 成员 user-1、user-2 各有一条绑定连接，都应收到同一条消息
-    await cli1.waitForOutput(/<< \[admin:dev-team\].*api-to-cli 测试消息/, 10000);
-    await cli2.waitForOutput(/<< \[admin:dev-team\].*api-to-cli 测试消息/, 10000);
+    // g1 成员 u1、u2 各有一条绑定连接，都应收到同一条消息
+    await cli1.waitForOutput(/<< \[admin:g1\].*api-to-cli 测试消息/, 10000);
+    await cli2.waitForOutput(/<< \[admin:g1\].*api-to-cli 测试消息/, 10000);
   });
 
   // ================================================================
@@ -155,11 +155,11 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
     // 上行：channelclient → channelmanager → messenger → 本地存储，经 API 可查
     const msg = await waitForRecentMessage(
       request,
-      'dev-team',
+      'g1',
       (m: any) => m.content?.msg_type === 'Text' && m.content?.data === 'cli-to-api 测试消息',
     );
-    expect(msg.user_id).toBe('user-1');
-    expect(msg.group_id).toBe('dev-team');
+    expect(msg.user_id).toBe('u1');
+    expect(msg.group_id).toBe('g1');
   });
 
   // ================================================================
@@ -172,12 +172,12 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
     writeFileSync(pngPath, pngBuffer);
 
     // API 上传（发消息注册 → multipart 上传文件实体）
-    apiAttKey = await apiUploadAttachment(request, 'dev-team', {
+    apiAttKey = await apiUploadAttachment(request, 'g1', {
       name: 'api-upload.png', mimeType: 'image/png', buffer: pngBuffer,
     });
 
     // client-cli 收到 AttachmentInfoResponse
-    await cli1.waitForOutput(/<< \[admin:dev-team\].*api-upload\.png/, 10000);
+    await cli1.waitForOutput(/<< \[admin:g1\].*api-upload\.png/, 10000);
 
     // client-cli 经 channelmanager 的附件下载协议拉取文件
     cli1.stdin(`/download ${apiAttKey}`);
@@ -208,7 +208,7 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
     // 上行：channelclient → channelmanager → messenger → 存储，附件消息出现在历史中
     const msg = await waitForRecentMessage(
       request,
-      'dev-team',
+      'g1',
       (m: any) => m.content?.msg_type === 'AttachmentInfoResponse'
         && m.content?.data?.info?.file_name === 'cli-upload.png',
     );
@@ -233,11 +233,11 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
     const txtPath = join(tmpDir, 'api-upload.txt');
     writeFileSync(txtPath, txtBuffer);
 
-    apiAttKey = await apiUploadAttachment(request, 'dev-team', {
+    apiAttKey = await apiUploadAttachment(request, 'g1', {
       name: 'api-upload.txt', mimeType: 'text/plain', buffer: txtBuffer,
     });
 
-    await cli1.waitForOutput(/<< \[admin:dev-team\].*api-upload\.txt/, 10000);
+    await cli1.waitForOutput(/<< \[admin:g1\].*api-upload\.txt/, 10000);
 
     cli1.stdin(`/download ${apiAttKey}`);
     await cli1.waitForOutput(/>> downloading .*api-upload\.txt \(\d+ bytes\)/);
@@ -261,7 +261,7 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
 
     const msg = await waitForRecentMessage(
       request,
-      'dev-team',
+      'g1',
       (m: any) => m.content?.msg_type === 'AttachmentInfoResponse'
         && m.content?.data?.info?.file_name === 'cli-upload.txt',
     );
@@ -278,35 +278,35 @@ test.describe.serial('channel-cli 测试：channel-web API ↔ channelmanager �
   // TC-08 群组管理 → client-cli 收到 leave/join 通知（channelmanager 通知下发）
   // ================================================================
   test('TC-08: 群组管理 → client-cli 收到 leave/join 通知', async ({ request }) => {
-    // 移除 user-2 出 project-x → cli2 收到 leave
+    // 移除 u2 出 g2 → cli2 收到 leave
     const r1 = await apiPost(request, '/api/groups/manage-members', {
-      group_id: 'project-x', add_ids: [], remove_ids: ['user-2'],
+      group_id: 'g2', add_ids: [], remove_ids: ['u2'],
     });
     expect(r1.success).toBe(true);
-    await cli2.waitForOutput(/<< leave group: project-x @ web/, 10000);
+    await cli2.waitForOutput(/<< leave group: g2 @ web/, 10000);
 
-    // 添加 user-2 回 project-x → cli2 收到 join
+    // 添加 u2 回 g2 → cli2 收到 join
     const r2 = await apiPost(request, '/api/groups/manage-members', {
-      group_id: 'project-x', add_ids: ['user-2'], remove_ids: [],
+      group_id: 'g2', add_ids: ['u2'], remove_ids: [],
     });
     expect(r2.success).toBe(true);
-    await cli2.waitForOutput(/<< join group: project-x @ web/, 10000);
+    await cli2.waitForOutput(/<< join group: g2 @ web/, 10000);
   });
 
   // ================================================================
-  // TC-09 admin-user 单聊群组路由（仅 user-1 收到，user-2 不收）
+  // TC-09 admin-user 单聊群组路由（仅 u1 收到，u2 不收）
   // ================================================================
   test('TC-09: admin-user 单聊群组消息按用户路由', async ({ request }) => {
     const resp = await apiPost(request, '/api/message/send', {
-      messenger_id: 'web', user_id: 'admin', group_id: 'a_user-1',
+      messenger_id: 'web', user_id: 'admin', group_id: 'a_u1',
       content: { msg_type: 'Text', data: '单聊路由测试' },
     });
     expect(resp.success).toBe(true);
 
-    // user-1 收到单聊消息
-    await cli1.waitForOutput(/<< \[admin:a_user-1\].*单聊路由测试/, 10000);
+    // u1 收到单聊消息
+    await cli1.waitForOutput(/<< \[admin:a_u1\].*单聊路由测试/, 10000);
 
-    // user-2 的绑定连接不应收到（channelmanager 按接收用户分发）
+    // u2 的绑定连接不应收到（channelmanager 按接收用户分发）
     await new Promise(r => setTimeout(r, 2000));
     expect(cli2.hasOutput(/单聊路由测试/)).toBe(false);
   });
