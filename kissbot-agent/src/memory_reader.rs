@@ -20,10 +20,13 @@ impl MemoryReader {
     /// 从 memory-struct 读取顶层记忆索引（摘要列表）
     /// 在启动、切换模式、重置时作为初始上下文的一部分
     /// 注意：memory-struct 尚未实现，此方法当前调用无实际效果
+    /// agent_id/role_name 为 coordinator 传入的当前运行状态快照
     #[allow(dead_code)]
     pub async fn read_memory_struct_index(
         &self,
         config: &ConfigManager,
+        _agent_id: &str,
+        _role_name: &str,
         _mode: &Mode,
     ) -> Result<Vec<String>> {
         let structs = config.memory_structs().await;
@@ -35,13 +38,14 @@ impl MemoryReader {
     }
 
     /// 按当前模式读取最近历史记录
+    /// agent_id/role_name 为 coordinator 传入的当前运行状态快照
     pub async fn read_history(
         &self,
-        config: &ConfigManager,
+        _config: &ConfigManager,
+        agent_id: &str,
+        role_name: &str,
         mode: &Mode,
     ) -> Result<Vec<ContextMessage>> {
-        let agent_id = config.agent_id();
-        let role_name = config.current_role().await;
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let url = format!("{}/query", store_url.trim_end_matches('/'));
@@ -84,13 +88,14 @@ impl MemoryReader {
     }
 
     /// 查询事件列表
+    /// agent_id/role_name 为 coordinator 传入的当前运行状态快照
     #[allow(dead_code)]
     pub async fn list_events(
         &self,
-        config: &ConfigManager,
+        _config: &ConfigManager,
+        agent_id: &str,
+        role_name: &str,
     ) -> Result<Vec<String>> {
-        let agent_id = config.agent_id();
-        let role_name = config.current_role().await;
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let url = format!("{}/events", store_url.trim_end_matches('/'));

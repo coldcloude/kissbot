@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Local;
@@ -8,9 +9,9 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::types::{
-    Mode, WriteTask, ContextMessage, AdminCommand, Result,
+    Mode, WriteTask, ContextMessage, AdminCommand, Result, Error,
 };
-use crate::config_manager::ConfigManager;
+use crate::config_manager::{ConfigManager, ModelConfig};
 use crate::mode_manager::ModeManager;
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
@@ -18,6 +19,7 @@ use crate::context_builder::ContextBuilder;
 use crate::memory_reader::MemoryReader;
 use crate::memory_writer::MemoryWriter;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
+use crate::repo::ChannelUser;
 
 use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
@@ -31,6 +33,15 @@ pub struct AgentCoordinator {
     memory_store_client: Arc<MemoryStoreClient>,
     context_builder: Arc<tokio::sync::Mutex<ContextBuilder>>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
+    /// 运行状态：当前 agent / 角色 / 模型（启动从 NexusRepo 默认值初始化，运行期不回写）
+    current_agent_id: Arc<ArcSwap<String>>,
+    current_role: Arc<ArcSwap<String>>,
+    current_model: Arc<ArcSwap<String>>,
+    /// 运行状态：已绑定 channel（messenger_id → ChannelUser），/bind /unbind 修改
+    bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,
+    /// 运行状态：当前选中的 memory-struct（本期未实现，先占位）
+    #[allow(dead_code)]
+    selected_memory_structs: Arc<DashMap<String, ()>>,
     /// 按 messenger_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
     /// 断线通知：messenger_id → Notify，closed() 通知重连循环
@@ -42,43 +53,72 @@ impl AgentCoordinator {
         config: Arc<ConfigManager>,
         memory_writer: MemoryWriter,
     ) -> Result<Arc<Self>> {
-        let mode = config.current_mode().await;
-        let mode_manager = Arc::new(ModeManager::new(mode.clone()));
+        // mode 不再落盘，由 ModeManager 持有，默认角色模式
+        let mode_manager = Arc::new(ModeManager::new(Mode::Role));
         let memory_reader = Arc::new(MemoryReader::new());
         let memory_writer = Arc::new(memory_writer);
         let memory_store_client = Arc::new(MemoryStoreClient::new());
 
-        // 初始化 ModelClient
-        let model_config = config.model_config().await;
+        // 运行状态从 NexusRepo 默认值初始化
+        let default_agent_id = config.default_agent_id().await;
+        let default_role = config.default_role().await;
+        let default_model = config.default_model().await;
+
+        // 初始化 ModelClient（按默认模型名查配置）
+        let model_config = config.model_config_by_name(&default_model).await
+            .unwrap_or_else(ModelConfig::default);
         let model_client = ModelClient::new(model_config);
 
         // 初始化 ContextBuilder
-        let mut context_builder = ContextBuilder::new();
-
-        // 读取自我认知
-        if let Ok(ego_info) = Self::load_ego_info(&config).await {
-            context_builder.set_system_message(ego_info);
-        }
-
-        // 读取历史记忆
-        if let Ok(history) = memory_reader.read_history(&config, &mode).await {
-            context_builder.load_history(history);
-        }
-
-        // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
-        let _ = memory_reader.read_memory_struct_index(&config, &mode).await;
+        let context_builder = ContextBuilder::new();
 
         let coordinator = Arc::new(Self {
-            config,
+            config: config.clone(),
             mode_manager,
             memory_reader,
             memory_writer,
             memory_store_client,
             context_builder: Arc::new(tokio::sync::Mutex::new(context_builder)),
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
+            current_agent_id: Arc::new(ArcSwap::from_pointee(default_agent_id)),
+            current_role: Arc::new(ArcSwap::from_pointee(default_role)),
+            current_model: Arc::new(ArcSwap::from_pointee(default_model)),
+            bound_channels: Arc::new(DashMap::new()),
+            selected_memory_structs: Arc::new(DashMap::new()),
             channel_clients: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
         });
+
+        // 初始化 bound_channels：enabled_by_default 且 default_bind_user 非空
+        for (_, ch) in config.channels().await {
+            if ch.enabled_by_default {
+                if let Some(bu) = &ch.default_bind_user {
+                    coordinator.bound_channels.insert(ch.messenger_id.to_string(), Arc::new(bu.clone()));
+                }
+            }
+        }
+
+        // 读取自我认知
+        if let Ok(ego_info) = coordinator.load_ego_info().await {
+            let mut ctx = coordinator.context_builder.lock().await;
+            ctx.set_system_message(ego_info);
+        }
+
+        // 读取历史记忆
+        let mode = coordinator.mode_manager.current().await;
+        if let Ok(history) = coordinator.memory_reader
+            .read_history(&config, &coordinator.current_agent_id(), &coordinator.current_role(), &mode)
+            .await
+        {
+            let mut ctx = coordinator.context_builder.lock().await;
+            ctx.load_history(history);
+        }
+
+        // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
+        let mode = coordinator.mode_manager.current().await;
+        let _ = coordinator.memory_reader
+            .read_memory_struct_index(&config, &coordinator.current_agent_id(), &coordinator.current_role(), &mode)
+            .await;
 
         // 连接所有 channel
         coordinator.connect_channels().await;
@@ -87,9 +127,53 @@ impl AgentCoordinator {
         Ok(coordinator)
     }
 
+    // ==================== 运行状态 getter/setter（不回写 NexusRepo） ====================
+
+    pub fn current_agent_id(&self) -> String { self.current_agent_id.load().to_string() }
+    pub fn current_role(&self) -> String { self.current_role.load().to_string() }
+    #[allow(dead_code)]
+    pub fn current_model(&self) -> String { self.current_model.load().to_string() }
+
+    /// 切换当前角色（角色切换同时重建上下文）
+    pub async fn set_current_role(&self, role: Option<String>) {
+        self.current_role.store(Arc::new(role.unwrap_or_default()));
+        self.reset_context().await;
+    }
+
+    /// 切换当前模型（校验 model 存在，热更新 ModelClient）
+    pub async fn set_current_model(&self, name: String) -> Result<()> {
+        // 校验 model 存在
+        if self.config.model_config_by_name(&name).await.is_none() {
+            return Err(Error::ModelProviderNotSupported(format!("model 不存在: {}", name)));
+        }
+        self.current_model.store(Arc::new(name.clone()));
+        // 热更新 ModelClient
+        let cfg = self.config.model_config_by_name(&name).await.unwrap();
+        let mut client = self.model_client.lock().await;
+        client.update_config(cfg);
+        Ok(())
+    }
+
+    /// 切换当前 agent（agent 切换同时重建上下文）
+    pub async fn set_current_agent_id(&self, id: String) {
+        self.current_agent_id.store(Arc::new(id));
+        self.reset_context().await;
+    }
+
+    /// 绑定 channel 用户（仅运行状态，不回写）
+    pub async fn bind_channel(&self, binding: ChannelUser) {
+        self.bound_channels.insert(binding.messenger_id.to_string(), Arc::new(binding));
+    }
+
+    /// 解绑 channel（仅运行状态，不回写）
+    pub async fn unbind_channel(&self, messenger_id: &str) {
+        self.bound_channels.remove(messenger_id);
+    }
+
     /// 连接所有已配置的 channel
     async fn connect_channels(self: &Arc<Self>) {
-        let bindings = self.config.channel_bindings().await;   // shim: Vec<ChannelUser>
+        // 绑定范围从运行状态 bound_channels 读取
+        let bindings: Vec<Arc<ChannelUser>> = self.bound_channels.iter().map(|e| e.value().clone()).collect();
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         let coordinator = self.clone();
@@ -155,8 +239,8 @@ impl Terminal for AgentCoordinator {
     /// 收到上行消息
     async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
         // 1. 推上行消息到记忆（使用 Arc 引用避免深复制）
-        let agent_id = Arc::new(self.config.agent_id().to_string());
-        let role_name = Arc::new(self.config.current_role().await);
+        let agent_id = Arc::new(self.current_agent_id());
+        let role_name = Arc::new(self.current_role());
         self.memory_store_client.push_channel_record(ChannelRecord {
             agent_id,
             role_name,
@@ -209,8 +293,7 @@ impl AgentCoordinator {
         let content_text = extract_text(&incoming.content);
 
         // 1. 检查群组是否在绑定范围内
-        let bindings = self.config.channel_bindings().await;
-        if !bindings.iter().any(|b| *b.messenger_id == messenger_id) {
+        if !self.bound_channels.contains_key(&messenger_id) {
             return; // 非绑定 channel 的消息丢弃
         }
 
@@ -245,41 +328,30 @@ impl AgentCoordinator {
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, &self.config).await {
+                match CommandRouter::execute(&cmd, &self.config, self).await {
                     Ok((reply, cmd_needs_reset)) => {
                         self.send_reply(messenger_id, user_id, group_id, reply).await;
 
                         // 处理需要触发上下文重建的命令
                         if cmd_needs_reset {
                             match &cmd {
-                                AdminCommand::SetRole(role) => {
-                                    let role = role.clone();
-                                    self.mode_manager.set_mode(Mode::Role).await;
-                                    self.reset_context().await;
-                                    self.send_reply(messenger_id, user_id, group_id,
-                                        format!("🔄 已{}，上下文已重建",
-                                            role.map(|r| format!("切换角色为: {}", r))
-                                                .unwrap_or("取消角色".to_string()))).await;
-                                }
                                 AdminCommand::ModeEvent(event_id) => {
                                     let eid = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                                     self.mode_manager.set_mode(Mode::Event(eid.clone())).await;
-                                    let _ = self.config.set_current_mode(Mode::Event(eid)).await;
                                     self.reset_context().await;
                                 }
                                 AdminCommand::ModeRole => {
                                     self.mode_manager.set_mode(Mode::Role).await;
-                                    let _ = self.config.set_current_mode(Mode::Role).await;
                                     self.reset_context().await;
                                 }
                                 AdminCommand::Reenter(event_id) => {
                                     self.mode_manager.set_mode(Mode::Event(event_id.clone())).await;
-                                    let _ = self.config.set_current_mode(Mode::Event(event_id.clone())).await;
                                     self.reset_context().await;
                                 }
                                 AdminCommand::Reset => {
                                     self.reset_context().await;
                                 }
+                                // SetRole / Agent 已在 coordinator setter 内重建上下文，此处不重复 reset
                                 _ => {}
                             }
                         }
@@ -336,8 +408,8 @@ impl AgentCoordinator {
                 }
 
                 // 4. 推送 think 到 MemoryWriter
-                let agent_id = self.config.agent_id().to_string();
-                let role_name = self.config.current_role().await;
+                let agent_id = self.current_agent_id();
+                let role_name = self.current_role();
                 let _ = self.memory_writer.push(WriteTask::Think {
                     agent_id,
                     role_name: Some(role_name),
@@ -383,8 +455,8 @@ impl AgentCoordinator {
         match client.send_message(msg).await {
             Ok(response) => {
                 // 下行成功后推记忆（is_self=1，使用返回的 content）
-                let agent_id = Arc::new(self.config.agent_id().to_string());
-                let role_name = Arc::new(self.config.current_role().await);
+                let agent_id = Arc::new(self.current_agent_id());
+                let role_name = Arc::new(self.current_role());
                 self.memory_store_client.push_channel_record(ChannelRecord {
                     agent_id,
                     role_name,
@@ -414,28 +486,34 @@ impl AgentCoordinator {
         }
 
         // 重新读取自我认知
-        if let Ok(ego_info) = Self::load_ego_info(&self.config).await {
+        if let Ok(ego_info) = self.load_ego_info().await {
             let mut ctx = self.context_builder.lock().await;
             ctx.set_system_message(ego_info);
         }
 
         // 读取历史记忆
         let mode = self.mode_manager.current().await;
-        if let Ok(history) = self.memory_reader.read_history(&self.config, &mode).await {
+        if let Ok(history) = self.memory_reader
+            .read_history(&self.config, &self.current_agent_id(), &self.current_role(), &mode)
+            .await
+        {
             let mut ctx = self.context_builder.lock().await;
             ctx.load_history(history);
         }
 
         // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
         let mode = self.mode_manager.current().await;
-        let _ = self.memory_reader.read_memory_struct_index(&self.config, &mode).await;
+        let _ = self.memory_reader
+            .read_memory_struct_index(&self.config, &self.current_agent_id(), &self.current_role(), &mode)
+            .await;
 
         info!("上下文已重置");
     }
 
-    async fn load_ego_info(config: &ConfigManager) -> Result<String> {
-        let agent_id = config.agent_id();
-        let role_name = config.current_role().await;
+    /// 读取自我认知（agent 元数据 + 角色设定），agent_id/role 取当前运行状态
+    async fn load_ego_info(&self) -> Result<String> {
+        let agent_id = self.current_agent_id();
+        let role_name = self.current_role();
         let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
 
         let client = reqwest::Client::new();
@@ -492,5 +570,38 @@ fn extract_text(content: &Content) -> String {
             .filter_map(|c| match c { Content::Text(t) => Some(t.as_str().to_string()), _ => None })
             .collect::<Vec<_>>().join("\n"),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use crate::repo::ChannelConfig;
+
+    // 注：ConfigManager::new 依赖 KISSBOT_CONFIG 全局单例，单元测试难注入。
+    // bound_channels 初始化逻辑用直接构造验证：
+    #[test]
+    fn bound_channels_init_logic() {
+        // 模拟：enabled + default_bind_user 非空才入 bound_channels
+        let enabled_with_bind = ChannelConfig {
+            messenger_id: Arc::new("m1".into()), ws_url: Arc::new("ws://x".into()),
+            admins: Arc::new(HashSet::new()),
+            default_bind_user: Some(ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) }),
+            enabled_by_default: true,
+        };
+        let enabled_no_bind = ChannelConfig {
+            default_bind_user: None, ..enabled_with_bind.clone()
+        };
+        let disabled_with_bind = ChannelConfig {
+            messenger_id: Arc::new("m2".into()), enabled_by_default: false, ..enabled_with_bind.clone()
+        };
+        let all = vec![enabled_with_bind.clone(), enabled_no_bind, disabled_with_bind];
+        let bound: Vec<_> = all.iter()
+            .filter(|c| c.enabled_by_default)
+            .filter_map(|c| c.default_bind_user.clone())
+            .collect();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(*bound[0].messenger_id, "m1");
     }
 }

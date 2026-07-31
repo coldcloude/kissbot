@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::repo::{NexusRepo, StationRepo, ChannelConfig, ChannelUser, MemoryStructConfig};
-use crate::types::{Mode, Result, Error};
+use crate::types::{Result, Error};
 
 // ========== 配置数据结构 ==========
 
@@ -66,6 +66,7 @@ impl AgentConfig {
 
 /// 配置变更监听器：当配置被管理命令修改时，通知外部协调器
 pub trait ConfigChangeListener: Send + Sync {
+    #[allow(dead_code)]
     fn on_config_changed(&self, config_manager: &ConfigManager);
 }
 
@@ -171,6 +172,7 @@ impl ConfigManager {
     }
 
     /// 通知所有监听器
+    #[allow(dead_code)]
     async fn notify_listeners(&self) {
         let listeners: Vec<Arc<dyn ConfigChangeListener>> = self.listeners
             .iter().map(|e| e.value().clone()).collect();
@@ -238,35 +240,8 @@ impl ConfigManager {
     pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
     pub async fn default_model(&self) -> String { self.nexus_repo.read().await.default_model.to_string() }
 
-    // ===== 临时 shim（Task 4 移除，改由 coordinator 运行状态承担）=====
-    /// shim: agent_id 暂读 default_agent_id
-    pub fn agent_id(&self) -> String {
-        // 同步读不到 RwLock async，这里用 try_read 兜底空串；Task 4 后此方法删除
-        self.nexus_repo.try_read().map(|r| r.default_agent_id.to_string()).unwrap_or_default()
-    }
-    /// shim: model_config 暂按 default_model 名查
-    pub async fn model_config(&self) -> ModelConfig {
-        let name = self.default_model().await;
-        self.model_config_by_name(&name).await
-            .unwrap_or_else(|| ModelConfig::default())
-    }
-    /// shim: current_role 暂读 default_role
-    pub async fn current_role(&self) -> String { self.default_role().await }
-    /// shim: current_mode 暂返回 Role
-    pub async fn current_mode(&self) -> Mode { Mode::Role }
-    /// shim: channel_bindings 暂读 enabled + default_bind_user 非空的 channel
-    pub async fn channel_bindings(&self) -> Vec<ChannelUser> {
-        let repo = self.nexus_repo.read().await;
-        repo.channels.iter()
-            .filter_map(|(_, v)| {
-                let c = v.load();
-                if c.enabled_by_default {
-                    c.default_bind_user.clone()
-                } else { None }
-            })
-            .collect()
-    }
-    /// shim: admin_users 暂聚合所有 channel 的 admins
+    // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
+    /// 聚合所有 channel 的 admins
     pub async fn admin_users(&self) -> Vec<ChannelUser> {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter()
@@ -276,41 +251,7 @@ impl ConfigManager {
             })
             .collect()
     }
-    /// shim: set_current_role 暂写 default_role 并回写（过渡态，Task 4 改为 coordinator 运行状态不回写）
-    pub async fn set_current_role(&self, role: Option<String>) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
-            repo.default_role = Arc::new(role.unwrap_or_default());
-        }
-        self.save_nexus().await?;
-        self.notify_listeners().await;
-        Ok(())
-    }
-    /// shim: set_current_mode 暂不落盘（过渡态）
-    pub async fn set_current_mode(&self, _mode: Mode) -> Result<()> { Ok(()) }
-    /// shim: add_binding/remove_binding/add_admin/remove_admin 暂改 NexusRepo 并回写
-    pub async fn add_binding(&self, binding: ChannelUser) -> Result<()> {
-        {
-            let repo = self.nexus_repo.write().await;
-            if let Some(swap) = repo.channels.get(&binding.messenger_id.to_string()) {
-                let mut ch = swap.load().clone();
-                Arc::make_mut(&mut ch).default_bind_user = Some(binding);
-                swap.store(ch);
-            }
-        }
-        self.save_nexus().await
-    }
-    pub async fn remove_binding(&self, messenger_id: &str) -> Result<()> {
-        {
-            let repo = self.nexus_repo.write().await;
-            if let Some(swap) = repo.channels.get(messenger_id) {
-                let mut ch = swap.load().clone();
-                Arc::make_mut(&mut ch).default_bind_user = None;
-                swap.store(ch);
-            }
-        }
-        self.save_nexus().await
-    }
+    /// 添加管理权限（回写 NexusRepo）
     pub async fn add_admin(&self, admin: ChannelUser) -> Result<()> {
         {
             let repo = self.nexus_repo.write().await;
@@ -323,6 +264,7 @@ impl ConfigManager {
         }
         self.save_nexus().await
     }
+    /// 移除管理权限（回写 NexusRepo）
     pub async fn remove_admin(&self, messenger_id: &str, user_id: &str) -> Result<()> {
         {
             let repo = self.nexus_repo.write().await;

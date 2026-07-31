@@ -95,6 +95,8 @@ pub enum AdminCommand {
     Reenter(String),
     Events,
     Reset,
+    Model(String),   // 新增：/model <name>
+    Agent(String),   // 新增：/agent <id>
 }
 
 // ========== 模型相关 ==========

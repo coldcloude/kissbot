@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::types::{AdminCommand, Error, Result};
 use crate::config_manager::ConfigManager;
+use crate::coordinator::AgentCoordinator;
 use crate::repo::ChannelUser;
 
 pub struct CommandRouter;
@@ -114,25 +115,40 @@ impl CommandRouter {
             }
             "events" => Ok(AdminCommand::Events),
             "reset" => Ok(AdminCommand::Reset),
+            "model" => {
+                if parts.len() < 2 {
+                    return Err(Error::InvalidCommand("格式: /model <name>".to_string()));
+                }
+                Ok(AdminCommand::Model(parts[1].to_string()))
+            }
+            "agent" => {
+                if parts.len() < 2 {
+                    return Err(Error::InvalidCommand("格式: /agent <id>".to_string()));
+                }
+                Ok(AdminCommand::Agent(parts[1].to_string()))
+            }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]))),
         }
     }
 
     /// 执行管理命令（返回回复文本和是否需要触发上下文重建）
+    /// 运行状态命令（bind/unbind/role/model/agent）走 coordinator 不回写；
+    /// admin/unadmin 走 ConfigManager NexusRepo 回写。
     pub async fn execute(
         command: &AdminCommand,
         config: &ConfigManager,
+        coordinator: &AgentCoordinator,
     ) -> Result<(String, bool)> {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                config.add_binding(ChannelUser {
+                coordinator.bind_channel(ChannelUser {
                     messenger_id: Arc::new(messenger_id.clone()),
                     user_id: Arc::new(user_id.clone()),
-                }).await?;
+                }).await;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::Unbind { messenger_id } => {
-                config.remove_binding(messenger_id).await?;
+                coordinator.unbind_channel(messenger_id).await;
                 Ok((format!("✅ 已解绑 messenger: {}", messenger_id), false))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
@@ -147,12 +163,19 @@ impl CommandRouter {
                 Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::SetRole(role) => {
-                config.set_current_role(role.clone()).await?;
-                let msg = match role {
-                    Some(name) => format!("✅ 已切换角色为: {}", name),
-                    None => "✅ 已取消角色".to_string(),
-                };
-                Ok((msg, true))  // 角色切换触发上下文重建
+                coordinator.set_current_role(role.clone()).await;
+                Ok((match role {
+                    Some(n) => format!("✅ 已切换角色为: {}", n),
+                    None => "✅ 已取消角色".into(),
+                }, true))
+            }
+            AdminCommand::Model(name) => {
+                coordinator.set_current_model(name.clone()).await?;
+                Ok((format!("✅ 已切换模型为: {}", name), false))
+            }
+            AdminCommand::Agent(id) => {
+                coordinator.set_current_agent_id(id.clone()).await;
+                Ok((format!("✅ 已切换 agent 为: {}", id), true))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = match event_id {
