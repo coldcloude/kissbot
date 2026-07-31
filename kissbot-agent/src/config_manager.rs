@@ -1,17 +1,17 @@
 use std::sync::Arc;
+use std::collections::HashSet;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use kissbot_api::ArcSwapHashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::repo::{NexusRepo, StationRepo, ChannelConfig, ChannelUser, MemoryStructConfig};
 use crate::types::{Result, Error};
 
 // ========== 配置数据结构 ==========
 
-// ModelConfig 仍定义在本文件（Task 2 已改名），供 model_client 与 repo.rs 共用
-// （ModelConfig 定义保留在原处）
+// ModelConfig 定义在本文件，供 model_client 与本文件的 NexusRepo.models 共用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub name: Arc<String>,
@@ -39,6 +39,66 @@ impl Default for ModelConfig {
             retry_count: 3,
         }
     }
+}
+
+/// nexus 可改配置，持久化到 <data_dir>/nexus.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NexusRepo {
+    pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
+    pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,
+    pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
+    // nexus 可对接的 station 列表
+    pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
+    pub default_agent_id: Arc<String>,
+    pub default_role: Arc<String>,
+    pub default_model: Arc<String>,
+}
+
+impl Default for NexusRepo {
+    fn default() -> Self {
+        Self {
+            channels: Arc::new(ArcSwapHashMap::new()),
+            models: Arc::new(ArcSwapHashMap::new()),
+            memory_structs: Arc::new(ArcSwapHashMap::new()),
+            stations: Arc::new(ArcSwapHashMap::new()),
+            default_agent_id: Arc::new(String::new()),
+            default_role: Arc::new(String::new()),
+            default_model: Arc::new(String::new()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelConfig {
+    pub messenger_id: Arc<String>,
+    pub ws_url: Arc<String>,
+    pub admins: Arc<HashSet<ChannelUser>>,
+    pub default_bind_user: Option<ChannelUser>,
+    pub enabled_by_default: bool,
+}
+
+/// 机器人绑定身份 / 管理员身份统一结构
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+pub struct ChannelUser {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStructConfig {
+    pub name: Arc<String>,
+    pub url: Arc<String>,
+}
+
+/// station 可改配置，持久化到 <data_dir>/station.json（本轮占位，暂无字段）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StationRepo {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationConfig {
+    pub station_id: Arc<String>,
+    pub base_url: Arc<String>,
+    pub timeout_secs: u64,
 }
 
 /// 静态配置：来自 KISSBOT_CONFIG 的 agent 段，启动后不变
@@ -351,5 +411,42 @@ mod tests {
         assert!(matches!(err, Error::ConfigNotFound(_)));
         let err = manager.remove_admin("nope", "u1").await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
+    }
+
+    #[test]
+    fn channel_user_hash_eq_by_value() {
+        let a = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let b = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b), "等值 ChannelUser 应命中 HashSet");
+    }
+
+    #[test]
+    fn nexus_repo_serde_roundtrip() {
+        let repo = NexusRepo {
+            channels: Arc::new(ArcSwapHashMap::new()),
+            models: Arc::new(ArcSwapHashMap::new()),
+            memory_structs: Arc::new(ArcSwapHashMap::new()),
+            stations: Arc::new(ArcSwapHashMap::new()),
+            default_agent_id: Arc::new("agent-1".into()),
+            default_role: Arc::new("dev".into()),
+            default_model: Arc::new("gpt-4o".into()),
+        };
+        let json = serde_json::to_string(&repo).unwrap();
+        let back: NexusRepo = serde_json::from_str(&json).unwrap();
+        assert_eq!(*back.default_agent_id, "agent-1");
+        assert_eq!(*back.default_role, "dev");
+        assert_eq!(*back.default_model, "gpt-4o");
+    }
+
+    #[test]
+    fn nexus_repo_default_empty() {
+        let repo = NexusRepo::default();
+        assert!(repo.channels.is_empty());
+        assert!(repo.models.is_empty());
+        assert!(repo.memory_structs.is_empty());
+        assert!(repo.stations.is_empty());
+        assert!(repo.default_agent_id.is_empty());
     }
 }

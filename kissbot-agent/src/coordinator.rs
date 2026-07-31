@@ -19,7 +19,7 @@ use crate::context_builder::ContextBuilder;
 use crate::memory_reader::MemoryReader;
 use crate::memory_writer::MemoryWriter;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
-use crate::repo::{ChannelConfig, ChannelUser};
+use crate::config_manager::{ChannelConfig, ChannelUser};
 
 use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
@@ -593,7 +593,7 @@ fn extract_text(content: &Content) -> String {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use crate::repo::ChannelConfig;
+    use crate::config_manager::ChannelConfig;
 
     // 注：ConfigManager::new 依赖 KISSBOT_CONFIG 全局单例，单元测试难注入。
     // bound_channels 初始化逻辑用直接构造验证（连接/绑定两轴分离）：

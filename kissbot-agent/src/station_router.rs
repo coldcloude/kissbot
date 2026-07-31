@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 
-use crate::repo::StationConfig;
+use crate::config_manager::StationConfig;
 
 /// Station 路由表，维护已配置的 Station 地址映射
 #[allow(dead_code)]

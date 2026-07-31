@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::types::{AdminCommand, Error, Result};
 use crate::config_manager::ConfigManager;
 use crate::coordinator::AgentCoordinator;
-use crate::repo::ChannelUser;
+use crate::config_manager::ChannelUser;
 
 pub struct CommandRouter;
 
