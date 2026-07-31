@@ -17,7 +17,7 @@
 - 提交 comment 用中文，包含该提交所有改动内容
 - 读写文件必须用 Read/Write/Edit 工具，禁止 sed/python 改文件
 - 配置结构体不加 `#[serde(default)]`（字段缺失反序列化报错，延续 c5094b8 风格）；Option 字段用 `#[serde(skip_serializing_if = "Option::is_none")]`
-- 每任务结束运行 `cargo test -p kissbot-agent` 与 `cargo build -p kissbot-agent` 通过后提交
+- 每任务结束运行 `cd kissbot-agent && cargo test` 与 `cd kissbot-agent && cargo build` 通过后提交
 - 模板参考：现有 nexus.json（`script/template/nexus.json`、`workspace/agent-data/nexus.json`）与 `config.json`（root / `script/config.json` / `test/workspace/config.json`）
 
 ---
@@ -121,7 +121,7 @@
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent resolve_effective_config 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test resolve_effective_config 2>&1 | tail -20`
 Expected: 编译失败，报 `ProviderModel` / `ProviderConfig` / `EffectiveModelConfig` / `resolve_effective_config` 未定义。
 
 - [ ] **Step 3: 实现**
@@ -207,7 +207,7 @@ pub struct EffectiveModelConfig {
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -20`
 Expected: 全部 PASS（含原有测试）。
 
 - [ ] **Step 5: 提交**
@@ -475,14 +475,14 @@ pub struct MessageItem {
 
 - [ ] **Step 3: 运行测试确认失败/编译**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent provider 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test provider 2>&1 | tail -20`
 Expected: 本任务实现已含测试与实现，应直接通过；如 model_client.rs 中 `MessageItem` 引用报未定义，检查 (b) 的 import 是否正确。
 
 （说明：本任务实现与测试同写。若测试阶段出现编译错误，按错误修正后再进入 Step 4。）
 
 - [ ] **Step 4: 运行全部测试确认通过**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -20`
 Expected: 全部 PASS。
 
 - [ ] **Step 5: 提交**
@@ -586,7 +586,7 @@ cd /home/admin/project/kissbot && git add kissbot-agent/src/provider.rs kissbot-
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -20`
 Expected: 编译失败，报 `ChannelConfig` 无 `messenger_id` 字段或 `add_admin` 签名不匹配。
 
 - [ ] **Step 3: 实现（config_manager.rs）**
@@ -973,7 +973,7 @@ pub struct ChannelConfig {
 
 - [ ] **Step 5: 运行测试确认通过**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -20`
 Expected: 全部 PASS。
 
 - [ ] **Step 6: 提交**
@@ -1110,7 +1110,7 @@ cd /home/admin/project/kissbot && git add kissbot-agent/src/config_manager.rs ki
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -20`
 Expected: 编译失败（旧 ModelConfig 字段仍在、新结构未实现）。本任务实现步骤较多，可先完成 Step 3 全部实现后再跑本步验证失败转成功。
 
 - [ ] **Step 3: 实现（config_manager.rs）**
@@ -1399,7 +1399,7 @@ impl Provider for UnsupportedProvider {
 
 - [ ] **Step 8: 运行测试确认通过**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-agent 2>&1 | tail -30`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | tail -30`
 Expected: 全部 PASS。若 coordinator 测试有 `current_model` 相关断言或 `set_current_model` 旧调用残留，按新签名修正。
 
 - [ ] **Step 9: 提交**
@@ -1478,7 +1478,7 @@ cd /home/admin/project/kissbot && git add kissbot-agent/src/config_manager.rs ki
 
 - [ ] **Step 4: 全量构建与测试**
 
-Run: `cd /home/admin/project/kissbot && cargo build -p kissbot-agent 2>&1 | tail -5 && cargo test -p kissbot-agent 2>&1 | tail -20`
+Run: `cd /home/admin/project/kissbot/kissbot-agent && cargo build 2>&1 | tail -5 && cargo test 2>&1 | tail -20`
 Expected: 构建成功、全部测试 PASS。
 
 - [ ] **Step 5: 验证新配置可被解析（临时冒烟）**
