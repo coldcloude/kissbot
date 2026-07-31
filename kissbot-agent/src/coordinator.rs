@@ -12,7 +12,6 @@ use crate::types::{
     Mode, WriteTask, ContextMessage, AdminCommand, Result, Error,
 };
 use crate::config_manager::{ConfigManager, ModelConfig};
-use crate::mode_manager::ModeManager;
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::context_builder::ContextBuilder;
@@ -27,16 +26,16 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
-    mode_manager: Arc<ModeManager>,
     memory_reader: Arc<MemoryReader>,
     memory_writer: Arc<MemoryWriter>,
     memory_store_client: Arc<MemoryStoreClient>,
     context_builder: Arc<tokio::sync::Mutex<ContextBuilder>>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
-    /// 运行状态：当前 agent / 角色 / 模型（启动从 NexusRepo 默认值初始化，运行期不回写）
+    /// 运行状态：当前 agent / 角色 / 模型 / 模式（启动从 NexusRepo 默认值初始化，运行期不回写）
     current_agent_id: ArcSwap<String>,
     current_role: ArcSwap<String>,
     current_model: ArcSwap<String>,
+    current_mode: ArcSwap<Mode>,
     /// 运行状态：已绑定 channel（messenger_id → ChannelUser），/bind /unbind 修改
     bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,
     /// 运行状态：当前选中的 memory-struct（本期未实现，先占位）
@@ -53,8 +52,7 @@ impl AgentCoordinator {
         config: Arc<ConfigManager>,
         memory_writer: MemoryWriter,
     ) -> Result<Arc<Self>> {
-        // mode 不再落盘，由 ModeManager 持有，默认角色模式
-        let mode_manager = Arc::new(ModeManager::new(Mode::Role));
+        // mode 不再落盘，由 coordinator 的 current_mode (ArcSwap) 持有，默认角色模式
         let memory_reader = Arc::new(MemoryReader::new());
         let memory_writer = Arc::new(memory_writer);
         let memory_store_client = Arc::new(MemoryStoreClient::new());
@@ -77,7 +75,6 @@ impl AgentCoordinator {
 
         let coordinator = Arc::new(Self {
             config: config.clone(),
-            mode_manager,
             memory_reader,
             memory_writer,
             memory_store_client,
@@ -86,6 +83,7 @@ impl AgentCoordinator {
             current_agent_id: ArcSwap::from_pointee(default_agent_id),
             current_role: ArcSwap::from_pointee(default_role),
             current_model: ArcSwap::from_pointee(default_model),
+            current_mode: ArcSwap::from_pointee(Mode::Role),
             bound_channels,
             selected_memory_structs: Arc::new(DashMap::new()),
             channel_clients: Arc::new(DashMap::new()),
@@ -99,7 +97,7 @@ impl AgentCoordinator {
         }
 
         // 读取历史记忆
-        let mode = coordinator.mode_manager.current().await;
+        let mode = coordinator.current_mode();
         if let Ok(history) = coordinator.memory_reader
             .read_history(&config, &coordinator.current_agent_id(), &coordinator.current_role(), &mode)
             .await
@@ -109,7 +107,7 @@ impl AgentCoordinator {
         }
 
         // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
-        let mode = coordinator.mode_manager.current().await;
+        let mode = coordinator.current_mode();
         let _ = coordinator.memory_reader
             .read_memory_struct_index(&config, &coordinator.current_agent_id(), &coordinator.current_role(), &mode)
             .await;
@@ -127,6 +125,9 @@ impl AgentCoordinator {
     pub fn current_role(&self) -> String { self.current_role.load().to_string() }
     #[allow(dead_code)]
     pub fn current_model(&self) -> String { self.current_model.load().to_string() }
+    pub fn current_mode(&self) -> Mode { (*self.current_mode.load_full()).clone() }
+    /// 切换当前模式（仅存状态，上下文重建由调用方触发 reset_context）
+    pub fn set_current_mode(&self, mode: Mode) { self.current_mode.store(Arc::new(mode)); }
 
     /// 切换当前角色（角色切换同时重建上下文）
     pub async fn set_current_role(&self, role: Option<String>) {
@@ -353,15 +354,15 @@ impl AgentCoordinator {
                             match &cmd {
                                 AdminCommand::ModeEvent(event_id) => {
                                     let eid = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                                    self.mode_manager.set_mode(Mode::Event(eid.clone())).await;
+                                    self.set_current_mode(Mode::Event(eid.clone()));
                                     self.reset_context().await;
                                 }
                                 AdminCommand::ModeRole => {
-                                    self.mode_manager.set_mode(Mode::Role).await;
+                                    self.set_current_mode(Mode::Role);
                                     self.reset_context().await;
                                 }
                                 AdminCommand::Reenter(event_id) => {
-                                    self.mode_manager.set_mode(Mode::Event(event_id.clone())).await;
+                                    self.set_current_mode(Mode::Event(event_id.clone()));
                                     self.reset_context().await;
                                 }
                                 AdminCommand::Reset => {
@@ -508,7 +509,7 @@ impl AgentCoordinator {
         }
 
         // 读取历史记忆
-        let mode = self.mode_manager.current().await;
+        let mode = self.current_mode();
         if let Ok(history) = self.memory_reader
             .read_history(&self.config, &self.current_agent_id(), &self.current_role(), &mode)
             .await
@@ -518,7 +519,7 @@ impl AgentCoordinator {
         }
 
         // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
-        let mode = self.mode_manager.current().await;
+        let mode = self.current_mode();
         let _ = self.memory_reader
             .read_memory_struct_index(&self.config, &self.current_agent_id(), &self.current_role(), &mode)
             .await;

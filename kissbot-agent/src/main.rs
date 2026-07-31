@@ -11,7 +11,6 @@ mod model_client;
 mod memory_reader;
 mod memory_store_client;
 mod memory_writer;
-mod mode_manager;
 mod station_client;
 mod station_router;
 mod types;
