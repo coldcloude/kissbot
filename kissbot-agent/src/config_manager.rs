@@ -11,6 +11,48 @@ use crate::types::{Result, Error};
 
 // ========== 配置数据结构 ==========
 
+// ========== Provider 配置 ==========
+
+// (provider, model) 固定一起出现：函数调用、current 运行状态、default 配置共用
+// Task 4 接入 model_client 后移除 allow(dead_code)
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModel {
+    pub provider: String,
+    pub model: String,
+}
+
+// ProviderConfig 定义在本文件，供 provider / model_client 与本文件的 NexusRepo.providers 共用
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub name: Arc<String>,               // provider 名（providers map 的 key）
+    pub provider_type: String,           // "openai" | "anthropic"，决定 Provider 实现
+    pub base_url: String,                // URL 前缀，如 https://api.deepseek.com（原 endpoint）
+    pub api_key: String,                 // provider 级密钥（从 model 级移上）
+    pub default_context_length: u32,     // 默认上下文长度（token），本期只落位
+    pub default_max_tokens: u32,
+    pub default_temperature: f32,
+    pub default_timeout_secs: u64,
+    pub default_retry_count: u32,
+    pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,  // key = model 标识
+}
+
+// 合并后的有效配置（provider 默认 + model 覆盖），运行时合成、不持久化
+// Task 4 接入 model_client 后移除 allow(dead_code)
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct EffectiveModelConfig {
+    pub provider_type: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub timeout_secs: u64,
+    pub retry_count: u32,
+    pub context_length: u32,
+}
+
 // ModelConfig 定义在本文件，供 model_client 与本文件的 NexusRepo.models 共用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -46,6 +88,7 @@ impl Default for ModelConfig {
 pub struct NexusRepo {
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,
+    pub providers: Arc<ArcSwapHashMap<String, ProviderConfig>>, // key = provider 名
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
@@ -59,6 +102,7 @@ impl Default for NexusRepo {
         Self {
             channels: Arc::new(ArcSwapHashMap::new()),
             models: Arc::new(ArcSwapHashMap::new()),
+            providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new(String::new()),
@@ -285,6 +329,27 @@ impl ConfigManager {
         self.save_nexus().await
     }
 
+    // ---------- providers ----------
+    /// 合成 provider 默认 + model 配置的有效参数（每次调用现场合成，配置永远最新）
+    /// Task 4 接入 model_client 后移除 allow(dead_code)
+    #[allow(dead_code)]
+    pub async fn resolve_effective_config(&self, pm: &ProviderModel) -> Option<EffectiveModelConfig> {
+        let repo = self.nexus_repo.read().await;
+        let provider = repo.providers.get(&pm.provider)?.load_full();
+        let model_cfg = provider.models.get(&pm.model)?.load_full();
+        Some(EffectiveModelConfig {
+            provider_type: provider.provider_type.clone(),
+            base_url: provider.base_url.clone(),
+            api_key: provider.api_key.clone(),
+            model: model_cfg.model.clone(),
+            max_tokens: model_cfg.max_tokens,
+            temperature: model_cfg.temperature,
+            timeout_secs: model_cfg.timeout_secs,
+            retry_count: model_cfg.retry_count,
+            context_length: provider.default_context_length,
+        })
+    }
+
     // ---------- memory_structs ----------
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
@@ -427,6 +492,7 @@ mod tests {
         let repo = NexusRepo {
             channels: Arc::new(ArcSwapHashMap::new()),
             models: Arc::new(ArcSwapHashMap::new()),
+            providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new("agent-1".into()),
@@ -448,5 +514,84 @@ mod tests {
         assert!(repo.memory_structs.is_empty());
         assert!(repo.stations.is_empty());
         assert!(repo.default_agent_id.is_empty());
+    }
+
+    // ---------- Provider 配置 ----------
+
+    fn sample_provider(name: &str) -> ProviderConfig {
+        ProviderConfig {
+            name: Arc::new(name.into()),
+            provider_type: "openai".into(),
+            base_url: "https://api.deepseek.com".into(),
+            api_key: "sk-test".into(),
+            default_context_length: 65536,
+            default_max_tokens: 4096,
+            default_temperature: 0.7,
+            default_timeout_secs: 60,
+            default_retry_count: 3,
+            models: Arc::new(ArcSwapHashMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_config_merges_provider_and_model() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        // 构造 provider + model（Task 1 阶段 ModelConfig 仍为旧结构，字段必填）
+        let mut provider = sample_provider("deepseek");
+        {
+            let map = Arc::make_mut(&mut provider.models);
+            map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
+                name: Arc::new("deepseek-4-flash".into()),
+                provider: "openai".into(),
+                endpoint: "https://api.deepseek.com".into(),
+                api_key: "sk-test".into(),
+                model: "deepseek-4-flash".into(),
+                max_tokens: 2048,
+                temperature: 0.3,
+                timeout_secs: 30,
+                retry_count: 2,
+            })));
+        }
+        {
+            let mut repo = manager.nexus_repo.write().await;
+            let map = Arc::make_mut(&mut repo.providers);
+            map.insert("deepseek".to_string(), ArcSwap::new(Arc::new(provider)));
+        }
+        let pm = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let eff = manager.resolve_effective_config(&pm).await.expect("应能合成");
+        assert_eq!(eff.provider_type, "openai");
+        assert_eq!(eff.base_url, "https://api.deepseek.com");
+        assert_eq!(eff.api_key, "sk-test");
+        assert_eq!(eff.model, "deepseek-4-flash");
+        assert_eq!(eff.max_tokens, 2048, "model 的 max_tokens 应生效");
+        assert_eq!(eff.temperature, 0.3, "model 的 temperature 应生效");
+        assert_eq!(eff.timeout_secs, 30);
+        assert_eq!(eff.retry_count, 2);
+        assert_eq!(eff.context_length, 65536, "context_length 取 provider 默认");
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_config_missing_returns_none() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        assert!(manager.resolve_effective_config(&ProviderModel { provider: "nope".into(), model: "m".into() }).await.is_none());
+        assert!(manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "nope".into() }).await.is_none());
     }
 }
