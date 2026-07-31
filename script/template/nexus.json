@@ -1,0 +1,21 @@
+{
+  "channels": {},
+  "models": {
+    "deepseek-4-flash": {
+      "name": "deepseek-4-flash",
+      "provider": "openai",
+      "endpoint": "https://api.deepseek.com/chat/completions",
+      "api_key": "",
+      "model": "deepseek-4-flash",
+      "max_tokens": 4096,
+      "temperature": 0.7,
+      "timeout_secs": 60,
+      "retry_count": 3
+    }
+  },
+  "memory_structs": {},
+  "stations": {},
+  "default_agent_id": "",
+  "default_role": "",
+  "default_model": "deepseek-4-flash"
+}

@@ -12,3 +12,5 @@ test/workspace
 # 根 config.json 的 agent.data_dir = "data"，运行 agent 会生成 data/nexus.json 等
 # （各脚本/工作区目录自行维护自己的数据目录配置）
 data
+# agent api key 本地密钥文件（不入库）
+key.local.json

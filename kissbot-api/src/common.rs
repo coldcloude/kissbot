@@ -47,6 +47,7 @@ impl<T> ApiResponse<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ArcSwapHashMap<K, T>
 where
     K: Eq + Hash + Clone + 'static,
