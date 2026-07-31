@@ -9,7 +9,9 @@ use crate::types::{Mode, Result, Error};
 // ========== 配置数据结构 ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmConfig {
+pub struct ModelConfig {
+    #[serde(default)]
+    pub name: Arc<String>,
     pub provider: String,
     pub endpoint: String,
     pub api_key: String,
@@ -20,9 +22,10 @@ pub struct LlmConfig {
     pub retry_count: u32,
 }
 
-impl Default for LlmConfig {
+impl Default for ModelConfig {
     fn default() -> Self {
         Self {
+            name: Arc::new(String::new()),
             provider: "openai".to_string(),
             endpoint: String::new(),
             api_key: String::new(),
@@ -58,7 +61,7 @@ pub struct StationConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentConfigFile {
     agent_id: String,
-    llm: LlmConfig,
+    model: ModelConfig,
     current_role: String,
     current_mode: AgentModeFile,
     channel_bindings: Vec<ChannelBinding>,
@@ -80,7 +83,7 @@ struct AgentModeFile {
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub agent_id: String,
-    pub llm: LlmConfig,
+    pub model: ModelConfig,
     pub stations: Vec<StationConfig>,
     channel_ws_url: Option<String>,
     memory_struct_url: Option<String>,
@@ -126,7 +129,7 @@ impl ConfigManager {
 
         let agent_config = AgentConfig {
             agent_id: file.agent_id,
-            llm: file.llm,
+            model: file.model,
             stations: file.stations,
             channel_ws_url: file.channel_ws_url,
             memory_struct_url: file.memory_struct_url,
@@ -157,7 +160,7 @@ impl ConfigManager {
         };
         let file = AgentConfigFile {
             agent_id: self.agent_config.agent_id.clone(),
-            llm: self.agent_config.llm.clone(),
+            model: self.agent_config.model.clone(),
             current_role: runtime.current_role.clone(),
             current_mode: mode,
             channel_bindings: runtime.channel_bindings.clone(),
@@ -194,8 +197,8 @@ impl ConfigManager {
         &self.agent_config.agent_id
     }
 
-    pub fn llm_config(&self) -> &LlmConfig {
-        &self.agent_config.llm
+    pub fn model_config(&self) -> &ModelConfig {
+        &self.agent_config.model
     }
 
     #[allow(dead_code)]

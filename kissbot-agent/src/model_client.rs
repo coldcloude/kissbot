@@ -3,16 +3,16 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::time::sleep;
 
-use crate::types::{LlmResponse, Result, Error};
-use crate::config_manager::LlmConfig;
+use crate::types::{ModelResponse, Result, Error};
+use crate::config_manager::ModelConfig;
 
-pub struct LlmClient {
-    config: LlmConfig,
+pub struct ModelClient {
+    config: ModelConfig,
     client: reqwest::Client,
 }
 
-impl LlmClient {
-    pub fn new(config: LlmConfig) -> Self {
+impl ModelClient {
+    pub fn new(config: ModelConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
@@ -21,7 +21,7 @@ impl LlmClient {
     }
 
     #[allow(dead_code)]
-    pub fn update_config(&mut self, config: LlmConfig) {
+    pub fn update_config(&mut self, config: ModelConfig) {
         self.config = config;
         self.client = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.config.timeout_secs))
@@ -29,8 +29,8 @@ impl LlmClient {
             .unwrap_or_default();
     }
 
-    /// 调用 LLM API（非流式）
-    pub async fn call(&self, messages: &[MessageItem]) -> Result<LlmResponse> {
+    /// 调用模型 API（非流式）
+    pub async fn call(&self, messages: &[MessageItem]) -> Result<ModelResponse> {
         let max_retries = self.config.retry_count;
         let mut last_error = None;
 
@@ -46,18 +46,18 @@ impl LlmClient {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| Error::LlmApiError("LLM 调用失败".to_string())))
+        Err(last_error.unwrap_or_else(|| Error::ModelApiError("模型调用失败".to_string())))
     }
 
-    async fn call_inner(&self, messages: &[MessageItem]) -> Result<LlmResponse> {
+    async fn call_inner(&self, messages: &[MessageItem]) -> Result<ModelResponse> {
         match self.config.provider.as_str() {
             "openai" => self.call_openai(messages).await,
             "anthropic" => self.call_anthropic(messages).await,
-            _ => Err(Error::LlmProviderNotSupported(self.config.provider.clone())),
+            _ => Err(Error::ModelProviderNotSupported(self.config.provider.clone())),
         }
     }
 
-    async fn call_openai(&self, messages: &[MessageItem]) -> Result<LlmResponse> {
+    async fn call_openai(&self, messages: &[MessageItem]) -> Result<ModelResponse> {
         let url = format!("{}/chat/completions", self.config.endpoint.trim_end_matches('/'));
 
         let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
@@ -84,7 +84,7 @@ impl LlmClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::LlmApiError(format!("OpenAI API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("OpenAI API {}: {}", status, text)));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -99,10 +99,10 @@ impl LlmClient {
             .unwrap_or("stop")
             .to_string();
 
-        Ok(LlmResponse { content, tool_calls, finish_reason })
+        Ok(ModelResponse { content, tool_calls, finish_reason })
     }
 
-    async fn call_anthropic(&self, messages: &[MessageItem]) -> Result<LlmResponse> {
+    async fn call_anthropic(&self, messages: &[MessageItem]) -> Result<ModelResponse> {
         let url = format!("{}/v1/messages", self.config.endpoint.trim_end_matches('/'));
 
         // 分离 system 消息
@@ -140,7 +140,7 @@ impl LlmClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::LlmApiError(format!("Anthropic API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("Anthropic API {}: {}", status, text)));
         }
 
         let data: serde_json::Value = resp.json().await?;
@@ -151,11 +151,11 @@ impl LlmClient {
             .unwrap_or("end_turn")
             .to_string();
 
-        Ok(LlmResponse { content, tool_calls: Vec::new(), finish_reason })
+        Ok(ModelResponse { content, tool_calls: Vec::new(), finish_reason })
     }
 }
 
-/// LLM 上下文中的单条消息
+/// 模型上下文中的单条消息
 #[derive(Debug, Clone)]
 pub struct MessageItem {
     pub role: String,

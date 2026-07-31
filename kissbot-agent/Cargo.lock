@@ -805,6 +805,7 @@ dependencies = [
 name = "kissbot-agent"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bytes",
  "chrono",
@@ -814,10 +815,12 @@ dependencies = [
  "kai-ws",
  "kissbot-api",
  "kissbot-channel-client",
+ "kissbot-config",
  "kissbot-security",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

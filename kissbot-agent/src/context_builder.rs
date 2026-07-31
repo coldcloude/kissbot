@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::types::ContextMessage;
-use crate::llm_client::MessageItem;
+use crate::model_client::MessageItem;
 
 /// 最大上下文消息数量，超过时触发重置
 const MAX_CONTEXT_MESSAGES: usize = 100;
@@ -70,7 +70,7 @@ impl ContextBuilder {
         self.sent_contents.iter().any(|s| s == content)
     }
 
-    /// 构建 LLM 消息列表
+    /// 构建模型消息列表
     pub fn build(&self) -> Vec<MessageItem> {
         let mut items = Vec::new();
 

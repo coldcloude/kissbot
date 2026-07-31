@@ -10,11 +10,11 @@ pub enum Error {
     #[error("Config parse error: {0}")]
     ConfigParseError(String),
 
-    #[error("LLM API error: {0}")]
-    LlmApiError(String),
+    #[error("Model API error: {0}")]
+    ModelApiError(String),
 
-    #[error("LLM provider not supported: {0}")]
-    LlmProviderNotSupported(String),
+    #[error("Model provider not supported: {0}")]
+    ModelProviderNotSupported(String),
 
     #[error("Memory store error: {0}")]
     MemoryStoreError(String),
@@ -97,7 +97,7 @@ pub enum AdminCommand {
     Reset,
 }
 
-// ========== LLM 相关 ==========
+// ========== 模型相关 ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -107,7 +107,7 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmResponse {
+pub struct ModelResponse {
     pub content: String,
     #[allow(dead_code)]
     pub tool_calls: Vec<ToolCall>,

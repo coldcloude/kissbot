@@ -13,7 +13,7 @@ use crate::types::{
 use crate::config_manager::ConfigManager;
 use crate::mode_manager::ModeManager;
 use crate::command_router::CommandRouter;
-use crate::llm_client::LlmClient;
+use crate::model_client::ModelClient;
 use crate::context_builder::ContextBuilder;
 use crate::memory_reader::MemoryReader;
 use crate::memory_writer::MemoryWriter;
@@ -30,7 +30,7 @@ pub struct AgentCoordinator {
     memory_writer: Arc<MemoryWriter>,
     memory_store_client: Arc<MemoryStoreClient>,
     context_builder: Arc<tokio::sync::Mutex<ContextBuilder>>,
-    llm_client: Arc<tokio::sync::Mutex<LlmClient>>,
+    model_client: Arc<tokio::sync::Mutex<ModelClient>>,
     /// 按 messenger_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
     /// 断线通知：messenger_id → Notify，closed() 通知重连循环
@@ -48,9 +48,9 @@ impl AgentCoordinator {
         let memory_writer = Arc::new(memory_writer);
         let memory_store_client = Arc::new(MemoryStoreClient::new());
 
-        // 初始化 LLMClient
-        let llm_config = config.llm_config().clone();
-        let llm_client = Arc::new(tokio::sync::Mutex::new(LlmClient::new(llm_config)));
+        // 初始化 ModelClient
+        let model_config = config.model_config().clone();
+        let model_client = ModelClient::new(model_config);
 
         // 初始化 ContextBuilder
         let mut context_builder = ContextBuilder::new();
@@ -75,7 +75,7 @@ impl AgentCoordinator {
             memory_writer,
             memory_store_client,
             context_builder: Arc::new(tokio::sync::Mutex::new(context_builder)),
-            llm_client,
+            model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
             channel_clients: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
         });
@@ -313,23 +313,23 @@ impl AgentCoordinator {
             });
         }
 
-        // 2. 调用 LLM
+        // 2. 调用模型
         let response = {
             let ctx = self.context_builder.lock().await;
             let messages = ctx.build();
-            let llm = self.llm_client.lock().await;
-            llm.call(&messages).await
+            let model = self.model_client.lock().await;
+            model.call(&messages).await
         };
 
         match response {
-            Ok(llm_resp) => {
+            Ok(model_resp) => {
                 let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
                 // 3. 记录已发送内容
                 {
                     let mut ctx = self.context_builder.lock().await;
-                    ctx.push_assistant(llm_resp.content.clone(), now.clone());
-                    ctx.record_sent_content(llm_resp.content.clone());
+                    ctx.push_assistant(model_resp.content.clone(), now.clone());
+                    ctx.record_sent_content(model_resp.content.clone());
                 }
 
                 // 4. 推送 think 到 MemoryWriter
@@ -338,12 +338,12 @@ impl AgentCoordinator {
                 let _ = self.memory_writer.push(WriteTask::Think {
                     agent_id,
                     role_name: Some(role_name),
-                    content: llm_resp.content.clone(),
+                    content: model_resp.content.clone(),
                     time: now,
                 });
 
                 // 5. 发送回复到通道
-                self.send_reply(&messenger_id, &user_id, &group_id, llm_resp.content).await;
+                self.send_reply(&messenger_id, &user_id, &group_id, model_resp.content).await;
 
                 // 6. 检查上下文超长
                 let overflow = {
@@ -356,9 +356,9 @@ impl AgentCoordinator {
                 }
             }
             Err(e) => {
-                warn!("LLM 调用失败: {:?}", e);
+                warn!("模型调用失败: {:?}", e);
                 self.send_reply(&messenger_id, &user_id, &group_id,
-                    format!("❌ LLM 调用失败: {}", e)).await;
+                    format!("❌ 模型调用失败: {}", e)).await;
             }
         }
     }
