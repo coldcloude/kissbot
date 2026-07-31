@@ -8,6 +8,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const BACKEND_BINARY = join(REPO_ROOT, 'kissbot-channel-web', 'target', 'debug', 'kissbot-channel-web');
+const AGENT_BINARY = join(REPO_ROOT, 'kissbot-agent', 'target', 'debug', 'kissbot-agent');
+
+export const AGENT_MGMT_PORT = 9090;
 
 export function resetWorkspace(): void {
   const ws = join(REPO_ROOT, 'test', 'workspace');
@@ -31,6 +34,27 @@ export function startBackend(cwd: string): ChildProcess {
 }
 
 export function stopBackend(proc?: ChildProcess): void {
+  if (proc && !proc.killed) {
+    proc.kill('SIGTERM');
+  }
+}
+
+// 启动 kissbot-agent（debug 二进制），KISSBOT_CONFIG 指向 <cwd>/config.json
+// 调用方用 waitForPort(AGENT_MGMT_PORT) 等待管理 API 就绪
+// 注意：agent 日志走 stdout/stderr 管道，此处不等待输出
+// 复制 startBackend 的 spawn 模式（stdio 管道 + RUST_LOG 环境）
+export function startAgent(cwd: string): ChildProcess {
+  const proc = spawn(AGENT_BINARY, [], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, RUST_LOG: 'info', KISSBOT_CONFIG: join(cwd, 'config.json') },
+  });
+  proc.stdout?.on('data', (d) => process.stdout.write(`[agent] ${d}`));
+  proc.stderr?.on('data', (d) => process.stderr.write(`[agent:err] ${d}`));
+  return proc;
+}
+
+export function stopAgent(proc?: ChildProcess): void {
   if (proc && !proc.killed) {
     proc.kill('SIGTERM');
   }
