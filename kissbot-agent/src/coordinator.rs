@@ -36,14 +36,14 @@ pub struct AgentCoordinator {
     current_role: ArcSwap<String>,
     current_model: ArcSwap<String>,
     current_mode: ArcSwap<Mode>,
-    /// 运行状态：已绑定 channel（messenger_id → ChannelUser），/bind /unbind 修改
+    /// 运行状态：已绑定 channel（channel_id → ChannelUser），/bind /unbind 修改
     bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,
     /// 运行状态：当前选中的 memory-struct（本期未实现，先占位）
     #[allow(dead_code)]
     selected_memory_structs: Arc<DashMap<String, ()>>,
-    /// 按 messenger_id 索引的 ChannelClient
+    /// 按 agent 内部 channel_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
-    /// 断线通知：messenger_id → Notify，closed() 通知重连循环
+    /// 断线通知：channel_id → Notify，closed() 通知重连循环
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
 }
 
@@ -157,18 +157,19 @@ impl AgentCoordinator {
 
     // 运行时 /bind /unbind 目前仅修改 bound_channels（消息过滤），
     // 连接/绑定请求的运行期管理（自动连断）推迟到后续轮次：本轮不自动连断。
-    /// 绑定 channel 用户（仅运行状态，不回写）
-    pub async fn bind_channel(&self, binding: ChannelUser) {
-        self.bound_channels.insert(binding.messenger_id.to_string(), Arc::new(binding));
+    /// 绑定 channel 用户（仅运行状态，不回写）；key 为 agent 内部 channel_id
+    pub async fn bind_channel(&self, channel_id: &str, binding: ChannelUser) {
+        self.bound_channels.insert(channel_id.to_string(), Arc::new(binding));
     }
 
     /// 解绑 channel（仅运行状态，不回写）
-    pub async fn unbind_channel(&self, messenger_id: &str) {
-        self.bound_channels.remove(messenger_id);
+    pub async fn unbind_channel(&self, channel_id: &str) {
+        self.bound_channels.remove(channel_id);
     }
 
     /// 计算启动时绑定集合：enabled_by_default 且 default_bind_user 非空的 channel
     /// （连接由 connect_channels 按 enabled_by_default 独立控制，此处只算绑定集合）
+    /// 索引 key 为 agent 内部 channel_id（与消息方 messenger 无关）
     fn bound_channels_from_channels(
         channels: Vec<(String, Arc<ChannelConfig>)>,
     ) -> DashMap<String, Arc<ChannelUser>> {
@@ -176,7 +177,7 @@ impl AgentCoordinator {
         for (_, ch) in channels {
             if ch.enabled_by_default {
                 if let Some(bu) = &ch.default_bind_user {
-                    map.insert(ch.messenger_id.to_string(), Arc::new(bu.clone()));
+                    map.insert(ch.channel_id.to_string(), Arc::new(bu.clone()));
                 }
             }
         }
@@ -195,34 +196,35 @@ impl AgentCoordinator {
             if !ch.enabled_by_default {
                 continue; // 未启用：不连接
             }
-            let messenger_id = ch.messenger_id.to_string();
+            let channel_id = ch.channel_id.to_string();
             let ws_url = ch.ws_url.to_string();
             // 绑定身份来自运行状态 bound_channels；不在绑定集合则仅连接不绑定
-            let bound_user_id = self.bound_channels.get(&messenger_id)
+            let bound_user_id = self.bound_channels.get(&channel_id)
                 .map(|e| e.value().user_id.to_string());
 
             let client = ChannelClient::new(
-                messenger_id.clone(),
+                channel_id.clone(),
                 Arc::downgrade(&(coordinator.clone() as Arc<dyn Terminal>)),
             );
 
             // 断线通知
             let notify = Arc::new(tokio::sync::Notify::new());
-            coordinator.disconnect_notify.insert(messenger_id.clone(), notify.clone());
-            coordinator.channel_clients.insert(messenger_id.clone(), client);
+            coordinator.disconnect_notify.insert(channel_id.clone(), notify.clone());
+            coordinator.channel_clients.insert(channel_id.clone(), client);
 
-            let client_clone = coordinator.channel_clients.get(&messenger_id).unwrap().clone();
+            let client_clone = coordinator.channel_clients.get(&channel_id).unwrap().clone();
             let api_key = api_key.clone();
 
             tokio::spawn(async move {
                 loop {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
-                            info!("已连接 channel: {}", messenger_id);
+                            info!("已连接 channel: {}", channel_id);
                             // 绑定用户（仅 bound_channels 中存在的 channel 发送绑定请求）
+                            // BindRequest.messenger_id 承载 agent 内部 channel_id（与消息方 messenger 无强绑定）
                             if let Some(user_id) = &bound_user_id {
                                 let _ = client_clone.bind(BindRequest {
-                                    messenger_id: Arc::new(messenger_id.clone()),
+                                    messenger_id: Arc::new(channel_id.clone()),
                                     user_id: Arc::new(user_id.clone()),
                                 }).await;
                             }
@@ -230,7 +232,7 @@ impl AgentCoordinator {
                             notify.notified().await;
                         }
                         Err(e) => {
-                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", messenger_id, e, reconnect_secs);
+                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", channel_id, e, reconnect_secs);
                             tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
                         }
                     }
@@ -254,7 +256,7 @@ impl AgentCoordinator {
 #[async_trait]
 impl Terminal for AgentCoordinator {
     /// 收到上行消息
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
+    async fn incoming_message(&self, channel_id: &str, message: Arc<IncomingMessage>) {
         // 1. 推上行消息到记忆（使用 Arc 引用避免深复制）
         let agent_id = Arc::new(self.current_agent_id());
         let role_name = Arc::new(self.current_role());
@@ -269,8 +271,8 @@ impl Terminal for AgentCoordinator {
             time: message.time.clone(),
         }).await;
 
-        // 2. 处理消息
-        self.handle_incoming(message).await;
+        // 2. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
+        self.handle_incoming(channel_id, message).await;
     }
 
     async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
@@ -302,15 +304,15 @@ impl Terminal for AgentCoordinator {
 // ==================== 消息处理 ====================
 
 impl AgentCoordinator {
-    async fn handle_incoming(&self, incoming: Arc<IncomingMessage>) {
+    async fn handle_incoming(&self, channel_id: &str, incoming: Arc<IncomingMessage>) {
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
         let group_id = incoming.group_id.to_string();
         let is_self = incoming.is_self;
         let content_text = extract_text(&incoming.content);
 
-        // 1. 检查群组是否在绑定范围内
-        if !self.bound_channels.contains_key(&messenger_id) {
+        // 1. 检查 channel 是否在绑定范围内（key = agent 内部 channel_id）
+        if !self.bound_channels.contains_key(channel_id) {
             return; // 非绑定 channel 的消息丢弃
         }
 
@@ -326,18 +328,19 @@ impl AgentCoordinator {
         // 3. 检查管理命令
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, &messenger_id, &user_id).await {
-                self.handle_admin_command(&content_text, &messenger_id, &user_id, &group_id).await;
+                self.handle_admin_command(channel_id, &content_text, &messenger_id, &user_id, &group_id).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
         }
 
         // 4. 普通消息 → agentic loop
-        self.run_agentic_loop(incoming).await;
+        self.run_agentic_loop(channel_id, incoming).await;
     }
 
     async fn handle_admin_command(
         &self,
+        channel_id: &str,
         content: &str,
         messenger_id: &str,
         user_id: &str,
@@ -345,9 +348,9 @@ impl AgentCoordinator {
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, &self.config, self).await {
+                match CommandRouter::execute(&cmd, &self.config, self, channel_id).await {
                     Ok((reply, cmd_needs_reset)) => {
-                        self.send_reply(messenger_id, user_id, group_id, reply).await;
+                        self.send_reply(channel_id, messenger_id, user_id, group_id, reply).await;
 
                         // 处理需要触发上下文重建的命令
                         if cmd_needs_reset {
@@ -374,19 +377,19 @@ impl AgentCoordinator {
                         }
                     }
                     Err(e) => {
-                        self.send_reply(messenger_id, user_id, group_id,
+                        self.send_reply(channel_id, messenger_id, user_id, group_id,
                             format!("❌ 命令执行失败: {}", e)).await;
                     }
                 }
             }
             Err(e) => {
-                self.send_reply(messenger_id, user_id, group_id,
+                self.send_reply(channel_id, messenger_id, user_id, group_id,
                     format!("⚠️ {}", e)).await;
             }
         }
     }
 
-    async fn run_agentic_loop(&self, incoming: Arc<IncomingMessage>) {
+    async fn run_agentic_loop(&self, channel_id: &str, incoming: Arc<IncomingMessage>) {
         let content_text = extract_text(&incoming.content);
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
@@ -435,7 +438,7 @@ impl AgentCoordinator {
                 });
 
                 // 5. 发送回复到通道
-                self.send_reply(&messenger_id, &user_id, &group_id, model_resp.content).await;
+                self.send_reply(channel_id, &messenger_id, &user_id, &group_id, model_resp.content).await;
 
                 // 6. 检查上下文超长
                 let overflow = {
@@ -449,16 +452,17 @@ impl AgentCoordinator {
             }
             Err(e) => {
                 warn!("模型调用失败: {:?}", e);
-                self.send_reply(&messenger_id, &user_id, &group_id,
+                self.send_reply(channel_id, &messenger_id, &user_id, &group_id,
                     format!("❌ 模型调用失败: {}", e)).await;
             }
         }
     }
 
     /// 发送回复消息到通道，成功后推记忆（is_self=1）
-    async fn send_reply(&self, messenger_id: &str, user_id: &str, group_id: &str, content: String) {
-        let Some(client) = self.channel_clients.get(messenger_id) else {
-            warn!("send_reply: 未找到 channel client: {}", messenger_id);
+    /// channel_id 定位连接（agent 内部标识），messenger_id 为消息方身份（回复目标）
+    async fn send_reply(&self, channel_id: &str, messenger_id: &str, user_id: &str, group_id: &str, content: String) {
+        let Some(client) = self.channel_clients.get(channel_id) else {
+            warn!("send_reply: 未找到 channel client: {}", channel_id);
             return;
         };
 
@@ -601,47 +605,47 @@ mod tests {
     #[test]
     fn bound_channels_init_logic() {
         // 模拟三个 channel：
-        // 1) m1: enabled + default_bind_user 非空 → 连接且绑定
-        // 2) m3: enabled + default_bind_user 为空 → 连接但不绑定（消息被过滤直到运行时 /bind）
-        // 3) m2: disabled + default_bind_user 非空 → 不连接也不绑定
+        // 1) c1: enabled + default_bind_user 非空 → 连接且绑定
+        // 2) c3: enabled + default_bind_user 为空 → 连接但不绑定（消息被过滤直到运行时 /bind）
+        // 3) c2: disabled + default_bind_user 非空 → 不连接也不绑定
         let enabled_with_bind = ChannelConfig {
-            messenger_id: Arc::new("m1".into()), ws_url: Arc::new("ws://x".into()),
+            channel_id: Arc::new("c1".into()), ws_url: Arc::new("ws://x".into()),
             admins: Arc::new(HashSet::new()),
             default_bind_user: Some(ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) }),
             enabled_by_default: true,
         };
         let enabled_no_bind = ChannelConfig {
-            messenger_id: Arc::new("m3".into()),
+            channel_id: Arc::new("c3".into()),
             default_bind_user: None, ..enabled_with_bind.clone()
         };
         let disabled_with_bind = ChannelConfig {
-            messenger_id: Arc::new("m2".into()), enabled_by_default: false, ..enabled_with_bind.clone()
+            channel_id: Arc::new("c2".into()), enabled_by_default: false, ..enabled_with_bind.clone()
         };
         let all = vec![
-            (enabled_with_bind.messenger_id.to_string(), Arc::new(enabled_with_bind.clone())),
-            (enabled_no_bind.messenger_id.to_string(), Arc::new(enabled_no_bind.clone())),
-            (disabled_with_bind.messenger_id.to_string(), Arc::new(disabled_with_bind.clone())),
+            (enabled_with_bind.channel_id.to_string(), Arc::new(enabled_with_bind.clone())),
+            (enabled_no_bind.channel_id.to_string(), Arc::new(enabled_no_bind.clone())),
+            (disabled_with_bind.channel_id.to_string(), Arc::new(disabled_with_bind.clone())),
         ];
 
-        // 绑定集合：仅 enabled_by_default 且 default_bind_user 非空的 channel
+        // 绑定集合：仅 enabled_by_default 且 default_bind_user 非空的 channel（key = channel_id）
         let bound = AgentCoordinator::bound_channels_from_channels(all);
-        assert_eq!(bound.len(), 1, "只有 m1 应入绑定集合");
-        let entry = bound.get("m1").unwrap();
+        assert_eq!(bound.len(), 1, "只有 c1 应入绑定集合");
+        let entry = bound.get("c1").unwrap();
         assert_eq!(*entry.value().messenger_id, "m1");
         assert_eq!(*entry.value().user_id, "u1");
         // enabled 但无 default_bind_user：连接（见下）但不绑定
-        assert!(!bound.contains_key("m3"), "enabled 无 default_bind_user 不应入绑定集合");
+        assert!(!bound.contains_key("c3"), "enabled 无 default_bind_user 不应入绑定集合");
         // disabled：不连接也不绑定
-        assert!(!bound.contains_key("m2"), "disabled 不应入绑定集合");
+        assert!(!bound.contains_key("c2"), "disabled 不应入绑定集合");
 
         // 连接集合：enabled_by_default 控制，与绑定无关
         let connect_set: Vec<String> = [
             enabled_with_bind, enabled_no_bind, disabled_with_bind,
         ].iter().filter(|c| c.enabled_by_default)
-            .map(|c| c.messenger_id.to_string())
+            .map(|c| c.channel_id.to_string())
             .collect();
-        assert!(connect_set.contains(&"m1".to_string()), "m1 应连接");
-        assert!(connect_set.contains(&"m3".to_string()), "m3 应连接（仅连接不绑定）");
-        assert!(!connect_set.contains(&"m2".to_string()), "m2 不应连接");
+        assert!(connect_set.contains(&"c1".to_string()), "c1 应连接");
+        assert!(connect_set.contains(&"c3".to_string()), "c3 应连接（仅连接不绑定）");
+        assert!(!connect_set.contains(&"c2".to_string()), "c2 不应连接");
     }
 }

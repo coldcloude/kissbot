@@ -138,28 +138,29 @@ impl CommandRouter {
         command: &AdminCommand,
         config: &ConfigManager,
         coordinator: &AgentCoordinator,
+        channel_id: &str,
     ) -> Result<(String, bool)> {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                coordinator.bind_channel(ChannelUser {
+                coordinator.bind_channel(channel_id, ChannelUser {
                     messenger_id: Arc::new(messenger_id.clone()),
                     user_id: Arc::new(user_id.clone()),
                 }).await;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::Unbind { messenger_id } => {
-                coordinator.unbind_channel(messenger_id).await;
-                Ok((format!("✅ 已解绑 messenger: {}", messenger_id), false))
+                coordinator.unbind_channel(channel_id).await;
+                Ok((format!("✅ 已解绑 channel: {}", messenger_id), false))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
-                config.add_admin(ChannelUser {
+                config.add_admin(channel_id, &ChannelUser {
                     messenger_id: Arc::new(messenger_id.clone()),
                     user_id: Arc::new(user_id.clone()),
                 }).await?;
                 Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
-                config.remove_admin(messenger_id, user_id).await?;
+                config.remove_admin(channel_id, user_id).await?;
                 Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), false))
             }
             AdminCommand::SetRole(role) => {
