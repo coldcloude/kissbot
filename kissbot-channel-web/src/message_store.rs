@@ -117,9 +117,10 @@ impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterConte
             .await?;
 
         for record in records.iter() {
-            let line = serde_json::to_string(record)?;
+            // JSON 与换行符一次写入，避免索引读取时捕获到缺少结尾换行的半行
+            let mut line = serde_json::to_string(record)?;
+            line.push('\n');
             file.write_all(line.as_bytes()).await?;
-            file.write_all(b"\n").await?;
         }
 
         if let Some(sets) = self.date_sets.upgrade() {

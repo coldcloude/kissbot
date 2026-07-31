@@ -94,7 +94,7 @@ test.describe.serial('channel-web 后端 API 测试', () => {
 
   // TC-05 获取最近消息
   test('TC-05: 获取最近消息', async ({ request }) => {
-    // 消息存储有 3 秒缓冲延迟，等待 4 秒
+    // 消息存储有 1 秒缓冲延迟，等待 4 秒
     await new Promise(r => setTimeout(r, 4000));
     const resp = await apiGet(request, '/api/messages/recent?group_id=dev-team&n=5');
     expect(resp.success).toBe(true);

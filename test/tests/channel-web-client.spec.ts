@@ -200,7 +200,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
       sharedCliUploadKey = keyMatch[1];
     }
 
-    // 等待后端 appender 缓冲落盘（3 秒缓冲 + 余量）
+    // 等待后端 appender 缓冲落盘（1 秒缓冲 + 余量）
     await new Promise(r => setTimeout(r, 4000));
 
     // 登录 web 并选中开发组（消息已从后端存储加载）
@@ -390,7 +390,7 @@ test.describe.serial('channel-web 与 channel-client 通信测试', () => {
   // TC-14 刷新页面重新登录 → 历史消息持久化
   // ================================================================
   test('TC-14: 刷新页面重新登录 → 历史消息持久化', async ({ page }) => {
-    // 等待消息落盘缓冲（后端 appender 3 秒缓冲 + 1 秒余量）
+    // 等待消息落盘缓冲（后端 appender 1 秒缓冲 + 余量）
     await new Promise(r => setTimeout(r, 4000));
 
     // 重新登录

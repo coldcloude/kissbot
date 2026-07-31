@@ -39,7 +39,7 @@ async function apiPost(request: APIRequestContext, path: string, body: unknown) 
   })).json();
 }
 
-// 轮询最近消息直到满足条件的消息出现（消息存储有 3 秒缓冲）
+// 轮询最近消息直到满足条件的消息出现（消息存储有 1 秒缓冲）
 async function waitForRecentMessage(
   request: APIRequestContext,
   groupId: string,

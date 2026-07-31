@@ -28,8 +28,8 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'kissbot-ui-'));
 
     // 通过 API 预发 25 条消息，为分页测试做准备
-    // 注意：由于后端 get_recent 在小批量测试中可能返回空数组（缓冲/索引同步问题），
-    // 分页测试（TC-11）已标记为 fixme，但消息仍保留在后端以便后续测试验证
+    // 注意：get_recent 返回最近 N 条，25 条中最早的 5 条（第 1-5 条）不在首次加载的 20 条内，
+    // 滚动到顶部加载更早消息时应补全，供 TC-11 分页断言使用
     for (let i = 1; i <= 25; i++) {
       await request.post(`${BASE}/api/message/send`, {
         headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
@@ -39,7 +39,7 @@ test.describe.serial('channel-web 前后端集成测试', () => {
         },
       });
     }
-    // 等待消息落盘缓冲
+    // 等待消息落盘缓冲（appender 1 秒缓冲 + 余量）
     await new Promise(r => setTimeout(r, 4000));
   });
 
@@ -387,9 +387,9 @@ test.describe.serial('channel-web 前后端集成测试', () => {
   // TC-11 分页加载历史消息
   // ================================================================
   // TC-11 分页加载历史消息
-  // 当前后端 get_recent 在小批量场景下因缓冲/索引同步问题返回空数组，
-  // 暂无法验证分页加载，保留为 fixme 等待后端修复后启用
-  test.fixme('TC-11: 分页加载历史消息', async ({ page }) => {
+  // beforeAll 预发了 25 条消息：首次加载取最近 20 条（第 6-25 条），
+  // 滚动到顶部后应通过 /messages/before 加载更早的 5 条（第 1-5 条）
+  test('TC-11: 分页加载历史消息', async ({ page }) => {
     await loginAndSelectDevTeam(page);
 
     // 通过 UI 发送一条消息
@@ -400,12 +400,12 @@ test.describe.serial('channel-web 前后端集成测试', () => {
     // 等待消息出现
     await expect(page.locator('.message-bubble').filter({ hasText: '分页测试消息' })).toBeVisible({ timeout: 5000 });
 
-    // 滚动到顶部触发自动加载
+    // 滚动到顶部触发加载更早消息
     const messageList = page.locator('.message-list');
     await messageList.evaluate(el => el.scrollTop = 0);
 
-    // 期望加载更多历史消息
-    await expect(messageList.locator('.message-bubble').first()).toBeVisible({ timeout: 5000 });
+    // 期望加载出 beforeAll 预发的更早消息（最新 20 条之外的第 1 条）
+    await expect(page.locator('.message-bubble').filter({ hasText: '批量消息第 1 条' })).toBeVisible({ timeout: 5000 });
   });
 
   // ================================================================

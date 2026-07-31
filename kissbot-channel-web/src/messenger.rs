@@ -103,7 +103,7 @@ impl WebMessenger {
         let appender = FileObjectAppender::new(
             message_store.clone(),
             Arc::new(NoopErrorHandler),
-            Duration::from_secs(3),
+            Duration::from_secs(1),
             100,
         );
         let messenger = Arc::new(Self {
