@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 
-use crate::config_manager::StationConfig;
+use crate::repo::StationConfig;
 
 /// Station 路由表，维护已配置的 Station 地址映射
 #[allow(dead_code)]
@@ -14,7 +14,7 @@ impl StationRouter {
     pub fn new(stations: Vec<StationConfig>) -> Self {
         let map = DashMap::new();
         for s in stations {
-            map.insert(s.station_id.clone(), s);
+            map.insert(s.station_id.to_string(), s);
         }
         Self { stations: map }
     }
@@ -24,14 +24,14 @@ impl StationRouter {
     pub fn update(&self, stations: Vec<StationConfig>) {
         self.stations.clear();
         for s in stations {
-            self.stations.insert(s.station_id.clone(), s);
+            self.stations.insert(s.station_id.to_string(), s);
         }
     }
 
     /// 按 Station ID 查询地址
     #[allow(dead_code)]
     pub fn get_url(&self, station_id: &str) -> Option<String> {
-        self.stations.get(station_id).map(|s| s.base_url.clone())
+        self.stations.get(station_id).map(|s| s.base_url.to_string())
     }
 
     /// 获取所有 Station ID

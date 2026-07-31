@@ -24,15 +24,10 @@ async fn main() {
 
     info!("kissbot-agent 启动");
 
-    // 配置文件路径（使用环境变量或默认路径）
-    let config_path = std::env::var("CONFIG_PATH")
-        .unwrap_or_else(|_| "config.json".to_string());
-
-    // 1. 加载配置
-    info!("加载配置: {}", config_path);
+    // 1. 加载配置（KISSBOT_CONFIG agent 段 → AgentConfig，按 data_dir 引导 NexusRepo/StationRepo）
     let config = Arc::new(
-        config_manager::ConfigManager::load(&config_path).await
-            .expect("加载配置失败")
+        config_manager::ConfigManager::new().await
+            .expect("初始化配置失败")
     );
 
     info!("Agent ID: {}", config.agent_id());
@@ -45,10 +40,12 @@ async fn main() {
         .await
         .expect("初始化 Coordinator 失败");
 
-    // 4. 启动管理 API 服务器（后台）
+    // 4. 启动管理 API 服务器（后台，绑定 mgmt_host:mgmt_port）
     let mgr_config = config.clone();
+    let host = mgr_config.mgmt_host().to_string();
+    let port = mgr_config.mgmt_port();
     tokio::spawn(async move {
-        let server = http_server::HttpServer::new(mgr_config, 9090);
+        let server = http_server::HttpServer::new(mgr_config, host, port);
         if let Err(e) = server.start().await {
             tracing::error!("管理 API 服务器退出: {:?}", e);
         }

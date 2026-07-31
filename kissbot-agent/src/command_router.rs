@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::types::{AdminCommand, Error, Result};
-use crate::config_manager::{ConfigManager, ChannelBinding, AdminUser};
+use crate::config_manager::ConfigManager;
+use crate::repo::ChannelUser;
 
 pub struct CommandRouter;
 
@@ -16,7 +19,7 @@ impl CommandRouter {
         user_id: &str,
     ) -> bool {
         let admins = config.admin_users().await;
-        admins.iter().any(|a| a.messenger_id == messenger_id && a.user_id == user_id)
+        admins.iter().any(|a| *a.messenger_id == messenger_id && *a.user_id == user_id)
     }
 
     /// 解析管理命令
@@ -122,9 +125,9 @@ impl CommandRouter {
     ) -> Result<(String, bool)> {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                config.add_binding(ChannelBinding {
-                    messenger_id: messenger_id.clone(),
-                    user_id: user_id.clone(),
+                config.add_binding(ChannelUser {
+                    messenger_id: Arc::new(messenger_id.clone()),
+                    user_id: Arc::new(user_id.clone()),
                 }).await?;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), false))
             }
@@ -133,9 +136,9 @@ impl CommandRouter {
                 Ok((format!("✅ 已解绑 messenger: {}", messenger_id), false))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
-                config.add_admin(AdminUser {
-                    messenger_id: messenger_id.clone(),
-                    user_id: user_id.clone(),
+                config.add_admin(ChannelUser {
+                    messenger_id: Arc::new(messenger_id.clone()),
+                    user_id: Arc::new(user_id.clone()),
                 }).await?;
                 Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), false))
             }

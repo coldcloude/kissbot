@@ -10,17 +10,18 @@ use crate::types::Result;
 pub struct HttpServer {
     #[allow(dead_code)]
     config: Arc<ConfigManager>,
+    host: String,
     port: u16,
 }
 
 impl HttpServer {
-    pub fn new(config: Arc<ConfigManager>, port: u16) -> Self {
-        Self { config, port }
+    pub fn new(config: Arc<ConfigManager>, host: String, port: u16) -> Self {
+        Self { config, host, port }
     }
 
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
     pub async fn start(&self) -> Result<()> {
-        let addr = format!("0.0.0.0:{}", self.port);
+        let addr = format!("{}:{}", self.host, self.port);
         let listener = TcpListener::bind(&addr).await
             .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
 

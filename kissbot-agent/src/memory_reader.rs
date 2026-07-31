@@ -26,37 +26,12 @@ impl MemoryReader {
         config: &ConfigManager,
         _mode: &Mode,
     ) -> Result<Vec<String>> {
-        let struct_url = config.memory_struct_url();
-        if struct_url.is_empty() {
-            return Ok(Vec::new()); // memory-struct 未配置，忽略
+        let structs = config.memory_structs().await;
+        if structs.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let agent_id = config.agent_id();
-        let role_name = config.current_role().await;
-
-        let url = format!("{}/index", struct_url.trim_end_matches('/'));
-
-        let body = json!({
-            "agent_id": agent_id,
-            "role_name": role_name,
-        });
-
-        let resp = self.client.post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::MemoryStoreError(format!("读取记忆索引失败: {}", e)))?;
-
-        if !resp.status().is_success() {
-            return Ok(Vec::new()); // memory-struct 未就绪时静默忽略
-        }
-
-        let data: serde_json::Value = resp.json().await?;
-        let items = data["items"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v["summary"].as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-
-        Ok(items)
+        // memory-struct 功能未实现，暂占位
+        Ok(Vec::new())
     }
 
     /// 按当前模式读取最近历史记录

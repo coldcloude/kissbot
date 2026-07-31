@@ -49,7 +49,7 @@ impl AgentCoordinator {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
 
         // 初始化 ModelClient
-        let model_config = config.model_config().clone();
+        let model_config = config.model_config().await;
         let model_client = ModelClient::new(model_config);
 
         // 初始化 ContextBuilder
@@ -89,15 +89,19 @@ impl AgentCoordinator {
 
     /// 连接所有已配置的 channel
     async fn connect_channels(self: &Arc<Self>) {
-        let bindings = self.config.channel_bindings().await;
-        let ws_url = self.config.channel_ws_url().to_string();
+        let bindings = self.config.channel_bindings().await;   // shim: Vec<ChannelUser>
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         let coordinator = self.clone();
 
         for binding in &bindings {
-            let messenger_id = binding.messenger_id.clone();
-            let user_id = binding.user_id.clone();
+            let messenger_id = binding.messenger_id.to_string();
+            let user_id = binding.user_id.to_string();
+            // ws_url 从 NexusRepo 按 channel 读取
+            let ws_url = match self.config.channel_ws_url(&messenger_id).await {
+                Some(u) => u,
+                None => { warn!("channel {} 无 ws_url，跳过", messenger_id); continue; }
+            };
             let client = ChannelClient::new(
                 messenger_id.clone(),
                 Arc::downgrade(&(coordinator.clone() as Arc<dyn Terminal>)),
@@ -109,7 +113,6 @@ impl AgentCoordinator {
             coordinator.channel_clients.insert(messenger_id.clone(), client);
 
             let client_clone = coordinator.channel_clients.get(&messenger_id).unwrap().clone();
-            let ws_url = ws_url.clone();
             let api_key = api_key.clone();
 
             tokio::spawn(async move {
@@ -207,7 +210,7 @@ impl AgentCoordinator {
 
         // 1. 检查群组是否在绑定范围内
         let bindings = self.config.channel_bindings().await;
-        if !bindings.iter().any(|b| b.messenger_id == messenger_id) {
+        if !bindings.iter().any(|b| *b.messenger_id == messenger_id) {
             return; // 非绑定 channel 的消息丢弃
         }
 
