@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config_manager::ProviderModel;
+
 // ========== 错误类型 ==========
 
 #[derive(Debug, thiserror::Error)]
@@ -95,7 +97,7 @@ pub enum AdminCommand {
     Reenter(String),
     Events,
     Reset,
-    Model(String),   // 新增：/model <name>
+    Model(ProviderModel),   // /model <provider> <model>
     Agent(String),   // 新增：/agent <id>
 }
 

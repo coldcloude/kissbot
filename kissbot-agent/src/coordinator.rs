@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use crate::types::{
     Mode, WriteTask, ContextMessage, AdminCommand, Result, Error,
 };
-use crate::config_manager::{ConfigManager, ModelConfig};
+use crate::config_manager::{ConfigManager, ProviderModel};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::context_builder::ContextBuilder;
@@ -34,7 +34,7 @@ pub struct AgentCoordinator {
     /// 运行状态：当前 agent / 角色 / 模型 / 模式（启动从 NexusRepo 默认值初始化，运行期不回写）
     current_agent_id: ArcSwap<String>,
     current_role: ArcSwap<String>,
-    current_model: ArcSwap<String>,
+    current_model: ArcSwap<ProviderModel>,   // (provider, model) 打包
     current_mode: ArcSwap<Mode>,
     /// 运行状态：已绑定 channel（channel_id → ChannelUser），/bind /unbind 修改
     bound_channels: Arc<DashMap<String, Arc<ChannelUser>>>,
@@ -62,10 +62,8 @@ impl AgentCoordinator {
         let default_role = config.default_role().await;
         let default_model = config.default_model().await;
 
-        // 初始化 ModelClient（按默认模型名查配置）
-        let model_config = config.model_config_by_name(&default_model).await
-            .unwrap_or_else(ModelConfig::default);
-        let model_client = ModelClient::new(model_config);
+        // ModelClient 每次调用现场合成配置，无需预查 model 配置
+        let model_client = ModelClient::new(config.clone());
 
         // 初始化 ContextBuilder
         let context_builder = ContextBuilder::new();
@@ -123,8 +121,7 @@ impl AgentCoordinator {
 
     pub fn current_agent_id(&self) -> String { self.current_agent_id.load().to_string() }
     pub fn current_role(&self) -> String { self.current_role.load().to_string() }
-    #[allow(dead_code)]
-    pub fn current_model(&self) -> String { self.current_model.load().to_string() }
+    pub fn current_model(&self) -> ProviderModel { (*self.current_model.load_full()).clone() }
     pub fn current_mode(&self) -> Mode { (*self.current_mode.load_full()).clone() }
     /// 切换当前模式（仅存状态，上下文重建由调用方触发 reset_context）
     pub fn set_current_mode(&self, mode: Mode) { self.current_mode.store(Arc::new(mode)); }
@@ -135,17 +132,14 @@ impl AgentCoordinator {
         self.reset_context().await;
     }
 
-    /// 切换当前模型（校验 model 存在，热更新 ModelClient）
-    pub async fn set_current_model(&self, name: String) -> Result<()> {
-        // 校验 model 存在
-        if self.config.model_config_by_name(&name).await.is_none() {
-            return Err(Error::ModelProviderNotSupported(format!("model 不存在: {}", name)));
+    /// 切换当前模型（校验 provider/model 存在；每次调用由 ConfigManager 现场合成，无需热更新）
+    pub async fn set_current_model(&self, pm: ProviderModel) -> Result<()> {
+        // 校验 provider 与 model 存在
+        if self.config.resolve_effective_config(&pm).await.is_none() {
+            return Err(Error::ModelProviderNotSupported(format!(
+                "provider/model 不存在: {}/{}", pm.provider, pm.model)));
         }
-        self.current_model.store(Arc::new(name.clone()));
-        // 热更新 ModelClient
-        let cfg = self.config.model_config_by_name(&name).await.unwrap();
-        let mut client = self.model_client.lock().await;
-        client.update_config(cfg);
+        self.current_model.store(Arc::new(pm));
         Ok(())
     }
 
@@ -413,7 +407,7 @@ impl AgentCoordinator {
             let ctx = self.context_builder.lock().await;
             let messages = ctx.build();
             let model = self.model_client.lock().await;
-            model.call(&messages).await
+            model.call(&self.current_model(), &messages).await
         };
 
         match response {

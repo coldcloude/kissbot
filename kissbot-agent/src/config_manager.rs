@@ -14,9 +14,7 @@ use crate::types::{Result, Error};
 // ========== Provider 配置 ==========
 
 // (provider, model) 固定一起出现：函数调用、current 运行状态、default 配置共用
-// Task 4 接入 model_client 后移除 allow(dead_code)
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderModel {
     pub provider: String,
     pub model: String,
@@ -38,8 +36,6 @@ pub struct ProviderConfig {
 }
 
 // 合并后的有效配置（provider 默认 + model 覆盖），运行时合成、不持久化
-// Task 4 接入 model_client 后移除 allow(dead_code)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EffectiveModelConfig {
     pub provider_type: String,
@@ -50,64 +46,50 @@ pub struct EffectiveModelConfig {
     pub temperature: f32,
     pub timeout_secs: u64,
     pub retry_count: u32,
+    #[allow(dead_code)]   // 本期只落位：默认上下文长度（token），截断逻辑后续接入
     pub context_length: u32,
 }
 
-// ModelConfig 定义在本文件，供 model_client 与本文件的 NexusRepo.models 共用
+// ModelConfig 定义在本文件，供 model_client 与本文件的 NexusRepo.providers[].models 共用
+// 字段均为可继承参数（Option），不配时使用所属 ProviderConfig 的 default_* 值
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    pub name: Arc<String>,
-    pub provider: String,
-    pub endpoint: String,
-    pub api_key: String,
-    pub model: String,
-    pub max_tokens: u32,
-    pub temperature: f32,
-    pub timeout_secs: u64,
-    pub retry_count: u32,
-}
-
-impl Default for ModelConfig {
-    fn default() -> Self {
-        Self {
-            name: Arc::new(String::new()),
-            provider: "openai".to_string(),
-            endpoint: String::new(),
-            api_key: String::new(),
-            model: "gpt-4o".to_string(),
-            max_tokens: 4096,
-            temperature: 0.7,
-            timeout_secs: 60,
-            retry_count: 3,
-        }
-    }
+    pub model: String,                   // 与所属 provider 的 models map key 相同
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
 }
 
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexusRepo {
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
-    pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,
     pub providers: Arc<ArcSwapHashMap<String, ProviderConfig>>, // key = provider 名
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
     pub default_agent_id: Arc<String>,
     pub default_role: Arc<String>,
-    pub default_model: Arc<String>,
+    pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
 }
 
 impl Default for NexusRepo {
     fn default() -> Self {
         Self {
             channels: Arc::new(ArcSwapHashMap::new()),
-            models: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new(String::new()),
             default_role: Arc::new(String::new()),
-            default_model: Arc::new(String::new()),
+            default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
         }
     }
 }
@@ -154,7 +136,7 @@ pub struct AgentConfig {
     pub ws_reconnect_interval_secs: u64,
     pub init_agent_id: Arc<String>,
     pub init_role: Arc<String>,
-    pub init_model: Arc<String>,
+    pub init_model: Arc<ProviderModel>,   // 种子 NexusRepo.default_model（(provider, model) 打包）
 }
 
 impl AgentConfig {
@@ -314,25 +296,8 @@ impl ConfigManager {
         self.save_nexus().await
     }
 
-    // ---------- models ----------
-    pub async fn model_config_by_name(&self, name: &str) -> Option<ModelConfig> {
-        let repo = self.nexus_repo.read().await;
-        repo.models.get(name).map(|s| (*s.load_full()).clone())
-    }
-    #[allow(dead_code)]
-    pub async fn add_model(&self, cfg: ModelConfig) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
-            let map = Arc::make_mut(&mut repo.models);
-            map.insert(cfg.name.to_string(), ArcSwap::new(Arc::new(cfg)));
-        }
-        self.save_nexus().await
-    }
-
     // ---------- providers ----------
-    /// 合成 provider 默认 + model 配置的有效参数（每次调用现场合成，配置永远最新）
-    /// Task 4 接入 model_client 后移除 allow(dead_code)
-    #[allow(dead_code)]
+    /// 合成 provider 默认 + model 覆盖的有效参数（每次调用现场合成，配置永远最新）
     pub async fn resolve_effective_config(&self, pm: &ProviderModel) -> Option<EffectiveModelConfig> {
         let repo = self.nexus_repo.read().await;
         let provider = repo.providers.get(&pm.provider)?.load_full();
@@ -342,11 +307,11 @@ impl ConfigManager {
             base_url: provider.base_url.clone(),
             api_key: provider.api_key.clone(),
             model: model_cfg.model.clone(),
-            max_tokens: model_cfg.max_tokens,
-            temperature: model_cfg.temperature,
-            timeout_secs: model_cfg.timeout_secs,
-            retry_count: model_cfg.retry_count,
-            context_length: provider.default_context_length,
+            max_tokens: model_cfg.max_tokens.unwrap_or(provider.default_max_tokens),
+            temperature: model_cfg.temperature.unwrap_or(provider.default_temperature),
+            timeout_secs: model_cfg.timeout_secs.unwrap_or(provider.default_timeout_secs),
+            retry_count: model_cfg.retry_count.unwrap_or(provider.default_retry_count),
+            context_length: model_cfg.context_length.unwrap_or(provider.default_context_length),
         })
     }
 
@@ -360,7 +325,7 @@ impl ConfigManager {
     #[allow(dead_code)]
     pub async fn default_agent_id(&self) -> String { self.nexus_repo.read().await.default_agent_id.to_string() }
     pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
-    pub async fn default_model(&self) -> String { self.nexus_repo.read().await.default_model.to_string() }
+    pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
     /// 聚合所有 channel 的 admins
@@ -416,7 +381,7 @@ mod tests {
             ws_reconnect_interval_secs: 5,
             init_agent_id: Arc::new("agent-1".into()),
             init_role: Arc::new("dev".into()),
-            init_model: Arc::new("gpt-4o".into()),
+            init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         }
     }
 
@@ -428,7 +393,7 @@ mod tests {
         let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
         assert_eq!(*repo.default_agent_id, "agent-1");
         assert_eq!(*repo.default_role, "dev");
-        assert_eq!(*repo.default_model, "gpt-4o");
+        assert_eq!(*repo.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
         assert!(repo.channels.is_empty());
         assert!(path.exists(), "首次创建应写文件");
     }
@@ -492,26 +457,25 @@ mod tests {
     fn nexus_repo_serde_roundtrip() {
         let repo = NexusRepo {
             channels: Arc::new(ArcSwapHashMap::new()),
-            models: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_agent_id: Arc::new("agent-1".into()),
             default_role: Arc::new("dev".into()),
-            default_model: Arc::new("gpt-4o".into()),
+            default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         };
         let json = serde_json::to_string(&repo).unwrap();
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.default_agent_id, "agent-1");
         assert_eq!(*back.default_role, "dev");
-        assert_eq!(*back.default_model, "gpt-4o");
+        assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
     }
 
     #[test]
     fn nexus_repo_default_empty() {
         let repo = NexusRepo::default();
         assert!(repo.channels.is_empty());
-        assert!(repo.models.is_empty());
+        assert!(repo.providers.is_empty());
         assert!(repo.memory_structs.is_empty());
         assert!(repo.stations.is_empty());
         assert!(repo.default_agent_id.is_empty());
@@ -546,20 +510,17 @@ mod tests {
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
             listeners: DashMap::new(),
         };
-        // 构造 provider + model（Task 1 阶段 ModelConfig 仍为旧结构，字段必填）
+        // 构造 provider + model（ModelConfig 为 Option 可继承参数）
         let mut provider = sample_provider("deepseek");
         {
             let map = Arc::make_mut(&mut provider.models);
             map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
-                name: Arc::new("deepseek-4-flash".into()),
-                provider: "openai".into(),
-                endpoint: "https://api.deepseek.com".into(),
-                api_key: "sk-test".into(),
                 model: "deepseek-4-flash".into(),
-                max_tokens: 2048,
-                temperature: 0.3,
-                timeout_secs: 30,
-                retry_count: 2,
+                max_tokens: Some(2048),
+                temperature: Some(0.3),
+                timeout_secs: Some(30),
+                retry_count: Some(2),
+                context_length: None,  // 未配 → 继承 provider 默认
             })));
         }
         {
@@ -577,7 +538,45 @@ mod tests {
         assert_eq!(eff.temperature, 0.3, "model 的 temperature 应生效");
         assert_eq!(eff.timeout_secs, 30);
         assert_eq!(eff.retry_count, 2);
-        assert_eq!(eff.context_length, 65536, "context_length 取 provider 默认");
+        assert_eq!(eff.context_length, 65536, "context_length 未配应继承 provider 默认");
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_config_inherits_provider_defaults() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        let mut provider = sample_provider("deepseek");
+        {
+            let map = Arc::make_mut(&mut provider.models);
+            map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
+                model: "deepseek-4-flash".into(),
+                max_tokens: None,
+                temperature: None,
+                timeout_secs: None,
+                retry_count: None,
+                context_length: Some(131072),  // 覆盖 context_length
+            })));
+        }
+        {
+            let mut repo = manager.nexus_repo.write().await;
+            let map = Arc::make_mut(&mut repo.providers);
+            map.insert("deepseek".to_string(), ArcSwap::new(Arc::new(provider)));
+        }
+        let pm = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let eff = manager.resolve_effective_config(&pm).await.expect("应能合成");
+        assert_eq!(eff.max_tokens, 4096, "缺省继承 provider 默认");
+        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.timeout_secs, 60);
+        assert_eq!(eff.retry_count, 3);
+        assert_eq!(eff.context_length, 131072, "model 覆盖 context_length 应生效");
     }
 
     #[tokio::test]

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use crate::types::{AdminCommand, Error, Result};
-use crate::config_manager::ConfigManager;
+use crate::config_manager::{ChannelUser, ConfigManager, ProviderModel};
 use crate::coordinator::AgentCoordinator;
-use crate::config_manager::ChannelUser;
 
 pub struct CommandRouter;
 
@@ -116,10 +115,13 @@ impl CommandRouter {
             "events" => Ok(AdminCommand::Events),
             "reset" => Ok(AdminCommand::Reset),
             "model" => {
-                if parts.len() < 2 {
-                    return Err(Error::InvalidCommand("格式: /model <name>".to_string()));
+                if parts.len() != 3 {
+                    return Err(Error::InvalidCommand("格式: /model <provider> <model>".to_string()));
                 }
-                Ok(AdminCommand::Model(parts[1].to_string()))
+                Ok(AdminCommand::Model(ProviderModel {
+                    provider: parts[1].to_string(),
+                    model: parts[2].to_string(),
+                }))
             }
             "agent" => {
                 if parts.len() < 2 {
@@ -170,9 +172,9 @@ impl CommandRouter {
                     None => "✅ 已取消角色".into(),
                 }, true))
             }
-            AdminCommand::Model(name) => {
-                coordinator.set_current_model(name.clone()).await?;
-                Ok((format!("✅ 已切换模型为: {}", name), false))
+            AdminCommand::Model(pm) => {
+                coordinator.set_current_model(pm.clone()).await?;
+                Ok((format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model), false))
             }
             AdminCommand::Agent(id) => {
                 coordinator.set_current_agent_id(id.clone()).await;

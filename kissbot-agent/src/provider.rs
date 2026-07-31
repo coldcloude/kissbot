@@ -8,8 +8,6 @@ use crate::config_manager::EffectiveModelConfig;
 use crate::types::{Error, MessageItem, ModelResponse, Result};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
-// 尚未被 ModelClient 消费（Task 4 接线），暂标 allow(dead_code)
-#[allow(dead_code)]
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse>;
@@ -17,14 +15,12 @@ pub trait Provider: Send + Sync {
 
 // ========== OpenAI 兼容协议（/chat/completions） ==========
 
-#[allow(dead_code)]
 pub struct OpenAiProvider {
     client: Arc<reqwest::Client>,
     base_url: String,
     api_key: String,
 }
 
-#[allow(dead_code)]
 impl OpenAiProvider {
     pub fn new(client: Arc<reqwest::Client>, base_url: &str, api_key: &str) -> Self {
         Self {
@@ -35,7 +31,6 @@ impl OpenAiProvider {
     }
 }
 
-#[allow(dead_code)]
 fn openai_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) -> serde_json::Value {
     let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
         json!({ "role": m.role, "content": m.content })
@@ -56,7 +51,6 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     ModelResponse { content, tool_calls: Vec::new(), finish_reason }
 }
 
-#[allow(dead_code)]
 #[async_trait]
 impl Provider for OpenAiProvider {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
@@ -79,14 +73,12 @@ impl Provider for OpenAiProvider {
 
 // ========== Anthropic 协议（/v1/messages） ==========
 
-#[allow(dead_code)]
 pub struct AnthropicProvider {
     client: Arc<reqwest::Client>,
     base_url: String,
     api_key: String,
 }
 
-#[allow(dead_code)]
 impl AnthropicProvider {
     pub fn new(client: Arc<reqwest::Client>, base_url: &str, api_key: &str) -> Self {
         Self {
@@ -97,7 +89,6 @@ impl AnthropicProvider {
     }
 }
 
-#[allow(dead_code)]
 fn anthropic_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) -> serde_json::Value {
     // 分离 system 消息
     let system_parts: Vec<String> = messages.iter()
@@ -131,7 +122,6 @@ fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
     ModelResponse { content, tool_calls: Vec::new(), finish_reason }
 }
 
-#[allow(dead_code)]
 #[async_trait]
 impl Provider for AnthropicProvider {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
