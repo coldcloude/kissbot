@@ -34,6 +34,16 @@ impl ModelClient {
         crate::provider::provider_for(self.client.clone(), &effective.provider_type, &effective.base_url, &effective.api_key)
     }
 
+    /// 从服务商 API 获取全部模型名（按 pm.provider 的 ProviderConfig 构造 Provider）
+    /// 返回 Err 表示 API 调用失败（网络/鉴权）
+    pub async fn list_models(&self, pm: &ProviderModel) -> Result<Vec<String>> {
+        let pc = self.config_manager.provider_config_by_name(&pm.provider).await
+            .ok_or_else(|| Error::ModelProviderNotSupported(format!("provider 不存在: {}", pm.provider)))?;
+        let provider = crate::provider::provider_for(
+            self.client.clone(), &pc.provider_type, &pc.base_url, &pc.api_key);
+        provider.list_models().await
+    }
+
     /// 指数退避重试（retry_count 来自有效配置）
     async fn call_with_retry(
         &self,

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use chrono::Local;
 use dashmap::DashMap;
@@ -33,6 +34,8 @@ pub struct AgentCoordinator {
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
+    /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
+    valid_default: ArcSwap<Option<ProviderModel>>,
     /// 按 agent 内部 channel_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
@@ -59,7 +62,17 @@ impl AgentCoordinator {
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
             channel_clients: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
+            valid_default: ArcSwap::from_pointee(None),
         });
+
+        // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
+        let default_model = config.default_model().await;
+        let valid_default = match coordinator.model_client.lock().await.list_models(&default_model).await {
+            Ok(list) if list.iter().any(|m| m == &default_model.model) => Some(default_model.clone()),
+            Ok(_) => { tracing::warn!("default_model {}/{} 不在 API 模型列表", default_model.provider, default_model.model); None }
+            Err(e) => { tracing::warn!("校验 default_model 失败（API 不可用?）: {:?}", e); None }
+        };
+        coordinator.valid_default.store(Arc::new(valid_default));
 
         // 按全部 channel 的绑定三元组初始化会话集合（agent 脱离态跳过）
         for (_, ch) in config.channels().await {
@@ -93,8 +106,9 @@ impl AgentCoordinator {
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
     async fn ensure_session(&self, key: &SessionKey) -> (Arc<Session>, bool) {
-        let (session, created) =
-            self.session_manager.get_or_create(key, Some(self.config.default_model().await));
+        // valid_default.load_full() 返回 Arc<Option<ProviderModel>>，解引用克隆得 Option
+        let model = (*self.valid_default.load_full()).clone();
+        let (session, created) = self.session_manager.get_or_create(key, model);
         if created {
             self.build_initial_context(&session).await;
         }
@@ -247,7 +261,7 @@ impl AgentCoordinator {
         self.config.update_channel(channel_id, |c| c.is_send_channel = on).await
     }
 
-    /// 设置来源 channel 所属会话的模型（运行态，不回写；校验 provider/model 存在）
+    /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
         let Some(ch) = self.channel_config(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
@@ -255,10 +269,12 @@ impl AgentCoordinator {
         let Some(key) = self.session_key_for(&ch) else {
             return Err(Error::InvalidCommand("channel 未关联 agent，无法设置模型".to_string()));
         };
-        // 校验 provider 与 model 存在
-        if self.config.resolve_effective_config(&pm).await.is_none() {
+        // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
+        let models = self.model_client.lock().await.list_models(&pm).await
+            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
+        if !models.iter().any(|m| m == &pm.model) {
             return Err(Error::ModelProviderNotSupported(format!(
-                "provider/model 不存在: {}/{}", pm.provider, pm.model)));
+                "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
         }
         let (session, _) = self.ensure_session(&key).await;
         session.model.store(Arc::new(Some(pm)));

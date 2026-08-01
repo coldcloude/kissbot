@@ -361,6 +361,12 @@ impl ConfigManager {
         })
     }
 
+    /// 按名取 provider 配置（Arc 快照），供 provider 构造（model_client.list_models 使用）
+    /// 不存在返回 None
+    pub async fn provider_config_by_name(&self, name: &str) -> Option<Arc<ProviderConfig>> {
+        self.nexus_repo.read().await.providers.get(name).map(|s| s.load_full())
+    }
+
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
     pub async fn add_provider(&self, cfg: ProviderConfig) -> Result<()> {
@@ -823,6 +829,29 @@ mod tests {
         assert_eq!(eff.max_tokens, 4096);          // provider 默认值
         assert_eq!(eff.temperature, 0.7);
         assert_eq!(eff.timeout_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn provider_config_by_name_getter() {
+        // 构造 manager：provider_config_by_name("deepseek") 返回 Some、("nope") 返回 None
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        // 未添加前 None
+        assert!(manager.provider_config_by_name("deepseek").await.is_none());
+        manager.add_provider(sample_provider("deepseek")).await.unwrap();
+        let pc = manager.provider_config_by_name("deepseek").await.expect("应能查到");
+        assert_eq!(*pc.name, "deepseek");
+        assert_eq!(pc.base_url, "https://api.deepseek.com");
+        assert_eq!(pc.api_key, "sk-test");
+        assert!(manager.provider_config_by_name("nope").await.is_none());
     }
 
     #[tokio::test]
