@@ -1,4 +1,4 @@
-# kissbot-agent 组件设计
+# system-design-agent 组件设计
 
 ## 概述
 Agent 是智能体组件，内部由两个模块组成——Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）。Nexus 负责"思考"——与 LLM 通信处理输入输出，对接记忆系统；Station 负责"行动"——执行具体工具操作。nexus 通过内部调用与同进程 station 通信，通过 HTTPS 与远程 station 通信。
@@ -33,7 +33,7 @@ graph TB
 - 处理 LLM 输出，将 tool call 分派到 station
 - 支持两种记忆模式（角色记忆/事件记忆）
 
-详见 [kissbot-agent-nexus 内部设计](kissbot-agent-nexus.md)
+详见 [kissbot-agent-nexus 内部设计](components-design/kissbot-agent-nexus.md)
 
 ### Station（Tool 执行主机）
 - 接收来自 nexus 的 tool call 并执行
@@ -41,14 +41,14 @@ graph TB
 - 不直接对接记忆系统（tool 结果由 nexus 统一推送记忆）
 - 可运行在通用服务器、网络设备、智能家电、机器人等多种形态上
 
-详见 [kissbot-agent-station 内部设计](kissbot-agent-station.md)
+详见 [kissbot-agent-station 内部设计](components-design/kissbot-agent-station.md)
 
 ### 记忆系统
 - 由 nexus 对接记忆系统
 - 两种组织模式：角色记忆由角色标识，事件记忆由角色和事件共同标识
 - nexus 按标识粒度和记忆系统通信
 
-详见 [kissbot-memory 组件设计](kissbot-memory.md)
+详见 [kissbot-memory 组件设计](components-design/kissbot-memory.md)
 
 ### 配置管理器
 配置按三分结构管理：

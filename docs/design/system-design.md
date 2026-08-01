@@ -6,26 +6,11 @@
 ## 一、组件体系
 
 ### 1. Agent
-智能体组件，由两个内部模块组成：
+智能体组件，由 Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）两个内部模块组成，模块职责与内部结构详见 [system-design-agent](system-design-agent.md)。
 
-**Nexus（LLM 通信枢纽）** — 智能体的"思考"部分。负责与 LLM 通信：接收外部输入 → 从记忆系统读取上下文 → 构建 LLM 上下文 → 调用 LLM API → 处理 LLM 输出。若输出包含 tool call，则将 tool call 分派到对应的 Station 执行；若输出为回复文本，则发往外部，并用发送的返回值补充、替换消息内容后推送至记忆系统。收发的通道消息均由 nexus 推送至记忆系统。
-
-**Station（Tool 执行主机）** — 智能体的"行动"部分。负责执行具体的工具操作：接收来自 nexus 的 tool call → 执行工具 → 将结果返回给 nexus。Station 不直接与 LLM 通信，也不对接记忆系统，只专注于工具的执行和结果返回。
-
-Agent 程序可在启动时选择开启的部分：
-- 仅开启 nexus（纯 LLM 交互，无工具执行）
-- 仅开启 station（纯工具执行，无 LLM 交互）
-- 同时开启 nexus 和 station（本地智能体，nexus 和 station 同进程内通信，但也保留和远程 station 和 nexus 通信的能力）
-
-同一系统内可运行多个 agent 实例，各实例可开启不同的部分、对接不同的 LLM 模型或服务于不同的场景。
+Agent 程序可在启动时选择开启的部分（仅 nexus / 仅 station / 同时开启），同一系统内可运行多个 agent 实例，各实例可开启不同的部分、对接不同的 LLM 模型或服务于不同的场景。
 
 Agent 除了根据外界信息给出回应外，还可以主动获取信息并据此行动。可以为 agent 设计自主行动的目标，agent 据此执行信息收集、信息反馈、自动工具调用等。
-
-**Station 形态**：station 可以运行在多种设备上：
-- **通用服务器**：运行标准工具集（文件操作、命令执行等）
-- **网络设备**：读写网络配置、获取监控数据等
-- **智能家电**：执行物理世界操作（开关、调节等）
-- **机器人**：执行物理动作（移动、抓取等）
 
 > 注：记忆查询属于 nexus 内置工具，不经由 station 执行。
 
@@ -51,7 +36,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 管理和获取 agent 的自我认知设定。提供 agent 元数据、个体识别信息、角色设定等数据的存储和查询能力。
 
 ### 5. API 定义
-定义各组件间通信的标准数据结构和统一的响应格式。是组件间数据交换的契约层，确保跨组件通信的数据类型一致。
+定义各组件间通信的标准数据结构和统一的响应格式，是组件间数据交换的契约层。内部模块与设计原则详见 [system-design-api](system-design-api.md)。
 
 ### 6. 安全组件
 多种安全模块统一放在安全组件中，当前模块如下：
@@ -63,7 +48,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 
 **公共配置组件**：加载 JSON 配置文件（通过 `KISSBOT_CONFIG` 环境变量指定路径，默认 `./config.json`），提供层级化的配置访问接口 `get_section(path)`。组件间通过点号路径解耦。
 
-**网络地址配置**：定义各组件访问其他服务的 URL（memory_store_url、memory_ego_url）。由 `kissbot-api` 的 `ApiConfig` 封装，各组件统一从该配置中读取外部服务地址。
+**网络地址配置**：定义各组件访问其他服务的 URL（memory_store_url、memory_ego_url），由 `ApiConfig` 封装（详见 [system-design-api](system-design-api.md)），各组件统一从该配置中读取外部服务地址。
 
 **安全配置**：所有 API key 统一归入 `security` 配置段，由 `kissbot-security` 的 `SecurityConfig` 封装。各组件通过 `SecurityConfig::get()` 获取认证所需的 key。
 
