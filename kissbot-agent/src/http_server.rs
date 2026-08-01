@@ -50,14 +50,9 @@ struct RemoveAdminRequest {
 }
 
 impl HttpServer {
-    /// 生产构造：admin_api_key 从 kissbot_security 全局配置读取
+    /// 从 kissbot_security 全局配置读取 admin_api_key（与 channel-web / memory-ego 一致）
     pub fn new(config: Arc<ConfigManager>, host: String, port: u16) -> Self {
         let admin_api_key = kissbot_security::SecurityConfig::get().admin_api_key.to_string();
-        Self::with_admin_key(config, admin_api_key, host, port)
-    }
-
-    /// 测试/注入构造：显式传入 admin_api_key，避免触发 kissbot-config 全局单例
-    pub fn with_admin_key(config: Arc<ConfigManager>, admin_api_key: String, host: String, port: u16) -> Self {
         Self { config, admin_api_key, host, port }
     }
 
@@ -196,7 +191,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         let cfg_path = dir.path().join("config.json");
         let cfg_json = format!(
-            r#"{{"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5,"init_agent_id":"","init_role":"","init_model":{{"provider":"deepseek","model":"gpt-4o"}}}}}}"#,
+            r#"{{"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5,"init_agent_id":"","init_role":"","init_model":{{"provider":"deepseek","model":"gpt-4o"}}}}}}"#,
             data_dir.to_str().unwrap()
         );
         std::fs::write(&cfg_path, cfg_json).unwrap();
@@ -226,7 +221,7 @@ mod tests {
     async fn config_endpoints_auth_and_crud() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir).await;
-        let server = HttpServer::with_admin_key(manager.clone(), "admin-key-123".into(), "127.0.0.1".into(), 0);
+        let server = HttpServer::new(manager.clone(), "127.0.0.1".into(), 0);
         let app = server.build_router();
 
         // 无 key → 401（AuthLayer 拦截）
