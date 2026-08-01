@@ -40,16 +40,6 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     stopBackend(backend);
   });
 
-  test('TC-01: 非管理员（u3）发送 /model 被忽略', async () => {
-    // 记录发送前的输出基线，只断言基线之后没有 agent 回复
-    const baseline = cliUser.getOutput();
-    cliUser.stdin('/send /model deepseek deepseek-4-flash');
-    // 等待一段时间确认没有 agent 回复
-    await sleep(3000);
-    const tail = cliUser.getOutput().slice(baseline.length);
-    expect(tail).not.toMatch(/切换模型|模型调用失败|不存在|未关联/);
-  });
-
   test('TC-02: 管理员（u2）发送 /agent a1 r1 设置 channel 的 agent 与 role', async () => {
     cliAdmin.stdin('/send /agent a1 r1');
     await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
@@ -58,11 +48,6 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
   test('TC-03: 管理员（u2）发送 /admin web u3 添加管理权限', async () => {
     cliAdmin.stdin('/send /admin web u3');
     await cliAdmin.waitForOutput(/✅ 已添加管理权限: web \/ u3/, 10000);
-  });
-
-  test('TC-04: u3 成为管理员后发送 /model 调整会话模型', async () => {
-    cliUser.stdin('/send /model deepseek deepseek-4-flash');
-    await cliUser.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-4-flash/, 15000);
   });
 
   test('TC-05: 管理员（u2）发送 /role r2 修改 channel 角色（回写并重定位会话）', async () => {

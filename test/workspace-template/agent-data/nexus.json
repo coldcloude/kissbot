@@ -5,7 +5,7 @@
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "u2" }],
       "bind_user": { "messenger_id": "web", "user_id": "u1" },
-      "agent_id": "0",
+      "agent_id": "",
       "role_name": "0",
       "is_send_channel": true,
       "enabled": true
@@ -23,7 +23,8 @@
       "default_timeout_secs": 60,
       "default_retry_count": 3,
       "models": {
-        "deepseek-4-flash": { "model": "deepseek-4-flash" }
+        "deepseek-4-flash": { "model": "deepseek-4-flash" },
+        "deepseek-v4-flash": { "model": "deepseek-v4-flash" }
       }
     }
   },

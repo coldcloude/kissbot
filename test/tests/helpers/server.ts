@@ -3,6 +3,8 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import net from 'net';
+// 注入 api key：复用 Task 7 的 inject-key.mjs（script/ 下，export injectApiKeys）
+// 注意：tsc 对 .mjs 静态 import 报 TS7016（无声明文件），因此用动态 import（运行时仍为 ESM 静态可解析路径）
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +22,19 @@ export function resetWorkspace(): void {
     execSync(`rm -rf "${ws}"`);
   }
   execSync(`cp -r "${tmpl}" "${ws}"`, { stdio: 'inherit' });
+}
+
+// 将仓库根 key.local.json 的 api key 注入 <repo>/test/workspace/agent-data/nexus.json
+// 需先 resetWorkspace() 生成 workspace，再由各测试用例按需调用
+// 注：本函数为异步（injectApiKeys 为 async），调用方需 await
+export async function injectAgentApiKeys(): Promise<void> {
+  // tsc 对 .mjs 的静态 import 与字面量动态 import 都报 TS7016（无声明文件），
+  // 因此用 string 变量承载模块路径绕过静态解析；运行时 Node ESM 仍按相对路径解析到 script/inject-key.mjs
+  const moduleUrl: string = '../../../script/inject-key.mjs';
+  const { injectApiKeys } = await import(moduleUrl);
+  const keyFile = join(REPO_ROOT, 'key.local.json');
+  const nexus = join(REPO_ROOT, 'test', 'workspace', 'agent-data', 'nexus.json');
+  await injectApiKeys(keyFile, nexus);
 }
 
 export function startBackend(cwd: string): ChildProcess {
