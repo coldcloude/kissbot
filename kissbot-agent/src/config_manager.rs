@@ -339,20 +339,21 @@ impl ConfigManager {
 
     // ---------- providers ----------
     /// 合成 provider 默认 + model 覆盖的有效参数（每次调用现场合成，配置永远最新）
+    /// model 未在 provider.models 配置时用 provider 默认值合成（极端 models={} 也可用）
     pub async fn resolve_effective_config(&self, pm: &ProviderModel) -> Option<EffectiveModelConfig> {
         let repo = self.nexus_repo.read().await;
         let provider = repo.providers.get(&pm.provider)?.load_full();
-        let model_cfg = provider.models.get(&pm.model)?.load_full();
+        let model_cfg = provider.models.get(&pm.model).map(|s| s.load_full());
         Some(EffectiveModelConfig {
             provider_type: provider.provider_type.clone(),
             base_url: provider.base_url.clone(),
             api_key: provider.api_key.clone(),
-            model: model_cfg.model.clone(),
-            max_tokens: model_cfg.max_tokens.unwrap_or(provider.default_max_tokens),
-            temperature: model_cfg.temperature.unwrap_or(provider.default_temperature),
-            timeout_secs: model_cfg.timeout_secs.unwrap_or(provider.default_timeout_secs),
-            retry_count: model_cfg.retry_count.unwrap_or(provider.default_retry_count),
-            context_length: model_cfg.context_length.unwrap_or(provider.default_context_length),
+            model: pm.model.clone(),   // 用切换指令的模型名（未配置也有效）
+            max_tokens: model_cfg.as_ref().and_then(|m| m.max_tokens).unwrap_or(provider.default_max_tokens),
+            temperature: model_cfg.as_ref().and_then(|m| m.temperature).unwrap_or(provider.default_temperature),
+            timeout_secs: model_cfg.as_ref().and_then(|m| m.timeout_secs).unwrap_or(provider.default_timeout_secs),
+            retry_count: model_cfg.as_ref().and_then(|m| m.retry_count).unwrap_or(provider.default_retry_count),
+            context_length: model_cfg.as_ref().and_then(|m| m.context_length).unwrap_or(provider.default_context_length),
         })
     }
 
@@ -785,8 +786,38 @@ mod tests {
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
             listeners: DashMap::new(),
         };
+        // provider 不存在 → None
         assert!(manager.resolve_effective_config(&ProviderModel { provider: "nope".into(), model: "m".into() }).await.is_none());
-        assert!(manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "nope".into() }).await.is_none());
+        // provider 存在但 model 未配置 → Some（用 provider 默认值合成）
+        manager.add_provider(sample_provider("deepseek")).await.unwrap();
+        let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "nope".into() }).await
+            .expect("model 未配置也应合成");
+        assert_eq!(eff.model, "nope", "model 用切换指令的模型名");
+        assert_eq!(eff.max_tokens, 4096, "未配置参数取 provider 默认值");
+        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.timeout_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_config_synthesizes_unconfigured_model() {
+        // manager 构造沿用本文件其它测试的内联模式；provider.deepseek 的 models 为空（models={} 极端情况）
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        manager.add_provider(sample_provider("deepseek")).await.unwrap();
+        let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "deepseek-v4-flash".into() }).await;
+        let eff = eff.expect("model 未配置也应合成");
+        assert_eq!(eff.model, "deepseek-v4-flash");
+        assert_eq!(eff.max_tokens, 4096);          // provider 默认值
+        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.timeout_secs, 60);
     }
 
     #[tokio::test]
@@ -803,8 +834,9 @@ mod tests {
         };
         // add_provider → resolve 可见
         manager.add_provider(sample_provider("deepseek")).await.unwrap();
-        let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() }).await;
-        assert!(eff.is_none(), "provider 无 models 时 model 不存在返回 None");
+        let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() }).await
+            .expect("provider 无 models 时 model 未配置也应合成（取 provider 默认值）");
+        assert_eq!(eff.max_tokens, 4096, "未配置参数取 provider 默认值");
         // 带 models 的 provider
         let mut provider = sample_provider("openai");
         {
