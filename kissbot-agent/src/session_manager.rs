@@ -133,12 +133,12 @@ impl SessionContext {
 pub struct Session {
     pub key: SessionKey,
     pub context: tokio::sync::Mutex<SessionContext>,
-    /// 会话级模型（创建时取 default_model，/model 调整）
-    pub model: ArcSwap<ProviderModel>,
+    /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
+    pub model: ArcSwap<Option<ProviderModel>>,
 }
 
 impl Session {
-    pub fn new(key: SessionKey, model: ProviderModel) -> Self {
+    pub fn new(key: SessionKey, model: Option<ProviderModel>) -> Self {
         Self {
             key,
             context: tokio::sync::Mutex::new(SessionContext::new()),
@@ -167,8 +167,8 @@ impl SessionManager {
         self.sessions.get(key).map(|e| e.value().clone())
     }
 
-    /// 定位会话，不存在则创建（model 为初始模型）；返回 (会话, 是否新建)
-    pub fn get_or_create(&self, key: &SessionKey, model: ProviderModel) -> (Arc<Session>, bool) {
+    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型）；返回 (会话, 是否新建)
+    pub fn get_or_create(&self, key: &SessionKey, model: Option<ProviderModel>) -> (Arc<Session>, bool) {
         if let Some(s) = self.get(key) {
             return (s, false);
         }
@@ -248,14 +248,14 @@ mod tests {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, model.clone());
+        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()));
         assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, model.clone());
+        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()));
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, model);
+        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model));
         assert!(created3, "事件模式是独立会话");
     }
 
@@ -265,8 +265,8 @@ mod tests {
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
         let k2 = key("a2", "r2");
-        mgr.get_or_create(&k1, model.clone());
-        mgr.get_or_create(&k2, model);
+        mgr.get_or_create(&k1, Some(model.clone()));
+        mgr.get_or_create(&k2, Some(model));
         let mut keep = HashSet::new();
         keep.insert(k1.clone());
         mgr.retain(&keep);
@@ -304,5 +304,14 @@ mod tests {
         mgr.set_channel_mode("c1", Mode::Event("e9".into()));
         assert_eq!(mgr.channel_mode("c1"), Mode::Event("e9".into()));
         assert_eq!(mgr.channel_mode("c2"), Mode::Role, "未设置仍为角色模式");
+    }
+
+    #[test]
+    fn get_or_create_with_none_model() {
+        let mgr = SessionManager::new();
+        let key = SessionKey { agent_id: "a".into(), role_name: "r".into(), mode: Mode::Role };
+        let (s, created) = mgr.get_or_create(&key, None);
+        assert!(created);
+        assert!(s.model.load().is_none());
     }
 }

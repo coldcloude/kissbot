@@ -94,7 +94,7 @@ impl AgentCoordinator {
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
     async fn ensure_session(&self, key: &SessionKey) -> (Arc<Session>, bool) {
         let (session, created) =
-            self.session_manager.get_or_create(key, self.config.default_model().await);
+            self.session_manager.get_or_create(key, Some(self.config.default_model().await));
         if created {
             self.build_initial_context(&session).await;
         }
@@ -261,7 +261,7 @@ impl AgentCoordinator {
                 "provider/model 不存在: {}/{}", pm.provider, pm.model)));
         }
         let (session, _) = self.ensure_session(&key).await;
-        session.model.store(Arc::new(pm));
+        session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
 
@@ -510,6 +510,10 @@ impl AgentCoordinator {
     }
 
     async fn run_agentic_loop(&self, channel_id: &str, session: &Arc<Session>, incoming: Arc<IncomingMessage>) {
+        // 无可用模型：静默忽略普通消息（仅管理指令可用）
+        if session.model.load().is_none() {
+            return;
+        }
         let content_text = extract_text(&incoming.content);
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
@@ -533,8 +537,9 @@ impl AgentCoordinator {
             let ctx = session.context.lock().await;
             let messages = ctx.build();
             let model = session.model.load_full();
+            let Some(pm) = model.as_ref() else { return; };
             let mc = self.model_client.lock().await;
-            mc.call(&model, &messages).await
+            mc.call(pm, &messages).await
         };
 
         match response {
