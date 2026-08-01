@@ -201,6 +201,14 @@ impl CommandRouter {
             AdminCommand::Reset => {
                 Ok(("🔄 正在重置上下文...".to_string(), true))
             }
+            AdminCommand::SetAgent { .. } => {
+                // 新命令：多会话改造（Task 3 重写本文件），旧 parser 不会构造该变体，此处占位保持编译
+                Err(Error::InvalidCommand("/agent 新语义待多会话改造实现".to_string()))
+            }
+            AdminCommand::SendChannel(_) => {
+                // 新命令：多会话改造（Task 3 重写本文件），旧 parser 不会构造该变体，此处占位保持编译
+                Err(Error::InvalidCommand("/send-channel 待多会话改造实现".to_string()))
+            }
         }
     }
 }

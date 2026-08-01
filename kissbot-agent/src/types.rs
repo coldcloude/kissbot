@@ -77,10 +77,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // ========== 模式状态 ==========
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mode {
     Role,
     Event(String),
+}
+
+// ========== 会话标识 ==========
+
+/// 会话唯一标识：agent_id + role_name + mode 三元组
+/// 所有绑定 channel 的信息去重，每个三元组 = 一个会话
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionKey {
+    pub agent_id: String,
+    pub role_name: String,
+    pub mode: Mode,
+}
+
+/// 记忆读写边界的 role 编码：事件模式拼 {role}-{event}（对 memory-store 透明），角色模式原样
+pub fn memory_role(key: &SessionKey) -> String {
+    match &key.mode {
+        Mode::Event(event_id) => format!("{}-{}", key.role_name, event_id),
+        Mode::Role => key.role_name.clone(),
+    }
 }
 
 // ========== 管理命令类型 ==========
@@ -97,10 +116,25 @@ pub enum AdminCommand {
     ModeEvent(Option<String>),
     ModeRole,
     Reenter(String),
+    SendChannel(bool),
     Events,
     Reset,
     Model(ProviderModel),   // /model <provider> <model>
     Agent(String),   // 新增：/agent <id>
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）；旧 Agent 变体 Task 3 删除
+    SetAgent { agent_id: Option<String>, role: Option<String> },
+}
+
+// ========== 管理命令执行效果 ==========
+
+/// 命令执行后协调器需做的后续动作
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandEffect {
+    None,
+    /// 绑定/模式变化，来源 channel 需按新三元组重定位会话
+    Relocate,
+    /// 重置来源 channel 所属会话的上下文
+    ResetSession,
 }
 
 // ========== 模型相关 ==========
@@ -187,4 +221,29 @@ pub enum ContextMessage {
         #[allow(dead_code)]
         time: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_key_hash_eq_by_value() {
+        use std::collections::HashSet;
+        let a = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let b = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let c = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b), "等值 SessionKey 应命中 HashSet");
+        assert!(!set.contains(&c), "不同 mode 不应命中");
+    }
+
+    #[test]
+    fn memory_role_encodes_event_only() {
+        let role_key = SessionKey { agent_id: "a1".into(), role_name: "dev".into(), mode: Mode::Role };
+        assert_eq!(memory_role(&role_key), "dev");
+        let event_key = SessionKey { agent_id: "a1".into(), role_name: "dev".into(), mode: Mode::Event("e1".into()) };
+        assert_eq!(memory_role(&event_key), "dev-e1");
+    }
 }
