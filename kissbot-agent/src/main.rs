@@ -12,6 +12,7 @@ mod provider;
 mod memory_reader;
 mod memory_store_client;
 mod memory_writer;
+mod session_manager;
 mod station_client;
 mod station_router;
 mod types;
