@@ -23,7 +23,8 @@ use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
 use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
-/// 保留 agent/role：agent_id 为 "0" 或空 = 脱离 agent（该 channel 只处理管理命令）
+/// 保留 agent/role：agent_id 为空 = 脱离 agent（该 channel 只处理管理命令）；
+/// agent_id "0" 为无参 /agent 的保留 agent，建会话但初始上下文用默认系统提示词（见 build_initial_context）
 pub const RESERVED_AGENT_ID: &str = "0";
 pub const RESERVED_ROLE_NAME: &str = "0";
 
@@ -90,18 +91,11 @@ impl AgentCoordinator {
 
     // ==================== 会话定位与构建 ====================
 
-    /// 按来源 channel 的绑定配置 + 运行态 mode 计算会话 key；agent 脱离态返回 None
+    /// 按来源 channel 的绑定配置 + 运行态 mode 计算会话 key；agent 为空（未设置）返回 None
     fn session_key_for(&self, ch: &crate::config_manager::ChannelConfig) -> Option<SessionKey> {
-        let agent_id = ch.agent_id.to_string();
-        if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
-            return None; // 脱离 agent：只处理管理命令
-        }
+        // 运行态 mode 参与会话定位；agent/role 取绑定配置（纯函数逻辑见 session_key_of）
         let mode = self.session_manager.channel_mode(&ch.channel_id);
-        Some(SessionKey {
-            agent_id,
-            role_name: ch.role_name.to_string(),
-            mode,
-        })
+        session_key_of(&ch.agent_id, &ch.role_name, mode)
     }
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
@@ -115,20 +109,22 @@ impl AgentCoordinator {
         (session, created)
     }
 
-    /// 会话创建/重置时：加载 ego + 历史记录 + 顶层记忆索引构建初始上下文
+    /// 会话创建/重置时：加载 ego（"0" 用默认提示词）+ 历史记录 + 顶层记忆索引构建初始上下文
     async fn build_initial_context(&self, session: &Arc<Session>) {
-        // 读取自我认知（agent_id/role_name 取会话 key 原始值，不带事件编码）
-        if let Ok(ego_info) = self.load_ego_info(&session.key.agent_id, &session.key.role_name).await {
+        // 保留 agent "0" 不调 memory-ego，用 AgentConfig 默认系统提示词；其余 agent 走 load_ego_info
+        if session.key.agent_id == RESERVED_AGENT_ID {
+            session.context.lock().await.set_system_message(self.config.default_system_prompt().to_string());
+        } else if let Ok(ego_info) = self.load_ego_info(&session.key.agent_id, &session.key.role_name).await {
             session.context.lock().await.set_system_message(ego_info);
         }
-        // 读取历史记忆（事件模式由 memory_role 编码）
+        // 历史记忆照常加载（"0" 也调 memory-store；URL 空则优雅跳过）
         if let Ok(history) = self.memory_reader
             .read_history(&self.config, &session.key.agent_id, &session.key.role_name, &session.key.mode)
             .await
         {
             session.context.lock().await.load_history(history);
         }
-        // 读取顶层记忆索引（memory-struct 未实现时静默跳过）
+        // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
             .read_memory_struct_index(&self.config, &session.key.agent_id, &session.key.role_name, &session.key.mode)
             .await;
@@ -657,5 +653,40 @@ fn extract_text(content: &Content) -> String {
             .filter_map(|c| match c { Content::Text(t) => Some(t.as_str().to_string()), _ => None })
             .collect::<Vec<_>>().join("\n"),
         _ => String::new(),
+    }
+}
+
+/// 按 (agent_id, role_name, mode) 三元组计算会话 key（session_key_for 的纯函数版，便于测试）；
+/// agent_id 为空（未设置）= 脱离 agent
+fn session_key_of(agent_id: &str, role_name: &str, mode: Mode) -> Option<SessionKey> {
+    if agent_id.is_empty() {
+        return None; // 脱离 agent：只处理管理命令
+    }
+    // 保留 agent "0"（无参 /agent）同样建会话，初始上下文用默认系统提示词（见 build_initial_context）
+    Some(SessionKey {
+        agent_id: agent_id.to_string(),
+        role_name: role_name.to_string(),
+        mode,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_key_for_empty_detaches_but_zero_attaches() {
+        // agent_id 为空（未绑定 agent）：脱离，只处理管理命令
+        assert!(session_key_of("", "0", Mode::Role).is_none());
+        // 保留 agent "0"（无参 /agent）：建会话
+        let key = session_key_of("0", "0", Mode::Role).expect("agent 0 应建会话");
+        assert_eq!(key.agent_id, "0");
+        assert_eq!(key.role_name, "0");
+        assert_eq!(key.mode, Mode::Role);
+        // 其他普通 agent 照常建会话（含事件模式）
+        let key = session_key_of("a1", "r1", Mode::Event("e1".into())).expect("普通 agent 应建会话");
+        assert_eq!(key.agent_id, "a1");
+        assert_eq!(key.role_name, "r1");
+        assert_eq!(key.mode, Mode::Event("e1".into()));
     }
 }
