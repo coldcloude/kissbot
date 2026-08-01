@@ -352,22 +352,22 @@ git commit -m "refactor(ego): search role 侧 RoleSearchMetadata/role_name_descr
 
 ---
 
-### Task 6: agent_name 绑定 - 配置
+### Task 6: agent_name 绑定（配置 + SessionKey + resolve_agent_id + load_ego_info）
 
 **Files:**
-- Modify: `kissbot-agent/src/config_manager.rs`、`kissbot-agent/src/main.rs`
+- Modify: `kissbot-agent/src/config_manager.rs`、`kissbot-agent/src/main.rs`、`kissbot-agent/src/types.rs`、`kissbot-agent/src/coordinator.rs`、`kissbot-agent/src/session_manager.rs`、`kissbot-agent/src/command_router.rs`
 
 **Interfaces:**
-- Produces: `ChannelConfig.agent_name`；移除 `init_agent_id/init_role/default_agent_id/default_role` 及 main.rs "Agent ID:" 日志；保留 init_model/default_model。
+- Produces: `ChannelConfig.agent_name`；移除 `init_agent_id/init_role/default_agent_id/default_role` 及 main.rs "Agent ID:" 日志（保留 init_model/default_model）；`SessionKey.agent_name`；`session_key_of -> SessionKey`（去 Option）；`resolve_agent_id(agent_name) -> Arc<String>`（缓存，回退 "0"）；memory-store/ego 调用点用解析后 agent_id；`RESERVED_AGENT_NAME=""`、`RESERVED_AGENT_ID="0"`、`RESERVED_ROLE_NAME=""`；load_ego_info 用 /agent/get。
 
-- [ ] **Step 1: 写失败测试 - agent_name 字段**
+- [ ] **Step 1: 写失败测试 - agent_name 字段 + session_key_of 去 Option + resolve_agent_id**
 
-`kissbot-agent/src/config_manager.rs` 测试模块更新：构造 ChannelConfig 用 `agent_name`（非 agent_id）；构造 AgentConfig 去掉 init_agent_id/init_role；NexusRepo 去掉 default_agent_id/default_role。相关断言更新。
+`kissbot-agent/src/config_manager.rs` 测试模块更新：构造 ChannelConfig 用 `agent_name`（非 agent_id）；构造 AgentConfig 去掉 init_agent_id/init_role；NexusRepo 去掉 default_agent_id/default_role。`kissbot-agent/src/coordinator.rs` 测试模块更新 session_key_for_empty_detaches_but_zero_attaches：session_key_of 返回 SessionKey（非 Option），agent_name="" 返回 key（agent_name=""），agent_name="a1" 返回 key（agent_name="a1"）。新增 resolve_agent_id 单测（agent_name="" 直接 "0"；ego 不可用回退 "0"）。
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd kissbot-agent && cargo test config`
-Expected: 编译错误。
+Run: `cd kissbot-agent && cargo test`
+Expected: 编译错误（agent_name 字段缺失、default_* 引用、session_key_of 返回类型）。
 
 - [ ] **Step 3: 实现配置变更**
 
@@ -376,38 +376,11 @@ Expected: 编译错误。
 - NexusRepo：删除 `default_agent_id` / `default_role` 字段；Default impl 删除对应两行。
 - AgentConfig：删除 `init_agent_id` / `init_role` 字段。
 - load_or_create_nexus：删除 `default_agent_id: cfg.init_agent_id.clone(), default_role: cfg.init_role.clone()` 两行（..NexusRepo::default() 不再含这两字段）。
-- 删除 `default_agent_id()` / `default_role()` getter（确认无外部调用；main.rs 与 coordinator 调用点在 Task 7 处理，本任务先删 getter 并让编译报错指引）。
-- 搜索全 crate `default_agent_id` / `default_role` / `.agent_id`（ChannelConfig 上的）调用点，本任务先处理 config_manager 内部；coordinator/session_manager/main 在 Task 7 处理（本任务后工作区可能暂不编译，Task 7 收尾）。
+- 删除 `default_agent_id()` / `default_role()` getter（确认无外部调用）。
 
 `kissbot-agent/src/main.rs`：删除 `info!("Agent ID: {}", config.default_agent_id().await);` 行。
 
-- [ ] **Step 4: Commit（中间态，Task 7 完成后整体编译）**
-
-```bash
-git add -A
-git commit -m "refactor(agent): 配置 agent_id->agent_name，移除 init_agent_id/init_role/default_agent_id/default_role（Task 7 收尾编译）"
-```
-
----
-
-### Task 7: agent_name 绑定 - SessionKey + resolve_agent_id + load_ego_info
-
-**Files:**
-- Modify: `kissbot-agent/src/types.rs`、`kissbot-agent/src/coordinator.rs`、`kissbot-agent/src/session_manager.rs`、`kissbot-agent/src/command_router.rs`
-
-**Interfaces:**
-- Produces: `SessionKey.agent_name`；`session_key_of -> SessionKey`（去 Option）；`resolve_agent_id(agent_name) -> Arc<String>`（缓存，回退 "0"）；memory-store/ego 调用点用解析后 agent_id；`RESERVED_AGENT_NAME=""`、`RESERVED_AGENT_ID="0"`、`RESERVED_ROLE_NAME=""`；load_ego_info 用 /agent/get。
-
-- [ ] **Step 1: 写失败测试 - session_key_of 去 Option + resolve_agent_id**
-
-`kissbot-agent/src/coordinator.rs` 测试模块更新 session_key_for_empty_detaches_but_zero_attaches：session_key_of 返回 SessionKey（非 Option），agent_name="" 返回 key（agent_name=""），agent_name="a1" 返回 key（agent_name="a1"）。新增 resolve_agent_id 单测（mock ego 不可用回退 "0"；agent_name="" 直接 "0"）。
-
-- [ ] **Step 2: 运行测试确认失败**
-
-Run: `cd kissbot-agent && cargo test session_key`
-Expected: FAIL。
-
-- [ ] **Step 3: 实现 SessionKey.agent_name 与常量**
+- [ ] **Step 4: 实现 SessionKey.agent_name 与常量**
 
 `kissbot-agent/src/types.rs`：
 ```rust
@@ -425,9 +398,9 @@ pub const RESERVED_AGENT_NAME: &str = "";
 pub const RESERVED_AGENT_ID: &str = "0";
 pub const RESERVED_ROLE_NAME: &str = "";
 ```
-（删除原 RESERVED_AGENT_ID="0"/RESERVED_ROLE_NAME="0" 中 role 的 "0"。）
+（删除原 RESERVED_AGENT_ID="0"/RESERVED_ROLE_NAME="0"，新增 RESERVED_AGENT_NAME=""。）
 
-- [ ] **Step 4: 实现 resolve_agent_id 与缓存**
+- [ ] **Step 5: 实现 resolve_agent_id 与缓存**
 
 AgentCoordinator 加字段：
 ```rust
@@ -468,7 +441,7 @@ async fn resolve_agent_id(&self, agent_name: &str) -> Arc<String> {
 }
 ```
 
-- [ ] **Step 5: 迁移 session_key_for/of 与调用点**
+- [ ] **Step 6: 迁移 session_key_for/of 与调用点**
 
 `session_key_for(&ch)`：返回 `SessionKey { agent_name: ch.agent_name.to_string(), role_name: ch.role_name.to_string(), mode }`（去 Option，无空判断）。
 `session_key_of(agent_name, role_name, mode)`：返回 `SessionKey { agent_name: agent_name.to_string(), role_name: role_name.to_string(), mode }`（去 Option）。更新测试。
@@ -481,7 +454,7 @@ async fn resolve_agent_id(&self, agent_name: &str) -> Arc<String> {
 - incoming_message / send_reply push_channel_record：`agent_id: Arc::new(key.agent_id.clone())` -> `agent_id: self.resolve_agent_id(&key.agent_name).await`（Arc<String>，直接用）。
 - run_agentic_loop ThinkRequest：`let agent_id = session.key.agent_id.clone()` -> `let agent_id = self.resolve_agent_id(&session.key.agent_name).await;`（WriteTask::Think 的 agent_id 字段类型若为 String，用 `agent_id.as_str().to_string()` 或调整）。
 
-- [ ] **Step 6: 改 load_ego_info 用 /agent/get**
+- [ ] **Step 7: 改 load_ego_info 用 /agent/get**
 
 ```rust
 async fn load_ego_info(&self, agent_id: &str, role_name: &str) -> Result<String> {
@@ -508,25 +481,25 @@ async fn load_ego_info(&self, agent_id: &str, role_name: &str) -> Result<String>
 }
 ```
 
-- [ ] **Step 7: 改 command_router /agent /role 默认 ""**
+- [ ] **Step 8: 改 command_router /agent /role 默认 ""**
 
 `kissbot-agent/src/types.rs` AdminCommand::SetAgent 字段 `agent_id` -> `agent_name`。`command_router.rs`：parse `/agent` 产出 `SetAgent { agent_name, role }`；execute `let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());` `c.agent_name = Arc::new(new_agent.clone());`。SetRole execute `unwrap_or_else(|| RESERVED_ROLE_NAME.to_string())`（RESERVED_ROLE_NAME=""）。更新 import（RESERVED_AGENT_NAME/RESERVED_ROLE_NAME）。
 
-- [ ] **Step 8: 运行全工作区测试确认通过**
+- [ ] **Step 9: 运行全工作区测试确认通过**
 
 Run: `cargo test --workspace`
 Expected: PASS。
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add -A
-git commit -m "refactor(agent): SessionKey 用 agent_name + resolve_agent_id 解析 + session_key_of 去 Option + load_ego_info /agent/get"
+git commit -m "refactor(agent): agent_name 绑定（配置 agent_id->agent_name、SessionKey 用 agent_name、resolve_agent_id 解析、移除 default_*/init_*、session_key_of 去 Option、load_ego_info /agent/get）"
 ```
 
 ---
 
-### Task 8: 配置/模板/workspace 清理 + 文档
+### Task 7: 配置/模板/workspace 清理 + 文档
 
 **Files:**
 - Modify: `config.json`、`script/config.json`、`test/workspace-template/config.json`、`script/template/nexus.json`、`test/workspace-template/agent-data/nexus.json`
@@ -576,8 +549,8 @@ git commit -m "chore: 配置/模板适配 agent_name + 清理 workspace + 文档
 
 **1. Spec coverage（计划 2 覆盖 spec 第 3/4 节）：**
 - 第 3 节 memory-ego full_name + 代号：Role/RoleRelation full_name（Task 1/2）；代号校验（Task 3）；search agent 侧（Task 4）；search role 侧（Task 5）；API 路由（Task 2/4）。✓
-- 第 4 节 agent_name 绑定：配置（Task 6）；SessionKey/resolve_agent_id/session_key_of/load_ego_info（Task 7）；memory-store 用 agent_id（Task 7 调用点）；保留 agent 语义（Task 6/7）；role 目录已在计划 1 Task 6。✓
-- 第 6 节受影响面中 ego/agent 部分：各 Task 覆盖；配置/模板/workspace（Task 8）。✓
+- 第 4 节 agent_name 绑定：配置 + SessionKey/resolve_agent_id/session_key_of/load_ego_info（Task 6）；memory-store 用 agent_id（Task 6 调用点）；保留 agent 语义（Task 6）；role 目录已在计划 1 Task 6。✓
+- 第 6 节受影响面中 ego/agent 部分：各 Task 覆盖；配置/模板/workspace（Task 7）。✓
 - individual_name 不校验唯一性（HashMap 覆盖）：Task 4 不加唯一性校验。✓
 - AgentMetadata/OtherRole/IndividualRecognition 不加 full_name：Task 1 仅 Role/RoleRelation 加。✓
 
@@ -585,7 +558,7 @@ git commit -m "chore: 配置/模板适配 agent_name + 清理 workspace + 文档
 
 **3. Type consistency：** `resolve_agent_id -> Arc<String>`；SessionKey.agent_name（String）；RESERVED_AGENT_NAME="" / RESERVED_AGENT_ID="0" / RESERVED_ROLE_NAME=""；search_by_name -> Option<String>；name_index HashMap<String, String>；RoleSearchMetadata [role_name, full_name, description]（value[0/1/2] 对应）。✓
 
-**4. 跨计划衔接：** 计划 1 已让 ChannelRecord/ChannelRequest 含 name、IncomingMessage 无 is_self、role 目录 `{year}-{role_name}`；计划 2 Task 7 的 push_channel_record 调用点沿用计划 1 Task 4 的 ChannelRecord 结构（含 name），仅 agent_id 字段值改为 resolve_agent_id 结果。✓
+**4. 跨计划衔接：** 计划 1 已让 ChannelRecord/ChannelRequest 含 name、IncomingMessage 无 is_self、role 目录 `{year}-{role_name}`；计划 2 Task 6 的 push_channel_record 调用点沿用计划 1 Task 4 的 ChannelRecord 结构（含 name），仅 agent_id 字段值改为 resolve_agent_id 结果。✓
 
 ## Execution Handoff
 
