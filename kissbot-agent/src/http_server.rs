@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -13,7 +14,7 @@ use tracing::info;
 use crate::config_manager::{ChannelConfig, ChannelUser, ConfigManager, ProviderConfig, ProviderModel};
 use crate::types::Result;
 
-/// 管理 REST API 服务器（axum，X-Api-Key 鉴权，security.admin_api_key）
+/// 管理 REST API 服务器（axum，X-Api-Key 鉴权 layer，security.admin_api_key）
 pub struct HttpServer {
     #[allow(dead_code)]
     config: Arc<ConfigManager>,
@@ -60,9 +61,10 @@ impl HttpServer {
         Self { config, admin_api_key, host, port }
     }
 
+    /// 构建 Router：认证统一走 AuthLayer（kissbot-security，与 channel-web / memory-ego 同款）
     fn build_router(&self) -> Router {
         let config = self.config.clone();
-        let key = self.admin_api_key.clone();
+        let admin_api_key = self.admin_api_key.clone();
         Router::new()
             .route("/config", get(get_config))
             .route("/config/providers", post(add_provider))
@@ -72,7 +74,8 @@ impl HttpServer {
             .route("/config/channels/remove", post(remove_channel))
             .route("/config/admins", post(add_admin))
             .route("/config/admins/remove", post(remove_admin))
-            .with_state(AppState { config, key })
+            .with_state(AppState { config })
+            .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(Arc::new(admin_api_key)))))
     }
 
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
@@ -90,19 +93,6 @@ impl HttpServer {
 #[derive(Clone)]
 struct AppState {
     config: Arc<ConfigManager>,
-    key: String,
-}
-
-/// 鉴权：X-Api-Key 与 admin_api_key 比对
-fn check_api_key(headers: &HeaderMap, expected: &str) -> bool {
-    headers.get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|k| k == expected)
-        .unwrap_or(false)
-}
-
-fn unauthorized() -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::UNAUTHORIZED, Json(json!({ "success": false, "error": "unauthorized" })))
 }
 
 fn ok<T: serde::Serialize>(data: T) -> (StatusCode, Json<serde_json::Value>) {
@@ -113,70 +103,49 @@ fn fail(e: crate::types::Error) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(json!({ "success": false, "error": e.to_string() })))
 }
 
-// ========== Handlers ==========
+// ========== Handlers（认证由 AuthLayer 统一处理，handler 只做业务） ==========
 
-async fn get_config(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let snap = state.config.nexus_snapshot().await;
     ok(snap)
 }
 
-async fn add_provider(State(state): State<AppState>, headers: HeaderMap, Json(cfg): Json<ProviderConfig>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn add_provider(State(state): State<AppState>, Json(cfg): Json<ProviderConfig>) -> impl IntoResponse {
     match state.config.add_provider(cfg).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
-async fn remove_provider(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<NameRequest>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn remove_provider(State(state): State<AppState>, Json(req): Json<NameRequest>) -> impl IntoResponse {
     match state.config.remove_provider(&req.name).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
-async fn set_default(State(state): State<AppState>, headers: HeaderMap, Json(pm): Json<ProviderModel>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn set_default(State(state): State<AppState>, Json(pm): Json<ProviderModel>) -> impl IntoResponse {
     match state.config.set_default_model(pm).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
-async fn add_channel(State(state): State<AppState>, headers: HeaderMap, Json(ch): Json<ChannelConfig>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn add_channel(State(state): State<AppState>, Json(ch): Json<ChannelConfig>) -> impl IntoResponse {
     match state.config.add_channel(ch).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
-async fn remove_channel(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<ChannelIdRequest>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn remove_channel(State(state): State<AppState>, Json(req): Json<ChannelIdRequest>) -> impl IntoResponse {
     match state.config.remove_channel(&req.channel_id).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
-async fn add_admin(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<AddAdminRequest>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn add_admin(State(state): State<AppState>, Json(req): Json<AddAdminRequest>) -> impl IntoResponse {
     let admin = ChannelUser {
         messenger_id: Arc::new(req.messenger_id),
         user_id: Arc::new(req.user_id),
@@ -187,10 +156,7 @@ async fn add_admin(State(state): State<AppState>, headers: HeaderMap, Json(req):
     }
 }
 
-async fn remove_admin(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<RemoveAdminRequest>) -> impl IntoResponse {
-    if !check_api_key(&headers, &state.key) {
-        return unauthorized();
-    }
+async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdminRequest>) -> impl IntoResponse {
     match state.config.remove_admin(&req.channel_id, &req.messenger_id, &req.user_id).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
@@ -263,10 +229,10 @@ mod tests {
         let server = HttpServer::with_admin_key(manager.clone(), "admin-key-123".into(), "127.0.0.1".into(), 0);
         let app = server.build_router();
 
-        // 无 key → 401
+        // 无 key → 401（AuthLayer 拦截）
         let (status, _) = send(app.clone(), "GET", "/config", "", None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        // 错误 key → 401
+        // 错误 key → 401（AuthLayer 拦截）
         let (status, _) = send(app.clone(), "GET", "/config", "wrong", None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
