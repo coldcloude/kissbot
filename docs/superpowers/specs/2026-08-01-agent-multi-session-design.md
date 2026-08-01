@@ -20,23 +20,19 @@ pub struct ChannelConfig {
     pub channel_id: Arc<String>,
     pub ws_url: Arc<String>,
     pub admins: Arc<HashSet<ChannelUser>>,
-    pub bind: ChannelBinding,      // 必填（当前阶段，auto-bind 以后再做）
-    pub enabled: bool,
-}
-
-pub struct ChannelBinding {
-    pub user: ChannelUser,          // messenger_id + user_id
+    pub bind_user: ChannelUser,     // 必填（当前阶段，auto-bind 以后再做）
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub is_send_channel: bool,      // 是否选为该会话的发送 channel
+    pub enabled: bool,
 }
 ```
 
-- `default_bind_user: Option<ChannelUser>` → `bind: ChannelBinding`（必填）；`enabled_by_default` → `enabled`
-- **ChannelConfig 为唯一权威**：bind / enabled / agent_id / role_name / is_send_channel 的运行时修改（管理命令）经 ConfigManager 更新并 `save_nexus()` 回写
+- `default_bind_user: Option<ChannelUser>` → `bind_user: ChannelUser`（必填，扁平化）；`enabled_by_default` → `enabled`；新增 `agent_id` / `role_name` / `is_send_channel`
+- **ChannelConfig 为唯一权威**：bind_user / enabled / agent_id / role_name / is_send_channel 的运行时修改（管理命令）经 ConfigManager 更新并 `save_nexus()` 回写
 - **删除运行态 `bound_channels`**；coordinator 直接查 ConfigManager 的 channels
 - **运行态仅保存 per-channel mode**：`DashMap<channel_id, Mode>`（默认 `Mode::Role`，`/mode`、`/reenter` 修改，不回写，重启回 Role）
-- `/bind` 只设置 `bind.user`，不动 agent_id / role_name；`/unbind` **暂不进行任何操作**（返回提示即可），channel 必须保持 bind 状态
+- `/bind` 只设置 `bind_user`，不动 agent_id / role_name；`/unbind` **暂不进行任何操作**（返回提示即可），channel 必须保持 bind 状态
 - **保留值**：`agent_id = "0"`、`role_name = "0"`
   - `/agent` 无参 → agent_id = "0"；`/agent <id>` 不带 role → role_name = "0"
   - `/role` 无参 → role_name = "0"
@@ -64,17 +60,17 @@ pub struct SessionManager {
 }
 ```
 
-- `locate(channel_id) -> Option<Arc<Session>>`：按来源 channel 的 ChannelConfig.bind 三元组 + 运行态 mode 定位；不存在则创建（触发初始上下文构建）；agent 脱离态返回 None
+- `locate(channel_id) -> Option<Arc<Session>>`：按来源 channel 的 ChannelConfig（agent_id / role_name）+ 运行态 mode 定位；不存在则创建（触发初始上下文构建）；agent 脱离态返回 None
 - 绑定信息变化（/agent /role /mode /reenter /bind 回写后）：来源 channel 重新定位会话，必要时创建新会话；无任何 channel 绑定的会话销毁
 - **会话模型**：创建时取 `NexusRepo.default_model`；`/model` 调整来源 channel 所属会话的模型（运行态，不回写，重启后新会话回到 default_model）。coordinator 的全局 `current_model` 删除
-- **发送 channel**：取自绑定该会话的各 channel 的 `ChannelConfig.bind.is_send_channel`；均为 false 时首个绑定的 channel 兜底；`/send-channel on|off` 切换并回写（on 时清除同会话其他 channel 的标志）
+- **发送 channel**：取自绑定该会话的各 channel 的 `ChannelConfig.is_send_channel`；均为 false 时首个绑定的 channel 兜底；`/send-channel on|off` 切换并回写（on 时清除同会话其他 channel 的标志）
 - 锁粒度为会话级：不同会话的 agentic loop 可并行
 
 ## 3. 消息路由与 agentic loop
 
 ```
 上行消息（channel_id, msg）
-  → 查 ChannelConfig.bind（无 bind.user → 丢弃）
+  → 查 ChannelConfig（来源 channel 不在配置中 → 丢弃）
   → 按绑定三元组 + mode 写 channel 记录到记忆（事件模式 role_name 编码见 §4）
   → SessionManager::locate(channel_id)
     ├─ None（agent 脱离态）→ 仅管理命令可处理，普通消息丢弃
@@ -101,7 +97,7 @@ pub struct SessionManager {
 
 | 命令 | 语义 | 回写 |
 |------|------|------|
-| `/bind messenger <mid> <uid>` | 设置来源 channel 的 `bind.user`（不动 agent/role） | 是 |
+| `/bind messenger <mid> <uid>` | 设置来源 channel 的 `bind_user`（不动 agent/role） | 是 |
 | `/unbind ...` | 暂不操作，回复提示 | — |
 | `/agent [id] [role]` | 改来源 channel 的 agent_id（缺省 "0"）；role 缺省重置为 "0" | 是 |
 | `/role [name]` | 改来源 channel 的 role_name（缺省 "0"） | 是 |
@@ -118,10 +114,10 @@ pub struct SessionManager {
 
 ```
 加载配置（ConfigManager）
-→ 校验：enabled 的 channel 必须有 bind（当前阶段必填，缺失则告警并跳过该 channel）
-→ SessionManager 按全部 channel 的 bind 三元组去重生成会话集合（跳过 agent 脱离态）
+→ 校验：enabled 的 channel 必须有 bind_user（当前阶段必填，缺失则告警并跳过该 channel）
+→ SessionManager 按全部 channel 的（agent_id, role_name, mode）三元组去重生成会话集合（跳过 agent 脱离态）
 → 每个会话：model ← default_model；加载 ego + history + memory index 构建初始上下文
-→ 连接 enabled 的 channels，按 bind.user 发送绑定请求
+→ 连接 enabled 的 channels，按 bind_user 发送绑定请求
 → 协调器就绪
 ```
 
