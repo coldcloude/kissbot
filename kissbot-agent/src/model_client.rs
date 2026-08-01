@@ -25,12 +25,12 @@ impl ModelClient {
         let effective = self.config_manager.resolve_effective_config(pm).await
             .ok_or_else(|| Error::ModelProviderNotSupported(format!(
                 "provider/model 不存在: {}/{}", pm.provider, pm.model)))?;
-        let provider: Box<dyn Provider> = self.build_provider(&effective);
+        let provider: Box<dyn Provider> = self.build_provider(&effective)?;
         self.call_with_retry(&effective, provider, messages).await
     }
 
-    /// 按 provider_type 构建 Provider 实现（protocol 差异封装在 provider.rs，未知类型 panic）
-    fn build_provider(&self, effective: &EffectiveModelConfig) -> Box<dyn Provider> {
+    /// 按 provider_type 构建 Provider 实现（protocol 差异封装在 provider.rs，未知类型报错）
+    fn build_provider(&self, effective: &EffectiveModelConfig) -> Result<Box<dyn Provider>> {
         crate::provider::provider_for(self.client.clone(), &effective.provider_type, &effective.base_url, &effective.api_key)
     }
 
@@ -40,7 +40,7 @@ impl ModelClient {
         let pc = self.config_manager.provider_config_by_name(&pm.provider).await
             .ok_or_else(|| Error::ModelProviderNotSupported(format!("provider 不存在: {}", pm.provider)))?;
         let provider = crate::provider::provider_for(
-            self.client.clone(), &pc.provider_type, &pc.base_url, &pc.api_key);
+            self.client.clone(), &pc.provider_type, &pc.base_url, &pc.api_key)?;
         provider.list_models().await
     }
 

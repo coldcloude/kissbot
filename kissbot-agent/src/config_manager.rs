@@ -103,7 +103,7 @@ pub struct ChannelConfig {
     /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
     #[serde(alias = "default_bind_user")]
     pub bind_user: ChannelUser,
-    /// 绑定的 agent_id（"0" 或空 = 脱离 agent，该 channel 只处理管理命令）
+    /// 绑定的 agent_id（仅空 = 脱离 agent，该 channel 只处理管理命令；"0" = 挂载保留 agent "0"）
     #[serde(default)]
     pub agent_id: Arc<String>,
     #[serde(default)]

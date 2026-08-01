@@ -3,7 +3,6 @@
 // 可被 test import（injectApiKeys），也可 CLI 调用：node inject-key.mjs <key文件> <nexus.json路径>
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export async function injectApiKeys(keyFile, nexusPath) {

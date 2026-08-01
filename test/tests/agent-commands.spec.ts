@@ -72,18 +72,19 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/ℹ️ \/unbind 暂不支持/, 10000);
   });
 
-  test('TC-09: /agent 0 进入脱离态后普通消息被丢弃', async () => {
+  test('TC-09: /agent 0 挂载保留 agent "0"（无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
     cliAdmin.stdin('/send /agent 0');
     await cliAdmin.waitForOutput(/✅ 已设置 agent: 0 \/ role: 0/, 10000);
-    // 脱离态后发送普通消息，不应有任何 agent 回复
+    // 注意：/agent 0 是挂载保留 agent "0"（仅空 agent_id 才脱离），测试环境无 api_key → 无模型态
+    // 无模型态下普通消息被静默忽略：不进入 agentic loop，也不产生任何 agent 回复
     // 注意：channel 会把发送消息回显给群组成员（<< [u2:g1] ...hello），因此不能断言发送文本本身
-    // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（api_key 为空时若进入 loop 必然报错）
+    // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（若进入 loop，api_key 为空必然报错）
     const baseline = cliAdmin.getOutput();
     cliAdmin.stdin('/send hello');
     await sleep(3000);
     const tail = cliAdmin.getOutput().slice(baseline.length);
     expect(tail).not.toMatch(/模型调用失败/);
-    // 脱离态仍可执行管理命令
+    // 挂载态下管理命令仍可执行
     cliAdmin.stdin('/send /agent a1 r1');
     await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
   });

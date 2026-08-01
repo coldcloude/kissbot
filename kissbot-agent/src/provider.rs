@@ -21,12 +21,13 @@ pub trait Provider: Send + Sync {
 }
 
 /// 按 provider_type 构造 Provider 实现（"openai" | "anthropic"）
-/// 调用方先校验 provider_type 合法性，未知类型直接 panic
-pub fn provider_for(client: Arc<reqwest::Client>, provider_type: &str, base_url: &str, api_key: &str) -> Box<dyn Provider> {
+/// provider_type 来自 nexus.json / 管理 API（自由字符串，不做前置校验），
+/// 未知类型返回 Err（不 panic），由调用方优雅降级（如 no-model 态静默忽略）
+pub fn provider_for(client: Arc<reqwest::Client>, provider_type: &str, base_url: &str, api_key: &str) -> Result<Box<dyn Provider>> {
     match provider_type {
-        "openai" => Box::new(OpenAiProvider::new(client, base_url, api_key)),
-        "anthropic" => Box::new(AnthropicProvider::new(client, base_url, api_key)),
-        _ => panic!("provider_for: 未知 provider_type: {}", provider_type),
+        "openai" => Ok(Box::new(OpenAiProvider::new(client, base_url, api_key))),
+        "anthropic" => Ok(Box::new(AnthropicProvider::new(client, base_url, api_key))),
+        _ => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", provider_type))),
     }
 }
 
@@ -298,7 +299,15 @@ mod tests {
     #[test]
     fn provider_for_dispatches_by_type() {
         let client = Arc::new(reqwest::Client::new());
-        assert_eq!(provider_for(client.clone(), "openai", "u", "k").provider_type(), "openai");
-        assert_eq!(provider_for(client, "anthropic", "u", "k").provider_type(), "anthropic");
+        assert_eq!(provider_for(client.clone(), "openai", "u", "k").unwrap().provider_type(), "openai");
+        assert_eq!(provider_for(client, "anthropic", "u", "k").unwrap().provider_type(), "anthropic");
+    }
+
+    #[test]
+    fn provider_for_unknown_type_returns_err() {
+        let client = Arc::new(reqwest::Client::new());
+        let err = provider_for(client, "typo", "u", "k").err().expect("未知 provider_type 应返回 Err");
+        assert!(matches!(err, Error::ModelProviderNotSupported(_)), "未知类型应返回 ModelProviderNotSupported");
+        assert!(err.to_string().contains("未知 provider_type: typo"), "错误信息应指明未知类型");
     }
 }
