@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
-use crate::config_manager::ProviderModel;
+use crate::config_manager::{ChannelConfig, ProviderModel};
 use crate::types::{ContextMessage, MessageItem, Mode, SessionKey};
 
 /// 最大上下文消息数量，超过时触发重置
@@ -51,11 +51,13 @@ impl SessionContext {
     }
 
     /// 追加 tool call
+    #[allow(dead_code)]
     pub fn push_tool_call(&mut self, tool_name: String, parameters: serde_json::Value, time: String) {
         self.messages.push_back(ContextMessage::ToolCall { tool_name, parameters, time });
     }
 
     /// 追加 tool result
+    #[allow(dead_code)]
     pub fn push_tool_result(&mut self, tool_name: String, result: serde_json::Value, time: String) {
         self.messages.push_back(ContextMessage::ToolResult { tool_name, result, time });
     }
@@ -188,5 +190,119 @@ impl SessionManager {
     /// 读取来源 channel 的运行态模式（缺省角色模式）
     pub fn channel_mode(&self, channel_id: &str) -> Mode {
         self.channel_modes.get(channel_id).map(|m| m.value().clone()).unwrap_or(Mode::Role)
+    }
+
+    /// 从绑定该会话的多个 channel 中选定发送 channel：
+    /// is_send_channel=true 优先，否则选首个绑定；无匹配返回 None
+    pub fn resolve_send_channel(
+        &self,
+        key: &SessionKey,
+        channels: Vec<(String, Arc<ChannelConfig>)>,
+    ) -> Option<String> {
+        let mut first = None;
+        for (cid, ch) in channels {
+            if ch.agent_id.as_str() != key.agent_id || ch.role_name.as_str() != key.role_name {
+                continue;
+            }
+            if self.channel_mode(&cid) != key.mode {
+                continue;
+            }
+            if !ch.enabled {
+                continue;
+            }
+            if first.is_none() {
+                first = Some(cid.clone());
+            }
+            if ch.is_send_channel {
+                return Some(cid);
+            }
+        }
+        first
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config_manager::ChannelUser;
+
+    fn sample_channel(id: &str, agent: &str, role: &str, is_send: bool) -> ChannelConfig {
+        ChannelConfig {
+            channel_id: Arc::new(id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            agent_id: Arc::new(agent.into()),
+            role_name: Arc::new(role.into()),
+            is_send_channel: is_send,
+            enabled: true,
+        }
+    }
+
+    fn key(agent: &str, role: &str) -> SessionKey {
+        SessionKey { agent_id: agent.into(), role_name: role.into(), mode: Mode::Role }
+    }
+
+    #[test]
+    fn get_or_create_dedupes() {
+        let mgr = SessionManager::new();
+        let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let k = key("a1", "r1");
+        let (s1, created1) = mgr.get_or_create(&k, model.clone());
+        assert!(created1, "首次创建");
+        let (s2, created2) = mgr.get_or_create(&k, model.clone());
+        assert!(!created2, "同 key 复用");
+        assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
+        // 不同 mode 是不同会话
+        let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let (_s3, created3) = mgr.get_or_create(&k_event, model);
+        assert!(created3, "事件模式是独立会话");
+    }
+
+    #[test]
+    fn retain_prunes_unbound() {
+        let mgr = SessionManager::new();
+        let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let k1 = key("a1", "r1");
+        let k2 = key("a2", "r2");
+        mgr.get_or_create(&k1, model.clone());
+        mgr.get_or_create(&k2, model);
+        let mut keep = HashSet::new();
+        keep.insert(k1.clone());
+        mgr.retain(&keep);
+        assert!(mgr.get(&k1).is_some(), "仍在绑定集合的会话保留");
+        assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
+    }
+
+    #[test]
+    fn resolve_send_channel_flag_then_first() {
+        let mgr = SessionManager::new();
+        let k = key("a1", "r1");
+        let channels = vec![
+            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
+            ("c2".to_string(), Arc::new(sample_channel("c2", "a1", "r1", true))),
+            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
+        ];
+        assert_eq!(mgr.resolve_send_channel(&k, channels.clone()).as_deref(), Some("c2"), "is_send_channel 优先");
+
+        // 全 false → 首个绑定
+        let channels_all_false = vec![
+            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
+            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
+        ];
+        assert_eq!(mgr.resolve_send_channel(&k, channels_all_false).as_deref(), Some("c1"));
+
+        // 不同三元组 → None
+        let other = vec![("c9".to_string(), Arc::new(sample_channel("c9", "a9", "r9", true)))];
+        assert_eq!(mgr.resolve_send_channel(&k, other), None);
+    }
+
+    #[test]
+    fn channel_mode_default_role_and_set() {
+        let mgr = SessionManager::new();
+        assert_eq!(mgr.channel_mode("c1"), Mode::Role, "缺省角色模式");
+        mgr.set_channel_mode("c1", Mode::Event("e9".into()));
+        assert_eq!(mgr.channel_mode("c1"), Mode::Event("e9".into()));
+        assert_eq!(mgr.channel_mode("c2"), Mode::Role, "未设置仍为角色模式");
     }
 }

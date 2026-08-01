@@ -99,8 +99,22 @@ pub struct ChannelConfig {
     pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
     pub ws_url: Arc<String>,
     pub admins: Arc<HashSet<ChannelUser>>,
-    pub default_bind_user: Option<ChannelUser>,
-    pub enabled_by_default: bool,
+    /// 绑定用户（必填；auto-bind 功能以后再做）
+    /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
+    #[serde(alias = "default_bind_user")]
+    pub bind_user: ChannelUser,
+    /// 绑定的 agent_id（"0" 或空 = 脱离 agent，该 channel 只处理管理命令）
+    #[serde(default)]
+    pub agent_id: Arc<String>,
+    #[serde(default)]
+    pub role_name: Arc<String>,
+    /// 是否选为该会话的发送 channel
+    #[serde(default)]
+    pub is_send_channel: bool,
+    /// 是否启用（连接由 enabled 控制）
+    /// 旧字段名 enabled_by_default 别名兼容旧 nexus.json
+    #[serde(alias = "enabled_by_default")]
+    pub enabled: bool,
 }
 
 /// 机器人绑定身份 / 管理员身份统一结构
@@ -267,7 +281,6 @@ impl ConfigManager {
 
     // ---------- channels ----------
     /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
-    #[allow(dead_code)]
     pub async fn channels(&self) -> Vec<(String, Arc<ChannelConfig>)> {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
@@ -292,6 +305,24 @@ impl ConfigManager {
             let mut repo = self.nexus_repo.write().await;
             let map = Arc::make_mut(&mut repo.channels);
             map.remove(channel_id);
+        }
+        self.save_nexus().await
+    }
+
+    /// 修改 channel 配置并落盘（绑定/agent/role/is_send_channel 等运行时回写统一入口）
+    /// channel 不存在返回 ConfigNotFound
+    pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut ChannelConfig) + Send,
+    {
+        {
+            let repo = self.nexus_repo.write().await;
+            let swap = repo.channels.get(channel_id)
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+            let mut ch = swap.load().clone();
+            let ch_mut = Arc::make_mut(&mut ch);
+            f(ch_mut);
+            swap.store(ch);
         }
         self.save_nexus().await
     }
@@ -354,6 +385,7 @@ impl ConfigManager {
     // ---------- default 读写 ----------
     #[allow(dead_code)]
     pub async fn default_agent_id(&self) -> String { self.nexus_repo.read().await.default_agent_id.to_string() }
+    #[allow(dead_code)]
     pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
     pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
     /// 设置默认模型（(provider, model) 打包），落盘
@@ -479,6 +511,88 @@ mod tests {
         let err = manager.add_admin("nope", &admin).await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
         let err = manager.remove_admin("nope", "m1", "u1").await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+    }
+
+    fn sample_channel(id: &str) -> ChannelConfig {
+        ChannelConfig {
+            channel_id: Arc::new(id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            agent_id: Arc::new("0".into()),
+            role_name: Arc::new("0".into()),
+            is_send_channel: true,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn channel_config_new_shape_serde_roundtrip() {
+        let ch = sample_channel("web-main");
+        let json = serde_json::to_string(&ch).unwrap();
+        assert!(json.contains("\"bind_user\""), "应序列化 bind_user");
+        assert!(json.contains("\"agent_id\""));
+        assert!(json.contains("\"role_name\""));
+        assert!(json.contains("\"is_send_channel\""));
+        assert!(json.contains("\"enabled\""));
+        let back: ChannelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(*back.channel_id, "web-main");
+        assert_eq!(*back.bind_user.user_id, "u1");
+    }
+
+    #[test]
+    fn channel_config_old_shape_alias_migration() {
+        // 旧格式：default_bind_user / enabled_by_default，缺 agent_id/role_name/is_send_channel
+        let old = r#"{
+            "channel_id": "web-main",
+            "ws_url": "ws://127.0.0.1:8201",
+            "admins": [],
+            "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
+            "enabled_by_default": true
+        }"#;
+        let ch: ChannelConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(*ch.bind_user.messenger_id, "web");
+        assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
+        assert!(ch.agent_id.is_empty(), "缺省 agent_id 应为空（脱离态）");
+        assert!(ch.role_name.is_empty());
+        assert!(!ch.is_send_channel);
+    }
+
+    #[tokio::test]
+    async fn update_channel_mutates_and_persists() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        manager.add_channel(sample_channel("web-main")).await.unwrap();
+
+        // 修改 agent_id/role_name/is_send_channel
+        manager.update_channel("web-main", |c| {
+            c.agent_id = Arc::new("a1".into());
+            c.role_name = Arc::new("r1".into());
+            c.is_send_channel = false;
+        }).await.unwrap();
+
+        // 内存可见
+        let ch = manager.channels().await.into_iter()
+            .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
+        assert_eq!(*ch.agent_id, "a1");
+        assert!(!ch.is_send_channel);
+
+        // 落盘可见（重新读文件）
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
+        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
+
+        // channel 不存在报错
+        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
     }
 

@@ -264,7 +264,10 @@ mod tests {
         let (status, body) = send(app.clone(), "POST", "/config/channels", "admin-key-123",
             Some(serde_json::json!({
                 "channel_id": "web-main", "ws_url": "ws://127.0.0.1:8201",
-                "admins": [], "default_bind_user": null, "enabled_by_default": true
+                "admins": [],
+                "bind_user": { "messenger_id": "web", "user_id": "u1" },
+                "agent_id": "0", "role_name": "0",
+                "is_send_channel": false, "enabled": true
             }))).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);

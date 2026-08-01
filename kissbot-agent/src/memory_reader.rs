@@ -61,7 +61,7 @@ impl MemoryReader {
             Mode::Event(event_id) => {
                 json!({
                     "agent_id": agent_id,
-                    "role_name": format!("{}:{}", role_name, event_id),
+                    "role_name": format!("{}-{}", role_name, event_id),
                     "limit": MAX_RECENT_RECORDS,
                 })
             }

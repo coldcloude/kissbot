@@ -120,8 +120,7 @@ pub enum AdminCommand {
     Events,
     Reset,
     Model(ProviderModel),   // /model <provider> <model>
-    Agent(String),   // 新增：/agent <id>
-    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）；旧 Agent 变体 Task 3 删除
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）
     SetAgent { agent_id: Option<String>, role: Option<String> },
 }
 

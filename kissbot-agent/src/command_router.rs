@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::types::{AdminCommand, Error, Result};
+use crate::types::{AdminCommand, CommandEffect, Error, Mode, Result};
 use crate::config_manager::{ChannelUser, ConfigManager, ProviderModel};
-use crate::coordinator::AgentCoordinator;
+use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_ID, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
 
@@ -79,12 +79,16 @@ impl CommandRouter {
                     user_id: parts[2].to_string(),
                 })
             }
+            "agent" => {
+                // /agent [id] [role]：缺省 id 用保留 agent "0"，缺省 role 用保留 role "0"
+                let agent_id = parts.get(1).map(|s| s.to_string());
+                let role = parts.get(2).map(|s| s.to_string());
+                Ok(AdminCommand::SetAgent { agent_id, role })
+            }
             "role" => {
-                if parts.len() >= 2 {
-                    Ok(AdminCommand::SetRole(Some(parts[1].to_string())))
-                } else {
-                    Ok(AdminCommand::SetRole(None))
-                }
+                // /role [name]：缺省用保留 role "0"
+                let role = parts.get(1).map(|s| s.to_string());
+                Ok(AdminCommand::SetRole(role))
             }
             "mode" => {
                 if parts.len() < 2 {
@@ -112,6 +116,14 @@ impl CommandRouter {
                 }
                 Ok(AdminCommand::Reenter(parts[1].to_string()))
             }
+            "send-channel" => {
+                if parts.len() < 2 || !matches!(parts[1], "on" | "off") {
+                    return Err(Error::InvalidCommand(
+                        "格式: /send-channel on|off".to_string()
+                    ));
+                }
+                Ok(AdminCommand::SendChannel(parts[1] == "on"))
+            }
             "events" => Ok(AdminCommand::Events),
             "reset" => Ok(AdminCommand::Reset),
             "model" => {
@@ -123,91 +135,90 @@ impl CommandRouter {
                     model: parts[2].to_string(),
                 }))
             }
-            "agent" => {
-                if parts.len() < 2 {
-                    return Err(Error::InvalidCommand("格式: /agent <id>".to_string()));
-                }
-                Ok(AdminCommand::Agent(parts[1].to_string()))
-            }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]))),
         }
     }
 
-    /// 执行管理命令（返回回复文本和是否需要触发上下文重建）
-    /// 运行状态命令（bind/unbind/role/model/agent）走 coordinator 不回写；
-    /// admin/unadmin 走 ConfigManager NexusRepo 回写。
+    /// 执行管理命令（返回回复文本和协调器后续动作）
+    /// bind/agent/role/send-channel/admin/unadmin 走 ConfigManager 回写；
+    /// mode/reenter 改运行态模式（coordinator）；model 改会话模型（运行态）。
     pub async fn execute(
         command: &AdminCommand,
         config: &ConfigManager,
         coordinator: &AgentCoordinator,
         channel_id: &str,
-    ) -> Result<(String, bool)> {
+    ) -> Result<(String, CommandEffect)> {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                coordinator.bind_channel(channel_id, ChannelUser {
-                    messenger_id: Arc::new(messenger_id.clone()),
-                    user_id: Arc::new(user_id.clone()),
-                }).await;
-                Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), false))
+                config.update_channel(channel_id, |c| {
+                    c.bind_user = ChannelUser {
+                        messenger_id: Arc::new(messenger_id.clone()),
+                        user_id: Arc::new(user_id.clone()),
+                    };
+                }).await?;
+                Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::Relocate))
             }
             AdminCommand::Unbind { .. } => {
-                coordinator.unbind_channel(channel_id).await;
-                Ok((format!("✅ 已解绑 channel: {}", channel_id), false))
+                // 当前阶段 /unbind 暂不进行任何操作（channel 必须保持 bind 状态）
+                Ok(("ℹ️ /unbind 暂不支持，channel 需保持绑定状态".to_string(), CommandEffect::None))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
                 config.add_admin(channel_id, &ChannelUser {
                     messenger_id: Arc::new(messenger_id.clone()),
                     user_id: Arc::new(user_id.clone()),
                 }).await?;
-                Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), false))
+                Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
                 config.remove_admin(channel_id, messenger_id, user_id).await?;
-                Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), false))
+                Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
+            }
+            AdminCommand::SetAgent { agent_id, role } => {
+                let new_agent = agent_id.clone().unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
+                let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                config.update_channel(channel_id, |c| {
+                    c.agent_id = Arc::new(new_agent.clone());
+                    c.role_name = Arc::new(new_role.clone());
+                }).await?;
+                Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::Relocate))
             }
             AdminCommand::SetRole(role) => {
-                coordinator.set_current_role(role.clone()).await;
-                Ok((match role {
-                    Some(n) => format!("✅ 已切换角色为: {}", n),
-                    None => "✅ 已取消角色".into(),
-                }, true))
-            }
-            AdminCommand::Model(pm) => {
-                coordinator.set_current_model(pm.clone()).await?;
-                Ok((format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model), false))
-            }
-            AdminCommand::Agent(id) => {
-                coordinator.set_current_agent_id(id.clone()).await;
-                Ok((format!("✅ 已切换 agent 为: {}", id), true))
+                let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                config.update_channel(channel_id, |c| {
+                    c.role_name = Arc::new(new_role.clone());
+                }).await?;
+                Ok((format!("✅ 已设置 role: {}", new_role), CommandEffect::Relocate))
             }
             AdminCommand::ModeEvent(event_id) => {
-                let id = match event_id {
-                    Some(id) => id.clone(),
-                    None => uuid::Uuid::new_v4().to_string(),
-                };
-                // 模式切换由 Coordinator 处理，这里只返回新 event_id
-                Ok((format!("✅ 新事件 ID: {}", id), true))
+                let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                coordinator.set_channel_mode(channel_id, Mode::Event(id.clone())).await;
+                Ok((format!("✅ 新事件 ID: {}", id), CommandEffect::Relocate))
             }
             AdminCommand::ModeRole => {
-                Ok(("✅ 已切换为角色模式".to_string(), true))
+                coordinator.set_channel_mode(channel_id, Mode::Role).await;
+                Ok(("✅ 已切换为角色模式".to_string(), CommandEffect::Relocate))
             }
             AdminCommand::Reenter(event_id) => {
-                Ok((format!("✅ 将重进事件: {}", event_id), true))
+                coordinator.set_channel_mode(channel_id, Mode::Event(event_id.clone())).await;
+                Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::Relocate))
+            }
+            AdminCommand::SendChannel(on) => {
+                coordinator.set_send_channel(channel_id, *on).await?;
+                Ok((
+                    if *on { "✅ 已设为发送 channel".to_string() } else { "✅ 已取消发送 channel".to_string() },
+                    CommandEffect::None,
+                ))
             }
             AdminCommand::Events => {
-                // Events 由 Coordinator 通过 MemoryReader 查询
-                Ok(("📋 查询事件列表中...".to_string(), false))
+                let reply = coordinator.list_events(channel_id).await?;
+                Ok((reply, CommandEffect::None))
             }
             AdminCommand::Reset => {
-                Ok(("🔄 正在重置上下文...".to_string(), true))
+                Ok(("🔄 正在重置上下文...".to_string(), CommandEffect::ResetSession))
             }
-            AdminCommand::SetAgent { .. } => {
-                // 新命令：多会话改造（Task 3 重写本文件），旧 parser 不会构造该变体，此处占位保持编译
-                Err(Error::InvalidCommand("/agent 新语义待多会话改造实现".to_string()))
-            }
-            AdminCommand::SendChannel(_) => {
-                // 新命令：多会话改造（Task 3 重写本文件），旧 parser 不会构造该变体，此处占位保持编译
-                Err(Error::InvalidCommand("/send-channel 待多会话改造实现".to_string()))
+            AdminCommand::Model(pm) => {
+                coordinator.set_session_model(channel_id, pm.clone()).await?;
+                Ok((format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model), CommandEffect::None))
             }
         }
     }

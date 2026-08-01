@@ -4,7 +4,6 @@ use tracing::info;
 
 mod command_router;
 mod config_manager;
-mod context_builder;
 mod coordinator;
 mod http_server;
 mod model_client;
