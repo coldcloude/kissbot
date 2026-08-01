@@ -148,6 +148,7 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
+    pub default_system_prompt: Arc<String>,   // 保留 agent "0" 的默认系统提示词（不调 memory-ego 时用）
     pub init_agent_id: Arc<String>,
     pub init_role: Arc<String>,
     pub init_model: Arc<ProviderModel>,   // 种子 NexusRepo.default_model（(provider, model) 打包）
@@ -273,6 +274,9 @@ impl ConfigManager {
     pub fn mgmt_port(&self) -> u16 { self.agent_config.mgmt_port }
     #[allow(dead_code)]
     pub fn data_dir(&self) -> &str { &self.agent_config.data_dir }
+
+    #[allow(dead_code)]
+    pub fn default_system_prompt(&self) -> &str { &self.agent_config.default_system_prompt }
 
     /// 注册配置变更监听器
     #[allow(dead_code)]
@@ -463,6 +467,7 @@ mod tests {
             mgmt_host: Arc::new("127.0.0.1".into()),
             mgmt_port: 9090,
             ws_reconnect_interval_secs: 5,
+            default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
             init_agent_id: Arc::new("agent-1".into()),
             init_role: Arc::new("dev".into()),
             init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
