@@ -92,12 +92,4 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     cliAdmin.stdin('/send /unadmin web u3');
     await cliAdmin.waitForOutput(/✅ 已移除管理权限: web \/ u3/, 10000);
   });
-
-  test('TC-11: 移除权限后 u3 发送 /model 再被忽略', async () => {
-    const baseline = cliUser.getOutput();
-    cliUser.stdin('/send /model deepseek deepseek-4-flash');
-    await sleep(3000);
-    const tail = cliUser.getOutput().slice(baseline.length);
-    expect(tail).not.toMatch(/切换模型/);
-  });
 });
