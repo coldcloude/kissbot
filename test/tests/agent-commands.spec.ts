@@ -17,7 +17,7 @@ let cliUser: SpawnedCli;    // u3：admin/unadmin 测试对象
 // 等待 cli 输出（返回 Promise，用于"不应出现"的断言配合超时）
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
-test.describe.serial('agent 管理命令测试（/admin 与 /model，cli 经 channel-web 发送）', () => {
+test.describe.serial('agent 管理命令测试（多会话路由，cli 经 channel-web 发送）', () => {
 
   test.beforeAll(async () => {
     resetWorkspace();
@@ -41,31 +41,72 @@ test.describe.serial('agent 管理命令测试（/admin 与 /model，cli 经 cha
   });
 
   test('TC-01: 非管理员（u3）发送 /model 被忽略', async () => {
-    // 记录发送前的输出基线，只断言基线之后没有 agent 回复
     const baseline = cliUser.getOutput();
     cliUser.stdin('/send /model deepseek deepseek-4-flash');
-    // 等待一段时间确认没有 agent 回复
     await sleep(3000);
     const tail = cliUser.getOutput().slice(baseline.length);
-    expect(tail).not.toMatch(/切换模型|模型调用失败|不存在/);
+    expect(tail).not.toMatch(/切换模型|模型调用失败|不存在|未关联/);
   });
 
-  test('TC-02: 管理员（u2）发送 /admin web u3 添加管理权限', async () => {
+  test('TC-02: 管理员（u2）发送 /agent a1 r1 设置 channel 的 agent 与 role', async () => {
+    cliAdmin.stdin('/send /agent a1 r1');
+    await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
+  });
+
+  test('TC-03: 管理员（u2）发送 /admin web u3 添加管理权限', async () => {
     cliAdmin.stdin('/send /admin web u3');
     await cliAdmin.waitForOutput(/✅ 已添加管理权限: web \/ u3/, 10000);
   });
 
-  test('TC-03: u3 成为管理员后发送 /model 生效', async () => {
+  test('TC-04: u3 成为管理员后发送 /model 调整会话模型', async () => {
     cliUser.stdin('/send /model deepseek deepseek-4-flash');
     await cliUser.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-4-flash/, 15000);
   });
 
-  test('TC-04: 管理员（u2）发送 /unadmin web u3 移除权限', async () => {
+  test('TC-05: 管理员（u2）发送 /role r2 修改 channel 角色（回写并重定位会话）', async () => {
+    cliAdmin.stdin('/send /role r2');
+    await cliAdmin.waitForOutput(/✅ 已设置 role: r2/, 10000);
+  });
+
+  test('TC-06: 管理员（u2）发送 /mode event 进入事件模式（自动生成事件 ID）', async () => {
+    cliAdmin.stdin('/send /mode event');
+    await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
+  });
+
+  test('TC-07: 管理员（u2）发送 /send-channel on/off 切换发送 channel（回写）', async () => {
+    cliAdmin.stdin('/send /send-channel on');
+    await cliAdmin.waitForOutput(/✅ 已设为发送 channel/, 10000);
+    cliAdmin.stdin('/send /send-channel off');
+    await cliAdmin.waitForOutput(/✅ 已取消发送 channel/, 10000);
+  });
+
+  test('TC-08: /unbind 暂不操作，回复提示', async () => {
+    cliAdmin.stdin('/send /unbind messenger web');
+    await cliAdmin.waitForOutput(/ℹ️ \/unbind 暂不支持/, 10000);
+  });
+
+  test('TC-09: /agent 0 进入脱离态后普通消息被丢弃', async () => {
+    cliAdmin.stdin('/send /agent 0');
+    await cliAdmin.waitForOutput(/✅ 已设置 agent: 0 \/ role: 0/, 10000);
+    // 脱离态后发送普通消息，不应有任何 agent 回复
+    // 注意：channel 会把发送消息回显给群组成员（<< [u2:g1] ...hello），因此不能断言发送文本本身
+    // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（api_key 为空时若进入 loop 必然报错）
+    const baseline = cliAdmin.getOutput();
+    cliAdmin.stdin('/send hello');
+    await sleep(3000);
+    const tail = cliAdmin.getOutput().slice(baseline.length);
+    expect(tail).not.toMatch(/模型调用失败/);
+    // 脱离态仍可执行管理命令
+    cliAdmin.stdin('/send /agent a1 r1');
+    await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
+  });
+
+  test('TC-10: 管理员（u2）发送 /unadmin web u3 移除权限', async () => {
     cliAdmin.stdin('/send /unadmin web u3');
     await cliAdmin.waitForOutput(/✅ 已移除管理权限: web \/ u3/, 10000);
   });
 
-  test('TC-05: 移除权限后 u3 发送 /model 再被忽略', async () => {
+  test('TC-11: 移除权限后 u3 发送 /model 再被忽略', async () => {
     const baseline = cliUser.getOutput();
     cliUser.stdin('/send /model deepseek deepseek-4-flash');
     await sleep(3000);

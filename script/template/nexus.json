@@ -4,8 +4,11 @@
       "channel_id": "web-main",
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "u2" }],
-      "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
-      "enabled_by_default": true
+      "bind_user": { "messenger_id": "web", "user_id": "u1" },
+      "agent_id": "0",
+      "role_name": "0",
+      "is_send_channel": true,
+      "enabled": true
     }
   },
   "providers": {
