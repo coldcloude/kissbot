@@ -4,7 +4,7 @@
 
 **Goal:** 将 kissbot-agent 从单会话改造为多会话：nexus 按 (agent_id, role_name, mode) 三元组管理会话，各会话独立上下文/模型/模式状态，消息按来源 channel 的绑定配置路由，回复经会话发送 channel 发出。
 
-**Architecture:** 新增 SessionManager 模块（合并原 ContextBuilder 逻辑，删除 context_builder.rs）；ChannelConfig 扁平化为「配置即运行值」（bind_user/agent_id/role_name/is_send_channel/enabled 更新即回写 nexus.json），运行态仅保留 per-channel mode；Coordinator 按来源 channel 绑定三元组定位会话并路由，回复走会话发送 channel。
+**Architecture:** 新增 SessionManager 模块（合并原 ContextBuilder 逻辑）；ChannelConfig 扁平化为「配置即运行值」（bind_user/agent_id/role_name/is_send_channel/enabled 更新即回写 nexus.json），运行态仅保留 per-channel mode；Coordinator 按来源 channel 绑定三元组定位会话并路由，回复走会话发送 channel。
 
 **Tech Stack:** Rust + tokio + dashmap + arc-swap + axum；测试用 cargo test + Playwright（channel-web + cli）。
 
@@ -21,10 +21,11 @@
 - /unbind 暂不进行任何操作（回复提示）
 - /model 调整**来源 channel 所属会话**的模型（运行态，不回写）；会话模型初始取 `NexusRepo.default_model`
 - 运行态仅保存 per-channel mode（DashMap<channel_id, Mode>，不回写，重启回 Role）
+- **任务顺序约束**：Task 1、Task 2 必须保持 crate 可编译（纯增量）；Task 3 是原子集成改造（coordinator/command_router/ChannelConfig 强耦合，本任务内一次性落地，完成后整体编译）
 
 ---
 
-### Task 1: types.rs 基础类型改造（Mode 派生 + SessionKey + AdminCommand + CommandEffect）
+### Task 1: types.rs 基础类型改造（纯增量，保持可编译）
 
 **Files:**
 - Modify: `kissbot-agent/src/types.rs`
@@ -35,13 +36,14 @@
 - Produces:
   - `Mode` 增加 `PartialEq, Eq, Hash` 派生
   - `pub struct SessionKey { pub agent_id: String, pub role_name: String, pub mode: Mode }`（derive `Debug, Clone, PartialEq, Eq, Hash`）
-  - `AdminCommand`：删除 `Agent(String)`；`SetRole(Option<String>)` 保留；新增 `SetAgent { agent_id: Option<String>, role: Option<String> }`、`SendChannel(bool)`
+  - `AdminCommand`：**保留** `Agent(String)`（Task 3 删除），新增 `SetAgent { agent_id: Option<String>, role: Option<String> }`、`SendChannel(bool)`
   - `pub enum CommandEffect { None, Relocate, ResetSession }`（derive `Debug, Clone, Copy, PartialEq, Eq`）
   - `pub fn memory_role(key: &SessionKey) -> String`：事件模式返回 `format!("{}-{}", role_name, event_id)`，角色模式返回 role_name
+- 约束：本任务结束时 `cd kissbot-agent && cargo build` 必须通过（旧代码未受影响）
 
 - [ ] **Step 1: 写失败测试**
 
-在 `kissbot-agent/src/types.rs` 末尾的 `#[cfg(test)]` 模块（新建）加入：
+在 `kissbot-agent/src/types.rs` 末尾新增 `#[cfg(test)]` 模块：
 
 ```rust
 #[cfg(test)]
@@ -112,9 +114,10 @@ pub fn memory_role(key: &SessionKey) -> String {
 }
 ```
 
-`AdminCommand` 中 `Agent(String)` 替换为：
+`AdminCommand` 中 `Agent(String)` 变体**保留不动**，在其之后新增：
 
 ```rust
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）；旧 Agent 变体 Task 3 删除
     SetAgent { agent_id: Option<String>, role: Option<String> },
 ```
 
@@ -140,214 +143,29 @@ pub enum CommandEffect {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: 运行测试确认通过 + 编译验证**
 
-Run: `cd kissbot-agent && cargo test types::tests -v 2>&1 | tail -20`
-Expected: 2 个测试 PASS
+Run: `cd kissbot-agent && cargo test types::tests -v 2>&1 | tail -20 && cargo build 2>&1 | tail -5`
+Expected: 2 个测试 PASS，且 `cargo build` 无错误（旧代码兼容）
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add kissbot-agent/src/types.rs
-git commit -m "feat(agent): types 增加 SessionKey/CommandEffect/memory_role，AdminCommand 增加 SetAgent/SendChannel，Mode 支持 Hash"
+git commit -m "feat(agent): types 增加 SessionKey/CommandEffect/memory_role，Mode 支持 Hash，AdminCommand 增加 SetAgent/SendChannel（保留旧 Agent 变体）"
 ```
 
 ---
 
-### Task 2: config_manager.rs ChannelConfig 扁平化 + update_channel 回写接口
-
-**Files:**
-- Modify: `kissbot-agent/src/config_manager.rs`
-- Test: `kissbot-agent/src/config_manager.rs`（文件内 `#[cfg(test)]`）
-
-**Interfaces:**
-- Consumes: Task 1 的 `SessionKey` 不需要；本任务只改 ChannelConfig 结构
-- Produces:
-  - `ChannelConfig { channel_id, ws_url, admins, bind_user: ChannelUser, agent_id: Arc<String>, role_name: Arc<String>, is_send_channel: bool, enabled: bool }`
-  - serde 兼容旧文件：`bind_user` 别名 `default_bind_user`、`enabled` 别名 `enabled_by_default`、新字段 `#[serde(default)]`
-  - `pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()> where F: FnOnce(&mut ChannelConfig) + Send`：修改 channel 并落盘；channel 不存在返回 `Error::ConfigNotFound`
-  - `channels()` 去掉 `#[allow(dead_code)]`
-
-- [ ] **Step 1: 写失败测试**
-
-在 `kissbot-agent/src/config_manager.rs` 的 `#[cfg(test)]` 模块（`mod tests` 内）加入：
-
-```rust
-    fn sample_channel(id: &str) -> ChannelConfig {
-        ChannelConfig {
-            channel_id: Arc::new(id.into()),
-            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
-            admins: Arc::new(HashSet::new()),
-            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
-            agent_id: Arc::new("0".into()),
-            role_name: Arc::new("0".into()),
-            is_send_channel: true,
-            enabled: true,
-        }
-    }
-
-    #[test]
-    fn channel_config_new_shape_serde_roundtrip() {
-        let ch = sample_channel("web-main");
-        let json = serde_json::to_string(&ch).unwrap();
-        assert!(json.contains("\"bind_user\""), "应序列化 bind_user");
-        assert!(json.contains("\"agent_id\""));
-        assert!(json.contains("\"role_name\""));
-        assert!(json.contains("\"is_send_channel\""));
-        assert!(json.contains("\"enabled\""));
-        let back: ChannelConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(*back.channel_id, "web-main");
-        assert_eq!(*back.bind_user.user_id, "u1");
-    }
-
-    #[test]
-    fn channel_config_old_shape_alias_migration() {
-        // 旧格式：default_bind_user / enabled_by_default，缺 agent_id/role_name/is_send_channel
-        let old = r#"{
-            "channel_id": "web-main",
-            "ws_url": "ws://127.0.0.1:8201",
-            "admins": [],
-            "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
-            "enabled_by_default": true
-        }"#;
-        let ch: ChannelConfig = serde_json::from_str(old).unwrap();
-        assert_eq!(*ch.bind_user.messenger_id, "web");
-        assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
-        assert!(ch.agent_id.is_empty(), "缺省 agent_id 应为空（脱离态）");
-        assert!(ch.role_name.is_empty());
-        assert!(!ch.is_send_channel);
-    }
-
-    #[tokio::test]
-    async fn update_channel_mutates_and_persists() {
-        let dir = tempdir().unwrap();
-        let cfg = agent_config(dir.path().to_str().unwrap());
-        let manager = ConfigManager {
-            agent_config: cfg,
-            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
-            station_repo: Arc::new(RwLock::new(StationRepo::default())),
-            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
-            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
-        };
-        manager.add_channel(sample_channel("web-main")).await.unwrap();
-
-        // 修改 agent_id/role_name/is_send_channel
-        manager.update_channel("web-main", |c| {
-            c.agent_id = Arc::new("a1".into());
-            c.role_name = Arc::new("r1".into());
-            c.is_send_channel = false;
-        }).await.unwrap();
-
-        // 内存可见
-        let ch = manager.channels().await.into_iter()
-            .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
-        assert_eq!(*ch.agent_id, "a1");
-        assert!(!ch.is_send_channel);
-
-        // 落盘可见（重新读文件）
-        let saved: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
-        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
-
-        // channel 不存在报错
-        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
-        assert!(matches!(err, Error::ConfigNotFound(_)));
-    }
-```
-
-- [ ] **Step 2: 运行测试确认失败**
-
-Run: `cd kissbot-agent && cargo test config_manager::tests -v 2>&1 | tail -30`
-Expected: 编译失败（`ChannelConfig` 无 `bind_user`/`agent_id` 等字段，`update_channel` 未定义）
-
-- [ ] **Step 3: 实现**
-
-在 `kissbot-agent/src/config_manager.rs` 中，将 `ChannelConfig` 定义替换为：
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelConfig {
-    pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
-    pub ws_url: Arc<String>,
-    pub admins: Arc<HashSet<ChannelUser>>,
-    /// 绑定用户（必填；auto-bind 功能以后再做）
-    /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
-    #[serde(alias = "default_bind_user")]
-    pub bind_user: ChannelUser,
-    /// 绑定的 agent_id（"0" 或空 = 脱离 agent，该 channel 只处理管理命令）
-    #[serde(default)]
-    pub agent_id: Arc<String>,
-    #[serde(default)]
-    pub role_name: Arc<String>,
-    /// 是否选为该会话的发送 channel
-    #[serde(default)]
-    pub is_send_channel: bool,
-    /// 是否启用（连接由 enabled 控制）
-    /// 旧字段名 enabled_by_default 别名兼容旧 nexus.json
-    #[serde(alias = "enabled_by_default")]
-    pub enabled: bool,
-}
-```
-
-`channels()` 方法去掉 `#[allow(dead_code)]`（现在有调用方）：
-
-```rust
-    // ---------- channels ----------
-    /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
-    pub async fn channels(&self) -> Vec<(String, Arc<ChannelConfig>)> {
-        let repo = self.nexus_repo.read().await;
-        repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
-    }
-```
-
-在 `remove_channel` 之后新增：
-
-```rust
-    /// 修改 channel 配置并落盘（绑定/agent/role/is_send_channel 等运行时回写统一入口）
-    /// channel 不存在返回 ConfigNotFound
-    pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut ChannelConfig) + Send,
-    {
-        {
-            let repo = self.nexus_repo.write().await;
-            let swap = repo.channels.get(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
-            let mut ch = swap.load().clone();
-            let ch_mut = Arc::make_mut(&mut ch);
-            f(ch_mut);
-            swap.store(ch);
-        }
-        self.save_nexus().await
-    }
-```
-
-注意：`add_channel` / `add_admin` / `remove_admin` 里构造 `ChannelConfig` / 读写 `admins` 的代码路径不变（`default_bind_user` 引用已不存在，检查文件内其他 `default_bind_user` / `enabled_by_default` 引用，全部改为新字段名）。
-
-- [ ] **Step 4: 运行全部 config_manager 测试确认通过**
-
-Run: `cd kissbot-agent && cargo test config_manager::tests -v 2>&1 | tail -30`
-Expected: 全部 PASS（含原有 bootstrap/serde/provider 测试与新增 3 个）
-
-- [ ] **Step 5: 提交**
-
-```bash
-git add kissbot-agent/src/config_manager.rs
-git commit -m "feat(agent): ChannelConfig 扁平化（bind_user/agent_id/role_name/is_send_channel/enabled），旧字段别名兼容，新增 update_channel 回写接口"
-```
-
----
-
-### Task 3: session_manager.rs 新模块（合并 ContextBuilder，删除 context_builder.rs）
+### Task 2: session_manager.rs 新模块（纯增量，暂不删 context_builder）
 
 **Files:**
 - Create: `kissbot-agent/src/session_manager.rs`
-- Delete: `kissbot-agent/src/context_builder.rs`
+- Modify: `kissbot-agent/src/main.rs`（仅增加 `mod session_manager;`，**保留** `mod context_builder;`）
 - Test: `kissbot-agent/src/session_manager.rs`（文件内 `#[cfg(test)]`）
 
 **Interfaces:**
-- Consumes: Task 1 的 `SessionKey` / `Mode` / `memory_role`；Task 2 的 `ChannelConfig`；现有 `ProviderModel`
+- Consumes: Task 1 的 `SessionKey` / `Mode`；现有 `ProviderModel` / `ChannelConfig` / `ContextMessage` / `MessageItem`
 - Produces:
   - `pub struct SessionContext`（原 ContextBuilder 全部方法：`new` / `set_system_message` / `load_history` / `push_user_message` / `push_assistant` / `push_tool_call` / `push_tool_result` / `record_sent_content` / `is_self_echo` / `build` / `is_overflow` / `clear`）
   - `pub struct Session { pub key: SessionKey, pub context: tokio::sync::Mutex<SessionContext>, pub model: ArcSwap<ProviderModel> }`，`Session::new(key, model)`
@@ -358,21 +176,13 @@ git commit -m "feat(agent): ChannelConfig 扁平化（bind_user/agent_id/role_na
   - `retain(&self, keys: &HashSet<SessionKey>)`：只保留集合内的会话
   - `set_channel_mode(&self, channel_id: &str, mode: Mode)` / `channel_mode(&self, channel_id: &str) -> Mode`（缺省 `Mode::Role`）
   - `resolve_send_channel(&self, key: &SessionKey, channels: Vec<(String, Arc<ChannelConfig>)>) -> Option<String>`：`is_send_channel=true` 优先，否则首个绑定；都不匹配返回 None
+- 约束：本任务结束时 `cd kissbot-agent && cargo test` 必须全部通过（含既有测试），`cargo build` 无错误
 
 - [ ] **Step 1: 创建实现文件（含单测）**
 
-创建 `kissbot-agent/src/session_manager.rs`，完整内容见 Step 3（实现 + `#[cfg(test)]` 单测在一个文件中）。
+创建 `kissbot-agent/src/session_manager.rs`，完整内容见 Step 2（实现 + `#[cfg(test)]` 单测在一个文件中）。
 
-- [ ] **Step 2: 运行单测确认通过**
-
-Run: `cd kissbot-agent && cargo test session_manager::tests -v 2>&1 | tail -30`
-Expected: 4 个测试 PASS，覆盖：
-- `get_or_create_dedupes`：同 key 两次调用返回同一 Session，第二次 created=false；不同 mode 是独立会话
-- `retain_prunes_unbound`：两个会话，retain 只留一个，另一个被移除
-- `resolve_send_channel_flag_then_first`：三 channel 绑同 key，一个 is_send_channel=true → 选中它；全 false → 选首个；不同 key → None
-- `channel_mode_default_role_and_set`：缺省 Role，set 后生效
-
-- [ ] **Step 3: 实现（完整文件）**
+- [ ] **Step 2: 实现（完整文件）**
 
 `kissbot-agent/src/session_manager.rs` 全文：
 
@@ -685,40 +495,294 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 删除 context_builder.rs 并改 main.rs 模块声明**
+注意：本任务中 `ChannelConfig` 仍是旧结构（`default_bind_user` / `enabled_by_default`）——session_manager 的测试用新字段构造会在 Task 3 完成前编译失败。因此本任务先**不写测试中的 `sample_channel` 新字段**，改为：先创建 `session_manager.rs`（**不含** `#[cfg(test)]` 模块），跑 `cargo test` 确认既有测试仍全绿、编译通过并提交；测试随 Task 3 的 ChannelConfig 扁平化一并落地（Task 3 步骤 1 会给出完整测试代码）。
 
-删除文件 `kissbot-agent/src/context_builder.rs`（`git rm`）。`main.rs` 的模块声明 `mod context_builder;` 改为 `mod session_manager;`（本步骤只改声明，编译错误先不修，Task 4 完成 coordinator 后整体编译）。
+- [ ] **Step 3: main.rs 声明**
+
+`kissbot-agent/src/main.rs` 的模块声明区增加一行（**保留** `mod context_builder;`）：
+
+```rust
+mod session_manager;
+```
+
+- [ ] **Step 4: 编译验证（crate 必须仍编译）**
+
+Run: `cd kissbot-agent && cargo build 2>&1 | tail -10 && cargo test 2>&1 | tail -10`
+Expected: 编译通过；既有测试全部 PASS（本任务不新增可运行单测，单测随 Task 3 落地）
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add kissbot-agent/src/session_manager.rs kissbot-agent/src/main.rs
-git rm kissbot-agent/src/context_builder.rs
-git commit -m "feat(agent): 新增 SessionManager（合并 ContextBuilder），按会话管理上下文/模型/发送 channel 与 per-channel mode"
+git commit -m "feat(agent): 新增 SessionManager 模块（会话集合/上下文/发送 channel/per-channel mode），main 声明新模块"
 ```
 
 ---
 
-### Task 4: coordinator.rs 多会话路由改造
+### Task 3: 一体化集成改造（ChannelConfig 扁平化 + Coordinator/CommandRouter 重写，原子落地）
 
 **Files:**
-- Rewrite: `kissbot-agent/src/coordinator.rs`
-- Test: `kissbot-agent/src/coordinator.rs`（删除旧 bound_channels_init_logic 测试）
+- Modify: `kissbot-agent/src/config_manager.rs`（ChannelConfig 扁平化 + update_channel + channels() 去 allow + 3 个新测试）
+- Rewrite: `kissbot-agent/src/coordinator.rs`（多会话路由）
+- Rewrite: `kissbot-agent/src/command_router.rs`（命令新语义）
+- Modify: `kissbot-agent/src/types.rs`（删除旧 `Agent(String)` 变体）
+- Modify: `kissbot-agent/src/main.rs`（删除 `mod context_builder;`，保留 `mod session_manager;`）
+- Delete: `kissbot-agent/src/context_builder.rs`
+- Modify: `kissbot-agent/src/memory_reader.rs`（事件编码冒号改横线）
+- Modify: `kissbot-agent/src/http_server.rs`（测试 channel JSON 适配新结构）
+- Test: `kissbot-agent/src/session_manager.rs`（本任务补充 4 个单测，见步骤 4 完整代码）
 
 **Interfaces:**
-- Consumes: Task 1（SessionKey/CommandEffect/memory_role/AdminCommand）、Task 2（ChannelConfig 新结构/update_channel）、Task 3（SessionManager/Session/SessionContext）
+- Consumes: Task 1（SessionKey/CommandEffect/memory_role/SetAgent/SendChannel）、Task 2（SessionManager/Session/SessionContext）
 - Produces:
+  - `ChannelConfig { channel_id, ws_url, admins, bind_user: ChannelUser, agent_id: Arc<String>, role_name: Arc<String>, is_send_channel: bool, enabled: bool }`（serde 别名 `default_bind_user`/`enabled_by_default` 兼容旧文件，新字段 `#[serde(default)]`）
+  - `ConfigManager::update_channel<F>(&self, channel_id: &str, f: F) -> Result<()> where F: FnOnce(&mut ChannelConfig) + Send`
   - `pub const RESERVED_AGENT_ID: &str = "0";` / `pub const RESERVED_ROLE_NAME: &str = "0";`
-  - `AgentCoordinator::new(config: Arc<ConfigManager>, memory_writer: MemoryWriter) -> Result<Arc<Self>>`（签名不变）
-  - 方法（CommandRouter 与内部使用）：`bind_channel` 删除；新增 `set_channel_mode(channel_id, mode)`、`set_send_channel(channel_id, on) -> Result<()>`、`set_session_model(channel_id, pm) -> Result<()>`、`list_events(channel_id) -> Result<String>`、`relocate_channel(channel_id)`、`reset_session_for(channel_id)`
+  - `AgentCoordinator` 方法：`set_channel_mode` / `set_send_channel(channel_id, on) -> Result<()>` / `set_session_model(channel_id, pm) -> Result<()>` / `list_events(channel_id) -> Result<String>` / `relocate_channel(channel_id)` / `reset_session_for(channel_id)`
+  - `CommandRouter::execute(command, config, coordinator, channel_id) -> Result<(String, CommandEffect)>`
+- 约束：本任务结束后 `cd kissbot-agent && cargo test` 全部 PASS、`cargo build` 无 warning 级错误
 
-- [ ] **Step 1: 更新 coordinator.rs 单元测试**
+- [ ] **Step 1: config_manager.rs ChannelConfig 扁平化 + update_channel + 测试**
 
-删除原 `bound_channels_init_logic` 测试（旧逻辑已删除；coordinator 逻辑依赖全局单例 KISSBOT_CONFIG 难以单测，路由核心由 Task 3 SessionManager 单测 + Task 7 集成测试覆盖）：
+在 `kissbot-agent/src/config_manager.rs` 中，将 `ChannelConfig` 定义替换为：
 
-删除 `#[cfg(test)]` 模块中从 `// 注：ConfigManager::new 依赖 KISSBOT_CONFIG 全局单例，单元测试难注入。` 注释开始的整个 `bound_channels_init_logic` 测试函数，及其上方 `use std::collections::HashSet;` 与 `use crate::config_manager::ChannelConfig;` 两行引用（`#[cfg(test)]` 模块保留为空）。
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelConfig {
+    pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
+    pub ws_url: Arc<String>,
+    pub admins: Arc<HashSet<ChannelUser>>,
+    /// 绑定用户（必填；auto-bind 功能以后再做）
+    /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
+    #[serde(alias = "default_bind_user")]
+    pub bind_user: ChannelUser,
+    /// 绑定的 agent_id（"0" 或空 = 脱离 agent，该 channel 只处理管理命令）
+    #[serde(default)]
+    pub agent_id: Arc<String>,
+    #[serde(default)]
+    pub role_name: Arc<String>,
+    /// 是否选为该会话的发送 channel
+    #[serde(default)]
+    pub is_send_channel: bool,
+    /// 是否启用（连接由 enabled 控制）
+    /// 旧字段名 enabled_by_default 别名兼容旧 nexus.json
+    #[serde(alias = "enabled_by_default")]
+    pub enabled: bool,
+}
+```
 
-- [ ] **Step 2: 重写 coordinator.rs**
+`channels()` 方法去掉 `#[allow(dead_code)]`：
+
+```rust
+    // ---------- channels ----------
+    /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
+    pub async fn channels(&self) -> Vec<(String, Arc<ChannelConfig>)> {
+        let repo = self.nexus_repo.read().await;
+        repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
+    }
+```
+
+在 `remove_channel` 之后新增：
+
+```rust
+    /// 修改 channel 配置并落盘（绑定/agent/role/is_send_channel 等运行时回写统一入口）
+    /// channel 不存在返回 ConfigNotFound
+    pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()>
+    where
+        F: FnOnce(&mut ChannelConfig) + Send,
+    {
+        {
+            let repo = self.nexus_repo.write().await;
+            let swap = repo.channels.get(channel_id)
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+            let mut ch = swap.load().clone();
+            let ch_mut = Arc::make_mut(&mut ch);
+            f(ch_mut);
+            swap.store(ch);
+        }
+        self.save_nexus().await
+    }
+```
+
+在 `#[cfg(test)]` 模块（`mod tests` 内）新增 3 个测试：
+
+```rust
+    fn sample_channel(id: &str) -> ChannelConfig {
+        ChannelConfig {
+            channel_id: Arc::new(id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            agent_id: Arc::new("0".into()),
+            role_name: Arc::new("0".into()),
+            is_send_channel: true,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn channel_config_new_shape_serde_roundtrip() {
+        let ch = sample_channel("web-main");
+        let json = serde_json::to_string(&ch).unwrap();
+        assert!(json.contains("\"bind_user\""), "应序列化 bind_user");
+        assert!(json.contains("\"agent_id\""));
+        assert!(json.contains("\"role_name\""));
+        assert!(json.contains("\"is_send_channel\""));
+        assert!(json.contains("\"enabled\""));
+        let back: ChannelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(*back.channel_id, "web-main");
+        assert_eq!(*back.bind_user.user_id, "u1");
+    }
+
+    #[test]
+    fn channel_config_old_shape_alias_migration() {
+        // 旧格式：default_bind_user / enabled_by_default，缺 agent_id/role_name/is_send_channel
+        let old = r#"{
+            "channel_id": "web-main",
+            "ws_url": "ws://127.0.0.1:8201",
+            "admins": [],
+            "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
+            "enabled_by_default": true
+        }"#;
+        let ch: ChannelConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(*ch.bind_user.messenger_id, "web");
+        assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
+        assert!(ch.agent_id.is_empty(), "缺省 agent_id 应为空（脱离态）");
+        assert!(ch.role_name.is_empty());
+        assert!(!ch.is_send_channel);
+    }
+
+    #[tokio::test]
+    async fn update_channel_mutates_and_persists() {
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        manager.add_channel(sample_channel("web-main")).await.unwrap();
+
+        // 修改 agent_id/role_name/is_send_channel
+        manager.update_channel("web-main", |c| {
+            c.agent_id = Arc::new("a1".into());
+            c.role_name = Arc::new("r1".into());
+            c.is_send_channel = false;
+        }).await.unwrap();
+
+        // 内存可见
+        let ch = manager.channels().await.into_iter()
+            .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
+        assert_eq!(*ch.agent_id, "a1");
+        assert!(!ch.is_send_channel);
+
+        // 落盘可见（重新读文件）
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
+        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
+
+        // channel 不存在报错
+        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+    }
+```
+
+- [ ] **Step 2: session_manager.rs 补充单测（ChannelConfig 新字段可用了）**
+
+在 `kissbot-agent/src/session_manager.rs` 文件末尾追加 `#[cfg(test)]` 模块（完整代码，含 `sample_channel` 新字段构造）：
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config_manager::ChannelUser;
+
+    fn sample_channel(id: &str, agent: &str, role: &str, is_send: bool) -> ChannelConfig {
+        ChannelConfig {
+            channel_id: Arc::new(id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            agent_id: Arc::new(agent.into()),
+            role_name: Arc::new(role.into()),
+            is_send_channel: is_send,
+            enabled: true,
+        }
+    }
+
+    fn key(agent: &str, role: &str) -> SessionKey {
+        SessionKey { agent_id: agent.into(), role_name: role.into(), mode: Mode::Role }
+    }
+
+    #[test]
+    fn get_or_create_dedupes() {
+        let mgr = SessionManager::new();
+        let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let k = key("a1", "r1");
+        let (s1, created1) = mgr.get_or_create(&k, model.clone());
+        assert!(created1, "首次创建");
+        let (s2, created2) = mgr.get_or_create(&k, model.clone());
+        assert!(!created2, "同 key 复用");
+        assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
+        // 不同 mode 是不同会话
+        let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let (_s3, created3) = mgr.get_or_create(&k_event, model);
+        assert!(created3, "事件模式是独立会话");
+    }
+
+    #[test]
+    fn retain_prunes_unbound() {
+        let mgr = SessionManager::new();
+        let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
+        let k1 = key("a1", "r1");
+        let k2 = key("a2", "r2");
+        mgr.get_or_create(&k1, model.clone());
+        mgr.get_or_create(&k2, model);
+        let mut keep = HashSet::new();
+        keep.insert(k1.clone());
+        mgr.retain(&keep);
+        assert!(mgr.get(&k1).is_some(), "仍在绑定集合的会话保留");
+        assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
+    }
+
+    #[test]
+    fn resolve_send_channel_flag_then_first() {
+        let mgr = SessionManager::new();
+        let k = key("a1", "r1");
+        let channels = vec![
+            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
+            ("c2".to_string(), Arc::new(sample_channel("c2", "a1", "r1", true))),
+            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
+        ];
+        assert_eq!(mgr.resolve_send_channel(&k, channels.clone()).as_deref(), Some("c2"), "is_send_channel 优先");
+
+        // 全 false → 首个绑定
+        let channels_all_false = vec![
+            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
+            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
+        ];
+        assert_eq!(mgr.resolve_send_channel(&k, channels_all_false).as_deref(), Some("c1"));
+
+        // 不同三元组 → None
+        let other = vec![("c9".to_string(), Arc::new(sample_channel("c9", "a9", "r9", true)))];
+        assert_eq!(mgr.resolve_send_channel(&k, other), None);
+    }
+
+    #[test]
+    fn channel_mode_default_role_and_set() {
+        let mgr = SessionManager::new();
+        assert_eq!(mgr.channel_mode("c1"), Mode::Role, "缺省角色模式");
+        mgr.set_channel_mode("c1", Mode::Event("e9".into()));
+        assert_eq!(mgr.channel_mode("c1"), Mode::Event("e9".into()));
+        assert_eq!(mgr.channel_mode("c2"), Mode::Role, "未设置仍为角色模式");
+    }
+}
+```
+
+- [ ] **Step 3: coordinator.rs 完整重写**
 
 完整替换 `kissbot-agent/src/coordinator.rs` 为以下代码（注意保留原注释语义，勿删注释）：
 
@@ -1363,30 +1427,9 @@ fn extract_text(content: &Content) -> String {
 }
 ```
 
-- [ ] **Step 3: 编译检查**
+注意：原 coordinator.rs 末尾的 `#[cfg(test)] mod tests`（`bound_channels_init_logic` 测试）整体删除——旧逻辑已删除，coordinator 依赖全局单例 KISSBOT_CONFIG 难以单测，路由核心由 SessionManager 单测 + Task 4 集成测试覆盖。
 
-Run: `cd kissbot-agent && cargo build 2>&1 | tail -30`
-Expected: 若 command_router.rs 仍是旧实现会编译失败（Task 5 修复），先确认除 command_router 外无其他错误。
-
-- [ ] **Step 4: 提交**
-
-```bash
-git add kissbot-agent/src/coordinator.rs
-git commit -m "feat(agent): Coordinator 多会话改造——按来源 channel 绑定三元组路由会话，会话级上下文/模型，回复走发送 channel，ChannelConfig 回写"
-```
-
----
-
-### Task 5: command_router.rs 命令解析与执行新语义
-
-**Files:**
-- Rewrite: `kissbot-agent/src/command_router.rs`
-
-**Interfaces:**
-- Consumes: Task 1（AdminCommand/CommandEffect）、Task 2（ConfigManager.update_channel）、Task 4（RESERVED_AGENT_ID/RESERVED_ROLE_NAME、set_channel_mode/set_send_channel/set_session_model/list_events）
-- Produces: `CommandRouter::execute(command, config, coordinator, channel_id) -> Result<(String, CommandEffect)>`（签名变更：返回效果而非 bool cmd_needs_reset）
-
-- [ ] **Step 1: 重写 command_router.rs**
+- [ ] **Step 4: command_router.rs 完整重写**
 
 完整替换 `kissbot-agent/src/command_router.rs`：
 
@@ -1618,34 +1661,24 @@ impl CommandRouter {
 }
 ```
 
-- [ ] **Step 2: 编译 + 全量测试**
+- [ ] **Step 5: types.rs 删除旧 Agent 变体 + main.rs 移除 context_builder + 删除文件**
 
-Run: `cd kissbot-agent && cargo test 2>&1 | tail -40`
-Expected: 编译通过，全部单测 PASS（types/config_manager/session_manager/http_server 等）
+`kissbot-agent/src/types.rs` 中删除 `Agent(String)` 变体（现在无人引用）：
 
-- [ ] **Step 3: 提交**
-
-```bash
-git add kissbot-agent/src/command_router.rs
-git commit -m "feat(agent): 管理命令新语义——agent/role 回写 channel 配置，mode 运行态，send-channel 切换，unbind 暂不支持，model 改会话模型"
+```rust
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）
+    SetAgent { agent_id: Option<String>, role: Option<String> },
 ```
 
----
+（删除其上方注释掉的旧 `Agent(String)` 行——实际是删除整行 `Agent(String),` 及其 doc 注释 `// 新增：/agent <id>`）
 
-### Task 6: memory_reader 事件编码改横线 + main.rs 适配
+`kissbot-agent/src/main.rs` 中删除 `mod context_builder;`（保留 `mod session_manager;`）。
 
-**Files:**
-- Modify: `kissbot-agent/src/memory_reader.rs`
-- Modify: `kissbot-agent/src/main.rs`
-- Modify: `kissbot-agent/src/http_server.rs`（测试 JSON 适配新 ChannelConfig 结构）
+删除文件：`git rm kissbot-agent/src/context_builder.rs`
 
-**Interfaces:**
-- Consumes: Task 1 的 `memory_role` 约定（`{role_name}-{event}`）
-- Produces: 事件模式读取侧编码由冒号改横线，与写入侧一致
+- [ ] **Step 6: memory_reader 事件编码改横线 + http_server 测试 JSON 适配**
 
-- [ ] **Step 1: memory_reader 事件编码改横线**
-
-在 `kissbot-agent/src/memory_reader.rs` 中，`read_history` 的事件分支改为横线拼接：
+`kissbot-agent/src/memory_reader.rs` 中，`read_history` 的事件分支改为横线拼接：
 
 ```rust
             Mode::Event(event_id) => {
@@ -1656,12 +1689,6 @@ git commit -m "feat(agent): 管理命令新语义——agent/role 回写 channel
                 })
             }
 ```
-
-- [ ] **Step 2: main.rs 模块声明**
-
-`kissbot-agent/src/main.rs` 中 `mod context_builder;` 改为 `mod session_manager;`。
-
-- [ ] **Step 3: http_server 测试 JSON 适配**
 
 `kissbot-agent/src/http_server.rs` 的测试 `config_endpoints_auth_and_crud` 中，添加 channel 的 JSON 改为：
 
@@ -1676,30 +1703,31 @@ git commit -m "feat(agent): 管理命令新语义——agent/role 回写 channel
             }))).await;
 ```
 
-- [ ] **Step 4: 编译 + 全量测试**
+- [ ] **Step 7: 全量测试 + 编译**
 
-Run: `cd kissbot-agent && cargo test 2>&1 | tail -40`
-Expected: 全部 PASS
+Run: `cd kissbot-agent && cargo build 2>&1 | tail -20 && cargo test 2>&1 | tail -30`
+Expected: 编译通过、无 warning；全部测试 PASS（config_manager 新增 3 + session_manager 新增 4 + types 2 + 既有全部）
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
-git add kissbot-agent/src/memory_reader.rs kissbot-agent/src/main.rs kissbot-agent/src/http_server.rs
-git commit -m "feat(agent): 事件记忆读取编码改 {role}-{event} 横线，与写入侧一致；模块声明与 http_server 测试适配新 ChannelConfig"
+git add kissbot-agent/src/types.rs kissbot-agent/src/config_manager.rs kissbot-agent/src/coordinator.rs kissbot-agent/src/command_router.rs kissbot-agent/src/main.rs kissbot-agent/src/memory_reader.rs kissbot-agent/src/http_server.rs kissbot-agent/src/session_manager.rs
+git rm kissbot-agent/src/context_builder.rs
+git commit -m "feat(agent): 多会话集成——ChannelConfig 扁平化回写、Coordinator 按会话路由、CommandRouter 新命令语义、删除 context_builder"
 ```
 
 ---
 
-### Task 7: 模板与 Playwright 集成测试适配 + 多会话用例
+### Task 4: 模板与 Playwright 集成测试适配 + 多会话用例
 
 **Files:**
 - Modify: `script/template/nexus.json`
 - Modify: `test/workspace-template/agent-data/nexus.json`
-- Modify: `test/tests/agent-config-api.spec.ts:81`（channel JSON 新结构）
+- Modify: `test/tests/agent-config-api.spec.ts`（channel JSON 新结构）
 - Modify: `test/tests/agent-commands.spec.ts`（新命令语义 + 多会话用例）
 
 **Interfaces:**
-- Consumes: 全部前序任务的可执行行为（agent 二进制）
+- Consumes: Task 3 的可执行行为（agent 二进制）
 - Produces: 验证多会话路由、发送 channel、命令回写与持久化的端到端测试
 
 - [ ] **Step 1: 模板 nexus.json 新结构**
@@ -1860,9 +1888,10 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
 
 Run:
 ```bash
+cd test && npx playwright test tests/agent-config-api.spec.ts 2>&1 | tail -30
 cd test && npx playwright test tests/agent-commands.spec.ts 2>&1 | tail -30
 ```
-Expected: 11 个用例全部 PASS（先 `npx playwright test tests/agent-config-api.spec.ts` 确认 API 测试也通过）
+Expected: agent-config-api 全部 PASS；agent-commands 11 个用例全部 PASS
 
 - [ ] **Step 5: 提交**
 
