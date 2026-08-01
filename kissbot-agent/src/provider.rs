@@ -11,6 +11,23 @@ use crate::types::{Error, MessageItem, ModelResponse, Result};
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse>;
+    /// 从服务商 API 获取全部可用模型名（GET /models）
+    /// 本期只落位：后续任务由管理 API（GET /models）消费
+    #[allow(dead_code)]
+    async fn list_models(&self) -> Result<Vec<String>>;
+    /// provider_type 标识（"openai" | "anthropic"），默认空串，供分发测试与运行时识别
+    #[allow(dead_code)]
+    fn provider_type(&self) -> &str { "" }
+}
+
+/// 按 provider_type 构造 Provider 实现（"openai" | "anthropic"）
+/// 调用方先校验 provider_type 合法性，未知类型直接 panic
+pub fn provider_for(client: Arc<reqwest::Client>, provider_type: &str, base_url: &str, api_key: &str) -> Box<dyn Provider> {
+    match provider_type {
+        "openai" => Box::new(OpenAiProvider::new(client, base_url, api_key)),
+        "anthropic" => Box::new(AnthropicProvider::new(client, base_url, api_key)),
+        _ => panic!("provider_for: 未知 provider_type: {}", provider_type),
+    }
 }
 
 // ========== OpenAI 兼容协议（/chat/completions） ==========
@@ -51,6 +68,14 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     ModelResponse { content, tool_calls: Vec::new(), finish_reason }
 }
 
+/// 从 OpenAI /models 响应中提取模型 id 列表（测试用解析函数，与网络解耦）
+#[allow(dead_code)]
+fn parse_openai_models(data: &serde_json::Value) -> Vec<String> {
+    data["data"].as_array()
+        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl Provider for OpenAiProvider {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
@@ -69,6 +94,24 @@ impl Provider for OpenAiProvider {
         let data: serde_json::Value = resp.json().await?;
         Ok(parse_openai_response(&data))
     }
+
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}/models", self.base_url.trim_end_matches('/'));
+        let resp = self.client.get(&url)
+            .timeout(Duration::from_secs(30))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::ModelApiError(format!("OpenAI models API {}: {}", status, text)));
+        }
+        let data: serde_json::Value = resp.json().await?;
+        Ok(parse_openai_models(&data))
+    }
+
+    fn provider_type(&self) -> &str { "openai" }
 }
 
 // ========== Anthropic 协议（/v1/messages） ==========
@@ -122,6 +165,14 @@ fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
     ModelResponse { content, tool_calls: Vec::new(), finish_reason }
 }
 
+/// 从 Anthropic /v1/models 响应中提取模型 id 列表（测试用解析函数，与网络解耦）
+#[allow(dead_code)]
+fn parse_anthropic_models(data: &serde_json::Value) -> Vec<String> {
+    data["data"].as_array()
+        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
 #[async_trait]
 impl Provider for AnthropicProvider {
     async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
@@ -141,6 +192,25 @@ impl Provider for AnthropicProvider {
         let data: serde_json::Value = resp.json().await?;
         Ok(parse_anthropic_response(&data))
     }
+
+    async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
+        let resp = self.client.get(&url)
+            .timeout(Duration::from_secs(30))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(Error::ModelApiError(format!("Anthropic models API {}: {}", status, text)));
+        }
+        let data: serde_json::Value = resp.json().await?;
+        Ok(parse_anthropic_models(&data))
+    }
+
+    fn provider_type(&self) -> &str { "anthropic" }
 }
 
 #[cfg(test)]
@@ -211,5 +281,24 @@ mod tests {
         let resp = parse_anthropic_response(&data);
         assert_eq!(resp.content, "答复");
         assert_eq!(resp.finish_reason, "end_turn");
+    }
+
+    #[test]
+    fn parse_openai_models_extracts_ids() {
+        let data = serde_json::json!({ "data": [ { "id": "deepseek-chat" }, { "id": "deepseek-reasoner" } ] });
+        assert_eq!(parse_openai_models(&data), vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]);
+    }
+
+    #[test]
+    fn parse_anthropic_models_extracts_ids() {
+        let data = serde_json::json!({ "data": [ { "id": "claude-3-5" } ] });
+        assert_eq!(parse_anthropic_models(&data), vec!["claude-3-5".to_string()]);
+    }
+
+    #[test]
+    fn provider_for_dispatches_by_type() {
+        let client = Arc::new(reqwest::Client::new());
+        assert_eq!(provider_for(client.clone(), "openai", "u", "k").provider_type(), "openai");
+        assert_eq!(provider_for(client, "anthropic", "u", "k").provider_type(), "anthropic");
     }
 }

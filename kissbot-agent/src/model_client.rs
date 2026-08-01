@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::config_manager::{ConfigManager, EffectiveModelConfig, ProviderModel};
-use crate::provider::{AnthropicProvider, OpenAiProvider, Provider};
+use crate::provider::Provider;
 use crate::types::{Error, MessageItem, ModelResponse, Result};
 
 pub struct ModelClient {
@@ -29,13 +29,9 @@ impl ModelClient {
         self.call_with_retry(&effective, provider, messages).await
     }
 
-    /// 按 provider_type 构建 Provider 实现（protocol 差异封装在 provider.rs）
+    /// 按 provider_type 构建 Provider 实现（protocol 差异封装在 provider.rs，未知类型 panic）
     fn build_provider(&self, effective: &EffectiveModelConfig) -> Box<dyn Provider> {
-        match effective.provider_type.as_str() {
-            "openai" => Box::new(OpenAiProvider::new(self.client.clone(), &effective.base_url, &effective.api_key)),
-            "anthropic" => Box::new(AnthropicProvider::new(self.client.clone(), &effective.base_url, &effective.api_key)),
-            other => Box::new(UnsupportedProvider { provider_type: other.to_string() }),
-        }
+        crate::provider::provider_for(self.client.clone(), &effective.provider_type, &effective.base_url, &effective.api_key)
     }
 
     /// 指数退避重试（retry_count 来自有效配置）
@@ -63,17 +59,5 @@ impl ModelClient {
         }
 
         Err(last_error.unwrap_or_else(|| Error::ModelApiError("模型调用失败".to_string())))
-    }
-}
-
-/// 未知 provider_type 时的占位实现（调用即报错）
-struct UnsupportedProvider {
-    provider_type: String,
-}
-
-#[async_trait::async_trait]
-impl Provider for UnsupportedProvider {
-    async fn send(&self, _effective: &EffectiveModelConfig, _messages: &[MessageItem]) -> Result<ModelResponse> {
-        Err(Error::ModelProviderNotSupported(self.provider_type.clone()))
     }
 }
