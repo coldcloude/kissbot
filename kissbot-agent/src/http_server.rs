@@ -19,8 +19,6 @@ pub struct HttpServer {
     #[allow(dead_code)]
     config: Arc<ConfigManager>,
     admin_api_key: String,
-    host: String,
-    port: u16,
 }
 
 // ========== 请求 DTO ==========
@@ -50,10 +48,11 @@ struct RemoveAdminRequest {
 }
 
 impl HttpServer {
-    /// 从 kissbot_security 全局配置读取 admin_api_key（与 channel-web / memory-ego 一致）
-    pub fn new(config: Arc<ConfigManager>, host: String, port: u16) -> Self {
+    /// 从 kissbot_security 全局配置读取 admin_api_key（与 channel-web / memory-ego 一致）；
+    /// 监听地址取 config 的 mgmt_host / mgmt_port
+    pub fn new(config: Arc<ConfigManager>) -> Self {
         let admin_api_key = kissbot_security::SecurityConfig::get().admin_api_key.to_string();
-        Self { config, admin_api_key, host, port }
+        Self { config, admin_api_key }
     }
 
     /// 构建 Router：认证统一走 AuthLayer（kissbot-security，与 channel-web / memory-ego 同款）
@@ -75,7 +74,7 @@ impl HttpServer {
 
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
     pub async fn start(&self) -> Result<()> {
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = format!("{}:{}", self.config.mgmt_host(), self.config.mgmt_port());
         let listener = TcpListener::bind(&addr).await
             .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
         info!("管理 API 服务器启动: {}", addr);
@@ -221,7 +220,7 @@ mod tests {
     async fn config_endpoints_auth_and_crud() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir).await;
-        let server = HttpServer::new(manager.clone(), "127.0.0.1".into(), 0);
+        let server = HttpServer::new(manager.clone());
         let app = server.build_router();
 
         // 无 key → 401（AuthLayer 拦截）

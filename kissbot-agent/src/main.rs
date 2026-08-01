@@ -40,12 +40,10 @@ async fn main() {
         .await
         .expect("初始化 Coordinator 失败");
 
-    // 4. 启动管理 API 服务器（后台，绑定 mgmt_host:mgmt_port）
+    // 4. 启动管理 API 服务器（后台，监听 config 的 mgmt_host:mgmt_port）
     let mgr_config = config.clone();
-    let host = mgr_config.mgmt_host().to_string();
-    let port = mgr_config.mgmt_port();
     tokio::spawn(async move {
-        let server = http_server::HttpServer::new(mgr_config, host, port);
+        let server = http_server::HttpServer::new(mgr_config);
         if let Err(e) = server.start().await {
             tracing::error!("管理 API 服务器退出: {:?}", e);
         }
