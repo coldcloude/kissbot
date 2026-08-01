@@ -238,19 +238,32 @@ impl ConfigManager {
         }
     }
 
-    pub async fn save_nexus(&self) -> Result<()> {
-        let repo = self.nexus_repo.read().await;
-        let json = serde_json::to_string_pretty(&*repo)?;
-        tokio::fs::write(&self.nexus_path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
-        Ok(())
+    /// 写 Nexus 配置（参考 WebMessengerRepo.write_config 模式）：
+    /// 获取写锁 → op 在 &mut NexusRepo 内直接修改 → 序列化 → 写文件，锁全程持有
+    async fn write_nexus_config<F, R>(&self, op: F) -> Result<R>
+    where
+        F: FnOnce(&mut NexusRepo) -> Result<R>,
+    {
+        let mut guard = self.nexus_repo.write().await;
+        let rst = op(&mut *guard)?;
+        let json = serde_json::to_string_pretty(&*guard)?;
+        tokio::fs::write(&self.nexus_path, json.as_bytes()).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        Ok(rst)
     }
 
+    /// 写 Station 配置（同 write_nexus_config 模式；station 功能未实现，暂无调用方）
     #[allow(dead_code)]
-    pub async fn save_station(&self) -> Result<()> {
-        let repo = self.station_repo.read().await;
-        let json = serde_json::to_string_pretty(&*repo)?;
-        tokio::fs::write(&self.station_path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
-        Ok(())
+    async fn write_station_config<F, R>(&self, op: F) -> Result<R>
+    where
+        F: FnOnce(&mut StationRepo) -> Result<R>,
+    {
+        let mut guard = self.station_repo.write().await;
+        let rst = op(&mut *guard)?;
+        let json = serde_json::to_string_pretty(&*guard)?;
+        tokio::fs::write(&self.station_path, json.as_bytes()).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        Ok(rst)
     }
 
     // ========== 静态配置 Getter（直接读，无锁） ==========
@@ -292,21 +305,19 @@ impl ConfigManager {
     }
     #[allow(dead_code)]
     pub async fn add_channel(&self, ch: ChannelConfig) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.channels);
             map.insert(ch.channel_id.to_string(), ArcSwap::new(Arc::new(ch)));
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
     #[allow(dead_code)]
     pub async fn remove_channel(&self, channel_id: &str) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.channels);
             map.remove(channel_id);
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
 
     /// 修改 channel 配置并落盘（绑定/agent/role/is_send_channel 等运行时回写统一入口）
@@ -315,16 +326,15 @@ impl ConfigManager {
     where
         F: FnOnce(&mut ChannelConfig) + Send,
     {
-        {
-            let repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
             f(ch_mut);
             swap.store(ch);
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
 
     // ---------- providers ----------
@@ -349,27 +359,25 @@ impl ConfigManager {
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
     pub async fn add_provider(&self, cfg: ProviderConfig) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.providers);
             if map.contains_key(&cfg.name.to_string()) {
                 return Err(Error::ConfigNotFound(format!("provider 已存在: {}", cfg.name)));
             }
             map.insert(cfg.name.to_string(), ArcSwap::new(Arc::new(cfg)));
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
     /// 删除 provider（不存在报 ConfigNotFound），落盘
     pub async fn remove_provider(&self, name: &str) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.providers);
             if !map.contains_key(name) {
                 return Err(Error::ConfigNotFound(format!("provider 不存在: {}", name)));
             }
             map.remove(name);
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
     /// 返回 NexusRepo 快照（管理 API GET /config 使用）
     pub async fn nexus_snapshot(&self) -> NexusRepo {
@@ -390,11 +398,10 @@ impl ConfigManager {
     pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
     /// 设置默认模型（(provider, model) 打包），落盘
     pub async fn set_default_model(&self, pm: ProviderModel) -> Result<()> {
-        {
-            let mut repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             *Arc::make_mut(&mut repo.default_model) = pm;
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
@@ -418,22 +425,20 @@ impl ConfigManager {
     }
     /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
-        {
-            let repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
             Arc::make_mut(&mut ch_mut.admins).insert(admin.clone());
             swap.store(ch);
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
     /// 移除管理权限（回写 NexusRepo；channel 不存在则报错）
     /// channel_id 定位 channel，messenger_id 为消息层身份（admin 条目的匹配键）
     pub async fn remove_admin(&self, channel_id: &str, messenger_id: &str, user_id: &str) -> Result<()> {
-        {
-            let repo = self.nexus_repo.write().await;
+        self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
             let mut ch = swap.load().clone();
@@ -441,8 +446,8 @@ impl ConfigManager {
             let target = ChannelUser { messenger_id: Arc::new(messenger_id.into()), user_id: Arc::new(user_id.into()) };
             Arc::make_mut(&mut ch_mut.admins).remove(&target);
             swap.store(ch);
-        }
-        self.save_nexus().await
+            Ok(())
+        }).await
     }
 }
 
@@ -490,7 +495,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_nexus_roundtrip() {
+    async fn nexus_json_file_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nexus.json");
         let cfg = agent_config(dir.path().to_str().unwrap());
@@ -500,6 +505,35 @@ mod tests {
         std::fs::write(&path, json).unwrap();
         let back: NexusRepo = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(*back.default_agent_id, "agent-1");
+    }
+
+    #[tokio::test]
+    async fn write_config_op_error_skips_persist() {
+        // write_nexus_config 模式语义：op 返回 Err 时不应序列化写盘（文件保持不变）
+        let dir = tempdir().unwrap();
+        let cfg = agent_config(dir.path().to_str().unwrap());
+        let manager = ConfigManager {
+            agent_config: cfg,
+            nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
+            station_repo: Arc::new(RwLock::new(StationRepo::default())),
+            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
+            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            listeners: DashMap::new(),
+        };
+        manager.add_channel(sample_channel("web-main")).await.unwrap();
+        let before = std::fs::read_to_string(dir.path().join("nexus.json")).unwrap();
+
+        // update_channel 的 op 前校验失败（channel 不存在）→ 返回 Err 且不落盘
+        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+        let after = std::fs::read_to_string(dir.path().join("nexus.json")).unwrap();
+        assert_eq!(before, after, "op 失败不应写入文件");
+
+        // 成功路径：落盘可见
+        manager.update_channel("web-main", |c| c.agent_id = Arc::new("a1".into())).await.unwrap();
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
+        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
     }
 
     #[tokio::test]
