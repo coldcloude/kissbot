@@ -40,7 +40,7 @@
     "init_role": "",
     "init_model": {
       "provider": "deepseek",
-      "model": "deepseek-4-flash"
+      "model": "deepseek-v4-flash"
     }
   }
 }
