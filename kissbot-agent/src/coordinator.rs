@@ -306,8 +306,6 @@ impl AgentCoordinator {
             }
             let channel_id = ch.channel_id.to_string();
             let ws_url = ch.ws_url.to_string();
-            // 绑定身份来自 ChannelConfig.bind_user
-            let bound_user = ch.bind_user.clone();
 
             let client = ChannelClient::new(
                 channel_id.clone(),
@@ -321,17 +319,23 @@ impl AgentCoordinator {
 
             let client_clone = coordinator.channel_clients.get(&channel_id).unwrap().clone();
             let api_key = api_key.clone();
+            // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 coordinator 引用
+            let coordinator_clone = coordinator.clone();
 
             tokio::spawn(async move {
                 loop {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
-                            // 绑定用户（BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let _ = client_clone.bind(BindRequest {
-                                messenger_id: bound_user.messenger_id.clone(),
-                                user_id: bound_user.user_id.clone(),
-                            }).await;
+                            // 绑定用户实时读取（BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
+                            let bind_user = coordinator_clone.channel_config(&channel_id).await
+                                .map(|c| c.bind_user.clone());
+                            if let Some(bu) = bind_user {
+                                let _ = client_clone.bind(BindRequest {
+                                    messenger_id: bu.messenger_id.clone(),
+                                    user_id: bu.user_id.clone(),
+                                }).await;
+                            }
                             // 等待断线通知（closed() 回调中 notify_one）
                             notify.notified().await;
                         }
@@ -439,7 +443,7 @@ impl AgentCoordinator {
 
         // 2. 管理命令
         if CommandRouter::is_command(&content_text) {
-            if CommandRouter::check_admin(&self.config, &messenger_id, &user_id).await {
+            if CommandRouter::check_admin(&self.config, channel_id, &messenger_id, &user_id).await {
                 self.handle_admin_command(channel_id, &content_text, &group_id).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop

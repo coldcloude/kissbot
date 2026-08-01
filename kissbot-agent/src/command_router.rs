@@ -12,13 +12,14 @@ impl CommandRouter {
         content.starts_with('/')
     }
 
-    /// 检查发送者是否为管理权限用户
+    /// 检查发送者是否为该来源 channel 的管理权限用户（per-channel，避免跨 channel 提权）
     pub async fn check_admin(
         config: &ConfigManager,
+        channel_id: &str,
         messenger_id: &str,
         user_id: &str,
     ) -> bool {
-        let admins = config.admin_users().await;
+        let admins = config.channel_admins(channel_id).await;
         admins.iter().any(|a| *a.messenger_id == messenger_id && *a.user_id == user_id)
     }
 

@@ -398,7 +398,8 @@ impl ConfigManager {
     }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
-    /// 聚合所有 channel 的 admins
+    /// 聚合所有 channel 的 admins（per-channel 检查改为 channel_admins 后暂无消费，保留）
+    #[allow(dead_code)]
     pub async fn admin_users(&self) -> Vec<ChannelUser> {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter()
@@ -407,6 +408,13 @@ impl ConfigManager {
                 c.admins.iter().cloned().collect::<Vec<ChannelUser>>()
             })
             .collect()
+    }
+    /// 读取指定 channel 的管理员列表（per-channel admin 检查用）
+    pub async fn channel_admins(&self, channel_id: &str) -> Vec<ChannelUser> {
+        let repo = self.nexus_repo.read().await;
+        repo.channels.get(channel_id)
+            .map(|s| s.load().admins.iter().cloned().collect())
+            .unwrap_or_default()
     }
     /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {

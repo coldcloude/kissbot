@@ -41,8 +41,10 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
   });
 
   test('TC-01: 非管理员（u3）发送 /model 被忽略', async () => {
+    // 记录发送前的输出基线，只断言基线之后没有 agent 回复
     const baseline = cliUser.getOutput();
     cliUser.stdin('/send /model deepseek deepseek-4-flash');
+    // 等待一段时间确认没有 agent 回复
     await sleep(3000);
     const tail = cliUser.getOutput().slice(baseline.length);
     expect(tail).not.toMatch(/切换模型|模型调用失败|不存在|未关联/);
