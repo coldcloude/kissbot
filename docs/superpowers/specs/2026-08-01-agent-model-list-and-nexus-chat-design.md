@@ -122,7 +122,7 @@ pub struct AgentConfig {
 
 ### 3.2 test 工作区模板
 
-- `test/workspace-template/agent-data/nexus.json`（新）：deepseek provider（api_key 空）+ models 含 `deepseek-4-flash`（现有测试用）与 `deepseek-v4-flash`（nexus-chat 用）；channel 配置预置 `agent_id: "0"`、`role_name: "0"`（配合 Part 2 的保留 agent 行为）。
+- `test/workspace-template/agent-data/nexus.json`（新）：deepseek provider（api_key 空）+ models 含 `deepseek-4-flash`（现有测试用）与 `deepseek-v4-flash`（nexus-chat 用）；channel 配置预置 `agent_id: ""`（初始脱离，由测试用无参 `/agent` 挂到保留 agent "0"，配合 Part 2 行为）。
 - `test/workspace-template/config.json`：agent 段补 `default_system_prompt`；`api` 段 `memory_store_url` / `memory_ego_url` 保持空（不依赖 memory 服务）。
 
 ### 3.3 测试基建
@@ -137,10 +137,11 @@ pub struct AgentConfig {
 
 ```
 beforeAll: resetWorkspace → injectAgentApiKeys → startBackend(8301) → startAgent(9090)
-           → spawnCli(web u2 g1) 等 bound（channel 模板预置 agent "0"，无需 /agent 也能文本）
-TC-1: /model deepseek deepseek-v4-flash → 断言"已切换模型为: deepseek/deepseek-v4-flash"
+           → spawnCli(web u2 g1) 等 bound
+TC-1: /agent（无参）→ 断言"已设置 agent: 0 / role: 0"（channel 挂到保留 agent "0"）
+TC-2: /model deepseek deepseek-v4-flash → 断言"已切换模型为: deepseek/deepseek-v4-flash"
       （真实 API 校验；key 已注入）
-TC-2: 普通文本"你好，请自我介绍" → 断言 CLI 收到 agent 非空回复（真实 LLM deepseek-v4-flash）
+TC-3: 普通文本"你好，请自我介绍" → 断言 CLI 收到 agent 非空回复（真实 LLM deepseek-v4-flash）
 ```
 
 不依赖 memory-ego（agent "0" 走默认提示词）与 memory-store（URL 空，history 读取优雅跳过、写入仅记日志）。
