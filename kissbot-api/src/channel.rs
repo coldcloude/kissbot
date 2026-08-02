@@ -58,6 +58,9 @@ pub struct OutgoingMessageResponse {
     pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub content: Content,  // 转换后的 content（已嵌入 key）
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +126,9 @@ pub struct IncomingMessage {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
 }
@@ -183,12 +189,18 @@ mod tests {
             messenger_id: Arc::new("messenger1".to_string()),
             group_id: Arc::new("group1".to_string()),
             user_id: Arc::new("user1".to_string()),
+            messenger_name: Arc::new("Messenger1Name".to_string()),
+            user_name: Arc::new("User1Name".to_string()),
+            group_name: Arc::new("Group1Name".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: GroupChangeNotification = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.messenger_id, "messenger1");
         assert_eq!(*deserialized.group_id, "group1");
         assert_eq!(*deserialized.user_id, "user1");
+        assert_eq!(*deserialized.messenger_name, "Messenger1Name");
+        assert_eq!(*deserialized.user_name, "User1Name");
+        assert_eq!(*deserialized.group_name, "Group1Name");
     }
 
     #[test]
@@ -196,11 +208,15 @@ mod tests {
         let obj = UserRemoveNotification {
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: UserRemoveNotification = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.messenger_id, "m1");
         assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.messenger_name, "M1Name");
+        assert_eq!(*deserialized.user_name, "U1Name");
     }
 
     #[test]
@@ -271,10 +287,16 @@ mod tests {
             msg_id: Arc::new("msg1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
             content,
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: OutgoingMessageResponse = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
+        assert_eq!(*deserialized.messenger_name, "M1Name");
+        assert_eq!(*deserialized.user_name, "U1Name");
+        assert_eq!(*deserialized.group_name, "G1Name");
         assert_eq!(deserialized.content, Content::Text(Arc::new("response content".to_string())));
     }
 
@@ -318,12 +340,18 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: IncomingMessage = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.msg_id, "msg1");
+        assert_eq!(*deserialized.messenger_name, "M1Name");
+        assert_eq!(*deserialized.user_name, "U1Name");
+        assert_eq!(*deserialized.group_name, "G1Name");
         assert_eq!(deserialized.content, Content::Text(Arc::new("Hello".to_string())));
     }
 

@@ -84,6 +84,9 @@ impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelP
         let record = ChannelRecord {
             user_id: user_id,
             is_self: request.is_self,
+            messenger_name: request.messenger_name.clone(),
+            user_name: request.user_name.clone(),
+            group_name: request.group_name.clone(),
             content: request.content.clone(),
             time: request.time.clone(),
             sn: 0,
@@ -297,6 +300,9 @@ use super::*;
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 1,
+            messenger_name: Arc::new("TelegramName".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
         };

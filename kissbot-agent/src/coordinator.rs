@@ -390,6 +390,9 @@ impl Terminal for AgentCoordinator {
                 user_id: message.user_id.clone(),
                 group_id: message.group_id.clone(),
                 is_self: message.is_self,
+                messenger_name: message.messenger_name.clone(),
+                user_name: message.user_name.clone(),
+                group_name: message.group_name.clone(),
                 content: message.content.clone(),
                 time: message.time.clone(),
             }).await;
@@ -628,6 +631,9 @@ impl AgentCoordinator {
                         user_id: bound.user_id.clone(),
                         group_id: Arc::new(group_id.to_string()),
                         is_self: 1,
+                        messenger_name: Arc::new(String::new()),
+                        user_name: Arc::new(String::new()),
+                        group_name: Arc::new(String::new()),
                         content: response.content.clone(),
                         time: response.time.clone(),
                     }).await;

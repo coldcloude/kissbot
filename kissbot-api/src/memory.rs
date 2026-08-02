@@ -15,6 +15,9 @@ pub struct ChannelRequest {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
 }
@@ -99,6 +102,9 @@ pub struct QueryRequest {
 pub struct ChannelRecord {
     pub user_id: Arc<String>,
     pub is_self: usize,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
     pub sn: u64,
@@ -203,12 +209,18 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.messenger_name, "M1Name");
+        assert_eq!(*deserialized.user_name, "U1Name");
+        assert_eq!(*deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(s) if s.as_str() == "Hello"));
     }
 
@@ -221,6 +233,9 @@ mod tests {
             user_id: Arc::new("u1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
             content: Content::Text(Arc::new("Hello".to_string())),
             time: Arc::new("t1".to_string()),
         };
@@ -343,6 +358,9 @@ mod tests {
         let mut channel = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 5,
@@ -367,6 +385,9 @@ mod tests {
         let r1 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
@@ -374,6 +395,9 @@ mod tests {
         let r2 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
             content: Content::Text(Arc::new("world".to_string())),
             time: Arc::new("2026-06-24 10:00:01".to_string()),
             sn: 1,
@@ -396,6 +420,9 @@ mod tests {
         let obj = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
             is_self: 0,
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
             content: Content::Text(Arc::new("hello".to_string())),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
@@ -403,6 +430,9 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.messenger_name, "M1Name");
+        assert_eq!(*deserialized.user_name, "U1Name");
+        assert_eq!(*deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(val) if val.as_str() == "hello"));
         assert_eq!(deserialized.sn, 1);
     }

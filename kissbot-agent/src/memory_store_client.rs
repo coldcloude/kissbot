@@ -24,6 +24,9 @@ pub struct ChannelRecord {
     pub user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
     pub content: Content,
     pub time: Arc<String>,
 }
@@ -92,6 +95,9 @@ impl FileAppendWriterContext<String, ChannelRecord> for MemoryStoreContext {
             user_id: r.user_id,
             group_id: r.group_id,
             is_self: r.is_self,
+            messenger_name: r.messenger_name,
+            user_name: r.user_name,
+            group_name: r.group_name,
             content: r.content,
             time: r.time,
         }).collect();

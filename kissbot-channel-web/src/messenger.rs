@@ -228,6 +228,8 @@ impl WebMessenger {
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id: self.messenger_id.clone(),
                     user_id: Arc::new(user_id.to_string()),
+                    messenger_name: Arc::new(String::new()),
+                    user_name: Arc::new(String::new()),
                 }),
                 time: Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
             });
@@ -374,6 +376,9 @@ impl WebMessenger {
             user_id: outgoing.user_id.clone(),
             group_id: outgoing.group_id.clone(),
             is_self: is_admin,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
             content: new_content.clone(),
             time: time.clone(),
         };
@@ -388,6 +393,9 @@ impl WebMessenger {
             msg_id,
             time,
             content: new_content,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
         }))
     }
     pub async fn send_stored(&self, msgs: Vec<IncomingMessage>) {
@@ -447,6 +455,9 @@ impl WebMessenger {
                     user_id: admin_msg.user_id.clone(),
                     group_id: admin_msg.group_id.clone(),
                     is_self,
+                    messenger_name: admin_msg.messenger_name.clone(),
+                    user_name: admin_msg.user_name.clone(),
+                    group_name: admin_msg.group_name.clone(),
                     content: admin_msg.content.clone(),
                     time: admin_msg.time.clone(),
                 });
@@ -471,6 +482,9 @@ impl WebMessenger {
                 messenger_id: self.messenger_id.clone(),
                 user_id: Arc::new(user_id.to_string()),
                 group_id: Arc::new(group_id.to_string()),
+                messenger_name: Arc::new(String::new()),
+                user_name: Arc::new(String::new()),
+                group_name: Arc::new(String::new()),
             }),
             change_type,
             time: Arc::new(time.to_string()),

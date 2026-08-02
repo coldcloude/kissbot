@@ -117,6 +117,9 @@ impl MockMessenger {
                     messenger_id,
                     group_id: Arc::new(group_id.to_string()),
                     user_id: Arc::new(user_id.to_string()),
+                    messenger_name: Arc::new(String::new()),
+                    user_name: Arc::new(String::new()),
+                    group_name: Arc::new(String::new()),
                 }),
                 change_type,
                 time: Arc::new(TEST_TIME.to_string()),
@@ -137,6 +140,8 @@ impl MockMessenger {
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id,
                     user_id: Arc::new(user_id.to_string()),
+                    messenger_name: Arc::new(String::new()),
+                    user_name: Arc::new(String::new()),
                 }),
                 time: Arc::new(TEST_TIME.to_string()),
             });
@@ -168,6 +173,9 @@ impl Messenger for MockMessenger {
             msg_id: Arc::new(format!("msg-{}", self.next_msg_id.fetch_add(1, Ordering::Relaxed))),
             time: Arc::new(TEST_TIME.to_string()),
             content,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new(String::new()),
+            group_name: Arc::new(String::new()),
         }))
     }
 
@@ -341,6 +349,9 @@ pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, tex
         user_id: Arc::new(user_id.to_string()),
         group_id: Arc::new(group_id.to_string()),
         is_self: 0,
+        messenger_name: Arc::new(String::new()),
+        user_name: Arc::new(String::new()),
+        group_name: Arc::new(String::new()),
         content: Content::Text(Arc::new(text.to_string())),
         time: Arc::new(TEST_TIME.to_string()),
     }

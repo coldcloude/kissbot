@@ -94,6 +94,9 @@ impl FileAppendWriterContext<String,MessageRecord> for MemorySenderContext {
                 user_id: record.message.user_id.clone(),
                 group_id: record.message.group_id.clone(),
                 is_self: record.message.is_self,
+                messenger_name: record.message.messenger_name.clone(),
+                user_name: record.message.user_name.clone(),
+                group_name: record.message.group_name.clone(),
                 content: record.message.content.clone(),
                 time: record.message.time.clone(),
             });

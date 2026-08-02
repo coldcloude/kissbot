@@ -10,6 +10,9 @@ pub struct GroupChangeNotification {
     pub messenger_id: Arc<String>,
     pub group_id: Arc<String>,
     pub user_id: Arc<String>,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
+    pub group_name: Arc<String>,
 }
 
 /// 用户移除通知
@@ -17,6 +20,8 @@ pub struct GroupChangeNotification {
 pub struct UserRemoveNotification {
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
+    pub messenger_name: Arc<String>,
+    pub user_name: Arc<String>,
 }
 
 // ========== 内容类型枚举 ==========
@@ -103,6 +108,9 @@ mod tests {
             messenger_id: Arc::new("m1".to_string()),
             group_id: Arc::new("g1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
         }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
@@ -115,6 +123,9 @@ mod tests {
             messenger_id: Arc::new("m1".to_string()),
             group_id: Arc::new("g1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
+            group_name: Arc::new("G1Name".to_string()),
         }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
@@ -126,6 +137,8 @@ mod tests {
         let content = Content::UserRemove(Arc::new(UserRemoveNotification {
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            messenger_name: Arc::new("M1Name".to_string()),
+            user_name: Arc::new("U1Name".to_string()),
         }));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
@@ -155,15 +168,23 @@ mod tests {
                 messenger_id: Arc::new("m1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                messenger_name: Arc::new("M1Name".to_string()),
+                user_name: Arc::new("U1Name".to_string()),
+                group_name: Arc::new("G1Name".to_string()),
             })),
             Content::GroupLeave(Arc::new(GroupChangeNotification {
                 messenger_id: Arc::new("m1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                messenger_name: Arc::new("M1Name".to_string()),
+                user_name: Arc::new("U1Name".to_string()),
+                group_name: Arc::new("G1Name".to_string()),
             })),
             Content::UserRemove(Arc::new(UserRemoveNotification {
                 messenger_id: Arc::new("m1".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                messenger_name: Arc::new("M1Name".to_string()),
+                user_name: Arc::new("U1Name".to_string()),
             })),
             Content::Multi(vec![
                 Content::Text(Arc::new("nested".to_string())),

@@ -51,6 +51,9 @@ pub fn group_change_to_incoming_message_event(message: Arc<GroupChangeEvent>) ->
         user_id: message.notification.user_id.clone(),
         group_id: message.notification.group_id.clone(),
         is_self: 1,
+        messenger_name: message.notification.messenger_name.clone(),
+        user_name: message.notification.user_name.clone(),
+        group_name: message.notification.group_name.clone(),
         content,
         time: message.time.clone(),
     });
