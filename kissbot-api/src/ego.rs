@@ -58,6 +58,7 @@ pub struct AgentMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleRelation {
     pub relation: Arc<String>,
+    pub full_name: Arc<String>,    // 新增
     pub description: Arc<String>,
 }
 
@@ -65,6 +66,7 @@ pub struct RoleRelation {
 pub struct Role {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
+    pub full_name: Arc<String>,    // 新增
     pub description: Arc<String>,
 }
 
@@ -237,6 +239,13 @@ pub struct UpdateRoleDescriptionRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub description: Arc<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateRoleFullNameRequest {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub full_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -605,6 +614,18 @@ mod tests {
     }
 
     #[test]
+    fn test_serde_update_role_full_name_request() {
+        let obj = UpdateRoleFullNameRequest {
+            agent_id: Arc::new("a1".to_string()),
+            role_name: Arc::new("admin".to_string()),
+            full_name: Arc::new("管理员".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: UpdateRoleFullNameRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.full_name, "管理员");
+    }
+
+    #[test]
     fn test_serde_get_other_role_request() {
         let obj = GetOtherRoleRequest {
             agent_id: Arc::new("a1".to_string()),
@@ -622,6 +643,7 @@ mod tests {
             individual_name: Arc::new("Bob".to_string()),
             role_relation: Arc::new(RoleRelation {
                 relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
                 description: Arc::new("works together".to_string()),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
@@ -681,6 +703,7 @@ mod tests {
     fn test_serde_update_other_role_relation_request() {
         let new_relation = Arc::new(RoleRelation {
             relation: Arc::new("friend".to_string()),
+            full_name: Arc::new(String::new()),
             description: Arc::new("friend".to_string()),
         });
         let obj = UpdateOtherRoleRelationRequest {
@@ -698,6 +721,7 @@ mod tests {
     fn test_serde_replace_other_role_relations_request() {
         let relation = Arc::new(RoleRelation {
             relation: Arc::new("friend".to_string()),
+            full_name: Arc::new(String::new()),
             description: Arc::new("friend".to_string()),
         });
         let obj = ReplaceOtherRoleRelationsRequest {

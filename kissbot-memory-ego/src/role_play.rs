@@ -214,6 +214,7 @@ impl RolePlayManager {
                         role: Arc::new(Role {
                             agent_id: Arc::new(agent_id.to_string()),
                             role_name: role_name.clone(),
+                            full_name: Arc::new(String::new()),
                             description,
                         }),
                         other_roles: Arc::new(ArcSwapHashMap::new()),
@@ -250,6 +251,7 @@ impl RolePlayManager {
                         role: Arc::new(Role {
                             agent_id: role.role.agent_id.clone(),
                             role_name: new_name.clone(),
+                            full_name: role.role.full_name.clone(),
                             description: role.role.description.clone(),
                         }),
                         other_roles: role.other_roles.clone()
@@ -271,6 +273,7 @@ impl RolePlayManager {
                         role: Arc::new(Role {
                             agent_id: role.role.agent_id.clone(),
                             role_name: role.role.role_name.clone(),
+                            full_name: role.role.full_name.clone(),
                             description,
                         }),
                         other_roles: role.other_roles.clone()
@@ -515,6 +518,7 @@ mod tests {
             individual_name: Arc::new("Bob".to_string()),
             role_relation: Arc::new(RoleRelation {
                 relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
                 description: Arc::new("Works together".to_string()),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
@@ -541,6 +545,7 @@ mod tests {
             individual_name: Arc::new("Bob".to_string()),
             role_relation: Arc::new(RoleRelation {
                 relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
                 description: Arc::new("".to_string()),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
@@ -570,6 +575,7 @@ mod tests {
             individual_name: Arc::new("Bob".to_string()),
             role_relation: Arc::new(RoleRelation {
                 relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
                 description: Arc::new("".to_string()),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
@@ -582,6 +588,7 @@ mod tests {
         ).await.unwrap();
         let relation = Arc::new(RoleRelation {
             relation: Arc::new("friend".to_string()),
+            full_name: Arc::new(String::new()),
             description: Arc::new("close friend".to_string()),
         });
         manager.replace_other_role_relations(

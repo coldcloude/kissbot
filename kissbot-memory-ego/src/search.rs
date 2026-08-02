@@ -440,6 +440,7 @@ mod tests {
             "role": {
                 "agent_id": agent_id,
                 "role_name": role_name,
+                "full_name": "",
                 "description": description
             },
             "other_roles": {}
