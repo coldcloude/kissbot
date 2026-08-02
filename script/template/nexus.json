@@ -1,9 +1,9 @@
 {
   "channels": {
-    "web-main": {
-      "channel_id": "web-main",
+    "web1": {
+      "channel_id": "web1",
       "ws_url": "ws://127.0.0.1:8201",
-      "admins": [{ "messenger_id": "web", "user_id": "u2" }],
+      "admins": [{ "messenger_id": "web", "user_id": "admin" }],
       "bind_user": { "messenger_id": "web", "user_id": "u1" },
       "agent_name": "",
       "role_name": "",
