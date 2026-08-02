@@ -159,9 +159,9 @@ use tokio;
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"A"},"time":"2026-06-24 08:00:00","sn":1}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"A"},"time":"2026-06-24 08:00:00","sn":1}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":B"},"time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"B"},"time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         // query range excludes A, includes B
@@ -171,7 +171,7 @@ use tokio;
 
         // write C (in range) after MemoryIndexer created
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"C"},"time":"2026-06-24 11:00:00","sn":3}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"C"},"time":"2026-06-24 11:00:00","sn":3}"#).await;
 
         // mark + query — incremental load picks up C
         indexer.mark_channel_obsolete(&key);
@@ -185,11 +185,11 @@ use tokio;
         let file_path = store_dir.join(&dir).join(&filename);
         tokio::fs::remove_file(&file_path).await.unwrap();
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"D"},"time":"2026-06-24 08:30:00","sn":4}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"D"},"time":"2026-06-24 08:30:00","sn":4}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"E"},"time":"2026-06-24 10:30:00","sn":5}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"E"},"time":"2026-06-24 10:30:00","sn":5}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"Text":"F"},"time":"2026-06-24 14:00:00","sn":6}"#).await;
+            r#"{"user_id":"u1","is_self":0,"msg_type":"text","content":{"msg_type":"Text","data":"F"},"time":"2026-06-24 14:00:00","sn":6}"#).await;
 
         // mark_all — full rebuild, only E in range
         indexer.mark_channel_all_obsolete(&key);
