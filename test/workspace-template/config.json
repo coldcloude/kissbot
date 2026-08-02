@@ -4,7 +4,7 @@
     "api_key": "user-key-456"
   },
   "memory": {
-    "root_dir": "data",
+    "root_dir": "memory-data",
     "store": {
       "listen_addr": "127.0.0.1",
       "listen_port": 8082
@@ -21,9 +21,9 @@
   "channel-web": {
     "messenger_id": "web",
     "admin_name": "管理员",
-    "messenger_repo": "channel-web-repo.json",
-    "attachment_dir": "attachments",
-    "message_dir": "messages",
+    "messenger_repo": "channel-data/channel-web-repo.json",
+    "attachment_dir": "channel-data/attachments",
+    "message_dir": "channel-data/messages",
     "ws_listen_addr": "127.0.0.1:8201",
     "http_listen_addr": "127.0.0.1:8301"
   },
