@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::types::{AdminCommand, CommandEffect, Error, Mode, Result};
 use crate::config_manager::{ChannelUser, ConfigManager, ProviderModel};
-use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_ID, RESERVED_ROLE_NAME};
+use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
 
@@ -81,13 +81,13 @@ impl CommandRouter {
                 })
             }
             "agent" => {
-                // /agent [id] [role]：缺省 id 用保留 agent "0"，缺省 role 用保留 role "0"
-                let agent_id = parts.get(1).map(|s| s.to_string());
+                // /agent [name] [role]：缺省 agent_name 用保留 agent（空），缺省 role 用保留 role（空）
+                let agent_name = parts.get(1).map(|s| s.to_string());
                 let role = parts.get(2).map(|s| s.to_string());
-                Ok(AdminCommand::SetAgent { agent_id, role })
+                Ok(AdminCommand::SetAgent { agent_name, role })
             }
             "role" => {
-                // /role [name]：缺省用保留 role "0"
+                // /role [name]：缺省用保留 role（空）
                 let role = parts.get(1).map(|s| s.to_string());
                 Ok(AdminCommand::SetRole(role))
             }
@@ -174,11 +174,11 @@ impl CommandRouter {
                 config.remove_admin(channel_id, messenger_id, user_id).await?;
                 Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
             }
-            AdminCommand::SetAgent { agent_id, role } => {
-                let new_agent = agent_id.clone().unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
+            AdminCommand::SetAgent { agent_name, role } => {
+                let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 config.update_channel(channel_id, |c| {
-                    c.agent_id = Arc::new(new_agent.clone());
+                    c.agent_name = Arc::new(new_agent.clone());
                     c.role_name = Arc::new(new_role.clone());
                 }).await?;
                 Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::Relocate))

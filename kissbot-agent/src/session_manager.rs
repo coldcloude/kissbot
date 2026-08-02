@@ -185,7 +185,7 @@ impl SessionManager {
     ) -> Option<String> {
         let mut first = None;
         for (cid, ch) in channels {
-            if ch.agent_id.as_str() != key.agent_id || ch.role_name.as_str() != key.role_name {
+            if ch.agent_name.as_str() != key.agent_name || ch.role_name.as_str() != key.role_name {
                 continue;
             }
             if self.channel_mode(&cid) != key.mode {
@@ -216,7 +216,7 @@ mod tests {
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
             bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
-            agent_id: Arc::new(agent.into()),
+            agent_name: Arc::new(agent.into()),
             role_name: Arc::new(role.into()),
             is_send_channel: is_send,
             enabled: true,
@@ -224,7 +224,7 @@ mod tests {
     }
 
     fn key(agent: &str, role: &str) -> SessionKey {
-        SessionKey { agent_id: agent.into(), role_name: role.into(), mode: Mode::Role }
+        SessionKey { agent_name: agent.into(), role_name: role.into(), mode: Mode::Role }
     }
 
     #[test]
@@ -238,7 +238,7 @@ mod tests {
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
-        let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let k_event = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let (_s3, created3) = mgr.get_or_create(&k_event, Some(model));
         assert!(created3, "事件模式是独立会话");
     }
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn get_or_create_with_none_model() {
         let mgr = SessionManager::new();
-        let key = SessionKey { agent_id: "a".into(), role_name: "r".into(), mode: Mode::Role };
+        let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
         let (s, created) = mgr.get_or_create(&key, None);
         assert!(created);
         assert!(s.model.load().is_none());

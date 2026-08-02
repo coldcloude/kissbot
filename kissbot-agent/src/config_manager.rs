@@ -75,8 +75,6 @@ pub struct NexusRepo {
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
-    pub default_agent_id: Arc<String>,
-    pub default_role: Arc<String>,
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
 }
 
@@ -87,8 +85,6 @@ impl Default for NexusRepo {
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
-            default_agent_id: Arc::new(String::new()),
-            default_role: Arc::new(String::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
         }
     }
@@ -103,9 +99,9 @@ pub struct ChannelConfig {
     /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
     #[serde(alias = "default_bind_user")]
     pub bind_user: ChannelUser,
-    /// 绑定的 agent_id（仅空 = 脱离 agent，该 channel 只处理管理命令；"0" = 挂载保留 agent "0"）
+    /// 绑定的 agent_name（代号；空 = 保留 agent，建会话用默认系统提示词，不调 memory-ego）
     #[serde(default)]
-    pub agent_id: Arc<String>,
+    pub agent_name: Arc<String>,
     #[serde(default)]
     pub role_name: Arc<String>,
     /// 是否选为该会话的发送 channel
@@ -148,9 +144,7 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
-    pub default_system_prompt: Arc<String>,   // 保留 agent "0" 的默认系统提示词（不调 memory-ego 时用）
-    pub init_agent_id: Arc<String>,
-    pub init_role: Arc<String>,
+    pub default_system_prompt: Arc<String>,   // 保留 agent 的默认系统提示词（不调 memory-ego 时用）
     pub init_model: Arc<ProviderModel>,   // 种子 NexusRepo.default_model（(provider, model) 打包）
 }
 
@@ -211,10 +205,8 @@ impl ConfigManager {
                 .map_err(|e| Error::ConfigParseError(e.to_string()))?;
             Ok(repo)
         } else {
-            // 首次创建：用 init_* 种子 3 个 default，集合为空
+            // 首次创建：用 init_model 种子 default_model，集合为空
             let repo = NexusRepo {
-                default_agent_id: cfg.init_agent_id.clone(),
-                default_role: cfg.init_role.clone(),
                 default_model: cfg.init_model.clone(),
                 ..NexusRepo::default()
             };
@@ -402,10 +394,6 @@ impl ConfigManager {
     }
 
     // ---------- default 读写 ----------
-    #[allow(dead_code)]
-    pub async fn default_agent_id(&self) -> String { self.nexus_repo.read().await.default_agent_id.to_string() }
-    #[allow(dead_code)]
-    pub async fn default_role(&self) -> String { self.nexus_repo.read().await.default_role.to_string() }
     pub async fn default_model(&self) -> ProviderModel { (*self.nexus_repo.read().await.default_model).clone() }
     /// 设置默认模型（(provider, model) 打包），落盘
     pub async fn set_default_model(&self, pm: ProviderModel) -> Result<()> {
@@ -474,8 +462,6 @@ mod tests {
             mgmt_port: 9090,
             ws_reconnect_interval_secs: 5,
             default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
-            init_agent_id: Arc::new("agent-1".into()),
-            init_role: Arc::new("dev".into()),
             init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         }
     }
@@ -486,8 +472,6 @@ mod tests {
         let path = dir.path().join("nexus.json");
         let cfg = agent_config(dir.path().to_str().unwrap());
         let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
-        assert_eq!(*repo.default_agent_id, "agent-1");
-        assert_eq!(*repo.default_role, "dev");
         assert_eq!(*repo.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
         assert!(repo.channels.is_empty());
         assert!(path.exists(), "首次创建应写文件");
@@ -500,10 +484,10 @@ mod tests {
         let cfg = agent_config(dir.path().to_str().unwrap());
         // 第一次创建
         let _ = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
-        // 改 init 不影响第二次（文件已存在为权威）
-        let cfg2 = AgentConfig { init_agent_id: Arc::new("changed".into()), ..cfg };
+        // 改 init_model 不影响第二次（文件已存在为权威）
+        let cfg2 = AgentConfig { init_model: Arc::new(ProviderModel { provider: "other".into(), model: "x".into() }), ..cfg };
         let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg2).await.unwrap();
-        assert_eq!(*repo.default_agent_id, "agent-1", "文件存在时 init_* 应被忽略");
+        assert_eq!(*repo.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }, "文件存在时 init_* 应被忽略");
     }
 
     #[tokio::test]
@@ -516,7 +500,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&repo).unwrap();
         std::fs::write(&path, json).unwrap();
         let back: NexusRepo = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(*back.default_agent_id, "agent-1");
+        assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
     }
 
     #[tokio::test]
@@ -542,10 +526,10 @@ mod tests {
         assert_eq!(before, after, "op 失败不应写入文件");
 
         // 成功路径：落盘可见
-        manager.update_channel("web-main", |c| c.agent_id = Arc::new("a1".into())).await.unwrap();
+        manager.update_channel("web-main", |c| c.agent_name = Arc::new("a1".into())).await.unwrap();
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
-        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
+        assert_eq!(saved["channels"]["web-main"]["agent_name"], "a1");
     }
 
     #[tokio::test]
@@ -574,8 +558,8 @@ mod tests {
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
             bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
-            agent_id: Arc::new("0".into()),
-            role_name: Arc::new("0".into()),
+            agent_name: Arc::new("".into()),
+            role_name: Arc::new("".into()),
             is_send_channel: true,
             enabled: true,
         }
@@ -586,7 +570,7 @@ mod tests {
         let ch = sample_channel("web-main");
         let json = serde_json::to_string(&ch).unwrap();
         assert!(json.contains("\"bind_user\""), "应序列化 bind_user");
-        assert!(json.contains("\"agent_id\""));
+        assert!(json.contains("\"agent_name\""));
         assert!(json.contains("\"role_name\""));
         assert!(json.contains("\"is_send_channel\""));
         assert!(json.contains("\"enabled\""));
@@ -597,7 +581,7 @@ mod tests {
 
     #[test]
     fn channel_config_old_shape_alias_migration() {
-        // 旧格式：default_bind_user / enabled_by_default，缺 agent_id/role_name/is_send_channel
+        // 旧格式：default_bind_user / enabled_by_default，缺 agent_name/role_name/is_send_channel
         let old = r#"{
             "channel_id": "web-main",
             "ws_url": "ws://127.0.0.1:8201",
@@ -608,7 +592,7 @@ mod tests {
         let ch: ChannelConfig = serde_json::from_str(old).unwrap();
         assert_eq!(*ch.bind_user.messenger_id, "web");
         assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
-        assert!(ch.agent_id.is_empty(), "缺省 agent_id 应为空（脱离态）");
+        assert!(ch.agent_name.is_empty(), "缺省 agent_name 应为空（保留 agent）");
         assert!(ch.role_name.is_empty());
         assert!(!ch.is_send_channel);
     }
@@ -627,9 +611,9 @@ mod tests {
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
 
-        // 修改 agent_id/role_name/is_send_channel
+        // 修改 agent_name/role_name/is_send_channel
         manager.update_channel("web-main", |c| {
-            c.agent_id = Arc::new("a1".into());
+            c.agent_name = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
             c.is_send_channel = false;
         }).await.unwrap();
@@ -637,13 +621,13 @@ mod tests {
         // 内存可见
         let ch = manager.channels().await.into_iter()
             .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
-        assert_eq!(*ch.agent_id, "a1");
+        assert_eq!(*ch.agent_name, "a1");
         assert!(!ch.is_send_channel);
 
         // 落盘可见（重新读文件）
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
-        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
+        assert_eq!(saved["channels"]["web-main"]["agent_name"], "a1");
 
         // channel 不存在报错
         let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
@@ -666,14 +650,10 @@ mod tests {
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
-            default_agent_id: Arc::new("agent-1".into()),
-            default_role: Arc::new("dev".into()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         };
         let json = serde_json::to_string(&repo).unwrap();
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
-        assert_eq!(*back.default_agent_id, "agent-1");
-        assert_eq!(*back.default_role, "dev");
         assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
     }
 
@@ -684,7 +664,6 @@ mod tests {
         assert!(repo.providers.is_empty());
         assert!(repo.memory_structs.is_empty());
         assert!(repo.stations.is_empty());
-        assert!(repo.default_agent_id.is_empty());
     }
 
     // ---------- Provider 配置 ----------

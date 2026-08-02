@@ -190,7 +190,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         let cfg_path = dir.path().join("config.json");
         let cfg_json = format!(
-            r#"{{"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5,"default_system_prompt":"你是 kissbot 智能助手","init_agent_id":"","init_role":"","init_model":{{"provider":"deepseek","model":"gpt-4o"}}}}}}"#,
+            r#"{{"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5,"default_system_prompt":"你是 kissbot 智能助手","init_model":{{"provider":"deepseek","model":"gpt-4o"}}}}}}"#,
             data_dir.to_str().unwrap()
         );
         std::fs::write(&cfg_path, cfg_json).unwrap();
@@ -266,7 +266,7 @@ mod tests {
                 "channel_id": "web-main", "ws_url": "ws://127.0.0.1:8201",
                 "admins": [],
                 "bind_user": { "messenger_id": "web", "user_id": "u1" },
-                "agent_id": "0", "role_name": "0",
+                "agent_name": "", "role_name": "",
                 "is_send_channel": false, "enabled": true
             }))).await;
         assert_eq!(status, StatusCode::OK);

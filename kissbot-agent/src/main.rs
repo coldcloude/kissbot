@@ -29,9 +29,6 @@ async fn main() {
             .expect("初始化配置失败")
     );
 
-    // 运行状态由 coordinator 持有，此处记录默认 agent id
-    info!("Agent ID: {}", config.default_agent_id().await);
-
     // 2. 初始化 MemoryWriter（思考/工具调用推送，非 channel 消息）
     let memory_writer = memory_writer::MemoryWriter::start();
 

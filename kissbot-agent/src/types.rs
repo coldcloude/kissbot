@@ -85,11 +85,11 @@ pub enum Mode {
 
 // ========== 会话标识 ==========
 
-/// 会话唯一标识：agent_id + role_name + mode 三元组
+/// 会话唯一标识：agent_name + role_name + mode 三元组
 /// 所有绑定 channel 的信息去重，每个三元组 = 一个会话
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
-    pub agent_id: String,
+    pub agent_name: String,
     pub role_name: String,
     pub mode: Mode,
 }
@@ -120,8 +120,8 @@ pub enum AdminCommand {
     Events,
     Reset,
     Model(ProviderModel),   // /model <provider> <model>
-    /// 设置 channel 绑定的 agent 与 role（缺省用保留值 "0"）
-    SetAgent { agent_id: Option<String>, role: Option<String> },
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_name=""、role_name=""）
+    SetAgent { agent_name: Option<String>, role: Option<String> },
 }
 
 // ========== 管理命令执行效果 ==========
@@ -229,9 +229,9 @@ mod tests {
     #[test]
     fn session_key_hash_eq_by_value() {
         use std::collections::HashSet;
-        let a = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let b = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let c = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let a = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let b = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let c = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 SessionKey 应命中 HashSet");
@@ -240,9 +240,9 @@ mod tests {
 
     #[test]
     fn memory_role_encodes_event_only() {
-        let role_key = SessionKey { agent_id: "a1".into(), role_name: "dev".into(), mode: Mode::Role };
+        let role_key = SessionKey { agent_name: "a1".into(), role_name: "dev".into(), mode: Mode::Role };
         assert_eq!(memory_role(&role_key), "dev");
-        let event_key = SessionKey { agent_id: "a1".into(), role_name: "dev".into(), mode: Mode::Event("e1".into()) };
+        let event_key = SessionKey { agent_name: "a1".into(), role_name: "dev".into(), mode: Mode::Event("e1".into()) };
         assert_eq!(memory_role(&event_key), "dev-e1");
     }
 }
