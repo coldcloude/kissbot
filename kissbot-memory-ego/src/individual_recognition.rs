@@ -225,6 +225,10 @@ impl IndividualRecognitionManager {
     }
 
     pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<String>, mut insert_relations: Vec<IndividualRelationEntry>) -> Result<()> {
+        // 校验新增 other_relations 的 key（individual_name 代号）
+        for entry in insert_relations.iter() {
+            validate_code(&entry.individual_name)?;
+        }
         self.write_individual_ref(agent_id, individual_name, |mut individual_arc| {
             let individual = Arc::make_mut(&mut individual_arc);
             let other_relations = Arc::make_mut(&mut individual.other_relations);
@@ -415,6 +419,58 @@ use super::*;
             vec![(Arc::new("a b".to_string()), individual)],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_individual_other_relations_rejects_invalid_key() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-invalid-rel").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        manager.get_individuals("agent-invalid-rel").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(HashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(ArcSwapHashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent-invalid-rel",
+            vec![],
+            vec![(Arc::new("Alice".to_string()), individual)],
+        ).await.unwrap();
+        let relation = Arc::new(IndividualRelation {
+            relation: Arc::new("friend".to_string()),
+            description: Arc::new("".to_string()),
+        });
+        // 非法 key 的 other_relations 插入应被拒
+        let result = manager.replace_individual_other_relations(
+            "agent-invalid-rel",
+            "Alice",
+            vec![],
+            vec![IndividualRelationEntry {
+                individual_name: "a b".to_string(),
+                relation,
+            }],
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+        // 合法 key 仍成功
+        let relation_ok = Arc::new(IndividualRelation {
+            relation: Arc::new("colleague".to_string()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_individual_other_relations(
+            "agent-invalid-rel",
+            "Alice",
+            vec![],
+            vec![IndividualRelationEntry {
+                individual_name: "Bob".to_string(),
+                relation: relation_ok,
+            }],
+        ).await.unwrap();
+        let alice = manager.get_individual("agent-invalid-rel", "Alice").await.unwrap();
+        assert!(alice.other_relations.contains_key("Bob"));
     }
 
     #[tokio::test]

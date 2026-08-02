@@ -339,6 +339,8 @@ impl RolePlayManager {
     }
 
     pub async fn rename_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_name: &str) -> Result<()> {
+        // 校验新 key（role_name 代号）
+        validate_code(new_name)?;
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
                 if role.other_roles.contains_key(new_name) {
@@ -607,6 +609,38 @@ mod tests {
         assert_eq!(*robert.individual_name, "Bob");
         let result = manager.get_other_role("agent-other-rename", "admin", "Bob").await;
         assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_other_role_rejects_invalid_code() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-other-rename-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-other-rename-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-other-rename-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-other-rename-invalid", "admin",
+            vec![],
+            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+        ).await.unwrap();
+        // 非法 new_name 应被拒
+        let result = manager.rename_other_role("agent-other-rename-invalid", "admin", "Bob", "a b").await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+        // 合法 new_name 仍成功
+        manager.rename_other_role("agent-other-rename-invalid", "admin", "Bob", "Robert2").await.unwrap();
+        let robert = manager.get_other_role("agent-other-rename-invalid", "admin", "Robert2").await.unwrap();
+        assert_eq!(*robert.individual_name, "Bob");
     }
 
     #[tokio::test]
