@@ -33,8 +33,6 @@
     "mgmt_port": 9090,
     "ws_reconnect_interval_secs": 5,
     "default_system_prompt": "你是 kissbot 智能助手",
-    "init_agent_id": "",
-    "init_role": "",
     "init_model": {
       "provider": "deepseek",
       "model": "deepseek-v4-flash"

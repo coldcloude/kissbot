@@ -80,11 +80,14 @@
 - 脏标记机制延迟更新搜索索引
 - 启动时自动加载所有 agent 和角色的数据到搜索索引
 - 支持按 agent 过滤的角色搜索
+- **Agent 搜索**：`name_index` 为 `individual_name -> agent_id` 全匹配（HashMap），`search_by_name` 返回 `Option<String>`（最多一个）；`name_completion`（individual_name 前缀补全）与 `name_descr_index`（[individual_name, description] 子串）保留
+- **Role 搜索**：`role_name_index`（role_name 子串）与 `role_name_completion`（role_name 前缀）不变；`role_name_descr_index` 索引 `[role_name, full_name, description]`（full_name 为展示文本）
 
 ### 5. API 服务器
-- Agent 元数据管理接口：创建、查询、更新名称/描述、复制、搜索、名称补全、批量获取
+- Agent 元数据管理接口：创建、查询、更新名称/描述、复制、搜索（search-name 全匹配返回 Option）、名称补全、批量获取
 - 个体识别信息管理接口：查询全部/单个个体、批量替换个体/标识/关系、重命名个体
-- 角色设定管理接口：列表、查询、创建、复制、删除、重命名、更新描述、搜索、名称补全；角色间关系增删改查
+- 角色设定管理接口：列表、查询、创建、复制、删除、重命名、更新描述/更新 full_name、搜索、名称补全；角色间关系增删改查
+- 代号校验：`role_name`/`individual_name` 写入入口强制 `^[A-Za-z0-9_]+$`（非空）
 
 ## Agent 自我认知数据模型
 
@@ -93,8 +96,8 @@
 - **个体识别信息**：个体列表，每项包含个体名称、身份识别（如所有者、管理员或其他个体）、个体所关联的消息通道身份、个体与其他个体的关系、个体描述
 
 ### 角色设定（每个 agent ID 对应多份）
-- **角色扮演**：角色名称、角色描述和该角色的自主运行目标
-- **角色间关系**：其他角色名称、该角色关联的个体名称、关系描述、关系类型
+- **角色扮演**：角色名称（代号）、full_name（展示文本）、角色描述和该角色的自主运行目标
+- **角色间关系**：其他角色名称（代号）、该角色关联的个体名称（代号）、关系描述、关系类型；RoleRelation 含 full_name（展示文本）
 
 ## 功能流程
 

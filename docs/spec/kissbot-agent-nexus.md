@@ -160,8 +160,17 @@
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | /role/get | 获取角色设定（role_name） |
-| POST | /agent/list | 获取 agent 元数据 |
+| POST | /agent/get | 获取 agent 元数据（按 agent_id） |
+| POST | /agent/search-name | 按 individual_name 全匹配返回 agent_id（Option） |
 | POST | /role/retrieve | 批量获取角色信息 |
+
+### agent_name 绑定与解析
+
+- channel 绑定使用 **agent_name**（= memory-ego 的 `AgentMetadata.individual_name`，代号）记录，配置字段为 `ChannelConfig.agent_name`
+- **保留 agent**：`agent_name == ""` 表示保留 agent（建会话、用 `default_system_prompt`、不调 memory-ego），其内部 agent_id 固定为 `"0"`
+- **agent_name == "0"** 为普通代号（正常解析，与保留无关）；不再有脱离态（`session_key_of` 去掉 Option，始终返回 SessionKey）
+- **解析**：coordinator 维护 `agent_name -> agent_id` 缓存（`resolve_agent_id`）；非空 agent_name 调 `/agent/search-name` 全匹配得 agent_id，失败/不可用回退 `agent_id="0"`
+- **memory-store/ego 用 agent_id（UUID）**：会话 key 用 agent_name（同步、无需解析），memory-store 目录与 ego 读取用解析后的 agent_id
 
 ## LLM API 适配
 

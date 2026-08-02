@@ -35,9 +35,9 @@ test.describe.serial('nexus-chat：真实 LLM 文本通信（deepseek）', () =>
     stopBackend(backend);
   });
 
-  test('TC-1: 无参 /agent 把 channel 挂到保留 agent 0', async () => {
+  test('TC-1: 无参 /agent 把 channel 挂到保留 agent（空 agent_name）', async () => {
     cli.stdin('/send /agent');
-    await cli.waitForOutput(/✅ 已设置 agent: 0 \/ role: 0/, 10000);
+    await cli.waitForOutput(/✅ 已设置 agent:  \/ role: /, 10000);
   });
 
   test('TC-2: /model 切换到 deepseek-v4-flash（真实 API 校验）', async () => {

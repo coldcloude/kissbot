@@ -5,8 +5,8 @@
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "u2" }],
       "bind_user": { "messenger_id": "web", "user_id": "u1" },
-      "agent_id": "",
-      "role_name": "0",
+      "agent_name": "",
+      "role_name": "",
       "is_send_channel": true,
       "enabled": true
     }
@@ -29,7 +29,5 @@
   },
   "memory_structs": {},
   "stations": {},
-  "default_agent_id": "",
-  "default_role": "",
   "default_model": { "provider": "deepseek", "model": "deepseek-v4-flash" }
 }

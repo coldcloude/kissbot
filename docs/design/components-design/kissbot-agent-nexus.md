@@ -5,7 +5,7 @@ Nexus — Agent 组件的 LLM 通信枢纽模块。智能体的"思考"部分，
 
 Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消息收发，与 memory-store、memory-ego 和 station 通过请求-响应方式通信。Agent 启动时可选择是否启用 nexus 模块。一个系统内可运行多个 agent 实例，每个实例可独立选择是否启用 nexus。
 
-一个 nexus 可同时管理多个会话。nexus 为每个绑定的 channel 配置 agent_id、role_name、mode，并将所有绑定项的信息去重，每个 agent_id+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读取范围与模式状态，并从绑定它的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送。
+一个 nexus 可同时管理多个会话。nexus 为每个绑定的 channel 配置 agent_name、role_name、mode，并将所有绑定项的信息去重，每个 agent_name+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读取范围与模式状态，并从绑定它的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送。
 
 ## 核心功能
 
@@ -36,7 +36,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个管理员，我要设置上下文消息数量上限，以防止上下文无限增长
 
 ### Epic 4：记忆读写
-- **目标**：在会话创建或重置时按会话的（agent_id、role_name、mode）从 memory-store 读取最近历史记录并从 memory-struct 读取顶层记忆索引；在agentic loop中将思考、tool call、tool result 写入记忆系统；将收发的通道消息写入记忆系统；各会话按自身模式（角色/事件）隔离记忆范围
+- **目标**：在会话创建或重置时按会话的（agent_name、role_name、mode）从 memory-store 读取最近历史记录（以解析后的 agent_id UUID 为存储键）并从 memory-struct 读取顶层记忆索引；在agentic loop中将思考、tool call、tool result 写入记忆系统；将收发的通道消息写入记忆系统；各会话按自身模式（角色/事件）隔离记忆范围
 - **依赖**：memory-store（记忆读写）、memory-struct（记忆索引）、memory-ego（自我认知信息）
 - **用户故事**：
   - 作为一个用户，我要询问智能体过往的对话内容，以让智能体回顾对话脉络并获取完整的历史信息
@@ -49,7 +49,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **目标**：作为客户端连接消息通道的服务端，支持多通道同时连接、心跳检测和断线重连
 - **依赖**：kissbot-channel（消息通道服务端和绑定协议）
 - **用户故事**：
-  - 作为一个管理员，我要配置通道绑定列表（每个绑定项指定 agent_id、role_name、mode），以让智能体启动时连接配置的通道并绑定用户、建立对应会话，实现与多个消息通道的通信
+  - 作为一个管理员，我要配置通道绑定列表（每个绑定项指定 agent_name、role_name、mode），以让智能体启动时连接配置的通道并绑定用户、建立对应会话，实现与多个消息通道的通信
   - 作为一个外部系统（消息通道），我要与智能体保持长连接，以保持通信的稳定性
   - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息，以让智能体收发消息并获取发送结果
 
@@ -67,11 +67,11 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 核心调度层，统一管理 nexus 所有入口（外部消息、定时器、API）
 - 管理 nexus 生命周期（启动、会话上下文重置）
 - 按消息来源 channel 对应的绑定配置定位会话，将外部输入路由到管理命令处理或该会话的agentic loop
-- 在会话创建或重置时按会话的 agent_id 和 role_name 从 memory-ego 加载自我认知信息设置为系统消息
+- 在会话创建或重置时按会话的 agent_name 解析出 agent_id（UUID）后，按该 agent_id 和 role_name 从 memory-ego 加载自我认知信息设置为系统消息
 
 ### 2. 配置管理器
 - 从配置文件加载所有配置
-- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_id、role_name、mode）、管理权限用户列表、station 地址列表、memory 组件地址
+- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode）、管理权限用户列表、station 地址列表、memory 组件地址
 - 支持运行时通过管理命令修改配置，修改后自动保存并通知监听器
 
 ### 3. LLM 客户端
@@ -84,7 +84,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 按会话管理内存中的 LLM 上下文消息列表
 - 在会话创建/重置时接收记忆读取器读取的历史记录构建初始上下文，自动包含系统消息
 - 运行时按会话增量追加用户消息和助手回复
-- 保存已发送消息标识（messenger_id、user_id、group_id、msg_id）列表，用于识别自身发送的消息
+- 每个 channel 维护运行时 ChannelContext，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
 - 会话上下文消息数量超上限时触发自动重置
 
 ### 5. 记忆读取器
@@ -92,23 +92,23 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **两级读取**：
   - 第一级：从 memory-store 读取最近若干条历史记录
   - 第二级：从 memory-struct 读取顶层记忆索引（如摘要列表），提供长期记忆概况
-- 按会话的（agent_id、role_name、mode）读取：角色模式会话读取该角色所有记录，事件模式会话只读本事件记录
+- 按会话的（agent_name、role_name、mode）定位，以解析后的（agent_id、role_name、mode）读取：角色模式会话读取该角色所有记录，事件模式会话只读本事件记录
 - 支持查询事件列表
 
 ### 6. 记忆写入器
 - agentic loop中 LLM 返回后，将思考内容、工具调用指令、工具结果写入 memory-store
-- 收到上行消息时，判断不是自身发送（使用 messenger_id、user_id、group_id、msg_id 与已发送记录比对）后写入 memory-store
+- 收到上行消息时，按 msg_id 查所属 channel 的未回显集合：命中（自身回显）则丢弃不写，未命中（非自身发送）后写入 memory-store（is_self=0）
 - 发送下行消息后，用发送的返回值补充、替换发送消息的内容，再写入 memory-store
 - 写入失败不重试，记录日志
 
 ### 7. 管理命令路由器
 - 识别以特定前缀开头的外部消息（管理命令）
 - 检查发送者是否在管理权限用户列表中
-- 解析命令类型：绑定/解绑通道（携带 agent_id、role_name、mode）、管理权限管理、修改通道绑定的角色或模式、重新进入事件、列出事件、重置会话上下文
+- 解析命令类型：绑定/解绑通道（携带 agent_name、role_name、mode）、管理权限管理、修改通道绑定的角色或模式、重新进入事件、列出事件、重置会话上下文
 - 调用对应处理器执行命令
 
 ### 8. 会话管理器
-- 汇总所有绑定 channel 的（agent_id、role_name、mode）信息并去重，维护会话集合
+- 汇总所有绑定 channel 的（agent_name、role_name、mode）信息并去重，维护会话集合
 - 按消息来源 channel 对应的绑定配置定位会话
 - 为每个会话从绑定它的多个 channel 中选定回复 channel，绑定信息变化时更新
 - 维护各会话的模式状态（角色模式/事件模式），默认角色模式
@@ -150,10 +150,10 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 检查消息来源和所属群组是否在绑定群组列表中
     ├─ 否 → 丢弃
     └─ 是 → 继续
-  → 检查发送记录（messenger_id、user_id、group_id、msg_id）
+  → 按 msg_id 查所属 channel 的未回显 outgoing 集合
     ├─ 匹配已发送记录 → 识别为自身发出的消息，丢弃（发送时已写入记忆，无需重复处理）
     └─ 非自身发送 → 记忆写入器将消息推送到写入队列，进入命令检查
-  → 按消息来源 channel 对应的绑定配置（agent_id、role_name、mode）定位会话
+  → 按消息来源 channel 对应的绑定配置（agent_name、role_name、mode）定位会话
   → 管理命令路由器检查是否以管理命令前缀开头
     ├─ 是 → 检查发送者是否在管理员列表中
     │   ├─ 是 → 对该会话执行管理命令，回复执行结果，如需要则触发该会话上下文重置
@@ -219,7 +219,7 @@ kissbot-agent 启动
 
 ### 会话定义与记忆模式隔离规则
 
-- 会话由（agent_id、role_name、mode）唯一标识，nexus 将所有绑定 channel 的信息去重生成会话集合，多个绑定相同三元组的 channel 共享同一会话
+- 会话由（agent_name、role_name、mode）唯一标识（agent_name 即绑定代号；memory-store/ego 读写用 agent_name 解析出的 agent_id UUID），nexus 将所有绑定 channel 的信息去重生成会话集合，多个绑定相同三元组的 channel 共享同一会话
 - 每个会话从绑定它的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送
 - 角色模式会话：记忆读取器读取该角色下所有记录（包括各事件期间的记录）
 - 事件模式会话：记忆读取器只读取本事件的记录
@@ -229,7 +229,7 @@ kissbot-agent 启动
 
 | 命令类别 | 用途 |
 |---------|------|
-| 绑定/解绑 | 绑定或解绑指定通道的用户，绑定携带 agent_id、role_name、mode |
+| 绑定/解绑 | 绑定或解绑指定通道的用户，绑定携带 agent_name、role_name、mode |
 | 管理权限管理 | 添加或移除用户的管理权限 |
 | 角色切换 | 修改指定通道绑定的角色 |
 | 模式切换 | 修改指定通道绑定的记忆模式（角色/事件） |
@@ -239,9 +239,9 @@ kissbot-agent 启动
 
 ### 自身发送消息识别
 
-- agent 自己发出的消息可能经通道再次返回，通过 messenger_id、user_id、group_id、msg_id 与已发送记录比对识别
-- 识别为自身发送的消息直接丢弃，不重复加入记忆（发送时已用返回值补充内容后写入记忆）
-- 判断不是自身发送的上行消息由记忆写入器加入记忆
+- agent 自己发出的消息（下行）经通道再次返回（回显）时，其 msg_id 与发送时 OutgoingMessageResponse 返回的 msg_id 一致
+- nexus 在发出 OutgoingMessage 拿到 response 后，把 response.msg_id 记入对应 channel 的 ChannelContext 未回显集合（TTL 懒清理，默认 60s）
+- 收到 IncomingMessage 时按 msg_id 查该集合：命中则移除并丢弃（发送时已写入记忆，无需重复处理）；未命中则视为普通上行消息写入记忆（is_self=0）
 
 ### 自动上下文重置
 
@@ -259,7 +259,7 @@ kissbot-agent 启动
 
 ### 通道连接管理
 
-- 启动时读取配置中的通道绑定列表（每项含 channel 身份与 agent_id、role_name、mode），为每个通道建立连接，连接后自动获取通道信息并发送绑定请求绑定指定用户
+- 启动时读取配置中的通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode），为每个通道建立连接，连接后自动获取通道信息并发送绑定请求绑定指定用户
 - 每个连接独立运行，支持心跳检测和断线自动重连
 - 上行消息按消息来源 channel 对应的绑定配置定位会话后送入协调器处理，下行消息通过该会话回复 channel 对应的连接发送，并接收通道返回的发送结果
 

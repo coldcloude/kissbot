@@ -72,10 +72,10 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/ℹ️ \/unbind 暂不支持/, 10000);
   });
 
-  test('TC-09: /agent 0 挂载保留 agent "0"（无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
-    cliAdmin.stdin('/send /agent 0');
-    await cliAdmin.waitForOutput(/✅ 已设置 agent: 0 \/ role: 0/, 10000);
-    // 注意：/agent 0 是挂载保留 agent "0"（仅空 agent_id 才脱离），测试环境无 api_key → 无模型态
+  test('TC-09: 无参 /agent 挂载保留 agent（空 agent_name；无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
+    cliAdmin.stdin('/send /agent');
+    await cliAdmin.waitForOutput(/✅ 已设置 agent:  \/ role: /, 10000);
+    // 注意：无参 /agent 挂载保留 agent（空 agent_name → agent_id="0"；agent_name="0" 已是普通代号），测试环境无 api_key → 无模型态
     // 无模型态下普通消息被静默忽略：不进入 agentic loop，也不产生任何 agent 回复
     // 注意：channel 会把发送消息回显给群组成员（<< [u2:g1] ...hello），因此不能断言发送文本本身
     // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（若进入 loop，api_key 为空必然报错）

@@ -44,7 +44,7 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
     const resp = await apiGet(request, '/config');
     expect(resp.success).toBe(true);
     expect(resp.data.providers.deepseek).toBeTruthy();
-    expect(resp.data.default_model).toEqual({ provider: 'deepseek', model: 'deepseek-4-flash' });
+    expect(resp.data.default_model).toEqual({ provider: 'deepseek', model: 'deepseek-v4-flash' });
   });
 
   test('TC-02: POST /config/providers 添加并落盘', async ({ request }) => {
@@ -79,7 +79,7 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
     const ch = await apiPost(request, '/config/channels', {
       channel_id: 'web-2', ws_url: 'ws://127.0.0.1:8201',
       admins: [], bind_user: { messenger_id: 'web', user_id: 'u1' },
-      agent_id: '0', role_name: '0', is_send_channel: false, enabled: false,
+      agent_name: '', role_name: '', is_send_channel: false, enabled: false,
     });
     expect(ch.success).toBe(true);
     const adm = await apiPost(request, '/config/admins', {
