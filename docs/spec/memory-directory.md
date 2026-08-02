@@ -19,8 +19,8 @@
 ```
 
 `suffix` 由调用方（nexus、memory-struct）拼接，路径构造器不做解析：
-- 角色记忆：`{year}-{role-name}`
-- 事件记忆：`{year}-{role-name}-{event-id}`
+- 角色记忆：`{year}-{role-name}`（role_name 为空时形如 `2026-`）
+- 事件记忆：`{year}-{role-name}-{event-id}`（role_name 为空时形如 `2026--{event-id}`）
 
 ## 文件格式
 

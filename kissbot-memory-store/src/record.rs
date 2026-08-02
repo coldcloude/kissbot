@@ -752,7 +752,7 @@ mod tests {
         let expected_path = root
             .join("test_think")
             .join("memory-store")
-            .join("2026")
+            .join("2026-")
             .join("think-records-2026-06-25.jsonl");
         assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
 
@@ -799,7 +799,7 @@ mod tests {
         let expected_path = root
             .join("test_tool_call")
             .join("memory-store")
-            .join("2026")
+            .join("2026-")
             .join("tool-call-records-2026-06-25.jsonl");
         assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
 
@@ -844,7 +844,7 @@ mod tests {
         let expected_path = root
             .join("test_tool_result")
             .join("memory-store")
-            .join("2026")
+            .join("2026-")
             .join("tool-result-records-2026-06-25.jsonl");
         assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
 

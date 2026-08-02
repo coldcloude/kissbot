@@ -18,11 +18,7 @@ pub async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -
     let year = as_year(date);
     match DirectoryManager::get().ensure_agent_store_dir(agent_id).await {
         Ok(store_dir) => {
-            let year_role_dir = if role_name.is_empty() {
-                store_dir.join(year)
-            } else {
-                store_dir.join(format!("{}-{}", year, role_name))
-            };
+            let year_role_dir = store_dir.join(format!("{}-{}", year, role_name));
             
             if !year_role_dir.exists() {
                 tokio::fs::create_dir_all(&year_role_dir).await?;
@@ -248,6 +244,23 @@ use super::*;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(file_name, "channel-m1=u1=g1-records-2026-06-24.jsonl");
+    }
+
+    #[tokio::test]
+    async fn test_channel_file_dir_empty_role() {
+        // 空 role_name 目录应为 `2026-`（非 `2026`）
+        let key = ChannelRecordKey {
+            agent_id: Arc::new("agent1".to_string()),
+            role_name: Arc::new("".to_string()),
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            date: Arc::new("2026-06-24".to_string()),
+        };
+        let parser = ChannelParser;
+        let path = parser.get_path(&key).await.unwrap();
+        let dir_name = path.parent().unwrap().file_name().unwrap().to_str().unwrap();
+        assert_eq!(dir_name, "2026-");
     }
 
     #[tokio::test]
