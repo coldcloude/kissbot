@@ -11,7 +11,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::config_manager::{ChannelConfig, ChannelUser, ConfigManager, ProviderConfig, ProviderModel};
+use crate::config_manager::{ChannelConfig, ConfigManager, ProviderConfig, ProviderModel};
+use kissbot_api::ChannelUser;
 use crate::types::Result;
 
 /// 管理 REST API 服务器（axum，X-Api-Key 鉴权 layer，security.admin_api_key）
@@ -141,8 +142,8 @@ async fn remove_channel(State(state): State<AppState>, Json(req): Json<ChannelId
 
 async fn add_admin(State(state): State<AppState>, Json(req): Json<AddAdminRequest>) -> impl IntoResponse {
     let admin = ChannelUser {
-        messenger_id: Arc::new(req.messenger_id),
-        user_id: Arc::new(req.user_id),
+        messenger_id: req.messenger_id,
+        user_id: req.user_id,
     };
     match state.config.add_admin(&req.channel_id, &admin).await {
         Ok(()) => ok(json!({})),

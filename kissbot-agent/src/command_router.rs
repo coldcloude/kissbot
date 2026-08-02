@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::types::{AdminCommand, CommandEffect, Error, Mode, Result};
-use crate::config_manager::{ChannelUser, ConfigManager, ProviderModel};
+use crate::config_manager::{ConfigManager, ProviderModel};
+use kissbot_api::ChannelUser;
 use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
@@ -20,7 +21,7 @@ impl CommandRouter {
         user_id: &str,
     ) -> bool {
         let admins = config.channel_admins(channel_id).await;
-        admins.iter().any(|a| *a.messenger_id == messenger_id && *a.user_id == user_id)
+        admins.iter().any(|a| a.messenger_id == messenger_id && a.user_id == user_id)
     }
 
     /// 解析管理命令
@@ -153,8 +154,8 @@ impl CommandRouter {
             AdminCommand::Bind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {
                     c.bind_user = ChannelUser {
-                        messenger_id: Arc::new(messenger_id.clone()),
-                        user_id: Arc::new(user_id.clone()),
+                        messenger_id: messenger_id.clone(),
+                        user_id: user_id.clone(),
                     };
                 }).await?;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::Relocate))
@@ -165,8 +166,8 @@ impl CommandRouter {
             }
             AdminCommand::Admin { messenger_id, user_id } => {
                 config.add_admin(channel_id, &ChannelUser {
-                    messenger_id: Arc::new(messenger_id.clone()),
-                    user_id: Arc::new(user_id.clone()),
+                    messenger_id: messenger_id.clone(),
+                    user_id: user_id.clone(),
                 }).await?;
                 Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
             }

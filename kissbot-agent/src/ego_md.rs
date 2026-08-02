@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use kissbot_api::{AgentMetadata, IndividualIdentifier, IndividualRecognition, RolePlay};
+use kissbot_api::{AgentMetadata, ChannelUser, IndividualRecognition, RolePlay};
 
 /// 由 AgentMetadata 生成系统提示词 markdown（身份）
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
@@ -11,7 +11,7 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
 }
 
 /// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
-pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: &HashSet<IndividualIdentifier>) -> String {
+pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: &HashSet<ChannelUser>) -> String {
     let mut content = String::from("# Individual Recognition\n\n");
     for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
         let individual = individual_arcswap.load();
@@ -19,7 +19,7 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
         let mut identifiers = String::new();
         for id in individual.identifiers.iter() {
             if ids.contains(id) {
-                identifiers.push_str(&format!("- {} {} {}\n", id.messenger_id, id.user_id, id.group_id));
+                identifiers.push_str(&format!("- {} {}\n", id.messenger_id, id.user_id));
             }
         }
 

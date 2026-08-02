@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use kissbot_api::ArcSwapHashMap;
+use kissbot_api::{ArcSwapHashMap, ChannelUser};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -113,12 +113,7 @@ pub struct ChannelConfig {
     pub enabled: bool,
 }
 
-/// 机器人绑定身份 / 管理员身份统一结构
-#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
-pub struct ChannelUser {
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-}
+/// 机器人绑定身份 / 管理员身份统一结构（定义于 kissbot-api::channel）
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStructConfig {
@@ -442,7 +437,7 @@ impl ConfigManager {
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
-            let target = ChannelUser { messenger_id: Arc::new(messenger_id.into()), user_id: Arc::new(user_id.into()) };
+            let target = ChannelUser { messenger_id: messenger_id.into(), user_id: user_id.into() };
             Arc::make_mut(&mut ch_mut.admins).remove(&target);
             swap.store(ch);
             Ok(())
@@ -545,7 +540,7 @@ mod tests {
             listeners: DashMap::new(),
         };
         // channel 不存在：add_admin / remove_admin 都应返回 ConfigNotFound 而非静默成功
-        let admin = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let admin = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
         let err = manager.add_admin("nope", &admin).await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
         let err = manager.remove_admin("nope", "m1", "u1").await.unwrap_err();
@@ -557,7 +552,7 @@ mod tests {
             channel_id: Arc::new(id.into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            bind_user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
             agent_name: Arc::new("".into()),
             role_name: Arc::new("".into()),
             is_send_channel: true,
@@ -576,7 +571,7 @@ mod tests {
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.channel_id, "web-main");
-        assert_eq!(*back.bind_user.user_id, "u1");
+        assert_eq!(back.bind_user.user_id, "u1");
     }
 
     #[test]
@@ -590,7 +585,7 @@ mod tests {
             "enabled_by_default": true
         }"#;
         let ch: ChannelConfig = serde_json::from_str(old).unwrap();
-        assert_eq!(*ch.bind_user.messenger_id, "web");
+        assert_eq!(ch.bind_user.messenger_id, "web");
         assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
         assert!(ch.agent_name.is_empty(), "缺省 agent_name 应为空（保留 agent）");
         assert!(ch.role_name.is_empty());
@@ -636,8 +631,8 @@ mod tests {
 
     #[test]
     fn channel_user_hash_eq_by_value() {
-        let a = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
-        let b = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let a = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
+        let b = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 ChannelUser 应命中 HashSet");

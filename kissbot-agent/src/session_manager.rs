@@ -208,14 +208,14 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config_manager::ChannelUser;
+    use kissbot_api::ChannelUser;
 
     fn sample_channel(id: &str, agent: &str, role: &str, is_send: bool) -> ChannelConfig {
         ChannelConfig {
             channel_id: Arc::new(id.into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_user: ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+            bind_user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
             agent_name: Arc::new(agent.into()),
             role_name: Arc::new(role.into()),
             is_send_channel: is_send,

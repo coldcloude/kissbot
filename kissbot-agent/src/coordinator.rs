@@ -247,10 +247,9 @@ impl AgentCoordinator {
         let mut ids = std::collections::HashSet::new();
         for (_, ch) in self.config.channels().await {
             let bu = &ch.bind_user;
-            ids.insert(kissbot_api::IndividualIdentifier {
+            ids.insert(kissbot_api::ChannelUser {
                 messenger_id: bu.messenger_id.to_string(),
                 user_id: bu.user_id.to_string(),
-                group_id: String::new(),
             });
         }
         // 匹配的个体名，用于角色设定的 other_roles 过滤
@@ -433,8 +432,8 @@ impl AgentCoordinator {
                                 .map(|c| c.bind_user.clone());
                             if let Some(bu) = bind_user {
                                 let _ = client_clone.bind(BindRequest {
-                                    messenger_id: bu.messenger_id.clone(),
-                                    user_id: bu.user_id.clone(),
+                                    messenger_id: Arc::new(bu.messenger_id.clone()),
+                                    user_id: Arc::new(bu.user_id.clone()),
                                 }).await;
                             }
                             // 等待断线通知（closed() 回调中 notify_one）
@@ -697,8 +696,8 @@ impl AgentCoordinator {
         let bound = ch.bind_user.clone();
 
         let msg = OutgoingMessage {
-            messenger_id: bound.messenger_id.clone(),   // 对端 messenger 标识（如 "web"）
-            user_id: bound.user_id.clone(),             // agent 绑定的用户
+            messenger_id: Arc::new(bound.messenger_id.clone()),   // 对端 messenger 标识（如 "web"）
+            user_id: Arc::new(bound.user_id.clone()),             // agent 绑定的用户
             group_id: Arc::new(group_id.to_string()),
             content: Content::Text(Arc::new(content.clone())),
         };
@@ -712,8 +711,8 @@ impl AgentCoordinator {
                 self.memory_store_client.push_channel_record(ChannelRecord {
                     agent_id: self.resolve_agent_id(&key.agent_name).await,
                     role_name: Arc::new(role_name),
-                    messenger_id: bound.messenger_id.clone(),
-                    user_id: bound.user_id.clone(),
+                    messenger_id: Arc::new(bound.messenger_id.clone()),
+                    user_id: Arc::new(bound.user_id.clone()),
                     group_id: Arc::new(group_id.to_string()),
                     is_self: 1,
                     messenger_name: response.messenger_name.clone(),

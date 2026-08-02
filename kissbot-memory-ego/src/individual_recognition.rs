@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use crate::error::Result;
 use crate::error::Error;
 use crate::code::validate_code;
-use kissbot_api::{Individual, IndividualIdentifier, IndividualRecognition, ArcUnwrapOrClone};
+use kissbot_api::{ChannelUser, Individual, IndividualRecognition, ArcUnwrapOrClone};
 
 pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: &str = "individual-recognition-";
 
@@ -210,7 +210,7 @@ impl IndividualRecognitionManager {
         }).await
     }
 
-    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<IndividualIdentifier>, mut insert_identifiers: Vec<IndividualIdentifier>) -> Result<()> {
+    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<ChannelUser>, mut insert_identifiers: Vec<ChannelUser>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |mut individual_arc| {
             let individual = Arc::make_mut(&mut individual_arc);
             let identifiers = Arc::make_mut(&mut individual.identifiers);

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::ArcSwapHashMap;
+use crate::channel::ChannelUser;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
@@ -19,13 +20,6 @@ impl std::fmt::Display for RoleKey {
 
 // ========== Simple enums / structs (no Arc needed, for JSON) ==========
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct IndividualIdentifier {
-    pub messenger_id: String,
-    pub user_id: String,
-    pub group_id: String,
-}
-
 // ========== Internal storage types (use Arc / DashMap / DashSet) ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +30,7 @@ pub struct IndividualRelation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Individual {
-    pub identifiers: Arc<HashSet<IndividualIdentifier>>,
+    pub identifiers: Arc<HashSet<ChannelUser>>,
     pub relation: Arc<IndividualRelation>,
     pub other_relations: Arc<ArcSwapHashMap<String, IndividualRelation>>,
 }
@@ -177,8 +171,8 @@ pub struct RenameIndividualRequest {
 pub struct ReplaceIndividualIdentifiersRequest {
     pub agent_id: Arc<String>,
     pub individual_name: Arc<String>,
-    pub remove_identifiers: Vec<IndividualIdentifier>,
-    pub insert_identifiers: Vec<IndividualIdentifier>,
+    pub remove_identifiers: Vec<ChannelUser>,
+    pub insert_identifiers: Vec<ChannelUser>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -499,10 +493,9 @@ mod tests {
 
     #[test]
     fn test_serde_replace_individual_identifiers_request() {
-        let identifier = IndividualIdentifier {
+        let identifier = ChannelUser {
             messenger_id: "m1".to_string(),
             user_id: "u1".to_string(),
-            group_id: "g1".to_string(),
         };
         let obj = ReplaceIndividualIdentifiersRequest {
             agent_id: Arc::new("a1".to_string()),

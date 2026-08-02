@@ -41,6 +41,13 @@ pub struct MessengerInfoRequest {
     pub messenger_id: Arc<String>,
 }
 
+/// 通道用户标识（消息方身份：messenger_id + user_id）
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
+pub struct ChannelUser {
+    pub messenger_id: String,
+    pub user_id: String,
+}
+
 // ========================= Message & Attachment ==========================
 
 use crate::message::Content;
