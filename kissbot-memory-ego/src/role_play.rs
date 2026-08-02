@@ -286,6 +286,27 @@ impl RolePlayManager {
         Ok(())
     }
 
+    pub async fn update_role_full_name(&self, agent_id: &str, role_name: &str, full_name: Arc<String>) -> Result<()> {
+        self.write_role_play_ref(agent_id, role_name, |role_or_none| {
+            match role_or_none {
+                Some(role) => {
+                    Ok(Arc::new(RolePlay {
+                        role: Arc::new(Role {
+                            agent_id: role.role.agent_id.clone(),
+                            role_name: role.role.role_name.clone(),
+                            full_name,
+                            description: role.role.description.clone(),
+                        }),
+                        other_roles: role.other_roles.clone()
+                    }))
+                },
+                None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+            }
+        }).await?;
+        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
+        Ok(())
+    }
+
     pub async fn get_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
         self.read_role_play_other_role(agent_id, role_name, other_role_name).await
     }
@@ -504,6 +525,20 @@ mod tests {
         manager.update_role_description("agent-upd-desc", "admin", Arc::new("New desc".to_string())).await.unwrap();
         let role = manager.get_role("agent-upd-desc", "admin").await.unwrap();
         assert_eq!(*role.role.description, "New desc");
+    }
+
+    #[tokio::test]
+    async fn test_update_role_full_name() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-upd-full-name").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-upd-full-name").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-upd-full-name", Arc::new("admin".to_string()), Arc::new("Old desc".to_string())).await.unwrap();
+        manager.update_role_full_name("agent-upd-full-name", "admin", Arc::new("新展示名".to_string())).await.unwrap();
+        let role = manager.get_role("agent-upd-full-name", "admin").await.unwrap();
+        assert_eq!(*role.role.full_name, "新展示名");
+        assert_eq!(*role.role.description, "Old desc");
     }
 
     #[tokio::test]

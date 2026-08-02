@@ -46,6 +46,7 @@ pub fn create_router() -> Router {
         .route("/role/remove", delete(remove_role))
         .route("/role/rename", put(rename_role))
         .route("/role/update-description", put(update_role_description))
+        .route("/role/update-full-name", put(update_role_full_name))
         .route("/role/search-name", post(search_role_by_name))
         .route("/role/search-description", post(search_role_by_description))
         .route("/role/retrieve", post(retrieve_roles))
@@ -322,6 +323,16 @@ async fn rename_role(Json(req): Json<ego::RenameRoleRequest>) -> impl IntoRespon
 
 async fn update_role_description(Json(req): Json<ego::UpdateRoleDescriptionRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get().update_role_description(&req.agent_id, &req.role_name, req.description).await;
+
+    match result {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn update_role_full_name(Json(req): Json<ego::UpdateRoleFullNameRequest>) -> impl IntoResponse {
+    let result = RolePlayManager::get().update_role_full_name(&req.agent_id, &req.role_name, req.full_name).await;
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
