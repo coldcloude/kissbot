@@ -13,4 +13,4 @@
 ## 消息方向
 
 - `OutgoingMessage`：发送方发出的消息，不含 msg_id、time
-- `IncomingMessage`：接收方收到的消息，含 msg_id、time、is_self
+- `IncomingMessage`：接收方收到的消息，含 msg_id、time（is_self 已移除，自身回显由 nexus 按 msg_id 识别）

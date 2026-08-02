@@ -348,7 +348,6 @@ pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, tex
         messenger_id: Arc::new(messenger_id.to_string()),
         user_id: Arc::new(user_id.to_string()),
         group_id: Arc::new(group_id.to_string()),
-        is_self: 0,
         messenger_name: Arc::new(String::new()),
         user_name: Arc::new(String::new()),
         group_name: Arc::new(String::new()),

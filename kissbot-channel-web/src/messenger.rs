@@ -403,13 +403,11 @@ impl WebMessenger {
         let msg_id = self.next_msg_id();
         let time = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         // 写入存储
-        let is_admin = if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() { 1 } else { 0 };
         let admin_msg = IncomingMessage {
             msg_id: msg_id.clone(),
             messenger_id: self.messenger_id.clone(),
             user_id: outgoing.user_id.clone(),
             group_id: outgoing.group_id.clone(),
-            is_self: is_admin,
             messenger_name: messenger_name.clone(),
             user_name: user_name.clone(),
             group_name: group_name.clone(),
@@ -455,7 +453,7 @@ impl WebMessenger {
                     if Self::is_admin_user_group_for(admin_msg.user_id.as_str(), admin_msg.group_id.as_str())
                         && cfg.users.contains_key(admin_msg.user_id.as_str())
                     {
-                        // 发送者发给自己（agent 会识别 is_self）
+                        // 发送者发给自己（agent 按 msg_id 识别自身回显）
                         vec![admin_msg.user_id.clone()]
                     } else {
                         vec![]
@@ -482,13 +480,11 @@ impl WebMessenger {
                 continue;
             }
             for member_id in &members {
-                let is_self = if member_id.as_str() == admin_msg.user_id.as_str() { 1 } else { 0 };
                 let incoming = Arc::new(IncomingMessage {
                     msg_id: admin_msg.msg_id.clone(),
                     messenger_id: admin_msg.messenger_id.clone(),
                     user_id: admin_msg.user_id.clone(),
                     group_id: admin_msg.group_id.clone(),
-                    is_self,
                     messenger_name: admin_msg.messenger_name.clone(),
                     user_name: admin_msg.user_name.clone(),
                     group_name: admin_msg.group_name.clone(),
