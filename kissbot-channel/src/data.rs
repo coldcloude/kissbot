@@ -63,3 +63,42 @@ pub fn group_change_to_incoming_message_event(message: Arc<GroupChangeEvent>) ->
         incoming_message: incoming,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_group_change_to_incoming_passes_names() {
+        let notification = Arc::new(GroupChangeNotification {
+            messenger_id: Arc::new("web".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            user_id: Arc::new("u1".to_string()),
+            messenger_name: Arc::new("Web Chat".to_string()),
+            user_name: Arc::new("用户1".to_string()),
+            group_name: Arc::new("群组1".to_string()),
+        });
+        let event = Arc::new(GroupChangeEvent {
+            msg_id: Arc::new("msg1".to_string()),
+            notification: notification.clone(),
+            change_type: GroupChangeType::Joined,
+            time: Arc::new("2026-08-02 10:00:00".to_string()),
+        });
+
+        let event_msg = group_change_to_incoming_message_event(event);
+        let incoming = &event_msg.incoming_message;
+
+        // name 与通知一致
+        assert_eq!(incoming.messenger_name, notification.messenger_name);
+        assert_eq!(incoming.user_name, notification.user_name);
+        assert_eq!(incoming.group_name, notification.group_name);
+        // 消息主体字段不变
+        assert_eq!(incoming.messenger_id, notification.messenger_id);
+        assert_eq!(incoming.user_id, notification.user_id);
+        assert_eq!(incoming.group_id, notification.group_id);
+        // 内容为 GroupJoin 通知
+        assert!(matches!(incoming.content, Content::GroupJoin(ref n) if **n == *notification));
+        // 接收者即被通知用户
+        assert_eq!(event_msg.recipient_user_id, notification.user_id);
+    }
+}
