@@ -31,6 +31,9 @@ pub enum Error {
 
     #[error("Agent role other role already exists: {0} {1} {2}")]
     AgentRoleOtherRoleAlreadyExists(String, String, String),
+
+    #[error("Invalid code (only [A-Za-z0-9_] allowed, non-empty): {0}")]
+    InvalidCode(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

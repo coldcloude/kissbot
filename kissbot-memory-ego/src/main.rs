@@ -2,6 +2,7 @@ mod error;
 #[cfg(test)]
 mod test_util;
 mod config;
+mod code;
 mod agent;
 mod ego_md;
 mod search;

@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::error::Error;
+use crate::code::validate_code;
 use kissbot_api::{Individual, IndividualIdentifier, IndividualRecognition, ArcUnwrapOrClone};
 
 pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: &str = "individual-recognition-";
@@ -162,6 +163,9 @@ impl IndividualRecognitionManager {
     }
 
     pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<Arc<String>>, mut insert_individuals: Vec<(Arc<String>, Arc<Individual>)>) -> Result<()> {
+        for (name, _) in insert_individuals.iter() {
+            validate_code(name.as_str())?;
+        }
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
                 let mut individuals_new_arc = individuals.clone();
@@ -182,6 +186,7 @@ impl IndividualRecognitionManager {
     }
 
     pub async fn rename_individual(&self, agent_id: &str, individual_name: &str, new_name: &str) -> Result<()> {
+        validate_code(new_name)?;
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
                 if individuals.individual_map.contains_key(new_name) {
@@ -388,5 +393,50 @@ use super::*;
         ).await.unwrap();
         let result = manager.rename_individual("agent-rename-exists", "Alice", "Bob").await;
         assert!(matches!(result, Err(Error::AgentIndividualAlreadyExists(_, _))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_individuals_rejects_invalid_key() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-invalid-ind").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        manager.get_individuals("agent-invalid-ind").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(HashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(ArcSwapHashMap::new()),
+        });
+        let result = manager.replace_individuals(
+            "agent-invalid-ind",
+            vec![],
+            vec![(Arc::new("a b".to_string()), individual)],
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_individual_rejects_empty_name() {
+        setup().await;
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-empty-rename").await.unwrap();
+        let manager = IndividualRecognitionManager::get();
+        manager.get_individuals("agent-empty-rename").await.unwrap();
+        let individual = Arc::new(Individual {
+            identifiers: Arc::new(HashSet::new()),
+            relation: Arc::new(IndividualRelation {
+                relation: Arc::new("friend".to_string()),
+                description: Arc::new("best friend".to_string()),
+            }),
+            other_relations: Arc::new(ArcSwapHashMap::new()),
+        });
+        manager.replace_individuals(
+            "agent-empty-rename",
+            vec![],
+            vec![(Arc::new("Alice".to_string()), individual)],
+        ).await.unwrap();
+        let result = manager.rename_individual("agent-empty-rename", "Alice", "").await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
 }

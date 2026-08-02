@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 
 use crate::error::Result;
 use crate::error::Error;
+use crate::code::validate_code;
 use crate::search::SearchManager;
 
 pub const EGO_ROLE_PLAY_PREFIX: &str = "role-play-";
@@ -204,6 +205,7 @@ impl RolePlayManager {
     }
 
     pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
+        validate_code(role_name.as_str())?;
         self.write_role_play_ref(agent_id, role_name.clone().as_str(), |old| {
             match old {
                 Some(_) => {
@@ -227,6 +229,7 @@ impl RolePlayManager {
     }
 
     pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+        validate_code(new_name.as_str())?;
         let role = self.get_role(agent_id, role_name).await?;
         self.create_role(agent_id, new_name.clone(), role.role.description.clone()).await?;
         SearchManager::get().await.mark_role_dirty(agent_id, new_name.as_str());
@@ -240,6 +243,7 @@ impl RolePlayManager {
     }
 
     pub async fn rename_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+        validate_code(new_name.as_str())?;
         let role = self.get_role(agent_id, role_name).await?;
         self.write_role_play_ref(agent_id, new_name.as_str(), |old| {
             match old {
@@ -312,6 +316,9 @@ impl RolePlayManager {
     }
 
     pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<String>, mut insert_other_roles: Vec<OtherRoleEntry>) -> Result<()> {
+        for entry in insert_other_roles.iter() {
+            validate_code(&entry.role_name)?;
+        }
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
                 let mut role_new_arc = role.clone();
@@ -356,6 +363,7 @@ impl RolePlayManager {
     }
 
     pub async fn update_other_role_individual_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_individual_name: Arc<String>) -> Result<()> {
+        validate_code(new_individual_name.as_str())?;
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
                 individual_name: new_individual_name,
@@ -389,6 +397,9 @@ impl RolePlayManager {
     }
 
     pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<String>, mut insert_relations: Vec<RoleRelationEntry>) -> Result<()> {
+        for entry in insert_relations.iter() {
+            validate_code(&entry.role_name)?;
+        }
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |mut other_role_arc| {
             let other_role = Arc::make_mut(&mut other_role_arc);
             let other_role_relations = Arc::make_mut(&mut other_role.other_role_relations);
@@ -635,5 +646,135 @@ mod tests {
         let entry = bob.other_role_relations.get("enemy").unwrap();
         let rel = entry.load();
         assert_eq!(*rel.relation, "friend");
+    }
+
+    #[tokio::test]
+    async fn test_create_role_rejects_invalid_code() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-invalid-role").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-invalid-role").await.unwrap();
+        let result = RolePlayManager::get().create_role(
+            "agent-invalid-role",
+            Arc::new("a b".to_string()),
+            Arc::new("Desc".to_string()),
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_create_role_from_rejects_invalid_code() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-from-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-from-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-from-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let result = manager.create_role_from("agent-from-invalid", "admin", Arc::new("a b".to_string())).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_rename_role_rejects_invalid_code() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-rename-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-rename-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-rename-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let result = manager.rename_role("agent-rename-invalid", "admin", Arc::new("a b".to_string())).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_other_roles_rejects_invalid_key() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-other-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-other-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-other-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        let result = manager.replace_other_roles(
+            "agent-other-invalid", "admin",
+            vec![],
+            vec![OtherRoleEntry { role_name: "a b".to_string(), other_role }],
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_update_other_role_individual_name_rejects_invalid() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-ind-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-ind-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-ind-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-ind-invalid", "admin",
+            vec![],
+            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+        ).await.unwrap();
+        let result = manager.update_other_role_individual_name(
+            "agent-ind-invalid", "admin", "Bob",
+            Arc::new("a b".to_string()),
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_replace_other_role_relations_rejects_invalid_key() {
+        setup().await;
+        let dm = kissbot_memory::DirectoryManager::get();
+        dm.ensure_agent_dir("agent-rel-invalid").await.unwrap();
+        dm.ensure_agent_ego_dir("agent-rel-invalid").await.unwrap();
+        let manager = RolePlayManager::get();
+        manager.create_role("agent-rel-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        let other_role = Arc::new(OtherRole {
+            individual_name: Arc::new("Bob".to_string()),
+            role_relation: Arc::new(RoleRelation {
+                relation: Arc::new("colleague".to_string()),
+                full_name: Arc::new(String::new()),
+                description: Arc::new("".to_string()),
+            }),
+            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            description: Arc::new("".to_string()),
+        });
+        manager.replace_other_roles(
+            "agent-rel-invalid", "admin",
+            vec![],
+            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+        ).await.unwrap();
+        let relation = Arc::new(RoleRelation {
+            relation: Arc::new("friend".to_string()),
+            full_name: Arc::new(String::new()),
+            description: Arc::new("".to_string()),
+        });
+        let result = manager.replace_other_role_relations(
+            "agent-rel-invalid", "admin", "Bob",
+            vec![],
+            vec![RoleRelationEntry { role_name: "a b".to_string(), relation }],
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
 }

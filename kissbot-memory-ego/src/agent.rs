@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
+use crate::code::validate_code;
 use crate::search::SearchManager;
 use kissbot_api::AgentMetadata;
 use kissbot_memory::DirectoryManager;
@@ -121,6 +122,7 @@ impl AgentManager {
     }
 
     pub async fn create_agent(&self, individual_name: Arc<String>, description: Arc<String>) -> Result<Arc<String>> {
+        validate_code(individual_name.as_str())?;
         let agent_id = Arc::new(Uuid::new_v4().to_string());
         let created_at = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
@@ -151,6 +153,7 @@ impl AgentManager {
     }
 
     pub async fn update_agent_name(&self, agent_id: &str, individual_name: Arc<String>) -> Result<()> {
+        validate_code(individual_name.as_str())?;
         self.write_agent_metadata_ref(agent_id, |metadata| {
             match metadata {
                 Some(metadata) => {
@@ -295,5 +298,27 @@ mod tests {
         let agent = manager.get_agent(&agent_id).await.unwrap();
         assert_eq!(*agent.individual_name, "Alice2");
         assert_eq!(*agent.description, "Updated");
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_rejects_invalid_code() {
+        setup().await;
+        let result = AgentManager::get().create_agent(
+            Arc::new("a b c".to_string()),
+            Arc::new("Test agent".to_string()),
+        ).await;
+        assert!(matches!(result, Err(Error::InvalidCode(_))));
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_valid_code() {
+        setup().await;
+        let manager = AgentManager::get();
+        let agent_id = manager.create_agent(
+            Arc::new("alice_01".to_string()),
+            Arc::new("Test agent".to_string()),
+        ).await.unwrap();
+        let agent = manager.get_agent(&agent_id).await.unwrap();
+        assert_eq!(*agent.individual_name, "alice_01");
     }
 }
