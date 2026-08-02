@@ -46,6 +46,7 @@ impl SseDispatcher {
     }
 }
 const ADMIN_USER_GROUP_PREFIX: &str = "a_";
+const WEB_MESSENGER_NAME: &str = "Web Chat";
 pub static ADMIN_USER_ID: LazyLock<Arc<String>> = LazyLock::new(|| Arc::new("admin".to_string()));
 const USER_ID_PREFIX: &str = "u";
 const GROUP_ID_PREFIX: &str = "g";
@@ -170,6 +171,33 @@ impl WebMessenger {
             None
         }
     }
+
+    /// 按 user_id/group_id 解析 (messenger_name, user_name, group_name)
+    fn resolve_names(&self, cfg: &WebMessengerRepo, user_id: &str, group_id: &str) -> (Arc<String>, Arc<String>, Arc<String>) {
+        let messenger_name = Arc::new(WEB_MESSENGER_NAME.to_string());
+        let user_name = if user_id == ADMIN_USER_ID.as_str() {
+            // admin（agent 绑定身份）的展示名取 repo.admin_name
+            cfg.admin_name.clone()
+        } else {
+            cfg.users.get(user_id)
+                .map(|s| s.load().user_name.clone())
+                .unwrap_or_else(|| Arc::new(String::new()))
+        };
+        let group_name = if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            // admin-user 单聊组：group_name = 对端 user 的 user_name
+            match Self::parse_admin_user_group_ref(cfg, group_id) {
+                Some(uid) => cfg.users.get(&uid)
+                    .map(|s| s.load().user_name.clone())
+                    .unwrap_or_else(|| Arc::new(String::new())),
+                None => Arc::new(String::new()),
+            }
+        } else {
+            cfg.groups.get(group_id)
+                .map(|s| s.load().group_name.clone())
+                .unwrap_or_else(|| Arc::new(String::new()))
+        };
+        (messenger_name, user_name, group_name)
+    }
     pub async fn update_admin_name(&self, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
             repo.admin_name = Arc::new(new_name.to_string());
@@ -201,8 +229,12 @@ impl WebMessenger {
         Ok(user_id)
     }
     pub async fn remove_user(&self, user_id: &str) -> Result<()> {
-        self.write_config(|repo| {
+        let user_name = self.write_config(|repo| {
             if repo.users.contains_key(user_id) {
+                // 移除前先取 user_name（移除后即丢失）
+                let user_name = repo.users.get(user_id)
+                    .map(|s| s.load().user_name.clone())
+                    .unwrap_or_else(|| Arc::new(String::new()));
                 let users = Arc::make_mut(&mut repo.users);
                 users.remove(user_id);
                 // 从所有群组中移除该成员
@@ -216,7 +248,7 @@ impl WebMessenger {
                         group_swap.store(group_new_arc);
                     }
                 }
-                Ok(())
+                Ok(user_name)
             } else {
                 Err(Error::UserNotFound(user_id.to_string()))
             }
@@ -228,8 +260,8 @@ impl WebMessenger {
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id: self.messenger_id.clone(),
                     user_id: Arc::new(user_id.to_string()),
-                    messenger_name: Arc::new(String::new()),
-                    user_name: Arc::new(String::new()),
+                    messenger_name: Arc::new(WEB_MESSENGER_NAME.to_string()),
+                    user_name,
                 }),
                 time: Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
             });
@@ -359,6 +391,8 @@ impl WebMessenger {
                 return Err(Error::GroupNotFound(outgoing.group_id.to_string()));
             }
         }
+        // 在 drop(cfg) 前解析 name（cfg 持有读锁）
+        let (messenger_name, user_name, group_name) = self.resolve_names(&cfg, outgoing.user_id.as_str(), outgoing.group_id.as_str());
         drop(cfg);
         // 处理附件消息：解析 content、生成 key（在成员分发之前执行）
         let new_content = kissbot_channel::process_attachment_message(
@@ -376,9 +410,9 @@ impl WebMessenger {
             user_id: outgoing.user_id.clone(),
             group_id: outgoing.group_id.clone(),
             is_self: is_admin,
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
+            messenger_name: messenger_name.clone(),
+            user_name: user_name.clone(),
+            group_name: group_name.clone(),
             content: new_content.clone(),
             time: time.clone(),
         };
@@ -393,9 +427,9 @@ impl WebMessenger {
             msg_id,
             time,
             content: new_content,
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
+            messenger_name,
+            user_name,
+            group_name,
         }))
     }
     pub async fn send_stored(&self, msgs: Vec<IncomingMessage>) {
@@ -476,15 +510,18 @@ impl WebMessenger {
     }
     async fn notify_group_change(&self, user_id: &str, group_id: &str, change_type: GroupChangeType, time: &str) {
         let Some(manager) = self.manager.upgrade() else { return; };
+        let cfg = self.config.read().await;
+        let (messenger_name, user_name, group_name) = self.resolve_names(&cfg, user_id, group_id);
+        drop(cfg);
         let event = Arc::new(GroupChangeEvent {
             msg_id: self.next_msg_id(),
             notification: Arc::new(GroupChangeNotification {
                 messenger_id: self.messenger_id.clone(),
                 user_id: Arc::new(user_id.to_string()),
                 group_id: Arc::new(group_id.to_string()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
+                messenger_name,
+                user_name,
+                group_name,
             }),
             change_type,
             time: Arc::new(time.to_string()),
@@ -659,5 +696,96 @@ impl Messenger for WebMessenger {
             store.remove_transfer_key(transfer_id);
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kissbot_api::Content;
+
+    fn test_repo(admin_name: &str, users: &[(&str, &str)]) -> Arc<RwLock<WebMessengerRepo>> {
+        let mut user_map = ArcSwapHashMap::new();
+        for (uid, uname) in users {
+            user_map.insert(uid.to_string(), ArcSwap::new(Arc::new(UserConfig {
+                user_id: Arc::new(uid.to_string()),
+                user_name: Arc::new(uname.to_string()),
+            })));
+        }
+        Arc::new(RwLock::new(WebMessengerRepo {
+            messenger_id: Arc::new("web".to_string()),
+            admin_name: Arc::new(admin_name.to_string()),
+            users: Arc::new(user_map),
+            groups: Arc::new(ArcSwapHashMap::new()),
+            next_user_seq: 0,
+            next_group_seq: 0,
+        }))
+    }
+
+    fn make_messenger(config: Arc<RwLock<WebMessengerRepo>>) -> (Arc<WebMessenger>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let messenger = WebMessenger::new(
+            Arc::new("web".to_string()),
+            dir.path().join("repo.json"),
+            config,
+            Weak::new(),
+            dir.path().join("attachments").to_str().unwrap(),
+            dir.path().join("messages").to_str().unwrap(),
+        );
+        (messenger, dir)
+    }
+
+    #[tokio::test]
+    async fn test_send_response_names_admin_single_chat() {
+        // admin 发送到 admin-user 单聊组 a_u1：user_name=admin_name，group_name=对端 u1 的 user_name
+        let config = test_repo("管理员", &[("u1", "用户1")]);
+        let (messenger, _dir) = make_messenger(config);
+        let outgoing = Arc::new(OutgoingMessage {
+            messenger_id: Arc::new("web".to_string()),
+            user_id: ADMIN_USER_ID.clone(),
+            group_id: Arc::new(admin_user_group_id("u1")),
+            content: Content::Text(Arc::new("hello".to_string())),
+        });
+        let response = messenger.send(outgoing).await.unwrap();
+        assert_eq!(response.messenger_name.as_str(), "Web Chat");
+        assert_eq!(response.user_name.as_str(), "管理员");
+        assert_eq!(response.group_name.as_str(), "用户1");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_names() {
+        let config = test_repo("管理员", &[("u1", "用户1")]);
+        // 注入一个普通群组 g1
+        let mut groups = ArcSwapHashMap::new();
+        groups.insert("g1".to_string(), ArcSwap::new(Arc::new(GroupConfig {
+            group_id: Arc::new("g1".to_string()),
+            group_name: Arc::new("研发群".to_string()),
+            members: Arc::new(HashSet::new()),
+        })));
+        config.write().await.groups = Arc::new(groups);
+
+        let (messenger, _dir) = make_messenger(config.clone());
+        let cfg = config.read().await;
+
+        // admin 发送到 admin-user 单聊组 a_u1：user_name=admin_name，group_name=对端 u1 名
+        let (m, u, g) = messenger.resolve_names(&cfg, "admin", &admin_user_group_id("u1"));
+        assert_eq!(m.as_str(), "Web Chat");
+        assert_eq!(u.as_str(), "管理员");
+        assert_eq!(g.as_str(), "用户1");
+
+        // admin 发送到普通群组 g1：group_name=群组名
+        let (_, u2, g2) = messenger.resolve_names(&cfg, "admin", "g1");
+        assert_eq!(u2.as_str(), "管理员");
+        assert_eq!(g2.as_str(), "研发群");
+
+        // 普通用户 u1 发送到单聊组 a_u1：user_name=u1 名，group_name=u1 名
+        let (_, u3, g3) = messenger.resolve_names(&cfg, "u1", &admin_user_group_id("u1"));
+        assert_eq!(u3.as_str(), "用户1");
+        assert_eq!(g3.as_str(), "用户1");
+
+        // 未知 user/group：空串兜底
+        let (_, u4, g4) = messenger.resolve_names(&cfg, "nobody", "nope");
+        assert_eq!(u4.as_str(), "");
+        assert_eq!(g4.as_str(), "");
     }
 }

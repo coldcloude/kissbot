@@ -33,3 +33,6 @@ kissbot-api = { path = "../kissbot-api" }
 kissbot-channel = { path = "../kissbot-channel" }
 kissbot-config = { path = "../kissbot-config" }
 kissbot-security = { path = "../kissbot-security" }
+
+[dev-dependencies]
+tempfile = "3"
