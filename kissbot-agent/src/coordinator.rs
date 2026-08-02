@@ -234,7 +234,8 @@ impl AgentCoordinator {
         info!("会话上下文已重置: {:?}", session.key);
     }
 
-    /// 读取自我认知（agent 元数据 + 角色设定），agent_id 为解析后的 UUID
+    /// 读取自我认知（agent 元数据 + 个体识别 + 角色设定）生成系统提示词，agent_id 为解析后的 UUID
+    /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
     async fn load_ego_info(&self, agent_id: &str, role_name: &str) -> Result<String> {
         let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
 
@@ -242,7 +243,20 @@ impl AgentCoordinator {
 
         let mut system_parts = vec![];
 
-        // 获取 agent 元数据（按 agent_id 查询）
+        // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
+        let mut ids = std::collections::HashSet::new();
+        for (_, ch) in self.config.channels().await {
+            let bu = &ch.bind_user;
+            ids.insert(kissbot_api::IndividualIdentifier {
+                messenger_id: bu.messenger_id.to_string(),
+                user_id: bu.user_id.to_string(),
+                group_id: String::new(),
+            });
+        }
+        // 匹配的个体名，用于角色设定的 other_roles 过滤
+        let mut individual_names = std::collections::HashSet::new();
+
+        // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
         if let Ok(agent_resp) = client.post(&format!("{}/agent/get", ego_url))
             .json(&serde_json::json!({
                 "agent_id": agent_id,
@@ -250,17 +264,35 @@ impl AgentCoordinator {
             .send()
             .await
         {
-            if let Ok(data) = agent_resp.json::<serde_json::Value>().await {
-                if let Some(name) = data["data"]["individual_name"].as_str() {
-                    system_parts.push(format!("你的名字是: {}", name));
-                }
-                if let Some(desc) = data["data"]["description"].as_str() {
-                    system_parts.push(format!("你的描述: {}", desc));
+            if let Ok(envelope) = agent_resp.json::<kissbot_api::ApiResponse<kissbot_api::AgentMetadata>>().await {
+                if let Some(metadata) = envelope.data {
+                    system_parts.push(crate::ego_md::build_ego_identity_md(&metadata));
                 }
             }
         }
 
-        // 获取角色设定
+        // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
+        if let Ok(individual_resp) = client.post(&format!("{}/individual/get-all", ego_url))
+            .json(&serde_json::json!({
+                "agent_id": agent_id,
+            }))
+            .send()
+            .await
+        {
+            if let Ok(envelope) = individual_resp.json::<kissbot_api::ApiResponse<kissbot_api::IndividualRecognition>>().await {
+                if let Some(individuals) = envelope.data {
+                    for (name, entry) in individuals.individual_map.iter() {
+                        let individual = entry.load();
+                        if individual.identifiers.iter().any(|id| ids.contains(id)) {
+                            individual_names.insert(name.clone());
+                        }
+                    }
+                    system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, &ids));
+                }
+            }
+        }
+
+        // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
         if !role_name.is_empty() {
             if let Ok(role_resp) = client.post(&format!("{}/role/get", ego_url))
                 .json(&serde_json::json!({
@@ -270,9 +302,9 @@ impl AgentCoordinator {
                 .send()
                 .await
             {
-                if let Ok(data) = role_resp.json::<serde_json::Value>().await {
-                    if let Some(desc) = data["data"]["description"].as_str() {
-                        system_parts.push(format!("角色: {} - {}", role_name, desc));
+                if let Ok(envelope) = role_resp.json::<kissbot_api::ApiResponse<kissbot_api::RolePlay>>().await {
+                    if let Some(role) = envelope.data {
+                        system_parts.push(crate::ego_md::build_role_play_md(&role, &individual_names));
                     }
                 }
             }

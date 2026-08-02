@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use kissbot_api::{AgentMetadata, IndividualIdentifier, IndividualRecognition, RolePlay};
 
-#[allow(dead_code)]
+/// 由 AgentMetadata 生成系统提示词 markdown（身份）
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     format!(
         "# Agent Identity\n\n- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
@@ -10,7 +10,7 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     )
 }
 
-#[allow(dead_code)]
+/// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
 pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: &HashSet<IndividualIdentifier>) -> String {
     let mut content = String::from("# Individual Recognition\n\n");
     for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
@@ -45,7 +45,7 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
     content
 }
 
-#[allow(dead_code)]
+/// 由 RolePlay 生成系统提示词 markdown（角色设定，按 individual_names 过滤展示的其他角色）
 pub fn build_role_play_md(role: &RolePlay, individual_names: &HashSet<String>) -> String {
     let mut content = String::from("# Role Play\n\n");
     content.push_str(&format!("- **Self Role**: {}\n\n", role.role.role_name));

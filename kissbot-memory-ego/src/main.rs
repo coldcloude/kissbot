@@ -4,7 +4,6 @@ mod test_util;
 mod config;
 mod code;
 mod agent;
-mod ego_md;
 mod search;
 mod individual_recognition;
 mod role_play;
