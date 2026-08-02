@@ -11,6 +11,8 @@ const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const BACKEND_BINARY = join(REPO_ROOT, 'kissbot-channel-web', 'target', 'debug', 'kissbot-channel-web');
 const AGENT_BINARY = join(REPO_ROOT, 'kissbot-agent', 'target', 'debug', 'kissbot-agent');
+const MEMORY_STORE_BINARY = join(REPO_ROOT, 'kissbot-memory-store', 'target', 'debug', 'kissbot-memory-store');
+const MEMORY_EGO_BINARY = join(REPO_ROOT, 'kissbot-memory-ego', 'target', 'debug', 'kissbot-memory-ego');
 
 export const AGENT_MGMT_PORT = 9090;
 
@@ -49,6 +51,44 @@ export function startBackend(cwd: string): ChildProcess {
 }
 
 export function stopBackend(proc?: ChildProcess): void {
+  if (proc && !proc.killed) {
+    proc.kill('SIGTERM');
+  }
+}
+
+// 启动 kissbot-memory-store（debug 二进制），cwd 需含 config.json（memory.root_dir 为相对路径）
+// 调用方用 waitForPort(8082) 等待就绪
+export function startMemoryStore(cwd: string): ChildProcess {
+  const proc = spawn(MEMORY_STORE_BINARY, [], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, RUST_LOG: 'info' },
+  });
+  proc.stdout?.on('data', (d) => process.stdout.write(`[memory-store] ${d}`));
+  proc.stderr?.on('data', (d) => process.stderr.write(`[memory-store:err] ${d}`));
+  return proc;
+}
+
+export function stopMemoryStore(proc?: ChildProcess): void {
+  if (proc && !proc.killed) {
+    proc.kill('SIGTERM');
+  }
+}
+
+// 启动 kissbot-memory-ego（debug 二进制），cwd 需含 config.json
+// 调用方用 waitForPort(3001) 等待就绪
+export function startMemoryEgo(cwd: string): ChildProcess {
+  const proc = spawn(MEMORY_EGO_BINARY, [], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, RUST_LOG: 'info' },
+  });
+  proc.stdout?.on('data', (d) => process.stdout.write(`[memory-ego] ${d}`));
+  proc.stderr?.on('data', (d) => process.stderr.write(`[memory-ego:err] ${d}`));
+  return proc;
+}
+
+export function stopMemoryEgo(proc?: ChildProcess): void {
   if (proc && !proc.killed) {
     proc.kill('SIGTERM');
   }

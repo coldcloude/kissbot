@@ -20,6 +20,16 @@ async function globalSetup() {
     stdio: 'inherit',
     cwd: __dirname,
   });
+  console.log('[global-setup] Building memory-store...');
+  execSync('cargo build --manifest-path ../kissbot-memory-store/Cargo.toml', {
+    stdio: 'inherit',
+    cwd: __dirname,
+  });
+  console.log('[global-setup] Building memory-ego...');
+  execSync('cargo build --manifest-path ../kissbot-memory-ego/Cargo.toml', {
+    stdio: 'inherit',
+    cwd: __dirname,
+  });
   console.log('[global-setup] Build complete.');
 }
 
