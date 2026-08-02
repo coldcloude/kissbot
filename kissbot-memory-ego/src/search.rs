@@ -40,7 +40,7 @@ struct RoleSearchMetadata {
 impl RoleSearchMetadata {
     pub fn new(role: &Role) -> Self {
         Self {
-            value: vec![role.role_name.clone(), role.description.clone()],
+            value: vec![role.role_name.clone(), role.full_name.clone(), role.description.clone()],
         }
     }
 }
@@ -301,8 +301,8 @@ impl SearchManager {
                 }
             }
             if let Some((_, old_search_metadata)) = old_search_metadata_or_none.as_ref() {
-                //检查description是否变化
-                if old_search_metadata.value[1].as_str() == new_descr.as_str() {
+                //检查description是否变化（value[2]；value[1] 现为 full_name）
+                if old_search_metadata.value[2].as_str() == new_descr.as_str() {
                     descr_obsolute = false;
                 }
             }
@@ -438,14 +438,14 @@ mod tests {
         ).await.unwrap();
     }
 
-    async fn create_test_role(agent_id: &str, role_name: &str, description: &str) {
+    async fn create_test_role(agent_id: &str, role_name: &str, full_name: &str, description: &str) {
         let dm = DirectoryManager::get();
         let ego_dir = dm.ensure_agent_ego_dir(agent_id).await.unwrap();
         let role_play = serde_json::json!({
             "role": {
                 "agent_id": agent_id,
                 "role_name": role_name,
-                "full_name": "",
+                "full_name": full_name,
                 "description": description
             },
             "other_roles": {}
@@ -515,7 +515,7 @@ mod tests {
     async fn test_search_role_by_name() {
         crate::test_util::init_test_config();
         create_test_agent("role-name-agt", "Alice", "").await;
-        create_test_role("role-name-agt", "admin", "Administrator").await;
+        create_test_role("role-name-agt", "admin", "", "Administrator").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("role-name-agt").await;
         manager.force_sync_role("role-name-agt", "admin").await;
@@ -528,12 +528,26 @@ mod tests {
     async fn test_search_role_by_description() {
         crate::test_util::init_test_config();
         create_test_agent("role-desc-agt", "Alice", "").await;
-        create_test_role("role-desc-agt", "admin", "Special role description").await;
+        create_test_role("role-desc-agt", "admin", "", "Special role description").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("role-desc-agt").await;
         manager.force_sync_role("role-desc-agt", "admin").await;
         let results = manager.search_role_by_description("Special", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+    }
+
+    #[tokio::test]
+    async fn test_search_role_by_description_matches_full_name() {
+        crate::test_util::init_test_config();
+        create_test_agent("role-fn-agt", "Alice", "").await;
+        // full_name 含可搜索文本，description 不含
+        create_test_role("role-fn-agt", "admin", "超级管理员", "Administrator").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("role-fn-agt").await;
+        manager.force_sync_role("role-fn-agt", "admin").await;
+        let results = manager.search_role_by_description("超级", None).await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        assert_eq!(results[0].role_name, "admin");
     }
 
     #[tokio::test]
