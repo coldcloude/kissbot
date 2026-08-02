@@ -15,7 +15,7 @@
 ## 群消息分发
 
 - 按群组成员为每个成员生成一条 IncomingMessage
-- `is_self` 按接收者是否为发送者逐条计算
+- 分发消息携带发送者的 messenger_name/user_name/group_name；自身回显由 agent 按 msg_id 识别（不按接收者计算 is_self）
 - admin 不参与成员分发，通过 SSE 接收所有群组的消息
 
 ## 先存后推

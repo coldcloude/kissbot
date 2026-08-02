@@ -46,7 +46,7 @@
 
 ## 群组变化处理
 
-- 群组加入 / 退出事件统一转换为系统消息（system_group_join / leave，is_self=1），走上行的双路分发
+- 群组加入 / 退出事件统一转换为系统消息（Content::GroupJoin / GroupLeave），记忆记录 is_self=0，agent 按 Content 类型跳过 agentic loop
 - 同时向 agent 发送 join / leave 控制通知
 - 顺序：join 先通知后发系统消息，leave 先发系统消息再通知
 
