@@ -78,8 +78,6 @@ pub struct NexusRepo {
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
     /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
     pub default_system_prompt: Arc<String>,
-    /// 初始模型（创建时记录，provider/model 打包）
-    pub init_model: Arc<ProviderModel>,
 }
 
 impl Default for NexusRepo {
@@ -91,7 +89,6 @@ impl Default for NexusRepo {
             stations: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
             default_system_prompt: Arc::new(String::new()),
-            init_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
         }
     }
 }
@@ -145,7 +142,7 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
-    // 注：default_system_prompt 与 init_model 已移入 NexusRepo（nexus.json），config.json 不再承载
+    // 注：default_system_prompt 已移入 NexusRepo（nexus.json），config.json 不再承载
 }
 
 impl AgentConfig {
@@ -205,7 +202,7 @@ impl ConfigManager {
                 .map_err(|e| Error::ConfigParseError(e.to_string()))?;
             Ok(repo)
         } else {
-            // 首次创建：默认空配置（default_model/default_system_prompt/init_model 由 nexus.json 模板或人工填写）
+            // 首次创建：默认空配置（default_model/default_system_prompt 由 nexus.json 模板或人工填写）
             let repo = NexusRepo::default();
             let json = serde_json::to_string_pretty(&repo)?;
             tokio::fs::write(path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
@@ -469,7 +466,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nexus.json");
         let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
-        // 首次创建为空默认（default_model/default_system_prompt/init_model 由模板或人工填写）
+        // 首次创建为空默认（default_model/default_system_prompt 由模板或人工填写）
         assert!(repo.default_model.provider.is_empty());
         assert!(repo.default_system_prompt.is_empty());
         assert!(repo.channels.is_empty());
@@ -648,13 +645,11 @@ mod tests {
             stations: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
             default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
-            init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         };
         let json = serde_json::to_string(&repo).unwrap();
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
         assert_eq!(*back.default_system_prompt, "你是 kissbot 智能助手");
-        assert_eq!(*back.init_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
     }
 
     #[test]

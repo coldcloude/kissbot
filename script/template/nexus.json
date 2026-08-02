@@ -30,6 +30,5 @@
   "memory_structs": {},
   "stations": {},
   "default_model": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-  "default_system_prompt": "你是 kissbot 智能助手",
-  "init_model": { "provider": "deepseek", "model": "deepseek-v4-flash" }
+  "default_system_prompt": "你是 kissbot 智能助手"
 }
