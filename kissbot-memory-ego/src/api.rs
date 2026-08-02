@@ -146,8 +146,8 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
 
 async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
     let ego_manager = SearchManager::get().await;
-    let agents = ego_manager.search_by_name(&req.keyword).await;
-    (StatusCode::OK, Json(ApiResponse::success(agents)))
+    let agent_id = ego_manager.search_by_name(&req.keyword).await;
+    (StatusCode::OK, Json(ApiResponse::success(agent_id)))
 }
 
 async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {

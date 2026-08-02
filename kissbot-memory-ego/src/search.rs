@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
@@ -89,7 +90,7 @@ fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> 
 
 pub struct SearchManager {
     identity_dirty: DashSet<String>,
-    name_index: Arc<RwLock<SubstringIndex<String>>>,
+    name_index: Arc<RwLock<HashMap<String, String>>>,
     name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
     name_completion: SimplePrefixCompletion<String>,
     search_metadata: DashMap<String, SearchMetadata>,
@@ -106,7 +107,7 @@ impl SearchManager {
     pub fn new() -> Self {
         Self {
             identity_dirty: DashSet::new(),
-            name_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
+            name_index: Arc::new(RwLock::new(HashMap::new())),
             name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             name_completion: SimplePrefixCompletion::new(),
             search_metadata: DashMap::new(),
@@ -168,14 +169,18 @@ impl SearchManager {
             if name_obsolute {
                 let mut guard = self.name_index.write().await;
                 //有旧值，先移除
-                if let Some(old_name) = old_name_or_none {
-                    let old_name_document = to_document(old_name);
-                    guard.remove(&agent_id.to_string(), &old_name_document);
-                    self.name_completion.remove(&agent_id.to_string(), &old_name_document);
+                if let Some(old_name) = old_name_or_none.as_ref() {
+                    guard.remove(old_name.as_str());
                 }
                 //插入新值
-                let new_name_document = to_document(new_name);
-                guard.insert(&agent_id.to_string(), &new_name_document);
+                guard.insert(new_name.as_str().to_string(), agent_id.to_string());
+                //name_completion（仍索引 individual_name，逻辑不变）
+                let mut old_doc_name = old_name_or_none.clone();
+                if let Some(old_name) = old_doc_name.take() {
+                    let old_name_document = to_document(old_name);
+                    self.name_completion.remove(&agent_id.to_string(), &old_name_document);
+                }
+                let new_name_document = to_document(new_name.clone());
                 self.name_completion.insert(&agent_id.to_string(), &new_name_document);
             }
             //name或description变更
@@ -194,9 +199,9 @@ impl SearchManager {
         else {
             //移除旧名称索引
             if let Some(old_name) = old_name_or_none {
-                let old_name_document = to_document(old_name);
                 let mut guard = self.name_index.write().await;
-                guard.remove(&agent_id.to_string(), &old_name_document);
+                guard.remove(old_name.as_str());
+                let old_name_document = to_document(old_name);
                 self.name_completion.remove(&agent_id.to_string(), &old_name_document);
             }
             //移除旧全文索引
@@ -244,12 +249,12 @@ impl SearchManager {
         self.identity_dirty.insert(agent_id.to_string());
     }
 
-    pub async fn search_by_name(&self, query: &str) -> Vec<String> {
+    pub async fn search_by_name(&self, query: &str) -> Option<String> {
         //先同步脏数据
         self.sync_all_identity().await;
-        //搜索
+        //搜索（全匹配）
         let guard = self.name_index.read().await;
-        guard.find_all_keys(query, false).iter().map(|id| id.to_string()).collect()
+        guard.get(query).cloned()
     }
 
     pub async fn search_by_description(&self, query: &str) -> Vec<String> {
@@ -460,9 +465,12 @@ mod tests {
         let manager = SearchManager::new();
         manager.force_sync_identity("name-agt1").await;
         manager.force_sync_identity("name-agt2").await;
-        let results = manager.search_by_name("Alice").await;
-        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
-        assert_eq!(results[0], "name-agt1");
+        // 全匹配：返回 Some(agent_id)
+        let result = manager.search_by_name("Alice").await;
+        assert_eq!(result, Some("name-agt1".to_string()), "expected Some(name-agt1), got {:?}", result);
+        // 前缀不是全匹配：返回 None
+        let result = manager.search_by_name("Al").await;
+        assert_eq!(result, None, "expected None for prefix, got {:?}", result);
     }
 
     #[tokio::test]
@@ -471,8 +479,8 @@ mod tests {
         create_test_agent("noname-agt", "Alice", "Test").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("noname-agt").await;
-        let results = manager.search_by_name("Nonexistent").await;
-        assert!(results.is_empty(), "expected empty, got {:?}", results);
+        let result = manager.search_by_name("Nonexistent").await;
+        assert_eq!(result, None, "expected None, got {:?}", result);
     }
 
     #[tokio::test]
