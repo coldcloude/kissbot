@@ -171,9 +171,10 @@ impl AgentCoordinator {
 
     /// 会话创建/重置时：加载 ego（保留 agent 用默认提示词）+ 历史记录 + 顶层记忆索引构建初始上下文
     async fn build_initial_context(&self, session: &Arc<Session>) {
-        // 保留 agent（agent_name 为空）不调 memory-ego，用 AgentConfig 默认系统提示词；其余 agent 走 load_ego_info
+        // 保留 agent（agent_name 为空）不调 memory-ego，用 NexusRepo 默认系统提示词；其余 agent 走 load_ego_info
         if session.key.agent_name == RESERVED_AGENT_NAME {
-            session.context.lock().await.set_system_message(self.config.default_system_prompt().to_string());
+            let prompt = self.config.default_system_prompt().await;
+            session.context.lock().await.set_system_message(prompt);
         } else {
             let agent_id = self.resolve_agent_id(&session.key.agent_name).await;
             if let Ok(ego_info) = self.load_ego_info(agent_id.as_str(), &session.key.role_name).await {

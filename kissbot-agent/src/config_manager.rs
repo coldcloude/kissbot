@@ -76,6 +76,10 @@ pub struct NexusRepo {
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
+    /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
+    pub default_system_prompt: Arc<String>,
+    /// 初始模型（创建时记录，provider/model 打包）
+    pub init_model: Arc<ProviderModel>,
 }
 
 impl Default for NexusRepo {
@@ -86,6 +90,8 @@ impl Default for NexusRepo {
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
+            default_system_prompt: Arc::new(String::new()),
+            init_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
         }
     }
 }
@@ -139,8 +145,7 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
-    pub default_system_prompt: Arc<String>,   // 保留 agent 的默认系统提示词（不调 memory-ego 时用）
-    pub init_model: Arc<ProviderModel>,   // 种子 NexusRepo.default_model（(provider, model) 打包）
+    // 注：default_system_prompt 与 init_model 已移入 NexusRepo（nexus.json），config.json 不再承载
 }
 
 impl AgentConfig {
@@ -179,7 +184,7 @@ impl ConfigManager {
         let nexus_path = format!("{}/nexus.json", data_dir);
         let station_path = format!("{}/station.json", data_dir);
 
-        let nexus_repo = Self::load_or_create_nexus(&nexus_path, &agent_config).await?;
+        let nexus_repo = Self::load_or_create_nexus(&nexus_path).await?;
         let station_repo = Self::load_or_create_station(&station_path).await?;
 
         Ok(Self {
@@ -192,7 +197,7 @@ impl ConfigManager {
         })
     }
 
-    async fn load_or_create_nexus(path: &str, cfg: &AgentConfig) -> Result<NexusRepo> {
+    async fn load_or_create_nexus(path: &str) -> Result<NexusRepo> {
         if std::path::Path::new(path).exists() {
             let content = tokio::fs::read_to_string(path).await
                 .map_err(|e| Error::ConfigNotFound(format!("{}: {}", path, e)))?;
@@ -200,11 +205,8 @@ impl ConfigManager {
                 .map_err(|e| Error::ConfigParseError(e.to_string()))?;
             Ok(repo)
         } else {
-            // 首次创建：用 init_model 种子 default_model，集合为空
-            let repo = NexusRepo {
-                default_model: cfg.init_model.clone(),
-                ..NexusRepo::default()
-            };
+            // 首次创建：默认空配置（default_model/default_system_prompt/init_model 由 nexus.json 模板或人工填写）
+            let repo = NexusRepo::default();
             let json = serde_json::to_string_pretty(&repo)?;
             tokio::fs::write(path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
             Ok(repo)
@@ -263,7 +265,10 @@ impl ConfigManager {
     pub fn data_dir(&self) -> &str { &self.agent_config.data_dir }
 
     #[allow(dead_code)]
-    pub fn default_system_prompt(&self) -> &str { &self.agent_config.default_system_prompt }
+    /// 保留 agent 默认系统提示词（读 NexusRepo，nexus.json 可持久化修改）
+    pub async fn default_system_prompt(&self) -> String {
+        self.nexus_repo.read().await.default_system_prompt.to_string()
+    }
 
     /// 注册配置变更监听器
     #[allow(dead_code)]
@@ -456,18 +461,17 @@ mod tests {
             mgmt_host: Arc::new("127.0.0.1".into()),
             mgmt_port: 9090,
             ws_reconnect_interval_secs: 5,
-            default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
-            init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         }
     }
 
     #[tokio::test]
-    async fn bootstrap_creates_nexus_with_seeds() {
+    async fn bootstrap_creates_nexus_empty() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nexus.json");
-        let cfg = agent_config(dir.path().to_str().unwrap());
-        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
-        assert_eq!(*repo.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
+        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
+        // 首次创建为空默认（default_model/default_system_prompt/init_model 由模板或人工填写）
+        assert!(repo.default_model.provider.is_empty());
+        assert!(repo.default_system_prompt.is_empty());
         assert!(repo.channels.is_empty());
         assert!(path.exists(), "首次创建应写文件");
     }
@@ -476,26 +480,23 @@ mod tests {
     async fn bootstrap_loads_existing_nexus() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nexus.json");
-        let cfg = agent_config(dir.path().to_str().unwrap());
-        // 第一次创建
-        let _ = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
-        // 改 init_model 不影响第二次（文件已存在为权威）
-        let cfg2 = AgentConfig { init_model: Arc::new(ProviderModel { provider: "other".into(), model: "x".into() }), ..cfg };
-        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg2).await.unwrap();
-        assert_eq!(*repo.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }, "文件存在时 init_* 应被忽略");
+        // 第一次创建（空默认）
+        let _ = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
+        // 第二次加载：文件已存在为权威（内容不变）
+        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
+        assert!(repo.default_model.provider.is_empty(), "文件存在时不应重新种子");
     }
 
     #[tokio::test]
     async fn nexus_json_file_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nexus.json");
-        let cfg = agent_config(dir.path().to_str().unwrap());
-        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap(), &cfg).await.unwrap();
+        let repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
         // 模拟写回再读
         let json = serde_json::to_string_pretty(&repo).unwrap();
         std::fs::write(&path, json).unwrap();
         let back: NexusRepo = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
+        assert!(back.default_model.provider.is_empty());
     }
 
     #[tokio::test]
@@ -646,10 +647,14 @@ mod tests {
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
+            default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
+            init_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
         };
         let json = serde_json::to_string(&repo).unwrap();
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.default_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
+        assert_eq!(*back.default_system_prompt, "你是 kissbot 智能助手");
+        assert_eq!(*back.init_model, ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() });
     }
 
     #[test]
