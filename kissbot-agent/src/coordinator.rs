@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use arc_swap::ArcSwap;
@@ -28,6 +28,35 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 pub const RESERVED_AGENT_ID: &str = "0";
 pub const RESERVED_ROLE_NAME: &str = "0";
 
+/// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
+const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
+
+/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合
+struct ChannelContext {
+    pending_outgoing: HashMap<String, Instant>,
+}
+
+impl ChannelContext {
+    fn new() -> Self { Self { pending_outgoing: HashMap::new() } }
+
+    fn add_pending(&mut self, msg_id: String) {
+        self.evict();
+        self.pending_outgoing.insert(msg_id, Instant::now());
+    }
+
+    /// 命中则移除并返回 true（回显消费）
+    fn consume_pending(&mut self, msg_id: &str) -> bool {
+        self.evict();
+        self.pending_outgoing.remove(msg_id).is_some()
+    }
+
+    /// TTL 懒清理：淘汰超过 CHANNEL_CONTEXT_TTL_SECS 的条目
+    fn evict(&mut self) {
+        let ttl = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
+        self.pending_outgoing.retain(|_, t| t.elapsed() < ttl);
+    }
+}
+
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
     memory_reader: Arc<MemoryReader>,
@@ -39,6 +68,8 @@ pub struct AgentCoordinator {
     valid_default: ArcSwap<Option<ProviderModel>>,
     /// 按 agent 内部 channel_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
+    /// 每 channel 运行时上下文（msg_id 回显判定用）
+    channel_contexts: Arc<DashMap<String, Arc<tokio::sync::Mutex<ChannelContext>>>>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
 }
@@ -62,6 +93,7 @@ impl AgentCoordinator {
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
             channel_clients: Arc::new(DashMap::new()),
+            channel_contexts: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
         });
@@ -96,6 +128,24 @@ impl AgentCoordinator {
         // 运行态 mode 参与会话定位；agent/role 取绑定配置（纯函数逻辑见 session_key_of）
         let mode = self.session_manager.channel_mode(&ch.channel_id);
         session_key_of(&ch.agent_id, &ch.role_name, mode)
+    }
+
+    /// 记录已发出的 outgoing msg_id 到该 channel 的 pending 集合（回显判定用）
+    async fn record_outgoing_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) {
+        let ctx = self.channel_contexts
+            .entry(channel_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(ChannelContext::new())))
+            .clone();
+        ctx.lock().await.add_pending(msg_id.as_str().to_string());
+    }
+
+    /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
+    async fn is_self_echo_by_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) -> bool {
+        if let Some(ctx) = self.channel_contexts.get(channel_id) {
+            ctx.lock().await.consume_pending(msg_id.as_str())
+        } else {
+            false
+        }
     }
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
@@ -380,7 +430,12 @@ impl Terminal for AgentCoordinator {
         // 1. 来源 channel 必须在配置中
         let Some(ch) = self.channel_config(channel_id).await else { return; };
 
-        // 2. 推上行消息到记忆（agent/role 取来源 channel 绑定，事件模式编码）
+        // 2. msg_id 回显判定：命中（已发未回显）则跳过，不存 record、不进 agentic loop
+        if self.is_self_echo_by_msg_id(channel_id, &message.msg_id).await {
+            return;
+        }
+
+        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent/role 取来源 channel 绑定，事件模式编码）
         if let Some(key) = self.session_key_for(&ch) {
             let role_name = memory_role(&key);
             self.memory_store_client.push_channel_record(ChannelRecord {
@@ -389,7 +444,7 @@ impl Terminal for AgentCoordinator {
                 messenger_id: message.messenger_id.clone(),
                 user_id: message.user_id.clone(),
                 group_id: message.group_id.clone(),
-                is_self: message.is_self,
+                is_self: 0,
                 messenger_name: message.messenger_name.clone(),
                 user_name: message.user_name.clone(),
                 group_name: message.group_name.clone(),
@@ -398,7 +453,7 @@ impl Terminal for AgentCoordinator {
             }).await;
         }
 
-        // 3. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
+        // 4. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
         self.handle_incoming(channel_id, ch, message).await;
     }
 
@@ -440,20 +495,12 @@ impl AgentCoordinator {
         let messenger_id = incoming.messenger_id.to_string();
         let user_id = incoming.user_id.to_string();
         let group_id = incoming.group_id.to_string();
-        let is_self = incoming.is_self;
         let content_text = extract_text(&incoming.content);
 
-        // 1. 自身发送回显识别（会话级 sent_contents）
-        if is_self == 1 {
-            if let Some(key) = self.session_key_for(&ch) {
-                if let Some(session) = self.session_manager.get(&key) {
-                    let ctx = session.context.lock().await;
-                    if ctx.is_self_echo(&content_text) {
-                        return; // 自己发出的回显，丢弃
-                    }
-                }
-            }
-            return;
+        // 1. 系统事件（群组变更/用户移除）不进 agentic loop
+        match &incoming.content {
+            Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
+            _ => {}
         }
 
         // 2. 管理命令
@@ -565,7 +612,6 @@ impl AgentCoordinator {
                 {
                     let mut ctx = session.context.lock().await;
                     ctx.push_assistant(model_resp.content.clone(), now.clone());
-                    ctx.record_sent_content(model_resp.content.clone());
                 }
 
                 // 4. 推送 think 到 MemoryWriter（事件模式编码）
@@ -621,9 +667,10 @@ impl AgentCoordinator {
 
         match client.send_message(msg).await {
             Ok(response) => {
-                // 下行成功后推记忆（is_self=1，使用返回的 content）
+                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1，name 取自 response）
                 if let Some(key) = self.session_key_for(&ch) {
                     let role_name = memory_role(&key);
+                    self.record_outgoing_msg_id(send_channel_id, &response.msg_id).await;
                     self.memory_store_client.push_channel_record(ChannelRecord {
                         agent_id: Arc::new(key.agent_id.clone()),
                         role_name: Arc::new(role_name),
@@ -631,17 +678,12 @@ impl AgentCoordinator {
                         user_id: bound.user_id.clone(),
                         group_id: Arc::new(group_id.to_string()),
                         is_self: 1,
-                        messenger_name: Arc::new(String::new()),
-                        user_name: Arc::new(String::new()),
-                        group_name: Arc::new(String::new()),
+                        messenger_name: response.messenger_name.clone(),
+                        user_name: response.user_name.clone(),
+                        group_name: response.group_name.clone(),
                         content: response.content.clone(),
                         time: response.time.clone(),
                     }).await;
-
-                    // 记录已发送内容（用于 is_self echo 检测，会话级）
-                    if let Some(session) = self.session_manager.get(&key) {
-                        session.context.lock().await.record_sent_content(content);
-                    }
                 }
             }
             Err(e) => {
@@ -679,6 +721,34 @@ fn session_key_of(agent_id: &str, role_name: &str, mode: Mode) -> Option<Session
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_context_msg_id_consume() {
+        let mut ctx = ChannelContext::new();
+        // 加入后命中且消费移除
+        ctx.add_pending("msg1".to_string());
+        assert!(ctx.consume_pending("msg1"));
+        // 已消费，再次查询为 false
+        assert!(!ctx.consume_pending("msg1"));
+        // 未加入的 msg_id
+        assert!(!ctx.consume_pending("nonexistent"));
+    }
+
+    #[test]
+    fn channel_context_ttl_evict() {
+        let mut ctx = ChannelContext::new();
+        // 正常条目（未过期）
+        ctx.add_pending("fresh".to_string());
+        // 直接构造过期条目（同模块可见字段）
+        ctx.pending_outgoing.insert(
+            "expired".to_string(),
+            Instant::now() - Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS + 1),
+        );
+        // consume 触发 evict：过期条目被淘汰 -> false
+        assert!(!ctx.consume_pending("expired"));
+        // 未过期条目仍在 -> true
+        assert!(ctx.consume_pending("fresh"));
+    }
 
     #[test]
     fn session_key_for_empty_detaches_but_zero_attaches() {

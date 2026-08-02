@@ -14,8 +14,6 @@ const MAX_CONTEXT_MESSAGES: usize = 100;
 pub struct SessionContext {
     messages: VecDeque<ContextMessage>,
     system_message: Option<String>,
-    /// 保存已发送的消息 content，用于 is_self=1 对比
-    sent_contents: VecDeque<String>,
 }
 
 impl SessionContext {
@@ -23,7 +21,6 @@ impl SessionContext {
         Self {
             messages: VecDeque::new(),
             system_message: None,
-            sent_contents: VecDeque::with_capacity(64),
         }
     }
 
@@ -60,19 +57,6 @@ impl SessionContext {
     #[allow(dead_code)]
     pub fn push_tool_result(&mut self, tool_name: String, result: serde_json::Value, time: String) {
         self.messages.push_back(ContextMessage::ToolResult { tool_name, result, time });
-    }
-
-    /// 记录已发送的消息内容（用于 is_self=1 识别）
-    pub fn record_sent_content(&mut self, content: String) {
-        if self.sent_contents.len() >= 64 {
-            self.sent_contents.pop_front();
-        }
-        self.sent_contents.push_back(content);
-    }
-
-    /// 检查内容是否为最近发出的消息回显
-    pub fn is_self_echo(&self, content: &str) -> bool {
-        self.sent_contents.iter().any(|s| s == content)
     }
 
     /// 构建模型消息列表
