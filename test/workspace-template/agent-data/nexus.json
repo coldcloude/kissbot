@@ -22,7 +22,7 @@
       "default_timeout_secs": 60,
       "default_retry_count": 3,
       "default_thinking": "enabled",
-      "default_reasoning_effort": "high",
+      "default_reasoning_effort": "low",
       "models": {}
     }
   },

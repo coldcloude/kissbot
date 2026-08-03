@@ -16,6 +16,21 @@ const MEMORY_EGO_BINARY = join(REPO_ROOT, 'kissbot-memory-ego', 'target', 'debug
 
 export const AGENT_MGMT_PORT = 9090;
 
+// 清理残留的服务进程（上次运行崩溃/中断遗留的 agent/backend/memory-store/memory-ego）
+// 必要性：残留进程占用端口会导致本测试启动的服务 bind 失败、请求打到旧实例；
+// 且旧实例 cwd 指向 workspace，resetWorkspace 删除目录后其相对 root_dir 路径全部失效（如 memory-store PathNotExist）。
+// 按二进制绝对路径精确匹配，避免误杀 kissbot-agent-config 等无关进程。
+export function killStrayServices(): void {
+  const binaries = [BACKEND_BINARY, AGENT_BINARY, MEMORY_STORE_BINARY, MEMORY_EGO_BINARY];
+  for (const bin of binaries) {
+    try {
+      execSync(`pkill -9 -f '^${bin}( |$)' || true`, { stdio: 'ignore' });
+    } catch {
+      // pkill 无匹配进程返回非零，忽略
+    }
+  }
+}
+
 export function resetWorkspace(): void {
   const ws = join(REPO_ROOT, 'test', 'workspace');
   const tmpl = join(REPO_ROOT, 'test', 'workspace-template');

@@ -20,9 +20,11 @@ impl MemoryWriter {
         let (sender, receiver): (Sender<WriteTask>, Receiver<WriteTask>) =
             bounded(DEFAULT_QUEUE_CAPACITY);
         let memory_store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
+        // memory-store 鉴权（与 memory_store_client 一致：X-Api-Key = security.api_key）
+        let api_key = kissbot_security::SecurityConfig::get().api_key.to_string();
 
         let handle = tokio::spawn(async move {
-            Self::run_background(receiver, memory_store_url).await;
+            Self::run_background(receiver, memory_store_url, api_key).await;
         });
 
         Self {
@@ -40,7 +42,7 @@ impl MemoryWriter {
     }
 
     /// 后台任务：从队列消费并写入 memory-store
-    async fn run_background(receiver: Receiver<WriteTask>, store_url: String) {
+    async fn run_background(receiver: Receiver<WriteTask>, store_url: String, api_key: String) {
         let client = reqwest::Client::new();
         let base_url = store_url.trim_end_matches('/').to_string();
 
@@ -57,7 +59,8 @@ impl MemoryWriter {
                         }],
                         "force": 0,
                     });
-                    client.post(&format!("{}/think", base_url))
+                    client.post(&format!("{}/store/think", base_url))
+                        .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
                         .json(&body).send().await
                 }
                 WriteTask::ToolCall { agent_id, role_name, tool_name, tool_params, time } => {
@@ -72,7 +75,8 @@ impl MemoryWriter {
                         }],
                         "force": 0,
                     });
-                    client.post(&format!("{}/tool-call", base_url))
+                    client.post(&format!("{}/store/tool-call", base_url))
+                        .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
                         .json(&body).send().await
                 }
                 WriteTask::ToolResult { agent_id, role_name, tool_result, time } => {
@@ -86,13 +90,22 @@ impl MemoryWriter {
                         }],
                         "force": 0,
                     });
-                    client.post(&format!("{}/tool-result", base_url))
+                    client.post(&format!("{}/store/tool-result", base_url))
+                        .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
                         .json(&body).send().await
                 }
             };
 
-            if let Err(e) = result {
-                error!("记忆写入失败（不重试）: {:?}", e);
+            match result {
+                Ok(resp) => {
+                    // 非 2xx 也记录错误（HTTP 层失败原本被 send().await 吞掉，仅凭返回体错误不可见）
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let text = resp.text().await.unwrap_or_default();
+                        error!("记忆写入失败 status={} body={}", status, text);
+                    }
+                }
+                Err(e) => error!("记忆写入失败（不重试）: {:?}", e),
             }
         }
 
