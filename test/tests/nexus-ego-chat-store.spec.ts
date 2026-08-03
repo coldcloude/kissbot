@@ -24,10 +24,17 @@ let agentId: string;   // ego 里预建 agent a1 的 UUID（由 /agent/search-na
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+// 本地日期（agent think 记录 time 来自 Local::now()，归档按本地日期分区）
 function todayDate(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// UTC 日期（backend channel 记录 time 来自 Utc::now()，归档按 UTC 日期分区；
+// 深夜本地日期 > UTC 日期时两者不同日，查询须用各自时间源的日期）
+function utcDate(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 // 发送文本消息并等待 agent（u1 身份）的真实 LLM 回复
@@ -67,7 +74,8 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
     data: {
       agent_id: agentId, role_name: roleName, messenger_id: 'web',
       user_id: 'u1', group_id: 'g1',   // 文件名 user_id = 绑定用户（接收方）
-      start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+      start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
+      // 查询日期用 UTC（backend channel 记录 time 来自 Utc::now()）
     },
   })).json();
   expect(resp.success).toBe(true);
@@ -101,10 +109,11 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
     data: {
       agent_id: agentId, role_name: roleName,
       start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+      // 查询日期用本地（agent think 记录 time 来自 Local::now()）
     },
   })).json();
   expect(resp.success).toBe(true);
-  expect(resp.data.length).toBeGreaterThanOrEqual(1, 'think 记录应已写入（agent 侧 MemoryWriter 推送 /store/think）');
+  expect(resp.data.length).toBeGreaterThanOrEqual(1, 'think 记录应已写入（agent 侧 MemoryStoreClient 推送 /store/think）');
   const key = resp.data[0][0];
   // ego 读取验证：agent_id 为 ego 解析出的 UUID（非保留值 "0"）
   expect(key.agent_id).toBe(agentId);
