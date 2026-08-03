@@ -90,7 +90,7 @@ nexus 与记忆系统的交互区分两种模式：
   - agentic loop 内：由 LLM 通过 nexus 内置 tool 从记忆结构组件查询记忆（不记入记忆）
 
 ### 会话与绑定
-一个 nexus 可同时管理多个会话。nexus 为每个绑定的 channel 配置 agent_id、role_name、mode，并将所有绑定项的信息去重，每个 agent_id+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读取范围与模式状态，消息按来源 channel 对应的绑定配置路由到对应会话。每个会话从其绑定的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送。
+一个 nexus 可同时管理多个会话。nexus 为每个绑定的 channel 配置 agent_name（绑定代号，空串为保留 agent）、role_name、mode，并将所有绑定项的信息去重，每个 agent_name+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读取范围与模式状态，消息按来源 channel 对应的绑定配置路由到对应会话；记忆读写用 agent_name 解析出的 agent_id（UUID）定位。每个会话从其绑定的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送。
 
 ### Agent 的自我认知机制
 每个 agent 具有双重自我认知设定：

@@ -5,7 +5,7 @@
 2. [x] 一个nexus管理不止一个会话上下文，每个channel都有绑定的agent_id、role_name、mode，nexus将所有活动channel的绑定去重，每个agent_id+role_name+mode为一个会话，每个会话对应的多个channel中，应该选择一个作为发送回复消息的channel
 3. [ ] 重新设计会话和记忆的关系
 4. [ ] 增加auto_bind
-5. [ ] 移植ego.md，删除channel中的memory_store_client
+5. [x] 移植ego.md到agent，删除channel中的memory_store_client（9681a6b 已完成，含 load_ego_info 改用 ego_md 三个 builder）
 
 ## 处理优化
 1. [x] 去掉msg_type，直接使用Content枚举值的表示方法
