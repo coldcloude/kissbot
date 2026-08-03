@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { APIRequestContext } from '@playwright/test';
 import { resetWorkspace, startBackend, stopBackend, waitForPort } from './helpers/server';
+import { generateSmallPng } from './helpers/assets';
 import { fileURLToPath } from 'url';
 import { ChildProcess } from 'child_process';
 import { join, dirname } from 'path';
@@ -244,18 +245,8 @@ test.describe.serial('channel-web 后端 API 测试', () => {
 
   // TC-21 附件上传——上传文件数据
   test('TC-21: 附件上传——上传文件数据', async ({ request }) => {
-    // 使用 1x1 红色 PNG 作为测试图片
-    const pngBuffer = Buffer.from([
-      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-      0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
-      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1 pixel
-      0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // 8-bit RGB
-      0xDE, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, // IDAT chunk length
-      0x54, 0x78, 0x9C, 0xFB, 0xCF, 0xC0, 0x00, 0x00, // IDAT type + data
-      0x03, 0x00, 0x01, 0x00, 0x83, 0xC9, 0xEC, 0x6B, // IDAT data + crc
-      0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND length + type
-      0xAE, 0x42, 0x60, 0x82,                         // IEND crc
-    ]);
+    // 使用合法 PNG（image crate 可解码，缩略图才能生成）
+    const pngBuffer = generateSmallPng();
     const resp = await request.post(`${BASE}/api/attachment/upload`, {
       headers: { 'X-Api-Key': API_KEY },
       multipart: {
@@ -281,9 +272,13 @@ test.describe.serial('channel-web 后端 API 测试', () => {
     const resp = await request.get(`${BASE}/api/attachment/thumbnail?key=${sharedAttKey}`, {
       headers: { 'X-Api-Key': API_KEY },
     });
+    expect(resp.status()).toBe(200);
     const body = await resp.body();
-    // 如果缩略图生成成功应为 JPEG 格式；否则至少返回非空数据（错误信息）
+    // 缩略图统一存为 JPEG（与响应头 image/jpeg 一致）
     expect(body.length).toBeGreaterThan(0);
+    expect(body[0]).toBe(0xFF); // JPEG SOI
+    expect(body[1]).toBe(0xD8);
+    expect(resp.headers()['content-type']).toContain('image/jpeg');
   });
 
   // TC-24 分页加载历史消息

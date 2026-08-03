@@ -126,14 +126,13 @@ impl AttachmentStore {
             return Err(Error::AttachmentNotFound(key.to_string()));
         }
 
-        let mime_type = mime_guess::from_path(&file_path).first_or_octet_stream();
-        if mime_type.type_() == mime_guess::mime::IMAGE {
-            if let Ok(data) = std::fs::read(&file_path) {
-                if let Ok(img) = image::load_from_memory(&data) {
-                    let thumb = img.thumbnail(200, 200);
-                    if thumb.save(&thumb_path).is_ok() {
-                        return Ok(Bytes::from(std::fs::read(&thumb_path)?));
-                    }
+        // 尝试直接解码图片生成缩略图（meta 的 mime_type 已保证为图片；
+        // thumb_ 文件无扩展名，统一用 JPEG 保存以匹配响应头 image/jpeg）
+        if let Ok(data) = std::fs::read(&file_path) {
+            if let Ok(img) = image::load_from_memory(&data) {
+                let thumb = img.thumbnail(200, 200);
+                if thumb.save_with_format(&thumb_path, image::ImageFormat::Jpeg).is_ok() {
+                    return Ok(Bytes::from(std::fs::read(&thumb_path)?));
                 }
             }
         }
@@ -320,13 +319,13 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
                 // 写入完成，rename
                 let target_path = dir.join(uuid_ch.as_str());
                 std::fs::rename(&temp_path, &target_path)?;
-                // 如果是图片则生成缩略图
+                // 如果是图片则生成缩略图（thumb_ 文件无扩展名，统一存 JPEG）
                 if meta.info.mime_type.starts_with("image/") {
                     if let Ok(data) = std::fs::read(&target_path) {
                         if let Ok(img) = image::load_from_memory(&data) {
                             let thumb_path = dir.join(format!("thumb_{}", uuid));
                             let thumb = img.thumbnail(200, 200);
-                            if thumb.save(&thumb_path).is_ok() {
+                            if thumb.save_with_format(&thumb_path, image::ImageFormat::Jpeg).is_ok() {
                                 // 更新 metadata 中的 has_thumbnail
                                 let updated_meta = AttachmentMeta {
                                     key: meta.key.clone(),
