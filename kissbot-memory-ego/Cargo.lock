@@ -794,6 +794,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "http-body-util",
  "kai-index",
  "kissbot-api",
  "kissbot-config",
@@ -804,6 +805,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tower",
  "uuid",
 ]
 
