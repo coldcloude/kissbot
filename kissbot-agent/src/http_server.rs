@@ -176,9 +176,11 @@ mod tests {
             api_key: "sk-test".into(),
             default_context_length: 65536,
             default_max_tokens: 4096,
-            default_temperature: 0.7,
+            default_temperature: Some(0.7),
             default_timeout_secs: 60,
             default_retry_count: 3,
+            default_thinking: None,
+            default_reasoning_effort: None,
             models: Arc::new(ArcSwapHashMap::new()),
         }
     }

@@ -29,9 +29,14 @@ pub struct ProviderConfig {
     pub api_key: String,                 // provider 级密钥（从 model 级移上）
     pub default_context_length: u32,     // 默认上下文长度（token），本期只落位
     pub default_max_tokens: u32,
-    pub default_temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_temperature: Option<f32>,
     pub default_timeout_secs: u64,
     pub default_retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_thinking: Option<String>,          // 默认思考模式开关值（原样进 {"thinking":{"type":...}}）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,  // 默认思考力度
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,  // key = model 标识
 }
 
@@ -43,11 +48,13 @@ pub struct EffectiveModelConfig {
     pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
-    pub temperature: f32,
+    pub temperature: Option<f32>,
     pub timeout_secs: u64,
     pub retry_count: u32,
     #[allow(dead_code)]   // 本期只落位：默认上下文长度（token），截断逻辑后续接入
     pub context_length: u32,
+    pub thinking: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 // ModelConfig 定义在本文件，供 model_client 与本文件的 NexusRepo.providers[].models 共用
@@ -65,6 +72,10 @@ pub struct ModelConfig {
     pub retry_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
@@ -343,10 +354,12 @@ impl ConfigManager {
             api_key: provider.api_key.clone(),
             model: pm.model.clone(),   // 用切换指令的模型名（未配置也有效）
             max_tokens: model_cfg.as_ref().and_then(|m| m.max_tokens).unwrap_or(provider.default_max_tokens),
-            temperature: model_cfg.as_ref().and_then(|m| m.temperature).unwrap_or(provider.default_temperature),
+            temperature: model_cfg.as_ref().and_then(|m| m.temperature).or(provider.default_temperature),
             timeout_secs: model_cfg.as_ref().and_then(|m| m.timeout_secs).unwrap_or(provider.default_timeout_secs),
             retry_count: model_cfg.as_ref().and_then(|m| m.retry_count).unwrap_or(provider.default_retry_count),
             context_length: model_cfg.as_ref().and_then(|m| m.context_length).unwrap_or(provider.default_context_length),
+            thinking: model_cfg.as_ref().and_then(|m| m.thinking.clone()).or(provider.default_thinking.clone()),
+            reasoning_effort: model_cfg.as_ref().and_then(|m| m.reasoning_effort.clone()).or(provider.default_reasoning_effort.clone()),
         })
     }
 
@@ -671,11 +684,34 @@ mod tests {
             api_key: "sk-test".into(),
             default_context_length: 65536,
             default_max_tokens: 4096,
-            default_temperature: 0.7,
+            default_temperature: Some(0.7),
             default_timeout_secs: 60,
             default_retry_count: 3,
+            default_thinking: None,
+            default_reasoning_effort: None,
             models: Arc::new(ArcSwapHashMap::new()),
         }
+    }
+
+    #[test]
+    fn provider_config_old_shape_migration() {
+        // 旧格式：default_temperature 为数值，无 default_thinking/default_reasoning_effort
+        let old = r#"{
+            "name": "deepseek",
+            "provider_type": "openai",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "sk-test",
+            "default_context_length": 65536,
+            "default_max_tokens": 4096,
+            "default_temperature": 0.7,
+            "default_timeout_secs": 60,
+            "default_retry_count": 3,
+            "models": {}
+        }"#;
+        let pc: ProviderConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(pc.default_temperature, Some(0.7), "旧数值应映射为 Some");
+        assert_eq!(pc.default_thinking, None);
+        assert_eq!(pc.default_reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -701,6 +737,8 @@ mod tests {
                 timeout_secs: Some(30),
                 retry_count: Some(2),
                 context_length: None,  // 未配 → 继承 provider 默认
+                thinking: Some("enabled".into()),
+                reasoning_effort: Some("high".into()),
             })));
         }
         {
@@ -715,7 +753,9 @@ mod tests {
         assert_eq!(eff.api_key, "sk-test");
         assert_eq!(eff.model, "deepseek-4-flash");
         assert_eq!(eff.max_tokens, 2048, "model 的 max_tokens 应生效");
-        assert_eq!(eff.temperature, 0.3, "model 的 temperature 应生效");
+        assert_eq!(eff.temperature, Some(0.3), "model 的 temperature 应生效");
+        assert_eq!(eff.thinking.as_deref(), Some("enabled"), "model 的 thinking 应生效");
+        assert_eq!(eff.reasoning_effort.as_deref(), Some("high"), "model 的 reasoning_effort 应生效");
         assert_eq!(eff.timeout_secs, 30);
         assert_eq!(eff.retry_count, 2);
         assert_eq!(eff.context_length, 65536, "context_length 未配应继承 provider 默认");
@@ -734,6 +774,9 @@ mod tests {
             listeners: DashMap::new(),
         };
         let mut provider = sample_provider("deepseek");
+        // 设置思考相关默认值（验证未配置时继承 provider 默认）
+        provider.default_thinking = Some("disabled".into());
+        provider.default_reasoning_effort = Some("low".into());
         {
             let map = Arc::make_mut(&mut provider.models);
             map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
@@ -743,6 +786,8 @@ mod tests {
                 timeout_secs: None,
                 retry_count: None,
                 context_length: Some(131072),  // 覆盖 context_length
+                thinking: None,
+                reasoning_effort: None,
             })));
         }
         {
@@ -753,10 +798,12 @@ mod tests {
         let pm = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let eff = manager.resolve_effective_config(&pm).await.expect("应能合成");
         assert_eq!(eff.max_tokens, 4096, "缺省继承 provider 默认");
-        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.temperature, Some(0.7));
         assert_eq!(eff.timeout_secs, 60);
         assert_eq!(eff.retry_count, 3);
         assert_eq!(eff.context_length, 131072, "model 覆盖 context_length 应生效");
+        assert_eq!(eff.thinking.as_deref(), Some("disabled"), "thinking 未配应继承 provider 默认");
+        assert_eq!(eff.reasoning_effort.as_deref(), Some("low"), "reasoning_effort 未配应继承 provider 默认");
     }
 
     #[tokio::test]
@@ -779,7 +826,7 @@ mod tests {
             .expect("model 未配置也应合成");
         assert_eq!(eff.model, "nope", "model 用切换指令的模型名");
         assert_eq!(eff.max_tokens, 4096, "未配置参数取 provider 默认值");
-        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.temperature, Some(0.7));
         assert_eq!(eff.timeout_secs, 60);
     }
 
@@ -801,7 +848,7 @@ mod tests {
         let eff = eff.expect("model 未配置也应合成");
         assert_eq!(eff.model, "deepseek-v4-flash");
         assert_eq!(eff.max_tokens, 4096);          // provider 默认值
-        assert_eq!(eff.temperature, 0.7);
+        assert_eq!(eff.temperature, Some(0.7));
         assert_eq!(eff.timeout_secs, 60);
     }
 
@@ -852,6 +899,7 @@ mod tests {
             map.insert("gpt-4o".into(), ArcSwap::new(Arc::new(ModelConfig {
                 model: "gpt-4o".into(), max_tokens: None, temperature: None,
                 timeout_secs: None, retry_count: None, context_length: None,
+                thinking: None, reasoning_effort: None,
             })));
         }
         manager.add_provider(provider).await.unwrap();
