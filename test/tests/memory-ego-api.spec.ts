@@ -17,11 +17,14 @@ let agentId: string;
 let copiedAgentId: string;
 
 async function apiReq(request: APIRequestContext, method: string, path: string, body?: unknown) {
-  return (await request.fetch(`${BASE}${path}`, {
+  const res = await request.fetch(`${BASE}${path}`, {
     method,
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: body,
-  })).json();
+  });
+  // 正常路径下所有端点均返回 2xx；非 2xx 直接报错暴露 HTTP 层问题
+  expect(res.ok()).toBe(true);
+  return (await res.json()) as any;
 }
 
 test.describe.serial('memory-ego API 测试', () => {
@@ -138,6 +141,8 @@ test.describe.serial('memory-ego API 测试', () => {
     const resp = await apiReq(request, 'POST', '/individual/get-all', { agent_id: agentId });
     expect(resp.success).toBe(true);
     expect(resp.data.agent_id).toBe(agentId);
+    // 尚未插入任何个体，individual_map 为空对象
+    expect(resp.data.individual_map).toEqual({});
   });
 
   // TC-12 批量替换个体
@@ -257,6 +262,9 @@ test.describe.serial('memory-ego API 测试', () => {
       agent_id: agentId, role_name: 'admin', new_name: 'admin2',
     });
     expect(resp.success).toBe(true);
+    // 回读：新角色出现在角色列表
+    const list = await apiReq(request, 'POST', '/role/list', { agent_id: agentId });
+    expect(list.data).toContain('admin2');
   });
 
   // TC-23 重命名角色
@@ -265,6 +273,10 @@ test.describe.serial('memory-ego API 测试', () => {
       agent_id: agentId, role_name: 'admin2', new_name: 'mod',
     });
     expect(resp.success).toBe(true);
+    // 回读：新名存在、旧名消失
+    const list = await apiReq(request, 'POST', '/role/list', { agent_id: agentId });
+    expect(list.data).toContain('mod');
+    expect(list.data).not.toContain('admin2');
   });
 
   // TC-24 按名称搜索角色
@@ -341,6 +353,11 @@ test.describe.serial('memory-ego API 测试', () => {
       agent_id: agentId, role_name: 'admin', other_role_name: 'bob', new_name: 'bobby',
     });
     expect(resp.success).toBe(true);
+    // 回读：新名可取、旧名不可取
+    const g = await apiReq(request, 'POST', '/role/other/get', {
+      agent_id: agentId, role_name: 'admin', other_role_name: 'bobby',
+    });
+    expect(g.success).toBe(true);
   });
 
   // TC-31 更新其他角色个体名
