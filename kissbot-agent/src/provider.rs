@@ -76,7 +76,28 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     let choice = &data["choices"][0];
     let content = choice["message"]["content"].as_str().unwrap_or("").to_string();
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("stop").to_string();
-    ModelResponse { content, tool_calls: Vec::new(), finish_reason }
+    // 思考内容：优先 API 的 reasoning_content 字段，缺失时用 <think> 标签兜底；<think> 标签总是剥离
+    let api_reasoning = choice["message"]["reasoning_content"].as_str().map(String::from);
+    let (content, tag_reasoning) = strip_think_tag(&content);
+    let reasoning_content = api_reasoning.or(tag_reasoning);
+    ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
+}
+
+/// 匹配 content 开头的 <think>...</think>（允许前导空白），剥离并返回 (剥离后内容, Option<思考内容>)
+/// 标签不在开头或未闭合时原样返回
+fn strip_think_tag(content: &str) -> (String, Option<String>) {
+    let start = content.len() - content.trim_start().len();
+    let trimmed = &content[start..];
+    if let Some(rest) = trimmed.strip_prefix("<think>") {
+        if let Some(end) = rest.find("</think>") {
+            let thinking = rest[..end].to_string();
+            let mut stripped = String::with_capacity(content.len());
+            stripped.push_str(&content[..start]);
+            stripped.push_str(&rest[end + "</think>".len()..]);
+            return (stripped, Some(thinking));
+        }
+    }
+    (content.to_string(), None)
 }
 
 /// 从 OpenAI /models 响应中提取模型 id 列表（测试用解析函数，与网络解耦）
@@ -181,9 +202,27 @@ fn anthropic_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) ->
 }
 
 fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
-    let content = data["content"][0]["text"].as_str().unwrap_or("").to_string();
+    // 思考内容：content blocks 中 type=="thinking" 的块（DeepSeek/Anthropic 均返回该结构）
+    let mut reasoning_content = None;
+    let mut content = String::new();
+    if let Some(blocks) = data["content"].as_array() {
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("thinking") if reasoning_content.is_none() => {
+                    reasoning_content = block["thinking"].as_str().map(String::from);
+                }
+                Some("text") if content.is_empty() => {
+                    content = block["text"].as_str().unwrap_or("").to_string();
+                }
+                _ => {}
+            }
+        }
+    }
     let finish_reason = data["stop_reason"].as_str().unwrap_or("end_turn").to_string();
-    ModelResponse { content, tool_calls: Vec::new(), finish_reason }
+    // <think> 标签总是剥离；思考内容为空时用标签内容兜底
+    let (content, tag_reasoning) = strip_think_tag(&content);
+    let reasoning_content = reasoning_content.or(tag_reasoning);
+    ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
 }
 
 /// 从 Anthropic /v1/models 响应中提取模型 id 列表（测试用解析函数，与网络解耦）
@@ -362,6 +401,79 @@ mod tests {
     fn parse_openai_models_extracts_ids() {
         let data = serde_json::json!({ "data": [ { "id": "deepseek-chat" }, { "id": "deepseek-reasoner" } ] });
         assert_eq!(parse_openai_models(&data), vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]);
+    }
+
+    #[test]
+    fn strip_think_tag_extracts_and_removes_leading_tag() {
+        assert_eq!(strip_think_tag("<think>让我想想</think>答案"), ("答案".to_string(), Some("让我想想".to_string())));
+    }
+
+    #[test]
+    fn strip_think_tag_keeps_non_leading_tag() {
+        let content = "答案<think>思考</think>";
+        assert_eq!(strip_think_tag(content), (content.to_string(), None));
+    }
+
+    #[test]
+    fn strip_think_tag_allows_leading_whitespace() {
+        assert_eq!(strip_think_tag("\n<think>思考</think>答案"), ("\n答案".to_string(), Some("思考".to_string())));
+    }
+
+    #[test]
+    fn strip_think_tag_returns_unchanged_when_no_tag() {
+        assert_eq!(strip_think_tag("普通文本"), ("普通文本".to_string(), None));
+        assert_eq!(strip_think_tag(""), ("".to_string(), None));
+    }
+
+    #[test]
+    fn strip_think_tag_keeps_unclosed_tag() {
+        let content = "<think>未闭合";
+        assert_eq!(strip_think_tag(content), (content.to_string(), None));
+    }
+
+    #[test]
+    fn parse_openai_response_extracts_reasoning_content() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案", "reasoning_content": "思考" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.content, "答案");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+    }
+
+    #[test]
+    fn parse_openai_response_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.content, "答案", "<think> 标签应剥离");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+    }
+
+    #[test]
+    fn parse_anthropic_response_extracts_thinking_block() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "思考过程" },
+                { "type": "text", "text": "答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_anthropic_response(&data);
+        assert_eq!(resp.content, "答复");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考过程"));
+    }
+
+    #[test]
+    fn parse_anthropic_response_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "content": [{ "type": "text", "text": "<think>思考</think>答复" }],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_anthropic_response(&data);
+        assert_eq!(resp.content, "答复");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
     }
 
     #[test]
