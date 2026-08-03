@@ -811,7 +811,6 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
- "flume",
  "http-body-util",
  "kai-file",
  "kai-ws",
