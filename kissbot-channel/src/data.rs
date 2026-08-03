@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(incoming.user_id, notification.user_id);
         assert_eq!(incoming.group_id, notification.group_id);
         // 内容为 GroupJoin 通知
-        assert!(matches!(incoming.content, Content::GroupJoin(ref n) if **n == *notification));
+        assert!(matches!(incoming.content.clone(), Content::GroupJoin(n) if n.as_ref() == notification.as_ref()));
         // 接收者即被通知用户
         assert_eq!(event_msg.recipient_user_id, notification.user_id);
     }
