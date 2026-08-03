@@ -289,8 +289,10 @@ impl SearchManager {
             //变更索引
             let new_search_metadata = RoleSearchMetadata::new(&role);
             let new_name = role.role_name.clone();
+            let new_full_name = role.full_name.clone();
             let new_descr = role.description.clone();
             let mut name_obsolute = true;
+            let mut full_name_obsolute = true;
             let mut descr_obsolute = true;
                 
             //没旧值，或新旧值不同，则需要变更索引
@@ -301,6 +303,10 @@ impl SearchManager {
                 }
             }
             if let Some((_, old_search_metadata)) = old_search_metadata_or_none.as_ref() {
+                //检查full_name是否变化（value[1]；全文索引含 full_name，变更需重建）
+                if old_search_metadata.value[1].as_str() == new_full_name.as_str() {
+                    full_name_obsolute = false;
+                }
                 //检查description是否变化（value[2]；value[1] 现为 full_name）
                 if old_search_metadata.value[2].as_str() == new_descr.as_str() {
                     descr_obsolute = false;
@@ -320,8 +326,8 @@ impl SearchManager {
                 guard.insert(&role_key, &new_name_document);
                 self.role_name_completion.insert(&role_key, &new_name_document);
             }
-            //name或description变更
-            if name_obsolute || descr_obsolute {
+            //name或full_name或description变更（全文索引 value 含 role_name/full_name/description）
+            if name_obsolute || full_name_obsolute || descr_obsolute {
                 let mut guard = self.role_name_descr_index.write().await;
                 //有旧值，先移除
                 if let Some((_, old_metadata)) = old_search_metadata_or_none {
@@ -548,6 +554,48 @@ mod tests {
         let results = manager.search_role_by_description("超级", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
         assert_eq!(results[0].role_name, "admin");
+    }
+
+    #[tokio::test]
+    async fn test_role_description_only_change_reindexes() {
+        crate::test_util::init_test_config();
+        create_test_agent("role-desc-chg-agt", "Alice", "").await;
+        // 初始：旧描述可搜
+        create_test_role("role-desc-chg-agt", "admin", "", "旧描述").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("role-desc-chg-agt").await;
+        manager.force_sync_role("role-desc-chg-agt", "admin").await;
+        let results = manager.search_role_by_description("旧描述", None).await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        // 仅 description 变更（name/full_name 不变）-> 重索引
+        RolePlayManager::get().update_role_description("role-desc-chg-agt", "admin", Arc::new("新描述".into())).await.unwrap();
+        manager.force_sync_role("role-desc-chg-agt", "admin").await;
+        let results = manager.search_role_by_description("新描述", None).await;
+        assert_eq!(results.len(), 1, "expected 1 after desc change, got {:?}", results);
+        // 旧描述不再命中
+        let results = manager.search_role_by_description("旧描述", None).await;
+        assert_eq!(results.len(), 0, "expected 0 for old desc, got {:?}", results);
+    }
+
+    #[tokio::test]
+    async fn test_role_full_name_only_change_reindexes() {
+        crate::test_util::init_test_config();
+        create_test_agent("role-fn-chg-agt", "Alice", "").await;
+        // 初始：旧全名可搜（全文索引含 full_name）
+        create_test_role("role-fn-chg-agt", "admin", "旧全名", "Administrator").await;
+        let manager = SearchManager::new();
+        manager.force_sync_identity("role-fn-chg-agt").await;
+        manager.force_sync_role("role-fn-chg-agt", "admin").await;
+        let results = manager.search_role_by_description("旧全名", None).await;
+        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
+        // 仅 full_name 变更（name/description 不变）-> 重索引
+        RolePlayManager::get().update_role_full_name("role-fn-chg-agt", "admin", Arc::new("新全名".into())).await.unwrap();
+        manager.force_sync_role("role-fn-chg-agt", "admin").await;
+        let results = manager.search_role_by_description("新全名", None).await;
+        assert_eq!(results.len(), 1, "expected 1 after full_name change, got {:?}", results);
+        // 旧全名不再命中
+        let results = manager.search_role_by_description("旧全名", None).await;
+        assert_eq!(results.len(), 0, "expected 0 for old full_name, got {:?}", results);
     }
 
     #[tokio::test]
