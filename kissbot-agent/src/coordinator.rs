@@ -10,14 +10,13 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::types::{
-    Mode, WriteTask, ContextMessage, Result, Error, SessionKey, memory_role,
+    Mode, ContextMessage, Result, Error, SessionKey, memory_role,
 };
 use crate::config_manager::{ConfigManager, ProviderModel};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::MemoryReader;
-use crate::memory_writer::MemoryWriter;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
 
 use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
@@ -68,7 +67,6 @@ impl ChannelContext {
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
     memory_reader: Arc<MemoryReader>,
-    memory_writer: Arc<MemoryWriter>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
@@ -85,10 +83,8 @@ pub struct AgentCoordinator {
 impl AgentCoordinator {
     pub async fn new(
         config: Arc<ConfigManager>,
-        memory_writer: MemoryWriter,
     ) -> Result<Arc<Self>> {
         let memory_reader = Arc::new(MemoryReader::new());
-        let memory_writer = Arc::new(memory_writer);
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let session_manager = SessionManager::new();
         let model_client = ModelClient::new(config.clone());
@@ -96,7 +92,6 @@ impl AgentCoordinator {
         let coordinator = Arc::new(Self {
             config: config.clone(),
             memory_reader,
-            memory_writer,
             memory_store_client,
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
@@ -709,16 +704,16 @@ impl AgentCoordinator {
                     ctx.push_assistant(model_resp.content.clone(), now.clone());
                 }
 
-                // 4. 推送 think 到 MemoryWriter（事件模式编码；取记忆用会话保存的 agent_id）
+                // 4. 推送 think 到 memory-store（事件模式编码；取记忆用会话保存的 agent_id）
                 // Think 记忆只存思考内容（方案 A）：有思考内容才写，无则跳过
                 if let Some(reasoning) = &model_resp.reasoning_content {
                     let role_name = memory_role(&session.key);
-                    let _ = self.memory_writer.push(WriteTask::Think {
-                        agent_id: session.agent_id.to_string(),
-                        role_name: Some(role_name),
-                        content: reasoning.clone(),
-                        time: now,
-                    });
+                    self.memory_store_client.push_think(
+                        session.agent_id.to_string(),
+                        Some(role_name),
+                        reasoning.clone(),
+                        now,
+                    ).await;
                 }
 
                 // 5. 发送回复到该会话的发送 channel

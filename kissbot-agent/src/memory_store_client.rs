@@ -112,7 +112,7 @@ where
     async fn remove_lock(&self, _key: &K) {}
 }
 
-// ========== 记录类型（与 WriteTask 变体字段同构） ==========
+// ========== 记录类型（与 memory-store API 的 Request 实体同构） ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRecord {
@@ -185,8 +185,7 @@ impl MemoryStoreClient {
     }
 
     /// 推送 think 记录（思考内容，方案 A 只存思考内容）
-    /// 当前无调用方（coordinator 接入属 Task 2），先标 allow(dead_code) 与 push_tool_call/push_tool_result 保持一致
-    #[allow(dead_code)]
+    /// 调用方：coordinator 步骤 4（思考记忆推送）；push_tool_call/push_tool_result 无调用方保留 allow(dead_code)
     pub async fn push_think(&self, agent_id: String, role_name: Option<String>, content: String, time: String) {
         self.think_appender.append(THINK_KEY.to_string(), vec![ThinkRecord {
             agent_id: Arc::new(agent_id),

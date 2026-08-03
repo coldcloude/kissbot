@@ -11,7 +11,6 @@ mod model_client;
 mod provider;
 mod memory_reader;
 mod memory_store_client;
-mod memory_writer;
 mod session_manager;
 mod station_client;
 mod station_router;
@@ -30,15 +29,12 @@ async fn main() {
             .expect("初始化配置失败")
     );
 
-    // 2. 初始化 MemoryWriter（思考/工具调用推送，非 channel 消息）
-    let memory_writer = memory_writer::MemoryWriter::start();
-
-    // 3. 初始化 Coordinator（内部启动 ChannelClient 连接和 MemoryStoreClient）
-    let coordinator = coordinator::AgentCoordinator::new(config.clone(), memory_writer)
+    // 2. 初始化 Coordinator（内部启动 ChannelClient 连接和 MemoryStoreClient，记忆推送统一走 MemoryStoreClient）
+    let coordinator = coordinator::AgentCoordinator::new(config.clone())
         .await
         .expect("初始化 Coordinator 失败");
 
-    // 4. 启动管理 API 服务器（后台，监听 config 的 mgmt_host:mgmt_port）
+    // 3. 启动管理 API 服务器（后台，监听 config 的 mgmt_host:mgmt_port）
     let mgr_config = config.clone();
     tokio::spawn(async move {
         let server = http_server::HttpServer::new(mgr_config);
@@ -47,7 +43,7 @@ async fn main() {
         }
     });
 
-    // 5. 运行主循环
+    // 4. 运行主循环
     info!("进入主循环");
     coordinator.run().await;
 }

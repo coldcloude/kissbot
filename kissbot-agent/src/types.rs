@@ -163,33 +163,6 @@ pub struct MessageItem {
     pub content: String,
 }
 
-// ========== MemoryWriter 写入队列 ==========
-
-#[derive(Debug, Clone)]
-pub enum WriteTask {
-    Think {
-        agent_id: String,
-        role_name: Option<String>,
-        content: String,
-        time: String,
-    },
-    #[allow(dead_code)]
-    ToolCall {
-        agent_id: String,
-        role_name: Option<String>,
-        tool_name: String,
-        tool_params: serde_json::Value,
-        time: String,
-    },
-    #[allow(dead_code)]
-    ToolResult {
-        agent_id: String,
-        role_name: Option<String>,
-        tool_result: serde_json::Value,
-        time: String,
-    },
-}
-
 // ========== 上下文消息 ==========
 
 #[derive(Debug, Clone)]
