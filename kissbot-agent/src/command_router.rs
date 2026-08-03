@@ -129,13 +129,22 @@ impl CommandRouter {
             "events" => Ok(AdminCommand::Events),
             "reset" => Ok(AdminCommand::Reset),
             "model" => {
-                if parts.len() != 3 {
-                    return Err(Error::InvalidCommand("格式: /model <provider> <model>".to_string()));
+                // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
+                if parts.len() < 3 || parts.len() > 4 {
+                    return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string()));
                 }
+                let set_default = match parts.get(3) {
+                    None => false,
+                    Some(v) => match *v {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string())),
+                    },
+                };
                 Ok(AdminCommand::Model(ProviderModel {
                     provider: parts[1].to_string(),
                     model: parts[2].to_string(),
-                }))
+                }, set_default))
             }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]))),
         }
@@ -222,10 +231,72 @@ impl CommandRouter {
             AdminCommand::Reset => {
                 Ok(("🔄 正在重置上下文...".to_string(), CommandEffect::ResetSession))
             }
-            AdminCommand::Model(pm) => {
+            AdminCommand::Model(pm, set_default) => {
+                // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
                 coordinator.set_session_model(channel_id, pm.clone()).await?;
-                Ok((format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model), CommandEffect::None))
+                if *set_default {
+                    config.set_default_model(pm.clone()).await?;
+                }
+                let mut reply = format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model);
+                if *set_default {
+                    reply.push_str("（已设为默认）");
+                }
+                Ok((reply, CommandEffect::None))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== /model 解析：第 4 段可选 [true|false]，缺省 false =====
+
+    #[test]
+    fn parse_model_without_default_flag() {
+        let cmd = CommandRouter::parse("/model deepseek deepseek-v4-flash").unwrap();
+        match cmd {
+            AdminCommand::Model(pm, set_default) => {
+                assert_eq!(pm.provider, "deepseek");
+                assert_eq!(pm.model, "deepseek-v4-flash");
+                assert!(!set_default);
+            }
+            _ => panic!("expected Model"),
+        }
+    }
+
+    #[test]
+    fn parse_model_with_true_flag() {
+        let cmd = CommandRouter::parse("/model deepseek deepseek-v4-flash true").unwrap();
+        match cmd {
+            AdminCommand::Model(pm, set_default) => {
+                assert_eq!(pm.provider, "deepseek");
+                assert_eq!(pm.model, "deepseek-v4-flash");
+                assert!(set_default);
+            }
+            _ => panic!("expected Model"),
+        }
+    }
+
+    #[test]
+    fn parse_model_with_false_flag() {
+        let cmd = CommandRouter::parse("/model deepseek deepseek-v4-flash false").unwrap();
+        match cmd {
+            AdminCommand::Model(_, set_default) => assert!(!set_default),
+            _ => panic!("expected Model"),
+        }
+    }
+
+    #[test]
+    fn parse_model_rejects_invalid_flag() {
+        let err = CommandRouter::parse("/model deepseek deepseek-v4-flash maybe").unwrap_err();
+        assert!(matches!(err, Error::InvalidCommand(_)));
+    }
+
+    #[test]
+    fn parse_model_rejects_missing_provider_or_model() {
+        assert!(CommandRouter::parse("/model deepseek").is_err());
+        assert!(CommandRouter::parse("/model deepseek deepseek-v4-flash true extra").is_err());
     }
 }
