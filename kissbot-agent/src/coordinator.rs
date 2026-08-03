@@ -304,6 +304,7 @@ impl AgentCoordinator {
         let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
 
         let client = reqwest::Client::new();
+        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
 
         let mut system_parts = vec![];
 
@@ -321,6 +322,7 @@ impl AgentCoordinator {
 
         // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
         if let Ok(agent_resp) = client.post(&format!("{}/agent/get", ego_url))
+            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
             .json(&serde_json::json!({
                 "agent_id": agent_id,
             }))
@@ -336,6 +338,7 @@ impl AgentCoordinator {
 
         // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
         if let Ok(individual_resp) = client.post(&format!("{}/individual/get-all", ego_url))
+            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
             .json(&serde_json::json!({
                 "agent_id": agent_id,
             }))
@@ -358,6 +361,7 @@ impl AgentCoordinator {
         // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
         if !role_name.is_empty() {
             if let Ok(role_resp) = client.post(&format!("{}/role/get", ego_url))
+                .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
                 .json(&serde_json::json!({
                     "agent_id": agent_id,
                     "role_name": role_name,
@@ -827,7 +831,9 @@ async fn resolve_agent_id_http(agent_name: &str, ego_url: &str) -> Result<Arc<St
         return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
     }
     let client = reqwest::Client::new();
+    let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
     let resp = client.post(format!("{}/agent/search-name", ego_url))
+        .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
         .json(&serde_json::json!({ "keyword": agent_name }))
         .send()
         .await
