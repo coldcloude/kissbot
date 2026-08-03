@@ -119,14 +119,18 @@ pub struct Session {
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
+    /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
+    /// session_key 仅作去重：取记忆/ego 一律用本字段，不再从 key 提取 agent_name 解析
+    pub agent_id: Arc<String>,
 }
 
 impl Session {
-    pub fn new(key: SessionKey, model: Option<ProviderModel>) -> Self {
+    pub fn new(key: SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
         Self {
             key,
             context: tokio::sync::Mutex::new(SessionContext::new()),
             model: ArcSwap::from_pointee(model),
+            agent_id,
         }
     }
 }
@@ -152,12 +156,12 @@ impl SessionManager {
         self.sessions.get(key).map(|e| e.value().clone())
     }
 
-    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型）；返回 (会话, 是否新建)
-    pub fn get_or_create(&self, key: &SessionKey, model: Option<ProviderModel>) -> (Arc<Session>, bool) {
+    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；返回 (会话, 是否新建)
+    pub fn get_or_create(&self, key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> (Arc<Session>, bool) {
         if let Some(s) = self.get(key) {
             return (s, false);
         }
-        let session = Arc::new(Session::new(key.clone(), model));
+        let session = Arc::new(Session::new(key.clone(), model, agent_id));
         self.sessions.insert(key.clone(), session.clone());
         (session, true)
     }
@@ -233,14 +237,14 @@ mod tests {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()));
+        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
         assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()));
+        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model));
+        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()));
         assert!(created3, "事件模式是独立会话");
     }
 
@@ -250,8 +254,8 @@ mod tests {
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
         let k2 = key("a2", "r2");
-        mgr.get_or_create(&k1, Some(model.clone()));
-        mgr.get_or_create(&k2, Some(model));
+        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()));
+        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()));
         let mut keep = HashSet::new();
         keep.insert(k1.clone());
         mgr.retain(&keep);
@@ -295,7 +299,7 @@ mod tests {
     fn get_or_create_with_none_model() {
         let mgr = SessionManager::new();
         let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let (s, created) = mgr.get_or_create(&key, None);
+        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
         assert!(created);
         assert!(s.model.load().is_none());
     }

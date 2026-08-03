@@ -34,33 +34,18 @@ const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 /// 上述 TTL 的 Duration 形式（evict 入参）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
 
-/// 运行态 agent 绑定：agent_name（代号）+ 解析后的 agent_id（UUID）
-/// 启动绑定/切换 agent 时确定；启动解析失败回退保留（agent_name=""、agent_id="0"）
-#[derive(Clone, Debug)]
-pub struct RuntimeAgent {
-    pub agent_name: Arc<String>,
-    pub agent_id: Arc<String>,
-}
-
-impl RuntimeAgent {
-    fn reserved() -> Self {
-        Self {
-            agent_name: Arc::new(RESERVED_AGENT_NAME.to_string()),
-            agent_id: Arc::new(RESERVED_AGENT_ID.to_string()),
-        }
-    }
-}
-
-/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent 绑定
+/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id
+/// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
+/// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
 struct ChannelContext {
     pending_outgoing: HashMap<String, Instant>,
-    /// 运行态 agent 绑定（启动/切换时确定；未绑定为 None，channel_agent 懒绑定）
-    agent: Option<RuntimeAgent>,
+    /// 运行态 agent_id（启动/切换时确定；未绑定为 None，channel_agent 懒绑定）
+    agent_id: Option<Arc<String>>,
 }
 
 impl ChannelContext {
     fn new() -> Self {
-        Self { pending_outgoing: HashMap::new(), agent: None }
+        Self { pending_outgoing: HashMap::new(), agent_id: None }
     }
 
     fn add_pending(&mut self, msg_id: String) {
@@ -172,48 +157,47 @@ impl AgentCoordinator {
         }
     }
 
-    /// 读取 channel 运行态 agent 绑定；未绑定（异常路径）时懒绑定
-    async fn channel_agent(&self, channel_id: &str) -> RuntimeAgent {
+    /// 读取 channel 运行态 agent_id；未绑定（异常路径）时懒绑定
+    async fn channel_agent(&self, channel_id: &str) -> Arc<String> {
         let ctx = self.channel_contexts.get(channel_id).map(|c| c.clone());
         if let Some(ctx) = ctx {
             let guard = ctx.lock().await;
-            if let Some(agent) = guard.agent.clone() {
-                return agent;
+            if let Some(agent_id) = guard.agent_id.clone() {
+                return agent_id;
             }
         }
         // 未绑定/缺失：懒绑定（正常启动路径已在 new() 中绑定全部 channel）
         self.bind_channel_runtime(channel_id).await
     }
 
-    /// 绑定（或重绑）channel 运行态 agent：从配置 agent_name 解析 agent_id，写入 channel 运行状态；
-    /// 空 agent_name 直接保留；解析失败回退保留 agent（agent_name=""、agent_id="0"）并告警
-    async fn bind_channel_runtime(&self, channel_id: &str) -> RuntimeAgent {
+    /// 绑定（或重绑）channel 运行态 agent_id：从配置 agent_name 解析，写入 channel 运行状态；
+    /// 空 agent_name 直接保留；解析失败回退保留 agent_id（"0"）并告警
+    async fn bind_channel_runtime(&self, channel_id: &str) -> Arc<String> {
         let agent_name = self.channel_config(channel_id).await
             .map(|c| c.agent_name.to_string())
             .unwrap_or_default();
-        let agent = if agent_name.is_empty() {
-            RuntimeAgent::reserved()
+        let agent_id = if agent_name.is_empty() {
+            Arc::new(RESERVED_AGENT_ID.to_string())
         } else {
             match resolve_agent_id_http(&agent_name, &kissbot_api::ApiConfig::get().memory_ego_url).await {
-                Ok(agent_id) => RuntimeAgent { agent_name: Arc::new(agent_name), agent_id },
+                Ok(agent_id) => agent_id,
                 Err(e) => {
-                    warn!("解析 agent {} 失败（{}），回退保留 agent（agent_name=\"\"、agent_id=\"0\"）", agent_name, e);
-                    RuntimeAgent::reserved()
+                    warn!("解析 agent {} 失败（{}），回退保留 agent_id（\"0\"）", agent_name, e);
+                    Arc::new(RESERVED_AGENT_ID.to_string())
                 }
             }
         };
-        self.set_channel_runtime(channel_id, agent.clone()).await;
-        agent
+        self.set_channel_runtime(channel_id, agent_id.clone()).await
     }
 
-    /// 写入 channel 运行态 agent 绑定（切换成功时由命令入口调用）
-    pub async fn set_channel_runtime(&self, channel_id: &str, agent: RuntimeAgent) -> RuntimeAgent {
+    /// 写入 channel 运行态 agent_id（切换成功时由命令入口调用）
+    pub async fn set_channel_runtime(&self, channel_id: &str, agent_id: Arc<String>) -> Arc<String> {
         let ctx = self.channel_contexts
             .entry(channel_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(ChannelContext::new())))
             .clone();
-        ctx.lock().await.agent = Some(agent.clone());
-        agent
+        ctx.lock().await.agent_id = Some(agent_id.clone());
+        agent_id
     }
 
     /// 解析 agent_name -> agent_id（不缓存）：空 agent_name 返回保留 id；
@@ -223,38 +207,39 @@ impl AgentCoordinator {
     }
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
-    /// channel_id 为触发会话创建/重置的来源 channel（运行态 agent 绑定取自该 channel）
+    /// channel_id 为触发会话创建/重置的来源 channel（新建会话的 agent_id 取自该 channel 运行态绑定）
     async fn ensure_session(&self, key: &SessionKey, channel_id: &str) -> (Arc<Session>, bool) {
         // valid_default.load_full() 返回 Arc<Option<ProviderModel>>，解引用克隆得 Option
         let model = (*self.valid_default.load_full()).clone();
-        let (session, created) = self.session_manager.get_or_create(key, model);
+        // 会话状态保存 agent_id：新建会话从来源 channel 运行态绑定取得（原子写入 get_or_create）
+        let agent_id = self.channel_agent(channel_id).await;
+        let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
         if created {
-            self.build_initial_context(&session, channel_id).await;
+            self.build_initial_context(&session).await;
         }
         (session, created)
     }
 
     /// 会话创建/重置时：加载 ego（保留 agent 用默认提示词）+ 历史记录 + 顶层记忆索引构建初始上下文
-    /// agent 标识取自来源 channel 的运行态绑定（启动/切换时确定，不在此处解析）
-    async fn build_initial_context(&self, session: &Arc<Session>, channel_id: &str) {
-        // 保留 agent（运行态 agent_name 为空）不调 memory-ego，用 NexusRepo 默认系统提示词；其余走 load_ego_info
-        let agent = self.channel_agent(channel_id).await;
-        if agent.agent_name.as_str() == RESERVED_AGENT_NAME {
+    /// 取记忆/ego 一律用会话状态保存的 agent_id（session_key 仅去重，不从 key 提取 agent_name）
+    async fn build_initial_context(&self, session: &Arc<Session>) {
+        // 保留 agent（agent_id="0"）不调 memory-ego，用 NexusRepo 默认系统提示词；其余走 load_ego_info
+        if session.agent_id.as_str() == RESERVED_AGENT_ID {
             let prompt = self.config.default_system_prompt().await;
             session.context.lock().await.set_system_message(prompt);
-        } else if let Ok(ego_info) = self.load_ego_info(agent.agent_id.as_str(), &session.key.role_name).await {
+        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.key.role_name).await {
             session.context.lock().await.set_system_message(ego_info);
         }
         // 历史记忆照常加载（保留 agent 也调 memory-store；URL 空则优雅跳过）
         if let Ok(history) = self.memory_reader
-            .read_history(&self.config, agent.agent_id.as_str(), &session.key.role_name, &session.key.mode)
+            .read_history(&self.config, session.agent_id.as_str(), &session.key.role_name, &session.key.mode)
             .await
         {
             session.context.lock().await.load_history(history);
         }
         // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
-            .read_memory_struct_index(&self.config, agent.agent_id.as_str(), &session.key.role_name, &session.key.mode)
+            .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.key.role_name, &session.key.mode)
             .await;
     }
 
@@ -284,17 +269,17 @@ impl AgentCoordinator {
         if let Some(ch) = self.channel_config(channel_id).await {
             let key = self.session_key_for(&ch);
             if let Some(session) = self.session_manager.get(&key) {
-                self.reset_context(&session, channel_id).await;
+                self.reset_context(&session).await;
                 return;
             }
         }
         warn!("reset: channel {} 无会话可重置", channel_id);
     }
 
-    /// 上下文重置：清空后重建初始上下文（agent 标识取触发 channel 的运行态绑定）
-    async fn reset_context(&self, session: &Arc<Session>, channel_id: &str) {
+    /// 上下文重置：清空后重建初始上下文（取记忆/ego 用会话保存的 agent_id）
+    async fn reset_context(&self, session: &Arc<Session>) {
         session.context.lock().await.clear();
-        self.build_initial_context(session, channel_id).await;
+        self.build_initial_context(session).await;
         info!("会话上下文已重置: {:?}", session.key);
     }
 
@@ -440,9 +425,11 @@ impl AgentCoordinator {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         let key = self.session_key_for(&ch);
-        let agent = self.channel_agent(channel_id).await;
+        // 取记忆用会话保存的 agent_id
+        let session = self.session_manager.get(&key)
+            .ok_or_else(|| Error::ConfigNotFound(format!("会话不存在: {:?}", key)))?;
         let events = self.memory_reader
-            .list_events(&self.config, agent.agent_id.as_str(), &key.role_name)
+            .list_events(&self.config, session.agent_id.as_str(), &key.role_name)
             .await?;
         if events.is_empty() {
             Ok("📋 暂无事件".to_string())
@@ -541,12 +528,12 @@ impl Terminal for AgentCoordinator {
             return;
         }
 
-        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent/role 取来源 channel 运行态绑定，事件模式编码）
+        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取来源 channel 运行态绑定，事件模式编码）
         let key = self.session_key_for(&ch);
         let role_name = memory_role(&key);
-        let agent = self.channel_agent(channel_id).await;
+        let agent_id = self.channel_agent(channel_id).await;
         self.memory_store_client.push_channel_record(ChannelRecord {
-            agent_id: agent.agent_id,
+            agent_id,
             role_name: Arc::new(role_name),
             messenger_id: message.messenger_id.clone(),
             user_id: message.user_id.clone(),
@@ -720,11 +707,10 @@ impl AgentCoordinator {
                     ctx.push_assistant(model_resp.content.clone(), now.clone());
                 }
 
-                // 4. 推送 think 到 MemoryWriter（事件模式编码；agent 标识取来源 channel 运行态绑定）
-                let agent = self.channel_agent(channel_id).await;
+                // 4. 推送 think 到 MemoryWriter（事件模式编码；取记忆用会话保存的 agent_id）
                 let role_name = memory_role(&session.key);
                 let _ = self.memory_writer.push(WriteTask::Think {
-                    agent_id: agent.agent_id.to_string(),
+                    agent_id: session.agent_id.to_string(),
                     role_name: Some(role_name),
                     content: model_resp.content.clone(),
                     time: now,
@@ -740,7 +726,7 @@ impl AgentCoordinator {
                 };
                 if overflow {
                     warn!("会话上下文超长，触发重置: {:?}", session.key);
-                    self.reset_context(session, channel_id).await;
+                    self.reset_context(session).await;
                 }
             }
             Err(e) => {
@@ -774,13 +760,13 @@ impl AgentCoordinator {
         match client.send_message(msg).await {
             Ok(response) => {
                 // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1，name 取自 response）
-                // agent 标识取发送 channel 的运行态绑定
+                // agent_id 取发送 channel 的运行态绑定（channel 存记忆用 channel 保存的 agent_id）
                 let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key);
-                let agent = self.channel_agent(send_channel_id).await;
+                let agent_id = self.channel_agent(send_channel_id).await;
                 self.record_outgoing_msg_id(send_channel_id, &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRecord {
-                    agent_id: agent.agent_id,
+                    agent_id,
                     role_name: Arc::new(role_name),
                     messenger_id: Arc::new(bound.messenger_id.clone()),
                     user_id: Arc::new(bound.user_id.clone()),
