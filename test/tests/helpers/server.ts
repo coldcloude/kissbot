@@ -47,6 +47,8 @@ export function startBackend(cwd: string): ChildProcess {
   });
   proc.stdout?.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   proc.stderr?.on('data', (d) => process.stderr.write(`[backend:err] ${d}`));
+  // 二进制缺失/启动失败时输出明确错误，避免 Node 未处理 error 事件崩溃
+  proc.on('error', (e) => process.stderr.write(`[backend] spawn error: ${e.message}\n`));
   return proc;
 }
 
@@ -66,6 +68,7 @@ export function startMemoryStore(cwd: string): ChildProcess {
   });
   proc.stdout?.on('data', (d) => process.stdout.write(`[memory-store] ${d}`));
   proc.stderr?.on('data', (d) => process.stderr.write(`[memory-store:err] ${d}`));
+  proc.on('error', (e) => process.stderr.write(`[memory-store] spawn error: ${e.message}\n`));
   return proc;
 }
 
@@ -85,6 +88,7 @@ export function startMemoryEgo(cwd: string): ChildProcess {
   });
   proc.stdout?.on('data', (d) => process.stdout.write(`[memory-ego] ${d}`));
   proc.stderr?.on('data', (d) => process.stderr.write(`[memory-ego:err] ${d}`));
+  proc.on('error', (e) => process.stderr.write(`[memory-ego] spawn error: ${e.message}\n`));
   return proc;
 }
 
@@ -106,6 +110,7 @@ export function startAgent(cwd: string): ChildProcess {
   });
   proc.stdout?.on('data', (d) => process.stdout.write(`[agent] ${d}`));
   proc.stderr?.on('data', (d) => process.stderr.write(`[agent:err] ${d}`));
+  proc.on('error', (e) => process.stderr.write(`[agent] spawn error: ${e.message}\n`));
   return proc;
 }
 
