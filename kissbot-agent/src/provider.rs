@@ -79,7 +79,8 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     // 思考内容：优先 API 的 reasoning_content 字段，缺失时用 <think> 标签兜底；<think> 标签总是剥离
     let api_reasoning = choice["message"]["reasoning_content"].as_str().map(String::from);
     let (content, tag_reasoning) = strip_think_tag(&content);
-    let reasoning_content = api_reasoning.or(tag_reasoning);
+    // 空字符串 reasoning_content 视为缺失，回退到 <think> 标签内容（filter 保证空串也触发兜底）
+    let reasoning_content = api_reasoning.filter(|s| !s.is_empty()).or(tag_reasoning);
     ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
 }
 
@@ -219,9 +220,9 @@ fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
         }
     }
     let finish_reason = data["stop_reason"].as_str().unwrap_or("end_turn").to_string();
-    // <think> 标签总是剥离；思考内容为空时用标签内容兜底
+    // <think> 标签总是剥离；思考内容为空（None 或空字符串）时用标签内容兜底
     let (content, tag_reasoning) = strip_think_tag(&content);
-    let reasoning_content = reasoning_content.or(tag_reasoning);
+    let reasoning_content = reasoning_content.filter(|s| !s.is_empty()).or(tag_reasoning);
     ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
 }
 
@@ -452,6 +453,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_openai_response_empty_api_reasoning_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案", "reasoning_content": "" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.content, "答案", "<think> 标签应剥离");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"), "空字符串 reasoning_content 应触发 <think> 兜底");
+    }
+
+    #[test]
     fn parse_anthropic_response_extracts_thinking_block() {
         let data = serde_json::json!({
             "content": [
@@ -474,6 +485,20 @@ mod tests {
         let resp = parse_anthropic_response(&data);
         assert_eq!(resp.content, "答复");
         assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+    }
+
+    #[test]
+    fn parse_anthropic_response_empty_thinking_block_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "" },
+                { "type": "text", "text": "<think>思考</think>答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_anthropic_response(&data);
+        assert_eq!(resp.content, "答复", "<think> 标签应剥离");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"), "空字符串 thinking 块应触发 <think> 兜底");
     }
 
     #[test]
