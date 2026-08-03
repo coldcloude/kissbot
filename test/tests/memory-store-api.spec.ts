@@ -29,11 +29,6 @@ function nowTime(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function todayDate(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function apiPost(request: APIRequestContext, path: string, body: unknown) {
@@ -58,7 +53,7 @@ test.describe.serial('memory-store API 测试', () => {
   // TC-01 追加 channel 记录并查询
   test('TC-01: 追加并查询 channel 记录', async ({ request }) => {
     const time = nowTime();
-    const date = todayDate(); // 追加与查询共用同一日期，避免跨午夜边界 flake
+    const date = time.slice(0, 10); // 从 time 推断日期（单一时间源，避免两次取时钟在午夜边界不一致）
     const resp = await apiPost(request, '/store/channel', {
       requests: [{
         agent_id: AGENT, role_name: ROLE, messenger_id: MESSENGER,
@@ -99,6 +94,7 @@ test.describe.serial('memory-store API 测试', () => {
   // TC-02 追加 think 记录并查询
   test('TC-02: 追加并查询 think 记录', async ({ request }) => {
     const time = nowTime();
+    const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/think', {
       requests: [{
         agent_id: AGENT, role_name: ROLE,
@@ -112,7 +108,7 @@ test.describe.serial('memory-store API 测试', () => {
 
     const q = await apiPost(request, '/store/query/think', {
       agent_id: AGENT, role_name: ROLE,
-      start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+      start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
     expect(q.data.length).toBeGreaterThanOrEqual(1);
@@ -127,6 +123,7 @@ test.describe.serial('memory-store API 测试', () => {
   // TC-03 追加 tool-call 记录并查询
   test('TC-03: 追加并查询 tool-call 记录', async ({ request }) => {
     const time = nowTime();
+    const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/tool-call', {
       requests: [{
         agent_id: AGENT, role_name: ROLE,
@@ -140,7 +137,7 @@ test.describe.serial('memory-store API 测试', () => {
 
     const q = await apiPost(request, '/store/query/tool-call', {
       agent_id: AGENT, role_name: ROLE,
-      start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+      start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
     expect(q.data.length).toBeGreaterThanOrEqual(1);
@@ -156,6 +153,7 @@ test.describe.serial('memory-store API 测试', () => {
   // TC-04 追加 tool-result 记录并查询
   test('TC-04: 追加并查询 tool-result 记录', async ({ request }) => {
     const time = nowTime();
+    const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/tool-result', {
       requests: [{
         agent_id: AGENT, role_name: ROLE,
@@ -169,7 +167,7 @@ test.describe.serial('memory-store API 测试', () => {
 
     const q = await apiPost(request, '/store/query/tool-result', {
       agent_id: AGENT, role_name: ROLE,
-      start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+      start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
     expect(q.data.length).toBeGreaterThanOrEqual(1);
