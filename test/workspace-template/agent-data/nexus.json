@@ -19,9 +19,10 @@
       "api_key": "",
       "default_context_length": 65536,
       "default_max_tokens": 4096,
-      "default_temperature": 0.7,
       "default_timeout_secs": 60,
       "default_retry_count": 3,
+      "default_thinking": "enabled",
+      "default_reasoning_effort": "high",
       "models": {}
     }
   },
