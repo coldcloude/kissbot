@@ -53,13 +53,23 @@ fn openai_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) -> se
     let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
         json!({ "role": m.role, "content": m.content })
     }).collect();
-    json!({
+    let mut body = json!({
         "model": effective.model,
         "messages": msgs,
         "max_tokens": effective.max_tokens,
-        "temperature": effective.temperature,
         "stream": false,
-    })
+    });
+    // 可选参数：有值才传（temperature / thinking / reasoning_effort）
+    if let Some(t) = effective.temperature {
+        body["temperature"] = json!(t);
+    }
+    if let Some(t) = &effective.thinking {
+        body["thinking"] = json!({ "type": t });
+    }
+    if let Some(e) = &effective.reasoning_effort {
+        body["reasoning_effort"] = json!(e);
+    }
+    body
 }
 
 fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
@@ -157,6 +167,16 @@ fn anthropic_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) ->
     if !system.is_empty() {
         body["system"] = json!(system);
     }
+    // 可选参数：有值才传（temperature / thinking / output_config.effort）
+    if let Some(t) = effective.temperature {
+        body["temperature"] = json!(t);
+    }
+    if let Some(t) = &effective.thinking {
+        body["thinking"] = json!({ "type": t });
+    }
+    if let Some(e) = &effective.reasoning_effort {
+        body["output_config"] = json!({ "effort": e });
+    }
     body
 }
 
@@ -252,6 +272,33 @@ mod tests {
     }
 
     #[test]
+    fn openai_body_omits_optional_params_when_none() {
+        let mut eff = sample_effective();
+        eff.temperature = None;
+        eff.thinking = None;
+        eff.reasoning_effort = None;
+        let msgs = vec![MessageItem { role: "user".into(), content: "你好".into() }];
+        let body = openai_body(&eff, &msgs);
+        assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
+        assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
+        assert!(body.get("reasoning_effort").is_none(), "reasoning_effort 未配置不应传");
+        assert_eq!(body["model"], "deepseek-4-flash");
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn openai_body_passes_thinking_and_reasoning_effort() {
+        let mut eff = sample_effective();
+        eff.thinking = Some("enabled".into());
+        eff.reasoning_effort = Some("high".into());
+        let msgs = vec![MessageItem { role: "user".into(), content: "你好".into() }];
+        let body = openai_body(&eff, &msgs);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["temperature"], 0.3_f32 as f64);
+    }
+
+    #[test]
     fn parse_openai_response_extracts_content_and_finish_reason() {
         let data = serde_json::json!({
             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
@@ -273,6 +320,31 @@ mod tests {
         assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["max_tokens"], 2048);
+    }
+
+    #[test]
+    fn anthropic_body_omits_optional_params_when_none() {
+        let mut eff = sample_effective();
+        eff.temperature = None;
+        eff.thinking = None;
+        eff.reasoning_effort = None;
+        let msgs = vec![MessageItem { role: "user".into(), content: "hi".into() }];
+        let body = anthropic_body(&eff, &msgs);
+        assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
+        assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
+        assert!(body.get("output_config").is_none(), "reasoning_effort 未配置不应传 output_config");
+    }
+
+    #[test]
+    fn anthropic_body_passes_thinking_and_output_config() {
+        let mut eff = sample_effective();
+        eff.thinking = Some("enabled".into());
+        eff.reasoning_effort = Some("high".into());
+        let msgs = vec![MessageItem { role: "user".into(), content: "hi".into() }];
+        let body = anthropic_body(&eff, &msgs);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(body["temperature"], 0.3_f32 as f64);
     }
 
     #[test]
