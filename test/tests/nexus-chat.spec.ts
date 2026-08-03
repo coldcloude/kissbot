@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { resetWorkspace, startBackend, stopBackend, startAgent, stopAgent, waitForPort, injectAgentApiKeys } from './helpers/server';
 import { spawnCli, type SpawnedCli } from './helpers/cli';
 import { join, dirname } from 'path';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { ChildProcess } from 'child_process';
 
@@ -43,6 +44,16 @@ test.describe.serial('nexus-chat：真实 LLM 文本通信（deepseek）', () =>
   test('TC-2: /model 切换到 deepseek-v4-flash（真实 API 校验）', async () => {
     cli.stdin('/send /model deepseek deepseek-v4-flash');
     await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-v4-flash/, 20000);
+  });
+
+  // TC-2b: /model 带 true 参数——切换会话模型并写入 NexusRepo 默认模型（真实 API 校验 + 落盘验证）
+  test('TC-2b: /model true 参数写入 NexusRepo 默认模型', async () => {
+    // deepseek-v4-pro 为 API 列表中的另一个合法模型（与模板默认 deepseek-v4-flash 不同，便于验证写入）
+    cli.stdin('/send /model deepseek deepseek-v4-pro true');
+    await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-v4-pro（已设为默认）/, 20000);
+    // 验证 NexusRepo 落盘
+    const nexus = JSON.parse(readFileSync(join(WORKSPACE, 'agent-data', 'nexus.json'), 'utf8'));
+    expect(nexus.default_model).toEqual({ provider: 'deepseek', model: 'deepseek-v4-pro' });
   });
 
   test('TC-3: 普通文本消息得到真实 LLM 非空回复', async () => {

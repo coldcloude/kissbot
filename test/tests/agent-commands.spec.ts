@@ -117,12 +117,4 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     cliAdmin.stdin('/send /model deepseek deepseek-v4-flash maybe');
     await cliAdmin.waitForOutput(/格式: \/model <provider> <model> \[true\|false\]/, 10000);
   });
-
-  // TC-12: /model 带 true 参数可解析并执行（测试环境无 api_key，模型切换在 API 校验处失败；
-  // 验证 4 参形式端到端可达执行路径；默认写入 NexusRepo 的链路由 config_manager 单测覆盖）
-  test('TC-12: /model 带 true 参数可解析并执行', async () => {
-    cliAdmin.stdin('/send /model deepseek deepseek-v4-flash true');
-    // 无 api_key：set_session_model 的 list_models 校验失败，回复执行失败信息（而非格式错误）
-    await cliAdmin.waitForOutput(/❌ 命令执行失败:.*获取模型列表失败/, 15000);
-  });
 });
