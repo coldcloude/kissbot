@@ -136,6 +136,9 @@ impl AgentManager {
         self.write_agent_metadata_ref(metadata.agent_id.clone().as_str(), |_| {
             Ok(Arc::new(metadata))
         }).await?;
+        // 新 agent 需入搜索索引（/agent/search-name 全匹配依赖 name_index；
+        // 与 update_agent_name/update_agent_description 的 mark_identity_dirty 对齐）
+        SearchManager::get().await.mark_identity_dirty(agent_id.as_str());
         Ok(agent_id)
     }
 
