@@ -56,46 +56,38 @@ async function waitNewOutput(baseline: string, regex: RegExp, timeout = 10000): 
   throw new Error(`CLI 新输出超时（${timeout}ms），期望 /${regex.source}/，基线后输出: ${cli.getOutput().slice(baseline.length).slice(-200)}`);
 }
 
-// 查询 memory-store channel 记录并断言该场景的用户消息（is_self=0）与 agent 回复（is_self=1）
+// 查询 memory-store channel 记录并断言该场景的双向消息（is_self=0 用户消息 / is_self=1 agent 回复）
+// 文件名按接收方 self_user_id（= channel 绑定的 user_id u1）分文件，双向消息在同一文件
 async function assertChannelRecords(request: APIRequestContext, roleName: string): Promise<void> {
   // 等待记忆落盘（memory-store appender 100ms 批量 + 余量）
   await sleep(1500);
 
-  async function query(userId: string) {
-    return (await request.post(`${STORE_BASE}/store/query/channel`, {
-      headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
-      data: {
-        agent_id: agentId, role_name: roleName, messenger_id: 'web',
-        user_id: userId, group_id: 'g1',
-        start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
-      },
-    })).json();
-  }
-
-  // 用户消息：u2 身份，is_self=0
-  const qUser = await query('u2');
-  expect(qUser.success).toBe(true);
-  expect(qUser.data.length).toBeGreaterThanOrEqual(1);
-  const keyUser = qUser.data[0][0];
+  const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
+    headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+    data: {
+      agent_id: agentId, role_name: roleName, messenger_id: 'web',
+      user_id: 'u1', group_id: 'g1',   // 文件名 user_id = 绑定用户（接收方）
+      start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
+    },
+  })).json();
+  expect(resp.success).toBe(true);
+  expect(resp.data.length).toBeGreaterThanOrEqual(1);
+  const key = resp.data[0][0];
   // ego 读取验证：agent_id 为 ego 解析出的 UUID（非保留值 "0"）
-  expect(keyUser.agent_id).toBe(agentId);
-  expect(keyUser.role_name).toBe(roleName);
-  expect(keyUser.group_id).toBe('g1');
-  const recUser = qUser.data[0][1];
-  expect(recUser.length).toBeGreaterThanOrEqual(1);
-  const lastUser = recUser[recUser.length - 1][1];
-  expect(lastUser.user_id).toBe('u2');
-  expect(lastUser.is_self).toBe(0);
+  expect(key.agent_id).toBe(agentId);
+  expect(key.role_name).toBe(roleName);
+  expect(key.group_id).toBe('g1');
+  expect(key.user_id).toBe('u1');
 
-  // agent 回复：u1 身份，is_self=1
-  const qSelf = await query('u1');
-  expect(qSelf.success).toBe(true);
-  expect(qSelf.data.length).toBeGreaterThanOrEqual(1);
-  const recSelf = qSelf.data[0][1];
-  expect(recSelf.length).toBeGreaterThanOrEqual(1);
-  const lastSelf = recSelf[recSelf.length - 1][1];
-  expect(lastSelf.user_id).toBe('u1');
-  expect(lastSelf.is_self).toBe(1);
+  const recs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
+  // 用户消息：u2 发送，is_self=0
+  const userMsgs = recs.filter((r) => r.is_self === 0);
+  expect(userMsgs.length).toBeGreaterThanOrEqual(1);
+  expect(userMsgs[userMsgs.length - 1].user_id).toBe('u2');
+  // agent 回复：以绑定用户 u1 身份发送，is_self=1
+  const selfMsgs = recs.filter((r) => r.is_self === 1);
+  expect(selfMsgs.length).toBeGreaterThanOrEqual(1);
+  expect(selfMsgs[selfMsgs.length - 1].user_id).toBe('u1');
 }
 
 test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入（4 种正常场景）', () => {

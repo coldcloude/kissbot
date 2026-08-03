@@ -15,7 +15,8 @@ const WORKSPACE = join(__dirname, '..', 'workspace');
 const AGENT = 'agent_a';
 const ROLE = 'admin';
 const MESSENGER = 'web';
-const USER = 'u1';
+const USER = 'u1';       // 发送者
+const SELF_USER = 'self1'; // 接收方（= channel 绑定的 user_id），文件名按此分文件
 const GROUP = 'g1';
 
 let store: ChildProcess;
@@ -57,7 +58,7 @@ test.describe.serial('memory-store API 测试', () => {
     const resp = await apiPost(request, '/store/channel', {
       requests: [{
         agent_id: AGENT, role_name: ROLE, messenger_id: MESSENGER,
-        user_id: USER, group_id: GROUP, is_self: 0,
+        user_id: USER, self_user_id: SELF_USER, group_id: GROUP, is_self: 0,
         messenger_name: 'Web', user_name: '用户1', group_name: '群组1',
         content: { msg_type: 'Text', data: '你好' }, time,
       }],
@@ -70,7 +71,7 @@ test.describe.serial('memory-store API 测试', () => {
 
     const q = await apiPost(request, '/store/query/channel', {
       agent_id: AGENT, role_name: ROLE, messenger_id: MESSENGER,
-      user_id: USER, group_id: GROUP,
+      user_id: SELF_USER, group_id: GROUP,
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
@@ -78,13 +79,14 @@ test.describe.serial('memory-store API 测试', () => {
     expect(q.data.length).toBeGreaterThanOrEqual(1);
     const records = q.data[0][1]; // [[line, record], ...]
     expect(records.length).toBeGreaterThanOrEqual(1);
-    // key 中含 messenger_id/user_id/group_id/date（记录本身不含）
-    expect(q.data[0][0].user_id).toBe(USER);
+    // key 中含 messenger_id/user_id/group_id/date；文件名 user_id 按接收方 self_user_id 分文件
+    expect(q.data[0][0].user_id).toBe(SELF_USER);
     expect(q.data[0][0].group_id).toBe(GROUP);
     expect(q.data[0][0].date).toBe(date);
     const record = records[records.length - 1][1];
+    // record.user_id 保留发送者身份（区分对话方向）
     expect(record.user_id).toBe(USER);
-    // 记录本身不含 group_id/is_self 之外的 key 字段；is_self 按追加值回读
+    // 记录本身不含 group_id；is_self 按追加值回读
     expect(record.group_id).toBeUndefined();
     expect(record.is_self).toBe(0);
     expect(record.content).toEqual({ msg_type: 'Text', data: '你好' });

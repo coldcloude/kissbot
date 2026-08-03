@@ -513,6 +513,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -540,7 +541,7 @@ mod tests {
             .join("test_append_new")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
         assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
 
         // 读取文件内容验证
@@ -569,6 +570,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -582,6 +584,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -595,6 +598,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -621,7 +625,7 @@ mod tests {
             .join("test_append_multi")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 3);
@@ -652,6 +656,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -678,6 +683,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -702,7 +708,7 @@ mod tests {
             .join("test_append_seq")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
@@ -865,6 +871,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -882,6 +889,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -914,6 +922,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -931,6 +940,7 @@ mod tests {
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
@@ -947,7 +957,7 @@ mod tests {
             .join("test_force_ooo")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
@@ -977,6 +987,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -990,6 +1001,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1003,6 +1015,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1022,6 +1035,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1035,6 +1049,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1052,7 +1067,7 @@ mod tests {
             .join("test_force_existing")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 5);
@@ -1085,6 +1100,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self_a".to_string()),
                 group_id: Arc::new("g1".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1098,6 +1114,7 @@ mod tests {
                 role_name: Arc::new("default".to_string()),
                 messenger_id: Arc::new("telegram".to_string()),
                 user_id: Arc::new("u2".to_string()),
+                self_user_id: Arc::new("self_b".to_string()),
                 group_id: Arc::new("g2".to_string()),
                 is_self: 0,
                 messenger_name: Arc::new(String::new()),
@@ -1125,12 +1142,12 @@ mod tests {
             .join("test_mk_a")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u1=g1-records-2026-06-25.jsonl");
+            .join("channel-telegram=self_a=g1-records-2026-06-25.jsonl");
         let path2 = root
             .join("test_mk_b")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=u2=g2-records-2026-06-25.jsonl");
+            .join("channel-telegram=self_b=g2-records-2026-06-25.jsonl");
 
         assert!(path1.exists(), "file for agent1 should exist");
         assert!(path2.exists(), "file for agent2 should exist");

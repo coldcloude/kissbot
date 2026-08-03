@@ -13,6 +13,8 @@ pub struct ChannelRequest {
     pub role_name: Arc<String>,
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
+    /// 接收方身份（= channel 绑定的 user_id，即 agent 视角的 self）；文件名按此值分文件
+    pub self_user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
     pub messenger_name: Arc<String>,
@@ -207,6 +209,7 @@ mod tests {
             role_name: Arc::new("admin".to_string()),
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new("M1Name".to_string()),
@@ -218,6 +221,7 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.self_user_id, "self1");
         assert_eq!(*deserialized.messenger_name, "M1Name");
         assert_eq!(*deserialized.user_name, "U1Name");
         assert_eq!(*deserialized.group_name, "G1Name");
@@ -231,6 +235,7 @@ mod tests {
             role_name: Arc::new("r1".to_string()),
             messenger_id: Arc::new("m1".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new("M1Name".to_string()),

@@ -68,12 +68,14 @@ impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
 
 impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelParser {
     fn parse_request(&self, request: ChannelRequest) -> (ChannelRecordKey, ChannelRecord) {
+        // 文件名（key.user_id）按接收方 self_user_id 分文件（同一 channel 双向消息归入绑定用户文件）；
+        // record.user_id 保留发送者身份（区分对话方向）
         let user_id = request.user_id.clone();
         let key = ChannelRecordKey {
             agent_id: request.agent_id.clone(),
             role_name: request.role_name.clone(),
             messenger_id: request.messenger_id.clone(),
-            user_id: user_id.clone(),
+            user_id: request.self_user_id.clone(),
             group_id: request.group_id.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
@@ -311,6 +313,7 @@ use super::*;
             role_name: Arc::new("default".to_string()),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 1,
             messenger_name: Arc::new("TelegramName".to_string()),
@@ -324,6 +327,8 @@ use super::*;
         assert_eq!(*key.agent_id, "agent1");
         assert_eq!(*key.messenger_id, "telegram");
         assert_eq!(*key.date, "2026-06-24");
+        // 文件名（key.user_id）按接收方 self_user_id 分文件；record.user_id 保留发送者
+        assert_eq!(*key.user_id, "self1");
         assert_eq!(*record.user_id, "u1");
         assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
         assert_eq!(record.sn, 0);

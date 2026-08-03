@@ -537,6 +537,8 @@ impl Terminal for AgentCoordinator {
             role_name: Arc::new(role_name),
             messenger_id: message.messenger_id.clone(),
             user_id: message.user_id.clone(),
+            // 接收方身份 = channel 绑定的 user_id（agent 视角的 self；文件名按此分文件）
+            self_user_id: Arc::new(ch.bind_user.user_id.clone()),
             group_id: message.group_id.clone(),
             is_self: 0,
             messenger_name: message.messenger_name.clone(),
@@ -770,6 +772,8 @@ impl AgentCoordinator {
                     role_name: Arc::new(role_name),
                     messenger_id: Arc::new(bound.messenger_id.clone()),
                     user_id: Arc::new(bound.user_id.clone()),
+                    // 接收方身份 = channel 绑定的 user_id（agent 视角的 self；文件名按此分文件）
+                    self_user_id: Arc::new(bound.user_id.clone()),
                     group_id: Arc::new(group_id.to_string()),
                     is_self: 1,
                     messenger_name: response.messenger_name.clone(),

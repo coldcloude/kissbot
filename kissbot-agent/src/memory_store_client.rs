@@ -22,6 +22,8 @@ pub struct ChannelRecord {
     pub role_name: Arc<String>,
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
+    /// 接收方身份（= channel 绑定的 user_id，即 agent 视角的 self）
+    pub self_user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
     pub messenger_name: Arc<String>,
@@ -93,6 +95,7 @@ impl FileAppendWriterContext<String, ChannelRecord> for MemoryStoreContext {
             role_name: r.role_name,
             messenger_id: r.messenger_id,
             user_id: r.user_id,
+            self_user_id: r.self_user_id,
             group_id: r.group_id,
             is_self: r.is_self,
             messenger_name: r.messenger_name,
