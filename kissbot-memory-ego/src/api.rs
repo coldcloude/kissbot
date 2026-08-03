@@ -405,3 +405,55 @@ async fn replace_other_role_relations(Json(req): Json<ego::ReplaceOtherRoleRelat
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::util::ServiceExt;
+
+    // /agent/search-name HTTP 成功路径 mock 测试：
+    // 复用 kissbot-agent/src/http_server.rs 的 Router oneshot 模式（真实 handler + tempdir 数据），
+    // 覆盖「创建 agent 后按 individual_name 全匹配可搜到」与「未命中返回 null」。
+    #[tokio::test]
+    async fn search_name_http_success() {
+        crate::test_util::init_test_config();
+
+        // 创建 agent（create_agent 标记搜索索引脏，search 时同步）
+        let agent_id = AgentManager::get().create_agent(
+            Arc::new("alice".to_string()),
+            Arc::new("Alice 助理".to_string()),
+        ).await.unwrap();
+
+        // 成功路径：keyword 全匹配 individual_name → data 为 agent_id
+        let app = create_router();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/agent/search-name")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"keyword":"alice"}"#.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"], serde_json::Value::String(agent_id.to_string()));
+
+        // 未命中：keyword 无匹配 → success=true、data 为 null
+        let req = Request::builder()
+            .method("POST")
+            .uri("/agent/search-name")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"keyword":"nobody"}"#.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"], serde_json::Value::Null);
+    }
+}

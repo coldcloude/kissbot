@@ -22,3 +22,5 @@ kissbot-security = { path = "../kissbot-security" }
 
 [dev-dependencies]
 tempfile = "3"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
