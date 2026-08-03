@@ -710,13 +710,16 @@ impl AgentCoordinator {
                 }
 
                 // 4. 推送 think 到 MemoryWriter（事件模式编码；取记忆用会话保存的 agent_id）
-                let role_name = memory_role(&session.key);
-                let _ = self.memory_writer.push(WriteTask::Think {
-                    agent_id: session.agent_id.to_string(),
-                    role_name: Some(role_name),
-                    content: model_resp.content.clone(),
-                    time: now,
-                });
+                // Think 记忆只存思考内容（方案 A）：有思考内容才写，无则跳过
+                if let Some(reasoning) = &model_resp.reasoning_content {
+                    let role_name = memory_role(&session.key);
+                    let _ = self.memory_writer.push(WriteTask::Think {
+                        agent_id: session.agent_id.to_string(),
+                        role_name: Some(role_name),
+                        content: reasoning.clone(),
+                        time: now,
+                    });
+                }
 
                 // 5. 发送回复到该会话的发送 channel
                 self.reply(channel_id, &group_id, model_resp.content).await;
