@@ -10,6 +10,11 @@ function entriesToArray<T>(obj: Record<string, T>): T[] {
   return Object.values(obj);
 }
 
+// 后端时间格式 "YYYY-MM-DD HH:MM:SS"（空格分隔），取前 10 位为日期
+function dateOf(time: string): string {
+  return time.slice(0, 10);
+}
+
 export default function App() {
   const [connected, setConnected] = useState(false);
   // connectError 在 handleConnect 中抛出，LoginPage 自己处理错误显示
@@ -35,20 +40,23 @@ export default function App() {
   const addMessages = useCallback((groupId: string, newGrouped: GroupedMessages[]) => {
     setGroupedMessagesMap(prev => {
       const existing = prev[groupId] || [];
-      // 合并同 date 分组
       const merged = [...existing];
       for (const ng of newGrouped) {
         const existingGroupIdx = merged.findIndex(g => g.key.date === ng.key.date);
         if (existingGroupIdx >= 0) {
-          // 按 line 去重合并
-          const existingLines = new Set(merged[existingGroupIdx].messages.map(m => m.line));
+          // 按 msg_id 去重合并（line 为占位 0 时无法区分不同消息，必须按 msg_id）
+          const existingIds = new Set(merged[existingGroupIdx].messages.map(m => m.message.msg_id));
           for (const lm of ng.messages) {
-            if (!existingLines.has(lm.line)) {
+            if (!existingIds.has(lm.message.msg_id)) {
               merged[existingGroupIdx].messages.push(lm);
             }
           }
-          // 按 line 排序
-          merged[existingGroupIdx].messages.sort((a, b) => a.line - b.line);
+          // 按 line 排序（占位 line 0 视为最新，排末尾）
+          merged[existingGroupIdx].messages.sort((a, b) => {
+            const al = a.line === 0 ? Number.MAX_SAFE_INTEGER : a.line;
+            const bl = b.line === 0 ? Number.MAX_SAFE_INTEGER : b.line;
+            return al - bl;
+          });
         } else {
           merged.push(ng);
         }
@@ -92,7 +100,7 @@ export default function App() {
     loadedMsgIdsRef.current.add(msg.msg_id);
 
     // 构建单条 GroupedMessages
-    const date = msg.time.split('T')[0];
+    const date = dateOf(msg.time);
     const grouped: GroupedMessages = {
       key: { group_id: msg.group_id, date },
       messages: [{ line: 0, message: msg }],
@@ -120,7 +128,7 @@ export default function App() {
         time: res.data.time,
       };
       loadedMsgIdsRef.current.add(msg.msg_id);
-      const date = msg.time.split('T')[0];
+      const date = dateOf(msg.time);
       addMessages(groupId, [{
         key: { group_id: groupId, date },
         messages: [{ line: 0, message: msg }],
@@ -156,7 +164,7 @@ export default function App() {
       time: res.data.time,
     };
     loadedMsgIdsRef.current.add(msg.msg_id);
-    const date = msg.time.split('T')[0];
+    const date = dateOf(msg.time);
     addMessages(groupId, [{
       key: { group_id: groupId, date },
       messages: [{ line: 0, message: msg }],
