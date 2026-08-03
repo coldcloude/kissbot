@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::types::{AdminCommand, CommandEffect, Error, Mode, Result};
 use crate::config_manager::{ConfigManager, ProviderModel};
 use kissbot_api::ChannelUser;
-use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
+use crate::coordinator::{AgentCoordinator, RuntimeAgent, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
 
@@ -178,10 +178,17 @@ impl CommandRouter {
             AdminCommand::SetAgent { agent_name, role } => {
                 let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                // 切换前先解析新 agent：失败则保持原有 agent 不变（配置与运行态均不改）
+                let agent_id = coordinator.resolve_agent_id_for_bind(&new_agent).await?;
                 config.update_channel(channel_id, |c| {
                     c.agent_name = Arc::new(new_agent.clone());
                     c.role_name = Arc::new(new_role.clone());
                 }).await?;
+                // 切换成功：写入 channel 运行态 agent 绑定
+                coordinator.set_channel_runtime(channel_id, RuntimeAgent {
+                    agent_name: Arc::new(new_agent.clone()),
+                    agent_id,
+                }).await;
                 Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::Relocate))
             }
             AdminCommand::SetRole(role) => {

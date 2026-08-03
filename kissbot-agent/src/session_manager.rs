@@ -131,7 +131,8 @@ impl Session {
     }
 }
 
-/// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_name, mode) 去重维护会话集合
+/// 会话管理器：汇总所有绑定 channel 的 (agent_name, role_name, mode) 去重维护会话集合
+/// （session_key 仅用于去重；agent_id 解析结果由各 channel 运行态绑定保存，不在此提取）
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
     /// 运行态 per-channel mode（不回写，重启回 Role）
