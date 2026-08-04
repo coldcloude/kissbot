@@ -139,8 +139,6 @@ pub struct OutChannelParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandEffect {
     None,
-    /// 绑定/模式变化，来源 channel 需按新三元组重定位会话
-    Relocate,
     /// 重置来源 channel 所属会话的上下文
     ResetSession,
 }

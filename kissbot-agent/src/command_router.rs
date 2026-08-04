@@ -206,35 +206,29 @@ impl CommandRouter {
             AdminCommand::SetAgent { agent_name, role } => {
                 let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 切换前先解析新 agent：失败则保持原有 agent 不变（配置与运行态均不改）
+                // 切换前先解析新 agent：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
                 let agent_id = coordinator.resolve_agent_id_for_bind(&new_agent).await?;
-                config.update_channel(channel_id, |c| {
-                    c.agent_name = Arc::new(new_agent.clone());
-                    c.role_name = Arc::new(new_role.clone());
-                }).await?;
-                // 切换成功：写入 channel 运行态 agent_id
-                coordinator.set_channel_runtime(channel_id, agent_id).await;
-                Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::Relocate))
+                // 写 config + 运行态 + 会话重定位走串行队列（防写-写竞态），返回时已生效
+                coordinator.change_channel_agent_role(channel_id, &new_agent, &new_role, agent_id).await?;
+                Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::None))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                config.update_channel(channel_id, |c| {
-                    c.role_name = Arc::new(new_role.clone());
-                }).await?;
-                Ok((format!("✅ 已设置 role: {}", new_role), CommandEffect::Relocate))
+                coordinator.change_channel_role(channel_id, &new_role).await?;
+                Ok((format!("✅ 已设置 role: {}", new_role), CommandEffect::None))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                coordinator.set_channel_mode(channel_id, Mode::Event(id.clone())).await;
-                Ok((format!("✅ 新事件 ID: {}", id), CommandEffect::Relocate))
+                coordinator.change_channel_mode(channel_id, Mode::Event(id.clone())).await?;
+                Ok((format!("✅ 新事件 ID: {}", id), CommandEffect::None))
             }
             AdminCommand::ModeRole => {
-                coordinator.set_channel_mode(channel_id, Mode::Role).await;
-                Ok(("✅ 已切换为角色模式".to_string(), CommandEffect::Relocate))
+                coordinator.change_channel_mode(channel_id, Mode::Role).await?;
+                Ok(("✅ 已切换为角色模式".to_string(), CommandEffect::None))
             }
             AdminCommand::Reenter(event_id) => {
-                coordinator.set_channel_mode(channel_id, Mode::Event(event_id.clone())).await;
-                Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::Relocate))
+                coordinator.change_channel_mode(channel_id, Mode::Event(event_id.clone())).await?;
+                Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::None))
             }
             AdminCommand::BindOutgoing(params) => {
                 match params {

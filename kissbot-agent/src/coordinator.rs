@@ -79,6 +79,17 @@ impl ChannelContext {
     }
 }
 
+/// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
+/// done 通知发起方处理完成（含结果）
+enum ConfigChange {
+    /// /agent：切换 channel 绑定的 agent 与 role（含运行态 agent_id 写入 + 会话重定位）
+    SetAgent { channel_id: String, agent_name: String, role: String, agent_id: Arc<String>, done: tokio::sync::oneshot::Sender<Result<()>> },
+    /// /role：设置 channel 绑定的 role（含会话重定位）
+    SetRole { channel_id: String, role: String, done: tokio::sync::oneshot::Sender<Result<()>> },
+    /// /mode event|role 与 /reenter：切换运行态模式（含会话重定位）
+    SetMode { channel_id: String, mode: Mode, done: tokio::sync::oneshot::Sender<Result<()>> },
+}
+
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
     memory_reader: Arc<MemoryReader>,
@@ -93,6 +104,8 @@ pub struct AgentCoordinator {
     channel_contexts: Arc<DashMap<String, Arc<ChannelContext>>>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
+    /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
+    command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
 }
 
 impl AgentCoordinator {
@@ -103,6 +116,8 @@ impl AgentCoordinator {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let session_manager = SessionManager::new();
         let model_client = ModelClient::new(config.clone());
+        // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
         let coordinator = Arc::new(Self {
             config: config.clone(),
@@ -114,7 +129,31 @@ impl AgentCoordinator {
             channel_contexts: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
+            command_tx,
         });
+
+        // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
+        {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                while let Some(change) = command_rx.recv().await {
+                    match change {
+                        ConfigChange::SetAgent { channel_id, agent_name, role, agent_id, done } => {
+                            let rst = coordinator.apply_set_agent(&channel_id, &agent_name, &role, agent_id).await;
+                            let _ = done.send(rst);
+                        }
+                        ConfigChange::SetRole { channel_id, role, done } => {
+                            let rst = coordinator.apply_set_role(&channel_id, &role).await;
+                            let _ = done.send(rst);
+                        }
+                        ConfigChange::SetMode { channel_id, mode, done } => {
+                            let rst = coordinator.apply_set_mode(&channel_id, mode).await;
+                            let _ = done.send(rst);
+                        }
+                    }
+                }
+            });
+        }
 
         // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
         let default_model = config.default_model().await;
@@ -381,9 +420,65 @@ impl AgentCoordinator {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
-    /// 切换来源 channel 的运行态模式（不回写，会话重定位由调用方触发）
-    pub async fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
+    /// /agent 变更：写 config（agent_name/role_name）+ 运行态 agent_id + 会话重定位，走串行队列，返回时已生效
+    pub async fn change_channel_agent_role(&self, channel_id: &str, agent_name: &str, role: &str, agent_id: Arc<String>) -> Result<()> {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.command_tx.send(ConfigChange::SetAgent {
+            channel_id: channel_id.to_string(),
+            agent_name: agent_name.to_string(),
+            role: role.to_string(),
+            agent_id,
+            done: done_tx,
+        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    }
+
+    /// /role 变更：写 config（role_name）+ 会话重定位，走串行队列
+    pub async fn change_channel_role(&self, channel_id: &str, role: &str) -> Result<()> {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.command_tx.send(ConfigChange::SetRole {
+            channel_id: channel_id.to_string(),
+            role: role.to_string(),
+            done: done_tx,
+        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    }
+
+    /// /mode 与 /reenter 变更：写运行态模式 + 会话重定位，走串行队列
+    pub async fn change_channel_mode(&self, channel_id: &str, mode: Mode) -> Result<()> {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.command_tx.send(ConfigChange::SetMode {
+            channel_id: channel_id.to_string(),
+            mode,
+            done: done_tx,
+        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    }
+
+    // ---- 变更消费者（队列内串行执行，不对外） ----
+
+    async fn apply_set_agent(&self, channel_id: &str, agent_name: &str, role: &str, agent_id: Arc<String>) -> Result<()> {
+        self.config.update_channel(channel_id, |c| {
+            c.agent_name = Arc::new(agent_name.to_string());
+            c.role_name = Arc::new(role.to_string());
+        }).await?;
+        self.set_channel_runtime(channel_id, agent_id).await;
+        self.relocate_channel(channel_id).await;
+        Ok(())
+    }
+
+    async fn apply_set_role(&self, channel_id: &str, role: &str) -> Result<()> {
+        self.config.update_channel(channel_id, |c| {
+            c.role_name = Arc::new(role.to_string());
+        }).await?;
+        self.relocate_channel(channel_id).await;
+        Ok(())
+    }
+
+    async fn apply_set_mode(&self, channel_id: &str, mode: Mode) -> Result<()> {
         self.session_manager.set_channel_mode(channel_id, mode);
+        self.relocate_channel(channel_id).await;
+        Ok(())
     }
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
@@ -610,9 +705,6 @@ impl AgentCoordinator {
 
                         // 应用命令执行效果
                         match effect {
-                            crate::types::CommandEffect::Relocate => {
-                                self.relocate_channel(channel_id).await;
-                            }
                             crate::types::CommandEffect::ResetSession => {
                                 self.reset_session_for(channel_id).await;
                             }
