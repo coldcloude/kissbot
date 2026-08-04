@@ -157,8 +157,10 @@ pub struct ToolCall {
 #[derive(Debug, Clone)]
 pub struct ModelResponse {
     pub content: String,
-    /// 思考内容（DeepSeek reasoning_content / anthropic thinking block / <think> 标签兜底；无则为 None）
+    /// 思考内容：API 字段（DeepSeek reasoning_content / anthropic thinking block）
     pub reasoning_content: Option<String>,
+    /// 思考内容：<think> 标签解析（去标签）；与 reasoning_content 独立，不合并
+    pub thinking: Option<String>,
     #[allow(dead_code)]
     pub tool_calls: Vec<ToolCall>,
     #[allow(dead_code)]

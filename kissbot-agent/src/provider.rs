@@ -76,12 +76,13 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     let choice = &data["choices"][0];
     let content = choice["message"]["content"].as_str().unwrap_or("").to_string();
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("stop").to_string();
-    // 思考内容：优先 API 的 reasoning_content 字段，缺失时用 <think> 标签兜底；<think> 标签总是剥离
-    let api_reasoning = choice["message"]["reasoning_content"].as_str().map(String::from);
+    // reasoning_content：API 字段，空串视为 None
+    let reasoning_content = choice["message"]["reasoning_content"].as_str()
+        .map(String::from).filter(|s| !s.is_empty());
+    // <think> 标签总剥离；thinking 独立取标签内容，空串视为 None
     let (content, tag_reasoning) = strip_think_tag(&content);
-    // 空字符串 reasoning_content 视为缺失，回退到 <think> 标签内容（filter 保证空串也触发兜底）
-    let reasoning_content = api_reasoning.filter(|s| !s.is_empty()).or(tag_reasoning);
-    ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
+    let thinking = tag_reasoning.filter(|s| !s.is_empty());
+    ModelResponse { content, reasoning_content, thinking, tool_calls: Vec::new(), finish_reason }
 }
 
 /// 匹配 content 开头的 <think>...</think>（允许前导空白），剥离并返回 (剥离后内容, Option<思考内容>)
@@ -203,14 +204,14 @@ fn anthropic_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) ->
 }
 
 fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
-    // 思考内容：content blocks 中 type=="thinking" 的块（DeepSeek/Anthropic 均返回该结构）
+    // reasoning_content：thinking block 内容（空串视为 None）
     let mut reasoning_content = None;
     let mut content = String::new();
     if let Some(blocks) = data["content"].as_array() {
         for block in blocks {
             match block["type"].as_str() {
                 Some("thinking") if reasoning_content.is_none() => {
-                    reasoning_content = block["thinking"].as_str().map(String::from);
+                    reasoning_content = block["thinking"].as_str().map(String::from).filter(|s| !s.is_empty());
                 }
                 Some("text") if content.is_empty() => {
                     content = block["text"].as_str().unwrap_or("").to_string();
@@ -220,10 +221,10 @@ fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
         }
     }
     let finish_reason = data["stop_reason"].as_str().unwrap_or("end_turn").to_string();
-    // <think> 标签总是剥离；思考内容为空（None 或空字符串）时用标签内容兜底
+    // <think> 标签总剥离；thinking 独立取标签内容
     let (content, tag_reasoning) = strip_think_tag(&content);
-    let reasoning_content = reasoning_content.filter(|s| !s.is_empty()).or(tag_reasoning);
-    ModelResponse { content, reasoning_content, tool_calls: Vec::new(), finish_reason }
+    let thinking = tag_reasoning.filter(|s| !s.is_empty());
+    ModelResponse { content, reasoning_content, thinking, tool_calls: Vec::new(), finish_reason }
 }
 
 /// 从 Anthropic /v1/models 响应中提取模型 id 列表（测试用解析函数，与网络解耦）
@@ -433,6 +434,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_openai_response_reasoning_and_thinking_independent() {
+        // API 有 reasoning_content + content 有 <think> 标签 -> 两字段都 Some（独立共存）
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>标签思考</think>答案", "reasoning_content": "API推理" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.content, "答案", "<think> 标签应剥离");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("API推理"), "reasoning_content 独立取 API 字段");
+        assert_eq!(resp.thinking.as_deref(), Some("标签思考"), "thinking 独立取标签内容");
+    }
+
+    #[test]
+    fn parse_openai_response_only_thinking_when_no_api_field() {
+        // 无 API reasoning_content + <think> 标签 -> reasoning_content=None, thinking=Some
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.reasoning_content, None);
+        assert_eq!(resp.thinking.as_deref(), Some("思考"));
+    }
+
+    #[test]
     fn parse_openai_response_extracts_reasoning_content() {
         let data = serde_json::json!({
             "choices": [{ "message": { "content": "答案", "reasoning_content": "思考" }, "finish_reason": "stop" }]
@@ -440,6 +464,7 @@ mod tests {
         let resp = parse_openai_response(&data);
         assert_eq!(resp.content, "答案");
         assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+        assert_eq!(resp.thinking, None, "仅 API 字段无标签时 thinking 应为 None");
     }
 
     #[test]
@@ -449,7 +474,8 @@ mod tests {
         });
         let resp = parse_openai_response(&data);
         assert_eq!(resp.content, "答案", "<think> 标签应剥离");
-        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+        assert_eq!(resp.reasoning_content, None, "标签内容不再合并到 reasoning_content");
+        assert_eq!(resp.thinking.as_deref(), Some("思考"), "标签内容独立取 thinking");
     }
 
     #[test]
@@ -459,7 +485,33 @@ mod tests {
         });
         let resp = parse_openai_response(&data);
         assert_eq!(resp.content, "答案", "<think> 标签应剥离");
-        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"), "空字符串 reasoning_content 应触发 <think> 兜底");
+        assert_eq!(resp.reasoning_content, None, "空字符串 reasoning_content 应视为 None");
+        assert_eq!(resp.thinking.as_deref(), Some("思考"), "标签内容独立取 thinking");
+    }
+
+    #[test]
+    fn parse_response_no_thinking_when_both_empty() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.reasoning_content, None);
+        assert_eq!(resp.thinking, None);
+    }
+
+    #[test]
+    fn parse_anthropic_response_reasoning_and_thinking_independent() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "API推理" },
+                { "type": "text", "text": "<think>标签思考</think>答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_anthropic_response(&data);
+        assert_eq!(resp.content, "答复");
+        assert_eq!(resp.reasoning_content.as_deref(), Some("API推理"));
+        assert_eq!(resp.thinking.as_deref(), Some("标签思考"));
     }
 
     #[test]
@@ -474,6 +526,7 @@ mod tests {
         let resp = parse_anthropic_response(&data);
         assert_eq!(resp.content, "答复");
         assert_eq!(resp.reasoning_content.as_deref(), Some("思考过程"));
+        assert_eq!(resp.thinking, None, "无标签时 thinking 应为 None");
     }
 
     #[test]
@@ -484,7 +537,8 @@ mod tests {
         });
         let resp = parse_anthropic_response(&data);
         assert_eq!(resp.content, "答复");
-        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"));
+        assert_eq!(resp.reasoning_content, None, "标签内容不再合并到 reasoning_content");
+        assert_eq!(resp.thinking.as_deref(), Some("思考"), "标签内容独立取 thinking");
     }
 
     #[test]
@@ -498,7 +552,8 @@ mod tests {
         });
         let resp = parse_anthropic_response(&data);
         assert_eq!(resp.content, "答复", "<think> 标签应剥离");
-        assert_eq!(resp.reasoning_content.as_deref(), Some("思考"), "空字符串 thinking 块应触发 <think> 兜底");
+        assert_eq!(resp.reasoning_content, None, "空字符串 thinking 块应视为 None");
+        assert_eq!(resp.thinking.as_deref(), Some("思考"), "标签内容独立取 thinking");
     }
 
     #[test]
