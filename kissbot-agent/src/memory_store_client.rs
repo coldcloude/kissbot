@@ -107,7 +107,7 @@ where
 // ========== MemoryStoreClient（push 直接用 kissbot-api 的 *Request） ==========
 
 pub struct MemoryStoreClient {
-    channel_appender: FileObjectAppender<String, ChannelRequest, StoreSender<MemoryStoreContext>, MemoryStoreContext, LoggingErrorHandler>,
+    channel_appender: FileObjectAppender<String, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
     think_appender: FileObjectAppender<String, ThinkRequest, StoreSender<ThinkStoreContext>, ThinkStoreContext, LoggingErrorHandler>,
     tool_call_appender: FileObjectAppender<String, ToolCallRequest, StoreSender<ToolCallStoreContext>, ToolCallStoreContext, LoggingErrorHandler>,
     tool_result_appender: FileObjectAppender<String, ToolResultRequest, StoreSender<ToolResultStoreContext>, ToolResultStoreContext, LoggingErrorHandler>,
@@ -119,7 +119,7 @@ impl MemoryStoreClient {
         let config = Arc::new(StoreHttpConfig::new());
         Self {
             channel_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(MemoryStoreContext { config: config.clone() })),
+                Arc::new(StoreSender::new(ChannelStoreContext { config: config.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
@@ -168,7 +168,7 @@ impl MemoryStoreClient {
     }
 }
 
-struct MemoryStoreContext {
+struct ChannelStoreContext {
     config: Arc<StoreHttpConfig>,
 }
 
@@ -177,7 +177,7 @@ fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<String, ChannelRequest> for MemoryStoreContext {
+impl FileAppendWriterContext<String, ChannelRequest> for ChannelStoreContext {
     async fn write(&mut self, _key: &String, records: Vec<ChannelRequest>) -> std::result::Result<(), kai_file::Error> {
         self.config.send_store_request("/store/channel", &channel_requests(records)).await
     }
