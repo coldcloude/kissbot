@@ -169,7 +169,7 @@ impl AgentCoordinator {
     /// 绑定（或重绑）channel 运行态 agent_id：从配置 agent_name 解析，写入 channel 运行状态；
     /// 空 agent_name 直接保留；解析失败回退保留 agent_id（"0"）并告警
     async fn bind_channel_runtime(&self, channel_id: &str) -> Arc<String> {
-        let agent_name = self.channel_config(channel_id).await
+        let agent_name = self.config.channel(channel_id).await
             .map(|c| c.agent_name.to_string())
             .unwrap_or_default();
         let agent_id = if agent_name.is_empty() {
@@ -244,7 +244,7 @@ impl AgentCoordinator {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取该 channel 运行态绑定）
-        if let Some(ch) = self.channel_config(channel_id).await {
+        if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
             self.ensure_session(&key, channel_id).await;
         }
@@ -262,7 +262,7 @@ impl AgentCoordinator {
 
     /// 重置来源 channel 所属会话的上下文
     async fn reset_session_for(&self, channel_id: &str) {
-        if let Some(ch) = self.channel_config(channel_id).await {
+        if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
             if let Some(session) = self.session_manager.get(&key) {
                 self.reset_context(&session).await;
@@ -375,7 +375,7 @@ impl AgentCoordinator {
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
-        let Some(ch) = self.channel_config(channel_id).await else {
+        let Some(ch) = self.config.channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         let key = self.session_key_for(&ch);
@@ -393,7 +393,7 @@ impl AgentCoordinator {
 
     /// 查询来源 channel 所属会话的事件列表
     pub async fn list_events(&self, channel_id: &str) -> Result<String> {
-        let Some(ch) = self.channel_config(channel_id).await else {
+        let Some(ch) = self.config.channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         let key = self.session_key_for(&ch);
@@ -411,12 +411,6 @@ impl AgentCoordinator {
     }
 
     // ==================== 通道连接 ====================
-
-    /// 从配置中按 channel_id 取 channel 配置
-    async fn channel_config(&self, channel_id: &str) -> Option<Arc<crate::config_manager::ChannelConfig>> {
-        // map 直接按 key O(1) 查找（channels() 克隆整个 map 再 find 是 O(n)）
-        self.config.channel(channel_id).await
-    }
 
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
     /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
@@ -454,7 +448,7 @@ impl AgentCoordinator {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
                             // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let bind_users = coordinator_clone.channel_config(&channel_id).await
+                            let bind_users = coordinator_clone.config.channel(&channel_id).await
                                 .map(|c| c.bind_users.clone());
                             if let Some(bus) = bind_users {
                                 for bu in bus {
@@ -494,7 +488,7 @@ impl Terminal for AgentCoordinator {
     /// 收到上行消息（event 含接收方 recipient_user_id）
     async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
-        let Some(ch) = self.channel_config(channel_id).await else { return; };
+        let Some(ch) = self.config.channel(channel_id).await else { return; };
 
         // 2. msg_id 回显判定：命中（已发未回显）则跳过，不存 record、不进 agentic loop
         if self.is_self_echo_by_msg_id(channel_id, &event.incoming_message.msg_id).await {
@@ -632,7 +626,7 @@ impl AgentCoordinator {
             warn!("send_admin_reply: 未找到 channel client: {}", channel_id);
             return;
         };
-        let Some(ch) = self.channel_config(channel_id).await else {
+        let Some(ch) = self.config.channel(channel_id).await else {
             warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
             return;
         };
@@ -675,7 +669,7 @@ impl AgentCoordinator {
     /// 取来源 channel 所属 (agent,role) 的 out_channel（跨 channel 找有 outgoing 配置的，至多 1 个）
     /// out_channel 跟 channel 不跟 mode：该 channel 所有 mode 的 session 共用
     async fn resolve_out_channel(&self, channel_id: &str) -> Option<OutChannel> {
-        let ch = self.channel_config(channel_id).await?;
+        let ch = self.config.channel(channel_id).await?;
         let channels = self.config.channels().await;
         for (_, c) in &channels {
             if c.agent_name == ch.agent_name && c.role_name == ch.role_name {
@@ -798,7 +792,7 @@ impl AgentCoordinator {
             warn!("send_outgoing: 未找到 channel client: {}", out_channel.channel_id);
             return;
         };
-        let Some(ch) = self.channel_config(out_channel.channel_id.as_str()).await else {
+        let Some(ch) = self.config.channel(out_channel.channel_id.as_str()).await else {
             warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
         };
