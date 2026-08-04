@@ -313,6 +313,11 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
     }
+    /// 按 channel_id 直接查找单个 channel 配置（map O(1) get，不克隆整个 map 再遍历）
+    pub async fn channel(&self, channel_id: &str) -> Option<Arc<ChannelConfig>> {
+        let repo = self.nexus_repo.read().await;
+        repo.channels.get(channel_id).map(|s| s.load().clone())
+    }
     #[allow(dead_code)]
     pub async fn channel_ws_url(&self, channel_id: &str) -> Option<String> {
         let repo = self.nexus_repo.read().await;

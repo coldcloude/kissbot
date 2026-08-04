@@ -414,9 +414,8 @@ impl AgentCoordinator {
 
     /// 从配置中按 channel_id 取 channel 配置
     async fn channel_config(&self, channel_id: &str) -> Option<Arc<crate::config_manager::ChannelConfig>> {
-        self.config.channels().await.into_iter()
-            .find(|(id, _)| id == channel_id)
-            .map(|(_, ch)| ch)
+        // map 直接按 key O(1) 查找（channels() 克隆整个 map 再 find 是 O(n)）
+        self.config.channel(channel_id).await
     }
 
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
