@@ -115,7 +115,9 @@ impl SessionContext {
 
 /// 单个会话：独立上下文、模型与模式状态
 pub struct Session {
-    pub key: SessionKey,
+    pub key: SessionKey,           // 只做去重（HashMap key）
+    pub role_name: String,         // 运行态：从 key 复制，业务读取源
+    pub mode: Mode,                // 运行态：从 key 复制，业务读取源
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
@@ -126,11 +128,15 @@ pub struct Session {
 
 impl Session {
     pub fn new(key: SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
+        let role_name = key.role_name.clone();
+        let mode = key.mode.clone();
         Self {
-            key,
+            role_name,
+            mode,
             context: tokio::sync::Mutex::new(SessionContext::new()),
             model: ArcSwap::from_pointee(model),
             agent_id,
+            key,
         }
     }
 }
@@ -237,5 +243,15 @@ mod tests {
         let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
         assert!(created);
         assert!(s.model.load().is_none());
+    }
+
+    #[test]
+    fn session_copies_role_name_and_mode_from_key() {
+        let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
+        let agent_id = Arc::new("uuid".to_string());
+        let session = Session::new(key.clone(), model, agent_id);
+        assert_eq!(session.role_name, "r1");
+        assert_eq!(session.mode, Mode::Event("e1".into()));
     }
 }

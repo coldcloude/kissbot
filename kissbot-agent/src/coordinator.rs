@@ -503,7 +503,7 @@ impl Terminal for AgentCoordinator {
 
         // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取来源 channel 运行态绑定，事件模式编码）
         let key = self.session_key_for(&ch);
-        let role_name = memory_role(&key);
+        let role_name = memory_role(&key.role_name, &key.mode);
         let agent_id = self.channel_agent(channel_id).await;
         self.memory_store_client.push_channel_record(ChannelRecord {
             agent_id,
@@ -648,7 +648,7 @@ impl AgentCoordinator {
             Ok(response) => {
                 // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
                 let key = self.session_key_for(&ch);
-                let role_name = memory_role(&key);
+                let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(channel_id).await;
                 self.record_outgoing_msg_id(channel_id, &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRecord {
@@ -740,7 +740,7 @@ impl AgentCoordinator {
                 // 4. 推送 think 到 memory-store（事件模式编码；取记忆用会话保存的 agent_id）
                 // Think 记忆只存思考内容（方案 A）：有思考内容才写，无则跳过
                 if let Some(reasoning) = &model_resp.reasoning_content {
-                    let role_name = memory_role(&session.key);
+                    let role_name = memory_role(&session.key.role_name, &session.key.mode);
                     self.memory_store_client.push_think(
                         session.agent_id.to_string(),
                         Some(role_name),
@@ -792,7 +792,7 @@ impl AgentCoordinator {
             Ok(response) => {
                 // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
                 let key = self.session_key_for(&ch);
-                let role_name = memory_role(&key);
+                let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(out_channel.channel_id.as_str()).await;
                 self.record_outgoing_msg_id(out_channel.channel_id.as_str(), &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRecord {

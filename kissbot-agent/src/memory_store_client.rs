@@ -268,7 +268,9 @@ fn think_request(r: ThinkRecord) -> ThinkRequest {
     ThinkRequest {
         agent_id: r.agent_id,
         role_name: r.role_name.unwrap_or_default(),  // None → 空串（与 memory-store 无 role 语义一致）
-        content: r.content,
+        // Task 1 临时适配：既有 push_think 只传一份内容（reasoning_content）；thinking 留空（Task 4 改双字段写入）
+        reasoning_content: r.content,
+        thinking: Arc::new(String::new()),
         key: r.key,
         time: r.time,
     }
@@ -356,7 +358,8 @@ mod tests {
         let req = think_request(r);
         assert_eq!(req.agent_id.as_str(), "a1");
         assert_eq!(req.role_name.as_str(), "r1");
-        assert_eq!(req.content.as_str(), "思考");
+        assert_eq!(req.reasoning_content.as_str(), "思考");
+        assert_eq!(req.thinking.as_str(), "");
         assert_eq!(req.time.as_str(), "2026-08-03 10:00:00");
 
         let r2 = ThinkRecord {

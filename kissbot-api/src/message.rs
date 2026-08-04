@@ -39,6 +39,10 @@ pub enum Content {
     GroupJoin(Arc<GroupChangeNotification>),
     GroupLeave(Arc<GroupChangeNotification>),
     UserRemove(Arc<UserRemoveNotification>),
+    // 新增三变体：内容为 key（UUID），关联对应详情记录（agent 直接生成 ChannelRecord，不用于 IncomingMessage/OutgoingMessage）
+    Think(Arc<String>),
+    ToolCall(Arc<String>),
+    ToolResult(Arc<String>),
 }
 
 // ========== 附件消息相关类型 ==========
@@ -153,6 +157,24 @@ mod tests {
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
+    }
+
+    #[test]
+    fn test_serde_content_think_tool_variants() {
+        let think = Content::Think(Arc::new("uuid-1".to_string()));
+        let json = serde_json::to_value(&think).unwrap();
+        assert_eq!(json, serde_json::json!({"msg_type":"Think","data":"uuid-1"}));
+        assert_eq!(serde_json::from_value::<Content>(json).unwrap(), think);
+
+        let call = Content::ToolCall(Arc::new("uuid-2".to_string()));
+        let j = serde_json::to_value(&call).unwrap();
+        assert_eq!(j["msg_type"], "ToolCall");
+        assert_eq!(j["data"], "uuid-2");
+
+        let result = Content::ToolResult(Arc::new("uuid-3".to_string()));
+        let j = serde_json::to_value(&result).unwrap();
+        assert_eq!(j["msg_type"], "ToolResult");
+        assert_eq!(j["data"], "uuid-3");
     }
 
     #[test]
