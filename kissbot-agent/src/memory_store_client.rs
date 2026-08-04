@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 use tracing::error;
 
 // 批处理参数
-const RECORD_QUEUE_SIZE: usize = 100;
-const RECORD_MAX_DELAY: Duration = Duration::from_secs(1);
+const RECORD_QUEUE_SIZE: usize = 10;
+const RECORD_MAX_DELAY: Duration = Duration::from_millis(100);
 const CHANNEL_KEY: &str = "1";
 const THINK_KEY: &str = "2";
 const TOOL_CALL_KEY: &str = "3";
