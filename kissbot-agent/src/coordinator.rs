@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use chrono::Local;
 use dashmap::DashMap;
@@ -38,30 +38,40 @@ const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SE
 /// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
 /// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
 struct ChannelContext {
-    pending_outgoing: HashMap<String, Instant>,
-    /// 运行态 agent_id（启动/切换时确定；未绑定为 None，channel_agent 懒绑定）
-    agent_id: Option<Arc<String>>,
+    /// 已发出未回显的 msg_id -> 记录时间（DashMap 无锁并发访问）
+    pending_outgoing: DashMap<String, Instant>,
+    /// 运行态 agent_id（ArcSwapOption 无锁读写；未绑定为 None，channel_agent 懒绑定）
+    agent_id: ArcSwapOption<String>,
 }
 
 impl ChannelContext {
     fn new() -> Self {
-        Self { pending_outgoing: HashMap::new(), agent_id: None }
+        Self {
+            pending_outgoing: DashMap::new(),
+            agent_id: ArcSwapOption::new(None),
+        }
     }
 
-    fn add_pending(&mut self, msg_id: String) {
+    fn add_pending(&self, msg_id: String) {
         self.evict(CHANNEL_CONTEXT_TTL);
         self.pending_outgoing.insert(msg_id, Instant::now());
     }
 
     /// 命中则移除并返回 true（回显消费）
-    fn consume_pending(&mut self, msg_id: &str) -> bool {
+    fn consume_pending(&self, msg_id: &str) -> bool {
         self.evict(CHANNEL_CONTEXT_TTL);
         self.pending_outgoing.remove(msg_id).is_some()
     }
 
-    /// TTL 懒清理：淘汰超过 ttl 的条目（调用点传固定 TTL；测试可传 0 即插入即过期）
-    fn evict(&mut self, ttl: Duration) {
-        self.pending_outgoing.retain(|_, t| t.elapsed() < ttl);
+    /// TTL 懒清理：先遍历收集过期条目，再逐个删除（DashMap 迭代期间不可修改，两步防死锁）
+    fn evict(&self, ttl: Duration) {
+        let expired: Vec<String> = self.pending_outgoing.iter()
+            .filter(|e| e.value().elapsed() >= ttl)
+            .map(|e| e.key().clone())
+            .collect();
+        for key in expired {
+            self.pending_outgoing.remove(&key);
+        }
     }
 }
 
@@ -75,8 +85,8 @@ pub struct AgentCoordinator {
     valid_default: ArcSwap<Option<ProviderModel>>,
     /// 按 agent 内部 channel_id 索引的 ChannelClient
     channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
-    /// 每 channel 运行时上下文（msg_id 回显判定 + 运行态 agent 绑定）
-    channel_contexts: Arc<DashMap<String, Arc<tokio::sync::Mutex<ChannelContext>>>>,
+    /// 每 channel 运行时上下文（无锁：DashMap pending + ArcSwapOption agent_id）
+    channel_contexts: Arc<DashMap<String, Arc<ChannelContext>>>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
 }
@@ -139,15 +149,15 @@ impl AgentCoordinator {
     async fn record_outgoing_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) {
         let ctx = self.channel_contexts
             .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(ChannelContext::new())))
+            .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
-        ctx.lock().await.add_pending(msg_id.as_str().to_string());
+        ctx.add_pending(msg_id.as_str().to_string());
     }
 
     /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
     async fn is_self_echo_by_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) -> bool {
         if let Some(ctx) = self.channel_contexts.get(channel_id) {
-            ctx.lock().await.consume_pending(msg_id.as_str())
+            ctx.consume_pending(msg_id.as_str())
         } else {
             false
         }
@@ -157,8 +167,7 @@ impl AgentCoordinator {
     async fn channel_agent(&self, channel_id: &str) -> Arc<String> {
         let ctx = self.channel_contexts.get(channel_id).map(|c| c.clone());
         if let Some(ctx) = ctx {
-            let guard = ctx.lock().await;
-            if let Some(agent_id) = guard.agent_id.clone() {
+            if let Some(agent_id) = ctx.agent_id.load_full() {
                 return agent_id;
             }
         }
@@ -190,9 +199,9 @@ impl AgentCoordinator {
     pub async fn set_channel_runtime(&self, channel_id: &str, agent_id: Arc<String>) -> Arc<String> {
         let ctx = self.channel_contexts
             .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(ChannelContext::new())))
+            .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
-        ctx.lock().await.agent_id = Some(agent_id.clone());
+        ctx.agent_id.store(Some(agent_id.clone()));
         agent_id
     }
 
@@ -890,7 +899,7 @@ mod tests {
 
     #[test]
     fn channel_context_msg_id_consume() {
-        let mut ctx = ChannelContext::new();
+        let ctx = ChannelContext::new();
         // 加入后命中且消费移除
         ctx.add_pending("msg1".to_string());
         assert!(ctx.consume_pending("msg1"));
@@ -902,7 +911,7 @@ mod tests {
 
     #[test]
     fn channel_context_ttl_evict() {
-        let mut ctx = ChannelContext::new();
+        let ctx = ChannelContext::new();
         // TTL=0：插入即过期（走真实 add_pending 路径），下次操作即被淘汰
         ctx.add_pending("expired".to_string());
         ctx.evict(Duration::from_secs(0));
