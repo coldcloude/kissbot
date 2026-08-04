@@ -78,17 +78,19 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
   });
 
-  test('TC-07: /send-channel 已废弃（is_send_channel 删除，out_channel 改由 /bind-outgoing 设置）', async () => {
-    // is_send_channel 已删除：/send-channel 回复废弃提示，不再回写配置
+  test('TC-07: /send-channel 已删除（is_send_channel 删除，out_channel 改由 /bind-outgoing 设置）', async () => {
+    // /send-channel 命令已删除：返回未知命令错误，不再回写配置
     cliAdmin.stdin('/send /send-channel on');
-    await cliAdmin.waitForOutput(/\/send-channel on 已废弃/, 10000);
-    cliAdmin.stdin('/send /send-channel off');
-    await cliAdmin.waitForOutput(/\/send-channel off 已废弃/, 10000);
+    await cliAdmin.waitForOutput(/⚠️ Invalid command: 未知命令: send-channel/, 10000);
   });
 
-  test('TC-08: /unbind 暂不操作，回复提示', async () => {
+  test('TC-08: /unbind 缺 user_id 报格式错误；带 user_id 正常移除（并清空引用的 outgoing）', async () => {
+    // 缺 user_id：格式错误（Task 3 起 /unbind 必须带 <user_id>，原"暂不支持"行为已删除）
     cliAdmin.stdin('/send /unbind messenger web');
-    await cliAdmin.waitForOutput(/ℹ️ \/unbind 暂不支持/, 10000);
+    await cliAdmin.waitForOutput(/⚠️ Invalid command: 格式: \/unbind messenger <messenger_id> <user_id>/, 10000);
+    // 带 user_id：正常移除（web/u1 是模板绑定用户；引用该身份的 outgoing 同步清空）
+    cliAdmin.stdin('/send /unbind messenger web u1');
+    await cliAdmin.waitForOutput(/✅ 已移除 channel 用户: web \/ u1/, 10000);
   });
 
   test('TC-09: 无参 /agent 挂载保留 agent（空 agent_name；无模型态下普通消息静默忽略，管理命令照常回复）', async () => {

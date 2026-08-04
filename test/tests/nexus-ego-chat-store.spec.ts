@@ -98,6 +98,53 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   expect(selfMsgs[selfMsgs.length - 1].user_id).toBe('u1');
 }
 
+// ==================== out_channel 路由测试辅助 ====================
+
+// 读取 nexus.json 的 web-main channel 配置（验证 bind_users/outgoing 落盘；命令回写先于回复，断言时已持久化）
+function readChannelConfig(): any {
+  const nexus = JSON.parse(readFileSync(join(WORKSPACE, 'agent-data', 'nexus.json'), 'utf8'));
+  return nexus.channels['web-main'];
+}
+
+// 查询 memory-store channel 记录（u1 文件），返回记录数组（含 is_self/user_id/content 字段）
+async function queryChannelRecords(request: APIRequestContext, roleName: string): Promise<any[]> {
+  const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
+    headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+    data: {
+      agent_id: agentId, role_name: roleName, messenger_id: 'web',
+      user_id: 'u1', group_id: 'g1',   // 文件名 user_id = 接收方（绑定用户 u1）
+      start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
+    },
+  })).json();
+  expect(resp.success).toBe(true);
+  return (resp.data ?? []).flatMap((entry: [any, any]) =>
+    (entry[1] as [number, any][]).map((e) => e[1]));
+}
+
+// 等待指定内容的用户消息 channel 记录落盘（is_self=0；agent 收到消息即写入，与是否回复无关）
+async function waitUserMessageRecord(request: APIRequestContext, roleName: string, content: string): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < 10000) {
+    const recs = await queryChannelRecords(request, roleName);
+    if (recs.some((r) => r.is_self === 0 && r.content?.data === content)) return;
+    await sleep(300);
+  }
+  throw new Error(`超时未见用户消息 channel 记录: ${content}`);
+}
+
+// 断言基线后不再出现 agent 回复回显（<< [u1:g1] / [u3:g1] = out_channel 产出）；
+// 窗口覆盖模型调用耗时（若 out_channel 未关，回复约 2-5s 内必到）
+async function assertNoAgentReply(baseline: string, timeout = 8000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const tail = cli.getOutput().slice(baseline.length);
+    if (/<< \[u1:g1\]|<< \[u3:g1\]/.test(tail)) {
+      throw new Error(`不应出现 agent 回复回显（out_channel 应已关闭/清空），实际新输出: ${tail.slice(-200)}`);
+    }
+    await sleep(200);
+  }
+}
+
 // 查询 memory-store think 记录并断言思考记忆已生成（方案 A：模型思考模式返回 reasoning_content 时写入 Think）
 // 本测试在模板 default_thinking=enabled 下运行，deepseek-v4-flash 思考模式开启时必有 reasoning_content
 async function assertThinkRecords(request: APIRequestContext, roleName: string): Promise<void> {
@@ -124,7 +171,7 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
   expect(thinkRecs.length).toBeGreaterThanOrEqual(1, '思考记忆内容应非空');
 }
 
-test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入（4 种正常场景）', () => {
+test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 + out_channel 路由（4 种正常场景 + 2 种路由场景）', () => {
 
   test.beforeAll(async ({ request }) => {
     resetWorkspace();
@@ -218,5 +265,79 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入�
     await waitNewOutput(base2, /✅ 新事件 ID: ev2/);
     await sendAndWaitReply('你好，请用一句话自我介绍');
     await assertChannelRecords(request, 'r1-ev2');
+  });
+
+  // 场景 5：out_channel 路由——bind-outgoing off 只存不回复，恢复后 agent 又回复
+  // 模板 nexus.json 已带 outgoing（web/u1/g1），普通消息经 out_channel 回复；关掉后不进 Agentic Loop 只存 ChannelRecord
+  test('场景5-out_channel: bind-outgoing off 只存不回复，恢复后回复', async ({ request }) => {
+    // 切回角色模式并设 agent a1 / role out1（模板 outgoing web/u1/g1 生效）
+    let base = cli.getOutput();
+    cli.stdin('/send /mode role');
+    await waitNewOutput(base, /✅ 已切换为角色模式/);
+    base = cli.getOutput();
+    cli.stdin('/send /agent a1 out1');
+    await waitNewOutput(base, /✅ 已设置 agent: a1 \/ role: out1/);
+
+    // 1. 模板 outgoing web/u1/g1：普通消息经 out_channel 回复
+    await sendAndWaitReply('你好，请确认你收到了这条消息');
+
+    // 2. 管理员关 out_channel（/bind-outgoing off）
+    base = cli.getOutput();
+    cli.stdin('/send /bind-outgoing off');
+    await waitNewOutput(base, /✅ 已取消发送通道（只存不回复）/);
+    // 落盘验证：outgoing 已清空
+    expect(readChannelConfig().outgoing).toBeNull();
+
+    // 3. 再发普通消息：无回复（不进 Agentic Loop），但 channel 记录仍写入（is_self=0）
+    const baseline = cli.getOutput();
+    const offlineMsg = '路由关闭测试-只存不回复';
+    cli.stdin(`/send ${offlineMsg}`);
+    await waitUserMessageRecord(request, 'out1', offlineMsg);
+    await assertNoAgentReply(baseline);
+
+    // 4. 恢复 out_channel（/bind-outgoing web u1 g1）
+    base = cli.getOutput();
+    cli.stdin('/send /bind-outgoing web u1 g1');
+    await waitNewOutput(base, /✅ 已设发送通道: web \/ u1 -> g1/);
+    expect(readChannelConfig().outgoing).toEqual({ messenger_id: 'web', user_id: 'u1', group_id: 'g1' });
+
+    // 5. 再发普通消息：agent 又回复
+    await sendAndWaitReply('恢复发送通道后，请再次确认你收到了消息');
+  });
+
+  // 场景 6：out_channel 路由——/bind 追加 + /bind-outgoing 指向新绑 user + /unbind 移除后 outgoing 自动清空
+  test('场景6-out_channel: bind 追加 u3 + bind-outgoing 指向 u3 + unbind 移除后 outgoing 自动清空', async ({ request }) => {
+    // 切回角色模式并设 agent a1 / role out2
+    let base = cli.getOutput();
+    cli.stdin('/send /mode role');
+    await waitNewOutput(base, /✅ 已切换为角色模式/);
+    base = cli.getOutput();
+    cli.stdin('/send /agent a1 out2');
+    await waitNewOutput(base, /✅ 已设置 agent: a1 \/ role: out2/);
+
+    // 1. /bind 追加绑定 u3（去重追加语义由命令层保证，此处验证追加成功并落盘）
+    base = cli.getOutput();
+    cli.stdin('/send /bind messenger web u3');
+    await waitNewOutput(base, /✅ 已绑定 channel 用户: web \/ u3/);
+    expect(readChannelConfig().bind_users).toContainEqual({ messenger_id: 'web', user_id: 'u3' });
+
+    // 2. /bind-outgoing 指向新绑的 u3（校验已绑定通过；本轮不回发 u3 消息，u3 未在 ws 绑定）
+    base = cli.getOutput();
+    cli.stdin('/send /bind-outgoing web u3 g1');
+    await waitNewOutput(base, /✅ 已设发送通道: web \/ u3 -> g1/);
+
+    // 3. /unbind 移除 u3：outgoing 引用身份被移除 → 自动清空（回复确认）
+    base = cli.getOutput();
+    cli.stdin('/send /unbind messenger web u3');
+    await waitNewOutput(base, /✅ 已移除 channel 用户: web \/ u3/);
+    expect(readChannelConfig().outgoing).toBeNull();
+    expect(readChannelConfig().bind_users).not.toContainEqual({ messenger_id: 'web', user_id: 'u3' });
+
+    // 4. u2 发普通消息：无回复（outgoing 已清空，只存不回复），channel 记录仍写入
+    const baseline = cli.getOutput();
+    const offlineMsg = 'unbind后消息-无回复';
+    cli.stdin(`/send ${offlineMsg}`);
+    await waitUserMessageRecord(request, 'out2', offlineMsg);
+    await assertNoAgentReply(baseline);
   });
 });
