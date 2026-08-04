@@ -16,10 +16,10 @@ use tracing::error;
 // 批处理参数
 const RECORD_QUEUE_SIZE: usize = 100;
 const RECORD_MAX_DELAY: Duration = Duration::from_secs(1);
-const CHANNEL_KEY: &str = "0";
-const THINK_KEY: &str = "think";
-const TOOL_CALL_KEY: &str = "tool-call";
-const TOOL_RESULT_KEY: &str = "tool-result";
+const CHANNEL_KEY: &str = "1";
+const THINK_KEY: &str = "2";
+const TOOL_CALL_KEY: &str = "3";
+const TOOL_RESULT_KEY: &str = "4";
 
 // ========== 共享发送段（各记录类型复用，只写一遍） ==========
 
