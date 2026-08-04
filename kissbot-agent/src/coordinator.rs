@@ -42,6 +42,8 @@ struct ChannelContext {
     pending_outgoing: DashMap<String, Instant>,
     /// 运行态 agent_id（ArcSwapOption 无锁读写；未绑定为 None，channel_agent 懒绑定）
     agent_id: ArcSwapOption<String>,
+    /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
+    mode: ArcSwap<Mode>,
 }
 
 impl ChannelContext {
@@ -49,6 +51,7 @@ impl ChannelContext {
         Self {
             pending_outgoing: DashMap::new(),
             agent_id: ArcSwapOption::new(None),
+            mode: ArcSwap::from_pointee(Mode::Role),
         }
     }
 
@@ -171,8 +174,8 @@ impl AgentCoordinator {
 
     /// 按来源 channel 的绑定配置 + 运行态 mode 计算会话 key（agent/role 取绑定配置，纯函数逻辑见 session_key_of）
     fn session_key_for(&self, ch: &crate::config_manager::ChannelConfig) -> SessionKey {
-        // 运行态 mode 参与会话定位；无脱离态，agent_name 为空 = 保留 agent
-        let mode = self.session_manager.channel_mode(&ch.channel_id);
+        // 运行态 mode 参与会话定位（从 ChannelContext 读）；无脱离态，agent_name 为空 = 保留 agent
+        let mode = self.channel_mode(&ch.channel_id);
         session_key_of(&ch.agent_name, &ch.role_name, mode)
     }
 
@@ -234,6 +237,23 @@ impl AgentCoordinator {
             .clone();
         ctx.agent_id.store(Some(agent_id.clone()));
         agent_id
+    }
+
+    /// 设置 channel 运行态模式（写 ChannelContext.mode；/mode 切换，不回写，重启回 Role）
+    pub fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
+        let ctx = self.channel_contexts
+            .entry(channel_id.to_string())
+            .or_insert_with(|| Arc::new(ChannelContext::new()))
+            .clone();
+        ctx.mode.store(Arc::new(mode));
+    }
+
+    /// 取 channel 运行态模式（未绑定/缺失回退角色模式）
+    pub fn channel_mode(&self, channel_id: &str) -> Mode {
+        match self.channel_contexts.get(channel_id) {
+            Some(c) => (*c.mode.load_full()).clone(),
+            None => Mode::Role,
+        }
     }
 
     /// 解析 agent_name -> agent_id（不缓存）：空 agent_name 返回保留 id；
@@ -427,7 +447,7 @@ impl AgentCoordinator {
         Some(SessionKey {
             agent_name: ch.agent_name.to_string(),
             role_name: ch.role_name.to_string(),
-            mode: self.session_manager.channel_mode(channel_id),
+            mode: self.channel_mode(channel_id),
         })
     }
 
@@ -438,7 +458,7 @@ impl AgentCoordinator {
             c.agent_name = Arc::new(new_key.agent_name.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
         }).await?;
-        self.session_manager.set_channel_mode(channel_id, new_key.mode.clone());
+        self.set_channel_mode(channel_id, new_key.mode.clone());
         if let Some(agent_id) = agent_id {
             self.set_channel_runtime(channel_id, agent_id).await;
         }

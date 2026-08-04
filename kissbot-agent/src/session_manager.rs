@@ -141,15 +141,12 @@ impl Session {
 /// （session_key 仅用于去重；agent_id 解析结果由各 channel 运行态绑定保存，不在此提取）
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
-    /// 运行态 per-channel mode（不回写，重启回 Role）
-    channel_modes: DashMap<String, Mode>,
 }
 
 impl SessionManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             sessions: DashMap::new(),
-            channel_modes: DashMap::new(),
         })
     }
 
@@ -179,15 +176,6 @@ impl SessionManager {
         self.sessions.retain(|k, _| keys.contains(k));
     }
 
-    /// 设置来源 channel 的运行态模式（不回写）
-    pub fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
-        self.channel_modes.insert(channel_id.to_string(), mode);
-    }
-
-    /// 读取来源 channel 的运行态模式（缺省角色模式）
-    pub fn channel_mode(&self, channel_id: &str) -> Mode {
-        self.channel_modes.get(channel_id).map(|m| m.value().clone()).unwrap_or(Mode::Role)
-    }
 }
 
 #[cfg(test)]
@@ -227,15 +215,6 @@ mod tests {
         mgr.retain(&keep);
         assert!(mgr.get(&k1).is_some(), "仍在绑定集合的会话保留");
         assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
-    }
-
-    #[test]
-    fn channel_mode_default_role_and_set() {
-        let mgr = SessionManager::new();
-        assert_eq!(mgr.channel_mode("c1"), Mode::Role, "缺省角色模式");
-        mgr.set_channel_mode("c1", Mode::Event("e9".into()));
-        assert_eq!(mgr.channel_mode("c1"), Mode::Event("e9".into()));
-        assert_eq!(mgr.channel_mode("c2"), Mode::Role, "未设置仍为角色模式");
     }
 
     #[test]
