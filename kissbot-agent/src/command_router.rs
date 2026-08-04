@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::types::{AdminCommand, CommandEffect, Error, Mode, Result};
-use crate::config_manager::{ConfigManager, ProviderModel};
+use crate::types::{AdminCommand, CommandEffect, Error, Mode, OutChannelParams, Result};
+use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
 
@@ -50,13 +50,14 @@ impl CommandRouter {
                 })
             }
             "unbind" => {
-                if parts.len() < 3 || parts[1] != "messenger" {
+                if parts.len() < 4 || parts[1] != "messenger" {
                     return Err(Error::InvalidCommand(
-                        "格式: /unbind messenger <messenger_id>".to_string()
+                        "格式: /unbind messenger <messenger_id> <user_id>".to_string()
                     ));
                 }
                 Ok(AdminCommand::Unbind {
                     messenger_id: parts[2].to_string(),
+                    user_id: parts[3].to_string(),
                 })
             }
             "admin" => {
@@ -118,13 +119,21 @@ impl CommandRouter {
                 }
                 Ok(AdminCommand::Reenter(parts[1].to_string()))
             }
-            "send-channel" => {
-                if parts.len() < 2 || !matches!(parts[1], "on" | "off") {
+            "bind-outgoing" => {
+                // /bind-outgoing <messenger_id> <user_id> <group_id> 或 /bind-outgoing off
+                if parts.len() == 2 && parts[1] == "off" {
+                    return Ok(AdminCommand::BindOutgoing(None));
+                }
+                if parts.len() < 4 {
                     return Err(Error::InvalidCommand(
-                        "格式: /send-channel on|off".to_string()
+                        "格式: /bind-outgoing <messenger_id> <user_id> <group_id> 或 /bind-outgoing off".to_string()
                     ));
                 }
-                Ok(AdminCommand::SendChannel(parts[1] == "on"))
+                Ok(AdminCommand::BindOutgoing(Some(OutChannelParams {
+                    messenger_id: parts[1].to_string(),
+                    user_id: parts[2].to_string(),
+                    group_id: parts[3].to_string(),
+                })))
             }
             "events" => Ok(AdminCommand::Events),
             "reset" => Ok(AdminCommand::Reset),
@@ -151,7 +160,7 @@ impl CommandRouter {
     }
 
     /// 执行管理命令（返回回复文本和协调器后续动作）
-    /// bind/agent/role/send-channel/admin/unadmin 走 ConfigManager 回写；
+    /// bind/agent/role/bind-outgoing/admin/unadmin 走 ConfigManager 回写；
     /// mode/reenter 改运行态模式（coordinator）；model 改会话模型（运行态）。
     pub async fn execute(
         command: &AdminCommand,
@@ -162,17 +171,26 @@ impl CommandRouter {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {
-                    // bind_users 为绑定身份数组：/bind 覆盖为单元素（保持原覆盖语义；追加去重语义由命令任务实现）
-                    c.bind_users = vec![ChannelUser {
-                        messenger_id: messenger_id.clone(),
-                        user_id: user_id.clone(),
-                    }];
+                    // 追加去重：已存在则幂等忽略
+                    let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                    if !c.bind_users.iter().any(|b| b == &cu) {
+                        c.bind_users.push(cu);
+                    }
                 }).await?;
-                Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::Relocate))
+                Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))
             }
-            AdminCommand::Unbind { .. } => {
-                // 当前阶段 /unbind 暂不进行任何操作（channel 必须保持 bind 状态）
-                Ok(("ℹ️ /unbind 暂不支持，channel 需保持绑定状态".to_string(), CommandEffect::None))
+            AdminCommand::Unbind { messenger_id, user_id } => {
+                config.update_channel(channel_id, |c| {
+                    // 移除指定 ChannelUser
+                    c.bind_users.retain(|b| !(b.messenger_id == *messenger_id && b.user_id == *user_id));
+                    // 移除的是 outgoing 引用身份则清空 outgoing（避免悬空引用）
+                    if let Some(out) = &c.outgoing {
+                        if out.messenger_id.as_str() == messenger_id && out.user_id.as_str() == user_id {
+                            c.outgoing = None;
+                        }
+                    }
+                }).await?;
+                Ok((format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
                 config.add_admin(channel_id, &ChannelUser {
@@ -218,10 +236,42 @@ impl CommandRouter {
                 coordinator.set_channel_mode(channel_id, Mode::Event(event_id.clone())).await;
                 Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::Relocate))
             }
-            AdminCommand::SendChannel(on) => {
-                // /send-channel 已废弃：is_send_channel 字段已删除（数据模型任务），out_channel 改由 /bind-outgoing 设置（命令任务删除本命令）
-                let arg = if *on { "on" } else { "off" };
-                Ok((format!("ℹ️ /send-channel {} 已废弃，out_channel 请用 /bind-outgoing 设置", arg), CommandEffect::None))
+            AdminCommand::BindOutgoing(params) => {
+                match params {
+                    Some(p) => {
+                        // 1. 校验 ChannelUser 已绑定
+                        let channels = config.channels().await;
+                        let src = channels.iter().find(|(id, _)| id == channel_id).map(|(_, c)| c.clone())
+                            .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+                        let bound = src.bind_users.iter()
+                            .any(|b| b.messenger_id == p.messenger_id && b.user_id == p.user_id);
+                        if !bound {
+                            return Err(Error::InvalidCommand(format!(
+                                "ChannelUser 未绑定: {} / {}", p.messenger_id, p.user_id)));
+                        }
+                        // 2. 清空同 (agent_name, role_name) 其他 channel 的 outgoing（保证至多 1 个）
+                        for (cid, c) in channels.iter() {
+                            if cid != channel_id && c.agent_name == src.agent_name && c.role_name == src.role_name {
+                                if c.outgoing.is_some() {
+                                    config.update_channel(cid, |cc| cc.outgoing = None).await?;
+                                }
+                            }
+                        }
+                        // 3. 设来源 channel 的 outgoing
+                        config.update_channel(channel_id, |c| {
+                            c.outgoing = Some(OutChannelConfig {
+                                messenger_id: Arc::new(p.messenger_id.clone()),
+                                user_id: Arc::new(p.user_id.clone()),
+                                group_id: Arc::new(p.group_id.clone()),
+                            });
+                        }).await?;
+                        Ok((format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id), CommandEffect::None))
+                    }
+                    None => {
+                        config.update_channel(channel_id, |c| c.outgoing = None).await?;
+                        Ok(("✅ 已取消发送通道（只存不回复）".to_string(), CommandEffect::None))
+                    }
+                }
             }
             AdminCommand::Events => {
                 let reply = coordinator.list_events(channel_id).await?;
@@ -297,5 +347,46 @@ mod tests {
     fn parse_model_rejects_missing_provider_or_model() {
         assert!(CommandRouter::parse("/model deepseek").is_err());
         assert!(CommandRouter::parse("/model deepseek deepseek-v4-flash true extra").is_err());
+    }
+
+    // ===== /bind-outgoing 解析：<m> <u> <g> 或 off =====
+
+    #[test]
+    fn parse_bind_outgoing_params_and_off() {
+        let cmd = CommandRouter::parse("/bind-outgoing web u1 g1").unwrap();
+        match cmd {
+            AdminCommand::BindOutgoing(Some(p)) => {
+                assert_eq!(p.messenger_id, "web");
+                assert_eq!(p.user_id, "u1");
+                assert_eq!(p.group_id, "g1");
+            }
+            _ => panic!("expected BindOutgoing(Some)"),
+        }
+        let off = CommandRouter::parse("/bind-outgoing off").unwrap();
+        assert!(matches!(off, AdminCommand::BindOutgoing(None)), "off 应清空");
+        // 参数不足拒绝
+        assert!(CommandRouter::parse("/bind-outgoing web u1").is_err());
+    }
+
+    // ===== /unbind 解析：必须带 user_id =====
+
+    #[test]
+    fn parse_unbind_requires_user_id() {
+        let cmd = CommandRouter::parse("/unbind messenger web u1").unwrap();
+        match cmd {
+            AdminCommand::Unbind { messenger_id, user_id } => {
+                assert_eq!(messenger_id, "web");
+                assert_eq!(user_id, "u1");
+            }
+            _ => panic!("expected Unbind"),
+        }
+        assert!(CommandRouter::parse("/unbind messenger web").is_err(), "缺 user_id 应拒绝");
+    }
+
+    // ===== /send-channel 已删除 =====
+
+    #[test]
+    fn parse_send_channel_removed() {
+        assert!(CommandRouter::parse("/send-channel on").is_err(), "/send-channel 已删除");
     }
 }

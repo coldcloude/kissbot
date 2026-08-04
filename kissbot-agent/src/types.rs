@@ -108,20 +108,28 @@ pub fn memory_role(key: &SessionKey) -> String {
 pub enum AdminCommand {
     Bind { messenger_id: String, user_id: String },
     // messenger_id 字段为命令解析兼容保留（执行侧按 channel_id 定位，不再读取）
-    #[allow(dead_code)]
-    Unbind { messenger_id: String },
+    Unbind { messenger_id: String, user_id: String },
+    /// 设/清空 out_channel：Some 设（覆盖 + 同 agent/role 唯一），None 清空
+    BindOutgoing(Option<OutChannelParams>),
     Admin { messenger_id: String, user_id: String },
     Unadmin { messenger_id: String, user_id: String },
     SetRole(Option<String>),
     ModeEvent(Option<String>),
     ModeRole,
     Reenter(String),
-    SendChannel(bool),
     Events,
     Reset,
     Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
     /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_name=""、role_name=""）
     SetAgent { agent_name: Option<String>, role: Option<String> },
+}
+
+/// /bind-outgoing 命令参数（转 OutChannelConfig 持久化）
+#[derive(Debug, Clone)]
+pub struct OutChannelParams {
+    pub messenger_id: String,
+    pub user_id: String,
+    pub group_id: String,
 }
 
 // ========== 管理命令执行效果 ==========
