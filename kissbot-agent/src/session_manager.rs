@@ -159,8 +159,11 @@ impl SessionManager {
     }
 
     /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；返回 (会话, 是否新建)
-    /// entry API 原子化：不存在则创建，防并发重复创建（原 get 再 insert 两步存在竞态）
+    /// 双重锁定：先 get 快速路径（命中直接返回），未命中再走 entry API 原子创建（并发下仅一个创建成功）
     pub fn get_or_create(&self, key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> (Arc<Session>, bool) {
+        if let Some(s) = self.get(key) {
+            return (s, false);
+        }
         match self.sessions.entry(key.clone()) {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
