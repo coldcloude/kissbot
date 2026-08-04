@@ -109,22 +109,33 @@ pub struct ChannelConfig {
     pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
     pub ws_url: Arc<String>,
     pub admins: Arc<HashSet<ChannelUser>>,
-    /// 绑定用户（必填；auto-bind 功能以后再做）
-    /// 旧字段名 default_bind_user 别名兼容旧 nexus.json
-    #[serde(alias = "default_bind_user")]
-    pub bind_user: ChannelUser,
+    /// 多绑定身份（bind 追加去重，unbind 带 ChannelUser 移除）
+    pub bind_users: Vec<ChannelUser>,
+    /// out_channel 配置（Option，至多 1 个；存于被绑定的 channel 下）
+    pub outgoing: Option<OutChannelConfig>,
     /// 绑定的 agent_name（代号；空 = 保留 agent，建会话用默认系统提示词，不调 memory-ego）
     #[serde(default)]
     pub agent_name: Arc<String>,
     #[serde(default)]
     pub role_name: Arc<String>,
-    /// 是否选为该会话的发送 channel
-    #[serde(default)]
-    pub is_send_channel: bool,
     /// 是否启用（连接由 enabled 控制）
-    /// 旧字段名 enabled_by_default 别名兼容旧 nexus.json
-    #[serde(alias = "enabled_by_default")]
     pub enabled: bool,
+}
+
+/// out_channel 配置（持久化到 nexus.json；与 /bind-outgoing 三参数对应）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutChannelConfig {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
+}
+
+/// out_channel 运行态（coordinator 实时从配置构造）
+#[derive(Debug, Clone)]
+pub struct OutChannel {
+    pub channel_id: Arc<String>,
+    pub user: ChannelUser,
+    pub group_id: Arc<String>,
 }
 
 /// 机器人绑定身份 / 管理员身份统一结构（定义于 kissbot-api::channel）
@@ -324,7 +335,7 @@ impl ConfigManager {
         }).await
     }
 
-    /// 修改 channel 配置并落盘（绑定/agent/role/is_send_channel 等运行时回写统一入口）
+    /// 修改 channel 配置并落盘（绑定/agent/role/outgoing 等运行时回写统一入口）
     /// channel 不存在返回 ConfigNotFound
     pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()>
     where
@@ -563,31 +574,60 @@ mod tests {
             channel_id: Arc::new(id.into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
+            bind_users: vec![ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }],
+            outgoing: None,
             agent_name: Arc::new("".into()),
             role_name: Arc::new("".into()),
-            is_send_channel: true,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn channel_config_bind_users_and_outgoing_roundtrip() {
+        let ch = ChannelConfig {
+            channel_id: Arc::new("c1".into()),
+            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_users: vec![
+                ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
+                ChannelUser { messenger_id: "web".into(), user_id: "u2".into() },
+            ],
+            outgoing: Some(OutChannelConfig {
+                messenger_id: Arc::new("web".into()),
+                user_id: Arc::new("u1".into()),
+                group_id: Arc::new("g1".into()),
+            }),
+            agent_name: Arc::new("a1".into()),
+            role_name: Arc::new("r1".into()),
+            enabled: true,
+        };
+        let json = serde_json::to_value(&ch).unwrap();
+        assert_eq!(json["bind_users"][0]["user_id"], "u1", "bind_users 数组序列化");
+        assert_eq!(json["outgoing"]["group_id"], "g1");
+        assert!(json.get("is_send_channel").is_none(), "is_send_channel 已删除");
+        let back: ChannelConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back.bind_users.len(), 2);
+        assert_eq!(back.outgoing.as_ref().unwrap().group_id.as_str(), "g1");
     }
 
     #[test]
     fn channel_config_new_shape_serde_roundtrip() {
         let ch = sample_channel("web-main");
         let json = serde_json::to_string(&ch).unwrap();
-        assert!(json.contains("\"bind_user\""), "应序列化 bind_user");
+        assert!(json.contains("\"bind_users\""), "应序列化 bind_users");
         assert!(json.contains("\"agent_name\""));
         assert!(json.contains("\"role_name\""));
-        assert!(json.contains("\"is_send_channel\""));
+        assert!(!json.contains("\"is_send_channel\""), "is_send_channel 已删除");
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.channel_id, "web-main");
-        assert_eq!(back.bind_user.user_id, "u1");
+        assert_eq!(back.bind_users[0].user_id, "u1");
     }
 
     #[test]
-    fn channel_config_old_shape_alias_migration() {
-        // 旧格式：default_bind_user / enabled_by_default，缺 agent_name/role_name/is_send_channel
+    fn channel_config_old_shape_no_longer_parses() {
+        // 旧格式（default_bind_user / enabled_by_default / is_send_channel）不再兼容：
+        // bind_users 为必填数组，旧单值字段无 serde alias（不兼容旧配置，配置文件直接改）
         let old = r#"{
             "channel_id": "web-main",
             "ws_url": "ws://127.0.0.1:8201",
@@ -595,12 +635,7 @@ mod tests {
             "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
             "enabled_by_default": true
         }"#;
-        let ch: ChannelConfig = serde_json::from_str(old).unwrap();
-        assert_eq!(ch.bind_user.messenger_id, "web");
-        assert!(ch.enabled, "旧字段 enabled_by_default 应映射到 enabled");
-        assert!(ch.agent_name.is_empty(), "缺省 agent_name 应为空（保留 agent）");
-        assert!(ch.role_name.is_empty());
-        assert!(!ch.is_send_channel);
+        assert!(serde_json::from_str::<ChannelConfig>(old).is_err(), "旧格式应解析失败（不兼容）");
     }
 
     #[tokio::test]
@@ -617,18 +652,18 @@ mod tests {
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
 
-        // 修改 agent_name/role_name/is_send_channel
+        // 修改 agent_name/role_name/bind_users（is_send_channel 已删除，绑定改为数组追加）
         manager.update_channel("web-main", |c| {
             c.agent_name = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
-            c.is_send_channel = false;
+            c.bind_users.push(ChannelUser { messenger_id: "web".into(), user_id: "u2".into() });
         }).await.unwrap();
 
         // 内存可见
         let ch = manager.channels().await.into_iter()
             .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
         assert_eq!(*ch.agent_name, "a1");
-        assert!(!ch.is_send_channel);
+        assert_eq!(ch.bind_users.len(), 2, "bind_users 追加应可见");
 
         // 落盘可见（重新读文件）
         let saved: serde_json::Value = serde_json::from_str(

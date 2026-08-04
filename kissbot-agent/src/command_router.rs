@@ -162,10 +162,11 @@ impl CommandRouter {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {
-                    c.bind_user = ChannelUser {
+                    // bind_users 为绑定身份数组：/bind 覆盖为单元素（保持原覆盖语义；追加去重语义由命令任务实现）
+                    c.bind_users = vec![ChannelUser {
                         messenger_id: messenger_id.clone(),
                         user_id: user_id.clone(),
-                    };
+                    }];
                 }).await?;
                 Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::Relocate))
             }
@@ -218,11 +219,9 @@ impl CommandRouter {
                 Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::Relocate))
             }
             AdminCommand::SendChannel(on) => {
-                coordinator.set_send_channel(channel_id, *on).await?;
-                Ok((
-                    if *on { "✅ 已设为发送 channel".to_string() } else { "✅ 已取消发送 channel".to_string() },
-                    CommandEffect::None,
-                ))
+                // /send-channel 已废弃：is_send_channel 字段已删除（数据模型任务），out_channel 改由 /bind-outgoing 设置（命令任务删除本命令）
+                let arg = if *on { "on" } else { "off" };
+                Ok((format!("ℹ️ /send-channel {} 已废弃，out_channel 请用 /bind-outgoing 设置", arg), CommandEffect::None))
             }
             AdminCommand::Events => {
                 let reply = coordinator.list_events(channel_id).await?;

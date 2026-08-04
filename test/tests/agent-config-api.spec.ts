@@ -78,8 +78,8 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
   test('TC-04: POST /config/channels 与 /config/admins', async ({ request }) => {
     const ch = await apiPost(request, '/config/channels', {
       channel_id: 'web-2', ws_url: 'ws://127.0.0.1:8201',
-      admins: [], bind_user: { messenger_id: 'web', user_id: 'u1' },
-      agent_name: '', role_name: '', is_send_channel: false, enabled: false,
+      admins: [], bind_users: [{ messenger_id: 'web', user_id: 'u1' }],
+      agent_name: '', role_name: '', enabled: false,
     });
     expect(ch.success).toBe(true);
     const adm = await apiPost(request, '/config/admins', {

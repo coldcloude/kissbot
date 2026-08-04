@@ -12,14 +12,14 @@ use tracing::{info, warn};
 use crate::types::{
     Mode, ContextMessage, Result, Error, SessionKey, memory_role,
 };
-use crate::config_manager::{ConfigManager, ProviderModel};
+use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::MemoryReader;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
 
-use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest};
+use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest, ChannelUser};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 /// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
@@ -291,11 +291,12 @@ impl AgentCoordinator {
         // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
         let mut ids = std::collections::HashSet::new();
         for (_, ch) in self.config.channels().await {
-            let bu = &ch.bind_user;
-            ids.insert(kissbot_api::ChannelUser {
-                messenger_id: bu.messenger_id.to_string(),
-                user_id: bu.user_id.to_string(),
-            });
+            for bu in &ch.bind_users {
+                ids.insert(kissbot_api::ChannelUser {
+                    messenger_id: bu.messenger_id.clone(),
+                    user_id: bu.user_id.clone(),
+                });
+            }
         }
         // 匹配的个体名，用于角色设定的 other_roles 过滤
         let mut individual_names = std::collections::HashSet::new();
@@ -371,31 +372,6 @@ impl AgentCoordinator {
         self.session_manager.set_channel_mode(channel_id, mode);
     }
 
-    /// 设置/取消来源 channel 为其会话的发送 channel（回写配置）
-    /// on 时清除同会话其他 channel 的 is_send_channel 标志
-    pub async fn set_send_channel(&self, channel_id: &str, on: bool) -> Result<()> {
-        let Some(ch) = self.channel_config(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
-        };
-        let key = self.session_key_for(&ch);
-        if on {
-            // 同会话其他 channel 的发送标志清除（保持会话内只有一个发送 channel）
-            let channels = self.config.channels().await;
-            for (cid, other) in channels {
-                if cid == channel_id {
-                    continue;
-                }
-                let same_key = other.agent_name.as_str() == key.agent_name
-                    && other.role_name.as_str() == key.role_name
-                    && self.session_manager.channel_mode(&cid) == key.mode;
-                if same_key && other.is_send_channel {
-                    self.config.update_channel(&cid, |c| c.is_send_channel = false).await?;
-                }
-            }
-        }
-        self.config.update_channel(channel_id, |c| c.is_send_channel = on).await
-    }
-
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
         let Some(ch) = self.channel_config(channel_id).await else {
@@ -443,7 +419,7 @@ impl AgentCoordinator {
     }
 
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
-    /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_user 为绑定身份
+    /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
     async fn connect_channels(self: &Arc<Self>) {
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
@@ -477,14 +453,16 @@ impl AgentCoordinator {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
-                            // 绑定用户实时读取（BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let bind_user = coordinator_clone.channel_config(&channel_id).await
-                                .map(|c| c.bind_user.clone());
-                            if let Some(bu) = bind_user {
-                                let _ = client_clone.bind(BindRequest {
-                                    messenger_id: Arc::new(bu.messenger_id.clone()),
-                                    user_id: Arc::new(bu.user_id.clone()),
-                                }).await;
+                            // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
+                            let bind_users = coordinator_clone.channel_config(&channel_id).await
+                                .map(|c| c.bind_users.clone());
+                            if let Some(bus) = bind_users {
+                                for bu in bus {
+                                    let _ = client_clone.bind(BindRequest {
+                                        messenger_id: Arc::new(bu.messenger_id.clone()),
+                                        user_id: Arc::new(bu.user_id.clone()),
+                                    }).await;
+                                }
                             }
                             // 等待断线通知（closed() 回调中 notify_one）
                             notify.notified().await;
@@ -532,8 +510,8 @@ impl Terminal for AgentCoordinator {
             role_name: Arc::new(role_name),
             messenger_id: event.incoming_message.messenger_id.clone(),
             user_id: event.incoming_message.user_id.clone(),
-            // 接收方身份 = channel 绑定的 user_id（agent 视角的 self；文件名按此分文件）
-            self_user_id: Arc::new(ch.bind_user.user_id.clone()),
+            // 接收方身份 = event.recipient_user_id（agent 视角的 self；文件名按此分文件）
+            self_user_id: event.recipient_user_id.clone(),
             group_id: event.incoming_message.group_id.clone(),
             is_self: 0,
             messenger_name: event.incoming_message.messenger_name.clone(),
@@ -584,7 +562,6 @@ impl AgentCoordinator {
     ) {
         let messenger_id = event.incoming_message.messenger_id.to_string();
         let user_id = event.incoming_message.user_id.to_string();
-        let group_id = event.incoming_message.group_id.to_string();
         let content_text = extract_text(&event.incoming_message.content);
 
         // 1. 系统事件（群组变更/用户移除）不进 agentic loop
@@ -593,33 +570,36 @@ impl AgentCoordinator {
             _ => {}
         }
 
-        // 2. 管理命令
+        // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, channel_id, &messenger_id, &user_id).await {
-                self.handle_admin_command(channel_id, &content_text, &group_id).await;
+                self.handle_admin_command(channel_id, &event, &content_text).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
         }
 
-        // 3. 普通消息进入该会话的 agentic loop
+        // 3. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
+        let Some(out_channel) = self.resolve_out_channel(channel_id).await else {
+            return;
+        };
         let key = self.session_key_for(&ch);
         let (session, _) = self.ensure_session(&key, channel_id).await;
-        self.run_agentic_loop(channel_id, &session, event).await;
+        self.run_agentic_loop(channel_id, &session, event, &out_channel).await;
     }
 
     async fn handle_admin_command(
         &self,
         channel_id: &str,
+        event: &Arc<IncomingMessageEvent>,
         content: &str,
-        group_id: &str,
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
                 match CommandRouter::execute(&cmd, &self.config, self, channel_id).await {
                     Ok((reply, effect)) => {
-                        // 回复：会话存在走发送 channel，脱离态/无会话回退来源 channel
-                        self.reply(channel_id, group_id, reply).await;
+                        // 回复：系统命令始终发回来源 channel（不走 out_channel）
+                        self.send_admin_reply(channel_id, event, reply).await;
 
                         // 应用命令执行效果
                         match effect {
@@ -633,35 +613,88 @@ impl AgentCoordinator {
                         }
                     }
                     Err(e) => {
-                        self.reply(channel_id, group_id,
+                        self.send_admin_reply(channel_id, event,
                             format!("❌ 命令执行失败: {}", e)).await;
                     }
                 }
             }
             Err(e) => {
-                self.reply(channel_id, group_id,
+                self.send_admin_reply(channel_id, event,
                     format!("⚠️ {}", e)).await;
             }
         }
     }
 
-    /// 回复消息：解析会话发送 channel，脱离态/无会话回退来源 channel
-    async fn reply(&self, channel_id: &str, group_id: &str, content: String) {
-        let send_channel = self.resolve_send_channel(channel_id).await
-            .unwrap_or_else(|| channel_id.to_string());
-        self.send_reply(&send_channel, group_id, content).await;
+    /// 系统命令回复：始终发回来源 channel（不走 out_channel）
+    /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
+    async fn send_admin_reply(&self, channel_id: &str, event: &Arc<IncomingMessageEvent>, content: String) {
+        let Some(client) = self.channel_clients.get(channel_id) else {
+            warn!("send_admin_reply: 未找到 channel client: {}", channel_id);
+            return;
+        };
+        let Some(ch) = self.channel_config(channel_id).await else {
+            warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
+            return;
+        };
+
+        let msg = OutgoingMessage {
+            messenger_id: event.incoming_message.messenger_id.clone(),
+            user_id: event.recipient_user_id.clone(),
+            group_id: event.incoming_message.group_id.clone(),
+            content: Content::Text(Arc::new(content.clone())),
+        };
+
+        match client.send_message(msg).await {
+            Ok(response) => {
+                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
+                let key = self.session_key_for(&ch);
+                let role_name = memory_role(&key);
+                let agent_id = self.channel_agent(channel_id).await;
+                self.record_outgoing_msg_id(channel_id, &response.msg_id).await;
+                self.memory_store_client.push_channel_record(ChannelRecord {
+                    agent_id,
+                    role_name: Arc::new(role_name),
+                    messenger_id: event.incoming_message.messenger_id.clone(),
+                    user_id: event.recipient_user_id.clone(),
+                    self_user_id: event.recipient_user_id.clone(),
+                    group_id: event.incoming_message.group_id.clone(),
+                    is_self: 1,
+                    messenger_name: response.messenger_name.clone(),
+                    user_name: response.user_name.clone(),
+                    group_name: response.group_name.clone(),
+                    content: response.content.clone(),
+                    time: response.time.clone(),
+                }).await;
+            }
+            Err(e) => {
+                warn!("send_admin_reply 失败: {:?}", e);
+            }
+        }
     }
 
-    /// 解析来源 channel 所属会话的发送 channel
-    async fn resolve_send_channel(&self, channel_id: &str) -> Option<String> {
+    /// 取来源 channel 所属 (agent,role) 的 out_channel（跨 channel 找有 outgoing 配置的，至多 1 个）
+    /// out_channel 跟 channel 不跟 mode：该 channel 所有 mode 的 session 共用
+    async fn resolve_out_channel(&self, channel_id: &str) -> Option<OutChannel> {
         let ch = self.channel_config(channel_id).await?;
-        let key = self.session_key_for(&ch);
-        self.session_manager
-            .resolve_send_channel(&key, self.config.channels().await)
-            .or(Some(channel_id.to_string()))
+        let channels = self.config.channels().await;
+        for (_, c) in &channels {
+            if c.agent_name == ch.agent_name && c.role_name == ch.role_name {
+                if let Some(out) = &c.outgoing {
+                    return Some(OutChannel {
+                        channel_id: c.channel_id.clone(),
+                        user: ChannelUser {
+                            messenger_id: out.messenger_id.to_string(),
+                            user_id: out.user_id.to_string(),
+                        },
+                        group_id: out.group_id.clone(),
+                    });
+                }
+            }
+        }
+        None
     }
 
-    async fn run_agentic_loop(&self, channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
+    async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>, out_channel: &OutChannel) {
         // 无可用模型：静默忽略普通消息（仅管理指令可用）
         if session.model.load().is_none() {
             return;
@@ -716,8 +749,8 @@ impl AgentCoordinator {
                     ).await;
                 }
 
-                // 5. 发送回复到该会话的发送 channel
-                self.reply(channel_id, &group_id, model_resp.content).await;
+                // 5. 发送回复到该会话的 out_channel
+                self.send_outgoing(out_channel, model_resp.content).await;
 
                 // 6. 检查上下文超长
                 let overflow = {
@@ -731,48 +764,44 @@ impl AgentCoordinator {
             }
             Err(e) => {
                 warn!("模型调用失败: {:?}", e);
-                self.reply(channel_id, &group_id,
+                self.send_outgoing(out_channel,
                     format!("❌ 模型调用失败: {}", e)).await;
             }
         }
     }
 
-    /// 发送回复消息到通道（send_channel_id 为该会话发送 channel），成功后推记忆（is_self=1）
-    /// 发件人身份为发送 channel 配置的 bind_user
-    async fn send_reply(&self, send_channel_id: &str, group_id: &str, content: String) {
-        let Some(client) = self.channel_clients.get(send_channel_id) else {
-            warn!("send_reply: 未找到 channel client: {}", send_channel_id);
+    /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
+    async fn send_outgoing(&self, out_channel: &OutChannel, content: String) {
+        let Some(client) = self.channel_clients.get(out_channel.channel_id.as_str()) else {
+            warn!("send_outgoing: 未找到 channel client: {}", out_channel.channel_id);
             return;
         };
-        let Some(ch) = self.channel_config(send_channel_id).await else {
-            warn!("send_reply: 未找到 channel 配置: {}", send_channel_id);
+        let Some(ch) = self.channel_config(out_channel.channel_id.as_str()).await else {
+            warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
         };
-        let bound = ch.bind_user.clone();
 
         let msg = OutgoingMessage {
-            messenger_id: Arc::new(bound.messenger_id.clone()),   // 对端 messenger 标识（如 "web"）
-            user_id: Arc::new(bound.user_id.clone()),             // agent 绑定的用户
-            group_id: Arc::new(group_id.to_string()),
+            messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
+            user_id: Arc::new(out_channel.user.user_id.clone()),
+            group_id: out_channel.group_id.clone(),
             content: Content::Text(Arc::new(content.clone())),
         };
 
         match client.send_message(msg).await {
             Ok(response) => {
-                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1，name 取自 response）
-                // agent_id 取发送 channel 的运行态绑定（channel 存记忆用 channel 保存的 agent_id）
+                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
                 let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key);
-                let agent_id = self.channel_agent(send_channel_id).await;
-                self.record_outgoing_msg_id(send_channel_id, &response.msg_id).await;
+                let agent_id = self.channel_agent(out_channel.channel_id.as_str()).await;
+                self.record_outgoing_msg_id(out_channel.channel_id.as_str(), &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRecord {
                     agent_id,
                     role_name: Arc::new(role_name),
-                    messenger_id: Arc::new(bound.messenger_id.clone()),
-                    user_id: Arc::new(bound.user_id.clone()),
-                    // 接收方身份 = channel 绑定的 user_id（agent 视角的 self；文件名按此分文件）
-                    self_user_id: Arc::new(bound.user_id.clone()),
-                    group_id: Arc::new(group_id.to_string()),
+                    messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
+                    user_id: Arc::new(out_channel.user.user_id.clone()),
+                    self_user_id: Arc::new(out_channel.user.user_id.clone()),
+                    group_id: out_channel.group_id.clone(),
                     is_self: 1,
                     messenger_name: response.messenger_name.clone(),
                     user_name: response.user_name.clone(),
@@ -782,7 +811,7 @@ impl AgentCoordinator {
                 }).await;
             }
             Err(e) => {
-                warn!("send_reply 失败: {:?}", e);
+                warn!("send_outgoing 失败: {:?}", e);
             }
         }
     }

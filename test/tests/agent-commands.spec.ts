@@ -78,11 +78,12 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
   });
 
-  test('TC-07: 管理员（u2）发送 /send-channel on/off 切换发送 channel（回写）', async () => {
+  test('TC-07: /send-channel 已废弃（is_send_channel 删除，out_channel 改由 /bind-outgoing 设置）', async () => {
+    // is_send_channel 已删除：/send-channel 回复废弃提示，不再回写配置
     cliAdmin.stdin('/send /send-channel on');
-    await cliAdmin.waitForOutput(/✅ 已设为发送 channel/, 10000);
+    await cliAdmin.waitForOutput(/\/send-channel on 已废弃/, 10000);
     cliAdmin.stdin('/send /send-channel off');
-    await cliAdmin.waitForOutput(/✅ 已取消发送 channel/, 10000);
+    await cliAdmin.waitForOutput(/\/send-channel off 已废弃/, 10000);
   });
 
   test('TC-08: /unbind 暂不操作，回复提示', async () => {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
-use crate::config_manager::{ChannelConfig, ProviderModel};
+use crate::config_manager::ProviderModel;
 use crate::types::{ContextMessage, MessageItem, Mode, SessionKey};
 
 /// 最大上下文消息数量，超过时触发重置
@@ -180,53 +180,11 @@ impl SessionManager {
     pub fn channel_mode(&self, channel_id: &str) -> Mode {
         self.channel_modes.get(channel_id).map(|m| m.value().clone()).unwrap_or(Mode::Role)
     }
-
-    /// 从绑定该会话的多个 channel 中选定发送 channel：
-    /// is_send_channel=true 优先，否则选首个绑定；无匹配返回 None
-    pub fn resolve_send_channel(
-        &self,
-        key: &SessionKey,
-        channels: Vec<(String, Arc<ChannelConfig>)>,
-    ) -> Option<String> {
-        let mut first = None;
-        for (cid, ch) in channels {
-            if ch.agent_name.as_str() != key.agent_name || ch.role_name.as_str() != key.role_name {
-                continue;
-            }
-            if self.channel_mode(&cid) != key.mode {
-                continue;
-            }
-            if !ch.enabled {
-                continue;
-            }
-            if first.is_none() {
-                first = Some(cid.clone());
-            }
-            if ch.is_send_channel {
-                return Some(cid);
-            }
-        }
-        first
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kissbot_api::ChannelUser;
-
-    fn sample_channel(id: &str, agent: &str, role: &str, is_send: bool) -> ChannelConfig {
-        ChannelConfig {
-            channel_id: Arc::new(id.into()),
-            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
-            admins: Arc::new(HashSet::new()),
-            bind_user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
-            agent_name: Arc::new(agent.into()),
-            role_name: Arc::new(role.into()),
-            is_send_channel: is_send,
-            enabled: true,
-        }
-    }
 
     fn key(agent: &str, role: &str) -> SessionKey {
         SessionKey { agent_name: agent.into(), role_name: role.into(), mode: Mode::Role }
@@ -261,29 +219,6 @@ mod tests {
         mgr.retain(&keep);
         assert!(mgr.get(&k1).is_some(), "仍在绑定集合的会话保留");
         assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
-    }
-
-    #[test]
-    fn resolve_send_channel_flag_then_first() {
-        let mgr = SessionManager::new();
-        let k = key("a1", "r1");
-        let channels = vec![
-            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
-            ("c2".to_string(), Arc::new(sample_channel("c2", "a1", "r1", true))),
-            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
-        ];
-        assert_eq!(mgr.resolve_send_channel(&k, channels.clone()).as_deref(), Some("c2"), "is_send_channel 优先");
-
-        // 全 false → 首个绑定
-        let channels_all_false = vec![
-            ("c1".to_string(), Arc::new(sample_channel("c1", "a1", "r1", false))),
-            ("c3".to_string(), Arc::new(sample_channel("c3", "a1", "r1", false))),
-        ];
-        assert_eq!(mgr.resolve_send_channel(&k, channels_all_false).as_deref(), Some("c1"));
-
-        // 不同三元组 → None
-        let other = vec![("c9".to_string(), Arc::new(sample_channel("c9", "a9", "r9", true)))];
-        assert_eq!(mgr.resolve_send_channel(&k, other), None);
     }
 
     #[test]
