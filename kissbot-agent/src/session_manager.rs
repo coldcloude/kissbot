@@ -115,28 +115,24 @@ impl SessionContext {
 
 /// 单个会话：独立上下文、模型与模式状态
 pub struct Session {
-    pub key: SessionKey,           // 只做去重（HashMap key）
-    pub role_name: String,         // 运行态：从 key 复制，业务读取源
-    pub mode: Mode,                // 运行态：从 key 复制，业务读取源
+    pub role_name: Arc<String>,    // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
+    pub mode: Arc<Mode>,           // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
-    /// session_key 仅作去重：取记忆/ego 一律用本字段，不再从 key 提取 agent_name 解析
+    /// 取记忆/ego 一律用本字段；agent_name 业务不读（去 key 后不存），role_name/mode 从运行态字段读
     pub agent_id: Arc<String>,
 }
 
 impl Session {
-    pub fn new(key: SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
-        let role_name = key.role_name.clone();
-        let mode = key.mode.clone();
+    pub fn new(key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
         Self {
-            role_name,
-            mode,
+            role_name: Arc::new(key.role_name.clone()),
+            mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
             model: ArcSwap::from_pointee(model),
             agent_id,
-            key,
         }
     }
 }
@@ -167,7 +163,7 @@ impl SessionManager {
         if let Some(s) = self.get(key) {
             return (s, false);
         }
-        let session = Arc::new(Session::new(key.clone(), model, agent_id));
+        let session = Arc::new(Session::new(key, model, agent_id));
         self.sessions.insert(key.clone(), session.clone());
         (session, true)
     }
@@ -250,8 +246,8 @@ mod tests {
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
         let agent_id = Arc::new("uuid".to_string());
-        let session = Session::new(key.clone(), model, agent_id);
-        assert_eq!(session.role_name, "r1");
-        assert_eq!(session.mode, Mode::Event("e1".into()));
+        let session = Session::new(&key, model, agent_id);
+        assert_eq!(session.role_name.as_str(), "r1");
+        assert_eq!(*session.mode, Mode::Event("e1".into()));
     }
 }

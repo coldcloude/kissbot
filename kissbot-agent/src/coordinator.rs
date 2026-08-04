@@ -236,19 +236,19 @@ impl AgentCoordinator {
         if session.agent_id.as_str() == RESERVED_AGENT_ID {
             let prompt = self.config.default_system_prompt().await;
             session.context.lock().await.set_system_message(prompt);
-        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.key.role_name).await {
+        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
             session.context.lock().await.set_system_message(ego_info);
         }
         // 历史记忆照常加载（保留 agent 也调 memory-store；URL 空则优雅跳过）
         if let Ok(history) = self.memory_reader
-            .read_history(&self.config, session.agent_id.as_str(), &session.key.role_name, &session.key.mode)
+            .read_history(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
             .await
         {
             session.context.lock().await.load_history(history);
         }
         // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
-            .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.key.role_name, &session.key.mode)
+            .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
             .await;
     }
 
@@ -289,7 +289,7 @@ impl AgentCoordinator {
     async fn reset_context(&self, session: &Arc<Session>) {
         session.context.lock().await.clear();
         self.build_initial_context(session).await;
-        info!("会话上下文已重置: {:?}", session.key);
+        info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
     /// 读取自我认知（agent 元数据 + 个体识别 + 角色设定）生成系统提示词，agent_id 为解析后的 UUID
@@ -787,7 +787,7 @@ impl AgentCoordinator {
                     ctx.is_overflow()
                 };
                 if overflow {
-                    warn!("会话上下文超长，触发重置: {:?}", session.key);
+                    warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
                     self.reset_context(session).await;
                 }
             }
