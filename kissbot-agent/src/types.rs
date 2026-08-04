@@ -107,7 +107,7 @@ pub fn memory_role(key: &SessionKey) -> String {
 #[derive(Debug)]
 pub enum AdminCommand {
     Bind { messenger_id: String, user_id: String },
-    // messenger_id 字段为命令解析兼容保留（执行侧按 channel_id 定位，不再读取）
+    // unbind 按 (messenger_id, user_id) 双字段移除 ChannelUser；若移除的是 outgoing 引用身份则清空 outgoing
     Unbind { messenger_id: String, user_id: String },
     /// 设/清空 out_channel：Some 设（覆盖 + 同 agent/role 唯一），None 清空
     BindOutgoing(Option<OutChannelParams>),
