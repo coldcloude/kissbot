@@ -80,14 +80,10 @@ impl ChannelContext {
 }
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
-/// done 通知发起方处理完成（含结果）
+/// 统一为「应用新的会话三元组」：写 config + 运行态 mode + （可选）agent_id + 会话重定位
 enum ConfigChange {
-    /// /agent：切换 channel 绑定的 agent 与 role（含运行态 agent_id 写入 + 会话重定位）
-    SetAgent { channel_id: String, agent_name: String, role: String, agent_id: Arc<String>, done: tokio::sync::oneshot::Sender<Result<()>> },
-    /// /role：设置 channel 绑定的 role（含会话重定位）
-    SetRole { channel_id: String, role: String, done: tokio::sync::oneshot::Sender<Result<()>> },
-    /// /mode event|role 与 /reenter：切换运行态模式（含会话重定位）
-    SetMode { channel_id: String, mode: Mode, done: tokio::sync::oneshot::Sender<Result<()>> },
+    /// 应用新会话三元组（agent/role/mode 任一变化）；agent_id 仅 /agent 切换时 Some
+    ApplyKey { channel_id: String, new_key: SessionKey, agent_id: Option<Arc<String>>, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
 pub struct AgentCoordinator {
@@ -138,16 +134,8 @@ impl AgentCoordinator {
             tokio::spawn(async move {
                 while let Some(change) = command_rx.recv().await {
                     match change {
-                        ConfigChange::SetAgent { channel_id, agent_name, role, agent_id, done } => {
-                            let rst = coordinator.apply_set_agent(&channel_id, &agent_name, &role, agent_id).await;
-                            let _ = done.send(rst);
-                        }
-                        ConfigChange::SetRole { channel_id, role, done } => {
-                            let rst = coordinator.apply_set_role(&channel_id, &role).await;
-                            let _ = done.send(rst);
-                        }
-                        ConfigChange::SetMode { channel_id, mode, done } => {
-                            let rst = coordinator.apply_set_mode(&channel_id, mode).await;
+                        ConfigChange::ApplyKey { channel_id, new_key, agent_id, done } => {
+                            let rst = coordinator.apply_channel_key(&channel_id, &new_key, agent_id).await;
                             let _ = done.send(rst);
                         }
                     }
@@ -420,63 +408,40 @@ impl AgentCoordinator {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
-    /// /agent 变更：写 config（agent_name/role_name）+ 运行态 agent_id + 会话重定位，走串行队列，返回时已生效
-    pub async fn change_channel_agent_role(&self, channel_id: &str, agent_name: &str, role: &str, agent_id: Arc<String>) -> Result<()> {
+    /// agent/role/mode 变更统一入口：应用新会话三元组（写 config agent_name/role_name + 运行态 mode + 可选 agent_id + 会话重定位），
+    /// 走串行队列，返回时已生效
+    pub async fn change_channel_key(&self, channel_id: &str, new_key: SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        self.command_tx.send(ConfigChange::SetAgent {
+        self.command_tx.send(ConfigChange::ApplyKey {
             channel_id: channel_id.to_string(),
-            agent_name: agent_name.to_string(),
-            role: role.to_string(),
+            new_key,
             agent_id,
             done: done_tx,
         }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
     }
 
-    /// /role 变更：写 config（role_name）+ 会话重定位，走串行队列
-    pub async fn change_channel_role(&self, channel_id: &str, role: &str) -> Result<()> {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        self.command_tx.send(ConfigChange::SetRole {
-            channel_id: channel_id.to_string(),
-            role: role.to_string(),
-            done: done_tx,
-        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
-    }
-
-    /// /mode 与 /reenter 变更：写运行态模式 + 会话重定位，走串行队列
-    pub async fn change_channel_mode(&self, channel_id: &str, mode: Mode) -> Result<()> {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        self.command_tx.send(ConfigChange::SetMode {
-            channel_id: channel_id.to_string(),
-            mode,
-            done: done_tx,
-        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    /// 取 channel 当前会话三元组（config 的 agent_name/role_name + 运行态 mode），命令构造新三元组用
+    pub async fn channel_session_key(&self, channel_id: &str) -> Option<SessionKey> {
+        let ch = self.config.channel(channel_id).await?;
+        Some(SessionKey {
+            agent_name: ch.agent_name.to_string(),
+            role_name: ch.role_name.to_string(),
+            mode: self.session_manager.channel_mode(channel_id),
+        })
     }
 
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
-    async fn apply_set_agent(&self, channel_id: &str, agent_name: &str, role: &str, agent_id: Arc<String>) -> Result<()> {
+    async fn apply_channel_key(&self, channel_id: &str, new_key: &SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
         self.config.update_channel(channel_id, |c| {
-            c.agent_name = Arc::new(agent_name.to_string());
-            c.role_name = Arc::new(role.to_string());
+            c.agent_name = Arc::new(new_key.agent_name.clone());
+            c.role_name = Arc::new(new_key.role_name.clone());
         }).await?;
-        self.set_channel_runtime(channel_id, agent_id).await;
-        self.relocate_channel(channel_id).await;
-        Ok(())
-    }
-
-    async fn apply_set_role(&self, channel_id: &str, role: &str) -> Result<()> {
-        self.config.update_channel(channel_id, |c| {
-            c.role_name = Arc::new(role.to_string());
-        }).await?;
-        self.relocate_channel(channel_id).await;
-        Ok(())
-    }
-
-    async fn apply_set_mode(&self, channel_id: &str, mode: Mode) -> Result<()> {
-        self.session_manager.set_channel_mode(channel_id, mode);
+        self.session_manager.set_channel_mode(channel_id, new_key.mode.clone());
+        if let Some(agent_id) = agent_id {
+            self.set_channel_runtime(channel_id, agent_id).await;
+        }
         self.relocate_channel(channel_id).await;
         Ok(())
     }
