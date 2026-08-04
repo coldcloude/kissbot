@@ -218,37 +218,37 @@ use tokio;
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"A","key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
+            r#"{"reasoning_content":"A","thinking":"","key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"B","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"reasoning_content":"B","thinking":"","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.content.as_str(), "B");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "B");
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"C","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
+            r#"{"reasoning_content":"C","thinking":"","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_think_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.content.as_str(), "B");
-        assert_eq!(results[0].1[1].1.content.as_str(), "C");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "B");
+        assert_eq!(results[0].1[1].1.reasoning_content.as_str(), "C");
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
         tokio::fs::remove_file(&file_path).await.unwrap();
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"D","key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
+            r#"{"reasoning_content":"D","thinking":"","key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"E","key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
+            r#"{"reasoning_content":"E","thinking":"","key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"content":"F","key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
+            r#"{"reasoning_content":"F","thinking":"","key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
 
         indexer.mark_think_all_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.content.as_str(), "E");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "E");
     }
 
     #[tokio::test]

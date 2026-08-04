@@ -138,7 +138,8 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ThinkRecord {
-            content: request.content.clone(),
+            reasoning_content: request.reasoning_content.clone(),
+            thinking: request.thinking.clone(),
             key: request.key.clone(),
             time: request.time.clone(),
             sn: 0,
@@ -339,7 +340,8 @@ use super::*;
         let request = ThinkRequest {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
-            content: Arc::new("thinking...".to_string()),
+            reasoning_content: Arc::new("thinking...".to_string()),
+            thinking: Arc::new(String::new()),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
@@ -347,7 +349,7 @@ use super::*;
         let (key, record) = parser.parse_request(request);
         assert_eq!(*key.agent_id, "agent1");
         assert_eq!(*key.date, "2026-06-24");
-        assert_eq!(*record.content, "thinking...");
+        assert_eq!(*record.reasoning_content, "thinking...");
         assert_eq!(*record.key, "k1");
         assert_eq!(record.sn, 0);
     }

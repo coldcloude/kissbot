@@ -738,7 +738,8 @@ mod tests {
         let requests = vec![ThinkRequest {
             agent_id: Arc::new("test_think".to_string()),
             role_name: Arc::new("".to_string()),
-            content: Arc::new("I think...".to_string()),
+            reasoning_content: Arc::new("I think...".to_string()),
+            thinking: Arc::new(String::new()),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
@@ -765,7 +766,7 @@ mod tests {
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let record: ThinkRecord = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(record.sn(), 1);
-        assert_eq!(*record.content, "I think...");
+        assert_eq!(*record.reasoning_content, "I think...");
     }
 
     #[tokio::test]
