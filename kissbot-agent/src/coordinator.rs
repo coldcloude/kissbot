@@ -738,18 +738,37 @@ impl AgentCoordinator {
                     ctx.push_assistant(model_resp.content.clone(), now.clone());
                 }
 
-                // 4. 推送 think 到 memory-store（事件模式编码；取记忆用会话保存的 agent_id）
-                // Think 记忆只存思考内容（方案 A）：有思考内容才写，无则跳过
-                if let Some(reasoning) = &model_resp.reasoning_content {
-                    let role_name = memory_role(&session.key.role_name, &session.key.mode);
+                // 4. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
+                // 身份来自 out_channel；任一有值才写，都 None 跳过
+                if should_write_think(model_resp.reasoning_content.as_deref(), model_resp.thinking.as_deref()) {
+                    let key = uuid::Uuid::new_v4().to_string();
+                    let role_name = memory_role(&session.role_name, &session.mode);
+                    let agent_id = session.agent_id.clone();
+
+                    // 4a. ChannelRecord(Think(key)) 写主时间线（身份来自 out_channel，is_self=1）
+                    self.memory_store_client.push_channel_record(ChannelRequest {
+                        agent_id: agent_id.clone(),
+                        role_name: Arc::new(role_name.clone()),
+                        messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
+                        user_id: Arc::new(out_channel.user.user_id.clone()),
+                        self_user_id: Arc::new(out_channel.user.user_id.clone()),
+                        group_id: out_channel.group_id.clone(),
+                        is_self: 1,
+                        messenger_name: Arc::new(String::new()),   // 占位：详情经 key 关联，name 非关键
+                        user_name: Arc::new(String::new()),
+                        group_name: Arc::new(String::new()),
+                        content: Content::Think(Arc::new(key.clone())),
+                        time: Arc::new(now.clone()),
+                    }).await;
+
+                    // 4b. ThinkRequest(key, reasoning_content, thinking) 写详情
                     self.memory_store_client.push_think(ThinkRequest {
-                        agent_id: session.agent_id.clone(),
+                        agent_id,
                         role_name: Arc::new(role_name),
-                        // Task 3 临时适配：reasoning_content 单值 + thinking 空串（Task 4 改双字段+key）
-                        reasoning_content: Arc::new(reasoning.clone()),
-                        thinking: Arc::new(String::new()),
-                        key: Arc::new(String::new()),
-                        time: Arc::new(now),
+                        reasoning_content: Arc::new(model_resp.reasoning_content.clone().unwrap_or_default()),
+                        thinking: Arc::new(model_resp.thinking.clone().unwrap_or_default()),
+                        key: Arc::new(key),
+                        time: Arc::new(now.clone()),
                     }).await;
                 }
 
@@ -830,6 +849,11 @@ fn extract_text(content: &Content) -> String {
             .collect::<Vec<_>>().join("\n"),
         _ => String::new(),
     }
+}
+
+/// think 写入条件：reasoning_content 或 thinking 任一有值才写（都 None 跳过）
+fn should_write_think(reasoning: Option<&str>, thinking: Option<&str>) -> bool {
+    reasoning.is_some() || thinking.is_some()
 }
 
 /// 按 (agent_name, role_name, mode) 三元组计算会话 key（session_key_for 的纯函数版，便于测试）；
@@ -933,5 +957,15 @@ mod tests {
         // ego_url 指向不可达端口 -> 连接失败 Err（启动绑定回退保留 agent）
         let r = resolve_agent_id_http("carol", "http://127.0.0.1:1").await;
         assert!(r.is_err(), "不可达应 Err");
+    }
+
+    #[test]
+    fn think_write_condition_any_non_empty() {
+        // 任一有值则写
+        assert!(should_write_think(Some("r".into()), None));
+        assert!(should_write_think(None, Some("t".into())));
+        assert!(should_write_think(Some("r".into()), Some("t".into())));
+        // 都 None 不写
+        assert!(!should_write_think(None, None));
     }
 }

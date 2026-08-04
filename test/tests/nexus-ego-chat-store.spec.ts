@@ -145,7 +145,7 @@ async function assertNoAgentReply(baseline: string, timeout = 8000): Promise<voi
   }
 }
 
-// 查询 memory-store think 记录并断言思考记忆已生成（方案 A：模型思考模式返回 reasoning_content 时写入 Think）
+// 查询 memory-store think 记录并断言思考记忆已生成（reasoning_content 或 thinking 任一非空 + key 非空）
 // 本测试在模板 default_thinking=enabled 下运行，deepseek-v4-flash 思考模式开启时必有 reasoning_content
 async function assertThinkRecords(request: APIRequestContext, roleName: string): Promise<void> {
   // 等待记忆落盘（memory-store appender 100ms 批量 + 余量）
@@ -165,10 +165,13 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
   // ego 读取验证：agent_id 为 ego 解析出的 UUID（非保留值 "0"）
   expect(key.agent_id).toBe(agentId);
   expect(key.role_name).toBe(roleName);
-  const recs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
-  // 思考内容非空（reasoning_content 或 <think> 标签提取值，方案 A 只存思考内容）
-  const thinkRecs = recs.filter((r) => (r.content ?? '').length > 0);
-  expect(thinkRecs.length).toBeGreaterThanOrEqual(1, '思考记忆内容应非空');
+  const thinkRecs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
+  expect(thinkRecs.length).toBeGreaterThanOrEqual(1, 'think 记录应已写入（agent 侧 MemoryStoreClient 推送 /store/think）');
+  const t = thinkRecs[thinkRecs.length - 1];
+  const hasReasoning = t.reasoning_content && t.reasoning_content.length > 0;
+  const hasThinking = t.thinking && t.thinking.length > 0;
+  expect(hasReasoning || hasThinking).toBe(true, 'reasoning_content 或 thinking 应有内容');
+  expect(t.key, 'key 应非空（UUID 关联 ChannelRecord(Think)）').toBeTruthy();
 }
 
 test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 + out_channel 路由（4 种正常场景 + 2 种路由场景）', () => {
