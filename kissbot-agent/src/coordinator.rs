@@ -17,9 +17,10 @@ use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::MemoryReader;
-use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
+use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest, ChannelUser};
+use kissbot_api::memory::{ChannelRequest, ThinkRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 /// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
@@ -505,7 +506,7 @@ impl Terminal for AgentCoordinator {
         let key = self.session_key_for(&ch);
         let role_name = memory_role(&key.role_name, &key.mode);
         let agent_id = self.channel_agent(channel_id).await;
-        self.memory_store_client.push_channel_record(ChannelRecord {
+        self.memory_store_client.push_channel_record(ChannelRequest {
             agent_id,
             role_name: Arc::new(role_name),
             messenger_id: event.incoming_message.messenger_id.clone(),
@@ -651,7 +652,7 @@ impl AgentCoordinator {
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(channel_id).await;
                 self.record_outgoing_msg_id(channel_id, &response.msg_id).await;
-                self.memory_store_client.push_channel_record(ChannelRecord {
+                self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id,
                     role_name: Arc::new(role_name),
                     messenger_id: event.incoming_message.messenger_id.clone(),
@@ -741,12 +742,15 @@ impl AgentCoordinator {
                 // Think 记忆只存思考内容（方案 A）：有思考内容才写，无则跳过
                 if let Some(reasoning) = &model_resp.reasoning_content {
                     let role_name = memory_role(&session.key.role_name, &session.key.mode);
-                    self.memory_store_client.push_think(
-                        session.agent_id.to_string(),
-                        Some(role_name),
-                        reasoning.clone(),
-                        now,
-                    ).await;
+                    self.memory_store_client.push_think(ThinkRequest {
+                        agent_id: session.agent_id.clone(),
+                        role_name: Arc::new(role_name),
+                        // Task 3 临时适配：reasoning_content 单值 + thinking 空串（Task 4 改双字段+key）
+                        reasoning_content: Arc::new(reasoning.clone()),
+                        thinking: Arc::new(String::new()),
+                        key: Arc::new(String::new()),
+                        time: Arc::new(now),
+                    }).await;
                 }
 
                 // 5. 发送回复到该会话的 out_channel
@@ -795,7 +799,7 @@ impl AgentCoordinator {
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(out_channel.channel_id.as_str()).await;
                 self.record_outgoing_msg_id(out_channel.channel_id.as_str(), &response.msg_id).await;
-                self.memory_store_client.push_channel_record(ChannelRecord {
+                self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id,
                     role_name: Arc::new(role_name),
                     messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
