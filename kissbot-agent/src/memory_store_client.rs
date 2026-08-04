@@ -23,38 +23,49 @@ const TOOL_RESULT_KEY: &str = "tool-result";
 
 // ========== 共享发送段（各记录类型复用，只写一遍） ==========
 
-/// 构造共享的 HTTP 配置（client / base_url / api_key，各类型 context 同源）
-fn store_http_config() -> (Client, String, Arc<String>) {
-    let api_config = kissbot_api::ApiConfig::get();
-    let security = kissbot_security::SecurityConfig::get();
-    (Client::new(), api_config.memory_store_url.clone(), security.api_key.clone())
+/// 共享的 HTTP 配置（client / base_url / api_key，各类型 context 经 Arc 同源引用）
+pub struct StoreHttpConfig {
+    client: Client,
+    base_url: String,
+    api_key: Arc<String>,
 }
 
-/// POST {base_url}{path}，带 X-Api-Key 鉴权头；base_url 空则跳过（Ok）；
-/// 非 2xx 返回 Err（错误含状态码与返回体）
-async fn send_store_request(
-    client: &Client,
-    base_url: &str,
-    api_key: &str,
-    path: &str,
-    body: &impl Serialize,
-) -> std::result::Result<(), kai_file::Error> {
-    if base_url.is_empty() {
-        return Ok(());
+impl StoreHttpConfig {
+    /// 构造共享 HTTP 配置（client / base_url / api_key 取自全局配置）
+    fn new() -> Self {
+        let api_config = kissbot_api::ApiConfig::get();
+        let security = kissbot_security::SecurityConfig::get();
+        Self {
+            client: Client::new(),
+            base_url: api_config.memory_store_url.clone(),
+            api_key: security.api_key.clone(),
+        }
     }
-    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    let response = client.post(&url)
-        .header(HEADER_API_KEY, api_key)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| kai_file::Error::ExternalError(Box::new(e)))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let msg = response.text().await.unwrap_or_default();
-        return Err(kai_file::Error::WriteError(format!("[{}] {}", status, msg)));
+
+    /// POST {base_url}{path}，带 X-Api-Key 鉴权头；base_url 空则跳过（Ok）；
+    /// 非 2xx 返回 Err（错误含状态码与返回体）
+    async fn send_store_request(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> std::result::Result<(), kai_file::Error> {
+        if self.base_url.is_empty() {
+            return Ok(());
+        }
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+        let response = self.client.post(&url)
+            .header(HEADER_API_KEY, self.api_key.as_str())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| kai_file::Error::ExternalError(Box::new(e)))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let msg = response.text().await.unwrap_or_default();
+            return Err(kai_file::Error::WriteError(format!("[{}] {}", status, msg)));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// 写失败统一日志 handler（替换 NoopErrorHandler，修复写失败静默丢弃）
@@ -104,28 +115,29 @@ pub struct MemoryStoreClient {
 
 impl MemoryStoreClient {
     pub fn new() -> Self {
-        let (client, base_url, api_key) = store_http_config();
+        // 共享 HTTP 配置：各类型 context 经 Arc 同源引用（client / base_url / api_key 一份）
+        let config = Arc::new(StoreHttpConfig::new());
         Self {
             channel_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(MemoryStoreContext { client: client.clone(), base_url: base_url.clone(), api_key: api_key.clone() })),
+                Arc::new(StoreSender::new(MemoryStoreContext { config: config.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             think_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ThinkStoreContext { client: client.clone(), base_url: base_url.clone(), api_key: api_key.clone() })),
+                Arc::new(StoreSender::new(ThinkStoreContext { config: config.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             tool_call_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ToolCallStoreContext { client: client.clone(), base_url: base_url.clone(), api_key: api_key.clone() })),
+                Arc::new(StoreSender::new(ToolCallStoreContext { config: config.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             tool_result_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ToolResultStoreContext { client, base_url, api_key })),
+                Arc::new(StoreSender::new(ToolResultStoreContext { config })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
@@ -157,9 +169,7 @@ impl MemoryStoreClient {
 }
 
 struct MemoryStoreContext {
-    client: Client,
-    base_url: String,
-    api_key: Arc<String>,
+    config: Arc<StoreHttpConfig>,
 }
 
 fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
@@ -169,16 +179,14 @@ fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
 #[async_trait]
 impl FileAppendWriterContext<String, ChannelRequest> for MemoryStoreContext {
     async fn write(&mut self, _key: &String, records: Vec<ChannelRequest>) -> std::result::Result<(), kai_file::Error> {
-        send_store_request(&self.client, &self.base_url, &self.api_key, "/store/channel", &channel_requests(records)).await
+        self.config.send_store_request("/store/channel", &channel_requests(records)).await
     }
 }
 
 // ========== think / tool-call / tool-result 的 context 与 requests 构造 ==========
 
 pub struct ThinkStoreContext {
-    client: Client,
-    base_url: String,
-    api_key: Arc<String>,
+    config: Arc<StoreHttpConfig>,
 }
 
 fn think_requests(records: Vec<ThinkRequest>) -> ThinkRequests {
@@ -188,14 +196,12 @@ fn think_requests(records: Vec<ThinkRequest>) -> ThinkRequests {
 #[async_trait]
 impl FileAppendWriterContext<String, ThinkRequest> for ThinkStoreContext {
     async fn write(&mut self, _key: &String, records: Vec<ThinkRequest>) -> std::result::Result<(), kai_file::Error> {
-        send_store_request(&self.client, &self.base_url, &self.api_key, "/store/think", &think_requests(records)).await
+        self.config.send_store_request("/store/think", &think_requests(records)).await
     }
 }
 
 pub struct ToolCallStoreContext {
-    client: Client,
-    base_url: String,
-    api_key: Arc<String>,
+    config: Arc<StoreHttpConfig>,
 }
 
 fn tool_call_requests(records: Vec<ToolCallRequest>) -> ToolCallRequests {
@@ -205,14 +211,12 @@ fn tool_call_requests(records: Vec<ToolCallRequest>) -> ToolCallRequests {
 #[async_trait]
 impl FileAppendWriterContext<String, ToolCallRequest> for ToolCallStoreContext {
     async fn write(&mut self, _key: &String, records: Vec<ToolCallRequest>) -> std::result::Result<(), kai_file::Error> {
-        send_store_request(&self.client, &self.base_url, &self.api_key, "/store/tool-call", &tool_call_requests(records)).await
+        self.config.send_store_request("/store/tool-call", &tool_call_requests(records)).await
     }
 }
 
 pub struct ToolResultStoreContext {
-    client: Client,
-    base_url: String,
-    api_key: Arc<String>,
+    config: Arc<StoreHttpConfig>,
 }
 
 fn tool_result_requests(records: Vec<ToolResultRequest>) -> ToolResultRequests {
@@ -222,7 +226,7 @@ fn tool_result_requests(records: Vec<ToolResultRequest>) -> ToolResultRequests {
 #[async_trait]
 impl FileAppendWriterContext<String, ToolResultRequest> for ToolResultStoreContext {
     async fn write(&mut self, _key: &String, records: Vec<ToolResultRequest>) -> std::result::Result<(), kai_file::Error> {
-        send_store_request(&self.client, &self.base_url, &self.api_key, "/store/tool-result", &tool_result_requests(records)).await
+        self.config.send_store_request("/store/tool-result", &tool_result_requests(records)).await
     }
 }
 
@@ -290,9 +294,13 @@ mod tests {
 
     #[tokio::test]
     async fn send_store_request_skips_empty_base_url() {
-        let client = Client::new();
+        let config = StoreHttpConfig {
+            client: Client::new(),
+            base_url: String::new(),
+            api_key: Arc::new("k".into()),
+        };
         // base_url 空 → 直接 Ok（不联网）
-        let rst = send_store_request(&client, "", "k", "/store/think", &serde_json::json!({})).await;
+        let rst = config.send_store_request("/store/think", &serde_json::json!({})).await;
         assert!(rst.is_ok(), "base_url 空应跳过发送");
     }
 }
