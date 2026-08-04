@@ -57,10 +57,14 @@ impl ChannelContext {
         self.pending_outgoing.insert(msg_id, Instant::now());
     }
 
-    /// 命中则移除并返回 true（回显消费）
+    /// 命中则移除并返回 true（回显消费）；未命中再清理过期条目（懒清理）
     fn consume_pending(&self, msg_id: &str) -> bool {
+        // 先尝试匹配消费（命中直接返回，避免每次消费都遍历清理）
+        if self.pending_outgoing.remove(msg_id).is_some() {
+            return true;
+        }
         self.evict(CHANNEL_CONTEXT_TTL);
-        self.pending_outgoing.remove(msg_id).is_some()
+        false
     }
 
     /// TTL 懒清理：先遍历收集过期条目，再逐个删除（DashMap 迭代期间不可修改，两步防死锁）
