@@ -139,6 +139,14 @@ pub struct IncomingMessage {
     pub time: Arc<String>,
 }
 
+/// 通道内统一的消息分发事件。recipient_user_id 为接收者（用于 bound_map）。
+/// incoming_message.user_id 为**发送者**。两者不同时表示转发（如 admin → agent）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingMessageEvent {
+    pub recipient_user_id: Arc<String>,
+    pub incoming_message: Arc<IncomingMessage>,
+}
+
 impl Record for IncomingMessage {
     fn time(&self) -> &str {
         self.time.as_str()
@@ -358,6 +366,29 @@ mod tests {
         assert_eq!(*deserialized.user_name, "U1Name");
         assert_eq!(*deserialized.group_name, "G1Name");
         assert_eq!(deserialized.content, Content::Text(Arc::new("Hello".to_string())));
+    }
+
+    #[test]
+    fn test_serde_incoming_message_event() {
+        let incoming = Arc::new(IncomingMessage {
+            msg_id: Arc::new("msg1".to_string()),
+            messenger_id: Arc::new("web".to_string()),
+            user_id: Arc::new("u2".to_string()),
+            group_id: Arc::new("g1".to_string()),
+            messenger_name: Arc::new("Web".to_string()),
+            user_name: Arc::new("User2".to_string()),
+            group_name: Arc::new("Group1".to_string()),
+            content: Content::Text(Arc::new("hello".to_string())),
+            time: Arc::new("2026-01-01 00:00:00".to_string()),
+        });
+        let obj = IncomingMessageEvent {
+            recipient_user_id: Arc::new("u1".to_string()),
+            incoming_message: incoming,
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        let deserialized: IncomingMessageEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(*deserialized.recipient_user_id, "u1");
+        assert_eq!(*deserialized.incoming_message.user_id, "u2");
     }
 
     #[test]

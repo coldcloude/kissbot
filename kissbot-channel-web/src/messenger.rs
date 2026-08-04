@@ -11,13 +11,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use kissbot_api::channel::{
-    AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
+    AttachmentDownloadRequest, AttachmentPayloadResponse, GroupInfo, IncomingMessage, IncomingMessageEvent, MessengerInfo, OutgoingMessage, OutgoingMessageResponse,
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
     ChannelManager, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
-    IncomingMessageEvent,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};

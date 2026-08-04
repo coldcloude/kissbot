@@ -6,7 +6,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::{DashMap, Entry};
 use kai_ws::{CODE_ERROR, CODE_SUCCESS, TYPE_HEARTBEAT, TYPE_RESPONSE, WsBinaryProcessor, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsJsonProcessorMut, WsMessage, WsProcessorContext, parse_bin_sn, ws_handle_connection_with_filter};
 use kissbot_api::{TYPE_ATTACHMENT_DOWNLOAD_REQUEST, TYPE_ATTACHMENT_PAYLOAD, parse_attachment_payload_header};
-use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
+use kissbot_api::channel::{AttachmentDownloadRequest, BindRequest, AttachmentPayloadResponse, IncomingMessageEvent, MessengerInfoRequest, OFFSET_ATT_DATA, OutgoingMessage, TYPE_BIND_AGENT_USER, TYPE_INCOMING_MESSAGE, TYPE_JOIN_GROUP, TYPE_LEAVE_GROUP, TYPE_MESSENGER_INFO_REQUEST, TYPE_OUTGOING_MESSAGE, TYPE_UNBIND_AGENT_USER, TYPE_USER_REMOVED};
 use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
@@ -685,7 +685,8 @@ impl ChannelManager {
         let connect_context = self.connect_map.get(&bound_connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
 
-        let payload = serde_json::to_value(event.incoming_message.as_ref())?;
+        // 发整个 event（含 recipient_user_id），agent 侧直接获得接收方身份
+        let payload = serde_json::to_value(event.as_ref())?;
         let sn = connect_context.ws_context.next_request_sn();
         connect_context.ws_context.send_json(WsMessage {
             sn,

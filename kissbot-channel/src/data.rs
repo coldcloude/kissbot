@@ -6,13 +6,8 @@ use serde::{Deserialize, Serialize};
 
 // ========== IncomingMessageEvent ==========
 
-/// 通道内统一的消息分发事件。recipient_user_id 为接收者（用于 bound_map）。
-/// incoming_message.user_id 为**发送者**。两者不同时表示转发（如 admin → agent）。
-#[derive(Debug, Clone)]
-pub struct IncomingMessageEvent {
-    pub recipient_user_id: Arc<String>,
-    pub incoming_message: Arc<IncomingMessage>,
-}
+/// IncomingMessageEvent 已移至 kissbot-api（kissbot_api::channel::IncomingMessageEvent，含 serde derive），
+/// 见文件头部 use kissbot_api::channel::*;
 
 // ========== Group Change ==========
 

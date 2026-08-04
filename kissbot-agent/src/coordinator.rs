@@ -19,7 +19,7 @@ use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::MemoryReader;
 use crate::memory_store_client::{MemoryStoreClient, ChannelRecord};
 
-use kissbot_api::channel::{IncomingMessage, OutgoingMessage, BindRequest};
+use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 /// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
@@ -513,13 +513,13 @@ impl AgentCoordinator {
 
 #[async_trait]
 impl Terminal for AgentCoordinator {
-    /// 收到上行消息
-    async fn incoming_message(&self, channel_id: &str, message: Arc<IncomingMessage>) {
+    /// 收到上行消息（event 含接收方 recipient_user_id）
+    async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
         let Some(ch) = self.channel_config(channel_id).await else { return; };
 
         // 2. msg_id 回显判定：命中（已发未回显）则跳过，不存 record、不进 agentic loop
-        if self.is_self_echo_by_msg_id(channel_id, &message.msg_id).await {
+        if self.is_self_echo_by_msg_id(channel_id, &event.incoming_message.msg_id).await {
             return;
         }
 
@@ -530,21 +530,21 @@ impl Terminal for AgentCoordinator {
         self.memory_store_client.push_channel_record(ChannelRecord {
             agent_id,
             role_name: Arc::new(role_name),
-            messenger_id: message.messenger_id.clone(),
-            user_id: message.user_id.clone(),
+            messenger_id: event.incoming_message.messenger_id.clone(),
+            user_id: event.incoming_message.user_id.clone(),
             // 接收方身份 = channel 绑定的 user_id（agent 视角的 self；文件名按此分文件）
             self_user_id: Arc::new(ch.bind_user.user_id.clone()),
-            group_id: message.group_id.clone(),
+            group_id: event.incoming_message.group_id.clone(),
             is_self: 0,
-            messenger_name: message.messenger_name.clone(),
-            user_name: message.user_name.clone(),
-            group_name: message.group_name.clone(),
-            content: message.content.clone(),
-            time: message.time.clone(),
+            messenger_name: event.incoming_message.messenger_name.clone(),
+            user_name: event.incoming_message.user_name.clone(),
+            group_name: event.incoming_message.group_name.clone(),
+            content: event.incoming_message.content.clone(),
+            time: event.incoming_message.time.clone(),
         }).await;
 
         // 4. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
-        self.handle_incoming(channel_id, ch, message).await;
+        self.handle_incoming(channel_id, ch, event).await;
     }
 
     async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
@@ -580,15 +580,15 @@ impl AgentCoordinator {
         &self,
         channel_id: &str,
         ch: Arc<crate::config_manager::ChannelConfig>,
-        incoming: Arc<IncomingMessage>,
+        event: Arc<IncomingMessageEvent>,
     ) {
-        let messenger_id = incoming.messenger_id.to_string();
-        let user_id = incoming.user_id.to_string();
-        let group_id = incoming.group_id.to_string();
-        let content_text = extract_text(&incoming.content);
+        let messenger_id = event.incoming_message.messenger_id.to_string();
+        let user_id = event.incoming_message.user_id.to_string();
+        let group_id = event.incoming_message.group_id.to_string();
+        let content_text = extract_text(&event.incoming_message.content);
 
         // 1. 系统事件（群组变更/用户移除）不进 agentic loop
-        match &incoming.content {
+        match &event.incoming_message.content {
             Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
             _ => {}
         }
@@ -605,7 +605,7 @@ impl AgentCoordinator {
         // 3. 普通消息进入该会话的 agentic loop
         let key = self.session_key_for(&ch);
         let (session, _) = self.ensure_session(&key, channel_id).await;
-        self.run_agentic_loop(channel_id, &session, incoming).await;
+        self.run_agentic_loop(channel_id, &session, event).await;
     }
 
     async fn handle_admin_command(
@@ -661,16 +661,16 @@ impl AgentCoordinator {
             .or(Some(channel_id.to_string()))
     }
 
-    async fn run_agentic_loop(&self, channel_id: &str, session: &Arc<Session>, incoming: Arc<IncomingMessage>) {
+    async fn run_agentic_loop(&self, channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
         // 无可用模型：静默忽略普通消息（仅管理指令可用）
         if session.model.load().is_none() {
             return;
         }
-        let content_text = extract_text(&incoming.content);
-        let messenger_id = incoming.messenger_id.to_string();
-        let user_id = incoming.user_id.to_string();
-        let group_id = incoming.group_id.to_string();
-        let time = incoming.time.to_string();
+        let content_text = extract_text(&event.incoming_message.content);
+        let messenger_id = event.incoming_message.messenger_id.to_string();
+        let user_id = event.incoming_message.user_id.to_string();
+        let group_id = event.incoming_message.group_id.to_string();
+        let time = event.incoming_message.time.to_string();
 
         // 1. 追加用户消息到该会话上下文
         {

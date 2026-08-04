@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelManager};
-use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent, IncomingMessageEvent};
+use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent};
 use kissbot_channel_client::error::Result as ClientResult;
 use kissbot_channel_client::Terminal;
 
@@ -245,13 +245,13 @@ impl MessengerCreator<MockMessenger> for MockMessengerCreator {
 // ========== Mock Terminal ==========
 
 pub struct MockTerminal {
-    pub incoming: flume::Sender<Arc<IncomingMessage>>,
+    pub incoming: flume::Sender<Arc<IncomingMessageEvent>>,
     pub joins: flume::Sender<Arc<GroupChangeNotification>>,
     pub leaves: flume::Sender<Arc<GroupChangeNotification>>,
     pub removals: flume::Sender<Arc<UserRemoveNotification>>,
     pub chunks: flume::Sender<(Arc<AttachmentInfoResponse>, u64, Bytes)>,
     pub closed_tx: flume::Sender<()>,
-    incoming_rx: flume::Receiver<Arc<IncomingMessage>>,
+    incoming_rx: flume::Receiver<Arc<IncomingMessageEvent>>,
     joins_rx: flume::Receiver<Arc<GroupChangeNotification>>,
     leaves_rx: flume::Receiver<Arc<GroupChangeNotification>>,
     removals_rx: flume::Receiver<Arc<UserRemoveNotification>>,
@@ -283,7 +283,7 @@ impl MockTerminal {
         })
     }
 
-    pub fn incoming_rx(&self) -> flume::Receiver<Arc<IncomingMessage>> { self.incoming_rx.clone() }
+    pub fn incoming_rx(&self) -> flume::Receiver<Arc<IncomingMessageEvent>> { self.incoming_rx.clone() }
     pub fn joins_rx(&self) -> flume::Receiver<Arc<GroupChangeNotification>> { self.joins_rx.clone() }
     pub fn leaves_rx(&self) -> flume::Receiver<Arc<GroupChangeNotification>> { self.leaves_rx.clone() }
     pub fn removals_rx(&self) -> flume::Receiver<Arc<UserRemoveNotification>> { self.removals_rx.clone() }
@@ -293,7 +293,7 @@ impl MockTerminal {
 
 #[async_trait]
 impl Terminal for MockTerminal {
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
+    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessageEvent>) {
         let _ = self.incoming.send(message);
     }
 

@@ -108,10 +108,10 @@ impl CliTerminal {
 
 #[async_trait]
 impl Terminal for CliTerminal {
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessage>) {
+    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessageEvent>) {
         // 打印 content 原始 JSON 串
-        let json = serde_json::to_string(&message.content).unwrap();
-        println!("<< [{}:{}] {}", message.user_id, message.group_id, json);
+        let json = serde_json::to_string(&message.incoming_message.content).unwrap();
+        println!("<< [{}:{}] {}", message.incoming_message.user_id, message.incoming_message.group_id, json);
     }
 
     async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {

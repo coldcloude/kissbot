@@ -39,7 +39,9 @@ async fn test_bind_send_and_notify() {
     // 上行消息 → terminal.incoming_message
     messenger.push_incoming(make_text_incoming("m1", "u1", "g1", "hi"));
     let incoming = tokio::time::timeout(Duration::from_secs(2), terminal.incoming_rx().recv_async()).await.unwrap().unwrap();
-    assert_eq!(incoming.content, Content::Text(Arc::new("hi".to_string())));
+    // 全链路透传：recipient_user_id 随 event 到达
+    assert_eq!(*incoming.recipient_user_id, "u1");
+    assert_eq!(incoming.incoming_message.content, Content::Text(Arc::new("hi".to_string())));
 
     // 群组变化 join → terminal.join_group（同时会产生一条系统消息）
     messenger.push_group_change(GroupChangeType::Joined, "u1", "g1");

@@ -10,8 +10,8 @@ use crate::error::Result;
 /// id 是触发事件的 ChannelClient 的标识（由 ChannelClient::new 时传入）。
 #[async_trait]
 pub trait Terminal: Send + Sync + 'static {
-    /// 收到上行消息
-    async fn incoming_message(&self, id: &str, message: Arc<IncomingMessage>);
+    /// 收到上行消息（含接收方 recipient_user_id）
+    async fn incoming_message(&self, id: &str, message: Arc<IncomingMessageEvent>);
     /// 用户加入群组
     async fn join_group(&self, id: &str, notification: Arc<GroupChangeNotification>);
     /// 用户离开群组

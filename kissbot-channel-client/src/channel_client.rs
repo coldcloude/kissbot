@@ -172,9 +172,9 @@ impl WsJsonProcessor for TerminalJsonProcessor {
             return;
         };
         match data.payload_type {
-            TYPE_INCOMING_MESSAGE => match serde_json::from_value::<IncomingMessage>(payload) {
-                Ok(m) => terminal.incoming_message(client.id(), Arc::new(m)).await,
-                Err(e) => error!("parse incoming message error: {:?}", e),
+            TYPE_INCOMING_MESSAGE => match serde_json::from_value::<IncomingMessageEvent>(payload) {
+                Ok(ev) => terminal.incoming_message(client.id(), Arc::new(ev)).await,
+                Err(e) => error!("parse incoming message event error: {:?}", e),
             },
             TYPE_JOIN_GROUP => match serde_json::from_value::<GroupChangeNotification>(payload) {
                 Ok(n) => terminal.join_group(client.id(), Arc::new(n)).await,
