@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config_manager::ProviderModel;
@@ -145,11 +147,14 @@ pub enum CommandEffect {
 
 // ========== 模型相关 ==========
 
+/// OpenAI function call：wire 为 {id, type:"function", function:{name, arguments(JSON 字符串)}}
+/// 字段按编码规范用 Arc<String>/Arc<Value>（与 ToolCallRequest.tool_params 先例一致）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    pub id: String,
-    pub tool_name: String,
-    pub parameters: serde_json::Value,
+    pub id: Arc<String>,
+    pub name: Arc<String>,
+    /// 内部为解析后的参数对象；wire 时序列化为 JSON 字符串
+    pub arguments: Arc<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +168,29 @@ pub struct ModelResponse {
     pub tool_calls: Vec<ToolCall>,
     #[allow(dead_code)]
     pub finish_reason: String,
+}
+
+/// OpenAI 兼容上下文消息：role 即枚举变体，数据字段与 role 同级
+/// 字段按编码规范用 Arc<String>（Option 内同样 Arc 包裹）；tool_calls 为 Vec 不包裹
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Message {
+    System { content: Arc<String> },
+    User { content: Arc<String> },
+    Assistant {
+        content: Arc<String>,
+        /// 本地保留（缓存/历史），wire 不发送（DeepSeek/Kimi 文档要求）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<Arc<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<Vec<ToolCall>>,
+    },
+    Tool {
+        tool_call_id: Arc<String>,
+        /// 调用的工具名（内部元数据）
+        name: Arc<String>,
+        /// 调用结果（JSON 字符串或文本）
+        content: Arc<String>,
+    },
 }
 
 /// 模型上下文中的单条消息
@@ -226,5 +254,37 @@ mod tests {
     fn memory_role_encodes_event_only() {
         assert_eq!(memory_role("dev", &Mode::Role), "dev");
         assert_eq!(memory_role("dev", &Mode::Event("e1".into())), "dev-e1");
+    }
+
+    #[test]
+    fn message_serde_roundtrip() {
+        let msgs = vec![
+            Message::System { content: Arc::new("你是助手".into()) },
+            Message::User { content: Arc::new("你好".into()) },
+            Message::Assistant {
+                content: Arc::new(String::new()),
+                reasoning_content: Some(Arc::new("思考".into())),
+                tool_calls: Some(vec![ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) }]),
+            },
+            Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
+        ];
+        for m in &msgs {
+            let json = serde_json::to_value(m).unwrap();
+            let back: Message = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(m).unwrap());
+        }
+        // ToolCall arguments 保持 JSON 对象（非字符串）
+        let tc = &msgs[2];
+        if let Message::Assistant { tool_calls: Some(tcs), .. } = tc {
+            assert_eq!(tcs[0].arguments["path"], "/tmp/a.txt");
+        } else { panic!("应解析为 Assistant with tool_calls"); }
+    }
+
+    #[test]
+    fn message_assistant_optional_fields_omitted() {
+        let m = Message::Assistant { content: Arc::new("回答".into()), reasoning_content: None, tool_calls: None };
+        let v = serde_json::to_value(&m).unwrap();
+        assert!(v.get("reasoning_content").is_none(), "None 字段不应序列化");
+        assert!(v.get("tool_calls").is_none(), "None 字段不应序列化");
     }
 }
