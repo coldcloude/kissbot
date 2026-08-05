@@ -74,6 +74,16 @@ impl ContextCache {
             }
         }
         msgs.reverse();
+        // 崩溃一致性清理：恢复应从完整轮次开始。
+        // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
+        //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
+        // 2) 丢弃开头的 Tool 消息（恢复起点之前的残留）。
+        if let Some(Message::Assistant { tool_calls: Some(_), .. }) = msgs.last() {
+            msgs.pop();
+        }
+        while matches!(msgs.first(), Some(Message::Tool { .. })) {
+            msgs.remove(0);
+        }
         Ok(msgs)
     }
 
@@ -143,5 +153,39 @@ mod tests {
         assert!(cache.read_all(&k).await.unwrap().is_empty(), "clear 后为空");
         // 文件不存在时 clear 幂等
         cache.clear(&k).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_all_sanitizes_dangling_tool_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ContextCache::new(dir.path().to_str().unwrap());
+        // 用例 A：完整轮次 user → assistant(tool_calls) → tool，末尾再追一条悬挂 assistant(tool_calls)
+        // （崩溃发生在追加 assistant(tool_calls) 后、Tool 响应写入前）→ 回读丢弃悬挂尾巴，保留完整轮次
+        let k_a = key();
+        cache.append(&k_a, &[
+            Message::User { content: Arc::new("查一下".into()) },
+            Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) },
+            Message::Tool { tool_call_id: Arc::new("c1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
+        ]).await.unwrap();
+        cache.append(&k_a, &[Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) }]).await.unwrap();
+        let back = cache.read_all(&k_a).await.unwrap();
+        assert_eq!(back.len(), 3, "悬挂的 assistant(tool_calls) 应被丢弃，保留完整轮次");
+        assert!(matches!(&back[1], Message::Assistant { tool_calls: Some(_), .. }), "完整轮次的 assistant(tool_calls) 保留");
+        assert!(matches!(&back[2], Message::Tool { .. }), "tool 响应保留");
+
+        // 用例 B：仅一条悬挂 assistant(tool_calls) → 回读为空
+        let k_b = SessionKey { agent_name: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
+        cache.append(&k_b, &[Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) }]).await.unwrap();
+        assert!(cache.read_all(&k_b).await.unwrap().is_empty(), "仅悬挂 assistant 时回读为空");
+
+        // 用例 C：开头的 Tool 残留（恢复起点之前的半条轮次）被丢弃
+        let k_c = SessionKey { agent_name: "a1".into(), role_name: "r3".into(), mode: Mode::Role };
+        cache.append(&k_c, &[
+            Message::Tool { tool_call_id: Arc::new("c9".into()), name: Arc::new("read".into()), content: Arc::new("残留".into()) },
+            Message::User { content: Arc::new("继续".into()) },
+        ]).await.unwrap();
+        let back_c = cache.read_all(&k_c).await.unwrap();
+        assert_eq!(back_c.len(), 1, "开头 Tool 残留被丢弃，保留后续完整消息");
+        assert!(matches!(&back_c[0], Message::User { content } if content.as_str() == "继续"));
     }
 }

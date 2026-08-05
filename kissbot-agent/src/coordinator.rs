@@ -423,6 +423,9 @@ impl AgentCoordinator {
     /// 重写缓存为 system + user(压缩指令) + assistant(总结)，等待后续 channel 消息
     async fn compress_context(&self, session: &Arc<Session>) {
         let key = self.session_key_of_session(session);
+        // 0. 先校验模型可用（无模型早退，避免留下冗余归档副本）
+        let model = session.model.load_full();
+        let Some(pm) = model.as_ref() else { return; };
         let path = self.cache.path_for(&key);
         if path.exists() {
             let _ = self.history.archive(&key, &path).await;
@@ -437,8 +440,6 @@ impl AgentCoordinator {
         };
         // 2. 调会话模型总结（压缩不携带工具定义）
         let summary = {
-            let model = session.model.load_full();
-            let Some(pm) = model.as_ref() else { return; };
             let mc = self.model_client.lock().await;
             mc.call(pm, &messages, &[]).await.map(|r| r.content).unwrap_or_default()
         };
@@ -1027,16 +1028,23 @@ impl AgentCoordinator {
                     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
                     // 6. 追加 assistant 回复（含 reasoning_content 本地保留）+ 写缓存
+                    // 超限兜底：rounds 超过 MAX_TOOL_ROUNDS 后模型仍返回 tool_calls 时 content 为空，
+                    // 用兜底文案作为回复（不把空内容发送给用户）
+                    let reply_content = if model_resp.tool_calls.is_empty() {
+                        model_resp.content.clone()
+                    } else {
+                        "工具调用轮次已达上限，请稍后再试".to_string()
+                    };
                     {
                         let mut ctx = session.context.lock().await;
                         ctx.push(Message::Assistant {
-                            content: Arc::new(model_resp.content.clone()),
+                            content: Arc::new(reply_content.clone()),
                             reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                             tool_calls: None,
                         });
                     }
                     let _ = self.cache.append(&key, &[Message::Assistant {
-                        content: Arc::new(model_resp.content.clone()),
+                        content: Arc::new(reply_content.clone()),
                         reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: None,
                     }]).await;
@@ -1076,7 +1084,7 @@ impl AgentCoordinator {
                     }
 
                     // 8. 发送回复到该会话的 out_channel
-                    self.send_outgoing(out_channel, model_resp.content).await;
+                    self.send_outgoing(out_channel, reply_content).await;
                     break;
                 }
                 Err(e) => {

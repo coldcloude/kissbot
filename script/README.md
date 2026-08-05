@@ -73,9 +73,10 @@
 ```
 
 说明：
-- `context` 段按 `agent_name → role_name` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`；`default_stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
+- `context` 段按 `agent_name → role_name` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`（未声明 `default_stations` 时为空；示例显式声明 `["local"]`）；`default_stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
 - `stations.local.base_url` 为空 = 本地 Station：agent 启动时注册内置 `read` 工具，工具调用在进程内执行
 - `default_max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
+- **迁移注意**：`providers.<provider>` 的 `default_max_context_messages` 为必填字段（旧版 nexus.json 需手工补充；模板已含）；`context` 与 `stations.*.tools` 缺省时反序列化为空 map（兼容旧配置）
 
 ### 2. 启动与验证步骤
 

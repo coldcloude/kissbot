@@ -93,6 +93,8 @@ pub struct NexusRepo {
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
     /// agent_name → AgentContextConfig（上下文配置，三层继承见 context_config 模块）
+    /// serde(default)：旧 nexus.json 无 context 段时反序列化为空 map（= 全局默认，兼容旧配置）
+    #[serde(default)]
     pub context: Arc<ArcSwapHashMap<String, AgentContextConfig>>,
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
     /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
@@ -165,6 +167,8 @@ pub struct StationConfig {
     pub base_url: Arc<String>,
     pub timeout_secs: u64,
     /// 工具列表（key = 工具名）
+    /// serde(default)：旧 station 条目无 tools 时反序列化为空 map（= 不宣传任何工具，兼容旧配置）
+    #[serde(default)]
     pub tools: Arc<ArcSwapHashMap<String, ToolConfig>>,
 }
 
