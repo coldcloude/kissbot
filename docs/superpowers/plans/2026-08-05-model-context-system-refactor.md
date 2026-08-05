@@ -1827,16 +1827,19 @@ impl MemoryReader {
     }
 }
 
-/// 从 Content 枚举 JSON（{"Text": "...", "Multi": [...]}）提取文本
+/// 从 Content 枚举 JSON（{"msg_type":"Text","data":...} / {"msg_type":"Multi","data":[...]}）提取文本
+/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，不是 {"Text":...} 形式
 fn extract_record_text(content: &serde_json::Value) -> String {
-    match content.get("Text") {
-        Some(t) => t.as_str().unwrap_or("").to_string(),
-        None => match content.get("Multi") {
-            Some(arr) => arr.as_array().map(|items| items.iter()
-                .filter_map(|c| c.get("Text").and_then(|t| t.as_str()).map(String::from))
-                .collect::<Vec<_>>().join("\n")).unwrap_or_default(),
-            None => String::new(),
-        },
+    match content["msg_type"].as_str() {
+        Some("Text") => content["data"].as_str().unwrap_or("").to_string(),
+        Some("Multi") => content["data"].as_array().map(|items| items.iter()
+            .filter_map(|c| {
+                if c["msg_type"] == "Text" {
+                    c["data"].as_str().map(String::from)
+                } else { None }
+            })
+            .collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+        _ => String::new(),
     }
 }
 ```
