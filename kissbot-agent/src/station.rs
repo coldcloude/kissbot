@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
 
+use crate::config_manager::{StationConfig, ToolConfig};
 use crate::types::{Error, Result};
 
 /// 工具统一接口：统一参数（serde_json::Value）与返回值（serde_json::Value）
@@ -70,20 +71,27 @@ impl Tool for ReadTool {
 
 /// Station 运行态：base_url 非空 = REST 调用（本轮骨架）；为空 = 本地调用（查 local_tools 执行）
 pub struct StationRuntime {
-    base_url: String,
-    timeout_secs: u64,
+    config: Arc<StationConfig>,
     local_tools: DashMap<String, Arc<dyn Tool>>,
     client: reqwest::Client,
 }
 
 impl StationRuntime {
-    pub fn new(base_url: String, timeout_secs: u64) -> Self {
+    pub fn new(config: Arc<StationConfig>) -> Self {
         Self {
-            base_url,
-            timeout_secs,
+            config,
             local_tools: DashMap::new(),
             client: reqwest::Client::new(),
         }
+    }
+
+    pub fn station_id(&self) -> &str {
+        self.config.station_id.as_str()
+    }
+
+    /// 配置访问器（coordinator 判断 base_url 用）
+    pub fn config(&self) -> &StationConfig {
+        &self.config
     }
 
     /// 注册本地工具实现（base_url 为空的 station 用）
@@ -91,13 +99,18 @@ impl StationRuntime {
         self.local_tools.insert(name.to_string(), tool);
     }
 
+    /// 该 station 配置的工具名集合（LLM tools 聚合用）
+    pub fn configured_tools(&self) -> Vec<ToolConfig> {
+        self.config.tools.iter().map(|(_, s)| (*s.load_full()).clone()).collect()
+    }
+
     pub fn has_tool(&self, name: &str) -> bool {
-        self.local_tools.contains_key(name) || !self.base_url.is_empty()
+        self.local_tools.contains_key(name) || self.config.tools.contains_key(name)
     }
 
     /// 执行工具：base_url 空 → 本地查表执行；非空 → REST（本轮骨架，返回未实现错误）
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
-        if self.base_url.is_empty() {
+        if self.config.base_url.is_empty() {
             let tool = self.local_tools.get(name)
                 .ok_or_else(|| Error::InternalError(format!("本地工具不存在: {}", name)))?;
             return tool.call(params).await;
@@ -144,15 +157,25 @@ mod tests {
 
     #[tokio::test]
     async fn station_runtime_local_call() {
-        let runtime = StationRuntime::new(String::new(), 5);
+        let runtime = StationRuntime::new(Arc::new(station_config("local", "")));
         runtime.register_local("echo", Arc::new(EchoTool));
         let out = runtime.call_tool("echo", serde_json::json!({"v": 1})).await.unwrap();
         assert_eq!(out["v"], 1);
         // 未注册工具报错
         assert!(runtime.call_tool("nope", serde_json::json!({})).await.is_err());
         // base_url 非空 → REST 骨架（未实现错误）
-        let remote = StationRuntime::new("http://127.0.0.1:1".to_string(), 5);
+        let remote = StationRuntime::new(Arc::new(station_config("remote", "http://127.0.0.1:1")));
         assert!(remote.call_tool("any", serde_json::json!({})).await.is_err());
+    }
+
+    /// 构造测试用 StationConfig（tools 空）
+    fn station_config(station_id: &str, base_url: &str) -> StationConfig {
+        StationConfig {
+            station_id: Arc::new(station_id.into()),
+            base_url: Arc::new(base_url.into()),
+            timeout_secs: 5,
+            tools: Arc::new(kissbot_api::ArcSwapHashMap::new()),
+        }
     }
 }
 

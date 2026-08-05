@@ -164,6 +164,18 @@ pub struct StationConfig {
     pub station_id: Arc<String>,
     pub base_url: Arc<String>,
     pub timeout_secs: u64,
+    /// 工具列表（key = 工具名）
+    pub tools: Arc<ArcSwapHashMap<String, ToolConfig>>,
+}
+
+/// 工具配置（StationConfig.tools 的 value；name 与 map key 一致）
+/// 字段按编码规范用 Arc<String>/Arc<Value>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfig {
+    pub name: Arc<String>,
+    pub description: Arc<String>,
+    /// JSON Schema（OpenAI tools[].function.parameters）
+    pub parameters: Arc<serde_json::Value>,
 }
 
 /// 静态配置：来自 KISSBOT_CONFIG 的 agent 段，启动后不变
@@ -984,5 +996,29 @@ mod tests {
         let snap = manager.nexus_snapshot().await;
         assert_eq!(*snap.default_model, pm);
         assert!(!snap.providers.contains_key("openai"));
+    }
+
+    #[test]
+    fn station_config_tools_roundtrip() {
+        let sc = StationConfig {
+            station_id: Arc::new("local".into()),
+            base_url: Arc::new(String::new()),
+            timeout_secs: 5,
+            tools: Arc::new(ArcSwapHashMap::new()),
+        };
+        let json = serde_json::to_string(&sc).unwrap();
+        let back: StationConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(*back.station_id, "local");
+        assert!(back.tools.is_empty());
+
+        // ToolConfig 序列化
+        let tc = ToolConfig {
+            name: Arc::new("read".into()),
+            description: Arc::new("读取文本文件".into()),
+            parameters: Arc::new(serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } })),
+        };
+        let tj = serde_json::to_value(&tc).unwrap();
+        assert_eq!(tj["name"], "read");
+        assert_eq!(tj["parameters"]["properties"]["path"]["type"], "string");
     }
 }
