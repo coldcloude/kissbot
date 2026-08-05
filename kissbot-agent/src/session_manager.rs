@@ -1,27 +1,21 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
 use crate::config_manager::ProviderModel;
-use crate::types::{ContextMessage, MessageItem, Mode, SessionKey};
+use crate::types::{Message, Mode, SessionKey};
 
-/// 最大上下文消息数量，超过时触发重置
-const MAX_CONTEXT_MESSAGES: usize = 100;
-
-/// 会话上下文（原 ContextBuilder 逻辑，按会话持有）
+/// 会话上下文：纯内存消息序列 + system 消息（缓存/历史持久化由 coordinator 负责）
 pub struct SessionContext {
-    messages: VecDeque<ContextMessage>,
+    messages: Vec<Message>,
     system_message: Option<String>,
 }
 
 impl SessionContext {
     pub fn new() -> Self {
-        Self {
-            messages: VecDeque::new(),
-            system_message: None,
-        }
+        Self { messages: Vec::new(), system_message: None }
     }
 
     /// 设置系统消息（会话创建或重置时）
@@ -29,85 +23,43 @@ impl SessionContext {
         self.system_message = Some(content);
     }
 
-    /// 从 MemoryReader 加载历史记录重建上下文
-    pub fn load_history(&mut self, messages: Vec<ContextMessage>) {
+    /// 取系统消息（压缩/恢复用）
+    pub fn system_message(&self) -> Option<&str> {
+        self.system_message.as_deref()
+    }
+
+    /// 从缓存/记忆加载历史消息重建上下文（system 之外的部分）
+    pub fn load_messages(&mut self, messages: Vec<Message>) {
         self.messages.clear();
-        for msg in messages {
-            self.messages.push_back(msg);
-        }
+        self.messages = messages;
     }
 
-    /// 追加用户消息
-    pub fn push_user_message(&mut self, msg: ContextMessage) {
-        self.messages.push_back(msg);
+    /// 追加一条消息
+    pub fn push(&mut self, msg: Message) {
+        self.messages.push(msg);
     }
 
-    /// 追加 assistant 回复
-    pub fn push_assistant(&mut self, content: String, time: String) {
-        self.messages.push_back(ContextMessage::Assistant { content, time });
-    }
-
-    /// 追加 tool call
-    #[allow(dead_code)]
-    pub fn push_tool_call(&mut self, tool_name: String, parameters: serde_json::Value, time: String) {
-        self.messages.push_back(ContextMessage::ToolCall { tool_name, parameters, time });
-    }
-
-    /// 追加 tool result
-    #[allow(dead_code)]
-    pub fn push_tool_result(&mut self, tool_name: String, result: serde_json::Value, time: String) {
-        self.messages.push_back(ContextMessage::ToolResult { tool_name, result, time });
-    }
-
-    /// 构建模型消息列表
-    pub fn build(&self) -> Vec<MessageItem> {
+    /// 构建模型消息列表（system 在最前）
+    pub fn build(&self) -> Vec<Message> {
         let mut items = Vec::new();
-
         if let Some(system) = &self.system_message {
-            items.push(MessageItem {
-                role: "system".to_string(),
-                content: system.clone(),
-            });
+            items.push(Message::System { content: Arc::new(system.clone()) });
         }
-
-        for msg in &self.messages {
-            match msg {
-                ContextMessage::User { content, .. } => {
-                    items.push(MessageItem {
-                        role: "user".to_string(),
-                        content: content.clone(),
-                    });
-                }
-                ContextMessage::Assistant { content, .. } => {
-                    items.push(MessageItem {
-                        role: "assistant".to_string(),
-                        content: content.clone(),
-                    });
-                }
-                ContextMessage::ToolCall { tool_name, parameters, .. } => {
-                    items.push(MessageItem {
-                        role: "assistant".to_string(),
-                        content: format!("工具调用: {} ({})", tool_name, parameters),
-                    });
-                }
-                ContextMessage::ToolResult { tool_name, result, .. } => {
-                    items.push(MessageItem {
-                        role: "user".to_string(),
-                        content: format!("工具 {} 返回: {}", tool_name, result),
-                    });
-                }
-            }
-        }
-
+        items.extend(self.messages.iter().cloned());
         items
     }
 
-    /// 检查上下文是否超长
-    pub fn is_overflow(&self) -> bool {
-        self.messages.len() >= MAX_CONTEXT_MESSAGES
+    /// 消息条数（不含 system）
+    pub fn len(&self) -> usize {
+        self.messages.len()
     }
 
-    /// 清空上下文（重置时调用）
+    /// 检查是否超长（threshold 来自模型 effective 配置的 max_context_messages）
+    pub fn is_overflow(&self, max: usize) -> bool {
+        self.messages.len() >= max
+    }
+
+    /// 清空上下文（重置时调用；system 保留）
     pub fn clear(&mut self) {
         self.messages.clear();
     }
@@ -115,19 +67,21 @@ impl SessionContext {
 
 /// 单个会话：独立上下文、模型与模式状态
 pub struct Session {
-    pub role_name: Arc<String>,    // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
-    pub mode: Arc<Mode>,           // 运行态：从 key 复制
+    pub agent_name: Arc<String>,    // 运行态：从 key 复制（context 配置查找用）
+    pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
+    pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
-    /// 取记忆/ego 一律用本字段；agent_name 业务不读（去 key 后不存），role_name/mode 从运行态字段读
+    /// 取记忆/ego 一律用本字段（agent_name 仅作 context 配置查找，不参与记忆/ego 定位）
     pub agent_id: Arc<String>,
 }
 
 impl Session {
     pub fn new(key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
         Self {
+            agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),

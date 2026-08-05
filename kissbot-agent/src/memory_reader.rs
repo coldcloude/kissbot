@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use serde_json::json;
 
-use crate::types::{Mode, ContextMessage, Result, Error};
+use crate::types::{Mode, Message, Result, Error, ToolCall};
 use crate::config_manager::ConfigManager;
 
 /// 最近读取的最大记录数
@@ -45,7 +47,7 @@ impl MemoryReader {
         agent_id: &str,
         role_name: &str,
         mode: &Mode,
-    ) -> Result<Vec<ContextMessage>> {
+    ) -> Result<Vec<Message>> {
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
 
         let url = format!("{}/query", store_url.trim_end_matches('/'));
@@ -121,41 +123,50 @@ impl MemoryReader {
         Ok(events)
     }
 
-    fn records_to_messages(&self, records: &[serde_json::Value]) -> Vec<ContextMessage> {
+    fn records_to_messages(&self, records: &[serde_json::Value]) -> Vec<Message> {
         records.iter().filter_map(|r| {
             let msg_type = r["msg_type"].as_str().unwrap_or("");
-            let content = r["content"].as_str().unwrap_or("").to_string();
-            let time = r["time"].as_str().unwrap_or("").to_string();
+            let content = Arc::new(extract_record_text(&r["content"]));
 
             match msg_type {
-                "channel" | "text" => Some(ContextMessage::User {
-                    messenger_id: r["messenger_id"].as_str().unwrap_or("").to_string(),
-                    user_id: r["user_id"].as_str().unwrap_or("").to_string(),
-                    group_id: r["group_id"].as_str().unwrap_or("").to_string(),
-                    content,
-                    time,
-                }),
-                "think" => Some(ContextMessage::Assistant { content, time }),
+                "channel" | "text" => Some(Message::User { content }),
+                "think" => Some(Message::Assistant { content, reasoning_content: None, tool_calls: None }),
                 "tool_call" => {
                     let params = r["tool_params"].as_str()
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or(serde_json::Value::Null);
-                    Some(ContextMessage::ToolCall {
-                        tool_name: r["tool_name"].as_str().unwrap_or("").to_string(),
-                        parameters: params,
-                        time,
+                    Some(Message::Assistant {
+                        content: Arc::new(String::new()),
+                        reasoning_content: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: Arc::new(String::new()),
+                            name: Arc::new(r["tool_name"].as_str().unwrap_or("").to_string()),
+                            arguments: Arc::new(params),
+                        }]),
                     })
                 }
                 "tool_result" => {
-                    let result = r["tool_result"].clone();
-                    Some(ContextMessage::ToolResult {
-                        tool_name: r["tool_name"].as_str().unwrap_or("").to_string(),
-                        result,
-                        time,
+                    Some(Message::Tool {
+                        tool_call_id: Arc::new(String::new()),
+                        name: Arc::new(r["tool_name"].as_str().unwrap_or("").to_string()),
+                        content: Arc::new(r["tool_result"].to_string()),
                     })
                 }
                 _ => None,
             }
         }).collect()
+    }
+}
+
+/// 从 Content 枚举 JSON（{"Text": "...", "Multi": [...]}）提取文本（与 coordinator.extract_text 同语义）
+fn extract_record_text(content: &serde_json::Value) -> String {
+    match content.get("Text") {
+        Some(t) => t.as_str().unwrap_or("").to_string(),
+        None => match content.get("Multi") {
+            Some(arr) => arr.as_array().map(|items| items.iter()
+                .filter_map(|c| c.get("Text").and_then(|t| t.as_str()).map(String::from))
+                .collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+            None => String::new(),
+        },
     }
 }

@@ -5,7 +5,7 @@ use tokio::time::sleep;
 
 use crate::config_manager::{ConfigManager, EffectiveModelConfig, ProviderModel};
 use crate::provider::Provider;
-use crate::types::{Error, MessageItem, ModelResponse, Result};
+use crate::types::{Error, Message, ModelResponse, Result};
 
 pub struct ModelClient {
     config_manager: Arc<ConfigManager>,
@@ -21,7 +21,7 @@ impl ModelClient {
     /// 调用模型 API（非流式）
     /// 每次调用经 ConfigManager 现场合成最新 EffectiveModelConfig（配置永远最新，无需热更新），
     /// 并按 provider_type 构建对应 Provider 实现（未知类型报错）。
-    pub async fn call(&self, pm: &ProviderModel, messages: &[MessageItem]) -> Result<ModelResponse> {
+    pub async fn call(&self, pm: &ProviderModel, messages: &[Message]) -> Result<ModelResponse> {
         let effective = self.config_manager.resolve_effective_config(pm).await
             .ok_or_else(|| Error::ModelProviderNotSupported(format!(
                 "provider/model 不存在: {}/{}", pm.provider, pm.model)))?;
@@ -49,7 +49,7 @@ impl ModelClient {
         &self,
         effective: &EffectiveModelConfig,
         provider: Box<dyn Provider>,
-        messages: &[MessageItem],
+        messages: &[Message],
     ) -> Result<ModelResponse> {
         let max_retries = effective.retry_count;
         let mut last_error = None;

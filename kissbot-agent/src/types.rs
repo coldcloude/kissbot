@@ -193,47 +193,6 @@ pub enum Message {
     },
 }
 
-/// 模型上下文中的单条消息
-#[derive(Debug, Clone)]
-pub struct MessageItem {
-    pub role: String,
-    pub content: String,
-}
-
-// ========== 上下文消息 ==========
-
-#[derive(Debug, Clone)]
-pub enum ContextMessage {
-    User {
-        #[allow(dead_code)]
-        messenger_id: String,
-        #[allow(dead_code)]
-        user_id: String,
-        #[allow(dead_code)]
-        group_id: String,
-        content: String,
-        #[allow(dead_code)]
-        time: String,
-    },
-    Assistant {
-        content: String,
-        #[allow(dead_code)]
-        time: String,
-    },
-    ToolCall {
-        tool_name: String,
-        parameters: serde_json::Value,
-        #[allow(dead_code)]
-        time: String,
-    },
-    ToolResult {
-        tool_name: String,
-        result: serde_json::Value,
-        #[allow(dead_code)]
-        time: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::config_manager::EffectiveModelConfig;
-use crate::types::{Error, MessageItem, ModelResponse, Result};
+use crate::types::{Error, Message, ModelResponse, Result, ToolCall};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
 #[async_trait]
 pub trait Provider: Send + Sync {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse>;
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse>;
     /// 从服务商 API 获取全部可用模型名（GET /models）
     /// 本期只落位：后续任务由管理 API（GET /models）消费
     #[allow(dead_code)]
@@ -49,9 +49,24 @@ impl OpenAiProvider {
     }
 }
 
-fn openai_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) -> serde_json::Value {
-    let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-        json!({ "role": m.role, "content": m.content })
+fn openai_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_json::Value {
+    let msgs: Vec<serde_json::Value> = messages.iter().map(|m| match m {
+        Message::System { content } => json!({ "role": "system", "content": content }),
+        Message::User { content } => json!({ "role": "user", "content": content }),
+        Message::Assistant { content, tool_calls, .. } => {
+            let mut v = json!({ "role": "assistant", "content": content });
+            if let Some(tcs) = tool_calls {
+                v["tool_calls"] = json!(tcs.iter().map(|tc| json!({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": { "name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default() },
+                })).collect::<Vec<_>>());
+            }
+            v
+        }
+        Message::Tool { tool_call_id, content, .. } => {
+            json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
+        }
     }).collect();
     let mut body = json!({
         "model": effective.model,
@@ -82,7 +97,18 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     // <think> 标签总剥离；thinking 独立取标签内容，空串视为 None
     let (content, tag_reasoning) = strip_think_tag(&content);
     let thinking = tag_reasoning.filter(|s| !s.is_empty());
-    ModelResponse { content, reasoning_content, thinking, tool_calls: Vec::new(), finish_reason }
+    // tool_calls：OpenAI function call 数组（含 thinking 模式下多轮工具调用）；无则空
+    let tool_calls = choice["message"]["tool_calls"].as_array().map(|arr| {
+        arr.iter().filter_map(|tc| {
+            let id = tc["id"].as_str()?.to_string();
+            let name = tc["function"]["name"].as_str()?.to_string();
+            let arguments = tc["function"]["arguments"].as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            Some(ToolCall { id: Arc::new(id), name: Arc::new(name), arguments: Arc::new(arguments) })
+        }).collect()
+    }).unwrap_or_default();
+    ModelResponse { content, reasoning_content, thinking, tool_calls, finish_reason }
 }
 
 /// 匹配 content 开头的 <think>...</think>（允许前导空白），剥离并返回 (剥离后内容, Option<思考内容>)
@@ -112,7 +138,7 @@ fn parse_openai_models(data: &serde_json::Value) -> Vec<String> {
 
 #[async_trait]
 impl Provider for OpenAiProvider {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(effective.timeout_secs))
@@ -166,21 +192,22 @@ impl AnthropicProvider {
     }
 }
 
-fn anthropic_body(effective: &EffectiveModelConfig, messages: &[MessageItem]) -> serde_json::Value {
+fn anthropic_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_json::Value {
     // 分离 system 消息
     let system_parts: Vec<String> = messages.iter()
-        .filter(|m| m.role == "system")
-        .map(|m| m.content.clone())
+        .filter_map(|m| match m {
+            Message::System { content } => Some(content.to_string()),
+            _ => None,
+        })
         .collect();
     let system = system_parts.join("\n");
 
-    let msgs: Vec<serde_json::Value> = messages.iter()
-        .filter(|m| m.role != "system")
-        .map(|m| json!({
-            "role": if m.role == "assistant" { "assistant" } else { "user" },
-            "content": m.content,
-        }))
-        .collect();
+    let msgs: Vec<serde_json::Value> = messages.iter().filter_map(|m| match m {
+        Message::System { .. } => None,
+        Message::User { content } => Some(json!({ "role": "user", "content": content })),
+        Message::Assistant { content, .. } => Some(json!({ "role": "assistant", "content": content })),
+        Message::Tool { .. } => None,  // 本轮不支持工具消息
+    }).collect();
 
     let mut body = json!({
         "model": effective.model,
@@ -237,7 +264,7 @@ fn parse_anthropic_models(data: &serde_json::Value) -> Vec<String> {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[MessageItem]) -> Result<ModelResponse> {
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(effective.timeout_secs))
@@ -295,13 +322,19 @@ mod tests {
         }
     }
 
+    // Message 构造测试助手（字段为 Arc<String>，集中构造减少噪音）
+    fn sys(content: &str) -> Message {
+        Message::System { content: Arc::new(content.into()) }
+    }
+
+    fn usr(content: &str) -> Message {
+        Message::User { content: Arc::new(content.into()) }
+    }
+
     #[test]
     fn openai_body_includes_params_and_messages() {
         let eff = sample_effective();
-        let msgs = vec![
-            MessageItem { role: "system".into(), content: "你是助手".into() },
-            MessageItem { role: "user".into(), content: "你好".into() },
-        ];
+        let msgs = vec![sys("你是助手"), usr("你好")];
         let body = openai_body(&eff, &msgs);
         assert_eq!(body["model"], "deepseek-4-flash");
         assert_eq!(body["max_tokens"], 2048);
@@ -318,7 +351,7 @@ mod tests {
         eff.temperature = None;
         eff.thinking = None;
         eff.reasoning_effort = None;
-        let msgs = vec![MessageItem { role: "user".into(), content: "你好".into() }];
+        let msgs = vec![usr("你好")];
         let body = openai_body(&eff, &msgs);
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
@@ -332,7 +365,7 @@ mod tests {
         let mut eff = sample_effective();
         eff.thinking = Some("enabled".into());
         eff.reasoning_effort = Some("high".into());
-        let msgs = vec![MessageItem { role: "user".into(), content: "你好".into() }];
+        let msgs = vec![usr("你好")];
         let body = openai_body(&eff, &msgs);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
@@ -350,12 +383,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_openai_response_extracts_tool_calls() {
+        let data = serde_json::json!({
+            "choices": [{
+                "message": { "content": null, "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"/a\"}" } }] },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].id.as_str(), "c1");
+        assert_eq!(resp.tool_calls[0].name.as_str(), "read");
+        assert_eq!(resp.tool_calls[0].arguments["path"], "/a", "arguments 解析为 JSON 对象");
+        assert_eq!(resp.finish_reason, "tool_calls");
+    }
+
+    #[test]
+    fn parse_openai_response_no_tool_calls_by_default() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert!(resp.tool_calls.is_empty(), "无 tool_calls 字段时为空");
+    }
+
+    #[test]
     fn anthropic_body_separates_system_messages() {
         let eff = sample_effective();
-        let msgs = vec![
-            MessageItem { role: "system".into(), content: "设定".into() },
-            MessageItem { role: "user".into(), content: "hi".into() },
-        ];
+        let msgs = vec![sys("设定"), usr("hi")];
         let body = anthropic_body(&eff, &msgs);
         assert_eq!(body["system"], "设定");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
@@ -369,7 +424,7 @@ mod tests {
         eff.temperature = None;
         eff.thinking = None;
         eff.reasoning_effort = None;
-        let msgs = vec![MessageItem { role: "user".into(), content: "hi".into() }];
+        let msgs = vec![usr("hi")];
         let body = anthropic_body(&eff, &msgs);
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
@@ -381,7 +436,7 @@ mod tests {
         let mut eff = sample_effective();
         eff.thinking = Some("enabled".into());
         eff.reasoning_effort = Some("high".into());
-        let msgs = vec![MessageItem { role: "user".into(), content: "hi".into() }];
+        let msgs = vec![usr("hi")];
         let body = anthropic_body(&eff, &msgs);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["output_config"]["effort"], "high");

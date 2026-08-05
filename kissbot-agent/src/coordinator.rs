@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::types::{
-    Mode, ContextMessage, Result, Error, SessionKey, memory_role,
+    Mode, Message, Result, Error, SessionKey, memory_role,
 };
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
 use crate::command_router::CommandRouter;
@@ -33,6 +33,9 @@ pub const RESERVED_ROLE_NAME: &str = "";
 const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 /// 上述 TTL 的 Duration 形式（evict 入参）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
+
+/// 上下文消息数量上限，超过时触发重置（Task 3 改为会话模型 effective.max_context_messages）
+const MAX_CONTEXT_MESSAGES: usize = 100;
 
 /// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id
 /// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
@@ -291,7 +294,7 @@ impl AgentCoordinator {
             .read_history(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
             .await
         {
-            session.context.lock().await.load_history(history);
+            session.context.lock().await.load_messages(history);
         }
         // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
@@ -784,21 +787,11 @@ impl AgentCoordinator {
             return;
         }
         let content_text = extract_text(&event.incoming_message.content);
-        let messenger_id = event.incoming_message.messenger_id.to_string();
-        let user_id = event.incoming_message.user_id.to_string();
-        let group_id = event.incoming_message.group_id.to_string();
-        let time = event.incoming_message.time.to_string();
 
-        // 1. 追加用户消息到该会话上下文
+        // 1. 追加用户消息到该会话上下文（time/messenger 等不再保留，只留文本）
         {
             let mut ctx = session.context.lock().await;
-            ctx.push_user_message(ContextMessage::User {
-                messenger_id: messenger_id.clone(),
-                user_id: user_id.clone(),
-                group_id: group_id.clone(),
-                content: content_text.clone(),
-                time: time.clone(),
-            });
+            ctx.push(Message::User { content: Arc::new(content_text.clone()) });
         }
 
         // 2. 调用模型（用该会话的模型）
@@ -815,10 +808,14 @@ impl AgentCoordinator {
             Ok(model_resp) => {
                 let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-                // 3. 记录已发送内容
+                // 3. 记录已发送内容（assistant 消息含 reasoning_content，本地保留供缓存/后续轮次）
                 {
                     let mut ctx = session.context.lock().await;
-                    ctx.push_assistant(model_resp.content.clone(), now.clone());
+                    ctx.push(Message::Assistant {
+                        content: Arc::new(model_resp.content.clone()),
+                        reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
+                        tool_calls: None,
+                    });
                 }
 
                 // 4. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
@@ -858,10 +855,10 @@ impl AgentCoordinator {
                 // 5. 发送回复到该会话的 out_channel
                 self.send_outgoing(out_channel, model_resp.content).await;
 
-                // 6. 检查上下文超长
+                // 6. 检查上下文超长（阈值暂用常量，Task 3 改为模型 effective.max_context_messages）
                 let overflow = {
                     let ctx = session.context.lock().await;
-                    ctx.is_overflow()
+                    ctx.is_overflow(MAX_CONTEXT_MESSAGES)
                 };
                 if overflow {
                     warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
