@@ -7,6 +7,7 @@ use kissbot_api::{ArcSwapHashMap, ChannelUser};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::context_config::{AgentContextConfig, EffectiveContextConfig};
 use crate::types::{Result, Error};
 
 // ========== 配置数据结构 ==========
@@ -37,6 +38,7 @@ pub struct ProviderConfig {
     pub default_thinking: Option<String>,          // 默认思考模式开关值（原样进 {"thinking":{"type":...}}）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_reasoning_effort: Option<String>,  // 默认思考力度
+    pub default_max_context_messages: usize,     // 上下文消息条数上限（溢出触发重置/压缩）
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,  // key = model 标识
 }
 
@@ -53,6 +55,8 @@ pub struct EffectiveModelConfig {
     pub retry_count: u32,
     #[allow(dead_code)]   // 本期只落位：默认上下文长度（token），截断逻辑后续接入
     pub context_length: u32,
+    /// 上下文消息条数上限（溢出触发重置/压缩；来自 provider 默认 + model 覆盖）
+    pub max_context_messages: usize,
     pub thinking: Option<String>,
     pub reasoning_effort: Option<String>,
 }
@@ -73,6 +77,8 @@ pub struct ModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_context_messages: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
@@ -86,6 +92,8 @@ pub struct NexusRepo {
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
+    /// agent_name → AgentContextConfig（上下文配置，三层继承见 context_config 模块）
+    pub context: Arc<ArcSwapHashMap<String, AgentContextConfig>>,
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
     /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
     pub default_system_prompt: Arc<String>,
@@ -98,6 +106,7 @@ impl Default for NexusRepo {
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
+            context: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
             default_system_prompt: Arc::new(String::new()),
         }
@@ -374,6 +383,7 @@ impl ConfigManager {
             timeout_secs: model_cfg.as_ref().and_then(|m| m.timeout_secs).unwrap_or(provider.default_timeout_secs),
             retry_count: model_cfg.as_ref().and_then(|m| m.retry_count).unwrap_or(provider.default_retry_count),
             context_length: model_cfg.as_ref().and_then(|m| m.context_length).unwrap_or(provider.default_context_length),
+            max_context_messages: model_cfg.as_ref().and_then(|m| m.max_context_messages).unwrap_or(provider.default_max_context_messages),
             thinking: model_cfg.as_ref().and_then(|m| m.thinking.clone()).or(provider.default_thinking.clone()),
             reasoning_effort: model_cfg.as_ref().and_then(|m| m.reasoning_effort.clone()).or(provider.default_reasoning_effort.clone()),
         })
@@ -383,6 +393,14 @@ impl ConfigManager {
     /// 不存在返回 None
     pub async fn provider_config_by_name(&self, name: &str) -> Option<Arc<ProviderConfig>> {
         self.nexus_repo.read().await.providers.get(name).map(|s| s.load_full())
+    }
+
+    /// 按 (agent_name, role_name) 合并 context 配置（三层继承：全局默认 ← agent ← role）
+    pub async fn context_config(&self, agent_name: &str, role_name: &str) -> EffectiveContextConfig {
+        let repo = self.nexus_repo.read().await;
+        let agent = repo.context.get(agent_name).map(|s| s.load_full());
+        let role = agent.as_ref().and_then(|a| a.roles.get(role_name).map(|s| s.load_full()));
+        crate::context_config::merge_context_config(agent.as_deref(), role.as_deref())
     }
 
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
@@ -696,6 +714,7 @@ mod tests {
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             stations: Arc::new(ArcSwapHashMap::new()),
+            context: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
             default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
         };
@@ -729,6 +748,7 @@ mod tests {
             default_retry_count: 3,
             default_thinking: None,
             default_reasoning_effort: None,
+            default_max_context_messages: 100,
             models: Arc::new(ArcSwapHashMap::new()),
         }
     }
@@ -746,6 +766,7 @@ mod tests {
             "default_temperature": 0.7,
             "default_timeout_secs": 60,
             "default_retry_count": 3,
+            "default_max_context_messages": 100,
             "models": {}
         }"#;
         let pc: ProviderConfig = serde_json::from_str(old).unwrap();
@@ -777,6 +798,7 @@ mod tests {
                 timeout_secs: Some(30),
                 retry_count: Some(2),
                 context_length: None,  // 未配 → 继承 provider 默认
+                max_context_messages: Some(80),
                 thinking: Some("enabled".into()),
                 reasoning_effort: Some("high".into()),
             })));
@@ -798,6 +820,7 @@ mod tests {
         assert_eq!(eff.reasoning_effort.as_deref(), Some("high"), "model 的 reasoning_effort 应生效");
         assert_eq!(eff.timeout_secs, 30);
         assert_eq!(eff.retry_count, 2);
+        assert_eq!(eff.max_context_messages, 80, "model 的 max_context_messages 应生效");
         assert_eq!(eff.context_length, 65536, "context_length 未配应继承 provider 默认");
     }
 
@@ -826,6 +849,7 @@ mod tests {
                 timeout_secs: None,
                 retry_count: None,
                 context_length: Some(131072),  // 覆盖 context_length
+                max_context_messages: None,  // 未配 → 继承 provider 默认
                 thinking: None,
                 reasoning_effort: None,
             })));
@@ -842,6 +866,7 @@ mod tests {
         assert_eq!(eff.timeout_secs, 60);
         assert_eq!(eff.retry_count, 3);
         assert_eq!(eff.context_length, 131072, "model 覆盖 context_length 应生效");
+        assert_eq!(eff.max_context_messages, 100, "max_context_messages 未配应继承 provider 默认");
         assert_eq!(eff.thinking.as_deref(), Some("disabled"), "thinking 未配应继承 provider 默认");
         assert_eq!(eff.reasoning_effort.as_deref(), Some("low"), "reasoning_effort 未配应继承 provider 默认");
     }
@@ -939,7 +964,7 @@ mod tests {
             map.insert("gpt-4o".into(), ArcSwap::new(Arc::new(ModelConfig {
                 model: "gpt-4o".into(), max_tokens: None, temperature: None,
                 timeout_secs: None, retry_count: None, context_length: None,
-                thinking: None, reasoning_effort: None,
+                max_context_messages: None, thinking: None, reasoning_effort: None,
             })));
         }
         manager.add_provider(provider).await.unwrap();

@@ -317,6 +317,7 @@ mod tests {
             timeout_secs: 30,
             retry_count: 2,
             context_length: 65536,
+            max_context_messages: 100,
             thinking: None,
             reasoning_effort: None,
         }

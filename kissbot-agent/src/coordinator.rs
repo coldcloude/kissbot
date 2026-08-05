@@ -34,8 +34,8 @@ const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 /// 上述 TTL 的 Duration 形式（evict 入参）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
 
-/// 上下文消息数量上限，超过时触发重置（Task 3 改为会话模型 effective.max_context_messages）
-const MAX_CONTEXT_MESSAGES: usize = 100;
+// 上下文消息数量上限（溢出触发重置/压缩）已废弃硬编码常量 MAX_CONTEXT_MESSAGES——
+// 阈值统一由会话模型 effective.max_context_messages（provider/model 配置合成）决定，见 run_agentic_loop 溢出检查。
 
 /// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id
 /// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
@@ -855,10 +855,17 @@ impl AgentCoordinator {
                 // 5. 发送回复到该会话的 out_channel
                 self.send_outgoing(out_channel, model_resp.content).await;
 
-                // 6. 检查上下文超长（阈值暂用常量，Task 3 改为模型 effective.max_context_messages）
+                // 6. 检查上下文超长（阈值来自会话模型的 effective.max_context_messages）
                 let overflow = {
                     let ctx = session.context.lock().await;
-                    ctx.is_overflow(MAX_CONTEXT_MESSAGES)
+                    let model = session.model.load_full();
+                    match model.as_ref() {
+                        Some(pm) => match self.config.resolve_effective_config(pm).await {
+                            Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
+                            None => false,
+                        },
+                        None => false,
+                    }
                 };
                 if overflow {
                     warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);

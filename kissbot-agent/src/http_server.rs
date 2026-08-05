@@ -181,6 +181,7 @@ mod tests {
             default_retry_count: 3,
             default_thinking: None,
             default_reasoning_effort: None,
+            default_max_context_messages: 100,
             models: Arc::new(ArcSwapHashMap::new()),
         }
     }
