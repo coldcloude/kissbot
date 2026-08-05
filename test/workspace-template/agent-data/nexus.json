@@ -19,6 +19,7 @@
       "api_key": "",
       "default_context_length": 65536,
       "default_max_tokens": 4096,
+      "default_max_context_messages": 100,
       "default_timeout_secs": 60,
       "default_retry_count": 3,
       "default_thinking": "enabled",
@@ -29,5 +30,6 @@
   "memory_structs": {},
   "stations": {},
   "default_model": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-  "default_system_prompt": "你是 kissbot 智能助手"
+  "default_system_prompt": "你是 kissbot 智能助手",
+  "context": {}
 }
