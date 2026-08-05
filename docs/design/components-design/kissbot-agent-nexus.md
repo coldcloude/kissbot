@@ -36,7 +36,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个管理员，我要设置上下文消息数量上限，以防止上下文无限增长
 
 ### Epic 4：记忆读写
-- **目标**：在会话创建或重置时按会话的（agent_name、role_name、mode）从 memory-store 读取最近历史记录（以解析后的 agent_id UUID 为存储键）并从 memory-struct 读取顶层记忆索引；在agentic loop中将思考、tool call、tool result 写入记忆系统；将收发的通道消息写入记忆系统；各会话按自身模式（角色/事件）隔离记忆范围
+- **目标**：在会话创建或重置时按会话模式读取上下文来源（event 模式从本地缓存恢复、role 模式从 memory-store 读取最近对话消息）并从 memory-struct 读取顶层记忆索引；在agentic loop中将思考、tool call、tool result 写入记忆系统；将收发的通道消息写入记忆系统；各会话按自身模式（角色/事件）隔离记忆范围
 - **依赖**：memory-store（记忆读写）、memory-struct（记忆索引）、memory-ego（自我认知信息）
 - **用户故事**：
   - 作为一个用户，我要询问智能体过往的对话内容，以让智能体回顾对话脉络并获取完整的历史信息
@@ -54,7 +54,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息，以让智能体收发消息并获取发送结果
 
 ### Epic 6：工具调用分派
-- **目标**：解析 LLM 返回中的 tool call，区分内置工具和外置工具，分派到对应 Station 执行
+- **目标**：解析 LLM 返回中的 tool call，按工具名路由到会话启用的 Station 运行态执行（本地进程内执行 / 远程 REST 骨架）
 - **依赖**：Epic 2（LLM 交互）、Station 组件
 - **用户故事**：
   - 作为一个用户，我要向智能体提出需要执行工具的任务，以触发智能体执行工具调用
@@ -81,18 +81,19 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 支持运行时热更新配置
 
 ### 4. 上下文构建器
-- 按会话管理内存中的 LLM 上下文消息列表
-- 在会话创建/重置时接收记忆读取器读取的历史记录构建初始上下文，自动包含系统消息
-- 运行时按会话增量追加用户消息和助手回复
+- 按会话管理内存中的 LLM 上下文，消息为 OpenAI 格式的 Message 枚举（role 即枚举变体：system/user 含 content，assistant 含 content/reasoning_content/tool_calls，tool 含 tool_call_id/name/content）
+- 每会话持有 SessionContext（内存消息序列 + system 消息），并同步写入本地缓存（`<data_dir>/context/` 下按 session_key 编码的 JSONL，追加不截断）；重置/压缩前的缓存快照归档到 `<data_dir>/context-history/`（本轮只写不读）
+- 在会话创建/重置时按模式构建初始上下文：event 模式从缓存全量恢复（空则为仅 system），role 模式从记忆打包一条 user 消息
+- 运行时按会话增量追加用户消息、助手回复与工具调用/结果消息，每步同步写入缓存
 - 每个 channel 维护运行时 ChannelContext，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
-- 会话上下文消息数量超上限时触发自动重置
+- 会话上下文消息数量超上限时按模式触发重置（event 压缩、role 归档重建）
 
 ### 5. 记忆读取器
-- 在会话创建或重置时调用
+- 在会话创建或重置时调用（role 模式）
 - **两级读取**：
-  - 第一级：从 memory-store 读取最近若干条历史记录
+  - 第一级：从 memory-store 读取最近对话消息——时间窗（`memory_time_secs`）查询与最近 N 条（`memory_count`）查询各一次，比较两者首条记录时间取更早者作为结果（时间窗更大用窗口，最近 N 更早用最近 N）
   - 第二级：从 memory-struct 读取顶层记忆索引（如摘要列表），提供长期记忆概况
-- 按会话的（agent_name、role_name、mode）定位，以解析后的（agent_id、role_name、mode）读取：角色模式会话读取该角色所有记录，事件模式会话只读本事件记录
+- 读取结果打包为一条 user 消息（仅保留 name 与 content），作为 role 模式会话的首条内容
 - 支持查询事件列表
 
 ### 6. 记忆写入器
@@ -115,14 +116,13 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 绑定信息变化时更新会话集合，通知协调器创建或销毁会话上下文
 - 事件模式会话自动生成新事件标识，支持按事件标识重新进入指定事件
 
-### 9. Station 路由表
-- 从配置管理器读取已配置的 Station 列表
-- 提供按 Station ID 查找地址的查询接口
+### 9. Station 运行态
+- 按配置为每个 Station 构建 StationRuntime：base_url 为空的本地 Station 注册内置工具实现，非空的远程 Station 工具调用走 REST（本轮骨架未实现）
+- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长
 
-### 10. Station 通信客户端
-- 向 Station 发起请求（工具名称和参数）
-- 从响应中获取工具调用结果
-- 管理 Station 的连接超时配置
+### 10. Station 工具执行
+- 工具定义（name/description/parameters JSON Schema）存于 StationConfig.tools（工具名 → 配置），由 nexus 按会话启用的 station 集合聚合后随 LLM 请求发送
+- 本地工具：按工具名在本地工具表查找并执行（未注册报错）；远程工具：通过 HTTP 请求调用（本轮骨架，返回未实现错误）
 
 ### 11. 通信客户端
 - 作为客户端连接消息通道的服务端
@@ -132,10 +132,10 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 支持心跳检测和断线自动重连
 
 ### 12. 工具调用分派器
-- 解析 LLM 返回中的 tool call
-- 区分内置工具和外置工具
-- 内置工具由 nexus 自身执行，不发送 station，不记入记忆
-- 外置工具通过 Station 路由表查找目标 Station，分派执行
+- 解析 LLM 返回中的 tool call（工具名 + 参数）
+- 工具定义按会话 context 配置的启用 station 集合聚合，随 LLM 请求发送
+- 工具调用按工具名在启用 station 的运行态中路由执行，结果作为 tool 消息追加回上下文
+- 支持多轮嵌套：LLM 返回 tool_calls 时执行后继续调用，直至返回无 tool_calls 的回复（上限防死循环）
 
 ### 13. 管理 API 服务器
 - 绑定指定端口等待连接
@@ -158,21 +158,25 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
     ├─ 是 → 检查发送者是否在管理员列表中
     │   ├─ 是 → 对该会话执行管理命令，回复执行结果，如需要则触发该会话上下文重置
     │   └─ 否 → 忽略（不回复也不进入agentic loop）
-    └─ 否 → 进入该会话的agentic loop
+    └─ 否 → 加入该会话的合批缓冲，连续消息等待合批间隔后打包为一条 user 消息进入 agentic loop
 ```
 
 ### Epic 2+3 agentic loop流程
 
 ```
-普通消息 → 追加到该会话的上下文
-  → 检查上下文消息数量是否超过上限
-    ├─ 是 → 触发自动重置（清除该会话上下文，重新读取历史）
-    └─ 否 → 继续
-  → LLM 客户端调用 LLM API（传入该会话的完整上下文）
-  → LLM 返回回复
+普通消息 → 合批缓冲（同一会话连续消息等待合批间隔后打包为一条 user 消息，仅保留 name 与 content）
+  → 追加到该会话的上下文，每步同步写入本地缓存
+  → LLM 客户端调用 LLM API（传入该会话的完整上下文 + 启用 station 聚合的工具定义）
+  → LLM 返回 tool_calls
+    → 逐个执行工具调用（本地 Station 进程内执行 / 远程 REST 骨架），结果作为 tool 消息追加回上下文
+    → 再次调用 LLM，循环直至返回无 tool_calls 的回复（上限防死循环）
+  → LLM 返回最终回复
     → 记忆写入器推送思考内容到写入队列
     → 通信模块通过该会话的回复 channel 发送回复到消息通道
-    → 用发送返回值补充、替换回复消息内容后，记忆写入器推送回复到写入队列
+    → 记忆写入器推送回复到写入队列
+  → 检查上下文消息数量是否超过上限（模型配置的 max_context_messages）
+    ├─ event 模式 → 压缩：归档当前缓存，LLM 总结后重写为 system+user(压缩指令)+assistant(总结)
+    └─ role 模式 → 重置：归档当前缓存，按记忆打包重建
   → 等待下一条输入
 ```
 
@@ -184,24 +188,26 @@ kissbot-agent 启动
   → 初始化会话管理器（汇总绑定信息去重，生成会话集合）
   → 初始化记忆写入器（启动后台写入任务）
   → 初始化记忆读取器
-  → 初始化上下文构建器
+  → 初始化上下文构建器（含本地缓存与历史归档目录）
   → 初始化 LLM 客户端
+  → 构建各 Station 运行态（本地 Station 注册内置工具）
   → 初始化通信模块（连接所有配置的通道，获取通道信息并发送绑定请求）
-  → 对每个会话：记忆读取器按会话的（agent_id、role_name、mode）从 memory-store 读取最近历史记录
+  → 对每个会话按模式构建初始上下文：event 从本地缓存全量恢复（空则为仅 system）；role 从 memory-store 读取最近消息打包为一条 user 消息
   → 记忆读取器从 memory-struct 读取顶层记忆索引（memory-struct 未实现时跳过）
-  → 上下文构建器用历史记录 + 记忆索引 + Ego 信息构建各会话的初始上下文
+  → 上下文构建器用恢复/打包结果 + Ego 信息构建各会话的初始上下文
   → 协调器进入就绪状态
 ```
 
 ### Epic 3 上下文重置流程
 
 ```
-触发条件：对某会话执行重置命令 / 该会话上下文超长
-  → 记忆写入器刷新该会话当前剩余内容到 memory-store
+触发条件：对某会话执行重置命令 / 该会话上下文超长 / 新 session_key（会话创建或重新进入）
+  → 当前缓存快照归档到历史目录（context-history/，复制缓存文件）并清空缓存
   → 协调器按该会话的 agent_id 和 role_name 从 memory-ego 重新加载自我认知信息
-  → 记忆读取器按该会话的（agent_id、role_name、mode）从 memory-store 重新读取最近记录
-  → 记忆读取器从 memory-struct 重新读取顶层记忆索引（memory-struct 未实现时跳过）
-  → 上下文构建器重建该会话的上下文
+  → 按模式重建：
+    ├─ event：从缓存全量恢复（超长时先压缩：LLM 总结，新上下文为 system+user(压缩指令)+assistant(总结)）
+    └─ role：从记忆打包一条 user 消息作为首条内容
+  → 等待 channel 消息继续构造上下文
 ```
 
 ### Epic 4 事件管理流程
@@ -210,7 +216,7 @@ kissbot-agent 启动
 修改 channel 绑定为事件模式 → 会话管理器创建事件模式会话并自动生成新事件标识
   → 触发该会话上下文构建，读取当前事件上下文（空）且只记录本事件
 重新进入指定事件 → 事件模式会话切换到指定事件标识
-  → 读取该事件的记录，重建该会话上下文
+  → 从该事件会话的缓存恢复记录（若已有内容则以 assistant 消息结尾），重建该会话上下文
 列出事件 → 通过 memory-store 查询所有事件列表
 修改 channel 绑定回角色模式 → 消息进入角色模式会话，重建上下文
 ```
@@ -245,12 +251,14 @@ kissbot-agent 启动
 
 ### 自动上下文重置
 
-当上下文消息数量超过上限时自动触发重置，防止 LLM token 占用无限增长。
+上下文消息数量超过上限时自动触发重置：event 模式压缩（归档当前缓存 → LLM 总结 → 重写为 system+user(压缩指令)+assistant(总结)），role 模式归档后按记忆打包重建，防止 LLM token 占用无限增长。
 
 ### 初始上下文构建
 
-- 会话创建或重置时，记忆读取器按会话的（agent_id、role_name、mode）从 memory-store 读取最近历史记录、从 memory-struct 读取顶层记忆索引（如摘要列表，memory-struct 未实现时跳过），并结合 memory-ego 按该 agent_id 和 role_name 读取的自我认知信息构建该会话的初始 LLM 上下文
-- 运行时每次收到用户消息和 LLM 回复后增量追加到该会话的上下文，保持对话连续性
+- 会话创建或重置时按模式构建：event 模式从本地缓存全量恢复（缓存生命周期 = 当前上下文，超长即压缩，天然有界）；role 模式从 memory-store 读取最近消息（时间窗与最近 N 条两查询比较首条时间取更早者）打包为一条 user 消息
+- 上下文缓存存放于 `<data_dir>/context/`，按 session_key 编码存储，追加不截断；重置/压缩前归档到 `<data_dir>/context-history/`（本轮只写不读）
+- 结合 memory-ego 按该 agent_id 和 role_name 读取的自我认知信息设置为系统消息
+- 运行时每次收到合批后的用户消息和 LLM 回复（含工具调用与结果）后增量追加到该会话的上下文并同步写入缓存，保持对话连续性
 
 ### agentic loop 记忆写入
 
@@ -265,9 +273,10 @@ kissbot-agent 启动
 
 ### 工具调用分派
 
-- LLM 返回 tool call 时解析工具名称和参数，区分内置工具（如记忆查询）和外置工具
-- 内置工具由 nexus 自身执行，不发送 station、不记入记忆；外置工具按 Station 路由表查找目标地址发送请求执行
-- 工具结果再次触发 LLM tool call 时支持多轮嵌套处理
+- LLM 返回 tool call 时解析工具名称和参数
+- 工具定义（name/description/parameters）按会话 context 配置的启用 station 集合聚合，随每次 LLM 请求发送
+- 工具调用按工具名在启用 station 中路由：base_url 为空的本地 station 在进程内执行，非空走 REST（本轮骨架未实现）；找不到工具返回错误结果
+- 工具结果作为 tool 消息（tool_call_id/name/content）追加回上下文，再次触发 LLM tool call 时支持多轮嵌套处理（上限防死循环）
 
 ### LLM 调用重试
 

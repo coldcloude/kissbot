@@ -1,0 +1,108 @@
+# kissbot 手动测试脚本说明
+
+本目录提供 kissbot 各组件的手动启动脚本（`start-*.sh`、`reset-*.sh`），配置模板在 `template/`。
+
+- `reset-agent.sh`：按 `template/nexus.json`、`template/station.json` 生成 `../workspace/agent-data/` 下的运行配置
+- `reset-workspace.sh`：重置测试数据目录
+- `start-memory-store.sh` / `start-memory-ego.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
+- `inject-key.mjs`：向模板注入 API key
+
+## 模型上下文系统本地模式验证（手动）
+
+本节的 `context` 配置段与 Station 工具用于验证上下文重构与本地工具调用（多轮 agentic loop）。
+
+### 1. 配置 nexus.json（`../workspace/agent-data/nexus.json`）
+
+在 `providers.<provider>.models` 或 provider 默认上配置条数上限（溢出阈值），并增加 `context` 与 `stations` 段：
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "name": "deepseek",
+      "provider_type": "openai",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "sk-xxxx",
+      "default_context_length": 65536,
+      "default_max_context_messages": 100,
+      "default_max_tokens": 4096,
+      "default_timeout_secs": 60,
+      "default_retry_count": 3,
+      "models": {}
+    }
+  },
+  "stations": {
+    "local": {
+      "station_id": "local",
+      "base_url": "",
+      "timeout_secs": 5,
+      "tools": {
+        "read": {
+          "name": "read",
+          "description": "读取文本文件，路径须位于当前工作目录内",
+          "parameters": {
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+          }
+        }
+      }
+    }
+  },
+  "context": {
+    "": {
+      "default_channel_batch_interval_secs": 3,
+      "default_memory_time_secs": 3600,
+      "default_memory_count": 50,
+      "default_compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
+      "default_stations": ["local"],
+      "roles": {}
+    },
+    "a1": {
+      "default_channel_batch_interval_secs": 3,
+      "default_memory_time_secs": 3600,
+      "default_memory_count": 50,
+      "default_compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
+      "default_stations": ["local"],
+      "roles": {}
+    }
+  },
+  "default_model": { "provider": "deepseek", "model": "deepseek-chat" },
+  "default_system_prompt": "你是 kissbot 智能助手"
+}
+```
+
+说明：
+- `context` 段按 `agent_name → role_name` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`；`default_stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
+- `stations.local.base_url` 为空 = 本地 Station：agent 启动时注册内置 `read` 工具，工具调用在进程内执行
+- `default_max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
+
+### 2. 启动与验证步骤
+
+```bash
+# 1) 生成运行配置并注入 key
+./reset-agent.sh
+node inject-key.mjs
+
+# 2) 启动依赖（先 memory 后 channel，再 agent）
+./start-memory-store.sh
+./start-memory-ego.sh
+./start-channel-web.sh
+./start-agent.sh
+```
+
+> 注意：`script/config.json` 的 `api.memory_store_url` / `memory_ego_url` 为空时 agent 会跳过记忆读写；需要记忆功能时在 `../workspace/config.json`（测试工作区）中配置 URL 并按其启动。
+
+验证点：
+
+1. **合批**：通过 web 通道连续发送多条消息 → agent 日志显示等待合批间隔（默认 3s）后打包为一条 user 消息进入 agentic loop；内容为 `user_name: 消息` 逐行
+2. **多轮工具调用**：发送需要读文件的请求（如「读取 test.txt 的内容」，`test.txt` 需位于 agent 启动目录或其子目录内）→ 日志显示 LLM 返回 tool_call（模型需支持工具调用）→ 本地执行 `read` → 工具结果作为 tool 消息继续调用 LLM → 第二轮返回最终回复
+3. **上下文缓存**：`../workspace/agent-data/context/` 下生成按 session_key 编码的 `.jsonl`，随对话逐条追加（含 user/assistant/tool 消息）
+4. **历史归档**：发送 `/reset`（或上下文超长触发）后，`../workspace/agent-data/context-history/` 出现 `<key编码>-<时间戳>.jsonl` 归档副本；event 模式超长时走压缩（system + user 压缩指令 + assistant 总结）
+5. **路径安全**：让模型尝试读取 cwd 之外的路径（如 `../config.json` 的越界写法），`read` 工具返回路径越界错误，不实际读取
+
+### 3. 清理
+
+```bash
+./reset-workspace.sh   # 重置数据目录
+```
