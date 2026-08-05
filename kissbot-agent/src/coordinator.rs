@@ -13,6 +13,7 @@ use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
 };
 use crate::context_cache::ContextCache;
+use crate::context_config::EffectiveContextConfig;
 use crate::history::HistoryArchive;
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
 use crate::command_router::CommandRouter;
@@ -313,6 +314,13 @@ impl AgentCoordinator {
                 }
             }
             Mode::Role => {
+                // 重新进入既有 role 会话：旧上下文先归档为历史（重建后缓存将被清空重写）
+                // reset_context 已先归档+清空，此处缓存不存在不会重复归档
+                let path = self.cache.path_for(&key);
+                if path.exists() {
+                    let _ = self.history.archive(&key, &path).await;
+                    let _ = self.cache.clear(&key).await;
+                }
                 // 记忆打包：时间窗/最近N 两查询取并集，打包为一条 user 消息作为首条内容
                 let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
                 if let Ok(msgs) = self.memory_reader
@@ -369,7 +377,9 @@ impl AgentCoordinator {
         warn!("reset: channel {} 无会话可重置", channel_id);
     }
 
-    /// 上下文重置：归档当前缓存 → 清空缓存 → 清空内存 → 重建（按模式）
+    /// 上下文重置（新 session_key 或超长）：按模式归档当前缓存 → 清空 → 重建
+    /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
+    /// role：归档 + 记忆打包重建
     async fn reset_context(&self, session: &Arc<Session>) {
         let key = self.session_key_of_session(session);
         let path = self.cache.path_for(&key);
@@ -377,9 +387,58 @@ impl AgentCoordinator {
             let _ = self.history.archive(&key, &path).await;
         }
         let _ = self.cache.clear(&key).await;
+        // 合批缓冲清空 + 代数递增（失效旧计时任务，防重置前已入缓冲的消息被打包进重置后上下文）
+        {
+            let mut b = session.batch.lock().await;
+            b.clear();
+            session.batch_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         session.context.lock().await.clear();
         self.build_initial_context(session).await;
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
+    }
+
+    /// event 模式超长压缩：归档当前缓存 → LLM 总结（compress_prompt + 当前上下文）→
+    /// 重写缓存为 system + user(压缩指令) + assistant(总结)，等待后续 channel 消息
+    async fn compress_context(&self, session: &Arc<Session>) {
+        let key = self.session_key_of_session(session);
+        let path = self.cache.path_for(&key);
+        if path.exists() {
+            let _ = self.history.archive(&key, &path).await;
+        }
+        let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+        // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息
+        let messages = {
+            let ctx = session.context.lock().await;
+            let mut msgs = ctx.build();
+            msgs.push(Message::User { content: Arc::new(cfg.compress_prompt.clone()) });
+            msgs
+        };
+        // 2. 调会话模型总结（Task 13 后 call 增加 tools 参数，同步改为三参）
+        let summary = {
+            let model = session.model.load_full();
+            let Some(pm) = model.as_ref() else { return; };
+            let mc = self.model_client.lock().await;
+            mc.call(pm, &messages).await.map(|r| r.content).unwrap_or_default()
+        };
+        if summary.is_empty() {
+            warn!("上下文压缩总结为空，保留原上下文");
+            return;
+        }
+        // 3. 重建：清空内存（system 保留）→ user(压缩指令) + assistant(总结) → 缓存重写
+        {
+            let mut ctx = session.context.lock().await;
+            ctx.clear();
+            for m in compressed_messages(&cfg, &summary) {
+                ctx.push(m);
+            }
+        }
+        let _ = self.cache.clear(&key).await;
+        let msgs = { session.context.lock().await.build() };
+        // 缓存不含 system：只存 user+assistant（恢复时 set_system 在前）
+        let store: Vec<Message> = msgs.into_iter().filter(|m| !matches!(m, Message::System { .. })).collect();
+        let _ = self.cache.append(&key, &store).await;
+        info!("会话上下文已压缩: role={} mode={:?}", session.role_name, session.mode);
     }
 
     /// 读取自我认知（agent 元数据 + 个体识别 + 角色设定）生成系统提示词，agent_id 为解析后的 UUID
@@ -960,7 +1019,11 @@ impl AgentCoordinator {
                 };
                 if overflow {
                     warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
-                    self.reset_context(session).await;
+                    // 按模式处理：event 超长压缩（LLM 总结归档），role 归档后从记忆重建
+                    match &*session.mode {
+                        Mode::Event(_) => self.compress_context(session).await,
+                        Mode::Role => self.reset_context(session).await,
+                    }
                 }
             }
             Err(e) => {
@@ -1032,6 +1095,15 @@ fn extract_text(content: &Content) -> String {
 /// think 写入条件：reasoning_content 或 thinking 任一有值才写（都 None 跳过）
 fn should_write_think(reasoning: Option<&str>, thinking: Option<&str>) -> bool {
     reasoning.is_some() || thinking.is_some()
+}
+
+/// 压缩后上下文（不含 system）：user(压缩指令) + assistant(总结)
+/// 由 compress_context 重建内存上下文用；抽为纯函数便于测试
+fn compressed_messages(cfg: &EffectiveContextConfig, summary: &str) -> Vec<Message> {
+    vec![
+        Message::User { content: Arc::new(cfg.compress_prompt.clone()) },
+        Message::Assistant { content: Arc::new(summary.to_string()), reasoning_content: None, tool_calls: None },
+    ]
 }
 
 /// 按 (agent_name, role_name, mode) 三元组计算会话 key（session_key_for 的纯函数版，便于测试）；
@@ -1145,5 +1217,20 @@ mod tests {
         assert!(should_write_think(Some("r".into()), Some("t".into())));
         // 都 None 不写
         assert!(!should_write_think(None, None));
+    }
+
+    #[test]
+    fn compress_builds_prompt_summary_sequence() {
+        let cfg = EffectiveContextConfig {
+            channel_batch_interval_secs: 3,
+            memory_time_secs: 3600,
+            memory_count: 50,
+            compress_prompt: "总结以上对话".into(),
+            stations: std::collections::HashSet::new(),
+        };
+        let msgs = compressed_messages(&cfg, "总结内容");
+        assert_eq!(msgs.len(), 2);
+        assert!(matches!(&msgs[0], Message::User { content } if content.as_str() == "总结以上对话"));
+        assert!(matches!(&msgs[1], Message::Assistant { content, .. } if content.as_str() == "总结内容"));
     }
 }
