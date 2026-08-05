@@ -18,7 +18,7 @@ use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
-use crate::memory_reader::MemoryReader;
+use crate::memory_reader::{MemoryReader, pack_memory_messages};
 use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest, ChannelUser};
@@ -304,7 +304,7 @@ impl AgentCoordinator {
         } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
             session.context.lock().await.set_system_message(ego_info);
         }
-        // 按模式加载上下文：event 从缓存恢复；role 从记忆读取（Task 10 改为记忆打包）
+        // 按模式加载上下文：event 从缓存恢复；role 从记忆打包（两查询比较取并集，打包为一条 user 消息）
         let key = self.session_key_of_session(session);
         match &*session.mode {
             Mode::Event(_) => {
@@ -313,11 +313,15 @@ impl AgentCoordinator {
                 }
             }
             Mode::Role => {
-                if let Ok(history) = self.memory_reader
-                    .read_history(&self.config, session.agent_id.as_str(), session.role_name.as_str(), &session.mode)
+                // 记忆打包：时间窗/最近N 两查询取并集，打包为一条 user 消息作为首条内容
+                let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+                if let Ok(msgs) = self.memory_reader
+                    .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg)
                     .await
                 {
-                    session.context.lock().await.load_messages(history);
+                    if let Some(packed) = pack_memory_messages(&msgs) {
+                        session.context.lock().await.push(packed);
+                    }
                 }
             }
         }
