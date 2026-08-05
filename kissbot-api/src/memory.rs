@@ -88,6 +88,9 @@ pub struct QueryChannelRequest {
     pub group_id: Arc<String>,
     pub start_time: Arc<String>,
     pub end_time: Arc<String>,
+    /// 可选：返回该范围内最近 N 条（合并排序后截取）；None 返回全部
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +99,9 @@ pub struct QueryRequest {
     pub role_name: Arc<String>,
     pub start_time: Arc<String>,
     pub end_time: Arc<String>,
+    /// 可选：返回该范围内最近 N 条；None 返回全部
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 
@@ -374,6 +380,7 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             start_time: Arc::new("2026-01-01".to_string()),
             end_time: Arc::new("2026-06-01".to_string()),
+            limit: None,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: QueryChannelRequest = serde_json::from_value(json).unwrap();
@@ -387,6 +394,7 @@ mod tests {
             role_name: Arc::new("r1".to_string()),
             start_time: Arc::new("2026-01-01".to_string()),
             end_time: Arc::new("2026-06-01".to_string()),
+            limit: None,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: QueryRequest = serde_json::from_value(json).unwrap();
