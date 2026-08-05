@@ -179,13 +179,13 @@ mod tests {
             tools: Arc::new(kissbot_api::ArcSwapHashMap::new()),
         }
     }
-}
 
-/// 测试用 mock tool
-struct EchoTool;
-#[async_trait]
-impl Tool for EchoTool {
-    async fn call(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        Ok(params)
+    /// 测试用 mock tool
+    struct EchoTool;
+    #[async_trait]
+    impl Tool for EchoTool {
+        async fn call(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+            Ok(params)
+        }
     }
 }
