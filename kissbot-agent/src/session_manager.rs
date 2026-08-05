@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -71,6 +72,10 @@ pub struct Session {
     pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
+    /// 待合批缓冲（合批超时后打包进上下文）
+    pub batch: tokio::sync::Mutex<crate::batching::BatchBuffer>,
+    /// 合批代数：重置时递增使旧计时任务失效
+    pub batch_gen: Arc<AtomicU64>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
@@ -85,6 +90,8 @@ impl Session {
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
+            batch: tokio::sync::Mutex::new(crate::batching::BatchBuffer::new()),
+            batch_gen: Arc::new(AtomicU64::new(0)),
             model: ArcSwap::from_pointee(model),
             agent_id,
         }

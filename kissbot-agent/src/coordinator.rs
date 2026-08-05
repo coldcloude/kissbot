@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -114,6 +114,8 @@ pub struct AgentCoordinator {
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
+    /// 自引用弱引用（new() 中设置；channel 合批延时任务升级为 Arc<Self> 回调用）
+    weak_self: OnceLock<Weak<Self>>,
 }
 
 impl AgentCoordinator {
@@ -141,7 +143,11 @@ impl AgentCoordinator {
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
+            weak_self: OnceLock::new(),
         });
+
+        // 设置自引用弱引用（合批延时任务升级用；弱引用避免引用环）
+        let _ = coordinator.weak_self.set(Arc::downgrade(&coordinator));
 
         // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
         {
@@ -705,7 +711,48 @@ impl AgentCoordinator {
         };
         let key = self.session_key_for(&ch);
         let (session, _) = self.ensure_session(&key, channel_id).await;
-        self.run_agentic_loop(channel_id, &session, event, &out_channel).await;
+        self.enqueue_batch(channel_id, &session, &out_channel, event.incoming_message.user_name.as_str(), &content_text).await;
+    }
+
+    /// 普通消息入合批缓冲；首条消息启动延时打包任务（超时后打包为一条 user 消息进 agentic loop）
+    /// 管理命令不走本方法（handle_incoming 第 2 步已拦截）；回显判定/记忆写入仍逐条即时执行（incoming_message 中）
+    async fn enqueue_batch(
+        &self,
+        channel_id: &str,
+        session: &Arc<Session>,
+        out_channel: &OutChannel,
+        user_name: &str,
+        content_text: &str,
+    ) {
+        let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+        let interval = Duration::from_secs(cfg.channel_batch_interval_secs);
+
+        let mut batch = session.batch.lock().await;
+        let was_empty = batch.is_empty();
+        batch.push(user_name, content_text);
+        drop(batch);
+        if !was_empty {
+            return;  // 已有计时任务在跑，等待汇合
+        }
+        let gen_at_start = session.batch_gen.load(std::sync::atomic::Ordering::SeqCst);
+        let Some(coordinator) = self.weak_self.get().and_then(|w| w.upgrade()) else {
+            warn!("enqueue_batch: 协调器已释放，跳过合批");
+            return;
+        };
+        let session = session.clone();
+        let out_channel = out_channel.clone();
+        let channel_id = channel_id.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(interval).await;
+            let mut b = session.batch.lock().await;
+            // 代数变化（会话已重置）或缓冲被清空：放弃本次打包
+            if session.batch_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start { return; }
+            if b.is_empty() { return; }
+            let items = b.take();
+            drop(b);
+            let content = crate::batching::pack_batch(&items);
+            coordinator.run_agentic_loop(&channel_id, &session, content, &out_channel).await;
+        });
     }
 
     async fn handle_admin_command(
@@ -811,14 +858,13 @@ impl AgentCoordinator {
         None
     }
 
-    async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>, out_channel: &OutChannel) {
+    async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, content_text: String, out_channel: &OutChannel) {
         // 无可用模型：静默忽略普通消息（仅管理指令可用）
         if session.model.load().is_none() {
             return;
         }
-        let content_text = extract_text(&event.incoming_message.content);
 
-        // 1. 追加用户消息到该会话上下文（time/messenger 等不再保留，只留文本）
+        // 1. 追加用户消息到该会话上下文（合批已打包为一条 user 消息，time/messenger 等不保留，只留文本）
         {
             let mut ctx = session.context.lock().await;
             ctx.push(Message::User { content: Arc::new(content_text.clone()) });
