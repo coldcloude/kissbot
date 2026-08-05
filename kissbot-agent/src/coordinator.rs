@@ -12,6 +12,8 @@ use tracing::{info, warn};
 use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
 };
+use crate::context_cache::ContextCache;
+use crate::history::HistoryArchive;
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
@@ -94,6 +96,10 @@ enum ConfigChange {
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
+    /// 上下文本地缓存（agent-data/context）
+    cache: Arc<ContextCache>,
+    /// 历史上下文归档（agent-data/context-history）
+    history: Arc<HistoryArchive>,
     memory_reader: Arc<MemoryReader>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
@@ -118,11 +124,14 @@ impl AgentCoordinator {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let session_manager = SessionManager::new();
         let model_client = ModelClient::new(config.clone());
+        let data_dir = config.data_dir().to_string();
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
         let coordinator = Arc::new(Self {
             config: config.clone(),
+            cache: Arc::new(ContextCache::new(&data_dir)),
+            history: Arc::new(HistoryArchive::new(&data_dir)),
             memory_reader,
             memory_store_client,
             session_manager,
@@ -289,17 +298,32 @@ impl AgentCoordinator {
         } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
             session.context.lock().await.set_system_message(ego_info);
         }
-        // 历史记忆照常加载（保留 agent 也调 memory-store；URL 空则优雅跳过）
-        if let Ok(history) = self.memory_reader
-            .read_history(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
-            .await
-        {
-            session.context.lock().await.load_messages(history);
+        // 按模式加载上下文：event 从缓存恢复；role 从记忆读取（Task 10 改为记忆打包）
+        let key = self.session_key_of_session(session);
+        match &*session.mode {
+            Mode::Event(_) => {
+                if let Ok(history) = self.cache.read_all(&key).await {
+                    session.context.lock().await.load_messages(history);
+                }
+            }
+            Mode::Role => {
+                if let Ok(history) = self.memory_reader
+                    .read_history(&self.config, session.agent_id.as_str(), session.role_name.as_str(), &session.mode)
+                    .await
+                {
+                    session.context.lock().await.load_messages(history);
+                }
+            }
         }
         // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
             .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
             .await;
+    }
+
+    /// 从 Session 运行态构造 SessionKey（缓存/历史定位用）
+    fn session_key_of_session(&self, session: &Arc<Session>) -> SessionKey {
+        session_key_of(session.agent_name.as_str(), session.role_name.as_str(), (*session.mode).clone())
     }
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
@@ -335,8 +359,14 @@ impl AgentCoordinator {
         warn!("reset: channel {} 无会话可重置", channel_id);
     }
 
-    /// 上下文重置：清空后重建初始上下文（取记忆/ego 用会话保存的 agent_id）
+    /// 上下文重置：归档当前缓存 → 清空缓存 → 清空内存 → 重建（按模式）
     async fn reset_context(&self, session: &Arc<Session>) {
+        let key = self.session_key_of_session(session);
+        let path = self.cache.path_for(&key);
+        if path.exists() {
+            let _ = self.history.archive(&key, &path).await;
+        }
+        let _ = self.cache.clear(&key).await;
         session.context.lock().await.clear();
         self.build_initial_context(session).await;
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
@@ -794,6 +824,10 @@ impl AgentCoordinator {
             ctx.push(Message::User { content: Arc::new(content_text.clone()) });
         }
 
+        // 1b. 用户消息写缓存（best-effort，失败仅丢缓存不阻塞流程）
+        let key = self.session_key_of_session(session);
+        let _ = self.cache.append(&key, &[Message::User { content: Arc::new(content_text.clone()) }]).await;
+
         // 2. 调用模型（用该会话的模型）
         let response = {
             let ctx = session.context.lock().await;
@@ -817,6 +851,13 @@ impl AgentCoordinator {
                         tool_calls: None,
                     });
                 }
+
+                // 3b. assistant 回复写缓存（best-effort，失败仅丢缓存不阻塞流程）
+                let _ = self.cache.append(&key, &[Message::Assistant {
+                    content: Arc::new(model_resp.content.clone()),
+                    reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
+                    tool_calls: None,
+                }]).await;
 
                 // 4. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
                 // 身份来自 out_channel；任一有值才写，都 None 跳过
