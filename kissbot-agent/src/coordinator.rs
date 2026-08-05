@@ -15,15 +15,16 @@ use crate::types::{
 use crate::context_cache::ContextCache;
 use crate::context_config::EffectiveContextConfig;
 use crate::history::HistoryArchive;
-use crate::config_manager::{ConfigManager, ProviderModel, OutChannel};
+use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::{MemoryReader, pack_memory_messages};
 use crate::memory_store_client::MemoryStoreClient;
+use crate::station::{self, StationRuntime};
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest, ChannelUser};
-use kissbot_api::memory::{ChannelRequest, ThinkRequest};
+use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 /// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
@@ -36,6 +37,9 @@ pub const RESERVED_ROLE_NAME: &str = "";
 const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 /// 上述 TTL 的 Duration 形式（evict 入参）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
+
+/// Agentic Loop 工具调用轮次上限（防死循环）
+const MAX_TOOL_ROUNDS: usize = 10;
 
 // 上下文消息数量上限（溢出触发重置/压缩）已废弃硬编码常量 MAX_CONTEXT_MESSAGES——
 // 阈值统一由会话模型 effective.max_context_messages（provider/model 配置合成）决定，见 run_agentic_loop 溢出检查。
@@ -115,6 +119,8 @@ pub struct AgentCoordinator {
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
+    /// station_id → StationRuntime（启动时按配置构建；base_url 为空的本地 station 注册内置 Read 工具）
+    station_runtimes: Arc<DashMap<String, Arc<StationRuntime>>>,
     /// 自引用弱引用（new() 中设置；channel 合批延时任务升级为 Arc<Self> 回调用）
     weak_self: OnceLock<Weak<Self>>,
 }
@@ -144,6 +150,7 @@ impl AgentCoordinator {
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
+            station_runtimes: Arc::new(DashMap::new()),
             weak_self: OnceLock::new(),
         });
 
@@ -173,6 +180,20 @@ impl AgentCoordinator {
             Err(e) => { tracing::warn!("校验 default_model 失败（API 不可用?）: {:?}", e); None }
         };
         coordinator.valid_default.store(Arc::new(valid_default));
+
+        // 构建 Station 运行态：base_url 为空的本地 station 注册内置 Read 工具；
+        // 远程 station 的 runtime 同样构建（call_tool 走 REST 骨架，本轮不实现）
+        {
+            let runtimes = coordinator.station_runtimes.clone();
+            for (_, sc) in config.stations().await {
+                let runtime = Arc::new(StationRuntime::new(sc));
+                if runtime.config().base_url.is_empty() {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    runtime.register_local("read", Arc::new(station::ReadTool::new(cwd)));
+                }
+                runtimes.insert(runtime.station_id().to_string(), runtime);
+            }
+        }
 
         // 启动：为全部 channel 绑定运行态 agent（解析失败回退保留 agent），
         // 再按 channel 绑定三元组初始化会话集合（agent_name 为空 = 保留 agent，同样建会话）
@@ -414,12 +435,12 @@ impl AgentCoordinator {
             msgs.push(Message::User { content: Arc::new(cfg.compress_prompt.clone()) });
             msgs
         };
-        // 2. 调会话模型总结（Task 13 后 call 增加 tools 参数，同步改为三参）
+        // 2. 调会话模型总结（压缩不携带工具定义）
         let summary = {
             let model = session.model.load_full();
             let Some(pm) = model.as_ref() else { return; };
             let mc = self.model_client.lock().await;
-            mc.call(pm, &messages).await.map(|r| r.content).unwrap_or_default()
+            mc.call(pm, &messages, &[]).await.map(|r| r.content).unwrap_or_default()
         };
         if summary.is_empty() {
             warn!("上下文压缩总结为空，保留原上下文");
@@ -927,111 +948,195 @@ impl AgentCoordinator {
             return;
         }
 
+        // 会话 key（缓存定位）
+        let key = self.session_key_of_session(session);
+
         // 1. 追加用户消息到该会话上下文（合批已打包为一条 user 消息，time/messenger 等不保留，只留文本）
         {
             let mut ctx = session.context.lock().await;
             ctx.push(Message::User { content: Arc::new(content_text.clone()) });
         }
-
         // 1b. 用户消息写缓存（best-effort，失败仅丢缓存不阻塞流程）
-        let key = self.session_key_of_session(session);
         let _ = self.cache.append(&key, &[Message::User { content: Arc::new(content_text.clone()) }]).await;
 
-        // 2. 调用模型（用该会话的模型）
-        let response = {
-            let ctx = session.context.lock().await;
-            let messages = ctx.build();
-            let model = session.model.load_full();
-            let Some(pm) = model.as_ref() else { return; };
-            let mc = self.model_client.lock().await;
-            mc.call(pm, &messages).await
-        };
+        // 2. tools 聚合（会话 context 配置的启用 station）
+        let tools = self.tools_for_session(session).await;
 
-        match response {
-            Ok(model_resp) => {
-                let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // 3. 多轮工具循环：LLM 返回 tool_calls 则执行工具并继续，直到返回最终回复（上限 MAX_TOOL_ROUNDS 防死循环）
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            let response = {
+                let ctx = session.context.lock().await;
+                let messages = ctx.build();
+                let model = session.model.load_full();
+                let Some(pm) = model.as_ref() else { return; };
+                let mc = self.model_client.lock().await;
+                mc.call(pm, &messages, &tools).await
+            };
 
-                // 3. 记录已发送内容（assistant 消息含 reasoning_content，本地保留供缓存/后续轮次）
-                {
-                    let mut ctx = session.context.lock().await;
-                    ctx.push(Message::Assistant {
+            match response {
+                Ok(model_resp) if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS => {
+                    // 4. 追加 assistant(tool_calls) + 写缓存
+                    {
+                        let mut ctx = session.context.lock().await;
+                        ctx.push(Message::Assistant {
+                            content: Arc::new(String::new()),
+                            reasoning_content: None,
+                            tool_calls: Some(model_resp.tool_calls.clone()),
+                        });
+                    }
+                    let _ = self.cache.append(&key, &[Message::Assistant {
+                        content: Arc::new(String::new()),
+                        reasoning_content: None,
+                        tool_calls: Some(model_resp.tool_calls.clone()),
+                    }]).await;
+
+                    // 5. 逐个执行 tool call → Tool 消息 + 写缓存 + 记忆写入（tool-call / tool-result）
+                    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let role_name = memory_role(session.role_name.as_str(), &session.mode);
+                    let agent_id = session.agent_id.clone();
+                    for call in &model_resp.tool_calls {
+                        let result = self.execute_tool_call(session, call).await;
+                        let result_text = result.to_string();
+                        {
+                            let mut ctx = session.context.lock().await;
+                            ctx.push(Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) });
+                        }
+                        let _ = self.cache.append(&key, &[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) }]).await;
+                        // 记忆写入（tool-call 与 tool-result；agent_id 取会话状态，role_name 含事件编码）
+                        self.memory_store_client.push_tool_call(ToolCallRequest {
+                            agent_id: agent_id.clone(),
+                            role_name: Arc::new(role_name.clone()),
+                            tool_name: call.name.clone(),
+                            tool_params: call.arguments.clone(),
+                            key: Arc::new(String::new()),
+                            time: Arc::new(now.clone()),
+                        }).await;
+                        self.memory_store_client.push_tool_result(ToolResultRequest {
+                            agent_id: agent_id.clone(),
+                            role_name: Arc::new(role_name.clone()),
+                            tool_result: Arc::new(result.clone()),
+                            key: Arc::new(String::new()),
+                            time: Arc::new(now.clone()),
+                        }).await;
+                    }
+                    continue;  // 继续下一轮
+                }
+                Ok(model_resp) => {
+                    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+                    // 6. 追加 assistant 回复（含 reasoning_content 本地保留）+ 写缓存
+                    {
+                        let mut ctx = session.context.lock().await;
+                        ctx.push(Message::Assistant {
+                            content: Arc::new(model_resp.content.clone()),
+                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
+                            tool_calls: None,
+                        });
+                    }
+                    let _ = self.cache.append(&key, &[Message::Assistant {
                         content: Arc::new(model_resp.content.clone()),
                         reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: None,
-                    });
-                }
+                    }]).await;
 
-                // 3b. assistant 回复写缓存（best-effort，失败仅丢缓存不阻塞流程）
-                let _ = self.cache.append(&key, &[Message::Assistant {
-                    content: Arc::new(model_resp.content.clone()),
-                    reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
-                    tool_calls: None,
-                }]).await;
+                    // 7. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
+                    // 身份来自 out_channel；任一有值才写，都 None 跳过
+                    if should_write_think(model_resp.reasoning_content.as_deref(), model_resp.thinking.as_deref()) {
+                        let key_uuid = uuid::Uuid::new_v4().to_string();
+                        let role_name = memory_role(session.role_name.as_str(), &session.mode);
+                        let agent_id = session.agent_id.clone();
 
-                // 4. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
-                // 身份来自 out_channel；任一有值才写，都 None 跳过
-                if should_write_think(model_resp.reasoning_content.as_deref(), model_resp.thinking.as_deref()) {
-                    let key = uuid::Uuid::new_v4().to_string();
-                    let role_name = memory_role(&session.role_name, &session.mode);
-                    let agent_id = session.agent_id.clone();
+                        // 7a. ChannelRecord(Think(key)) 写主时间线（身份来自 out_channel，is_self=1）
+                        self.memory_store_client.push_channel_record(ChannelRequest {
+                            agent_id: agent_id.clone(),
+                            role_name: Arc::new(role_name.clone()),
+                            messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
+                            user_id: Arc::new(out_channel.user.user_id.clone()),
+                            self_user_id: Arc::new(out_channel.user.user_id.clone()),
+                            group_id: out_channel.group_id.clone(),
+                            is_self: 1,
+                            messenger_name: Arc::new(String::new()),   // 占位：详情经 key 关联，name 非关键
+                            user_name: Arc::new(String::new()),
+                            group_name: Arc::new(String::new()),
+                            content: Content::Think(Arc::new(key_uuid.clone())),
+                            time: Arc::new(now.clone()),
+                        }).await;
 
-                    // 4a. ChannelRecord(Think(key)) 写主时间线（身份来自 out_channel，is_self=1）
-                    self.memory_store_client.push_channel_record(ChannelRequest {
-                        agent_id: agent_id.clone(),
-                        role_name: Arc::new(role_name.clone()),
-                        messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
-                        user_id: Arc::new(out_channel.user.user_id.clone()),
-                        self_user_id: Arc::new(out_channel.user.user_id.clone()),
-                        group_id: out_channel.group_id.clone(),
-                        is_self: 1,
-                        messenger_name: Arc::new(String::new()),   // 占位：详情经 key 关联，name 非关键
-                        user_name: Arc::new(String::new()),
-                        group_name: Arc::new(String::new()),
-                        content: Content::Think(Arc::new(key.clone())),
-                        time: Arc::new(now.clone()),
-                    }).await;
-
-                    // 4b. ThinkRequest(key, reasoning_content, thinking) 写详情
-                    self.memory_store_client.push_think(ThinkRequest {
-                        agent_id,
-                        role_name: Arc::new(role_name),
-                        reasoning_content: Arc::new(model_resp.reasoning_content.clone().unwrap_or_default()),
-                        thinking: Arc::new(model_resp.thinking.clone().unwrap_or_default()),
-                        key: Arc::new(key),
-                        time: Arc::new(now.clone()),
-                    }).await;
-                }
-
-                // 5. 发送回复到该会话的 out_channel
-                self.send_outgoing(out_channel, model_resp.content).await;
-
-                // 6. 检查上下文超长（阈值来自会话模型的 effective.max_context_messages）
-                let overflow = {
-                    let ctx = session.context.lock().await;
-                    let model = session.model.load_full();
-                    match model.as_ref() {
-                        Some(pm) => match self.config.resolve_effective_config(pm).await {
-                            Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
-                            None => false,
-                        },
-                        None => false,
+                        // 7b. ThinkRequest(key, reasoning_content, thinking) 写详情
+                        self.memory_store_client.push_think(ThinkRequest {
+                            agent_id,
+                            role_name: Arc::new(role_name),
+                            reasoning_content: Arc::new(model_resp.reasoning_content.clone().unwrap_or_default()),
+                            thinking: Arc::new(model_resp.thinking.clone().unwrap_or_default()),
+                            key: Arc::new(key_uuid),
+                            time: Arc::new(now.clone()),
+                        }).await;
                     }
-                };
-                if overflow {
-                    warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
-                    // 按模式处理：event 超长压缩（LLM 总结归档），role 归档后从记忆重建
-                    match &*session.mode {
-                        Mode::Event(_) => self.compress_context(session).await,
-                        Mode::Role => self.reset_context(session).await,
-                    }
+
+                    // 8. 发送回复到该会话的 out_channel
+                    self.send_outgoing(out_channel, model_resp.content).await;
+                    break;
                 }
-            }
-            Err(e) => {
-                warn!("模型调用失败: {:?}", e);
-                self.send_outgoing(out_channel,
-                    format!("❌ 模型调用失败: {}", e)).await;
+                Err(e) => {
+                    warn!("模型调用失败: {:?}", e);
+                    self.send_outgoing(out_channel,
+                        format!("❌ 模型调用失败: {}", e)).await;
+                    break;
+                }
             }
         }
+
+        // 9. 检查上下文超长（阈值来自会话模型的 effective.max_context_messages）
+        let overflow = {
+            let ctx = session.context.lock().await;
+            let model = session.model.load_full();
+            match model.as_ref() {
+                Some(pm) => match self.config.resolve_effective_config(pm).await {
+                    Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
+                    None => false,
+                },
+                None => false,
+            }
+        };
+        if overflow {
+            warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
+            // 按模式处理：event 超长压缩（LLM 总结归档），role 归档后从记忆重建
+            match &*session.mode {
+                Mode::Event(_) => self.compress_context(session).await,
+                Mode::Role => self.reset_context(session).await,
+            }
+        }
+    }
+
+    /// 会话可用工具：context 配置的启用的 stations ∩ 实际配置的 station → 收集 ToolConfig
+    /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
+    async fn tools_for_session(&self, session: &Arc<Session>) -> Vec<ToolConfig> {
+        let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+        let mut tools = Vec::new();
+        for entry in self.station_runtimes.iter() {
+            let (station_id, runtime) = entry.pair();
+            if cfg.stations.contains(station_id.as_str()) {
+                tools.extend(runtime.configured_tools());
+            }
+        }
+        tools
+    }
+
+    /// 执行单个 tool call：在启用的 station 中查找并调用；找不到/调用失败返回错误 JSON
+    async fn execute_tool_call(&self, session: &Arc<Session>, call: &crate::types::ToolCall) -> serde_json::Value {
+        let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+        for entry in self.station_runtimes.iter() {
+            let (station_id, runtime) = entry.pair();
+            if cfg.stations.contains(station_id.as_str()) && runtime.has_tool(call.name.as_str()) {
+                match runtime.call_tool(call.name.as_str(), (*call.arguments).clone()).await {
+                    Ok(v) => return v,
+                    Err(e) => return serde_json::json!({ "error": e.to_string() }),
+                }
+            }
+        }
+        serde_json::json!({ "error": format!("工具不存在: {}", call.name) })
     }
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）

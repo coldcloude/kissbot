@@ -73,6 +73,8 @@ impl Tool for ReadTool {
 pub struct StationRuntime {
     config: Arc<StationConfig>,
     local_tools: DashMap<String, Arc<dyn Tool>>,
+    /// REST 分支请求客户端（远程 Station 后端实现时消费；本轮骨架未使用）
+    #[allow(dead_code)]
     client: reqwest::Client,
 }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tokio::time::sleep;
 
-use crate::config_manager::{ConfigManager, EffectiveModelConfig, ProviderModel};
+use crate::config_manager::{ConfigManager, EffectiveModelConfig, ProviderModel, ToolConfig};
 use crate::provider::Provider;
 use crate::types::{Error, Message, ModelResponse, Result};
 
@@ -21,12 +21,13 @@ impl ModelClient {
     /// 调用模型 API（非流式）
     /// 每次调用经 ConfigManager 现场合成最新 EffectiveModelConfig（配置永远最新，无需热更新），
     /// 并按 provider_type 构建对应 Provider 实现（未知类型报错）。
-    pub async fn call(&self, pm: &ProviderModel, messages: &[Message]) -> Result<ModelResponse> {
+    /// tools 为本次请求携带的工具定义（空则 OpenAI 请求不发送 tools 字段）。
+    pub async fn call(&self, pm: &ProviderModel, messages: &[Message], tools: &[ToolConfig]) -> Result<ModelResponse> {
         let effective = self.config_manager.resolve_effective_config(pm).await
             .ok_or_else(|| Error::ModelProviderNotSupported(format!(
                 "provider/model 不存在: {}/{}", pm.provider, pm.model)))?;
         let provider: Box<dyn Provider> = self.build_provider(&effective)?;
-        self.call_with_retry(&effective, provider, messages).await
+        self.call_with_retry(&effective, provider, messages, tools).await
     }
 
     /// 按 provider_type 构建 Provider 实现（protocol 差异封装在 provider.rs，未知类型报错）
@@ -50,12 +51,13 @@ impl ModelClient {
         effective: &EffectiveModelConfig,
         provider: Box<dyn Provider>,
         messages: &[Message],
+        tools: &[ToolConfig],
     ) -> Result<ModelResponse> {
         let max_retries = effective.retry_count;
         let mut last_error = None;
 
         for attempt in 0..=max_retries {
-            match provider.send(effective, messages).await {
+            match provider.send(effective, messages, tools).await {
                 Ok(response) => return Ok(response),
                 // 配置类错误（如未知 provider_type）是永久性错误，重试无意义，直接返回
                 Err(e @ Error::ModelProviderNotSupported(_)) => return Err(e),

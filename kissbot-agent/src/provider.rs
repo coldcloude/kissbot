@@ -4,13 +4,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::config_manager::EffectiveModelConfig;
+use crate::config_manager::{EffectiveModelConfig, ToolConfig};
 use crate::types::{Error, Message, ModelResponse, Result, ToolCall};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
 #[async_trait]
 pub trait Provider: Send + Sync {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse>;
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> Result<ModelResponse>;
     /// 从服务商 API 获取全部可用模型名（GET /models）
     /// 本期只落位：后续任务由管理 API（GET /models）消费
     #[allow(dead_code)]
@@ -49,7 +49,7 @@ impl OpenAiProvider {
     }
 }
 
-fn openai_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_json::Value {
+fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> serde_json::Value {
     let msgs: Vec<serde_json::Value> = messages.iter().map(|m| match m {
         Message::System { content } => json!({ "role": "system", "content": content }),
         Message::User { content } => json!({ "role": "user", "content": content }),
@@ -74,6 +74,13 @@ fn openai_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_
         "max_tokens": effective.max_tokens,
         "stream": false,
     });
+    // tools：非空才发送（工具定义数组，供 LLM 调用）
+    if !tools.is_empty() {
+        body["tools"] = json!(tools.iter().map(|t| json!({
+            "type": "function",
+            "function": { "name": t.name, "description": t.description, "parameters": t.parameters },
+        })).collect::<Vec<_>>());
+    }
     // 可选参数：有值才传（temperature / thinking / reasoning_effort）
     if let Some(t) = effective.temperature {
         body["temperature"] = json!(t);
@@ -138,12 +145,12 @@ fn parse_openai_models(data: &serde_json::Value) -> Vec<String> {
 
 #[async_trait]
 impl Provider for OpenAiProvider {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse> {
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> Result<ModelResponse> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(effective.timeout_secs))
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&openai_body(effective, messages))
+            .json(&openai_body(effective, messages, tools))
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -192,7 +199,7 @@ impl AnthropicProvider {
     }
 }
 
-fn anthropic_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_json::Value {
+fn anthropic_body(effective: &EffectiveModelConfig, messages: &[Message], _tools: &[ToolConfig]) -> serde_json::Value {
     // 分离 system 消息
     let system_parts: Vec<String> = messages.iter()
         .filter_map(|m| match m {
@@ -264,13 +271,13 @@ fn parse_anthropic_models(data: &serde_json::Value) -> Vec<String> {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
-    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message]) -> Result<ModelResponse> {
+    async fn send(&self, effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> Result<ModelResponse> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(effective.timeout_secs))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .json(&anthropic_body(effective, messages))
+            .json(&anthropic_body(effective, messages, tools))
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -336,7 +343,7 @@ mod tests {
     fn openai_body_includes_params_and_messages() {
         let eff = sample_effective();
         let msgs = vec![sys("你是助手"), usr("你好")];
-        let body = openai_body(&eff, &msgs);
+        let body = openai_body(&eff, &msgs, &[]);
         assert_eq!(body["model"], "deepseek-4-flash");
         assert_eq!(body["max_tokens"], 2048);
         // temperature 为 f32，序列化为 f64 表示，用 f32 精确值比较
@@ -353,7 +360,7 @@ mod tests {
         eff.thinking = None;
         eff.reasoning_effort = None;
         let msgs = vec![usr("你好")];
-        let body = openai_body(&eff, &msgs);
+        let body = openai_body(&eff, &msgs, &[]);
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
         assert!(body.get("reasoning_effort").is_none(), "reasoning_effort 未配置不应传");
@@ -367,10 +374,53 @@ mod tests {
         eff.thinking = Some("enabled".into());
         eff.reasoning_effort = Some("high".into());
         let msgs = vec![usr("你好")];
-        let body = openai_body(&eff, &msgs);
+        let body = openai_body(&eff, &msgs, &[]);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["temperature"], 0.3_f32 as f64);
+    }
+
+    #[test]
+    fn openai_body_includes_tools_when_present() {
+        let eff = sample_effective();
+        let msgs = vec![usr("查一下")];
+        let tools = vec![ToolConfig {
+            name: Arc::new("read".into()),
+            description: Arc::new("读取文本文件".into()),
+            parameters: Arc::new(serde_json::json!({ "type": "object" })),
+        }];
+        let body = openai_body(&eff, &msgs, &tools);
+        assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn openai_body_omits_tools_when_empty() {
+        let eff = sample_effective();
+        let msgs = vec![usr("你好")];
+        let body = openai_body(&eff, &msgs, &[]);
+        assert!(body.get("tools").is_none(), "无工具不应发送 tools 字段");
+    }
+
+    #[test]
+    fn openai_body_maps_tool_and_assistant_tool_calls() {
+        let eff = sample_effective();
+        let msgs = vec![
+            Message::Assistant {
+                content: Arc::new(String::new()),
+                reasoning_content: None,
+                tool_calls: Some(vec![ToolCall { id: Arc::new("c1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/a"})) }]),
+            },
+            Message::Tool { tool_call_id: Arc::new("c1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
+        ];
+        let body = openai_body(&eff, &msgs, &[]);
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["arguments"], r#"{"path":"/a"}"#, "arguments 序列化为 JSON 字符串");
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "c1");
+        // reasoning_content 不发送
+        assert!(body["messages"][0].get("reasoning_content").is_none());
     }
 
     #[test]
@@ -412,7 +462,7 @@ mod tests {
     fn anthropic_body_separates_system_messages() {
         let eff = sample_effective();
         let msgs = vec![sys("设定"), usr("hi")];
-        let body = anthropic_body(&eff, &msgs);
+        let body = anthropic_body(&eff, &msgs, &[]);
         assert_eq!(body["system"], "设定");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -426,7 +476,7 @@ mod tests {
         eff.thinking = None;
         eff.reasoning_effort = None;
         let msgs = vec![usr("hi")];
-        let body = anthropic_body(&eff, &msgs);
+        let body = anthropic_body(&eff, &msgs, &[]);
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
         assert!(body.get("output_config").is_none(), "reasoning_effort 未配置不应传 output_config");
@@ -438,7 +488,7 @@ mod tests {
         eff.thinking = Some("enabled".into());
         eff.reasoning_effort = Some("high".into());
         let msgs = vec![usr("hi")];
-        let body = anthropic_body(&eff, &msgs);
+        let body = anthropic_body(&eff, &msgs, &[]);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["temperature"], 0.3_f32 as f64);

@@ -24,7 +24,8 @@ impl SessionContext {
         self.system_message = Some(content);
     }
 
-    /// 取系统消息（压缩/恢复用）
+    /// 取系统消息（压缩/恢复用；当前调用方经 build() 内部读取，保留供后续使用）
+    #[allow(dead_code)]
     pub fn system_message(&self) -> Option<&str> {
         self.system_message.as_deref()
     }
@@ -50,7 +51,8 @@ impl SessionContext {
         items
     }
 
-    /// 消息条数（不含 system）
+    /// 消息条数（不含 system；is_overflow 内部直接算，保留供调用方读取）
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.messages.len()
     }

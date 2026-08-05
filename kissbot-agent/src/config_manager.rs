@@ -334,6 +334,11 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
     }
+    /// 返回所有 station 配置快照（station_id -> Arc<StationConfig>）
+    pub async fn stations(&self) -> Vec<(String, Arc<StationConfig>)> {
+        let repo = self.nexus_repo.read().await;
+        repo.stations.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
+    }
     /// 按 channel_id 直接查找单个 channel 配置（map O(1) get，不克隆整个 map 再遍历）
     pub async fn channel(&self, channel_id: &str) -> Option<Arc<ChannelConfig>> {
         let repo = self.nexus_repo.read().await;

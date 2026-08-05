@@ -155,14 +155,12 @@ impl MemoryStoreClient {
         self.think_appender.append(THINK_KEY.to_string(), vec![record]).await;
     }
 
-    /// 推送 tool-call 记录（station 工具调用功能落地时消费）
-    #[allow(dead_code)]
+    /// 推送 tool-call 记录（station 工具调用后写入记忆）
     pub async fn push_tool_call(&self, record: ToolCallRequest) {
         self.tool_call_appender.append(TOOL_CALL_KEY.to_string(), vec![record]).await;
     }
 
-    /// 推送 tool-result 记录（station 工具调用功能落地时消费）
-    #[allow(dead_code)]
+    /// 推送 tool-result 记录（station 工具调用后写入记忆）
     pub async fn push_tool_result(&self, record: ToolResultRequest) {
         self.tool_result_appender.append(TOOL_RESULT_KEY.to_string(), vec![record]).await;
     }
