@@ -8,6 +8,7 @@ mod context_cache;
 mod context_config;
 mod coordinator;
 mod ego_md;
+mod history;
 mod http_server;
 mod model_client;
 mod provider;
