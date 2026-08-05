@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - 遵守 `.claude/rules/coding-standards.md`：时间格式 `yyyy-MM-dd HH:mm:ss`；非枚举/非 Map Key/非 Vec 字段用 `Arc<T>` 包裹（HashSet 字段也用 `Arc<HashSet>`）
+- **用户已定（pre-flight）**：`Message`/`ToolCall` 字段按编码规范用 `Arc<String>`（String 字段，含 Option 内）/ `Arc<serde_json::Value>`（arguments）；构造一律 `Arc::new(...)`，读取用 `.as_str()`/`(*x).clone()`/`x.as_ref()`；`ToolConfig` 同（name/description 用 `Arc<String>`，parameters 用 `Arc<Value>`）；`MemoryMsg` 中间结构用普通 String（不参与 wire）
 - 不要删除代码中的注释（CLAUDE.md）
 - 禁止用 sed/python 修改文件；读写用工具
 - 测试运行：各 crate 独立，`cd <crate> && cargo test`（无根 workspace）
@@ -35,14 +36,14 @@
 #[test]
 fn message_serde_roundtrip() {
     let msgs = vec![
-        Message::System { content: "你是助手".into() },
-        Message::User { content: "你好".into() },
+        Message::System { content: Arc::new("你是助手".into()) },
+        Message::User { content: Arc::new("你好".into()) },
         Message::Assistant {
-            content: String::new(),
-            reasoning_content: Some("思考".into()),
-            tool_calls: Some(vec![ToolCall { id: "call_1".into(), name: "read".into(), arguments: serde_json::json!({"path": "/tmp/a.txt"}) }]),
+            content: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("思考".into())),
+            tool_calls: Some(vec![ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) }]),
         },
-        Message::Tool { tool_call_id: "call_1".into(), name: "read".into(), content: "内容".into() },
+        Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
     ];
     for m in &msgs {
         let json = serde_json::to_value(m).unwrap();
@@ -58,7 +59,7 @@ fn message_serde_roundtrip() {
 
 #[test]
 fn message_assistant_optional_fields_omitted() {
-    let m = Message::Assistant { content: "回答".into(), reasoning_content: None, tool_calls: None };
+    let m = Message::Assistant { content: Arc::new("回答".into()), reasoning_content: None, tool_calls: None };
     let v = serde_json::to_value(&m).unwrap();
     assert!(v.get("reasoning_content").is_none(), "None 字段不应序列化");
     assert!(v.get("tool_calls").is_none(), "None 字段不应序列化");
@@ -72,16 +73,17 @@ Expected: 编译失败——`Message` 未定义
 
 - [ ] **Step 3: 实现**
 
-`kissbot-agent/src/types.rs`：把旧的 ToolCall 定义替换为：
+`kissbot-agent/src/types.rs` 顶部 import 增加 `use std::sync::Arc;`。把旧的 ToolCall 定义替换为：
 
 ```rust
 /// OpenAI function call：wire 为 {id, type:"function", function:{name, arguments(JSON 字符串)}}
+/// 字段按编码规范用 Arc<String>/Arc<Value>（与 ToolCallRequest.tool_params 先例一致）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    pub id: String,
-    pub name: String,
+    pub id: Arc<String>,
+    pub name: Arc<String>,
     /// 内部为解析后的参数对象；wire 时序列化为 JSON 字符串
-    pub arguments: serde_json::Value,
+    pub arguments: Arc<serde_json::Value>,
 }
 ```
 
@@ -89,24 +91,25 @@ pub struct ToolCall {
 
 ```rust
 /// OpenAI 兼容上下文消息：role 即枚举变体，数据字段与 role 同级
+/// 字段按编码规范用 Arc<String>（Option 内同样 Arc 包裹）；tool_calls 为 Vec 不包裹
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    System { content: String },
-    User { content: String },
+    System { content: Arc<String> },
+    User { content: Arc<String> },
     Assistant {
-        content: String,
+        content: Arc<String>,
         /// 本地保留（缓存/历史），wire 不发送（DeepSeek/Kimi 文档要求）
         #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning_content: Option<String>,
+        reasoning_content: Option<Arc<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,
     },
     Tool {
-        tool_call_id: String,
+        tool_call_id: Arc<String>,
         /// 调用的工具名（内部元数据）
-        name: String,
+        name: Arc<String>,
         /// 调用结果（JSON 字符串或文本）
-        content: String,
+        content: Arc<String>,
     },
 }
 ```
@@ -185,7 +188,7 @@ impl SessionContext {
     pub fn build(&self) -> Vec<Message> {
         let mut items = Vec::new();
         if let Some(system) = &self.system_message {
-            items.push(Message::System { content: system.clone() });
+            items.push(Message::System { content: Arc::new(system.clone()) });
         }
         items.extend(self.messages.iter().cloned());
         items
@@ -310,7 +313,7 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
             let arguments = tc["function"]["arguments"].as_str()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(serde_json::Value::Null);
-            Some(ToolCall { id, name, arguments })
+            Some(ToolCall { id: Arc::new(id), name: Arc::new(name), arguments: Arc::new(arguments) })
         }).collect()
     }).unwrap_or_default();
     ModelResponse { content, reasoning_content, thinking, tool_calls, finish_reason }
@@ -323,7 +326,7 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
 fn anthropic_body(effective: &EffectiveModelConfig, messages: &[Message]) -> serde_json::Value {
     let system_parts: Vec<String> = messages.iter()
         .filter_map(|m| match m {
-            Message::System { content } => Some(content.clone()),
+            Message::System { content } => Some(content.to_string()),
             _ => None,
         })
         .collect();
@@ -390,25 +393,25 @@ async fn call_with_retry(
 fn records_to_messages(&self, records: &[serde_json::Value]) -> Vec<Message> {
     records.iter().filter_map(|r| {
         let msg_type = r["msg_type"].as_str().unwrap_or("");
-        let content = extract_record_text(&r["content"]);
+        let content = Arc::new(extract_record_text(&r["content"]));
         match msg_type {
             "channel" | "text" => Some(Message::User { content }),
             "think" => Some(Message::Assistant { content, reasoning_content: None, tool_calls: None }),
             "tool_call" => Some(Message::Assistant {
-                content: String::new(),
+                content: Arc::new(String::new()),
                 reasoning_content: None,
                 tool_calls: Some(vec![ToolCall {
-                    id: String::new(),
-                    name: r["tool_name"].as_str().unwrap_or("").to_string(),
-                    arguments: r["tool_params"].as_str()
+                    id: Arc::new(String::new()),
+                    name: Arc::new(r["tool_name"].as_str().unwrap_or("").to_string()),
+                    arguments: Arc::new(r["tool_params"].as_str()
                         .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or(serde_json::Value::Null),
+                        .unwrap_or(serde_json::Value::Null)),
                 }]),
             }),
             "tool_result" => Some(Message::Tool {
-                tool_call_id: String::new(),
-                name: r["tool_name"].as_str().unwrap_or("").to_string(),
-                content: r["tool_result"].to_string(),
+                tool_call_id: Arc::new(String::new()),
+                name: Arc::new(r["tool_name"].as_str().unwrap_or("").to_string()),
+                content: Arc::new(r["tool_result"].to_string()),
             }),
             _ => None,
         }
@@ -439,7 +442,7 @@ fn extract_record_text(content: &serde_json::Value) -> String {
 // 1. 追加用户消息到该会话上下文（time/messenger 等不再保留，只留文本）
 {
     let mut ctx = session.context.lock().await;
-    ctx.push(Message::User { content: content_text.clone() });
+    ctx.push(Message::User { content: Arc::new(content_text.clone()) });
 }
 ```
 
@@ -453,8 +456,8 @@ fn extract_record_text(content: &serde_json::Value) -> String {
 
 ```rust
 let msgs = vec![
-    Message::System { content: "你是助手".into() },
-    Message::User { content: "你好".into() },
+    Message::System { content: Arc::new("你是助手".into()) },
+    Message::User { content: Arc::new("你好".into()) },
 ];
 ```
 
@@ -786,8 +789,8 @@ mod tests {
 
     fn sample_msgs() -> Vec<Message> {
         vec![
-            Message::User { content: "你好".into() },
-            Message::Assistant { content: "在的".into(), reasoning_content: Some("思考".into()), tool_calls: None },
+            Message::User { content: Arc::new("你好".into()) },
+            Message::Assistant { content: Arc::new("在的".into()), reasoning_content: Some(Arc::new("思考".into())), tool_calls: None },
         ]
     }
 
@@ -812,8 +815,8 @@ mod tests {
         cache.append(&k, &sample_msgs()).await.unwrap();
         let back = cache.read_all(&k).await.unwrap();
         assert_eq!(back.len(), 2);
-        assert!(matches!(&back[0], Message::User { content } if content == "你好"));
-        assert!(matches!(&back[1], Message::Assistant { reasoning_content: Some(r), .. } if r == "思考"), "reasoning_content 应保留");
+        assert!(matches!(&back[0], Message::User { content } if content.as_str() == "你好"));
+        assert!(matches!(&back[1], Message::Assistant { reasoning_content: Some(r), .. } if r.as_str() == "思考"), "reasoning_content 应保留");
     }
 
     #[tokio::test]
@@ -822,7 +825,7 @@ mod tests {
         let cache = ContextCache::new(dir.path().to_str().unwrap());
         let k = key();
         cache.append(&k, &sample_msgs()).await.unwrap();
-        cache.append(&k, &[Message::User { content: "再问".into() }]).await.unwrap();
+        cache.append(&k, &[Message::User { content: Arc::new("再问".into()) }]).await.unwrap();
         assert_eq!(cache.read_all(&k).await.unwrap().len(), 3, "追加不截断");
         cache.clear(&k).await.unwrap();
         assert!(cache.read_all(&k).await.unwrap().is_empty(), "clear 后为空");
@@ -975,7 +978,7 @@ mod tests {
         let cache = ContextCache::new(dir.path().to_str().unwrap());
         let history = HistoryArchive::new(dir.path().to_str().unwrap());
         let k = key();
-        cache.append(&k, &[Message::User { content: "你好".into() }]).await.unwrap();
+        cache.append(&k, &[Message::User { content: Arc::new("你好".into()) }]).await.unwrap();
         let source = cache.path_for(&k);
         let dest = history.archive(&k, &source).await.unwrap();
         // 目标文件名 = <key编码>-<时间戳>.jsonl
@@ -1136,14 +1139,14 @@ match &*session.mode {
 ```rust
 // 1b. 用户消息写缓存
 let key = self.session_key_of_session(session);
-self.cache.append(&key, &[Message::User { content: content_text.clone() }]).await;
+self.cache.append(&key, &[Message::User { content: Arc::new(content_text.clone()) }]).await;
 ```
 
 - 步骤 3 追加 assistant 后加：
 
 ```rust
 // 3b. assistant 回复写缓存
-self.cache.append(&key, &[Message::Assistant { content: model_resp.content.clone(), reasoning_content: model_resp.reasoning_content.clone(), tool_calls: None }]).await;
+self.cache.append(&key, &[Message::Assistant { content: Arc::new(model_resp.content.clone()), reasoning_content: model_resp.reasoning_content.clone().map(Arc::new), tool_calls: None }]).await;
 ```
 
 注意：`key` 在步骤 1b 定义，后续复用。步骤 3 的 `push_assistant` 改为 `ctx.push(Message::Assistant { ... })`。
@@ -1660,7 +1663,7 @@ mod tests {
             MemoryMsg { user_name: String::new(), content: "无名字".into(), time: "t2".into() },
         ];
         let m = pack_memory_messages(&msgs).expect("非空应打包");
-        assert!(matches!(&m, Message::User { content } if content == "u1: 你好\n无名字"));
+        assert!(matches!(&m, Message::User { content } if content.as_str() == "u1: 你好\n无名字"));
     }
 
     #[test]
@@ -1712,7 +1715,7 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Option<Message> {
     let content = msgs.iter().map(|m| {
         if m.user_name.is_empty() { m.content.clone() } else { format!("{}: {}", m.user_name, m.content) }
     }).collect::<Vec<_>>().join("\n");
-    Some(Message::User { content })
+    Some(Message::User { content: Arc::new(content) })
 }
 
 pub struct MemoryReader {
@@ -1949,7 +1952,7 @@ async fn compress_context(&self, session: &Arc<Session>) {
     let messages = {
         let mut ctx = session.context.lock().await;
         let mut msgs = ctx.build();
-        msgs.push(Message::User { content: cfg.compress_prompt.clone() });
+        msgs.push(Message::User { content: Arc::new(cfg.compress_prompt.clone()) });
         msgs
     };
     // 2. 调会话模型总结（Task 13 后 call 增加 tools 参数，同步改为三参）
@@ -1967,8 +1970,8 @@ async fn compress_context(&self, session: &Arc<Session>) {
     {
         let mut ctx = session.context.lock().await;
         ctx.clear();
-        ctx.push(Message::User { content: cfg.compress_prompt.clone() });
-        ctx.push(Message::Assistant { content: summary, reasoning_content: None, tool_calls: None });
+        ctx.push(Message::User { content: Arc::new(cfg.compress_prompt.clone()) });
+        ctx.push(Message::Assistant { content: Arc::new(summary), reasoning_content: None, tool_calls: None });
     }
     let _ = self.cache.clear(&key).await;
     let msgs = { session.context.lock().await.build() };
@@ -1999,8 +2002,8 @@ if overflow {
 /// 压缩后上下文（不含 system）：user(压缩指令) + assistant(总结)
 fn compressed_messages(cfg: &EffectiveContextConfig, summary: &str) -> Vec<Message> {
     vec![
-        Message::User { content: cfg.compress_prompt.clone() },
-        Message::Assistant { content: summary.to_string(), reasoning_content: None, tool_calls: None },
+        Message::User { content: Arc::new(cfg.compress_prompt.clone()) },
+        Message::Assistant { content: Arc::new(summary.to_string()), reasoning_content: None, tool_calls: None },
     ]
 }
 
@@ -2015,8 +2018,8 @@ fn compress_builds_prompt_summary_sequence() {
     };
     let msgs = compressed_messages(&cfg, "总结内容");
     assert_eq!(msgs.len(), 2);
-    assert!(matches!(&msgs[0], Message::User { content } if content == "总结以上对话"));
-    assert!(matches!(&msgs[1], Message::Assistant { content, .. } if content == "总结内容"));
+    assert!(matches!(&msgs[0], Message::User { content } if content.as_str() == "总结以上对话"));
+    assert!(matches!(&msgs[1], Message::Assistant { content, .. } if content.as_str() == "总结内容"));
 }
 ```
 
@@ -2251,7 +2254,7 @@ git commit -m "feat(agent): Station 框架——Tool trait（统一 Value 参数
 - Modify: `kissbot-agent/src/station.rs`（StationRuntime 改收 Arc<StationConfig>）
 
 **Interfaces:**
-- Produces: `config_manager::{StationConfig { station_id, base_url, timeout_secs, tools: Arc<ArcSwapHashMap<String, ToolConfig>> }, ToolConfig { name: String, description: String, parameters: Value }}`；`ConfigManager::stations()` 已有（返回 Arc<StationConfig> 快照）；`StationRuntime::new(config: Arc<StationConfig>)`
+- Produces: `config_manager::{StationConfig { station_id, base_url, timeout_secs, tools: Arc<ArcSwapHashMap<String, ToolConfig>> }, ToolConfig { name: Arc<String>, description: Arc<String>, parameters: Arc<Value> }}`；`ConfigManager::stations()` 已有（返回 Arc<StationConfig> 快照）；`StationRuntime::new(config: Arc<StationConfig>)`
 
 - [ ] **Step 1: 写失败测试（config_manager.rs tests 追加）**
 
@@ -2271,9 +2274,9 @@ fn station_config_tools_roundtrip() {
 
     // ToolConfig 序列化
     let tc = ToolConfig {
-        name: "read".into(),
-        description: "读取文本文件".into(),
-        parameters: serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        name: Arc::new("read".into()),
+        description: Arc::new("读取文本文件".into()),
+        parameters: Arc::new(serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } })),
     };
     let tj = serde_json::to_value(&tc).unwrap();
     assert_eq!(tj["name"], "read");
@@ -2292,12 +2295,13 @@ Expected: 编译失败——`StationConfig` 无 `tools`、`ToolConfig` 未定义
 
 ```rust
 /// 工具配置（StationConfig.tools 的 value；name 与 map key 一致）
+/// 字段按编码规范用 Arc<String>/Arc<Value>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
-    pub name: String,
-    pub description: String,
+    pub name: Arc<String>,
+    pub description: Arc<String>,
     /// JSON Schema（OpenAI tools[].function.parameters）
-    pub parameters: serde_json::Value,
+    pub parameters: Arc<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2429,11 +2433,11 @@ fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[
 #[test]
 fn openai_body_includes_tools_when_present() {
     let eff = sample_effective();
-    let msgs = vec![Message::User { content: "查一下".into() }];
+    let msgs = vec![Message::User { content: Arc::new("查一下".into()) }];
     let tools = vec![ToolConfig {
-        name: "read".into(),
-        description: "读取文本文件".into(),
-        parameters: serde_json::json!({ "type": "object" }),
+        name: Arc::new("read".into()),
+        description: Arc::new("读取文本文件".into()),
+        parameters: Arc::new(serde_json::json!({ "type": "object" })),
     }];
     let body = openai_body(&eff, &msgs, &tools);
     assert_eq!(body["tools"][0]["function"]["name"], "read");
@@ -2443,7 +2447,7 @@ fn openai_body_includes_tools_when_present() {
 #[test]
 fn openai_body_omits_tools_when_empty() {
     let eff = sample_effective();
-    let msgs = vec![Message::User { content: "你好".into() }];
+    let msgs = vec![Message::User { content: Arc::new("你好".into()) }];
     let body = openai_body(&eff, &msgs, &[]);
     assert!(body.get("tools").is_none(), "无工具不应发送 tools 字段");
 }
@@ -2453,11 +2457,11 @@ fn openai_body_maps_tool_and_assistant_tool_calls() {
     let eff = sample_effective();
     let msgs = vec![
         Message::Assistant {
-            content: String::new(),
+            content: Arc::new(String::new()),
             reasoning_content: None,
-            tool_calls: Some(vec![ToolCall { id: "c1".into(), name: "read".into(), arguments: serde_json::json!({"path": "/a"}) }]),
+            tool_calls: Some(vec![ToolCall { id: Arc::new("c1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/a"})) }]),
         },
-        Message::Tool { tool_call_id: "c1".into(), name: "read".into(), content: "内容".into() },
+        Message::Tool { tool_call_id: Arc::new("c1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
     ];
     let body = openai_body(&eff, &msgs, &[]);
     assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c1");
@@ -2562,7 +2566,7 @@ async fn execute_tool_call(&self, session: &Arc<Session>, call: &crate::types::T
     let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
     for (station_id, runtime) in self.station_runtimes.iter() {
         if cfg.stations.contains(station_id.as_str()) && runtime.has_tool(call.name.as_str()) {
-            match runtime.call_tool(call.name.as_str(), call.arguments.clone()).await {
+            match runtime.call_tool(call.name.as_str(), (*call.arguments).clone()).await {
                 Ok(v) => return v,
                 Err(e) => return serde_json::json!({ "error": e.to_string() }),
             }
@@ -2589,9 +2593,9 @@ async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, cont
     // 1. 追加用户消息 + 写缓存
     {
         let mut ctx = session.context.lock().await;
-        ctx.push(Message::User { content: content_text.clone() });
+        ctx.push(Message::User { content: Arc::new(content_text.clone()) });
     }
-    self.cache.append(&key, &[Message::User { content: content_text.clone() }]).await;
+    self.cache.append(&key, &[Message::User { content: Arc::new(content_text.clone()) }]).await;
 
     // 2. tools 聚合（会话 context 配置的启用 station）
     let tools = self.tools_for_session(session).await;
@@ -2615,13 +2619,13 @@ async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, cont
                 {
                     let mut ctx = session.context.lock().await;
                     ctx.push(Message::Assistant {
-                        content: String::new(),
+                        content: Arc::new(String::new()),
                         reasoning_content: None,
                         tool_calls: Some(model_resp.tool_calls.clone()),
                     });
                 }
                 self.cache.append(&key, &[Message::Assistant {
-                    content: String::new(),
+                    content: Arc::new(String::new()),
                     reasoning_content: None,
                     tool_calls: Some(model_resp.tool_calls.clone()),
                 }]).await;
@@ -2635,15 +2639,15 @@ async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, cont
                     let result_text = result.to_string();
                     {
                         let mut ctx = session.context.lock().await;
-                        ctx.push(Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: result_text.clone() });
+                        ctx.push(Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) });
                     }
-                    self.cache.append(&key, &[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: result_text.clone() }]).await;
+                    self.cache.append(&key, &[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) }]).await;
                     // 记忆写入（tool-call 与 tool-result）
                     self.memory_store_client.push_tool_call(ToolCallRequest {
                         agent_id: agent_id.clone(),
                         role_name: Arc::new(role_name.clone()),
-                        tool_name: Arc::new(call.name.clone()),
-                        tool_params: Arc::new(call.arguments.clone()),
+                        tool_name: call.name.clone(),
+                        tool_params: call.arguments.clone(),
                         key: Arc::new(String::new()),
                         time: Arc::new(now.clone()),
                     }).await;
@@ -2664,14 +2668,14 @@ async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, cont
                 {
                     let mut ctx = session.context.lock().await;
                     ctx.push(Message::Assistant {
-                        content: model_resp.content.clone(),
-                        reasoning_content: model_resp.reasoning_content.clone(),
+                        content: Arc::new(model_resp.content.clone()),
+                        reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: None,
                     });
                 }
                 self.cache.append(&key, &[Message::Assistant {
-                    content: model_resp.content.clone(),
-                    reasoning_content: model_resp.reasoning_content.clone(),
+                    content: Arc::new(model_resp.content.clone()),
+                    reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                     tool_calls: None,
                 }]).await;
 
@@ -2836,3 +2840,4 @@ git commit -m "docs(agent): 更新 nexus/station 组件设计文档——OpenAI 
 - Task 10 `compress_context` 在 Task 10 时点用两参 `mc.call`，Task 13 改三参（两处均已注明同步改）
 - Task 10 补 role 重新进入的归档缺口：`build_initial_context` role 分支缓存存在先归档再重建（reset 已清空不重复）
 - Task 12 `StationRuntime` 增加 `config()` 访问器（Task 13 coordinator 判断 base_url 用）
+- **Pre-flight（用户定夺后已全量同步）**：`Message`/`ToolCall`/`ToolConfig` 字段改 `Arc<String>`/`Arc<Value>`（构造 `Arc::new`、读取 `.as_str()`/`(*x).clone()`/`.map(Arc::new)`），全计划代码片段已逐处更新（Task 1/2/4/6/9/10/12/13）
