@@ -170,11 +170,13 @@ mod tests {
         let j = serde_json::to_value(&call).unwrap();
         assert_eq!(j["msg_type"], "ToolCall");
         assert_eq!(j["data"], "uuid-2");
+        assert_eq!(serde_json::from_value::<Content>(j).unwrap(), call);
 
         let result = Content::ToolResult(Arc::new("uuid-3".to_string()));
         let j = serde_json::to_value(&result).unwrap();
         assert_eq!(j["msg_type"], "ToolResult");
         assert_eq!(j["data"], "uuid-3");
+        assert_eq!(serde_json::from_value::<Content>(j).unwrap(), result);
     }
 
     #[test]
