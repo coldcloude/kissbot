@@ -10,9 +10,9 @@ use tokio_util::time::DelayQueue;
 
 use crate::session_manager::Session;
 
-// ===== 过渡 shim（Task 2/3 删除）=====
-// 旧的 Mutex<Vec> 合批（BatchBuffer/pack_batch/flush_after_reset）保留到 coordinator/session
-// 完成新机制接线（数据/触发双 mpsc + DelayQueue），届时一并移除，避免本任务破坏编译。
+// ===== 过渡 shim（Task 3 删除）=====
+// 旧的 Mutex<Vec> 合批（BatchBuffer/pack_batch）保留到新机制接线完成（coordinator 改用
+// BatchState 后删除）；flush_after_reset 已在 Task 2 随 Session.resetting/batch 字段变更删除。
 
 /// 每会话待合批缓冲：消息先入缓冲，超时（channel_batch_interval_secs）无新消息才打包为一条 user 消息
 /// （过渡 shim：新机制为 BatchState + 数据/触发双 mpsc，Task 2/3 删除）
@@ -39,7 +39,8 @@ impl BatchBuffer {
         std::mem::take(&mut self.items)
     }
 
-    /// 清空缓冲（保留 API：当前重置流程不清空——重置期间消息统一并入重置后打包，见 flush_after_reset）
+    /// 清空缓冲（保留 API：旧重置流程不清空——重置期间消息统一并入重置后打包；
+    /// 新机制下数据留队、由 Trigger::Forced 强制 flush 处理，本 shim 方法已无调用方）
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.items.clear();
@@ -47,33 +48,11 @@ impl BatchBuffer {
 }
 
 /// 打包为一条 user 消息的 content：逐行 "name: text"（name 为空只留 text）
-/// （过渡 shim：新机制为 pack_events(&[BatchItem])，Task 2/3 删除）
+/// （过渡 shim：新机制为 pack_events(&[BatchItem])，Task 3 删除）
 pub fn pack_batch(items: &[(String, String)]) -> String {
     items.iter().map(|(name, text)| {
         if name.is_empty() { text.clone() } else { format!("{}: {}", name, text) }
     }).collect::<Vec<_>>().join("\n")
-}
-
-/// 延时打包：等待 interval 后，若会话正在重置则继续等待（重置期间不触发超时），
-/// 重置完成后立即打包一次；期间到达的消息统一合并（缓冲不清空）。缓冲为空返回 None
-/// （过渡 shim：新机制为 spawn_trigger + DelayQueue，Task 3 删除）
-pub async fn flush_after_reset(session: &Arc<Session>, interval: Duration) -> Option<String> {
-    tokio::time::sleep(interval).await;
-    loop {
-        let mut b = session.batch.lock().await;
-        // 重置期间等待（轮询，重置通常毫秒级）
-        if session.resetting.load(std::sync::atomic::Ordering::SeqCst) {
-            drop(b);
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            continue;
-        }
-        if b.is_empty() {
-            return None;
-        }
-        let items = b.take();
-        drop(b);
-        return Some(pack_batch(&items));
-    }
 }
 
 // ===== 新合批（mpsc×2 + DelayQueue，spec 2026-08-07-channel-batching-mpsc-design）=====
@@ -256,31 +235,6 @@ mod tests {
         b.clear();
         assert!(b.is_empty());
         assert!(b.take().is_empty());
-    }
-
-    #[tokio::test]
-    async fn flush_after_reset_waits_then_packs() {
-        use crate::session_manager::Session;
-        use crate::types::{Mode, SessionKey};
-        let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into())));
-        session.batch.lock().await.push("u1", "你好");
-        // 重置期间：resetting=true，flush 不应打包
-        session.resetting.store(true, std::sync::atomic::Ordering::SeqCst);
-        let session2 = session.clone();
-        let task = tokio::spawn(async move {
-            flush_after_reset(&session2, Duration::from_millis(20)).await
-        });
-        // 重置期间（20ms interval 已过）：缓冲仍保留消息（未被打包）
-        tokio::time::sleep(Duration::from_millis(60)).await;
-        assert!(!session.batch.lock().await.is_empty(), "重置期间不应打包，缓冲应保留消息");
-        // 重置期间到达的新消息并入缓冲
-        session.batch.lock().await.push("u2", "在吗");
-        // 重置完成：置 false，flush 立即打包（统一合并）
-        session.resetting.store(false, std::sync::atomic::Ordering::SeqCst);
-        let content = task.await.unwrap().expect("应打包");
-        assert_eq!(content, "u1: 你好\nu2: 在吗", "重置期间消息统一合并");
-        assert!(session.batch.lock().await.is_empty(), "打包后缓冲清空");
     }
 
     // ===== 新合批（mpsc×2 + DelayQueue）=====

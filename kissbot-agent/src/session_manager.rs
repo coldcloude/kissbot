@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -74,11 +73,8 @@ pub struct Session {
     pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
-    /// 待合批缓冲（合批超时后打包进上下文）
-    pub batch: tokio::sync::Mutex<crate::batching::BatchBuffer>,
-    /// 重置标志：reset_context 开始时置 true、结束时置 false；合批延时任务据此等待
-    /// （重置期间不触发超时打包，缓冲不清空，期间消息统一并入重置后的一次打包）
-    pub resetting: Arc<AtomicBool>,
+    /// 合批状态（数据/触发双 mpsc + DelayQueue + deadline + notify；trigger 任务持此 Arc，不持 Session）
+    pub batch: Arc<crate::batching::BatchState>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
@@ -93,11 +89,17 @@ impl Session {
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
-            batch: tokio::sync::Mutex::new(crate::batching::BatchBuffer::new()),
-            resetting: Arc::new(AtomicBool::new(false)),
+            batch: crate::batching::BatchState::new(),
             model: ArcSwap::from_pointee(model),
             agent_id,
         }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // 会话销毁：通知 trigger 任务退出（notify_one permit 语义：任务错过唤醒后下一轮 notified 立即完成）
+        self.batch.notify.notify_one();
     }
 }
 

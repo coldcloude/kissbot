@@ -401,9 +401,9 @@ impl AgentCoordinator {
     /// 上下文重置（新 session_key 或超长）：按模式归档当前缓存 → 清空 → 重建
     /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
     /// role：归档 + 记忆打包重建
+    /// 合批：数据留队（新机制不清空），期间消息并入重置后统一打包；
+    /// 重置末尾的 Trigger::Forced 强制 flush 由 Task 3 接线（本任务为过渡态，暂不发送）
     async fn reset_context(&self, session: &Arc<Session>) {
-        // 重置开始：置标志（合批延时任务等待；缓冲不清空，期间消息统一并入重置后的一次打包）
-        session.resetting.store(true, std::sync::atomic::Ordering::SeqCst);
         let key = self.session_key_of_session(session);
         let path = self.cache.path_for(&key);
         if path.exists() {
@@ -412,8 +412,6 @@ impl AgentCoordinator {
         let _ = self.cache.clear(&key).await;
         session.context.lock().await.clear();
         self.build_initial_context(session).await;
-        // 重置结束：清标志，延时任务立即打包（含期间到达的消息）
-        session.resetting.store(false, std::sync::atomic::Ordering::SeqCst);
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
@@ -789,46 +787,23 @@ impl AgentCoordinator {
         }
 
         // 3. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
-        let Some(out_channel) = self.resolve_out_channel(channel_id).await else {
+        let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
             return;
         };
         let key = self.session_key_for(&ch);
         let (session, _) = self.ensure_session(&key, channel_id).await;
-        self.enqueue_batch(channel_id, &session, &out_channel, event.incoming_message.user_name.as_str(), &content_text).await;
+        self.enqueue_batch(channel_id, &session, event).await;
     }
 
-    /// 普通消息入合批缓冲；首条消息启动延时打包任务（超时后打包为一条 user 消息进 agentic loop）
-    /// 管理命令不走本方法（handle_incoming 第 2 步已拦截）；回显判定/记忆写入仍逐条即时执行（incoming_message 中）
-    async fn enqueue_batch(
-        &self,
-        channel_id: &str,
-        session: &Arc<Session>,
-        out_channel: &OutChannel,
-        user_name: &str,
-        content_text: &str,
-    ) {
+    /// 合批：数据入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
+    /// 无 sleep、无逐消息任务；消费端（spawn_trigger/flush_batch）由 Task 3 接线，
+    /// ChannelContext 持 tx/trigger_tx 亦为 Task 3 内容——本任务为过渡实现（_channel_id 暂未使用）。
+    async fn enqueue_batch(&self, _channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
         let interval = Duration::from_secs(cfg.channel_batch_interval_secs);
-
-        let mut batch = session.batch.lock().await;
-        let was_empty = batch.is_empty();
-        batch.push(user_name, content_text);
-        drop(batch);
-        if !was_empty {
-            return;  // 已有计时任务在跑，等待汇合
-        }
-        let Some(coordinator) = self.weak_self.get().and_then(|w| w.upgrade()) else {
-            warn!("enqueue_batch: 协调器已释放，跳过合批");
-            return;
-        };
-        let session = session.clone();
-        let out_channel = out_channel.clone();
-        let channel_id = channel_id.to_string();
-        tokio::spawn(async move {
-            if let Some(content) = crate::batching::flush_after_reset(&session, interval).await {
-                coordinator.run_agentic_loop(&channel_id, &session, content, &out_channel).await;
-            }
-        });
+        let _ = session.batch.tx.send(event);   // 数据入队
+        session.batch.deadline.store(Some(Arc::new(Instant::now() + interval)));   // 更新截止（防抖）
+        let _ = session.batch.trigger_tx.send(crate::batching::Trigger::At(Instant::now() + interval));   // 发送触发时间
     }
 
     async fn handle_admin_command(
