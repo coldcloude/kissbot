@@ -120,21 +120,19 @@ pub fn spawn_trigger(
                     }
                 }
                 // DelayQueue 无固有 next()（next 来自 StreamExt）；用 poll_fn + poll_expired
-                item = std::future::poll_fn(|cx| delay.poll_expired(cx)) => {
+                // 守卫：队列空时禁用该分支——poll_expired 在空队列返回 Poll::Ready(None)（而非 Pending），
+                // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效）
+                item = std::future::poll_fn(|cx| delay.poll_expired(cx)), if !delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
                             Trigger::Forced => {
-                                if let (Some(s), Some(c)) = (session.upgrade(), coordinator.upgrade()) {
-                                    flush_events_to_loop(&batch, &s, &c, true).await;
-                                }
+                                flush_events_to_loop(&batch, session.clone(), coordinator.clone(), true).await;
                             }
                             Trigger::At(_) => {
-                                if let (Some(s), Some(c)) = (session.upgrade(), coordinator.upgrade()) {
-                                    flush_events_to_loop(&batch, &s, &c, false).await;
-                                }
+                                flush_events_to_loop(&batch, session.clone(), coordinator.clone(), false).await;
                             }
                         },
-                        None => break,                      // delay 关闭
+                        None => break,                      // 仅防御（队列非空时 poll_expired 不返回 None）
                     }
                 }
             }
@@ -142,12 +140,13 @@ pub fn spawn_trigger(
     });
 }
 
-/// 触发 flush：判定 → drain 全部 → 打包 → 交协调器进 agentic loop
+/// 触发 flush：判定 → drain 全部 → 打包 → 升级 Weak 后交协调器进 agentic loop
 /// （命名 flush_events_to_loop 与 coordinator 的 flush_batch 方法区分）
+/// 升级失败（session/coordinator 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
 pub async fn flush_events_to_loop(
     batch: &Arc<BatchState>,
-    session: &Arc<Session>,
-    coordinator: &Arc<crate::coordinator::AgentCoordinator>,
+    session: Weak<Session>,
+    coordinator: Weak<crate::coordinator::AgentCoordinator>,
     force: bool,
 ) {
     if !flush_ready(batch, force) {
@@ -161,8 +160,12 @@ pub async fn flush_events_to_loop(
     if items.is_empty() {
         return;
     }
+    // 升级 Weak：失败则数据已 drain（清走），打包内容丢弃
+    let (Some(s), Some(c)) = (session.upgrade(), coordinator.upgrade()) else {
+        return;
+    };
     let content = pack_events(&items);
-    coordinator.flush_batch(session, content).await;
+    c.flush_batch(&s, content).await;
 }
 
 #[cfg(test)]
@@ -221,5 +224,66 @@ mod tests {
         // 已超 deadline：非强制 flush
         batch.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
         assert!(flush_ready(&batch, false), "超时非强制应 flush");
+    }
+
+    // ===== trigger 循环测试（回归网：拦住空队列立即退出缺陷）=====
+
+    /// 等待任务执行 flush：flush_events_to_loop 的 flush_ready 通过后先 store(None) 再 drain，
+    /// 观测 deadline 变 None 即确认 flush 路径已执行（不自行 drain，避免把未处理数据误判为已处理）
+    async fn wait_flushed(batch: &Arc<BatchState>) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            if batch.deadline.load_full().is_none() {
+                // 任务已执行 store(None)；其 drain 可能仍在进行，稍候让数据被清走
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn spawn_trigger_flushes_on_at_trigger() {
+        let batch = BatchState::new();
+        batch.tx.send(ev("u1", "a")).unwrap();
+        batch.tx.send(ev("u2", "b")).unwrap();
+        // 与真实 enqueue 一致：deadline 与 At 触发时间同源（此处设为过去，到期立即弹出）
+        let at = Instant::now() - Duration::from_secs(1);
+        batch.deadline.store(Some(Arc::new(at)));
+        batch.trigger_tx.send(Trigger::At(at)).unwrap();
+        spawn_trigger(batch.clone(), Weak::new(), Weak::new());
+        assert!(wait_flushed(&batch).await, "At 触发后任务应执行 flush（deadline 置 None）");
+        assert!(batch.drain().await.is_empty(), "At 触发后任务应 drain 全部数据");
+    }
+
+    #[tokio::test]
+    async fn spawn_trigger_flushes_on_forced() {
+        let batch = BatchState::new();
+        batch.tx.send(ev("u1", "a")).unwrap();
+        // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 store(None) 再 drain）
+        batch.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
+        batch.trigger_tx.send(Trigger::Forced).unwrap();
+        spawn_trigger(batch.clone(), Weak::new(), Weak::new());
+        assert!(wait_flushed(&batch).await, "Forced 触发后任务应执行 flush（deadline 置 None）");
+        assert!(batch.drain().await.is_empty(), "Forced 触发后任务应 drain 全部数据");
+    }
+
+    #[tokio::test]
+    async fn spawn_trigger_exits_on_notify() {
+        let batch = BatchState::new();
+        spawn_trigger(batch.clone(), Weak::new(), Weak::new());
+        // 确保任务已启动并持有 trigger_rx
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        batch.notify.notify_one();
+        // 任务退出后 trigger_rx 已 drop → channel 关闭 → send 返回 Err
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            if batch.trigger_tx.send(Trigger::Forced).is_err() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "任务应在 notify 后退出");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

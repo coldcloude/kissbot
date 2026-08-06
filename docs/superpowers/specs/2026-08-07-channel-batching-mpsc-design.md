@@ -63,11 +63,13 @@ loop {
                 None         => break,                     // trigger channel 关闭
             }
         }
-        item = delay.next() => {
+        item = delay.next(), if !delay.is_empty() => {
+            // 守卫：队列空时禁用该分支——poll_expired 在空队列返回 Poll::Ready(None)（而非 Pending），
+            // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效）
             match item {
                 Some(Forced) => try_flush(force=true),
                 Some(At(_))  => try_flush(force=false),
-                None         => break,                     // delay 关闭
+                None         => break,                     // 仅防御（队列非空时 poll_expired 不返回 None）
             }
         }
     }

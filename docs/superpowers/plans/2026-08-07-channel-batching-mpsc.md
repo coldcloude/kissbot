@@ -214,19 +214,17 @@ pub fn spawn_trigger(
                         None => break,                      // trigger channel 关闭
                     }
                 }
-                item = batch.delay.next() => {
+                // 守卫：队列空时禁用该分支——poll_expired 在空队列返回 Poll::Ready(None)（而非 Pending），
+                // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效）
+                item = batch.delay.next(), if !batch.delay.is_empty() => {
                     match item {
                         Some(Trigger::Forced) => {
-                            if let (Some(s), Some(c)) = (session.upgrade(), coordinator.upgrade()) {
-                                flush_events_to_loop(&batch, &s, &c, true).await;
-                            }
+                            flush_events_to_loop(&batch, session.clone(), coordinator.clone(), true).await;
                         }
                         Some(Trigger::At(_)) => {
-                            if let (Some(s), Some(c)) = (session.upgrade(), coordinator.upgrade()) {
-                                flush_events_to_loop(&batch, &s, &c, false).await;
-                            }
+                            flush_events_to_loop(&batch, session.clone(), coordinator.clone(), false).await;
                         }
-                        None => break,                      // delay 关闭
+                        None => break,                      // 仅防御（队列非空时 poll_expired 不返回 None）
                     }
                 }
             }
