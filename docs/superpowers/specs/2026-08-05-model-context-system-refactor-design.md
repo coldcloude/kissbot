@@ -45,7 +45,7 @@ pub struct ToolCall {
 要点：
 
 - User 无独立 name 字段，说话人信息拼进 content（单条 `"user1: 你好"`；合批/打包多行 `"user1: 你好\nuser2: 在吗"`）
-- Assistant 带 tool_calls 时 content 通常为空串；`reasoning_content` 仅本地存储，发送时不带（DeepSeek/Kimi 文档要求）
+- Assistant 带 tool_calls 时 content 通常为空串；`reasoning_content` 工具调用场景必须随请求回传（DeepSeek 带 tools 请求须完整回传否则 400；Kimi 单轮工具循环保留并回传），非工具调用可选（API 忽略）；openai_body 自动序列化
 - 多轮模式由消息序列天然保证，无需额外结构
 
 ## 2. 会话与配置
@@ -218,7 +218,7 @@ run_agentic_loop(session, out_channel):
 
 **OpenAI 兼容**（deepseek/kimi/openai）：
 
-- 请求：`Message` → `{role, content}`；Assistant 带 tool_calls → `{role, content, tool_calls:[{id, type:"function", function:{name, arguments:JSON 字符串}}]}`；Tool → `{role:"tool", tool_call_id, content}`；`reasoning_content` 不发送；`tools` 数组按第 6 节聚合
+- 请求：`Message` → `{role, content}`；Assistant 带 tool_calls → `{role, content, tool_calls:[{id, type:"function", function:{name, arguments:JSON 字符串}}]}`；Tool → `{role:"tool", tool_call_id, content}`；`reasoning_content` 工具调用场景随请求回传（自动序列化），非工具调用省略；`tools` 数组按第 6 节聚合
 - 响应：解析 `message.tool_calls[]` → `ToolCall{id, name, arguments(解析后)}`（`finish_reason="tool_calls"` 时走工具分支）
 
 **Anthropic**：保持纯文本映射（content-only，tool_calls/工具消息本轮不支持，遇 tool_calls 记录日志）
