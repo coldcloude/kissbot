@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use kissbot_api::memory::ChannelCombo;
 use serde_json::json;
 
 use crate::config_manager::ConfigManager;
@@ -14,15 +15,30 @@ pub struct MemoryMsg {
     pub time: String,
 }
 
-/// 两查询比较决策：窗口首条更早 → true（窗口更大，用窗口）；recent 首条更早 → false（用 recent）
-/// None 视为最晚（空集合：另一侧胜出）；两侧都空返回 true（外部处理为空）
-pub fn window_wins(window_first: Option<&str>, recent_first: Option<&str>) -> bool {
-    match (window_first, recent_first) {
-        (Some(w), Some(r)) => w <= r,
-        (Some(_), None) => true,
-        (None, Some(_)) => false,
-        (None, None) => true,
+/// 并集算法（修正设计 2.3）：(1) 取最后 N 条 → T_N；(2) M = max(cutoff, T_N)；
+/// (3) [M, T_N]（含两端）取该时间全部；最终 = (1) ∪ (3)，时间正序
+/// list 为全史合并升序结果（调用方已按时间排序）；不足 N 条已全取，直接返回
+pub fn recent_memory(list: &[MemoryMsg], count: usize, cutoff: &str) -> Vec<MemoryMsg> {
+    if list.is_empty() {
+        return Vec::new();
     }
+    // 不足 N 条：已全部取出，直接返回（无需 T_N/M/(3)，避免空并集计算）
+    if list.len() <= count {
+        return list.to_vec();
+    }
+    let start_idx = list.len() - count;
+    let last_n = &list[start_idx..];
+    let t_n = &last_n[0].time;   // 最旧一条
+    let m = if cutoff >= t_n.as_str() { cutoff.to_string() } else { t_n.to_string() };
+    // (3) [M, T_N] 含两端；与 (1) 并集后升序（(1) 的全史查询已覆盖 (3) 区间，此处同列表过滤等价）
+    let mut out: Vec<MemoryMsg> = list.iter()
+        .filter(|msg| msg.time.as_str() >= m.as_str() && msg.time.as_str() <= t_n.as_str())
+        .cloned()
+        .chain(last_n.iter().cloned())
+        .collect();
+    out.sort_by(|a, b| a.time.cmp(&b.time));
+    out.dedup_by(|a, b| a.time == b.time && a.content == b.content && a.user_name == b.user_name);
+    out
 }
 
 /// 打包记忆消息为一条 user 消息（content 逐行 "name: text"，name 为空只留 text）；空返回 None
@@ -101,50 +117,48 @@ impl MemoryReader {
         Ok(events)
     }
 
-    /// 时间窗查询（messenger/user/group 空 = 目录聚合）；返回升序记录
-    async fn query_channel_range(
-        &self,
-        agent_id: &str,
-        role_name: &str,
-        start_time: &str,
-        end_time: &str,
-    ) -> Result<Vec<MemoryMsg>> {
-        self.query_channel(agent_id, role_name, start_time, end_time, None).await
+    /// 组合查询：POST {store}/store/query/combos，返回 (agent, role) 时间范围内出现的 channel 组合
+    async fn query_combos(&self, agent_id: &str, role_name: &str, start: &str, end: &str) -> Result<Vec<ChannelCombo>> {
+        let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
+        let url = format!("{}/store/query/combos", store_url.trim_end_matches('/'));
+        let body = json!({
+            "agent_id": agent_id,
+            "role_name": role_name,
+            "start_time": start,
+            "end_time": end,
+        });
+        let resp = self.client.post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::MemoryStoreError(format!("组合查询失败: {}", e)))?;
+        if !resp.status().is_success() {
+            return Err(Error::MemoryStoreError(format!("组合查询返回 {}", resp.status())));
+        }
+        let data: serde_json::Value = resp.json().await?;
+        Ok(serde_json::from_value(data["data"].clone()).unwrap_or_default())
     }
 
-    /// 最近 N 条（跨全史）
-    async fn query_channel_recent(
-        &self,
-        agent_id: &str,
-        role_name: &str,
-        limit: usize,
-    ) -> Result<Vec<MemoryMsg>> {
-        self.query_channel(agent_id, role_name, "2000-01-01 00:00:00", "2099-12-31 23:59:59", Some(limit)).await
-    }
-
-    /// 查询 channel 记录（POST {store}/store/query/channel）；messenger/user/group 空串 = 目录聚合
+    /// 组合内精确查询：POST {store}/store/query/channel（messenger/user/group 精确 key，取该时间全部）
     async fn query_channel(
         &self,
         agent_id: &str,
         role_name: &str,
+        combo: &ChannelCombo,
         start_time: &str,
         end_time: &str,
-        limit: Option<usize>,
     ) -> Result<Vec<MemoryMsg>> {
         let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
         let url = format!("{}/store/query/channel", store_url.trim_end_matches('/'));
-        let mut body = json!({
+        let body = json!({
             "agent_id": agent_id,
             "role_name": role_name,
-            "messenger_id": "",
-            "user_id": "",
-            "group_id": "",
+            "messenger_id": combo.messenger_id,
+            "user_id": combo.user_id,
+            "group_id": combo.group_id,
             "start_time": start_time,
             "end_time": end_time,
         });
-        if let Some(l) = limit {
-            body["limit"] = json!(l);
-        }
         let resp = self.client.post(&url)
             .json(&body)
             .send()
@@ -180,7 +194,7 @@ impl MemoryReader {
         out
     }
 
-    /// 两查询（时间窗 + 最近 N）比较首条时间取更早者，返回升序结果（role 模式记忆打包数据源）
+    /// role 模式记忆打包：组合查询 → 每组合全史查询合并 → 并集算法 → 升序结果
     pub async fn read_recent_for_context(
         &self,
         agent_id: &str,
@@ -193,12 +207,19 @@ impl MemoryReader {
             .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "2000-01-01 00:00:00".to_string());
 
-        let window = self.query_channel_range(agent_id, role_name, &start, &now).await?;
-        let recent = self.query_channel_recent(agent_id, role_name, cfg.memory_count).await?;
+        // 组合：按全史范围取（组合由文件枚举，范围覆盖即可）
+        let combos = self.query_combos(agent_id, role_name, "2000-01-01 00:00:00", &now).await?;
 
-        let window_first = window.first().map(|m| m.time.as_str());
-        let recent_first = recent.first().map(|m| m.time.as_str());
-        Ok(if window_wins(window_first, recent_first) { window } else { recent })
+        // (1) 每组合全史查询，合并升序
+        let mut merged: Vec<MemoryMsg> = Vec::new();
+        for combo in &combos {
+            if let Ok(msgs) = self.query_channel(agent_id, role_name, combo, "2000-01-01 00:00:00", &now).await {
+                merged.extend(msgs);
+            }
+        }
+        merged.sort_by(|a, b| a.time.cmp(&b.time));
+
+        Ok(recent_memory(&merged, cfg.memory_count, &start))
     }
 }
 
@@ -224,17 +245,58 @@ mod tests {
     use crate::types::Message;
 
     #[test]
-    fn window_wins_compares_first_record_time() {
-        // 窗口首条更早 → true（窗口更大，用窗口）
-        assert!(window_wins(Some("2026-08-05 09:00:00"), Some("2026-08-05 10:00:00")));
-        // recent 首条更早 → false（recent 更大，用 recent）
-        assert!(!window_wins(Some("2026-08-05 10:00:00"), Some("2026-08-05 09:00:00")));
-        // 相等 → 窗口
-        assert!(window_wins(Some("2026-08-05 10:00:00"), Some("2026-08-05 10:00:00")));
-        // 一侧为空：窗口空 → 用 recent；recent 空 → 用窗口；都空 → 窗口（外部处理为空）
-        assert!(!window_wins(None, Some("2026-08-05 10:00:00")));
-        assert!(window_wins(Some("2026-08-05 10:00:00"), None));
-        assert!(window_wins(None, None));
+    fn recent_memory_union_keeps_order_and_same_time_group() {
+        let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
+        // dense 场景 30 条在窗口内（时间 10:00~10:29），最后 N=10
+        let mut list: Vec<MemoryMsg> = (0..30).map(|i| t(&format!("m{}", i), &format!("2026-08-05 10:{:02}:00", i))).collect();
+        list.sort_by(|a, b| a.time.cmp(&b.time));
+        let cutoff = "2026-08-05 09:00:00";  // 窗口起点早于所有记录 → T_N > cutoff → M = T_N
+        let out = recent_memory(&list, 10, cutoff);
+        // 结果 = 最后 10 条（m20..m29），时间正序
+        assert_eq!(out.len(), 10);
+        assert_eq!(out[0].time, list[20].time);
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
+    }
+
+    #[test]
+    fn recent_memory_sparse_extends_beyond_window() {
+        let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
+        // 稀疏：总共 10 条在 07:00~07:45，窗口起点 08:00 晚于全部记录
+        let mut list: Vec<MemoryMsg> = vec![
+            t("a", "2026-08-05 07:00:00"), t("b", "2026-08-05 07:05:00"),
+            t("c", "2026-08-05 07:10:00"), t("d", "2026-08-05 07:15:00"),
+            t("e", "2026-08-05 07:20:00"), t("f", "2026-08-05 07:25:00"),
+            t("g", "2026-08-05 07:30:00"), t("h", "2026-08-05 07:35:00"),
+            t("i", "2026-08-05 07:40:00"), t("j", "2026-08-05 07:45:00"),
+        ];
+        list.sort_by(|a, b| a.time.cmp(&b.time));
+        let cutoff = "2026-08-05 08:00:00";  // 窗口起点晚于全部记录 → T_N < cutoff → M = cutoff
+        let out = recent_memory(&list, 10, cutoff);
+        assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 N 条（跨更早时间）");
+        assert_eq!(out[0].time, "2026-08-05 07:00:00");
+    }
+
+    #[test]
+    fn recent_memory_empty_and_less_than_n() {
+        assert!(recent_memory(&[], 10, "2026-08-05 09:00:00").is_empty());
+        let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
+        let list = vec![t("a", "2026-08-05 10:00:00"), t("b", "2026-08-05 10:01:00")];
+        let out = recent_memory(&list, 10, "2026-08-05 09:00:00");
+        assert_eq!(out.len(), 2, "不足 N 条取全部");
+    }
+
+    #[test]
+    fn recent_memory_includes_same_time_group_beyond_n() {
+        let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
+        // 15 条：记录 m11~m15 都与最后第 10 条同在 T_N=10:50（同时间组）
+        let mut list: Vec<MemoryMsg> = Vec::new();
+        for i in 1..=10 { list.push(t(&format!("m{}", i), &format!("2026-08-05 10:{:02}:00", 40 + i))); }
+        for i in 11..=15 { list.push(t(&format!("m{}", i), "2026-08-05 10:50:00")); }
+        list.sort_by(|a, b| a.time.cmp(&b.time));
+        let out = recent_memory(&list, 10, "2026-08-05 09:00:00");
+        // 最后 10 条 = m6..m15（T_N=10:50，同时间组起点）；同时间组 m11~m15 全保留 → 结果 10 条
+        assert_eq!(out.len(), 10, "T_N 同时间组不拆散（本例如最后 10 条起点恰在同时间组起点）");
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time));
     }
 
     #[test]

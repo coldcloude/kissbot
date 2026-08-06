@@ -342,7 +342,7 @@ impl AgentCoordinator {
                     let _ = self.history.archive(&key, &path).await;
                     let _ = self.cache.clear(&key).await;
                 }
-                // 记忆打包：时间窗/最近N 两查询取并集，打包为一条 user 消息作为首条内容
+                // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ 时间窗，同时间组不拆散），打包为一条 user 消息作为首条内容
                 let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
                 if let Ok(msgs) = self.memory_reader
                     .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg)
