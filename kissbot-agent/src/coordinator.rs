@@ -1136,8 +1136,11 @@ impl AgentCoordinator {
     /// 执行单个 tool call：在启用的 station 中查找并调用；找不到/调用失败返回错误 JSON
     async fn execute_tool_call(&self, session: &Arc<Session>, call: &crate::types::ToolCall) -> serde_json::Value {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
-        for entry in self.station_runtimes.iter() {
-            let (station_id, runtime) = entry.pair();
+        // 先克隆出 Arc 列表（释放 DashMap 全局读锁），再逐项 await（不跨 await 持锁）
+        let runtimes: Vec<(String, Arc<StationRuntime>)> = self.station_runtimes.iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        for (station_id, runtime) in &runtimes {
             if cfg.stations.contains(station_id.as_str()) && runtime.has_tool(call.name.as_str()) {
                 match runtime.call_tool(call.name.as_str(), (*call.arguments).clone()).await {
                     Ok(v) => return v,

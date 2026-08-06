@@ -71,6 +71,10 @@ impl MemoryIndexer {
     /// 供 agent 先取组合、再对每个组合用精确 key 时间区间查询（记忆打包流程）
     pub async fn query_combos(&self, query: QueryRequest) -> Result<Vec<ChannelCombo>> {
         use kai_date::as_date;
+        // 时间戳短于日期长度时 as_date 切片会 panic——视为无有效范围，直接返回（防御客户端短输入，短路不触文件系统）
+        if query.start_time.len() < 10 || query.end_time.len() < 10 {
+            return Ok(Vec::new());
+        }
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(query.agent_id.as_str()).await?;
         let mut combos: Vec<ChannelCombo> = Vec::new();
         let mut read_dir = tokio::fs::read_dir(&store_dir).await?;
@@ -422,5 +426,19 @@ use tokio;
         ids.sort();
         assert_eq!(ids[0], ("tg".into(), "self2".into(), "g2".into()));
         assert_eq!(ids[1], ("web".into(), "self1".into(), "g1".into()));
+    }
+
+    #[tokio::test]
+    async fn test_query_combos_short_time_input_returns_empty() {
+        // 时间戳短于日期长度（<10 字符）不应 panic，返回空（守卫短路）
+        let indexer = MemoryIndexer::new();
+        let query = QueryRequest {
+            agent_id: Arc::new("combo_agent".into()),
+            role_name: Arc::new("r1".into()),
+            start_time: Arc::new("2026".into()),
+            end_time: Arc::new("2026-08-05 23:59:59".into()),
+        };
+        let combos = indexer.query_combos(query).await.unwrap();
+        assert!(combos.is_empty(), "短时间戳应返回空而非 panic");
     }
 }

@@ -91,7 +91,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 5. 记忆读取器
 - 在会话创建或重置时调用（role 模式）
 - **两级读取**：
-  - 第一级：从 memory-store 读取最近对话消息——时间窗（`memory_time_secs`）查询与最近 N 条（`memory_count`）查询各一次，比较两者首条记录时间取更早者作为结果（时间窗更大用窗口，最近 N 更早用最近 N）
+  - 第一级：从 memory-store 读取最近对话消息——先经组合查询 API 获取该 agent/role 的 (messenger, user, group) 组合列表，对每个组合用精确 key 时间区间查询取该时间全部；合并升序后按并集算法：取最后 N 条（`memory_count`，不足 N 条直接返回全部），T_N = 最旧一条时间，M = max(时间窗起点, T_N)，结果 = 最后 N 条 ∪ [M, T_N] 同时间组（同时间记录不拆散），时间正序
   - 第二级：从 memory-struct 读取顶层记忆索引（如摘要列表），提供长期记忆概况
 - 读取结果打包为一条 user 消息（仅保留 name 与 content），作为 role 模式会话的首条内容
 - 支持查询事件列表
@@ -255,7 +255,7 @@ kissbot-agent 启动
 
 ### 初始上下文构建
 
-- 会话创建或重置时按模式构建：event 模式从本地缓存全量恢复（缓存生命周期 = 当前上下文，超长即压缩，天然有界）；role 模式从 memory-store 读取最近消息（时间窗与最近 N 条两查询比较首条时间取更早者）打包为一条 user 消息
+- 会话创建或重置时按模式构建：event 模式从本地缓存全量恢复（缓存生命周期 = 当前上下文，超长即压缩，天然有界）；role 模式从 memory-store 按组合查询 + 并集算法读取最近消息（最后 N 条与时间窗，同时间组不拆散）打包为一条 user 消息
 - 上下文缓存存放于 `<data_dir>/context/`，按 session_key 编码存储，追加不截断；重置/压缩前归档到 `<data_dir>/context-history/`（本轮只写不读）
 - 结合 memory-ego 按该 agent_id 和 role_name 读取的自我认知信息设置为系统消息
 - 运行时每次收到合批后的用户消息和 LLM 回复（含工具调用与结果）后增量追加到该会话的上下文并同步写入缓存，保持对话连续性
@@ -277,6 +277,7 @@ kissbot-agent 启动
 - 工具定义（name/description/parameters）按会话 context 配置的启用 station 集合聚合，随每次 LLM 请求发送
 - 工具调用按工具名在启用 station 中路由：base_url 为空的本地 station 在进程内执行，非空走 REST（本轮骨架未实现）；找不到工具返回错误结果
 - 工具结果作为 tool 消息（tool_call_id/name/content）追加回上下文，再次触发 LLM tool call 时支持多轮嵌套处理（上限防死循环）
+- 每个工具调用生成 UUID key，写 channel 占位记录（Content::ToolCall(key) / Content::ToolResult(key)），ToolCallRequest 与 ToolResultRequest 详情记录用同一 key 关联（think 同款机制），经 channel 时间线可见工具调用锚点
 
 ### LLM 调用重试
 

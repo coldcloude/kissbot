@@ -113,7 +113,8 @@ impl StationRuntime {
     /// 执行工具：base_url 空 → 本地查表执行；非空 → REST（本轮骨架，返回未实现错误）
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
         if self.config.base_url.is_empty() {
-            let tool = self.local_tools.get(name)
+            // 克隆出 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
+            let tool = self.local_tools.get(name).map(|r| r.value().clone())
                 .ok_or_else(|| Error::InternalError(format!("本地工具不存在: {}", name)))?;
             return tool.call(params).await;
         }
