@@ -830,10 +830,7 @@ impl AgentCoordinator {
         self.enqueue_batch(channel_id, &session, event).await;
     }
 
-    /// 合批：数据入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
-    /// 无 sleep、无逐消息任务；消费端（spawn_trigger/flush_batch）由 Task 3 接线，
-    /// ChannelContext 持 tx/trigger_tx 亦为 Task 3 内容——本任务为过渡实现（_channel_id 暂未使用）。
-    /// 合批：数据入队（channel 持有的发送端）+ 更新 deadline + 发送触发时间（At）。
+    /// 合批：数据经 channel 持有的发送端入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
     /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
     async fn enqueue_batch(&self, channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
