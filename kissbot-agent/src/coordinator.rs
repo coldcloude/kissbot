@@ -427,7 +427,7 @@ impl AgentCoordinator {
     /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
     /// role：归档 + 记忆打包重建
     /// 合批：数据留队（新机制不清空），期间消息并入重置后统一打包；
-    /// 重置末尾的 Trigger::Forced 强制 flush 由 Task 3 接线（本任务为过渡态，暂不发送）
+    /// 重置末尾发送 Trigger::Forced 强制 flush（不检查 deadline，重置期间消息即刻并入新上下文）
     async fn reset_context(&self, session: &Arc<Session>) {
         let key = self.session_key_of_session(session);
         let path = self.cache.path_for(&key);
