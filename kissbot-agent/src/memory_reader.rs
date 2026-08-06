@@ -19,7 +19,7 @@ pub struct MemoryMsg {
 /// (3) [M, T_N]（含两端）取该时间全部；最终 = (1) ∪ (3)，时间正序
 /// list 为全史合并升序结果（调用方已按时间排序）；不足 N 条已全取，直接返回
 pub fn recent_memory(list: &[MemoryMsg], count: usize, cutoff: &str) -> Vec<MemoryMsg> {
-    if list.is_empty() {
+    if list.is_empty() || count == 0 {
         return Vec::new();
     }
     // 不足 N 条：已全部取出，直接返回（无需 T_N/M/(3)，避免空并集计算）
@@ -36,7 +36,8 @@ pub fn recent_memory(list: &[MemoryMsg], count: usize, cutoff: &str) -> Vec<Memo
         .cloned()
         .chain(last_n.iter().cloned())
         .collect();
-    out.sort_by(|a, b| a.time.cmp(&b.time));
+    // 全键排序使重复项相邻，再按完整元组去重（仅按时间排序时同时间非相邻重复会漏去重）
+    out.sort_by(|a, b| a.time.cmp(&b.time).then(a.content.cmp(&b.content)).then(a.user_name.cmp(&b.user_name)));
     out.dedup_by(|a, b| a.time == b.time && a.content == b.content && a.user_name == b.user_name);
     out
 }
@@ -261,19 +262,17 @@ mod tests {
     #[test]
     fn recent_memory_sparse_extends_beyond_window() {
         let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
-        // 稀疏：总共 10 条在 07:00~07:45，窗口起点 08:00 晚于全部记录
-        let mut list: Vec<MemoryMsg> = vec![
-            t("a", "2026-08-05 07:00:00"), t("b", "2026-08-05 07:05:00"),
-            t("c", "2026-08-05 07:10:00"), t("d", "2026-08-05 07:15:00"),
-            t("e", "2026-08-05 07:20:00"), t("f", "2026-08-05 07:25:00"),
-            t("g", "2026-08-05 07:30:00"), t("h", "2026-08-05 07:35:00"),
-            t("i", "2026-08-05 07:40:00"), t("j", "2026-08-05 07:45:00"),
-        ];
+        // 稀疏分支：len > count（15 条）且全部记录早于窗口起点 cutoff=08:00
+        // → T_N(07:05) < cutoff → M = cutoff → (3) 过滤 [08:00, 07:05] 为空 → 结果 = 最后 N 条（跨更早时间）
+        let mut list: Vec<MemoryMsg> = Vec::new();
+        for i in 0..15 {
+            list.push(t(&format!("m{}", i), &format!("2026-08-05 07:{:02}:00", i)));
+        }
         list.sort_by(|a, b| a.time.cmp(&b.time));
-        let cutoff = "2026-08-05 08:00:00";  // 窗口起点晚于全部记录 → T_N < cutoff → M = cutoff
+        let cutoff = "2026-08-05 08:00:00";  // 窗口起点晚于全部记录
         let out = recent_memory(&list, 10, cutoff);
-        assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 N 条（跨更早时间）");
-        assert_eq!(out[0].time, "2026-08-05 07:00:00");
+        assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
+        assert_eq!(out[0].time, "2026-08-05 07:05:00", "起点 = 第 6 条（最后 10 条最旧一条）");
     }
 
     #[test]
@@ -283,20 +282,26 @@ mod tests {
         let list = vec![t("a", "2026-08-05 10:00:00"), t("b", "2026-08-05 10:01:00")];
         let out = recent_memory(&list, 10, "2026-08-05 09:00:00");
         assert_eq!(out.len(), 2, "不足 N 条取全部");
+        // count = 0：不参与并集，直接返回空（防 start_idx = len 空切片 panic）
+        assert!(recent_memory(&list, 0, "2026-08-05 09:00:00").is_empty());
     }
 
     #[test]
     fn recent_memory_includes_same_time_group_beyond_n() {
         let t = |m: &str, tm: &str| MemoryMsg { user_name: "u".into(), content: m.into(), time: tm.into() };
-        // 15 条：记录 m11~m15 都与最后第 10 条同在 T_N=10:50（同时间组）
+        // 同时间组横跨 N 边界：索引 4,5,6 同在 T=10:50，count=10 → start_idx=5 →
+        // 最后 10 条 = 索引 5..14，T_N = 10:50；索引 4 在 start_idx 之前但同在 T_N → 应被 (3) 取回
         let mut list: Vec<MemoryMsg> = Vec::new();
-        for i in 1..=10 { list.push(t(&format!("m{}", i), &format!("2026-08-05 10:{:02}:00", 40 + i))); }
-        for i in 11..=15 { list.push(t(&format!("m{}", i), "2026-08-05 10:50:00")); }
+        for i in 0..4 { list.push(t(&format!("m{}", i), &format!("2026-08-05 10:{:02}:00", 30 + i))); }
+        for i in 4..7 { list.push(t(&format!("m{}", i), "2026-08-05 10:50:00")); }
+        for i in 7..15 { list.push(t(&format!("m{}", i), &format!("2026-08-05 10:{:02}:00", 44 + i))); }
         list.sort_by(|a, b| a.time.cmp(&b.time));
         let out = recent_memory(&list, 10, "2026-08-05 09:00:00");
-        // 最后 10 条 = m6..m15（T_N=10:50，同时间组起点）；同时间组 m11~m15 全保留 → 结果 10 条
-        assert_eq!(out.len(), 10, "T_N 同时间组不拆散（本例如最后 10 条起点恰在同时间组起点）");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time));
+        // 结果 = 最后 10 条（索引 5..14）∪ 同 T_N 的索引 4 = 11 条，升序
+        assert_eq!(out.len(), 11, "T_N 同时间组横跨 N 边界时完整保留（含 start_idx 之前同时间记录）");
+        assert_eq!(out[0].time, "2026-08-05 10:50:00", "起点 = T_N 同时间组");
+        assert_eq!(out[0].content, "m4", "start_idx 之前的同时间记录被 (3) 取回");
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[test]
