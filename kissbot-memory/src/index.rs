@@ -63,23 +63,16 @@ impl MemoryIndexer {
     }
 
     pub async fn query_channel_records(&self, query: QueryChannelRequest) -> Result<Vec<(ChannelRecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
-        // 目录聚合模式：messenger/user/group 均为空串 → 按 agent+role 扫描全部 channel 文件
-        if query.messenger_id.is_empty() && query.user_id.is_empty() && query.group_id.is_empty() {
-            return self.query_channel_aggregate(query).await;
-        }
-        let mut result = self.channel_indices.query_all(query.clone()).await?;
-        take_recent(&mut result, query.limit);
-        Ok(result)
+        Ok(self.channel_indices.query_all(query).await?)
     }
 
-    /// 目录聚合：枚举 <root>/<agent_id>/memory-store/<year>-<role_name>/channel-*.jsonl，
-    /// 每文件 ReverseLineReader 尾部读取（上限 1024 行，覆盖最近窗口），合并按 (time, sn) 排序，
-    /// 时间窗过滤，limit 截取最近 N（messenger/user/group 空串时使用，供 agent 记忆打包按 role 全量读取）
-    async fn query_channel_aggregate(&self, query: QueryChannelRequest) -> Result<Vec<(ChannelRecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
-        use kai_file::ReverseLineReader;
+    /// 枚举 <root>/<agent_id>/memory-store/<year>-<role_name>/channel-*.jsonl，
+    /// 解析文件名中的 (messenger, user, group) 组合（按文件日期过滤在时间范围内），去重返回
+    /// 供 agent 先取组合、再对每个组合用精确 key 时间区间查询（记忆打包流程）
+    pub async fn query_combos(&self, query: QueryRequest) -> Result<Vec<ChannelCombo>> {
+        use kai_date::as_date;
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(query.agent_id.as_str()).await?;
-        // 收集所有 <year>-<role_name> 目录下的 channel 文件
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut combos: Vec<ChannelCombo> = Vec::new();
         let mut read_dir = tokio::fs::read_dir(&store_dir).await?;
         while let Some(entry) = read_dir.next_entry().await? {
             let dir_name = entry.file_name().to_string_lossy().to_string();
@@ -88,87 +81,47 @@ impl MemoryIndexer {
                     let mut year_dir = tokio::fs::read_dir(entry.path()).await?;
                     while let Some(f) = year_dir.next_entry().await? {
                         let fname = f.file_name().to_string_lossy().to_string();
-                        if fname.starts_with("channel-") && fname.ends_with(".jsonl") {
-                            files.push(f.path());
+                        if !fname.starts_with("channel-") || !fname.ends_with(".jsonl") { continue; }
+                        // 文件名：channel-{m}={u}={g}-records-{yyyy-mm-dd}.jsonl
+                        let body = fname.trim_start_matches("channel-");
+                        let Some((prefix, date)) = body.rsplit_once("-records-") else { continue; };
+                        let date = date.trim_end_matches(".jsonl");
+                        if date < as_date(query.start_time.as_str()) || date > as_date(query.end_time.as_str()) {
+                            continue;  // 文件日期不在时间范围内
                         }
+                        let mut parts = prefix.splitn(3, '=');
+                        let (Some(m), Some(u), Some(g)) = (parts.next(), parts.next(), parts.next()) else { continue; };
+                        combos.push(ChannelCombo {
+                            messenger_id: Arc::new(m.to_string()),
+                            user_id: Arc::new(u.to_string()),
+                            group_id: Arc::new(g.to_string()),
+                        });
                     }
                 }
             }
         }
-        // 每文件尾部读（上限 1024 行）
-        let mut merged: Vec<(u32, Arc<ChannelRecord>)> = Vec::new();
-        for path in files {
-            let mut reader = ReverseLineReader::new(&path, None, None).await?;
-            let mut count = 0;
-            while let Some(line_with_pos) = reader.next_line().await? {
-                let s = line_with_pos.line.trim();
-                if s.is_empty() { continue; }
-                if let Ok(rec) = serde_json::from_str::<ChannelRecord>(s) {
-                    merged.push((rec.sn as u32, Arc::new(rec)));
-                    count += 1;
-                    if count >= 1024 { break; }
-                }
-            }
-        }
-        // 按 (time, sn) 升序
-        merged.sort_by(|a, b| {
-            a.1.time.as_str().cmp(b.1.time.as_str()).then(a.1.sn.cmp(&b.1.sn))
+        // 去重（按组合三元组排序后相邻去重）
+        combos.sort_by(|a, b| {
+            a.messenger_id.as_str().cmp(b.messenger_id.as_str())
+                .then(a.user_id.as_str().cmp(b.user_id.as_str()))
+                .then(a.group_id.as_str().cmp(b.group_id.as_str()))
         });
-        // 时间窗过滤
-        merged.retain(|(_, r)| {
-            r.time.as_str() >= query.start_time.as_str() && r.time.as_str() <= query.end_time.as_str()
+        combos.dedup_by(|a, b| {
+            a.messenger_id == b.messenger_id && a.user_id == b.user_id && a.group_id == b.group_id
         });
-        // limit 截取最近 N（时间升序，保留尾部）
-        if let Some(limit) = query.limit {
-            if merged.len() > limit {
-                merged.drain(..merged.len() - limit);
-            }
-        }
-        let key = ChannelRecordKey {
-            agent_id: query.agent_id.clone(),
-            role_name: query.role_name.clone(),
-            messenger_id: Arc::new(String::new()),
-            user_id: Arc::new(String::new()),
-            group_id: Arc::new(String::new()),
-            date: Arc::new(String::new()),
-        };
-        Ok(vec![(key, merged)])
+        Ok(combos)
     }
 
     pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ThinkRecord>)>)>> {
-        let mut result = self.think_indices.query_all(query.clone()).await?;
-        take_recent(&mut result, query.limit);
-        Ok(result)
+        Ok(self.think_indices.query_all(query).await?)
     }
 
     pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolCallRecord>)>)>> {
-        let mut result = self.tool_call_indices.query_all(query.clone()).await?;
-        take_recent(&mut result, query.limit);
-        Ok(result)
+        Ok(self.tool_call_indices.query_all(query).await?)
     }
 
     pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolResultRecord>)>)>> {
-        let mut result = self.tool_result_indices.query_all(query.clone()).await?;
-        take_recent(&mut result, query.limit);
-        Ok(result)
-    }
-}
-
-/// 精确 key 路径 + limit：每组记录按 (time, sn) 排序后截取最近 N（保持现有返回结构）
-fn take_recent<K, R>(grouped: &mut Vec<(K, Vec<(u32, Arc<R>)>)>, limit: Option<usize>)
-where
-    K: Clone + Send + Sync,
-    R: kissbot_api::memory::MemoryRecord + Send + Sync + 'static,
-{
-    if let Some(limit) = limit {
-        for (_, records) in grouped.iter_mut() {
-            records.sort_by(|a, b| {
-                a.1.time().cmp(b.1.time()).then(a.1.sn().cmp(&b.1.sn()))
-            });
-            if records.len() > limit {
-                records.drain(..records.len() - limit);
-            }
-        }
+        Ok(self.tool_result_indices.query_all(query).await?)
     }
 }
 
@@ -244,7 +197,6 @@ use tokio;
             group_id: Arc::new(group_id.to_string()),
             start_time: Arc::new(format!("{} {}", date, s)),
             end_time: Arc::new(format!("{} {}", date, e)),
-            limit: None,
         };
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
@@ -305,7 +257,6 @@ use tokio;
             role_name: Arc::new(role_name.to_string()),
             start_time: Arc::new(format!("{} {}", date, s)),
             end_time: Arc::new(format!("{} {}", date, e)),
-            limit: None,
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -359,7 +310,6 @@ use tokio;
             role_name: Arc::new(role_name.to_string()),
             start_time: Arc::new(format!("{} {}", date, s)),
             end_time: Arc::new(format!("{} {}", date, e)),
-            limit: None,
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -413,7 +363,6 @@ use tokio;
             role_name: Arc::new(role_name.to_string()),
             start_time: Arc::new(format!("{} {}", date, s)),
             end_time: Arc::new(format!("{} {}", date, e)),
-            limit: None,
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -446,48 +395,32 @@ use tokio;
         assert_eq!(results[0].1.len(), 1);
     }
 
-    // ========== 目录聚合 + limit（messenger/user/group 空串 → 按 agent+role 扫描全部 channel 文件） ==========
+    // ========== 组合枚举（messenger/user/group 组合，供 agent 按组合精确查询） ==========
 
     #[tokio::test]
-    async fn test_query_channel_recent_with_limit_and_directory_aggregate() {
-        let agent_id = "agg_agent";
-        let role_name = "r1";
+    async fn test_query_combos_enumerates_channel_files() {
+        init_test_config();
+        // 写两个 channel 文件（不同 messenger/user/group，同 role）
         let date = "2026-08-05";
-        // 两个 channel 文件（不同 messenger），模拟该 role 下多个 channel 的历史
-        let web_file = "channel-web=self1=g1-records-2026-08-05.jsonl";
-        let tg_file = "channel-tg=self1=g1-records-2026-08-05.jsonl";
-        let rec = |time: &str, text: &str| format!(
-            r#"{{"user_id":"u1","is_self":0,"messenger_name":"","user_name":"name","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
-            text, time
-        );
-        append_jsonl(agent_id, role_name, web_file, date, &rec("2026-08-05 10:00:00", "m1-早")).await;
-        append_jsonl(agent_id, role_name, tg_file, date, &rec("2026-08-05 10:01:00", "m2-中")).await;
-        append_jsonl(agent_id, role_name, web_file, date, &rec("2026-08-05 10:02:00", "m1-晚")).await;
+        append_jsonl("combo_agent", "r1", "channel-web=self1=g1-records-2026-08-05.jsonl", date,
+            r#"{"user_id":"u1","is_self":0,"messenger_name":"","user_name":"n","group_name":"","content":{"msg_type":"Text","data":"hi"},"time":"2026-08-05 10:00:00","sn":1}"#).await;
+        append_jsonl("combo_agent", "r1", "channel-tg=self2=g2-records-2026-08-05.jsonl", date,
+            r#"{"user_id":"u1","is_self":0,"messenger_name":"","user_name":"n","group_name":"","content":{"msg_type":"Text","data":"hi2"},"time":"2026-08-05 10:01:00","sn":1}"#).await;
 
         let indexer = MemoryIndexer::new();
-        // 目录聚合：messenger/user/group 空串 + limit=2（取最近 2 条）
-        let query = QueryChannelRequest {
-            agent_id: Arc::new(agent_id.to_string()),
-            role_name: Arc::new(role_name.to_string()),
-            messenger_id: Arc::new(String::new()),
-            user_id: Arc::new(String::new()),
-            group_id: Arc::new(String::new()),
-            start_time: Arc::new("2026-08-05 00:00:00".to_string()),
-            end_time: Arc::new("2026-08-05 23:59:59".to_string()),
-            limit: Some(2),
+        let query = QueryRequest {
+            agent_id: Arc::new("combo_agent".into()),
+            role_name: Arc::new("r1".into()),
+            start_time: Arc::new("2026-08-05 00:00:00".into()),
+            end_time: Arc::new("2026-08-05 23:59:59".into()),
         };
-        let results = indexer.query_channel_records(query).await.unwrap();
-        let mut flat: Vec<(String, String)> = Vec::new();  // (time, text)
-        for (_, records) in &results {
-            for (_, r) in records {
-                if let Content::Text(t) = &r.content {
-                    flat.push((r.time.to_string(), t.as_str().to_string()));
-                }
-            }
-        }
-        flat.sort();
-        assert_eq!(flat.len(), 2, "limit=2 只返回最近 2 条");
-        assert_eq!(flat[0].1, "m2-中");
-        assert_eq!(flat[1].1, "m1-晚");
+        let combos = indexer.query_combos(query).await.unwrap();
+        assert_eq!(combos.len(), 2);
+        let mut ids: Vec<(String, String, String)> = combos.iter().map(|c| {
+            (c.messenger_id.to_string(), c.user_id.to_string(), c.group_id.to_string())
+        }).collect();
+        ids.sort();
+        assert_eq!(ids[0], ("tg".into(), "self2".into(), "g2".into()));
+        assert_eq!(ids[1], ("web".into(), "self1".into(), "g1".into()));
     }
 }

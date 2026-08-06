@@ -88,9 +88,6 @@ pub struct QueryChannelRequest {
     pub group_id: Arc<String>,
     pub start_time: Arc<String>,
     pub end_time: Arc<String>,
-    /// 可选：返回该范围内最近 N 条（合并排序后截取）；None 返回全部
-    #[serde(default)]
-    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,9 +96,14 @@ pub struct QueryRequest {
     pub role_name: Arc<String>,
     pub start_time: Arc<String>,
     pub end_time: Arc<String>,
-    /// 可选：返回该范围内最近 N 条；None 返回全部
-    #[serde(default)]
-    pub limit: Option<usize>,
+}
+
+/// channel 记录文件组合（messenger + user + group），用于按组合精确查询
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ChannelCombo {
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
+    pub group_id: Arc<String>,
 }
 
 
@@ -380,7 +382,6 @@ mod tests {
             group_id: Arc::new("g1".to_string()),
             start_time: Arc::new("2026-01-01".to_string()),
             end_time: Arc::new("2026-06-01".to_string()),
-            limit: None,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: QueryChannelRequest = serde_json::from_value(json).unwrap();
@@ -394,11 +395,25 @@ mod tests {
             role_name: Arc::new("r1".to_string()),
             start_time: Arc::new("2026-01-01".to_string()),
             end_time: Arc::new("2026-06-01".to_string()),
-            limit: None,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: QueryRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "a1");
+    }
+
+    #[test]
+    fn test_serde_channel_combo() {
+        let obj = ChannelCombo {
+            messenger_id: Arc::new("web".to_string()),
+            user_id: Arc::new("self1".to_string()),
+            group_id: Arc::new("g1".to_string()),
+        };
+        let json = serde_json::to_value(&obj).unwrap();
+        assert_eq!(json["messenger_id"], "web");
+        assert_eq!(json["user_id"], "self1");
+        assert_eq!(json["group_id"], "g1");
+        let back: ChannelCombo = serde_json::from_value(json).unwrap();
+        assert_eq!(back, obj);
     }
 
     // ========== Record trait ==========
