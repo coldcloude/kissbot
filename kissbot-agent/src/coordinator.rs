@@ -402,20 +402,18 @@ impl AgentCoordinator {
     /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
     /// role：归档 + 记忆打包重建
     async fn reset_context(&self, session: &Arc<Session>) {
+        // 重置开始：置标志（合批延时任务等待；缓冲不清空，期间消息统一并入重置后的一次打包）
+        session.resetting.store(true, std::sync::atomic::Ordering::SeqCst);
         let key = self.session_key_of_session(session);
         let path = self.cache.path_for(&key);
         if path.exists() {
             let _ = self.history.archive(&key, &path).await;
         }
         let _ = self.cache.clear(&key).await;
-        // 合批缓冲清空 + 代数递增（失效旧计时任务，防重置前已入缓冲的消息被打包进重置后上下文）
-        {
-            let mut b = session.batch.lock().await;
-            b.clear();
-            session.batch_gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
         session.context.lock().await.clear();
         self.build_initial_context(session).await;
+        // 重置结束：清标志，延时任务立即打包（含期间到达的消息）
+        session.resetting.store(false, std::sync::atomic::Ordering::SeqCst);
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
@@ -819,7 +817,6 @@ impl AgentCoordinator {
         if !was_empty {
             return;  // 已有计时任务在跑，等待汇合
         }
-        let gen_at_start = session.batch_gen.load(std::sync::atomic::Ordering::SeqCst);
         let Some(coordinator) = self.weak_self.get().and_then(|w| w.upgrade()) else {
             warn!("enqueue_batch: 协调器已释放，跳过合批");
             return;
@@ -828,15 +825,9 @@ impl AgentCoordinator {
         let out_channel = out_channel.clone();
         let channel_id = channel_id.to_string();
         tokio::spawn(async move {
-            tokio::time::sleep(interval).await;
-            let mut b = session.batch.lock().await;
-            // 代数变化（会话已重置）或缓冲被清空：放弃本次打包
-            if session.batch_gen.load(std::sync::atomic::Ordering::SeqCst) != gen_at_start { return; }
-            if b.is_empty() { return; }
-            let items = b.take();
-            drop(b);
-            let content = crate::batching::pack_batch(&items);
-            coordinator.run_agentic_loop(&channel_id, &session, content, &out_channel).await;
+            if let Some(content) = crate::batching::flush_after_reset(&session, interval).await {
+                coordinator.run_agentic_loop(&channel_id, &session, content, &out_channel).await;
+            }
         });
     }
 

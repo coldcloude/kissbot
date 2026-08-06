@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -76,8 +76,9 @@ pub struct Session {
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 待合批缓冲（合批超时后打包进上下文）
     pub batch: tokio::sync::Mutex<crate::batching::BatchBuffer>,
-    /// 合批代数：重置时递增使旧计时任务失效
-    pub batch_gen: Arc<AtomicU64>,
+    /// 重置标志：reset_context 开始时置 true、结束时置 false；合批延时任务据此等待
+    /// （重置期间不触发超时打包，缓冲不清空，期间消息统一并入重置后的一次打包）
+    pub resetting: Arc<AtomicBool>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
@@ -93,7 +94,7 @@ impl Session {
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
             batch: tokio::sync::Mutex::new(crate::batching::BatchBuffer::new()),
-            batch_gen: Arc::new(AtomicU64::new(0)),
+            resetting: Arc::new(AtomicBool::new(false)),
             model: ArcSwap::from_pointee(model),
             agent_id,
         }
