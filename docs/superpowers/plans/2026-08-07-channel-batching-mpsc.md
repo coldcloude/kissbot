@@ -233,23 +233,29 @@ pub fn spawn_trigger(
 }
 
 /// 触发 flush：判定 → drain 全部 → 打包 → 交协调器进 agentic loop
+/// 触发 flush：判定 → deadline 置 None → drain 全部 → 打包 → 交协调器进 agentic loop
 /// （命名 flush_events_to_loop 与 coordinator 的 flush_batch 方法区分）
+/// 收 Weak：升级失败（会话/协调器已销毁）时数据已 drain（消费丢弃），死 Weak 可观测
 pub async fn flush_events_to_loop(
     batch: &Arc<BatchState>,
-    session: &Arc<Session>,
-    coordinator: &Arc<crate::coordinator::AgentCoordinator>,
+    weak_session: Weak<Session>,
+    weak_coordinator: Weak<crate::coordinator::AgentCoordinator>,
     force: bool,
 ) {
     if !flush_ready(batch, force) {
         return;   // 非强制且未超 deadline：空转（等下一个到期触发）
     }
-    let items = batch.drain().await;
+    // deadline 置 None 在 drain 之前：避免并发 enqueue 新截止被清（drain 期间到达的消息并入本次 flush，其 At 稍后空转）
     batch.deadline.store(None);
+    let items = batch.drain().await;
     if items.is_empty() {
         return;
     }
     let content = pack_events(&items);
-    coordinator.flush_batch(session, content).await;
+    let (Some(s), Some(c)) = (weak_session.upgrade(), weak_coordinator.upgrade()) else {
+        return;   // 会话/协调器已销毁：丢弃打包内容
+    };
+    c.flush_batch(&s, content).await;
 }
 ```
 

@@ -81,8 +81,8 @@ loop {
 ```
 d = deadline.load_full();                                  // Option<Arc<Instant>>
 if !force && (d.is_none() || now < **d) { return; }        // 非强制且未超 deadline：空转（等下一个到期触发）
+deadline.store(None);                                       // 先清 deadline 再 drain：避免并发 enqueue 新截止被清（drain 期间到达的消息并入本次 flush，其 At 稍后空转）
 items = drain rx（try_recv 循环全部；channel 不关闭，跨 flush 复用）;
-deadline.store(None);
 if items.is_empty() { return; }
 打包：逐条 IncomingMessageEvent → user_name + extract_text(content) → "name: text" 行 → run_agentic_loop
 ```
