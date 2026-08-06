@@ -50,23 +50,16 @@ impl OpenAiProvider {
 }
 
 fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> serde_json::Value {
-    let msgs: Vec<serde_json::Value> = messages.iter().map(|m| match m {
-        Message::System { content } => json!({ "role": "system", "content": content }),
-        Message::User { content } => json!({ "role": "user", "content": content }),
-        Message::Assistant { content, tool_calls, .. } => {
-            let mut v = json!({ "role": "assistant", "content": content });
-            if let Some(tcs) = tool_calls {
-                v["tool_calls"] = json!(tcs.iter().map(|tc| json!({
-                    "id": tc.id,
-                    "type": "function",
-                    "function": { "name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default() },
-                })).collect::<Vec<_>>());
+    // Message 序列化即 OpenAI 格式（role 平级内部标签 + ToolCall wire 形状）；
+    // reasoning_content 仅本地保留（缓存/历史），wire 剥离（DeepSeek/Kimi 文档要求）
+    let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
+        let wire = match m {
+            Message::Assistant { content, reasoning_content: _, tool_calls } => {
+                Message::Assistant { content: content.clone(), reasoning_content: None, tool_calls: tool_calls.clone() }
             }
-            v
-        }
-        Message::Tool { tool_call_id, content, .. } => {
-            json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
-        }
+            other => other.clone(),
+        };
+        serde_json::to_value(&wire).expect("Message 序列化不可失败（role 平级标签 + Arc 字段恒可序列化）")
     }).collect();
     let mut body = json!({
         "model": effective.model,
@@ -105,16 +98,11 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
     let (content, tag_reasoning) = strip_think_tag(&content);
     let thinking = tag_reasoning.filter(|s| !s.is_empty());
     // tool_calls：OpenAI function call 数组（含 thinking 模式下多轮工具调用）；无则空
-    let tool_calls = choice["message"]["tool_calls"].as_array().map(|arr| {
-        arr.iter().filter_map(|tc| {
-            let id = tc["id"].as_str()?.to_string();
-            let name = tc["function"]["name"].as_str()?.to_string();
-            let arguments = tc["function"]["arguments"].as_str()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or(serde_json::Value::Null);
-            Some(ToolCall { id: Arc::new(id), name: Arc::new(name), arguments: Arc::new(arguments) })
-        }).collect()
-    }).unwrap_or_default();
+    // 直接用 ToolCall 自定义反序列化解析 wire 形状（容错：缺字段/格式异常回退空）
+    let tool_calls = match choice["message"]["tool_calls"].clone() {
+        serde_json::Value::Null => Vec::new(),
+        v => serde_json::from_value::<Vec<ToolCall>>(v).unwrap_or_default(),
+    };
     ModelResponse { content, reasoning_content, thinking, tool_calls, finish_reason }
 }
 
@@ -421,6 +409,21 @@ mod tests {
         assert_eq!(body["messages"][1]["tool_call_id"], "c1");
         // reasoning_content 不发送
         assert!(body["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn openai_body_strips_reasoning_content_on_wire() {
+        // Message 序列化保留 reasoning_content（缓存/历史），wire 剥离（DeepSeek/Kimi 文档要求）
+        let eff = sample_effective();
+        let msgs = vec![
+            Message::System { content: Arc::new("设定".into()) },
+            Message::Assistant { content: Arc::new("回答".into()), reasoning_content: Some(Arc::new("思考".into())), tool_calls: None },
+        ];
+        let body = openai_body(&eff, &msgs, &[]);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        assert!(body["messages"][1].get("reasoning_content").is_none(), "wire 应剥离 reasoning_content");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"], "回答");
     }
 
     #[test]

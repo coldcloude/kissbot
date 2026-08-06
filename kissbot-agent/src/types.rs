@@ -148,13 +148,64 @@ pub enum CommandEffect {
 // ========== 模型相关 ==========
 
 /// OpenAI function call：wire 为 {id, type:"function", function:{name, arguments(JSON 字符串)}}
+/// 自定义 serde：序列化/反序列化即 OpenAI wire 形状（缓存/历史与 wire 一致）
 /// 字段按编码规范用 Arc<String>/Arc<Value>（与 ToolCallRequest.tool_params 先例一致）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ToolCall {
     pub id: Arc<String>,
     pub name: Arc<String>,
-    /// 内部为解析后的参数对象；wire 时序列化为 JSON 字符串
+    /// 参数对象；wire 时序列化为 JSON 字符串（function.arguments）
     pub arguments: Arc<serde_json::Value>,
+}
+
+/// ToolCall 序列化辅助：function 内嵌对象（name + arguments 字符串）
+struct ToolCallFunction<'a> {
+    name: &'a Arc<String>,
+    arguments: &'a Arc<serde_json::Value>,
+}
+
+impl serde::Serialize for ToolCallFunction<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = serializer.serialize_struct("ToolCallFunction", 2)?;
+        st.serialize_field("name", self.name)?;
+        // arguments：参数对象序列化为 JSON 字符串（OpenAI wire 约定）
+        st.serialize_field("arguments", &serde_json::to_string(&**self.arguments).map_err(serde::ser::Error::custom)?)?;
+        st.end()
+    }
+}
+
+impl serde::Serialize for ToolCall {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = serializer.serialize_struct("ToolCall", 3)?;
+        st.serialize_field("id", &self.id)?;
+        st.serialize_field("type", "function")?;
+        st.serialize_field("function", &ToolCallFunction { name: &self.name, arguments: &self.arguments })?;
+        st.end()
+    }
+}
+
+/// 反序列化：容错解析 OpenAI wire 形状——id 必填；function.name 必填；
+/// function.arguments 为字符串则 JSON 解析为对象、非字符串则直接用、缺失回退 Null；type 忽略
+impl<'de> serde::Deserialize<'de> for ToolCall {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        let id = v.get("id").and_then(|x| x.as_str()).map(String::from)
+            .ok_or_else(|| serde::de::Error::custom("ToolCall 缺少 id"))?;
+        let name = v["function"]["name"].as_str().map(String::from)
+            .ok_or_else(|| serde::de::Error::custom("ToolCall 缺少 function.name"))?;
+        // arguments：字符串 → JSON 解析；对象/其他值 → 直接用；缺失 → Null
+        let arguments = match v["function"]["arguments"].clone() {
+            serde_json::Value::String(s) => serde_json::from_str(&s).unwrap_or(serde_json::Value::Null),
+            other => other,
+        };
+        Ok(ToolCall {
+            id: Arc::new(id),
+            name: Arc::new(name),
+            arguments: Arc::new(arguments),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -227,7 +278,7 @@ mod tests {
                 content: Arc::new(String::new()),
                 reasoning_content: None,
                 tool_calls: Some(vec![ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) }]),
-            }, r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","name":"read","arguments":{"path":"/tmp/a.txt"}}]}"#),
+            }, r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}"#),
             (Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) }, r#"{"role":"tool","tool_call_id":"call_1","name":"read","content":"内容"}"#),
         ];
         for (m, expected) in cases {
@@ -247,7 +298,7 @@ mod tests {
         let asst: Message = serde_json::from_str(r#"{"role":"assistant","content":"","reasoning_content":"思考"}"#).unwrap();
         assert!(matches!(asst, Message::Assistant { reasoning_content: Some(r), tool_calls: None, .. } if r.as_str() == "思考"));
 
-        let asst2: Message = serde_json::from_str(r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","name":"read","arguments":{"path":"/tmp/a.txt"}}]}"#).unwrap();
+        let asst2: Message = serde_json::from_str(r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}"#).unwrap();
         assert!(matches!(&asst2, Message::Assistant { reasoning_content: None, tool_calls: Some(tcs), .. }
             if tcs[0].id.as_str() == "call_1" && tcs[0].name.as_str() == "read" && tcs[0].arguments["path"] == "/tmp/a.txt"));
 
@@ -262,5 +313,26 @@ mod tests {
         let v = serde_json::to_value(&m).unwrap();
         assert!(v.get("reasoning_content").is_none(), "None 字段不应序列化");
         assert!(v.get("tool_calls").is_none(), "None 字段不应序列化");
+    }
+
+    #[test]
+    fn tool_call_wire_serde_roundtrip_and_tolerance() {
+        // 序列化：wire 形状 {id, type:"function", function:{name, arguments(JSON 字符串)}}
+        let tc = ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) };
+        let json = serde_json::to_string(&tc).unwrap();
+        assert_eq!(json, r#"{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"/tmp/a.txt\"}"}}"#, "arguments 序列化为 JSON 字符串");
+        // 反序列化：wire 形状还原（arguments 解析回对象）
+        let back: ToolCall = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id.as_str(), "call_1");
+        assert_eq!(back.name.as_str(), "read");
+        assert_eq!(back.arguments["path"], "/tmp/a.txt", "arguments 字符串解析回 JSON 对象");
+        // 容错：arguments 为对象直接用；缺失回退 Null；type 忽略
+        let obj_arg: ToolCall = serde_json::from_str(r#"{"id":"c","function":{"name":"n","arguments":{"a":1}}}"#).unwrap();
+        assert_eq!(obj_arg.arguments["a"], 1);
+        let no_arg: ToolCall = serde_json::from_str(r#"{"id":"c","function":{"name":"n"}}"#).unwrap();
+        assert!(no_arg.arguments.is_null(), "缺失 arguments 回退 Null");
+        // 缺 id / 缺 function.name 报错（parse_openai_response 整体回退空）
+        assert!(serde_json::from_str::<ToolCall>(r#"{"type":"function"}"#).is_err());
+        assert!(serde_json::from_str::<ToolCall>(r#"{"id":"c"}"#).is_err());
     }
 }
