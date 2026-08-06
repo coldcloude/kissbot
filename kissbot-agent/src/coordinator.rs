@@ -970,17 +970,19 @@ impl AgentCoordinator {
             match response {
                 Ok(model_resp) if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS => {
                     // 4. 追加 assistant(tool_calls) + 写缓存
+                    // reasoning_content 必须保留并随请求回传：DeepSeek 带 tools 的请求须完整回传否则 400；
+                    // Kimi 单轮工具循环（多步推理）须保留并回传全部思考内容；openai_body 自动序列化
                     {
                         let mut ctx = session.context.lock().await;
                         ctx.push(Message::Assistant {
                             content: Arc::new(String::new()),
-                            reasoning_content: None,
+                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                             tool_calls: Some(model_resp.tool_calls.clone()),
                         });
                     }
                     let _ = self.cache.append(&key, &[Message::Assistant {
                         content: Arc::new(String::new()),
-                        reasoning_content: None,
+                        reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: Some(model_resp.tool_calls.clone()),
                     }]).await;
 
@@ -1028,11 +1030,11 @@ impl AgentCoordinator {
                 Ok(model_resp) => {
                     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-                    // 6. 追加 assistant 回复（reasoning_content 置 None）+ 写缓存
+                    // 6. 追加 assistant 回复 + 写缓存
                     // 超限兜底：rounds 超过 MAX_TOOL_ROUNDS 后模型仍返回 tool_calls 时 content 为空，
                     // 用兜底文案作为回复（不把空内容发送给用户）
-                    // 上下文策略：wire 不带 reasoning_content → 上下文/缓存也不存（思考仅解析后
-                    // 在步骤 7 直接写 memory-store think 记录，不保留进上下文）
+                    // reasoning_content 保留并回传：带 tools 的请求须完整回传所有 assistant 的思考内容
+                    // （DeepSeek 400 规则 / Kimi 保留式思考）；同时思考内容在步骤 7 写 memory-store think 记录
                     let reply_content = if model_resp.tool_calls.is_empty() {
                         model_resp.content.clone()
                     } else {
@@ -1042,13 +1044,13 @@ impl AgentCoordinator {
                         let mut ctx = session.context.lock().await;
                         ctx.push(Message::Assistant {
                             content: Arc::new(reply_content.clone()),
-                            reasoning_content: None,
+                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                             tool_calls: None,
                         });
                     }
                     let _ = self.cache.append(&key, &[Message::Assistant {
                         content: Arc::new(reply_content.clone()),
-                        reasoning_content: None,
+                        reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: None,
                     }]).await;
 

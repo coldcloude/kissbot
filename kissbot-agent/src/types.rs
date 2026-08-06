@@ -230,7 +230,8 @@ pub enum Message {
     User { content: Arc<String> },
     Assistant {
         content: Arc<String>,
-        /// 本地保留（缓存/历史），wire 不发送（DeepSeek/Kimi 文档要求）
+        /// 工具调用场景必须随请求回传（DeepSeek：带 tools 的请求须完整回传否则 400；Kimi：单轮工具循环保留并回传）；
+        /// 非工具调用可选（API 忽略）；openai_body 自动序列化；同时思考内容经步骤 7 写 memory-store think 记录
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<Arc<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]

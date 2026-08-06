@@ -51,7 +51,8 @@ impl OpenAiProvider {
 
 fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> serde_json::Value {
     // Message 序列化即 OpenAI 格式（role 平级内部标签 + ToolCall wire 形状 + reasoning_content 字段自动生成/解析）；
-    // 上下文策略：wire 不带 reasoning_content → 消息进入上下文时已置 None（见 coordinator），此处无需处理
+    // reasoning_content 工具调用场景必须回传（DeepSeek 带 tools 请求须完整回传否则 400 / Kimi 保留式思考），
+    // 上下文已保留 model_resp.reasoning_content，此处直接序列化无需处理
     let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
         serde_json::to_value(m).expect("Message 序列化不可失败（role 平级标签 + Arc 字段恒可序列化）")
     }).collect();
@@ -401,14 +402,15 @@ mod tests {
         assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["arguments"], r#"{"path":"/a"}"#, "arguments 序列化为 JSON 字符串");
         assert_eq!(body["messages"][1]["role"], "tool");
         assert_eq!(body["messages"][1]["tool_call_id"], "c1");
-        // reasoning_content 不发送
+        // 输入 assistant 的 reasoning_content 为 None（上下文保留与否由 coordinator 策略决定），
+        // 此处由 skip_serializing_if 省略；若 Some（工具调用场景须回传）则自动序列化携带
         assert!(body["messages"][0].get("reasoning_content").is_none());
     }
 
     #[test]
     fn openai_body_serializes_reasoning_content_when_present() {
-        // 格式能力：Message 序列化即 OpenAI 格式，reasoning_content 由格式自动生成（若上下文出现 Some 则 wire 携带）；
-        // 实际上下文策略在消息进入上下文时置 None（见 coordinator），正常路径不会出现 Some
+        // 格式能力：Message 序列化即 OpenAI 格式，reasoning_content 由格式自动序列化携带；
+        // 上下文已保留 model_resp.reasoning_content（工具调用场景须回传，见 coordinator 步骤 4/6），wire 直接携带
         let eff = sample_effective();
         let msgs = vec![
             Message::System { content: Arc::new("设定".into()) },

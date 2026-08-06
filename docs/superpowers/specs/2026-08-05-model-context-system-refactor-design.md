@@ -23,7 +23,7 @@ pub enum Message {
     Assistant {
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning_content: Option<String>,   // 本地保留（缓存/历史），wire 不发送
+        reasoning_content: Option<String>,   // 工具调用场景必须随请求回传（DeepSeek 带 tools 请求须完整回传否则 400；Kimi 单轮工具循环保留并回传）；非工具调用可选（API 忽略）；openai_body 自动序列化
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<ToolCall>>,
     },
