@@ -1028,9 +1028,11 @@ impl AgentCoordinator {
                 Ok(model_resp) => {
                     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-                    // 6. 追加 assistant 回复（含 reasoning_content 本地保留）+ 写缓存
+                    // 6. 追加 assistant 回复（reasoning_content 置 None）+ 写缓存
                     // 超限兜底：rounds 超过 MAX_TOOL_ROUNDS 后模型仍返回 tool_calls 时 content 为空，
                     // 用兜底文案作为回复（不把空内容发送给用户）
+                    // 上下文策略：wire 不带 reasoning_content → 上下文/缓存也不存（思考仅解析后
+                    // 在步骤 7 直接写 memory-store think 记录，不保留进上下文）
                     let reply_content = if model_resp.tool_calls.is_empty() {
                         model_resp.content.clone()
                     } else {
@@ -1040,13 +1042,13 @@ impl AgentCoordinator {
                         let mut ctx = session.context.lock().await;
                         ctx.push(Message::Assistant {
                             content: Arc::new(reply_content.clone()),
-                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
+                            reasoning_content: None,
                             tool_calls: None,
                         });
                     }
                     let _ = self.cache.append(&key, &[Message::Assistant {
                         content: Arc::new(reply_content.clone()),
-                        reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
+                        reasoning_content: None,
                         tool_calls: None,
                     }]).await;
 

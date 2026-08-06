@@ -50,16 +50,10 @@ impl OpenAiProvider {
 }
 
 fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[ToolConfig]) -> serde_json::Value {
-    // Message 序列化即 OpenAI 格式（role 平级内部标签 + ToolCall wire 形状）；
-    // reasoning_content 仅本地保留（缓存/历史），wire 剥离（DeepSeek/Kimi 文档要求）
+    // Message 序列化即 OpenAI 格式（role 平级内部标签 + ToolCall wire 形状 + reasoning_content 字段自动生成/解析）；
+    // 上下文策略：wire 不带 reasoning_content → 消息进入上下文时已置 None（见 coordinator），此处无需处理
     let msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
-        let wire = match m {
-            Message::Assistant { content, reasoning_content: _, tool_calls } => {
-                Message::Assistant { content: content.clone(), reasoning_content: None, tool_calls: tool_calls.clone() }
-            }
-            other => other.clone(),
-        };
-        serde_json::to_value(&wire).expect("Message 序列化不可失败（role 平级标签 + Arc 字段恒可序列化）")
+        serde_json::to_value(m).expect("Message 序列化不可失败（role 平级标签 + Arc 字段恒可序列化）")
     }).collect();
     let mut body = json!({
         "model": effective.model,
@@ -412,8 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn openai_body_strips_reasoning_content_on_wire() {
-        // Message 序列化保留 reasoning_content（缓存/历史），wire 剥离（DeepSeek/Kimi 文档要求）
+    fn openai_body_serializes_reasoning_content_when_present() {
+        // 格式能力：Message 序列化即 OpenAI 格式，reasoning_content 由格式自动生成（若上下文出现 Some 则 wire 携带）；
+        // 实际上下文策略在消息进入上下文时置 None（见 coordinator），正常路径不会出现 Some
         let eff = sample_effective();
         let msgs = vec![
             Message::System { content: Arc::new("设定".into()) },
@@ -421,7 +416,7 @@ mod tests {
         ];
         let body = openai_body(&eff, &msgs, &[]);
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
-        assert!(body["messages"][1].get("reasoning_content").is_none(), "wire 应剥离 reasoning_content");
+        assert_eq!(body["messages"][1]["reasoning_content"], "思考", "格式自动序列化 reasoning_content");
         assert_eq!(body["messages"][1]["role"], "assistant");
         assert_eq!(body["messages"][1]["content"], "回答");
     }
