@@ -934,6 +934,42 @@ impl AgentCoordinator {
         None
     }
 
+    /// 按会话 (agent, role) 找 out_channel（resolve_out_channel 的会话版，合批 trigger flush 用）
+    async fn resolve_out_channel_for_session(&self, session: &Arc<Session>) -> Option<OutChannel> {
+        let channels = self.config.channels().await;
+        for (_, c) in &channels {
+            if c.agent_name.as_str() == session.agent_name.as_str()
+                && c.role_name.as_str() == session.role_name.as_str()
+            {
+                if let Some(out) = &c.outgoing {
+                    return Some(OutChannel {
+                        channel_id: c.channel_id.clone(),
+                        user: ChannelUser {
+                            messenger_id: out.messenger_id.to_string(),
+                            user_id: out.user_id.to_string(),
+                        },
+                        group_id: out.group_id.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// 合批 trigger 任务打包后调用：解析 out_channel 并进入 agentic loop
+    /// （合批重构接线：Task 3 完善 enqueue/spawn/reset 强制 flush，本方法供 batching.flush_events_to_loop 编译）
+    pub async fn flush_batch(&self, session: &Arc<Session>, content: String) {
+        // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
+        if session.model.load().is_none() {
+            return;
+        }
+        let Some(out_channel) = self.resolve_out_channel_for_session(session).await else {
+            warn!("flush_batch: 会话无 out_channel，跳过");
+            return;
+        };
+        self.run_agentic_loop("", session, content, &out_channel).await;
+    }
+
     async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, content_text: String, out_channel: &OutChannel) {
         // 无可用模型：静默忽略普通消息（仅管理指令可用）
         if session.model.load().is_none() {
@@ -1202,8 +1238,8 @@ impl AgentCoordinator {
     }
 }
 
-/// 从 Content 枚举中提取文本
-fn extract_text(content: &Content) -> String {
+/// 从 Content 枚举中提取文本（batching.pack_events 复用，pub(crate)）
+pub(crate) fn extract_text(content: &Content) -> String {
     match content {
         Content::Text(t) => t.as_str().to_string(),
         Content::Multi(items) => items.iter()
