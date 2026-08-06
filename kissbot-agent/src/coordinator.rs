@@ -984,11 +984,18 @@ impl AgentCoordinator {
                         tool_calls: Some(model_resp.tool_calls.clone()),
                     }]).await;
 
-                    // 5. 逐个执行 tool call → Tool 消息 + 写缓存 + 记忆写入（tool-call / tool-result）
+                    // 5. 逐个执行 tool call → 工具 key + channel 占位记录 + Tool 消息 + 写缓存 + 记忆写入
+                    // 5a/5f 占位与 5e 详情共用同一 key（经 channel 时间线关联），仿 think 流程
                     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     let role_name = memory_role(session.role_name.as_str(), &session.mode);
                     let agent_id = session.agent_id.clone();
                     for call in &model_resp.tool_calls {
+                        // 5a. 工具调用 key：UUID（ToolCall/ToolResult 详情与 channel 占位同 key 关联）
+                        let tool_key = uuid::Uuid::new_v4().to_string();
+                        // 5b. channel 占位记录（仿 think 流程，身份来自 out_channel，is_self=1）
+                        let call_placeholder = tool_placeholder_request(session, out_channel, &tool_key, false, &now);
+                        self.memory_store_client.push_channel_record(call_placeholder).await;
+                        // 5c. 执行工具
                         let result = self.execute_tool_call(session, call).await;
                         let result_text = result.to_string();
                         {
@@ -996,22 +1003,25 @@ impl AgentCoordinator {
                             ctx.push(Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) });
                         }
                         let _ = self.cache.append(&key, &[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) }]).await;
-                        // 记忆写入（tool-call 与 tool-result；agent_id 取会话状态，role_name 含事件编码）
+                        // 5e. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
                         self.memory_store_client.push_tool_call(ToolCallRequest {
                             agent_id: agent_id.clone(),
                             role_name: Arc::new(role_name.clone()),
                             tool_name: call.name.clone(),
                             tool_params: call.arguments.clone(),
-                            key: Arc::new(String::new()),
+                            key: Arc::new(tool_key.clone()),
                             time: Arc::new(now.clone()),
                         }).await;
                         self.memory_store_client.push_tool_result(ToolResultRequest {
                             agent_id: agent_id.clone(),
                             role_name: Arc::new(role_name.clone()),
                             tool_result: Arc::new(result.clone()),
-                            key: Arc::new(String::new()),
+                            key: Arc::new(tool_key.clone()),
                             time: Arc::new(now.clone()),
                         }).await;
+                        // 5f. tool-result 占位记录（同 key）
+                        let result_placeholder = tool_placeholder_request(session, out_channel, &tool_key, true, &now);
+                        self.memory_store_client.push_channel_record(result_placeholder).await;
                     }
                     continue;  // 继续下一轮
                 }
@@ -1201,6 +1211,36 @@ fn should_write_think(reasoning: Option<&str>, thinking: Option<&str>) -> bool {
     reasoning.is_some() || thinking.is_some()
 }
 
+/// 工具占位记录构造（仿 think 的 ChannelRecord(Think) 流程）：返回 ChannelRequest
+/// is_result=false → Content::ToolCall(key)；is_result=true → Content::ToolResult(key)
+/// 身份来自 out_channel（is_self=1，self_user=绑定用户）；role_name 含事件编码；详情经 key 关联
+/// 自由函数（不依赖 coordinator 状态），便于单测
+fn tool_placeholder_request(
+    session: &Arc<Session>,
+    out_channel: &OutChannel,
+    key: &str,
+    is_result: bool,
+    now: &str,
+) -> ChannelRequest {
+    let role_name = memory_role(session.role_name.as_str(), &session.mode);
+    let content = if is_result { Content::ToolResult(Arc::new(key.to_string())) }
+                  else { Content::ToolCall(Arc::new(key.to_string())) };
+    ChannelRequest {
+        agent_id: session.agent_id.clone(),
+        role_name: Arc::new(role_name),
+        messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
+        user_id: Arc::new(out_channel.user.user_id.clone()),
+        self_user_id: Arc::new(out_channel.user.user_id.clone()),
+        group_id: out_channel.group_id.clone(),
+        is_self: 1,
+        messenger_name: Arc::new(String::new()),   // 占位：详情经 key 关联，name 非关键
+        user_name: Arc::new(String::new()),
+        group_name: Arc::new(String::new()),
+        content,
+        time: Arc::new(now.to_string()),
+    }
+}
+
 /// 压缩后上下文（不含 system）：user(压缩指令) + assistant(总结)
 /// 由 compress_context 重建内存上下文用；抽为纯函数便于测试
 fn compressed_messages(cfg: &EffectiveContextConfig, summary: &str) -> Vec<Message> {
@@ -1336,5 +1376,28 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert!(matches!(&msgs[0], Message::User { content } if content.as_str() == "总结以上对话"));
         assert!(matches!(&msgs[1], Message::Assistant { content, .. } if content.as_str() == "总结内容"));
+    }
+
+    #[test]
+    fn tool_placeholder_uses_same_key_for_call_and_result() {
+        // 构造最小 Session + OutChannel（参照既有测试模式）
+        let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into())));
+        let out_channel = OutChannel {
+            channel_id: Arc::new("c1".into()),
+            user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
+            group_id: Arc::new("g1".into()),
+        };
+
+        let tool_key = uuid::Uuid::new_v4().to_string();
+        let call = tool_placeholder_request(&session, &out_channel, &tool_key, false, "2026-08-05 10:00:00");
+        let result = tool_placeholder_request(&session, &out_channel, &tool_key, true, "2026-08-05 10:00:01");
+        // 占位内容携带同一 key（call=ToolCall、result=ToolResult）
+        assert!(matches!(&call.content, Content::ToolCall(k) if k.as_str() == tool_key));
+        assert!(matches!(&result.content, Content::ToolResult(k) if k.as_str() == tool_key));
+        // 身份来自 out_channel（is_self=1，self_user=绑定用户）
+        assert_eq!(call.is_self, 1);
+        assert_eq!(call.self_user_id.as_str(), "u1");
+        assert_eq!(result.group_id.as_str(), "g1");
     }
 }
