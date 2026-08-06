@@ -170,9 +170,10 @@ pub struct ModelResponse {
     pub finish_reason: String,
 }
 
-/// OpenAI 兼容上下文消息：role 即枚举变体，数据字段与 role 同级
+/// OpenAI 兼容上下文消息：role 即枚举变体（内部标签序列化，role 与其他字段平级）
 /// 字段按编码规范用 Arc<String>（Option 内同样 Arc 包裹）；tool_calls 为 Vec 不包裹
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     System { content: Arc<String> },
     User { content: Arc<String> },
@@ -216,27 +217,43 @@ mod tests {
     }
 
     #[test]
-    fn message_serde_roundtrip() {
-        let msgs = vec![
-            Message::System { content: Arc::new("你是助手".into()) },
-            Message::User { content: Arc::new("你好".into()) },
-            Message::Assistant {
+    fn message_serialization_role_tag_same_level() {
+        // 序列化：role 为平级标签字段（内部标签 tag=role + lowercase；键序为 serde 派生插入序，文本为探针确认结果）
+        let cases: Vec<(Message, &str)> = vec![
+            (Message::System { content: Arc::new("你是助手".into()) }, r#"{"role":"system","content":"你是助手"}"#),
+            (Message::User { content: Arc::new("你好".into()) }, r#"{"role":"user","content":"你好"}"#),
+            (Message::Assistant { content: Arc::new(String::new()), reasoning_content: Some(Arc::new("思考".into())), tool_calls: None }, r#"{"role":"assistant","content":"","reasoning_content":"思考"}"#),
+            (Message::Assistant {
                 content: Arc::new(String::new()),
-                reasoning_content: Some(Arc::new("思考".into())),
+                reasoning_content: None,
                 tool_calls: Some(vec![ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) }]),
-            },
-            Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
+            }, r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","name":"read","arguments":{"path":"/tmp/a.txt"}}]}"#),
+            (Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) }, r#"{"role":"tool","tool_call_id":"call_1","name":"read","content":"内容"}"#),
         ];
-        for m in &msgs {
-            let json = serde_json::to_value(m).unwrap();
-            let back: Message = serde_json::from_value(json).unwrap();
-            assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(m).unwrap());
+        for (m, expected) in cases {
+            assert_eq!(serde_json::to_string(&m).unwrap(), expected);
         }
-        // ToolCall arguments 保持 JSON 对象（非字符串）
-        let tc = &msgs[2];
-        if let Message::Assistant { tool_calls: Some(tcs), .. } = tc {
-            assert_eq!(tcs[0].arguments["path"], "/tmp/a.txt");
-        } else { panic!("应解析为 Assistant with tool_calls"); }
+    }
+
+    #[test]
+    fn message_deserialization_role_tag_same_level() {
+        // 反序列化：role 标签定位变体，None 字段缺省
+        let sys: Message = serde_json::from_str(r#"{"role":"system","content":"你是助手"}"#).unwrap();
+        assert!(matches!(sys, Message::System { content } if content.as_str() == "你是助手"));
+
+        let user: Message = serde_json::from_str(r#"{"role":"user","content":"你好"}"#).unwrap();
+        assert!(matches!(user, Message::User { content } if content.as_str() == "你好"));
+
+        let asst: Message = serde_json::from_str(r#"{"role":"assistant","content":"","reasoning_content":"思考"}"#).unwrap();
+        assert!(matches!(asst, Message::Assistant { reasoning_content: Some(r), tool_calls: None, .. } if r.as_str() == "思考"));
+
+        let asst2: Message = serde_json::from_str(r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","name":"read","arguments":{"path":"/tmp/a.txt"}}]}"#).unwrap();
+        assert!(matches!(&asst2, Message::Assistant { reasoning_content: None, tool_calls: Some(tcs), .. }
+            if tcs[0].id.as_str() == "call_1" && tcs[0].name.as_str() == "read" && tcs[0].arguments["path"] == "/tmp/a.txt"));
+
+        let tool: Message = serde_json::from_str(r#"{"role":"tool","tool_call_id":"call_1","name":"read","content":"内容"}"#).unwrap();
+        assert!(matches!(tool, Message::Tool { tool_call_id, name, content }
+            if tool_call_id.as_str() == "call_1" && name.as_str() == "read" && content.as_str() == "内容"));
     }
 
     #[test]
