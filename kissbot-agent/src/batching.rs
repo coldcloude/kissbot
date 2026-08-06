@@ -10,51 +10,6 @@ use tokio_util::time::DelayQueue;
 
 use crate::session_manager::Session;
 
-// ===== 过渡 shim（Task 3 删除）=====
-// 旧的 Mutex<Vec> 合批（BatchBuffer/pack_batch）保留到新机制接线完成（coordinator 改用
-// BatchState 后删除）；flush_after_reset 已在 Task 2 随 Session.resetting/batch 字段变更删除。
-
-/// 每会话待合批缓冲：消息先入缓冲，超时（channel_batch_interval_secs）无新消息才打包为一条 user 消息
-/// （过渡 shim：新机制为 BatchState + 数据/触发双 mpsc，Task 2/3 删除）
-#[derive(Default)]
-pub struct BatchBuffer {
-    items: Vec<(String, String)>,  // (user_name, 文本)
-}
-
-impl BatchBuffer {
-    pub fn new() -> Self {
-        Self { items: Vec::new() }
-    }
-
-    pub fn push(&mut self, name: &str, text: &str) {
-        self.items.push((name.to_string(), text.to_string()));
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// 取出全部并清空（打包用）
-    pub fn take(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.items)
-    }
-
-    /// 清空缓冲（保留 API：旧重置流程不清空——重置期间消息统一并入重置后打包；
-    /// 新机制下数据留队、由 Trigger::Forced 强制 flush 处理，本 shim 方法已无调用方）
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.items.clear();
-    }
-}
-
-/// 打包为一条 user 消息的 content：逐行 "name: text"（name 为空只留 text）
-/// （过渡 shim：新机制为 pack_events(&[BatchItem])，Task 3 删除）
-pub fn pack_batch(items: &[(String, String)]) -> String {
-    items.iter().map(|(name, text)| {
-        if name.is_empty() { text.clone() } else { format!("{}: {}", name, text) }
-    }).collect::<Vec<_>>().join("\n")
-}
-
 // ===== 新合批（mpsc×2 + DelayQueue，spec 2026-08-07-channel-batching-mpsc-design）=====
 
 /// 合批数据：直接用 IncomingMessageEvent（不新建 BatchItem）
@@ -198,8 +153,11 @@ pub async fn flush_events_to_loop(
     if !flush_ready(batch, force) {
         return;   // 非强制且未超 deadline：空转（等下一个到期触发）
     }
-    let items = batch.drain().await;
+    // 先清 deadline 再 drain：并发 enqueue 若在 drain 期间设新截止，不会被后续的 store(None)
+    // 清掉（flush_ready 与 store(None) 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
+    // 其 At 触发稍后空转——语义可接受
     batch.deadline.store(None);
+    let items = batch.drain().await;
     if items.is_empty() {
         return;
     }
@@ -210,32 +168,6 @@ pub async fn flush_events_to_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pack_batch_formats_name_content_lines() {
-        let items = vec![
-            ("u1".to_string(), "你好".to_string()),
-            ("u2".to_string(), "在吗".to_string()),
-            (String::new(), "无名字".to_string()),
-        ];
-        assert_eq!(pack_batch(&items), "u1: 你好\nu2: 在吗\n无名字");
-    }
-
-    #[test]
-    fn batch_buffer_push_take_clear() {
-        let mut b = BatchBuffer::new();
-        assert!(b.is_empty());
-        b.push("u1", "a");
-        b.push("u2", "b");
-        assert!(!b.is_empty());
-        let items = b.take();
-        assert_eq!(items.len(), 2);
-        assert!(b.is_empty(), "take 后清空");
-        b.push("u1", "c");
-        b.clear();
-        assert!(b.is_empty());
-        assert!(b.take().is_empty());
-    }
 
     // ===== 新合批（mpsc×2 + DelayQueue）=====
 
