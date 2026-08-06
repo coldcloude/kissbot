@@ -46,17 +46,21 @@ pub fn pack_batch(items: &[(String, String)]) -> String {
 /// 重置完成后立即打包一次；期间到达的消息统一合并（缓冲不清空）。缓冲为空返回 None
 pub async fn flush_after_reset(session: &Arc<Session>, interval: Duration) -> Option<String> {
     tokio::time::sleep(interval).await;
-    // 重置期间等待（轮询，重置通常毫秒级）
-    while session.resetting.load(std::sync::atomic::Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    loop {
+        let mut b = session.batch.lock().await;
+        // 重置期间等待（轮询，重置通常毫秒级）
+        if session.resetting.load(std::sync::atomic::Ordering::SeqCst) {
+            drop(b);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        }
+        if b.is_empty() {
+            return None;
+        }
+        let items = b.take();
+        drop(b);
+        return Some(pack_batch(&items));
     }
-    let mut b = session.batch.lock().await;
-    if b.is_empty() {
-        return None;
-    }
-    let items = b.take();
-    drop(b);
-    Some(pack_batch(&items))
 }
 
 #[cfg(test)]

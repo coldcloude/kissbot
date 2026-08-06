@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::config_manager::ConfigManager;
 use crate::context_config::EffectiveContextConfig;
 use crate::types::{Message, Mode, Result, Error};
+use tracing::warn;
 
 /// 记忆消息（channel record 的最小视图：name + content，id 类不保留）
 #[derive(Debug, Clone)]
@@ -137,7 +138,14 @@ impl MemoryReader {
             return Err(Error::MemoryStoreError(format!("组合查询返回 {}", resp.status())));
         }
         let data: serde_json::Value = resp.json().await?;
-        Ok(serde_json::from_value(data["data"].clone()).unwrap_or_default())
+        // 响应 data 非预期结构时记日志（降级为空组合，避免静默丢组合）
+        match serde_json::from_value(data["data"].clone()) {
+            Ok(combos) => Ok(combos),
+            Err(e) => {
+                warn!("组合查询响应解析失败: {}", e);
+                Ok(Vec::new())
+            }
+        }
     }
 
     /// 组合内精确查询：POST {store}/store/query/channel（messenger/user/group 精确 key，取该时间全部）
@@ -214,8 +222,10 @@ impl MemoryReader {
         // (1) 每组合全史查询，合并升序
         let mut merged: Vec<MemoryMsg> = Vec::new();
         for combo in &combos {
-            if let Ok(msgs) = self.query_channel(agent_id, role_name, combo, "2000-01-01 00:00:00", &now).await {
-                merged.extend(msgs);
+            match self.query_channel(agent_id, role_name, combo, "2000-01-01 00:00:00", &now).await {
+                Ok(msgs) => merged.extend(msgs),
+                Err(e) => warn!("组合查询失败 messenger={} user={} group={}: {}",
+                    combo.messenger_id, combo.user_id, combo.group_id, e),
             }
         }
         merged.sort_by(|a, b| a.time.cmp(&b.time));

@@ -50,7 +50,7 @@ cutoff = now - memory_time_secs
 - 每组合的查询用现有精确 key（messenger/user/group）时间区间 API，**无 limit**，取该时间全部
 - 无 limit 意味着「最后 N 条」由客户端在合并结果上截取（(1) 的查询范围取全史，保证稀疏场景也能取到 N 条）
 - **(3) 的终点是 T_N（含）**：当倒数第 N 条时间点有多条同时间记录（如倒数 9～13 条都在 T_N）时，[M, T_N] 会取回 N 之外的同时间记录（11～13 条），与 (1) 并集后不按计数截断拆散同一时间组
-- 稀疏场景（窗口不足 N 条）：T_N < cutoff → M = cutoff → (3) = [cutoff, T_N] 为空（start > end）→ 结果 = 最后 N 条跨更早时间；窗口更大场景：M = T_N → (3) = [T_N, T_N] 仅同时间组 → 结果 = 窗口全量（含同时间组）
+- 稀疏场景（窗口不足 N 条）：T_N < cutoff → M = cutoff → (3) = [cutoff, T_N] 为空（start > end）→ 结果 = 最后 N 条跨更早时间；窗口更大场景：M = T_N → (3) = [T_N, T_N] 仅同时间组 → 结果 = 最后 N 条 + T_N 同时间组（窗口内早于 T_N 的记录不含）
 - 结果仅保留 channel 记录的 name+content（与主设计一致）
 
 ### 2.4 think/tool-call/tool-result 的 key 关联取回
