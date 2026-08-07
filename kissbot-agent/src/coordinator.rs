@@ -8,7 +8,6 @@ use bytes::Bytes;
 use chrono::Local;
 use dashmap::DashMap;
 use tracing::{info, warn};
-use tokio::sync::mpsc;
 
 use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
@@ -55,10 +54,9 @@ struct ChannelContext {
     agent_id: ArcSwapOption<String>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
-    /// 合批数据发送端（绑定会话时从 session.batch 取得；会话重定位后刷新，None 时懒绑定）
-    batch_tx: tokio::sync::Mutex<Option<mpsc::UnboundedSender<crate::batching::BatchItem>>>,
-    /// 合批触发器发送端（同上）
-    trigger_tx: tokio::sync::Mutex<Option<mpsc::UnboundedSender<crate::batching::Trigger>>>,
+    /// 合批生产侧（绑定会话时从 session.batch 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
+    /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
+    producer: ArcSwapOption<crate::batching::BatchProducer>,
 }
 
 impl ChannelContext {
@@ -67,8 +65,7 @@ impl ChannelContext {
             pending_outgoing: DashMap::new(),
             agent_id: ArcSwapOption::new(None),
             mode: ArcSwap::from_pointee(Mode::Role),
-            batch_tx: tokio::sync::Mutex::new(None),
-            trigger_tx: tokio::sync::Mutex::new(None),
+            producer: ArcSwapOption::new(None),
         }
     }
 
@@ -280,14 +277,13 @@ impl AgentCoordinator {
         agent_id
     }
 
-    /// 绑定会话后刷新合批发送端（从 session.batch 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
-    async fn bind_batch_tx(&self, channel_id: &str, session: &Arc<Session>) {
+    /// 绑定会话后刷新合批生产侧（从 session.batch 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
+    async fn bind_batch(&self, channel_id: &str, session: &Arc<Session>) {
         let ctx = self.channel_contexts
             .entry(channel_id.to_string())
             .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
-        *ctx.batch_tx.lock().await = Some(session.batch.tx.clone());
-        *ctx.trigger_tx.lock().await = Some(session.batch.trigger_tx.clone());
+        ctx.producer.store(Some(Arc::new(session.batch.clone())));
     }
 
     /// 设置 channel 运行态模式（写 ChannelContext.mode；/mode 切换，不回写，重启回 Role）
@@ -324,9 +320,9 @@ impl AgentCoordinator {
         let (session, created) = self.session_manager.get_or_create(key, model, agent_id, Arc::downgrade(&self));
         if created {
             self.build_initial_context(&session).await;
-            // 随会话创建：绑定合批发送端（channel 持 tx/trigger_tx）
-            self.bind_batch_tx(channel_id, &session).await;
         }
+        // 绑定合批生产侧（每次调用幂等；多 channel 共享同一 session 时共享同一 producer 对）
+        self.bind_batch(channel_id, &session).await;
         (session, created)
     }
 
@@ -600,11 +596,11 @@ impl AgentCoordinator {
             self.set_channel_runtime(channel_id, agent_id).await;
         }
         self.relocate_channel(channel_id).await;
-        // 会话重定位后刷新合批发送端（channel 绑定新的会话三元组，created 会话已由 ensure_session 绑定）
+        // 会话重定位后刷新合批生产侧（channel 绑定新的会话三元组，created 会话已由 ensure_session 绑定）
         if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
             if let Some(session) = self.session_manager.get(&key) {
-                self.bind_batch_tx(channel_id, &session).await;
+                self.bind_batch(channel_id, &session).await;
             }
         }
         Ok(())
@@ -852,7 +848,7 @@ impl AgentCoordinator {
         self.enqueue_batch(channel_id, &session, event).await;
     }
 
-    /// 合批：数据经 channel 持有的发送端入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
+    /// 合批：数据经 channel 持有的生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
     /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
     async fn enqueue_batch(&self, channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
@@ -862,19 +858,18 @@ impl AgentCoordinator {
             .entry(channel_id.to_string())
             .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
-        // 懒绑定：无发送端则从会话取（正常路径在 ensure_session 创建/apply_channel_key 已绑定）
-        if ctx.batch_tx.lock().await.is_none() {
-            self.bind_batch_tx(channel_id, session).await;
+        // 懒绑定：无生产侧则从会话取（正常路径在 ensure_session 创建/apply_channel_key 已绑定）
+        if ctx.producer.load_full().is_none() {
+            self.bind_batch(channel_id, session).await;
         }
-        let (btx, ttx) = (ctx.batch_tx.lock().await.clone(), ctx.trigger_tx.lock().await.clone());
-        if let (Some(btx), Some(ttx)) = (btx, ttx) {
-            let _ = btx.send(event);                                // 数据入队（队列累积，不逐条消费）
-            let at = Instant::now() + interval;                     // 单次计算：deadline 与触发时间同源
-            session.batch.set_deadline(at);                         // 更新截止（防抖，后推覆盖）
-            let _ = ttx.send(crate::batching::Trigger::At(at));     // 发送触发时间（绝对）
-        } else {
-            warn!("enqueue_batch: channel {} 无合批发送端", channel_id);
-        }
+        let Some(producer) = ctx.producer.load_full() else {
+            warn!("enqueue_batch: channel {} 无合批生产侧", channel_id);
+            return;
+        };
+        let _ = producer.tx.send(event);                                // 数据入队（队列累积，不逐条消费）
+        let at = Instant::now() + interval;                             // 单次计算：deadline 与触发时间同源
+        producer.set_deadline(at);                                      // 更新截止（防抖，后推覆盖）
+        let _ = producer.trigger_tx.send(crate::batching::Trigger::At(at));  // 发送触发时间（绝对）
     }
 
     async fn handle_admin_command(
