@@ -1,10 +1,12 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use tracing::warn;
 
 use crate::config_manager::ProviderModel;
+use crate::coordinator::AgentCoordinator;
 use crate::types::{Message, Mode, SessionKey};
 
 /// 会话上下文：纯内存消息序列 + system 消息（缓存/历史持久化由 coordinator 负责）
@@ -73,20 +75,29 @@ pub struct Session {
     pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
-    /// 合批生产侧（数据/触发发送端 + deadline + notify + 升级槽；消费侧由 trigger 任务独占）
+    /// 合批生产侧（依赖序构造时经 get_or_create 传入；channel 均从本字段取 producer 绑定）
     pub batch: crate::batching::BatchProducer,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
     /// 取记忆/ego 一律用本字段（agent_name 仅作 context 配置查找，不参与记忆/ego 定位）
     pub agent_id: Arc<String>,
+    /// coordinator 弱引用（accept_batch 升级调用 run_agentic_loop/out_channel 解析；弱引用破环：
+    /// coordinator → session_manager → session → coordinator 会形成强环）
+    coordinator: Weak<AgentCoordinator>,
+    /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
+    pub notify: Arc<tokio::sync::Notify>,
 }
 
 impl Session {
-    pub fn new(key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
-        let (batch, consumer) = crate::batching::new_batch();
-        // 消费侧立即移入 trigger 任务（随 session 创建 spawn；升级槽由 ensure_session 设置）
-        crate::batching::spawn_trigger(batch.clone(), consumer);
+    pub fn new(
+        key: &SessionKey,
+        model: Option<ProviderModel>,
+        agent_id: Arc<String>,
+        coordinator: Weak<AgentCoordinator>,
+        batch: crate::batching::BatchProducer,
+        notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
         Self {
             agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
@@ -95,14 +106,33 @@ impl Session {
             batch,
             model: ArcSwap::from_pointee(model),
             agent_id,
+            coordinator,
+            notify,
         }
+    }
+
+    /// 合批 flush 入口：trigger 任务经 consumer.session 弱引用升级后调用（原 coordinator.flush_batch 职责迁至会话侧）
+    /// 模型检查 → coordinator 弱引用升级 → out_channel 解析 → agentic loop
+    pub(crate) async fn accept_batch(self: &Arc<Self>, content: String) {
+        // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
+        if self.model.load().is_none() {
+            return;
+        }
+        let Some(coordinator) = self.coordinator.upgrade() else {
+            return;
+        };
+        let Some(out_channel) = coordinator.resolve_out_channel_for_session(self).await else {
+            warn!("accept_batch: 会话无 out_channel，跳过");
+            return;
+        };
+        coordinator.run_agentic_loop("", self, content, &out_channel).await;
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         // 会话销毁：通知 trigger 任务退出（notify_one permit 语义：任务错过唤醒后下一轮 notified 立即完成）
-        self.batch.notify.notify_one();
+        self.notify.notify_one();
     }
 }
 
@@ -124,16 +154,29 @@ impl SessionManager {
         self.sessions.get(key).map(|e| e.value().clone())
     }
 
-    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；返回 (会话, 是否新建)
+    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果；
+    /// coordinator 弱引用由 Arc 链调用方降级传入）；返回 (会话, 是否新建)
+    /// 创建时依赖序组装：notify → 2 mpsc → producer → session → consumer → spawn
+    /// （channel 均从 session.batch 取 producer；任务持 consumer，consumer 持 session 弱引用与 notify）
     /// 双重锁定：先 get 快速路径（命中直接返回），未命中再走 entry API 原子创建（并发下仅一个创建成功）
-    pub fn get_or_create(&self, key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> (Arc<Session>, bool) {
+    pub fn get_or_create(
+        &self,
+        key: &SessionKey,
+        model: Option<ProviderModel>,
+        agent_id: Arc<String>,
+        coordinator: Weak<AgentCoordinator>,
+    ) -> (Arc<Session>, bool) {
         if let Some(s) = self.get(key) {
             return (s, false);
         }
         match self.sessions.entry(key.clone()) {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                let session = Arc::new(Session::new(key, model, agent_id));
+                let notify = Arc::new(tokio::sync::Notify::new());
+                let (producer, rx, trigger_rx) = crate::batching::new_producer();
+                let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
+                let consumer = crate::batching::BatchConsumer::new(rx, trigger_rx, &session, notify);
+                crate::batching::spawn_trigger(session.batch.clone(), consumer);
                 e.insert(session.clone());
                 (session, true)
             }
@@ -160,14 +203,14 @@ mod tests {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
+        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()), Weak::new());
         assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
+        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()), Weak::new());
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()));
+        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()), Weak::new());
         assert!(created3, "事件模式是独立会话");
     }
 
@@ -177,8 +220,8 @@ mod tests {
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
         let k2 = key("a2", "r2");
-        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()));
-        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()));
+        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()), Weak::new());
+        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()), Weak::new());
         let mut keep = HashSet::new();
         keep.insert(k1.clone());
         mgr.retain(&keep);
@@ -190,7 +233,7 @@ mod tests {
     async fn get_or_create_with_none_model() {
         let mgr = SessionManager::new();
         let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
+        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()), Weak::new());
         assert!(created);
         assert!(s.model.load().is_none());
     }
@@ -200,7 +243,9 @@ mod tests {
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
         let agent_id = Arc::new("uuid".to_string());
-        let session = Session::new(&key, model, agent_id);
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let (producer, _rx, _trigger_rx) = crate::batching::new_producer();
+        let session = Session::new(&key, model, agent_id, Weak::new(), producer, notify);
         assert_eq!(session.role_name.as_str(), "r1");
         assert_eq!(*session.mode, Mode::Event("e1".into()));
     }

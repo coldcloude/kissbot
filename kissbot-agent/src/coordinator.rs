@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -128,8 +128,6 @@ pub struct AgentCoordinator {
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
     /// station_id → StationRuntime（启动时按配置构建；base_url 为空的本地 station 注册内置 Read 工具）
     station_runtimes: Arc<DashMap<String, Arc<StationRuntime>>>,
-    /// 自引用弱引用（new() 中设置；channel 合批延时任务升级为 Arc<Self> 回调用）
-    weak_self: OnceLock<Weak<Self>>,
 }
 
 impl AgentCoordinator {
@@ -158,11 +156,7 @@ impl AgentCoordinator {
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
             station_runtimes: Arc::new(DashMap::new()),
-            weak_self: OnceLock::new(),
         });
-
-        // 设置自引用弱引用（合批延时任务升级用；弱引用避免引用环）
-        let _ = coordinator.weak_self.set(Arc::downgrade(&coordinator));
 
         // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
         {
@@ -326,15 +320,12 @@ impl AgentCoordinator {
         let model = (*self.valid_default.load_full()).clone();
         // 会话状态保存 agent_id：新建会话从来源 channel 运行态绑定取得（原子写入 get_or_create）
         let agent_id = self.channel_agent(channel_id).await;
-        let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
+        // coordinator 弱引用直接降级传入（依赖序构造，无 OnceLock 后置设置）
+        let (session, created) = self.session_manager.get_or_create(key, model, agent_id, Arc::downgrade(&self));
         if created {
             self.build_initial_context(&session).await;
-            // 随会话创建：绑定合批发送端（channel 持 tx/trigger_tx）+ 设置 trigger 任务升级槽
-            // （trigger 任务已在 Session::new 随会话 spawn；槽 OnceLock set 一次——coordinator 为进程级
-            //  单例、session Weak 每 producer 一次；消息必须先过 ensure_session 才路由进队列，故 flush 时槽必然已设置）
+            // 随会话创建：绑定合批发送端（channel 持 tx/trigger_tx）
             self.bind_batch_tx(channel_id, &session).await;
-            let _ = session.batch.session.set(Arc::downgrade(&session));
-            let _ = session.batch.coordinator.set(self.weak_self.get().cloned().unwrap_or_default());
         }
         (session, created)
     }
@@ -990,7 +981,7 @@ impl AgentCoordinator {
     }
 
     /// 按会话 (agent, role) 找 out_channel（resolve_out_channel 的会话版，合批 trigger flush 用）
-    async fn resolve_out_channel_for_session(&self, session: &Arc<Session>) -> Option<OutChannel> {
+    pub(crate) async fn resolve_out_channel_for_session(&self, session: &Arc<Session>) -> Option<OutChannel> {
         let channels = self.config.channels().await;
         for (_, c) in &channels {
             if c.agent_name.as_str() == session.agent_name.as_str()
@@ -1011,21 +1002,7 @@ impl AgentCoordinator {
         None
     }
 
-    /// 合批 trigger 任务打包后调用：解析 out_channel 并进入 agentic loop
-    /// （batching.try_flush 升级槽后调用本方法）
-    pub async fn flush_batch(&self, session: &Arc<Session>, content: String) {
-        // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
-        if session.model.load().is_none() {
-            return;
-        }
-        let Some(out_channel) = self.resolve_out_channel_for_session(session).await else {
-            warn!("flush_batch: 会话无 out_channel，跳过");
-            return;
-        };
-        self.run_agentic_loop("", session, content, &out_channel).await;
-    }
-
-    async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, content_text: String, out_channel: &OutChannel) {
+    pub(crate) async fn run_agentic_loop(&self, _channel_id: &str, session: &Arc<Session>, content_text: String, out_channel: &OutChannel) {
         // 无可用模型：静默忽略普通消息（仅管理指令可用）
         if session.model.load().is_none() {
             return;
@@ -1480,7 +1457,9 @@ mod tests {
     async fn tool_placeholder_uses_same_key_for_call_and_result() {
         // 构造最小 Session + OutChannel（参照既有测试模式）
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into())));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let (producer, _rx, _trigger_rx) = crate::batching::new_producer();
+        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into()), std::sync::Weak::new(), producer, notify));
         let out_channel = OutChannel {
             channel_id: Arc::new("c1".into()),
             user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
