@@ -56,7 +56,7 @@ struct ChannelContext {
     mode: ArcSwap<Mode>,
     /// 合批生产侧（绑定会话时从 session.batch 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
     /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
-    producer: ArcSwapOption<crate::batching::BatchProducer>,
+    producer: ArcSwapOption<crate::session_manager::BatchProducer>,
 }
 
 impl ChannelContext {
@@ -424,7 +424,7 @@ impl AgentCoordinator {
         self.build_initial_context(session).await;
         // 重置完成：强制 flush（不检查 deadline），重置期间到达的消息即刻并入新上下文
         // （reset 可能由 trigger 任务的 flush → run_agentic_loop 溢出路径调用，Forced 入队后由任务串行处理）
-        session.batch.trigger_tx.send(crate::batching::Trigger::Forced).ok();
+        session.batch.trigger_tx.send(crate::session_manager::Trigger::Forced).ok();
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
@@ -874,7 +874,7 @@ impl AgentCoordinator {
         let _ = producer.tx.send(event);                                // 数据入队（队列累积，不逐条消费）
         let at = Instant::now() + interval;                             // 单次计算：deadline 与触发时间同源
         producer.set_deadline(at);                                      // 更新截止（防抖，后推覆盖）
-        let _ = producer.trigger_tx.send(crate::batching::Trigger::At(at));  // 发送触发时间（绝对）
+        let _ = producer.trigger_tx.send(crate::session_manager::Trigger::At(at));  // 发送触发时间（绝对）
     }
 
     async fn handle_admin_command(
@@ -1270,7 +1270,7 @@ impl AgentCoordinator {
     }
 }
 
-/// 从 Content 枚举中提取文本（batching.pack_events 复用，pub(crate)）
+/// 从 Content 枚举中提取文本（session_manager.try_flush 复用，pub(crate)）
 pub(crate) fn extract_text(content: &Content) -> String {
     match content {
         Content::Text(t) => t.as_str().to_string(),
@@ -1455,11 +1455,10 @@ mod tests {
 
     #[tokio::test]
     async fn tool_placeholder_uses_same_key_for_call_and_result() {
-        // 构造最小 Session + OutChannel（参照既有测试模式）
+        // 构造最小 Session + OutChannel（参照既有测试模式；经 get_or_create 走真实构造路径）
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let notify = Arc::new(tokio::sync::Notify::new());
-        let (producer, _rx, _trigger_rx) = crate::batching::new_producer();
-        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into()), std::sync::Weak::new(), producer, notify));
+        let mgr = SessionManager::new();
+        let (session, _) = mgr.get_or_create(&key, None, Arc::new("aid".into()), std::sync::Weak::new());
         let out_channel = OutChannel {
             channel_id: Arc::new("c1".into()),
             user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
