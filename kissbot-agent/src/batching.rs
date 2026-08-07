@@ -155,7 +155,10 @@ pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
                 }
                 // DelayQueue 实现 futures_core::Stream（poll_next 委托 poll_expired）；next() 来自 StreamExt。
                 // 守卫：队列空时禁用该分支——空队列时 poll_next 返回 Poll::Ready(None)（而非 Pending），
-                // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效，C1）
+                // 守卫安全（插入必然伴随唤醒）：队列数据唯一入口是 trigger_rx 分支（唯一的 delay.insert 调用点），
+                // 该分支完成即任务已醒来，下一轮 select 重新评估守卫便启用 delay 分支——不存在「队列有数据但
+                // 任务 park 着、delay 分支没被启用」的状态；到期唤醒走 DelayQueue 内部 sleep 的 waker，与其他
+                // 分支是否就绪无关，故 delay 分支不会被饿死，也不会错过已插入的数据。
                 item = consumer.delay.next(), if !consumer.delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
