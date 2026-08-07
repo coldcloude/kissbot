@@ -44,26 +44,24 @@ pub struct BatchConsumer {
     pub delay: DelayQueue<Trigger>,
 }
 
-impl BatchProducer {
-    /// 创建 channel 对 + DelayQueue，返回 (生产侧, 消费侧)；Session::new 调用后消费侧立即移入 trigger 任务
-    pub fn new() -> (Arc<Self>, BatchConsumer) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
-        let producer = Arc::new(Self {
-            tx,
-            trigger_tx,
-            deadline: ArcSwapOption::from(None),
-            notify: Arc::new(Notify::new()),
-            coordinator: Arc::new(OnceLock::new()),
-            session: Arc::new(OnceLock::new()),
-        });
-        let consumer = BatchConsumer {
-            rx,
-            trigger_rx,
-            delay: DelayQueue::new(),
-        };
-        (producer, consumer)
-    }
+/// 创建合批 channel 对 + DelayQueue，返回 (生产侧, 消费侧)；Session::new 调用后消费侧立即移入 trigger 任务
+pub fn new_batch() -> (Arc<BatchProducer>, BatchConsumer) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
+    let producer = Arc::new(BatchProducer {
+        tx,
+        trigger_tx,
+        deadline: ArcSwapOption::from(None),
+        notify: Arc::new(Notify::new()),
+        coordinator: Arc::new(OnceLock::new()),
+        session: Arc::new(OnceLock::new()),
+    });
+    let consumer = BatchConsumer {
+        rx,
+        trigger_rx,
+        delay: DelayQueue::new(),
+    };
+    (producer, consumer)
 }
 
 /// 打包为一条 user 消息的 content：逐行 "name: text"（name 为空只留 text）
@@ -193,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn producer_consumer_new_pairs_channels() {
         // 生产侧/消费侧同源成对；消费侧直接 &mut 取（零锁），channel 不关闭跨 flush 复用
-        let (producer, mut consumer) = BatchProducer::new();
+        let (producer, mut consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
         let item = consumer.rx.try_recv().unwrap();
         assert!(item.incoming_message.user_name.as_str() == "u1");
@@ -206,14 +204,14 @@ mod tests {
     #[tokio::test]
     async fn try_flush_drains_consumer_without_lock() {
         // 已超 deadline：非强制 flush → drain 全部（槽未设置 → 升级失败丢弃，drain 可观测）
-        let (producer, mut consumer) = BatchProducer::new();
+        let (producer, mut consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
         producer.tx.send(ev("u2", "b")).unwrap();
         producer.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
         try_flush(&producer, &mut consumer, false).await;
         assert!(consumer.rx.try_recv().is_err(), "已 drain");
         // 未超 deadline：不 drain
-        let (p2, mut c2) = BatchProducer::new();
+        let (p2, mut c2) = new_batch();
         p2.tx.send(ev("u1", "x")).unwrap();
         p2.deadline.store(Some(Arc::new(Instant::now() + Duration::from_secs(10))));
         try_flush(&p2, &mut c2, false).await;
@@ -222,7 +220,7 @@ mod tests {
 
     #[test]
     fn flush_ready_respects_deadline_and_force() {
-        let (producer, _consumer) = BatchProducer::new();
+        let (producer, _consumer) = new_batch();
         // 无 deadline：非强制不 flush
         assert!(!flush_ready(&producer, false));
         // 未超 deadline：非强制不 flush；强制无视 deadline
@@ -252,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_trigger_flushes_on_at_trigger() {
-        let (producer, consumer) = BatchProducer::new();
+        let (producer, consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
         producer.tx.send(ev("u2", "b")).unwrap();
         // 与真实 enqueue 一致：deadline 与 At 触发时间同源（此处设为过去，到期立即弹出）
@@ -265,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_trigger_flushes_on_forced() {
-        let (producer, consumer) = BatchProducer::new();
+        let (producer, consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
         // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 store(None) 再 drain）
         producer.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
@@ -276,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_trigger_exits_on_notify() {
-        let (producer, consumer) = BatchProducer::new();
+        let (producer, consumer) = new_batch();
         spawn_trigger(producer.clone(), consumer);
         // 确保任务已启动并持有 trigger_rx
         tokio::time::sleep(Duration::from_millis(20)).await;

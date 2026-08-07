@@ -84,7 +84,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
-        let (batch, consumer) = crate::batching::BatchProducer::new();
+        let (batch, consumer) = crate::batching::new_batch();
         // 消费侧立即移入 trigger 任务（随 session 创建 spawn；升级槽由 ensure_session 设置）
         crate::batching::spawn_trigger(batch.clone(), consumer);
         Self {
