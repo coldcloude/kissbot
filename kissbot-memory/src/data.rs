@@ -58,29 +58,28 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
 pub struct ChannelParser;
 
 #[async_trait]
-impl FilePathGenerator<ChannelRecordKey> for ChannelParser {
-    async fn get_path(&self, key: &ChannelRecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+impl FilePathGenerator<RecordKey> for ChannelParser {
+    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
         let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
-        let file_name = format!("channel-{}={}={}-records-{}.jsonl", key.messenger_id.as_str(), key.user_id.as_str(), key.group_id.as_str(), key.date.as_str());
+        let file_name = format!("channel-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
 }
 
-impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelParser {
-    fn parse_request(&self, request: ChannelRequest) -> (ChannelRecordKey, ChannelRecord) {
-        // 文件名（key.user_id）按接收方 self_user_id 分文件（同一 channel 双向消息归入绑定用户文件）；
-        // record.user_id 保留发送者身份（区分对话方向）
-        let user_id = request.user_id.clone();
-        let key = ChannelRecordKey {
+impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
+    fn parse_request(&self, request: ChannelRequest) -> (RecordKey, ChannelRecord) {
+        // 所有 channel 记录归入同一文件（每 agent+role+date）；
+        // record 保存完整身份：user_id=发送者、self_user_id=agent 绑定用户（接收方）、messenger_id/group_id
+        let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_name: request.role_name.clone(),
-            messenger_id: request.messenger_id.clone(),
-            user_id: request.self_user_id.clone(),
-            group_id: request.group_id.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ChannelRecord {
-            user_id: user_id,
+            user_id: request.user_id.clone(),
+            self_user_id: request.self_user_id.clone(),
+            messenger_id: request.messenger_id.clone(),
+            group_id: request.group_id.clone(),
             is_self: request.is_self,
             messenger_name: request.messenger_name.clone(),
             user_name: request.user_name.clone(),
@@ -93,28 +92,9 @@ impl RequestParser<ChannelRequest, ChannelRecordKey, ChannelRecord> for ChannelP
     }
 }
 
-impl QueryParser<QueryChannelRequest, ChannelRecordKey> for ChannelParser {
-    fn parse_query(&self, query: QueryChannelRequest) -> Vec<(ChannelRecordKey, (String, String))> {
-        let agent_id = query.agent_id.clone();
-        let role_name = query.role_name.clone();
-        let messenger_id = query.messenger_id.clone();
-        let user_id = query.user_id.clone();
-        let group_id = query.group_id.clone();
-        let mut results = Vec::new();
-        if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
-            for time in date_times {
-                let date = as_date(&time.0);
-                results.push((ChannelRecordKey {
-                    agent_id: agent_id.clone(),
-                    role_name: role_name.clone(),
-                    messenger_id: messenger_id.clone(),
-                    user_id: user_id.clone(),
-                    group_id: group_id.clone(),
-                    date: Arc::new(date.to_string()),
-                }, time));
-            }
-        }
-        results
+impl QueryParser<QueryRequest, RecordKey> for ChannelParser {
+    fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+        parse_query(query)
     }
 }
 
@@ -233,31 +213,45 @@ use super::*;
 
     // ========== FilePathGenerator ==========
 
+    use std::sync::{Once, OnceLock};
+
+    static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static INIT_CONFIG: Once = Once::new();
+
+    /// 初始化全局 Config（临时目录），供依赖文件系统路径的测试使用（与 index.rs 测试同款模式）
+    fn init_test_config() {
+        let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+        let config_path = dir.path().join("config.json");
+        let root_dir_str = dir.path().display().to_string();
+        // SAFETY: 单线程测试初始化，仅执行一次
+        INIT_CONFIG.call_once(|| {
+            std::fs::write(&config_path, format!(r#"{{"memory":{{"root_dir":"{}"}}}}"#, root_dir_str)).unwrap();
+            unsafe { std::env::set_var("KISSBOT_CONFIG", config_path.to_str().unwrap()); }
+            crate::Config::get();
+        });
+    }
+
     #[tokio::test]
     async fn test_channel_file_name() {
-        let key = ChannelRecordKey {
+        init_test_config();
+        let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
-            messenger_id: Arc::new("m1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ChannelParser;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(file_name, "channel-m1=u1=g1-records-2026-06-24.jsonl");
+        assert_eq!(file_name, "channel-records-2026-06-24.jsonl");
     }
 
     #[tokio::test]
     async fn test_channel_file_dir_empty_role() {
         // 空 role_name 目录应为 `2026-`（非 `2026`）
-        let key = ChannelRecordKey {
+        init_test_config();
+        let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("".to_string()),
-            messenger_id: Arc::new("m1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ChannelParser;
@@ -325,12 +319,16 @@ use super::*;
         };
         let parser = ChannelParser;
         let (key, record) = parser.parse_request(request);
+        // key 为公共 RecordKey（无 messenger/user/group 字段）
         assert_eq!(*key.agent_id, "agent1");
-        assert_eq!(*key.messenger_id, "telegram");
+        assert_eq!(*key.role_name, "default");
         assert_eq!(*key.date, "2026-06-24");
-        // 文件名（key.user_id）按接收方 self_user_id 分文件；record.user_id 保留发送者
-        assert_eq!(*key.user_id, "self1");
+        // record 保存完整身份：user_id=发送者、self_user_id=绑定用户、messenger_id/group_id
         assert_eq!(*record.user_id, "u1");
+        assert_eq!(*record.self_user_id, "self1");
+        assert_eq!(*record.messenger_id, "telegram");
+        assert_eq!(*record.group_id, "g1");
+        assert_eq!(record.is_self, 1);
         assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
         assert_eq!(record.sn, 0);
     }
