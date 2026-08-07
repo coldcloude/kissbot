@@ -811,6 +811,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "futures-util",
  "http-body-util",
  "kai-file",
  "kai-ws",

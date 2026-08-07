@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use kissbot_api::channel::IncomingMessageEvent;
 use tokio::sync::{mpsc, Notify};
 use tokio_util::time::DelayQueue;
@@ -143,16 +144,16 @@ pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
                         None => break,                      // trigger channel 关闭
                     }
                 }
-                // DelayQueue 无固有 next()（next 来自 StreamExt）；用 poll_fn + poll_expired
-                // 守卫：队列空时禁用该分支——poll_expired 在空队列返回 Poll::Ready(None)（而非 Pending），
-                // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效）
-                item = std::future::poll_fn(|cx| consumer.delay.poll_expired(cx)), if !consumer.delay.is_empty() => {
+                // DelayQueue 实现 futures_core::Stream（poll_next 委托 poll_expired）；next() 来自 StreamExt。
+                // 守卫：队列空时禁用该分支——空队列时 poll_next 返回 Poll::Ready(None)（而非 Pending），
+                // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效，C1）
+                item = consumer.delay.next(), if !consumer.delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
                             Trigger::Forced => try_flush(&producer, &mut consumer, true).await,
                             Trigger::At(_) => try_flush(&producer, &mut consumer, false).await,
                         },
-                        None => break,                      // 仅防御（队列非空时 poll_expired 不返回 None）
+                        None => break,                      // 仅防御（队列非空时 poll_next 不返回 None）
                     }
                 }
             }
