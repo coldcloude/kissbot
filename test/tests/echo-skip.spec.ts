@@ -81,13 +81,12 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
     // 等待 agent 批量追加器落盘（100ms 批量 + 网络）+ 回显被处理
     await sleep(3000);
 
-    // 查询保留 agent（agent_id="0"、role_name=""）当日 channel 记录（发出方 bind_user u1）
+    // 查询保留 agent（agent_id="0"、role_name=""）当日 channel 记录（所有通道记录同文件，身份在记录字段中）
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const q = await apiPost(request, '/store/query/channel', {
-      agent_id: '0', role_name: '', messenger_id: 'web',
-      user_id: 'u1', group_id: 'g1',
+      agent_id: '0', role_name: '',
       start_time: `${today} 00:00:00`, end_time: `${today} 23:59:59`,
     });
     expect(q.success).toBe(true);

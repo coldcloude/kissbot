@@ -16,7 +16,7 @@ const AGENT = 'agent_a';
 const ROLE = 'admin';
 const MESSENGER = 'web';
 const USER = 'u1';       // 发送者
-const SELF_USER = 'self1'; // 接收方（= channel 绑定的 user_id），文件名按此分文件
+const SELF_USER = 'self1'; // 接收方（= channel 绑定的 user_id）；记录中与发送者 user_id 区分，is_self 仅 agent 实际发送为 1
 const GROUP = 'g1';
 
 let store: ChildProcess;
@@ -70,8 +70,7 @@ test.describe.serial('memory-store API 测试', () => {
     await sleep(1000);
 
     const q = await apiPost(request, '/store/query/channel', {
-      agent_id: AGENT, role_name: ROLE, messenger_id: MESSENGER,
-      user_id: SELF_USER, group_id: GROUP,
+      agent_id: AGENT, role_name: ROLE,
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
@@ -79,15 +78,17 @@ test.describe.serial('memory-store API 测试', () => {
     expect(q.data.length).toBeGreaterThanOrEqual(1);
     const records = q.data[0][1]; // [[line, record], ...]
     expect(records.length).toBeGreaterThanOrEqual(1);
-    // key 中含 messenger_id/user_id/group_id/date；文件名 user_id 按接收方 self_user_id 分文件
-    expect(q.data[0][0].user_id).toBe(SELF_USER);
-    expect(q.data[0][0].group_id).toBe(GROUP);
+    // key 为公共 RecordKey（agent_id/role_name/date）；所有 channel 记录同文件，key 无身份字段
+    expect(q.data[0][0].agent_id).toBe(AGENT);
+    expect(q.data[0][0].role_name).toBe(ROLE);
     expect(q.data[0][0].date).toBe(date);
     const record = records[records.length - 1][1];
-    // record.user_id 保留发送者身份（区分对话方向）
+    // record 保存完整身份：user_id=发送者、self_user_id=接收方（绑定用户）、messenger_id/group_id
     expect(record.user_id).toBe(USER);
-    // 记录本身不含 group_id；is_self 按追加值回读
-    expect(record.group_id).toBeUndefined();
+    expect(record.self_user_id).toBe(SELF_USER);
+    expect(record.messenger_id).toBe(MESSENGER);
+    expect(record.group_id).toBe(GROUP);
+    // is_self 按追加值回读
     expect(record.is_self).toBe(0);
     expect(record.content).toEqual({ msg_type: 'Text', data: '你好' });
     expect(record.time).toBe(time);
@@ -100,7 +101,7 @@ test.describe.serial('memory-store API 测试', () => {
     const resp = await apiPost(request, '/store/think', {
       requests: [{
         agent_id: AGENT, role_name: ROLE,
-        content: '思考内容', key: 'think_key_1', time,
+        reasoning_content: '思考内容', thinking: '', key: 'think_key_1', time,
       }],
       force: 1,
     });
@@ -117,7 +118,7 @@ test.describe.serial('memory-store API 测试', () => {
     const records = q.data[0][1];
     expect(records.length).toBeGreaterThanOrEqual(1);
     const record = records[records.length - 1][1];
-    expect(record.content).toBe('思考内容');
+    expect(record.reasoning_content).toBe('思考内容');
     expect(record.key).toBe('think_key_1');
     expect(record.time).toBe(time);
   });

@@ -64,7 +64,7 @@ async function waitNewOutput(baseline: string, regex: RegExp, timeout = 10000): 
 }
 
 // 查询 memory-store channel 记录并断言该场景的双向消息（is_self=0 用户消息 / is_self=1 agent 回复）
-// 文件名按接收方 self_user_id（= channel 绑定的 user_id u1）分文件，双向消息在同一文件
+// 所有 channel 记录同文件（channel-records-{date}.jsonl）；身份在记录字段中（user_id=发送者、self_user_id=接收方/绑定用户）
 async function assertChannelRecords(request: APIRequestContext, roleName: string): Promise<void> {
   // 等待记忆落盘（memory-store appender 100ms 批量 + 余量）
   await sleep(1500);
@@ -72,8 +72,7 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
-      agent_id: agentId, role_name: roleName, messenger_id: 'web',
-      user_id: 'u1', group_id: 'g1',   // 文件名 user_id = 绑定用户（接收方）
+      agent_id: agentId, role_name: roleName,
       start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
       // 查询日期用 UTC（backend channel 记录 time 来自 Utc::now()）
     },
@@ -81,11 +80,9 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   expect(resp.success).toBe(true);
   expect(resp.data.length).toBeGreaterThanOrEqual(1);
   const key = resp.data[0][0];
-  // ego 读取验证：agent_id 为 ego 解析出的 UUID（非保留值 "0"）
+  // key 为公共 RecordKey；agent_id 为 ego 解析出的 UUID（非保留值 "0"）
   expect(key.agent_id).toBe(agentId);
   expect(key.role_name).toBe(roleName);
-  expect(key.group_id).toBe('g1');
-  expect(key.user_id).toBe('u1');
 
   const recs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
   // 用户消息：u2 发送，is_self=0
@@ -106,13 +103,12 @@ function readChannelConfig(): any {
   return nexus.channels['web-main'];
 }
 
-// 查询 memory-store channel 记录（u1 文件），返回记录数组（含 is_self/user_id/content 字段）
+// 查询 memory-store channel 记录（单文件全量），返回记录数组（含 is_self/user_id/content 字段）
 async function queryChannelRecords(request: APIRequestContext, roleName: string): Promise<any[]> {
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
-      agent_id: agentId, role_name: roleName, messenger_id: 'web',
-      user_id: 'u1', group_id: 'g1',   // 文件名 user_id = 接收方（绑定用户 u1）
+      agent_id: agentId, role_name: roleName,
       start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
     },
   })).json();
