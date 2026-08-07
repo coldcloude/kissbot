@@ -202,12 +202,12 @@ where
 #[derive(Clone)]
 struct ChannelFileIndexHook;
 
-impl FileHook<ChannelRecordKey> for ChannelFileIndexHook {
-    fn on_append(&self, key: &ChannelRecordKey) {
+impl FileHook<RecordKey> for ChannelFileIndexHook {
+    fn on_append(&self, key: &RecordKey) {
         MemoryIndexer::get().mark_channel_obsolete(key);
     }
 
-    fn on_force_append(&self, key: &ChannelRecordKey) {
+    fn on_force_append(&self, key: &RecordKey) {
         MemoryIndexer::get().mark_channel_all_obsolete(key);
     }
 }
@@ -321,7 +321,7 @@ where
     Ok(())
 }
 
-type ChannelAppender = RecordAppender<ChannelRecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
+type ChannelAppender = RecordAppender<RecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
 
 type ThinkAppender = RecordAppender<RecordKey, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
 
@@ -524,7 +524,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -541,7 +541,7 @@ mod tests {
             .join("test_append_new")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
 
         // 读取文件内容验证
@@ -609,7 +609,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -625,7 +625,7 @@ mod tests {
             .join("test_append_multi")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 3);
@@ -665,7 +665,7 @@ mod tests {
             content: Content::Text(Arc::new("first".to_string())),
             time: Arc::new("2026-06-25 10:00:00".to_string()),
         }];
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in req1 {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -692,7 +692,7 @@ mod tests {
             content: Content::Text(Arc::new("second".to_string())),
             time: Arc::new("2026-06-25 10:01:00".to_string()),
         }];
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in req2 {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -708,7 +708,7 @@ mod tests {
             .join("test_append_seq")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
@@ -958,7 +958,7 @@ mod tests {
             .join("test_force_ooo")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
@@ -1068,7 +1068,7 @@ mod tests {
             .join("test_force_existing")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self1=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let lines: Vec<&str> = content.trim().split('\n').collect();
         assert_eq!(lines.len(), 5);
@@ -1126,7 +1126,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<ChannelRecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -1138,17 +1138,17 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        // 验证两个文件都存在，sn 各自从 1 开始
+        // 验证两个文件都存在（不同 agent_id → 不同 RecordKey → 不同目录），sn 各自从 1 开始
         let path1 = root
             .join("test_mk_a")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self_a=g1-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
         let path2 = root
             .join("test_mk_b")
             .join("memory-store")
             .join("2026-default")
-            .join("channel-telegram=self_b=g2-records-2026-06-25.jsonl");
+            .join("channel-records-2026-06-25.jsonl");
 
         assert!(path1.exists(), "file for agent1 should exist");
         assert!(path2.exists(), "file for agent2 should exist");
