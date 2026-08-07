@@ -86,7 +86,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 在会话创建/重置时按模式构建初始上下文：event 模式从缓存全量恢复（空则为仅 system），role 模式从记忆打包一条 user 消息
 - 运行时按会话增量追加用户消息、助手回复与工具调用/结果消息，每步同步写入缓存
 - 每个 channel 维护运行时 ChannelContext，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
-- channel 合批：每个 channel 在绑定会话时取得合批数据发送端与触发发送端（同源 clone），收到普通消息后推入数据队列（元素为 IncomingMessageEvent，会话持接收端）并更新会话合批截止时间（deadline，ArcSwapOption 无锁）与发送触发时间（Trigger::At，绝对时刻）；会话级 trigger 任务随会话创建，select! 并行等待触发到达 / 定时到期 / 会话销毁通知，到期后按 deadline 判断（非强制）或直接（强制）从数据队列一次性读出全部，打包为一条 user 消息（仅保留 name 与 content）进入 agentic loop；上下文重置末尾发送强制触发（Trigger::Forced），重置期间到达的消息即刻并入新上下文；触发器队列与定时队列随会话生命周期，会话销毁时通知任务退出
+- channel 合批：合批状态分为生产侧与消费侧——生产侧（BatchProducer，会话持有）含数据发送端与触发发送端（channel 在绑定会话时取得同源 clone）、合批截止时间（deadline，ArcSwapOption 无锁）与退出通知；收到普通消息后推入数据队列（元素为 IncomingMessageEvent）并更新 deadline 与发送触发时间（Trigger::At，绝对时刻）；消费侧（BatchConsumer，数据/触发接收端与定时队列）由 trigger 任务独占，随会话创建 move 进任务、任务内直接访问（零锁）；trigger 任务 select! 并行等待触发到达 / 定时到期 / 会话销毁通知，到期后按 deadline 判断（非强制）或直接（强制）从数据队列一次性读出全部，打包为一条 user 消息（仅保留 name 与 content）进入 agentic loop；上下文重置末尾发送强制触发（Trigger::Forced），重置期间到达的消息即刻并入新上下文；触发器队列与定时队列随会话生命周期，会话销毁时通知任务退出（任务经会话上的升级槽升级会话与协调器引用）
 - 会话上下文消息数量超上限时按模式触发重置（event 压缩、role 归档重建）
 
 ### 5. 记忆读取器
