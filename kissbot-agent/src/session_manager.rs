@@ -74,7 +74,7 @@ pub struct Session {
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 合批生产侧（数据/触发发送端 + deadline + notify + 升级槽；消费侧由 trigger 任务独占）
-    pub batch: Arc<crate::batching::BatchProducer>,
+    pub batch: crate::batching::BatchProducer,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）

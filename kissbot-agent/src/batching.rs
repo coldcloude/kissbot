@@ -23,12 +23,13 @@ pub enum Trigger {
     Forced,
 }
 
-/// 生产侧：Session 持有（Arc）；全无锁共享类型（mpsc send &self / ArcSwapOption / Notify / OnceLock）
+/// 生产侧：Session 持有（直接值，可 Clone——字段均为 Clone/Arc 共享类型）；全无锁共享
+#[derive(Clone)]
 pub struct BatchProducer {
     pub tx: mpsc::UnboundedSender<BatchItem>,
     pub trigger_tx: mpsc::UnboundedSender<Trigger>,
     /// 截止时间（无锁：推数据时 store，try_flush 时 load）
-    pub deadline: ArcSwapOption<Instant>,
+    pub deadline: Arc<ArcSwapOption<Instant>>,
     /// 任务退出唤醒（session 销毁 notify_one；permit 语义错过唤醒后仍可退出）
     pub notify: Arc<Notify>,
     /// 任务升级槽（ensure_session 创建会话后设置一次；coordinator 为进程级单例）
@@ -45,17 +46,17 @@ pub struct BatchConsumer {
 }
 
 /// 创建合批 channel 对 + DelayQueue，返回 (生产侧, 消费侧)；Session::new 调用后消费侧立即移入 trigger 任务
-pub fn new_batch() -> (Arc<BatchProducer>, BatchConsumer) {
+pub fn new_batch() -> (BatchProducer, BatchConsumer) {
     let (tx, rx) = mpsc::unbounded_channel();
     let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
-    let producer = Arc::new(BatchProducer {
+    let producer = BatchProducer {
         tx,
         trigger_tx,
-        deadline: ArcSwapOption::from(None),
+        deadline: Arc::new(ArcSwapOption::from(None)),
         notify: Arc::new(Notify::new()),
         coordinator: Arc::new(OnceLock::new()),
         session: Arc::new(OnceLock::new()),
-    });
+    };
     let consumer = BatchConsumer {
         rx,
         trigger_rx,
@@ -85,8 +86,8 @@ pub fn flush_ready(producer: &BatchProducer, force: bool) -> bool {
 }
 
 /// 触发任务：随 Session::new 调用（consumer 创建后立即移入）；唯一消费者（独占 &mut consumer，零锁）
-/// 持 Arc<BatchProducer>（升级槽在 producer 上）——不阻止 session drop
-pub fn spawn_trigger(producer: Arc<BatchProducer>, mut consumer: BatchConsumer) {
+/// 持 BatchProducer clone（升级槽/notify/deadline 经 Arc 字段共享）——不阻止 session drop
+pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -124,7 +125,7 @@ pub fn spawn_trigger(producer: Arc<BatchProducer>, mut consumer: BatchConsumer) 
 /// 触发 flush：判定 → deadline 置 None → drain（&mut consumer.rx 零锁）→ 打包 → 升级槽进 agentic loop
 /// 升级失败（session/coordinator 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
 pub async fn try_flush(
-    producer: &Arc<BatchProducer>,
+    producer: &BatchProducer,
     consumer: &mut BatchConsumer,
     force: bool,
 ) {
@@ -236,7 +237,7 @@ mod tests {
 
     /// 等待任务执行 flush：try_flush 的 flush_ready 通过后先 store(None) 再 drain，
     /// 观测 deadline 变 None 即确认 flush 路径已执行（consumer 已移入任务，不做二次 drain）
-    async fn wait_flushed(producer: &Arc<BatchProducer>) -> bool {
+    async fn wait_flushed(producer: &BatchProducer) -> bool {
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
             if producer.deadline.load_full().is_none() {
