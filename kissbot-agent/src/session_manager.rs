@@ -73,8 +73,8 @@ pub struct Session {
     pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
-    /// 合批状态（数据/触发双 mpsc + DelayQueue + deadline + notify；trigger 任务持此 Arc，不持 Session）
-    pub batch: Arc<crate::batching::BatchState>,
+    /// 合批生产侧（数据/触发发送端 + deadline + notify + 升级槽；消费侧由 trigger 任务独占）
+    pub batch: Arc<crate::batching::BatchProducer>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
@@ -84,12 +84,15 @@ pub struct Session {
 
 impl Session {
     pub fn new(key: &SessionKey, model: Option<ProviderModel>, agent_id: Arc<String>) -> Self {
+        let (batch, consumer) = crate::batching::BatchProducer::new();
+        // 消费侧立即移入 trigger 任务（随 session 创建 spawn；升级槽由 ensure_session 设置）
+        crate::batching::spawn_trigger(batch.clone(), consumer);
         Self {
             agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
-            batch: crate::batching::BatchState::new(),
+            batch,
             model: ArcSwap::from_pointee(model),
             agent_id,
         }
@@ -152,8 +155,8 @@ mod tests {
         SessionKey { agent_name: agent.into(), role_name: role.into(), mode: Mode::Role }
     }
 
-    #[test]
-    fn get_or_create_dedupes() {
+    #[tokio::test]
+    async fn get_or_create_dedupes() {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
@@ -168,8 +171,8 @@ mod tests {
         assert!(created3, "事件模式是独立会话");
     }
 
-    #[test]
-    fn retain_prunes_unbound() {
+    #[tokio::test]
+    async fn retain_prunes_unbound() {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
@@ -183,8 +186,8 @@ mod tests {
         assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
     }
 
-    #[test]
-    fn get_or_create_with_none_model() {
+    #[tokio::test]
+    async fn get_or_create_with_none_model() {
         let mgr = SessionManager::new();
         let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
         let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
@@ -192,8 +195,8 @@ mod tests {
         assert!(s.model.load().is_none());
     }
 
-    #[test]
-    fn session_copies_role_name_and_mode_from_key() {
+    #[tokio::test]
+    async fn session_copies_role_name_and_mode_from_key() {
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
         let agent_id = Arc::new("uuid".to_string());

@@ -329,14 +329,12 @@ impl AgentCoordinator {
         let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
         if created {
             self.build_initial_context(&session).await;
-            // 随会话创建：绑定合批发送端（channel 持 tx/trigger_tx）+ spawn trigger 任务
-            // （任务持 Weak<Session>/Weak<Self>，不阻止会话销毁；flush 时升级，失败跳过）
+            // 随会话创建：绑定合批发送端（channel 持 tx/trigger_tx）+ 设置 trigger 任务升级槽
+            // （trigger 任务已在 Session::new 随会话 spawn；槽 OnceLock set 一次——coordinator 为进程级
+            //  单例、session Weak 每 producer 一次；消息必须先过 ensure_session 才路由进队列，故 flush 时槽必然已设置）
             self.bind_batch_tx(channel_id, &session).await;
-            crate::batching::spawn_trigger(
-                session.batch.clone(),
-                Arc::downgrade(&session),
-                self.weak_self.get().cloned().unwrap_or_default(),
-            );
+            let _ = session.batch.session.set(Arc::downgrade(&session));
+            let _ = session.batch.coordinator.set(self.weak_self.get().cloned().unwrap_or_default());
         }
         (session, created)
     }
@@ -981,7 +979,7 @@ impl AgentCoordinator {
     }
 
     /// 合批 trigger 任务打包后调用：解析 out_channel 并进入 agentic loop
-    /// （合批重构接线：Task 3 完善 enqueue/spawn/reset 强制 flush，本方法供 batching.flush_events_to_loop 编译）
+    /// （batching.try_flush 升级槽后调用本方法）
     pub async fn flush_batch(&self, session: &Arc<Session>, content: String) {
         // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
         if session.model.load().is_none() {
@@ -1445,8 +1443,8 @@ mod tests {
         assert!(matches!(&msgs[1], Message::Assistant { content, .. } if content.as_str() == "总结内容"));
     }
 
-    #[test]
-    fn tool_placeholder_uses_same_key_for_call_and_result() {
+    #[tokio::test]
+    async fn tool_placeholder_uses_same_key_for_call_and_result() {
         // 构造最小 Session + OutChannel（参照既有测试模式）
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
         let session = Arc::new(Session::new(&key, None, Arc::new("aid".into())));
