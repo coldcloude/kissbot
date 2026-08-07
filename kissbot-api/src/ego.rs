@@ -154,10 +154,16 @@ pub struct GetIndividualRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct IndividualEntry {
+    pub name: String,
+    pub individual: Arc<Individual>
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReplaceIndividualsRequest {
     pub agent_id: Arc<String>,
-    pub remove_individual_names: Vec<Arc<String>>,
-    pub insert_individuals: Vec<(Arc<String>, Arc<Individual>)>,
+    pub remove_individual_names: Vec<String>,
+    pub insert_individuals: Vec<IndividualEntry>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -470,8 +476,8 @@ mod tests {
         });
         let obj = ReplaceIndividualsRequest {
             agent_id: Arc::new("a1".to_string()),
-            remove_individual_names: vec![Arc::new("Bob".to_string())],
-            insert_individuals: vec![(Arc::new("Alice".to_string()), individual)],
+            remove_individual_names: vec!["Bob".to_string()],
+            insert_individuals: vec![IndividualEntry { name: "Alice".to_string(), individual }],
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ReplaceIndividualsRequest = serde_json::from_value(json).unwrap();

@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use arc_swap::ArcSwap;
 use kissbot_api::ArcSwapHashMap;
+use kissbot_api::IndividualEntry;
 use kissbot_api::IndividualRelationEntry;
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
@@ -11,7 +12,7 @@ use tokio::sync::RwLock;
 use crate::error::Result;
 use crate::error::Error;
 use crate::code::validate_code;
-use kissbot_api::{ChannelUser, Individual, IndividualRecognition, ArcUnwrapOrClone};
+use kissbot_api::{ChannelUser, Individual, IndividualRecognition};
 
 pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: &str = "individual-recognition-";
 
@@ -162,9 +163,9 @@ impl IndividualRecognitionManager {
         Ok(entry.load().clone())
     }
 
-    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<Arc<String>>, mut insert_individuals: Vec<(Arc<String>, Arc<Individual>)>) -> Result<()> {
-        for (name, _) in insert_individuals.iter() {
-            validate_code(name.as_str())?;
+    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<String>, mut insert_individuals: Vec<IndividualEntry>) -> Result<()> {
+        for entry in insert_individuals.iter() {
+            validate_code(entry.name.as_str())?;
         }
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
@@ -174,8 +175,8 @@ impl IndividualRecognitionManager {
                 for name in remove_individual_names.drain(..) {
                     individual_map.remove(name.as_str());
                 }
-                for (name, individual) in insert_individuals.drain(..) {
-                    individual_map.insert(name.unwrap_or_clone(), ArcSwap::new(individual));
+                for entry in insert_individuals.drain(..) {
+                    individual_map.insert(entry.name, ArcSwap::new(entry.individual));
                 }
                 Ok(individuals_new_arc)
             }
@@ -302,7 +303,7 @@ use super::*;
         manager.replace_individuals(
             "agent1",
             vec![],
-            vec![(Arc::new("Alice".to_string()), individual)],
+            vec![IndividualEntry { name: "Alice".to_string(), individual }],
         ).await.unwrap();
         let alice = manager.get_individual("agent1", "Alice").await.unwrap();
         assert_eq!(*alice.relation.relation, "friend");
@@ -326,11 +327,11 @@ use super::*;
         manager.replace_individuals(
             "agent-remove",
             vec![],
-            vec![(Arc::new("Alice".to_string()), individual)],
+            vec![IndividualEntry { name: "Alice".to_string(), individual }],
         ).await.unwrap();
         manager.replace_individuals(
             "agent-remove",
-            vec![Arc::new("Alice".to_string())],
+            vec!["Alice".to_string()],
             vec![],
         ).await.unwrap();
         let result = manager.get_individual("agent-remove", "Alice").await;
@@ -355,7 +356,7 @@ use super::*;
         manager.replace_individuals(
             "agent-rename",
             vec![],
-            vec![(Arc::new("Alice".to_string()), individual)],
+            vec![IndividualEntry { name: "Alice".to_string(), individual }],
         ).await.unwrap();
         manager.rename_individual("agent-rename", "Alice", "Bob").await.unwrap();
         let bob = manager.get_individual("agent-rename", "Bob").await.unwrap();
@@ -391,8 +392,8 @@ use super::*;
             "agent-rename-exists",
             vec![],
             vec![
-                (Arc::new("Alice".to_string()), alice),
-                (Arc::new("Bob".to_string()), bob),
+                IndividualEntry { name: "Alice".to_string(), individual: alice },
+                IndividualEntry { name: "Bob".to_string(), individual: bob },
             ],
         ).await.unwrap();
         let result = manager.rename_individual("agent-rename-exists", "Alice", "Bob").await;
@@ -416,7 +417,7 @@ use super::*;
         let result = manager.replace_individuals(
             "agent-invalid-ind",
             vec![],
-            vec![(Arc::new("a b".to_string()), individual)],
+            vec![IndividualEntry { name: "a b".to_string(), individual }],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
@@ -438,7 +439,7 @@ use super::*;
         manager.replace_individuals(
             "agent-invalid-rel",
             vec![],
-            vec![(Arc::new("Alice".to_string()), individual)],
+            vec![IndividualEntry { name: "Alice".to_string(), individual }],
         ).await.unwrap();
         let relation = Arc::new(IndividualRelation {
             relation: Arc::new("friend".to_string()),
@@ -490,7 +491,7 @@ use super::*;
         manager.replace_individuals(
             "agent-empty-rename",
             vec![],
-            vec![(Arc::new("Alice".to_string()), individual)],
+            vec![IndividualEntry { name: "Alice".to_string(), individual }],
         ).await.unwrap();
         let result = manager.rename_individual("agent-empty-rename", "Alice", "").await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
