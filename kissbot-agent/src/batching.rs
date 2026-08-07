@@ -1,9 +1,9 @@
 // ========== Channel 合批 ==========
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwapOption;
 use kissbot_api::channel::IncomingMessageEvent;
 use tokio::sync::{mpsc, Notify};
 use tokio_util::time::DelayQueue;
@@ -28,14 +28,57 @@ pub enum Trigger {
 pub struct BatchProducer {
     pub tx: mpsc::UnboundedSender<BatchItem>,
     pub trigger_tx: mpsc::UnboundedSender<Trigger>,
-    /// 截止时间（无锁：推数据时 store，try_flush 时 load）
-    pub deadline: Arc<ArcSwapOption<Instant>>,
+    /// 编码基准：固定 Instant（所有 clone 共享）；u64 毫秒 = 相对此基准（参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
+    anchor: Arc<Instant>,
+    /// 截止时间（u64 毫秒，相对 anchor；0 = 无待 flush（原 None）哨兵）——Arc<AtomicU64> 无锁共享
+    pub deadline: Arc<AtomicU64>,
     /// 任务退出唤醒（session 销毁 notify_one；permit 语义错过唤醒后仍可退出）
     pub notify: Arc<Notify>,
     /// 任务升级槽（ensure_session 创建会话后设置一次；coordinator 为进程级单例）
     pub coordinator: Arc<OnceLock<Weak<crate::coordinator::AgentCoordinator>>>,
     /// 任务升级槽（ensure_session 设置一次：Arc::downgrade(&session)）
     pub session: Arc<OnceLock<Weak<Session>>>,
+}
+
+impl BatchProducer {
+    fn now_millis(&self) -> u64 {
+        Instant::now().duration_since(*self.anchor).as_millis() as u64
+    }
+
+    /// 设置截止时间（Instant → u64 毫秒，相对 anchor；enqueue 推数据后调用，后推覆盖）
+    /// 0 是「无截止」哨兵：合法截止钳到 ≥1ms（过去时间饱和为 0 时不会与哨兵碰撞，判定时必已过）
+    /// CAS-max：只抬不降——并发后推（deadline 更大）不被较早写入覆盖
+    pub fn set_deadline(&self, at: Instant) {
+        let new = at.saturating_duration_since(*self.anchor).as_millis() as u64;
+        let new = new.max(1);
+        let mut cur = self.deadline.load(Ordering::Relaxed);
+        loop {
+            if cur != 0 && new <= cur {
+                return;   // 已有更晚截止（并发后推）：保持，防覆盖
+            }
+            match self.deadline.compare_exchange(cur, new, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(actual) => cur = actual,   // 竞争：用实际值重试
+            }
+        }
+    }
+
+    /// 清除截止时间（try_flush drain 前调用；0 = 无待 flush 哨兵）
+    pub fn clear_deadline(&self) {
+        self.deadline.store(0, Ordering::Relaxed);
+    }
+
+    /// 截止时间是否已过（0 = 无待 flush → false）
+    fn deadline_passed(&self) -> bool {
+        let v = self.deadline.load(Ordering::Relaxed);
+        v != 0 && self.now_millis() >= v
+    }
+
+    /// 截止时间是否已清（测试观测 flush 执行用）
+    #[cfg(test)]
+    pub fn deadline_cleared(&self) -> bool {
+        self.deadline.load(Ordering::Relaxed) == 0
+    }
 }
 
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
@@ -52,7 +95,8 @@ pub fn new_batch() -> (BatchProducer, BatchConsumer) {
     let producer = BatchProducer {
         tx,
         trigger_tx,
-        deadline: Arc::new(ArcSwapOption::from(None)),
+        anchor: Arc::new(Instant::now()),
+        deadline: Arc::new(AtomicU64::new(0)),
         notify: Arc::new(Notify::new()),
         coordinator: Arc::new(OnceLock::new()),
         session: Arc::new(OnceLock::new()),
@@ -76,13 +120,7 @@ pub fn pack_events(events: &[BatchItem]) -> String {
 
 /// 触发判定：非强制且未超 deadline → 不 flush；强制 → flush
 pub fn flush_ready(producer: &BatchProducer, force: bool) -> bool {
-    if force {
-        return true;
-    }
-    match producer.deadline.load_full() {
-        None => false,
-        Some(d) => Instant::now() >= *d,
-    }
+    force || producer.deadline_passed()
 }
 
 /// 触发任务：随 Session::new 调用（consumer 创建后立即移入）；唯一消费者（独占 &mut consumer，零锁）
@@ -132,10 +170,10 @@ pub async fn try_flush(
     if !flush_ready(producer, force) {
         return;   // 非强制且未超 deadline：空转（等下一个到期触发）
     }
-    // 先清 deadline 再 drain：并发 enqueue 若在 drain 期间设新截止，不会被后续的 store(None)
-    // 清掉（flush_ready 与 store(None) 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
+    // 先清 deadline 再 drain：并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
+    // （flush_ready 与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
     // 其 At 触发稍后空转——语义可接受
-    producer.deadline.store(None);
+    producer.clear_deadline();
     let mut items = Vec::new();
     loop {
         match consumer.rx.try_recv() {
@@ -208,39 +246,45 @@ mod tests {
         let (producer, mut consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
         producer.tx.send(ev("u2", "b")).unwrap();
-        producer.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
+        // 过去 deadline：anchor 编码下饱和为 1ms，sleep 保证 now_millis > 1（判定必已过）
+        producer.set_deadline(Instant::now() - Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(10)).await;
         try_flush(&producer, &mut consumer, false).await;
         assert!(consumer.rx.try_recv().is_err(), "已 drain");
         // 未超 deadline：不 drain
         let (p2, mut c2) = new_batch();
         p2.tx.send(ev("u1", "x")).unwrap();
-        p2.deadline.store(Some(Arc::new(Instant::now() + Duration::from_secs(10))));
+        p2.set_deadline(Instant::now() + Duration::from_secs(10));
         try_flush(&p2, &mut c2, false).await;
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
     }
 
-    #[test]
-    fn flush_ready_respects_deadline_and_force() {
-        let (producer, _consumer) = new_batch();
+    #[tokio::test]
+    async fn flush_ready_respects_deadline_and_force() {
+        // 各用例独立 producer：CAS-max 只抬不降，同一 producer 上后设的较早截止会被保持拒绝
         // 无 deadline：非强制不 flush
+        let (producer, _consumer) = new_batch();
         assert!(!flush_ready(&producer, false));
         // 未超 deadline：非强制不 flush；强制无视 deadline
-        producer.deadline.store(Some(Arc::new(Instant::now() + Duration::from_secs(10))));
+        let (producer, _consumer) = new_batch();
+        producer.set_deadline(Instant::now() + Duration::from_secs(10));
         assert!(!flush_ready(&producer, false), "未超时非强制不应 flush");
         assert!(flush_ready(&producer, true), "强制应 flush");
-        // 已超 deadline：非强制 flush
-        producer.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
+        // 已超 deadline：非强制 flush（过去截止锚定编码下饱和为 1ms，sleep 保证已过）
+        let (producer, _consumer) = new_batch();
+        producer.set_deadline(Instant::now() - Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(flush_ready(&producer, false), "超时非强制应 flush");
     }
 
     // ===== trigger 循环测试（回归网：拦住空队列立即退出缺陷）=====
 
-    /// 等待任务执行 flush：try_flush 的 flush_ready 通过后先 store(None) 再 drain，
-    /// 观测 deadline 变 None 即确认 flush 路径已执行（consumer 已移入任务，不做二次 drain）
+    /// 等待任务执行 flush：try_flush 的 flush_ready 通过后先 clear_deadline 再 drain，
+    /// 观测 deadline 变 0 即确认 flush 路径已执行（consumer 已移入任务，不做二次 drain）
     async fn wait_flushed(producer: &BatchProducer) -> bool {
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
-            if producer.deadline.load_full().is_none() {
+            if producer.deadline_cleared() {
                 tokio::time::sleep(Duration::from_millis(30)).await;
                 return true;
             }
@@ -256,7 +300,7 @@ mod tests {
         producer.tx.send(ev("u2", "b")).unwrap();
         // 与真实 enqueue 一致：deadline 与 At 触发时间同源（此处设为过去，到期立即弹出）
         let at = Instant::now() - Duration::from_secs(1);
-        producer.deadline.store(Some(Arc::new(at)));
+        producer.set_deadline(at);
         producer.trigger_tx.send(Trigger::At(at)).unwrap();
         spawn_trigger(producer.clone(), consumer);
         assert!(wait_flushed(&producer).await, "At 触发后任务应执行 flush（deadline 置 None）");
@@ -266,8 +310,8 @@ mod tests {
     async fn spawn_trigger_flushes_on_forced() {
         let (producer, consumer) = new_batch();
         producer.tx.send(ev("u1", "a")).unwrap();
-        // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 store(None) 再 drain）
-        producer.deadline.store(Some(Arc::new(Instant::now() - Duration::from_secs(1))));
+        // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 clear_deadline 再 drain）
+        producer.set_deadline(Instant::now() - Duration::from_secs(1));
         producer.trigger_tx.send(Trigger::Forced).unwrap();
         spawn_trigger(producer.clone(), consumer);
         assert!(wait_flushed(&producer).await, "Forced 触发后任务应执行 flush（deadline 置 None）");

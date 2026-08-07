@@ -846,7 +846,7 @@ impl AgentCoordinator {
         if let (Some(btx), Some(ttx)) = (btx, ttx) {
             let _ = btx.send(event);                                // 数据入队（队列累积，不逐条消费）
             let at = Instant::now() + interval;                     // 单次计算：deadline 与触发时间同源
-            session.batch.deadline.store(Some(Arc::new(at)));       // 更新截止（防抖，后推覆盖）
+            session.batch.set_deadline(at);                         // 更新截止（防抖，后推覆盖）
             let _ = ttx.send(crate::batching::Trigger::At(at));     // 发送触发时间（绝对）
         } else {
             warn!("enqueue_batch: channel {} 无合批发送端", channel_id);
