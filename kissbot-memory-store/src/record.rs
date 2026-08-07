@@ -1160,4 +1160,74 @@ mod tests {
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "agent1-msg"));
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "agent2-msg"));
     }
+
+    #[tokio::test]
+    async fn test_append_merged_identities_same_file() {
+        init_test_config();
+        let root = &MemoryConfig::get().root_dir;
+
+        let rm = RecordManager::new();
+
+        // 两个请求：同一 agent/role/date、不同 messenger/user/self_user/group → 合并到同一文件、sn 连续
+        let reqs = vec![
+            ChannelRequest {
+                agent_id: Arc::new("test_merged_ids".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("telegram".to_string()),
+                user_id: Arc::new("u1".to_string()),
+                self_user_id: Arc::new("self1".to_string()),
+                group_id: Arc::new("g1".to_string()),
+                is_self: 0,
+                messenger_name: Arc::new(String::new()),
+                user_name: Arc::new(String::new()),
+                group_name: Arc::new(String::new()),
+                content: Content::Text(Arc::new("msg1".to_string())),
+                time: Arc::new("2026-06-25 10:00:00".to_string()),
+            },
+            ChannelRequest {
+                agent_id: Arc::new("test_merged_ids".to_string()),
+                role_name: Arc::new("default".to_string()),
+                messenger_id: Arc::new("web".to_string()),
+                user_id: Arc::new("u2".to_string()),
+                self_user_id: Arc::new("self2".to_string()),
+                group_id: Arc::new("g2".to_string()),
+                is_self: 0,
+                messenger_name: Arc::new(String::new()),
+                user_name: Arc::new(String::new()),
+                group_name: Arc::new(String::new()),
+                content: Content::Text(Arc::new("msg2".to_string())),
+                time: Arc::new("2026-06-25 10:01:00".to_string()),
+            },
+        ];
+        rm.append_channel_record(reqs, false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // 仅存在一个文件，两条记录 sn 连续
+        let expected_path = root
+            .join("test_merged_ids")
+            .join("memory-store")
+            .join("2026-default")
+            .join("channel-records-2026-06-25.jsonl");
+        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
+
+        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
+        let lines: Vec<&str> = content.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+
+        let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
+        let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(r1.sn(), 1);
+        assert_eq!(r2.sn(), 2);
+        assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "msg1"));
+        assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "msg2"));
+        // 各记录保留自身身份字段
+        assert_eq!(*r1.messenger_id, "telegram");
+        assert_eq!(*r1.user_id, "u1");
+        assert_eq!(*r1.self_user_id, "self1");
+        assert_eq!(*r1.group_id, "g1");
+        assert_eq!(*r2.messenger_id, "web");
+        assert_eq!(*r2.user_id, "u2");
+        assert_eq!(*r2.self_user_id, "self2");
+        assert_eq!(*r2.group_id, "g2");
+    }
 }

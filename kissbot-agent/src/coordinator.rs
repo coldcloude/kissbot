@@ -750,7 +750,7 @@ impl Terminal for AgentCoordinator {
             role_name: Arc::new(role_name),
             messenger_id: event.incoming_message.messenger_id.clone(),
             user_id: event.incoming_message.user_id.clone(),
-            // 接收方身份 = event.recipient_user_id（agent 视角的 self；文件名按此分文件）
+            // 接收方身份 = event.recipient_user_id（agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
             self_user_id: event.recipient_user_id.clone(),
             group_id: event.incoming_message.group_id.clone(),
             is_self: 0,

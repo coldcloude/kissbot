@@ -13,7 +13,7 @@ pub struct ChannelRequest {
     pub role_name: Arc<String>,
     pub messenger_id: Arc<String>,
     pub user_id: Arc<String>,
-    /// 接收方身份（= channel 绑定的 user_id，即 agent 视角的 self）；文件名按此值分文件
+    /// 接收方身份（= channel 绑定的 user_id，即 agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
     pub self_user_id: Arc<String>,
     pub group_id: Arc<String>,
     pub is_self: usize,
