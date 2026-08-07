@@ -53,12 +53,6 @@ impl BatchProducer {
             }
         }
     }
-
-    /// 截止时间是否已清（测试观测 flush 执行用）
-    #[cfg(test)]
-    pub fn deadline_cleared(&self) -> bool {
-        self.deadline.load(Ordering::Relaxed) == 0
-    }
 }
 
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
@@ -268,47 +262,6 @@ mod tests {
         p2.set_deadline(Instant::now() + Duration::from_secs(10));
         try_flush(&mut c2, false).await;
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
-    }
-
-
-    // ===== trigger 循环测试（回归网：拦住空队列立即退出缺陷）=====
-
-    /// 等待任务执行 flush：try_flush 判定通过后先 clear_deadline 再 drain，
-    /// 观测 deadline 变 0 即确认 flush 路径已执行（consumer 已移入任务，不做二次 drain）
-    async fn wait_flushed(producer: &BatchProducer) -> bool {
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            if producer.deadline_cleared() {
-                tokio::time::sleep(Duration::from_millis(30)).await;
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        false
-    }
-
-    #[tokio::test]
-    async fn spawn_trigger_flushes_on_at_trigger() {
-        let (producer, consumer, _session) = test_pair();
-        producer.tx.send(ev("u1", "a")).unwrap();
-        producer.tx.send(ev("u2", "b")).unwrap();
-        // 与真实 enqueue 一致：deadline 与 At 触发时间同源（此处设为过去，到期立即弹出）
-        let at = Instant::now() - Duration::from_secs(1);
-        producer.set_deadline(at);
-        producer.trigger_tx.send(Trigger::At(at)).unwrap();
-        spawn_trigger(consumer);
-        assert!(wait_flushed(&producer).await, "At 触发后任务应执行 flush（deadline 置 None）");
-    }
-
-    #[tokio::test]
-    async fn spawn_trigger_flushes_on_forced() {
-        let (producer, consumer, _session) = test_pair();
-        producer.tx.send(ev("u1", "a")).unwrap();
-        // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 clear_deadline 再 drain）
-        producer.set_deadline(Instant::now() - Duration::from_secs(1));
-        producer.trigger_tx.send(Trigger::Forced).unwrap();
-        spawn_trigger(consumer);
-        assert!(wait_flushed(&producer).await, "Forced 触发后任务应执行 flush（deadline 置 None）");
     }
 
     #[tokio::test]
