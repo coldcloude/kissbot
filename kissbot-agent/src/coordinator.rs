@@ -54,7 +54,7 @@ struct ChannelContext {
     agent_id: ArcSwapOption<String>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
-    /// 合批生产侧（绑定会话时从 session.producer 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
+    /// 合批生产侧（绑定会话时从 session.batch_producer 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
     /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
     producer: ArcSwapOption<crate::session_manager::BatchProducer>,
 }
@@ -277,13 +277,13 @@ impl AgentCoordinator {
         agent_id
     }
 
-    /// 绑定会话后刷新合批生产侧（从 session.producer 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
+    /// 绑定会话后刷新合批生产侧（从 session.batch_producer 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
     async fn bind_batch(&self, channel_id: &str, session: &Arc<Session>) {
         let ctx = self.channel_contexts
             .entry(channel_id.to_string())
             .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
-        ctx.producer.store(Some(Arc::new(session.producer.clone())));
+        ctx.producer.store(Some(Arc::new(session.batch_producer.clone())));
     }
 
     /// 设置 channel 运行态模式（写 ChannelContext.mode；/mode 切换，不回写，重启回 Role）
@@ -424,7 +424,7 @@ impl AgentCoordinator {
         self.build_initial_context(session).await;
         // 重置完成：强制 flush（不检查 deadline），重置期间到达的消息即刻并入新上下文
         // （reset 可能由 trigger 任务的 flush → run_agentic_loop 溢出路径调用，Forced 入队后由任务串行处理）
-        session.producer.trigger_tx.send(crate::session_manager::Trigger::Forced).ok();
+        session.batch_producer.trigger_tx.send(crate::session_manager::Trigger::Forced).ok();
         info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
