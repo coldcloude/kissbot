@@ -81,8 +81,8 @@ pub struct Session {
     pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
-    /// 合批生产侧（依赖序构造时经 get_or_create 传入；channel 均从本字段取 producer 绑定）
-    pub batch: BatchProducer,
+    /// 合批生产侧（依赖序构造时经 create_session 传入；channel 均从本字段取 clone 绑定）
+    pub producer: BatchProducer,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
@@ -101,7 +101,7 @@ impl Session {
         model: Option<ProviderModel>,
         agent_id: Arc<String>,
         coordinator: Weak<AgentCoordinator>,
-        batch: BatchProducer,
+        producer: BatchProducer,
         notify: Arc<Notify>,
     ) -> Self {
         Self {
@@ -109,7 +109,7 @@ impl Session {
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new()),
-            batch,
+            producer,
             model: ArcSwap::from_pointee(model),
             agent_id,
             coordinator,
@@ -302,8 +302,8 @@ impl SessionManager {
     /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果；
     /// coordinator 弱引用由 Arc 链调用方降级传入）；返回 (会话, 是否新建)
     /// 创建时依赖序组装（内联 new_producer/BatchConsumer::new）：notify → 2 mpsc → producer → session → consumer → spawn
-    /// （channel 均从 session.batch 取 producer；任务持 consumer，consumer 持 session 弱引用与 notify，
-    ///  anchor/deadline 与 producer 共享同一 Arc——无锁共享状态）
+    /// （channel 均从 session.producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
+    ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
     /// 双重锁定：先 get 快速路径（命中直接返回），未命中再走 entry API 原子创建（并发下仅一个创建成功）
     pub fn get_or_create(
         &self,
@@ -328,36 +328,38 @@ impl SessionManager {
 
     /// 创建会话（get_or_create 的 created 分支抽出）：依赖序组装（内联 new_producer/BatchConsumer::new）+
     /// spawn 触发任务（内联 spawn_trigger：tokio::spawn(consumer.run())）；返回新建会话
-    /// （channel 均从 session.batch 取 producer；任务持 consumer，consumer 持 session 弱引用与 notify，
-    ///  anchor/deadline 与 producer 共享同一 Arc——无锁共享状态）
+    /// （channel 均从 session.producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
+    ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
     fn create_session(
         key: &SessionKey,
         model: Option<ProviderModel>,
         agent_id: Arc<String>,
         coordinator: Weak<AgentCoordinator>,
     ) -> Arc<Session> {
-        // 1. notify + 2 mpsc（无依赖）
+        // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
         let notify = Arc::new(Notify::new());
+        let anchor = Arc::new(Instant::now());
+        let deadline = Arc::new(AtomicU64::new(0));
         let (tx, rx) = mpsc::unbounded_channel();
         let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
-        // 2. 用 tx 构造 producer
+        // 2. 用 tx 构造 producer（anchor/deadline 复制自独立 Arc）
         let producer = BatchProducer {
             tx,
             trigger_tx,
-            anchor: Arc::new(Instant::now()),
-            deadline: Arc::new(AtomicU64::new(0)),
+            anchor: anchor.clone(),
+            deadline: deadline.clone(),
         };
         // 3. 用 producer 构造 session
         let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
-        // 4. 用 rx 和 session 构造 consumer（anchor/deadline 从 producer 复制，同一 Arc）
+        // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
         let consumer = BatchConsumer {
             rx,
             trigger_rx,
             delay: DelayQueue::new(),
             session: Arc::downgrade(&session),
             notify,
-            anchor: session.batch.anchor.clone(),
-            deadline: session.batch.deadline.clone(),
+            anchor,
+            deadline,
         };
         // 5. consumer 去 spawn（内联 spawn_trigger）
         tokio::spawn(consumer.run());
