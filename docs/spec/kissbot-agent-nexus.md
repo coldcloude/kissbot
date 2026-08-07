@@ -132,7 +132,7 @@
 
 | 方法 | 路径 | 请求体 |
 |------|------|--------|
-| POST | /query/channel | QueryChannelRequest — 按 (agent_id, role_name, messenger_id, user_id, group_id) + 时间范围查询 |
+| POST | /query/channel | QueryRequest — 按 (agent_id, role_name) + 时间范围查询（所有 channel 记录同文件，无需组合枚举） |
 | POST | /query | QueryRequest — 按 (agent_id, role_name) + 时间范围查询 |
 
 ### 记忆索引读取（MemoryReader → Memory-Struct）
