@@ -96,27 +96,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(
-        key: &SessionKey,
-        model: Option<ProviderModel>,
-        agent_id: Arc<String>,
-        coordinator: Weak<AgentCoordinator>,
-        batch_producer: BatchProducer,
-        notify: Arc<Notify>,
-    ) -> Self {
-        Self {
-            agent_name: Arc::new(key.agent_name.clone()),
-            role_name: Arc::new(key.role_name.clone()),
-            mode: Arc::new(key.mode.clone()),
-            context: tokio::sync::Mutex::new(SessionContext::new()),
-            batch_producer,
-            model: ArcSwap::from_pointee(model),
-            agent_id,
-            coordinator,
-            notify,
-        }
-    }
-
     /// 合批 flush 入口：trigger 任务经 consumer.session 弱引用升级后调用（原 coordinator.flush_batch 职责迁至会话侧）
     /// 模型检查 → coordinator 弱引用升级 → out_channel 解析 → agentic loop
     pub(crate) async fn accept_batch(self: &Arc<Self>, content: String) {
@@ -349,8 +328,18 @@ impl SessionManager {
             anchor: anchor.clone(),
             deadline: deadline.clone(),
         };
-        // 3. 用 producer 构造 session
-        let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
+        // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
+        let session = Arc::new(Session {
+            agent_name: Arc::new(key.agent_name.clone()),
+            role_name: Arc::new(key.role_name.clone()),
+            mode: Arc::new(key.mode.clone()),
+            context: tokio::sync::Mutex::new(SessionContext::new()),
+            batch_producer: producer,
+            model: ArcSwap::from_pointee(model),
+            agent_id,
+            coordinator,
+            notify: notify.clone(),
+        });
         // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
         let consumer = BatchConsumer {
             rx,
@@ -414,7 +403,18 @@ mod tests {
             anchor: Arc::new(Instant::now()),
             deadline: Arc::new(AtomicU64::new(0)),
         };
-        let session = Arc::new(Session::new(&key, None, Arc::new("aid".into()), Weak::new(), producer.clone(), notify.clone()));
+        // 3. 用 producer 构造 session（字面量，与 create_session 同构）
+        let session = Arc::new(Session {
+            agent_name: Arc::new(key.agent_name.clone()),
+            role_name: Arc::new(key.role_name.clone()),
+            mode: Arc::new(key.mode.clone()),
+            context: tokio::sync::Mutex::new(SessionContext::new()),
+            batch_producer: producer.clone(),
+            model: ArcSwap::from_pointee(None),
+            agent_id: Arc::new("aid".into()),
+            coordinator: Weak::new(),
+            notify: notify.clone(),
+        });
         let consumer = BatchConsumer {
             rx,
             trigger_rx,
@@ -520,7 +520,18 @@ mod tests {
             anchor: Arc::new(Instant::now()),
             deadline: Arc::new(AtomicU64::new(0)),
         };
-        let session = Session::new(&key, model, agent_id, Weak::new(), producer, notify);
+        // 3. 用 producer 构造 session（字面量，与 create_session 同构）
+        let session = Session {
+            agent_name: Arc::new(key.agent_name.clone()),
+            role_name: Arc::new(key.role_name.clone()),
+            mode: Arc::new(key.mode.clone()),
+            context: tokio::sync::Mutex::new(SessionContext::new()),
+            batch_producer: producer,
+            model: ArcSwap::from_pointee(model),
+            agent_id,
+            coordinator: Weak::new(),
+            notify,
+        };
         assert_eq!(session.role_name.as_str(), "r1");
         assert_eq!(*session.mode, Mode::Event("e1".into()));
     }
