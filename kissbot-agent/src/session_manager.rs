@@ -202,22 +202,26 @@ pub struct BatchConsumer {
     deadline: Arc<AtomicU64>,
 }
 
-/// 触发任务：随 session_manager.get_or_create 调用（consumer 创建后立即移入）；唯一消费者（独占 &mut consumer，零锁）
-/// 不持 producer（anchor/deadline 经 consumer 内共享 Arc 访问；退出靠 notify + trigger channel 关闭兜底）——不阻止 session drop
-pub fn spawn_trigger(mut consumer: BatchConsumer) {
-    tokio::spawn(async move {
+/// 触发 flush（BatchConsumer 成员函数）：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→
+/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_events）→ 经 session 弱引用升级进 agentic loop
+/// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
+impl BatchConsumer {
+    /// 触发任务主循环（原 spawn_trigger 的 spawn 内部分，改 consumer 成员函数；get_or_create 经 tokio::spawn 启动）
+    /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问；
+    /// 退出靠 notify + trigger channel 关闭兜底）——不阻止 session drop
+    async fn run(mut self) {
         loop {
             tokio::select! {
-                _ = consumer.notify.notified() => break,  // 会话销毁（session.notify notify_one）→ 退出
-                t = consumer.trigger_rx.recv() => {
+                _ = self.notify.notified() => break,  // 会话销毁（session.notify notify_one）→ 退出
+                t = self.trigger_rx.recv() => {
                     match t {
                         // 按剩余时长插入（DelayQueue::insert 收 Duration；at 为 std::time::Instant）
                         Some(Trigger::At(at)) => {
-                            consumer.delay.insert(Trigger::At(at), at.saturating_duration_since(Instant::now()));
+                            self.delay.insert(Trigger::At(at), at.saturating_duration_since(Instant::now()));
                         }
                         // 强制：立即到期
                         Some(Trigger::Forced) => {
-                            consumer.delay.insert(Trigger::Forced, Duration::ZERO);
+                            self.delay.insert(Trigger::Forced, Duration::ZERO);
                         }
                         None => break,                      // trigger channel 关闭
                     }
@@ -228,24 +232,19 @@ pub fn spawn_trigger(mut consumer: BatchConsumer) {
                 // 该分支完成即任务已醒来，下一轮 select 重新评估守卫便启用 delay 分支——不存在「队列有数据但
                 // 任务 park 着、delay 分支没被启用」的状态；到期唤醒走 DelayQueue 内部 sleep 的 waker，与其他
                 // 分支是否就绪无关，故 delay 分支不会被饿死，也不会错过已插入的数据。
-                item = consumer.delay.next(), if !consumer.delay.is_empty() => {
+                item = self.delay.next(), if !self.delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
-                            Trigger::Forced => consumer.try_flush(true).await,
-                            Trigger::At(_) => consumer.try_flush(false).await,
+                            Trigger::Forced => self.try_flush(true).await,
+                            Trigger::At(_) => self.try_flush(false).await,
                         },
                         None => break,                      // 仅防御（队列非空时 poll_next 不返回 None）
                     }
                 }
             }
         }
-    });
-}
+    }
 
-/// 触发 flush（BatchConsumer 成员函数）：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→
-/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_events）→ 经 session 弱引用升级进 agentic loop
-/// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
-impl BatchConsumer {
     pub async fn try_flush(&mut self, force: bool) {
         // 触发判定（内联 deadline_passed：0 = 无待 flush → false；now_millis = 相对 anchor 的 u64 毫秒）
         let deadline = self.deadline.load(Ordering::Relaxed);
@@ -319,35 +318,50 @@ impl SessionManager {
         match self.sessions.entry(key.clone()) {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                // 1. notify + 2 mpsc（无依赖）
-                let notify = Arc::new(Notify::new());
-                let (tx, rx) = mpsc::unbounded_channel();
-                let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
-                // 2. 用 tx 构造 producer
-                let producer = BatchProducer {
-                    tx,
-                    trigger_tx,
-                    anchor: Arc::new(Instant::now()),
-                    deadline: Arc::new(AtomicU64::new(0)),
-                };
-                // 3. 用 producer 构造 session
-                let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
-                // 4. 用 rx 和 session 构造 consumer（anchor/deadline 从 producer 复制，同一 Arc）
-                let consumer = BatchConsumer {
-                    rx,
-                    trigger_rx,
-                    delay: DelayQueue::new(),
-                    session: Arc::downgrade(&session),
-                    notify,
-                    anchor: session.batch.anchor.clone(),
-                    deadline: session.batch.deadline.clone(),
-                };
-                // 5. consumer 去 spawn
-                spawn_trigger(consumer);
+                // 创建部分抽出（create_session）：依赖序组装 + spawn 触发任务
+                let session = Self::create_session(key, model, agent_id, coordinator);
                 e.insert(session.clone());
                 (session, true)
             }
         }
+    }
+
+    /// 创建会话（get_or_create 的 created 分支抽出）：依赖序组装（内联 new_producer/BatchConsumer::new）+
+    /// spawn 触发任务（内联 spawn_trigger：tokio::spawn(consumer.run())）；返回新建会话
+    /// （channel 均从 session.batch 取 producer；任务持 consumer，consumer 持 session 弱引用与 notify，
+    ///  anchor/deadline 与 producer 共享同一 Arc——无锁共享状态）
+    fn create_session(
+        key: &SessionKey,
+        model: Option<ProviderModel>,
+        agent_id: Arc<String>,
+        coordinator: Weak<AgentCoordinator>,
+    ) -> Arc<Session> {
+        // 1. notify + 2 mpsc（无依赖）
+        let notify = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
+        // 2. 用 tx 构造 producer
+        let producer = BatchProducer {
+            tx,
+            trigger_tx,
+            anchor: Arc::new(Instant::now()),
+            deadline: Arc::new(AtomicU64::new(0)),
+        };
+        // 3. 用 producer 构造 session
+        let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
+        // 4. 用 rx 和 session 构造 consumer（anchor/deadline 从 producer 复制，同一 Arc）
+        let consumer = BatchConsumer {
+            rx,
+            trigger_rx,
+            delay: DelayQueue::new(),
+            session: Arc::downgrade(&session),
+            notify,
+            anchor: session.batch.anchor.clone(),
+            deadline: session.batch.deadline.clone(),
+        };
+        // 5. consumer 去 spawn（内联 spawn_trigger）
+        tokio::spawn(consumer.run());
+        session
     }
 
     /// 只保留仍在绑定集合中的会话（绑定信息变化后清理无绑定会话）
@@ -433,7 +447,8 @@ mod tests {
     #[tokio::test]
     async fn spawn_trigger_exits_on_notify() {
         let (producer, consumer, session) = test_pair();
-        spawn_trigger(consumer);
+        // 与 get_or_create 的 spawn 同构：tokio::spawn(consumer.run())
+        tokio::spawn(consumer.run());
         // 确保任务已启动并持有 trigger_rx
         tokio::time::sleep(Duration::from_millis(20)).await;
         session.notify.notify_one();
