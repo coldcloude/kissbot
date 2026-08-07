@@ -175,8 +175,8 @@ impl SessionManager {
                 let notify = Arc::new(tokio::sync::Notify::new());
                 let (producer, rx, trigger_rx) = crate::batching::new_producer();
                 let session = Arc::new(Session::new(key, model, agent_id, coordinator, producer, notify.clone()));
-                let consumer = crate::batching::BatchConsumer::new(rx, trigger_rx, &session, notify);
-                crate::batching::spawn_trigger(session.batch.clone(), consumer);
+                let consumer = crate::batching::BatchConsumer::new(rx, trigger_rx, &session, notify, &session.batch);
+                crate::batching::spawn_trigger(consumer);
                 e.insert(session.clone());
                 (session, true)
             }

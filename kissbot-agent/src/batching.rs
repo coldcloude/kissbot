@@ -36,10 +36,6 @@ pub struct BatchProducer {
 }
 
 impl BatchProducer {
-    fn now_millis(&self) -> u64 {
-        Instant::now().duration_since(*self.anchor).as_millis() as u64
-    }
-
     /// 设置截止时间（Instant → u64 毫秒，相对 anchor；enqueue 推数据后调用，后推覆盖）
     /// 0 是「无截止」哨兵：合法截止钳到 ≥1ms（过去时间饱和为 0 时不会与哨兵碰撞，判定时必已过）
     /// CAS-max：只抬不降——并发后推（deadline 更大）不被较早写入覆盖
@@ -58,17 +54,6 @@ impl BatchProducer {
         }
     }
 
-    /// 清除截止时间（try_flush drain 前调用；0 = 无待 flush 哨兵）
-    pub fn clear_deadline(&self) {
-        self.deadline.store(0, Ordering::Relaxed);
-    }
-
-    /// 截止时间是否已过（0 = 无待 flush → false）
-    fn deadline_passed(&self) -> bool {
-        let v = self.deadline.load(Ordering::Relaxed);
-        v != 0 && self.now_millis() >= v
-    }
-
     /// 截止时间是否已清（测试观测 flush 执行用）
     #[cfg(test)]
     pub fn deadline_cleared(&self) -> bool {
@@ -79,21 +64,28 @@ impl BatchProducer {
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
 /// 持 session 弱引用（flush 升级用；弱引用不强持会话——会话销毁由 session_manager/channel 决定）
 /// 持 notify（任务 select 等待会话销毁通知；与 Session.notify 同一 Arc，见 get_or_create 组装）
+/// 持 anchor/deadline（与 producer 共享同一 Arc：enqueue 侧 set_deadline 写、任务侧 try_flush 读/清，见 get_or_create 组装）
 pub struct BatchConsumer {
     rx: mpsc::UnboundedReceiver<BatchItem>,
     trigger_rx: mpsc::UnboundedReceiver<Trigger>,
     delay: DelayQueue<Trigger>,
     session: Weak<Session>,
     notify: Arc<Notify>,
+    /// 编码基准（与 producer 共享同一 Arc<Instant>；try_flush 判定用，参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
+    anchor: Arc<Instant>,
+    /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush（原 None）哨兵）
+    deadline: Arc<AtomicU64>,
 }
 
 impl BatchConsumer {
     /// 组装消费侧（依赖序：session 已建）；仅 session_manager.get_or_create 调用
+    /// anchor/deadline 从 producer 复制（同一 Arc，无锁共享状态）
     pub fn new(
         rx: mpsc::UnboundedReceiver<BatchItem>,
         trigger_rx: mpsc::UnboundedReceiver<Trigger>,
         session: &Arc<Session>,
         notify: Arc<Notify>,
+        producer: &BatchProducer,
     ) -> Self {
         Self {
             rx,
@@ -101,6 +93,8 @@ impl BatchConsumer {
             delay: DelayQueue::new(),
             session: Arc::downgrade(session),
             notify,
+            anchor: producer.anchor.clone(),
+            deadline: producer.deadline.clone(),
         }
     }
 }
@@ -129,8 +123,8 @@ pub fn pack_events(events: &[BatchItem]) -> String {
 }
 
 /// 触发任务：随 session_manager.get_or_create 调用（consumer 创建后立即移入）；唯一消费者（独占 &mut consumer，零锁）
-/// 持 BatchProducer clone（deadline 经 Arc 字段共享）——不阻止 session drop
-pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
+/// 不持 producer（anchor/deadline 经 consumer 内共享 Arc 访问；退出靠 notify + trigger channel 关闭兜底）——不阻止 session drop
+pub fn spawn_trigger(mut consumer: BatchConsumer) {
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -157,8 +151,8 @@ pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
                 item = consumer.delay.next(), if !consumer.delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
-                            Trigger::Forced => try_flush(&producer, &mut consumer, true).await,
-                            Trigger::At(_) => try_flush(&producer, &mut consumer, false).await,
+                            Trigger::Forced => try_flush(&mut consumer, true).await,
+                            Trigger::At(_) => try_flush(&mut consumer, false).await,
                         },
                         None => break,                      // 仅防御（队列非空时 poll_next 不返回 None）
                     }
@@ -168,20 +162,21 @@ pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
     });
 }
 
-/// 触发 flush：判定 → deadline 置 None → drain（&mut consumer.rx 零锁）→ 打包 → 经 consumer.session 弱引用升级进 agentic loop
+/// 触发 flush：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→ deadline 置 0 → drain
+/// （&mut consumer.rx 零锁）→ 打包 → 经 consumer.session 弱引用升级进 agentic loop
 /// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
-pub async fn try_flush(
-    producer: &BatchProducer,
-    consumer: &mut BatchConsumer,
-    force: bool,
-) {
-    if !(force || producer.deadline_passed()) {
+pub async fn try_flush(consumer: &mut BatchConsumer, force: bool) {
+    // 触发判定（内联 deadline_passed：0 = 无待 flush → false；now_millis = 相对 anchor 的 u64 毫秒）
+    let deadline = consumer.deadline.load(Ordering::Relaxed);
+    let now_millis = Instant::now().duration_since(*consumer.anchor).as_millis() as u64;
+    if !(force || (deadline != 0 && now_millis >= deadline)) {
         return;   // 非强制且未超 deadline：空转（等下一个到期触发）
     }
-    // 先清 deadline 再 drain：并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
+    // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
+    // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
     // （触发判定与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
     // 其 At 触发稍后空转——语义可接受
-    producer.clear_deadline();
+    consumer.deadline.store(0, Ordering::Relaxed);
     let mut items = Vec::new();
     loop {
         match consumer.rx.try_recv() {
@@ -233,7 +228,7 @@ mod tests {
         let notify = Arc::new(Notify::new());
         let (producer, rx, trigger_rx) = new_producer();
         let session = Arc::new(Session::new(&key, None, Arc::new("aid".into()), Weak::new(), producer.clone(), notify.clone()));
-        let consumer = BatchConsumer::new(rx, trigger_rx, &session, notify);
+        let consumer = BatchConsumer::new(rx, trigger_rx, &session, notify, &producer);
         (producer, consumer, session)
     }
 
@@ -265,13 +260,13 @@ mod tests {
         // 过去 deadline：anchor 编码下饱和为 1ms，sleep 保证 now_millis > 1（判定必已过）
         producer.set_deadline(Instant::now() - Duration::from_secs(1));
         tokio::time::sleep(Duration::from_millis(10)).await;
-        try_flush(&producer, &mut consumer, false).await;
+        try_flush(&mut consumer, false).await;
         assert!(consumer.rx.try_recv().is_err(), "已 drain");
         // 未超 deadline：不 drain
         let (p2, mut c2, _) = test_pair();
         p2.tx.send(ev("u1", "x")).unwrap();
         p2.set_deadline(Instant::now() + Duration::from_secs(10));
-        try_flush(&p2, &mut c2, false).await;
+        try_flush(&mut c2, false).await;
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
     }
 
@@ -301,7 +296,7 @@ mod tests {
         let at = Instant::now() - Duration::from_secs(1);
         producer.set_deadline(at);
         producer.trigger_tx.send(Trigger::At(at)).unwrap();
-        spawn_trigger(producer.clone(), consumer);
+        spawn_trigger(consumer);
         assert!(wait_flushed(&producer).await, "At 触发后任务应执行 flush（deadline 置 None）");
     }
 
@@ -312,14 +307,14 @@ mod tests {
         // 设过去 deadline 作为 flush 执行观测点（force 路径同样先 clear_deadline 再 drain）
         producer.set_deadline(Instant::now() - Duration::from_secs(1));
         producer.trigger_tx.send(Trigger::Forced).unwrap();
-        spawn_trigger(producer.clone(), consumer);
+        spawn_trigger(consumer);
         assert!(wait_flushed(&producer).await, "Forced 触发后任务应执行 flush（deadline 置 None）");
     }
 
     #[tokio::test]
     async fn spawn_trigger_exits_on_notify() {
         let (producer, consumer, session) = test_pair();
-        spawn_trigger(producer.clone(), consumer);
+        spawn_trigger(consumer);
         // 确保任务已启动并持有 trigger_rx
         tokio::time::sleep(Duration::from_millis(20)).await;
         session.notify.notify_one();
