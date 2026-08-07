@@ -231,8 +231,8 @@ pub fn spawn_trigger(mut consumer: BatchConsumer) {
                 item = consumer.delay.next(), if !consumer.delay.is_empty() => {
                     match item {
                         Some(expired) => match expired.get_ref() {
-                            Trigger::Forced => try_flush(&mut consumer, true).await,
-                            Trigger::At(_) => try_flush(&mut consumer, false).await,
+                            Trigger::Forced => consumer.try_flush(true).await,
+                            Trigger::At(_) => consumer.try_flush(false).await,
                         },
                         None => break,                      // 仅防御（队列非空时 poll_next 不返回 None）
                     }
@@ -242,42 +242,44 @@ pub fn spawn_trigger(mut consumer: BatchConsumer) {
     });
 }
 
-/// 触发 flush：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→ deadline 置 0 → drain
-/// （&mut consumer.rx 零锁）→ 打包（内联 pack_events）→ 经 consumer.session 弱引用升级进 agentic loop
+/// 触发 flush（BatchConsumer 成员函数）：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→
+/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_events）→ 经 session 弱引用升级进 agentic loop
 /// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
-pub async fn try_flush(consumer: &mut BatchConsumer, force: bool) {
-    // 触发判定（内联 deadline_passed：0 = 无待 flush → false；now_millis = 相对 anchor 的 u64 毫秒）
-    let deadline = consumer.deadline.load(Ordering::Relaxed);
-    let now_millis = Instant::now().duration_since(*consumer.anchor).as_millis() as u64;
-    if !(force || (deadline != 0 && now_millis >= deadline)) {
-        return;   // 非强制且未超 deadline：空转（等下一个到期触发）
-    }
-    // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
-    // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
-    // （触发判定与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
-    // 其 At 触发稍后空转——语义可接受
-    consumer.deadline.store(0, Ordering::Relaxed);
-    let mut items = Vec::new();
-    loop {
-        match consumer.rx.try_recv() {
-            Ok(item) => items.push(item),
-            Err(_) => break,   // Empty / Disconnected
+impl BatchConsumer {
+    pub async fn try_flush(&mut self, force: bool) {
+        // 触发判定（内联 deadline_passed：0 = 无待 flush → false；now_millis = 相对 anchor 的 u64 毫秒）
+        let deadline = self.deadline.load(Ordering::Relaxed);
+        let now_millis = Instant::now().duration_since(*self.anchor).as_millis() as u64;
+        if !(force || (deadline != 0 && now_millis >= deadline)) {
+            return;   // 非强制且未超 deadline：空转（等下一个到期触发）
         }
+        // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
+        // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
+        // （触发判定与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
+        // 其 At 触发稍后空转——语义可接受
+        self.deadline.store(0, Ordering::Relaxed);
+        let mut items = Vec::new();
+        loop {
+            match self.rx.try_recv() {
+                Ok(item) => items.push(item),
+                Err(_) => break,   // Empty / Disconnected
+            }
+        }
+        if items.is_empty() {
+            return;
+        }
+        // 任务持 session 弱引用升级会话（失败 = 会话已销毁，数据已 drain 清走，仅丢弃打包内容）
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        // 打包为一条 user 消息的 content（内联 pack_events）：逐行 "name: text"（name 为空只留 text）
+        let content = items.iter().map(|e| {
+            let name = e.incoming_message.user_name.as_str();
+            let text = extract_text(&e.incoming_message.content);
+            if name.is_empty() { text } else { format!("{}: {}", name, text) }
+        }).collect::<Vec<_>>().join("\n");
+        session.accept_batch(content).await;
     }
-    if items.is_empty() {
-        return;
-    }
-    // 任务持 consumer.session 弱引用升级会话（失败 = 会话已销毁，数据已 drain 清走，仅丢弃打包内容）
-    let Some(session) = consumer.session.upgrade() else {
-        return;
-    };
-    // 打包为一条 user 消息的 content（内联 pack_events）：逐行 "name: text"（name 为空只留 text）
-    let content = items.iter().map(|e| {
-        let name = e.incoming_message.user_name.as_str();
-        let text = extract_text(&e.incoming_message.content);
-        if name.is_empty() { text } else { format!("{}: {}", name, text) }
-    }).collect::<Vec<_>>().join("\n");
-    session.accept_batch(content).await;
 }
 
 /// 会话管理器：汇总所有绑定 channel 的 (agent_name, role_name, mode) 去重维护会话集合
@@ -418,13 +420,13 @@ mod tests {
         // 过去 deadline：anchor 编码下饱和为 1ms，sleep 保证 now_millis > 1（判定必已过）
         producer.set_deadline(Instant::now() - Duration::from_secs(1));
         tokio::time::sleep(Duration::from_millis(10)).await;
-        try_flush(&mut consumer, false).await;
+        consumer.try_flush(false).await;
         assert!(consumer.rx.try_recv().is_err(), "已 drain");
         // 未超 deadline：不 drain
         let (p2, mut c2, _) = test_pair();
         p2.tx.send(ev("u1", "x")).unwrap();
         p2.set_deadline(Instant::now() + Duration::from_secs(10));
-        try_flush(&mut c2, false).await;
+        c2.try_flush(false).await;
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
     }
 
