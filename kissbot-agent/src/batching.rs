@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn producer_consumer_new_pairs_channels() {
+    async fn producer_consumer_pairs_channels() {
         // 生产侧/消费侧同源成对；消费侧直接 &mut 取（零锁），channel 不关闭跨 flush 复用
         let (producer, mut consumer, _session) = test_pair();
         producer.tx.send(ev("u1", "a")).unwrap();

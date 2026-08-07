@@ -675,6 +675,9 @@ impl AgentCoordinator {
             let coordinator_clone = coordinator.clone();
 
             tokio::spawn(async move {
+                // 保持 TerminalHandle 强引用（client 只持 Weak<dyn Terminal>；与重连循环同生命周期，
+                // 否则循环体结束 terminal 即 drop，get_terminal().upgrade() 恒 None——消息/断线回调静默失效）
+                let _keepalive = terminal;
                 loop {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
@@ -859,10 +862,12 @@ impl AgentCoordinator {
             .or_insert_with(|| Arc::new(ChannelContext::new()))
             .clone();
         // 懒绑定：无生产侧则从会话取（正常路径在 ensure_session 创建/apply_channel_key 已绑定）
-        if ctx.producer.load_full().is_none() {
+        let mut producer = ctx.producer.load_full();
+        if producer.is_none() {
             self.bind_batch(channel_id, session).await;
+            producer = ctx.producer.load_full();
         }
-        let Some(producer) = ctx.producer.load_full() else {
+        let Some(producer) = producer else {
             warn!("enqueue_batch: channel {} 无合批生产侧", channel_id);
             return;
         };
