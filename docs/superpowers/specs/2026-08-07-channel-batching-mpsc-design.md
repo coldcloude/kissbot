@@ -7,7 +7,9 @@
 ## 生命周期与所有权
 
 - 两个 mpsc（数据、触发）与 DelayQueue **随 session 创建而创建、随 session 销毁而销毁**
-- **trigger 任务随 session spawn**（创建时启动），持 `Arc<BatchState>`（Session 的 Arc 字段）而非 `Arc<Session>`——session 可正常 drop
+- **归属拆分**：生产侧（`BatchProducer`，Session 持 Arc，全部无锁共享类型）与消费侧（`BatchConsumer`，trigger 任务独占，**随 Session::new spawn 直接 move 进任务，任务内 mut 访问，零锁**）
+- **trigger 任务随 session spawn**（Session::new 中，consumer 创建后立即移入任务）；任务持 `Arc<BatchProducer>`（非 `Arc<Session>`）——session 可正常 drop
+- **升级槽**：任务 flush 时经 `BatchProducer` 上的 `OnceLock<Weak<Session>>` / `OnceLock<Weak<AgentCoordinator>>` 升级（ensure_session 创建会话后设置一次；coordinator 为进程级单例）——这是全结构唯一的一处同步（设置一次）
 - **Notify 控制任务退出**：`Session::drop` 调 `notify.notify_one()`（permit 语义：无等待者时存 permit，任务错过唤醒后下一轮 `notified()` 立即完成）→ 任务收到通知**直接 break 退出**（无需 alive 标志）
 
 ## 结构
@@ -22,18 +24,31 @@ pub enum Trigger {
     Forced,        // 强制：立即 flush（上下文重置用）
 }
 
-/// 会话合批状态（Session 的一个 Arc 字段；trigger 任务持此 Arc）
-pub struct BatchState {
+/// 生产侧：Session 持有（Arc）；全部无锁共享类型（mpsc send &self / ArcSwapOption / Notify / OnceLock）
+pub struct BatchProducer {
     pub tx: mpsc::UnboundedSender<BatchItem>,                     // 数据发送端（channel 绑定会话时 clone）
-    rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<BatchItem>>>,   // 数据接收端（消费侧）
     pub trigger_tx: mpsc::UnboundedSender<Trigger>,               // 触发器发送端（channel/coordinator clone）
-    trigger_rx: mpsc::UnboundedReceiver<Trigger>,                 // 触发器接收端（trigger 任务持有）
-    delay: DelayQueue<Trigger>,                                   // 定时触发队列（trigger 任务持有）
     pub deadline: ArcSwapOption<Instant>,                         // 截止时间（无锁：推数据时 store，try_flush 时 load）
-    notify: Arc<Notify>,                                          // 任务退出唤醒（session 销毁 notify_one）
+    pub notify: Arc<Notify>,                                      // 任务退出唤醒（session 销毁 notify_one）
+    /// 任务升级槽（ensure_session 创建会话后设置一次；coordinator 为进程级单例）
+    pub coordinator: Arc<OnceLock<Weak<crate::coordinator::AgentCoordinator>>>,
+    /// 任务升级槽（ensure_session 设置一次：Arc::downgrade(&session)）
+    pub session: Arc<OnceLock<Weak<Session>>>,
 }
 
-// Session: batch: Arc<BatchState>；Session::new 里创建 BatchState 并 spawn trigger 任务
+/// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
+pub struct BatchConsumer {
+    rx: mpsc::UnboundedReceiver<BatchItem>,
+    trigger_rx: mpsc::UnboundedReceiver<Trigger>,
+    delay: DelayQueue<Trigger>,
+}
+
+impl BatchProducer {
+    /// 创建 channel 对 + DelayQueue，返回 (生产侧, 消费侧)
+    pub fn new() -> (Arc<Self>, BatchConsumer);
+}
+
+// Session: batch: Arc<BatchProducer>；Session::new 里 BatchProducer::new() 建两半，consumer 立即移入 spawn 的任务
 // Session Drop: batch.notify.notify_one()
 // ChannelContext: batch.tx / batch.trigger_tx（绑定会话时取 clone，解绑清空）
 ```
@@ -50,55 +65,59 @@ batch.deadline.store(Some(Arc::new(now + interval)))      // 更新截止（防�
 batch.trigger_tx.send(Trigger::At(now + interval))        // 直接发送触发时间（绝对），send 非阻塞
 ```
 
-### ② trigger 任务（随 session 创建，唯一消费者；拥有 trigger_rx + DelayQueue 所有权）
+### ② trigger 任务（随 session 创建 spawn，唯一消费者；独占 BatchConsumer——rx/trigger_rx/delay 直接 mut 访问，零锁）
 
 ```
 loop {
     tokio::select! {
-        _ = notify.notified() => break,                    // session 销毁（notify_one）→ 直接退出
-        t = trigger_rx.recv() => {
+        _ = producer.notify.notified() => break,                // session 销毁（notify_one）→ 直接退出
+        t = consumer.trigger_rx.recv() => {
             match t {
-                Some(At(at)) => delay.insert(Trigger::At(at), at - now),
-                Some(Forced) => delay.insert(Trigger::Forced, ZERO),
-                None         => break,                     // trigger channel 关闭
+                Some(At(at)) => consumer.delay.insert(Trigger::At(at), at - now),
+                Some(Forced) => consumer.delay.insert(Trigger::Forced, ZERO),
+                None         => break,                          // trigger channel 关闭
             }
         }
-        item = delay.next(), if !delay.is_empty() => {
+        item = poll_fn(|cx| consumer.delay.poll_expired(cx)), if !consumer.delay.is_empty() => {
             // 守卫：队列空时禁用该分支——poll_expired 在空队列返回 Poll::Ready(None)（而非 Pending），
             // 无守卫会在 spawn 首轮（队列空）命中 None => break 使任务立即退出（合批失效）
             match item {
-                Some(Forced) => try_flush(force=true),
-                Some(At(_))  => try_flush(force=false),
-                None         => break,                     // 仅防御（队列非空时 poll_expired 不返回 None）
+                Some(Forced) => try_flush(producer, &mut consumer, force=true),
+                Some(At(_))  => try_flush(producer, &mut consumer, force=false),
+                None         => break,                          // 仅防御（队列非空时 poll_expired 不返回 None）
             }
         }
     }
 }
 ```
 
-### ③ try_flush(force)（唯一调用方 = trigger 任务 → flush 天然串行）
+### ③ try_flush(producer, consumer, force)（唯一调用方 = trigger 任务 → flush 天然串行；消费侧零锁）
 
 ```
-d = deadline.load_full();                                  // Option<Arc<Instant>>
+d = producer.deadline.load_full();                          // Option<Arc<Instant>>
 if !force && (d.is_none() || now < **d) { return; }        // 非强制且未超 deadline：空转（等下一个到期触发）
-deadline.store(None);                                       // 先清 deadline 再 drain：避免并发 enqueue 新截止被清（drain 期间到达的消息并入本次 flush，其 At 稍后空转）
-items = drain rx（try_recv 循环全部；channel 不关闭，跨 flush 复用）;
+producer.deadline.store(None);                              // 先清 deadline 再 drain：避免并发 enqueue 新截止被清
+items = drain consumer.rx（try_recv 循环全部；&mut 直取，零锁；channel 不关闭，跨 flush 复用）;
 if items.is_empty() { return; }
-打包：逐条 IncomingMessageEvent → user_name + extract_text(content) → "name: text" 行 → run_agentic_loop
+打包：逐条 IncomingMessageEvent → user_name + extract_text(content) → "name: text" 行
+升级 producer.session + producer.coordinator（OnceLock）；失败则丢弃打包内容（会话已销毁）
+成功 → run_agentic_loop
 ```
 
 ### ④ 上下文重置 → 强制 flush
 
-`reset_context` 末尾 `batch.trigger_tx.send(Trigger::Forced)` → 任务插入 delay(ZERO) → 立即弹出 → `try_flush(force=true)` 直接 drain（不检查 deadline），重置期间消息即刻并入新上下文。
+`reset_context` 末尾 `session.batch.trigger_tx.send(Trigger::Forced)` → 任务插入 delay(ZERO) → 立即弹出 → `try_flush(force=true)` 直接 drain（不检查 deadline），重置期间消息即刻并入新上下文。
 
 ## 关键性质
 
 - **串行**：唯一 trigger 任务逐项处理（insert / try_flush），无 armed/CAS/resetting
-- **所有权清晰**：trigger_rx + DelayQueue 归任务（`delay.next()` 需 &mut，无 Arc<Mutex> 包裹）；生产者（channel）只碰两个 tx（send 非阻塞）
+- **消费侧零锁**：rx/trigger_rx/DelayQueue 归任务独占（move 进任务），`try_recv`/`recv`/`poll_expired` 直接 &mut——无 Mutex<Option> 移交、无每次 drain 锁
+- **生产侧零锁**：mpsc send &self / ArcSwapOption / Notify / OnceLock——全是线程安全共享类型
+- **唯一同步 = 升级槽设置一次**：`BatchProducer` 上的 `OnceLock<Weak<Session>>` / `OnceLock<Weak<Coordinator>>`，ensure_session 创建会话后设置；消息必须先过 ensure_session 才路由进队列，故 flush 时槽必然已设置
 - **无逐消息任务、无 re-arm**：触发时间即消息（At）；早期触发（被后续消息延长）弹出时 `now < deadline` 空转，延长后的新触发已由 channel 的 send 进 delay
 - **deadline 无锁**：ArcSwapOption<Instant>——多写（各 channel 推数据）+ 每次触发读，原子指针交换无锁竞争
 - **退出单机制**：Session::drop → notify_one()（permit 语义）→ 任务 notified() 直接 break；无 alive 标志
-- **生命周期无环**：任务持 Arc<BatchState> 不持 Session；任务退出后 BatchState 随引用释放；trigger_tx 随 BatchState drop，recv() 返回 None 双保险
+- **生命周期无环**：任务持 Arc<BatchProducer> 不持 Session；session 可正常 drop（Drop 通知任务）；任务退出后 BatchProducer 随引用释放
 - **多 channel 共享会话**：同源 tx/trigger_tx clone，任一推数据/触发都进同一队列；任一推数据重置 session 级 deadline
 
 ## 边界
@@ -121,8 +140,8 @@ if items.is_empty() { return; }
 
 ## 受影响文件
 
-- `kissbot-agent/src/batching.rs`（重构：BatchState/Trigger/try_flush/trigger 任务）
-- `kissbot-agent/src/session_manager.rs`（Session.batch: Arc<BatchState>；Session::new spawn 任务；Drop 通知；删除 batch_gen/resetting 残留）
-- `kissbot-agent/src/coordinator.rs`（enqueue_batch 改为 send+store+send；ChannelContext 持 tx/trigger_tx；reset_context 末尾 send Forced；删除 flush_after_reset/resetting 相关）
+- `kissbot-agent/src/batching.rs`（BatchState 拆为 BatchProducer/BatchConsumer；spawn_trigger(producer, consumer) 移入任务；try_flush(producer, consumer) 零锁 drain；升级槽）
+- `kissbot-agent/src/session_manager.rs`（Session.batch: Arc<BatchProducer>；Session::new 建两半并 spawn 任务；Drop 通知）
+- `kissbot-agent/src/coordinator.rs`（enqueue_batch 用 producer 字段——字段名不变仅类型换名；ensure_session 设置升级槽；reset_context 末尾 send Forced；删除 spawn_trigger 调用点——移至 Session::new）
 - `kissbot-agent/Cargo.toml`（+tokio-util）
 - 相关测试、组件设计文档、`script/README.md` 验证清单同步
