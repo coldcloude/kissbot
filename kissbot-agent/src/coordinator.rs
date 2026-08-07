@@ -54,6 +54,9 @@ struct ChannelContext {
     agent_id: ArcSwapOption<String>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
+    /// 本 channel 的 ChannelClient（connect_channels 时绑定；消息/回复路径从本字段取 client，
+    /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
+    client: ArcSwapOption<ChannelClient>,
     /// 合批生产侧（绑定会话时从 session.batch_producer 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
     /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
     producer: ArcSwapOption<crate::session_manager::BatchProducer>,
@@ -65,8 +68,19 @@ impl ChannelContext {
             pending_outgoing: DashMap::new(),
             agent_id: ArcSwapOption::new(None),
             mode: ArcSwap::from_pointee(Mode::Role),
+            client: ArcSwapOption::new(None),
             producer: ArcSwapOption::new(None),
         }
+    }
+
+    /// 绑定 channel client（connect_channels 时绑定；每次重连循环启动更新）
+    fn bind_client(&self, client: Arc<ChannelClient>) {
+        self.client.store(Some(client));
+    }
+
+    /// 取 channel client（未连接/未绑定为 None）
+    fn client(&self) -> Option<Arc<ChannelClient>> {
+        self.client.load_full()
     }
 
     fn add_pending(&self, msg_id: String) {
@@ -115,8 +129,6 @@ pub struct AgentCoordinator {
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
     valid_default: ArcSwap<Option<ProviderModel>>,
-    /// 按 agent 内部 channel_id 索引的 ChannelClient
-    channel_clients: Arc<DashMap<String, Arc<ChannelClient>>>,
     /// 每 channel 运行时上下文（无锁：DashMap pending + ArcSwapOption agent_id）
     channel_contexts: Arc<DashMap<String, Arc<ChannelContext>>>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
@@ -147,7 +159,6 @@ impl AgentCoordinator {
             memory_store_client,
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
-            channel_clients: Arc::new(DashMap::new()),
             channel_contexts: Arc::new(DashMap::new()),
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
@@ -670,9 +681,14 @@ impl AgentCoordinator {
             // 断线通知
             let notify = Arc::new(tokio::sync::Notify::new());
             coordinator.disconnect_notify.insert(channel_id.clone(), notify.clone());
-            coordinator.channel_clients.insert(channel_id.clone(), client);
+            // ChannelClient 归入该 channel 的 ChannelContext（懒建后 bind；消息/回复路径从 ctx 取 client）
+            let ctx = coordinator.channel_contexts
+                .entry(channel_id.clone())
+                .or_insert_with(|| Arc::new(ChannelContext::new()))
+                .clone();
+            ctx.bind_client(client.clone());
 
-            let client_clone = coordinator.channel_clients.get(&channel_id).unwrap().clone();
+            let client_clone = client;
             let api_key = api_key.clone();
             // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 coordinator 引用
             let coordinator_clone = coordinator.clone();
@@ -883,7 +899,7 @@ impl AgentCoordinator {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: &Arc<IncomingMessageEvent>, content: String) {
-        let Some(client) = self.channel_clients.get(channel_id) else {
+        let Some(client) = self.channel_contexts.get(channel_id).and_then(|ctx| ctx.client()) else {
             warn!("send_admin_reply: 未找到 channel client: {}", channel_id);
             return;
         };
@@ -1194,7 +1210,7 @@ impl AgentCoordinator {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     async fn send_outgoing(&self, out_channel: &OutChannel, content: String) {
-        let Some(client) = self.channel_clients.get(out_channel.channel_id.as_str()) else {
+        let Some(client) = self.channel_contexts.get(out_channel.channel_id.as_str()).and_then(|ctx| ctx.client()) else {
             warn!("send_outgoing: 未找到 channel client: {}", out_channel.channel_id);
             return;
         };
