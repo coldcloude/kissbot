@@ -293,28 +293,28 @@ impl MockTerminal {
 
 #[async_trait]
 impl Terminal for MockTerminal {
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessageEvent>) {
+    async fn incoming_message(self: Arc<Self>, _id: &str, message: Arc<IncomingMessageEvent>) {
         let _ = self.incoming.send(message);
     }
 
-    async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn join_group(self: Arc<Self>, _id: &str, notification: Arc<GroupChangeNotification>) {
         let _ = self.joins.send(notification);
     }
 
-    async fn leave_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(self: Arc<Self>, _id: &str, notification: Arc<GroupChangeNotification>) {
         let _ = self.leaves.send(notification);
     }
 
-    async fn user_removed(&self, _id: &str, notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(self: Arc<Self>, _id: &str, notification: Arc<UserRemoveNotification>) {
         let _ = self.removals.send(notification);
     }
 
-    async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
+    async fn download_chunk(self: Arc<Self>, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
         let _ = self.chunks.send((info, pos, data));
         Ok(())
     }
 
-    async fn closed(&self, _id: &str) {
+    async fn closed(self: Arc<Self>, _id: &str) {
         let _ = self.closed_tx.send(());
     }
 }

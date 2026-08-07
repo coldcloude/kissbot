@@ -44,7 +44,8 @@ const MAX_TOOL_ROUNDS: usize = 10;
 // 上下文消息数量上限（溢出触发重置/压缩）已废弃硬编码常量 MAX_CONTEXT_MESSAGES——
 // 阈值统一由会话模型 effective.max_context_messages（provider/model 配置合成）决定，见 run_agentic_loop 溢出检查。
 
-/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id
+/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id；
+/// client/producer 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
 /// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
 /// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
 struct ChannelContext {
