@@ -172,7 +172,7 @@ impl CommandRouter {
     pub async fn execute(
         command: &AdminCommand,
         config: &ConfigManager,
-        coordinator: &AgentCoordinator,
+        coordinator: &Arc<AgentCoordinator>,
         channel_id: &str,
     ) -> Result<(String, CommandEffect)> {
         match command {
