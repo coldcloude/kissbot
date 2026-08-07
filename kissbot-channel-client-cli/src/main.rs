@@ -108,25 +108,25 @@ impl CliTerminal {
 
 #[async_trait]
 impl Terminal for CliTerminal {
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessageEvent>) {
+    async fn incoming_message(self: Arc<Self>, _id: &str, message: Arc<IncomingMessageEvent>) {
         // 打印 content 原始 JSON 串
         let json = serde_json::to_string(&message.incoming_message.content).unwrap();
         println!("<< [{}:{}] {}", message.incoming_message.user_id, message.incoming_message.group_id, json);
     }
 
-    async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn join_group(self: Arc<Self>, _id: &str, notification: Arc<GroupChangeNotification>) {
         println!("<< join group: {} @ {}", notification.group_id, notification.messenger_id);
     }
 
-    async fn leave_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(self: Arc<Self>, _id: &str, notification: Arc<GroupChangeNotification>) {
         println!("<< leave group: {} @ {}", notification.group_id, notification.messenger_id);
     }
 
-    async fn user_removed(&self, _id: &str, notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(self: Arc<Self>, _id: &str, notification: Arc<UserRemoveNotification>) {
         println!("<< user removed: {} @ {}", notification.user_id, notification.messenger_id);
     }
 
-    async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()> {
+    async fn download_chunk(self: Arc<Self>, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()> {
         use std::io::Write;
         std::fs::create_dir_all(&self.download_dir)?;
         let path = format!("{}/{}", self.download_dir, info.info.file_name);
@@ -138,7 +138,7 @@ impl Terminal for CliTerminal {
         Ok(())
     }
 
-    async fn closed(&self, _id: &str) {
+    async fn closed(self: Arc<Self>, _id: &str) {
         println!("!! connection closed");
         std::process::exit(0);
     }
