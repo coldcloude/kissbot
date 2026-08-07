@@ -293,7 +293,7 @@ impl CommandRouter {
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
-                coordinator.set_session_model(channel_id, pm.clone()).await?;
+                coordinator.clone().set_session_model(channel_id, pm.clone()).await?;
                 if *set_default {
                     config.set_default_model(pm.clone()).await?;
                 }

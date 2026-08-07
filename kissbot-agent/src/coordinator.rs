@@ -162,7 +162,7 @@ impl AgentCoordinator {
                 while let Some(change) = command_rx.recv().await {
                     match change {
                         ConfigChange::ApplyKey { channel_id, new_key, agent_id, done } => {
-                            let rst = coordinator.apply_channel_key(&channel_id, &new_key, agent_id).await;
+                            let rst = coordinator.clone().apply_channel_key(&channel_id, &new_key, agent_id).await;
                             let _ = done.send(rst);
                         }
                     }
@@ -198,11 +198,11 @@ impl AgentCoordinator {
         for (_, ch) in config.channels().await {
             coordinator.bind_channel_runtime(&ch.channel_id).await;
             let key = coordinator.session_key_for(&ch);
-            coordinator.ensure_session(&key, &ch.channel_id).await;
+            coordinator.clone().ensure_session(&key, &ch.channel_id).await;
         }
 
-        // 连接所有 enabled 的 channel
-        coordinator.connect_channels().await;
+        // 连接所有 enabled 的 channel（connect_channels 取 Arc 值，clone 保留 new 末尾返回用）
+        coordinator.clone().connect_channels().await;
 
         info!("AgentCoordinator 初始化完成");
         Ok(coordinator)
@@ -311,7 +311,7 @@ impl AgentCoordinator {
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
     /// channel_id 为触发会话创建/重置的来源 channel（新建会话的 agent_id 取自该 channel 运行态绑定）
-    async fn ensure_session(self: &Arc<Self>, key: &SessionKey, channel_id: &str) -> (Arc<Session>, bool) {
+    async fn ensure_session(self: Arc<Self>, key: &SessionKey, channel_id: &str) -> (Arc<Session>, bool) {
         // valid_default.load_full() 返回 Arc<Option<ProviderModel>>，解引用克隆得 Option
         let model = (*self.valid_default.load_full()).clone();
         // 会话状态保存 agent_id：新建会话从来源 channel 运行态绑定取得（原子写入 get_or_create）
@@ -376,13 +376,13 @@ impl AgentCoordinator {
     }
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
-    async fn relocate_channel(self: &Arc<Self>, channel_id: &str) {
+    async fn relocate_channel(self: Arc<Self>, channel_id: &str) {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取该 channel 运行态绑定）
         if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
-            self.ensure_session(&key, channel_id).await;
+            self.clone().ensure_session(&key, channel_id).await;
         }
     }
 
@@ -586,7 +586,7 @@ impl AgentCoordinator {
 
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
-    async fn apply_channel_key(self: &Arc<Self>, channel_id: &str, new_key: &SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
+    async fn apply_channel_key(self: Arc<Self>, channel_id: &str, new_key: &SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
         self.config.update_channel(channel_id, |c| {
             c.agent_name = Arc::new(new_key.agent_name.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
@@ -595,7 +595,7 @@ impl AgentCoordinator {
         if let Some(agent_id) = agent_id {
             self.set_channel_runtime(channel_id, agent_id).await;
         }
-        self.relocate_channel(channel_id).await;
+        self.clone().relocate_channel(channel_id).await;
         // 会话重定位后刷新合批生产侧（channel 绑定新的会话三元组，created 会话已由 ensure_session 绑定）
         if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
@@ -607,7 +607,7 @@ impl AgentCoordinator {
     }
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
-    pub async fn set_session_model(self: &Arc<Self>, channel_id: &str, pm: ProviderModel) -> Result<()> {
+    pub async fn set_session_model(self: Arc<Self>, channel_id: &str, pm: ProviderModel) -> Result<()> {
         let Some(ch) = self.config.channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
@@ -619,7 +619,7 @@ impl AgentCoordinator {
             return Err(Error::ModelProviderNotSupported(format!(
                 "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
         }
-        let (session, _) = self.ensure_session(&key, channel_id).await;
+        let (session, _) = self.clone().ensure_session(&key, channel_id).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
@@ -647,10 +647,15 @@ impl AgentCoordinator {
 
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
     /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
-    async fn connect_channels(self: &Arc<Self>) {
+    async fn connect_channels(self: Arc<Self>) {
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         let coordinator = self.clone();
+
+        // Terminal 即 Coordinator 自身（全局唯一）：不再新建 TerminalHandle 适配器，
+        // 循环外建一次 Terminal 视图，所有 channel client 的 Weak<dyn Terminal> 指向同一目标；
+        // 强引用由 coordinator 其余 Arc（command_rx 循环等）保活——无需任务内 _keepalive
+        let terminal: Arc<dyn Terminal> = coordinator.clone();
 
         // 遍历 NexusRepo 中所有 channel，enabled 才连接
         for (_, ch) in self.config.channels().await {
@@ -660,8 +665,6 @@ impl AgentCoordinator {
             let channel_id = ch.channel_id.to_string();
             let ws_url = ch.ws_url.to_string();
 
-            // Terminal trait 回调限 &self receiver，用 TerminalHandle 适配器包 Arc<Self>（Arc 链方法入口）
-            let terminal: Arc<dyn Terminal> = Arc::new(TerminalHandle(coordinator.clone()));
             let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
 
             // 断线通知
@@ -675,9 +678,6 @@ impl AgentCoordinator {
             let coordinator_clone = coordinator.clone();
 
             tokio::spawn(async move {
-                // 保持 TerminalHandle 强引用（client 只持 Weak<dyn Terminal>；与重连循环同生命周期，
-                // 否则循环体结束 terminal 即 drop，get_terminal().upgrade() 恒 None——消息/断线回调静默失效）
-                let _keepalive = terminal;
                 loop {
                     match client_clone.connect(&ws_url, &api_key).await {
                         Ok(()) => {
@@ -716,46 +716,15 @@ impl AgentCoordinator {
     }
 }
 
-// ==================== Terminal 回调（TerminalHandle 适配器 + 固有方法） ====================
+// ==================== Terminal 回调（AgentCoordinator 直接实现；固有方法） ====================
 
-/// Terminal trait 适配器：ChannelClient 持 Weak<dyn Terminal> 回调（trait 方法 receiver 限 &self，
-/// 无法用 self: &Arc<Self>——E0053/E0038）；适配器持 Arc<AgentCoordinator>，
-/// 使消息路径可调用 coordinator 的 self: &Arc<Self> 方法（构造会话时降级自身弱引用）
-struct TerminalHandle(Arc<AgentCoordinator>);
-
+/// Terminal 即 Coordinator 自身（全局唯一）：trait receiver 为 self: Arc<Self>（by-value Arc），
+/// 方法内可直接持 Arc 调用 Arc 链方法（构造会话降级自身弱引用）——不再需要 TerminalHandle 适配器；
+/// ChannelClient 持 Weak<dyn Terminal>，connect_channels 中全部 client 弱引用指向同一 coordinator
 #[async_trait]
-impl Terminal for TerminalHandle {
+impl Terminal for AgentCoordinator {
     /// 收到上行消息（event 含接收方 recipient_user_id）
-    async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
-        self.0.incoming_message(channel_id, event).await;
-    }
-
-    async fn join_group(&self, id: &str, notification: Arc<GroupChangeNotification>) {
-        self.0.join_group(id, notification).await;
-    }
-
-    async fn leave_group(&self, id: &str, notification: Arc<GroupChangeNotification>) {
-        self.0.leave_group(id, notification).await;
-    }
-
-    async fn user_removed(&self, id: &str, notification: Arc<UserRemoveNotification>) {
-        self.0.user_removed(id, notification).await;
-    }
-
-    async fn download_chunk(&self, id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
-        self.0.download_chunk(id, info, pos, data).await
-    }
-
-    async fn closed(&self, id: &str) {
-        self.0.closed(id).await;
-    }
-}
-
-// ==================== Terminal 固有方法（适配器委托入口） ====================
-
-impl AgentCoordinator {
-    /// 收到上行消息（event 含接收方 recipient_user_id；TerminalHandle 委托入口）
-    async fn incoming_message(self: &Arc<Self>, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+    async fn incoming_message(self: Arc<Self>, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
         let Some(ch) = self.config.channel(channel_id).await else { return; };
 
@@ -785,27 +754,27 @@ impl AgentCoordinator {
         }).await;
 
         // 4. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
-        self.handle_incoming(channel_id, ch, event).await;
+        self.clone().handle_incoming(channel_id, ch, event).await;
     }
 
-    async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
+    async fn join_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
         // 群组加入事件，当前暂不处理
     }
 
-    async fn leave_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
         // 群组离开事件，当前暂不处理
     }
 
-    async fn user_removed(&self, _id: &str, _notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(self: Arc<Self>, _id: &str, _notification: Arc<UserRemoveNotification>) {
         // 用户删除事件，当前暂不处理
     }
 
-    async fn download_chunk(&self, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
+    async fn download_chunk(self: Arc<Self>, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
         // 当前未使用附件下载
         Ok(())
     }
 
-    async fn closed(&self, id: &str) {
+    async fn closed(self: Arc<Self>, id: &str) {
         info!("channel 连接关闭: {}，准备重连", id);
         // 通知重连循环
         if let Some(notify) = self.disconnect_notify.get(id) {
@@ -818,7 +787,7 @@ impl AgentCoordinator {
 
 impl AgentCoordinator {
     async fn handle_incoming(
-        self: &Arc<Self>,
+        self: Arc<Self>,
         channel_id: &str,
         ch: Arc<crate::config_manager::ChannelConfig>,
         event: Arc<IncomingMessageEvent>,
@@ -836,7 +805,7 @@ impl AgentCoordinator {
         // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, channel_id, &messenger_id, &user_id).await {
-                self.handle_admin_command(channel_id, &event, &content_text).await;
+                self.clone().handle_admin_command(channel_id, &event, &content_text).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
@@ -847,7 +816,7 @@ impl AgentCoordinator {
             return;
         };
         let key = self.session_key_for(&ch);
-        let (session, _) = self.ensure_session(&key, channel_id).await;
+        let (session, _) = self.clone().ensure_session(&key, channel_id).await;
         self.enqueue_batch(channel_id, &session, event).await;
     }
 
@@ -878,14 +847,14 @@ impl AgentCoordinator {
     }
 
     async fn handle_admin_command(
-        self: &Arc<Self>,
+        self: Arc<Self>,
         channel_id: &str,
         event: &Arc<IncomingMessageEvent>,
         content: &str,
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, &self.config, self, channel_id).await {
+                match CommandRouter::execute(&cmd, &self.config, &self, channel_id).await {
                     Ok((reply, effect)) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
