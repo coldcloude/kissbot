@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use kissbot_api::memory::ChannelCombo;
 use serde_json::json;
 
 use crate::config_manager::ConfigManager;
 use crate::context_config::EffectiveContextConfig;
 use crate::types::{Message, Mode, Result, Error};
-use tracing::warn;
 
 /// 记忆消息（channel record 的最小视图：name + content，id 类不保留）
 #[derive(Debug, Clone)]
@@ -119,41 +117,11 @@ impl MemoryReader {
         Ok(events)
     }
 
-    /// 组合查询：POST {store}/store/query/combos，返回 (agent, role) 时间范围内出现的 channel 组合
-    async fn query_combos(&self, agent_id: &str, role_name: &str, start: &str, end: &str) -> Result<Vec<ChannelCombo>> {
-        let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
-        let url = format!("{}/store/query/combos", store_url.trim_end_matches('/'));
-        let body = json!({
-            "agent_id": agent_id,
-            "role_name": role_name,
-            "start_time": start,
-            "end_time": end,
-        });
-        let resp = self.client.post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::MemoryStoreError(format!("组合查询失败: {}", e)))?;
-        if !resp.status().is_success() {
-            return Err(Error::MemoryStoreError(format!("组合查询返回 {}", resp.status())));
-        }
-        let data: serde_json::Value = resp.json().await?;
-        // 响应 data 非预期结构时记日志（降级为空组合，避免静默丢组合）
-        match serde_json::from_value(data["data"].clone()) {
-            Ok(combos) => Ok(combos),
-            Err(e) => {
-                warn!("组合查询响应解析失败: {}", e);
-                Ok(Vec::new())
-            }
-        }
-    }
-
-    /// 组合内精确查询：POST {store}/store/query/channel（messenger/user/group 精确 key，取该时间全部）
+    /// 单次全史查询：POST {store}/store/query/channel（QueryRequest，所有 channel 记录同文件，取该时间全部）
     async fn query_channel(
         &self,
         agent_id: &str,
         role_name: &str,
-        combo: &ChannelCombo,
         start_time: &str,
         end_time: &str,
     ) -> Result<Vec<MemoryMsg>> {
@@ -162,9 +130,6 @@ impl MemoryReader {
         let body = json!({
             "agent_id": agent_id,
             "role_name": role_name,
-            "messenger_id": combo.messenger_id,
-            "user_id": combo.user_id,
-            "group_id": combo.group_id,
             "start_time": start_time,
             "end_time": end_time,
         });
@@ -203,7 +168,7 @@ impl MemoryReader {
         out
     }
 
-    /// role 模式记忆打包：组合查询 → 每组合全史查询合并 → 并集算法 → 升序结果
+    /// role 模式记忆打包：单次全史查询 → 并集算法 → 升序结果（channel 记录已合并为单文件，无需组合枚举）
     pub async fn read_recent_for_context(
         &self,
         agent_id: &str,
@@ -216,21 +181,10 @@ impl MemoryReader {
             .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "2000-01-01 00:00:00".to_string());
 
-        // 组合：按全史范围取（组合由文件枚举，范围覆盖即可）
-        let combos = self.query_combos(agent_id, role_name, "2000-01-01 00:00:00", &now).await?;
+        // 单次全史查询（所有 channel 记录同文件，范围覆盖即可）
+        let msgs = self.query_channel(agent_id, role_name, "2000-01-01 00:00:00", &now).await?;
 
-        // (1) 每组合全史查询，合并升序
-        let mut merged: Vec<MemoryMsg> = Vec::new();
-        for combo in &combos {
-            match self.query_channel(agent_id, role_name, combo, "2000-01-01 00:00:00", &now).await {
-                Ok(msgs) => merged.extend(msgs),
-                Err(e) => warn!("组合查询失败 messenger={} user={} group={}: {}",
-                    combo.messenger_id, combo.user_id, combo.group_id, e),
-            }
-        }
-        merged.sort_by(|a, b| a.time.cmp(&b.time));
-
-        Ok(recent_memory(&merged, cfg.memory_count, &start))
+        Ok(recent_memory(&msgs, cfg.memory_count, &start))
     }
 }
 
