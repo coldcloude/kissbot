@@ -80,17 +80,6 @@ pub struct ToolResultRequests {
 // ========== Query requests ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryChannelRequest {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
-    pub start_time: Arc<String>,
-    pub end_time: Arc<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
@@ -98,20 +87,17 @@ pub struct QueryRequest {
     pub end_time: Arc<String>,
 }
 
-/// channel 记录文件组合（messenger + user + group），用于按组合精确查询
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct ChannelCombo {
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
-}
-
-
 //===================== Record in file ======================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
+    /// 发送者身份（区分对话方向）
     pub user_id: Arc<String>,
+    /// agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self）；
+    /// 注意与 is_self 不同：其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0
+    pub self_user_id: Arc<String>,
+    pub messenger_id: Arc<String>,
+    pub group_id: Arc<String>,
     pub is_self: usize,
     pub messenger_name: Arc<String>,
     pub user_name: Arc<String>,
@@ -190,16 +176,6 @@ impl_record!(
 );
 
 //===================== Record file key ======================
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct ChannelRecordKey {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
-    pub date: Arc<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct RecordKey {
@@ -373,22 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_query_channel_request() {
-        let obj = QueryChannelRequest {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("r1".to_string()),
-            messenger_id: Arc::new("m1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            start_time: Arc::new("2026-01-01".to_string()),
-            end_time: Arc::new("2026-06-01".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: QueryChannelRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.start_time, "2026-01-01");
-    }
-
-    #[test]
     fn test_serde_query_request() {
         let obj = QueryRequest {
             agent_id: Arc::new("a1".to_string()),
@@ -401,27 +361,15 @@ mod tests {
         assert_eq!(*deserialized.agent_id, "a1");
     }
 
-    #[test]
-    fn test_serde_channel_combo() {
-        let obj = ChannelCombo {
-            messenger_id: Arc::new("web".to_string()),
-            user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        assert_eq!(json["messenger_id"], "web");
-        assert_eq!(json["user_id"], "self1");
-        assert_eq!(json["group_id"], "g1");
-        let back: ChannelCombo = serde_json::from_value(json).unwrap();
-        assert_eq!(back, obj);
-    }
-
     // ========== Record trait ==========
 
     #[test]
     fn test_record_impl() {
         let mut channel = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
@@ -450,6 +398,9 @@ mod tests {
     fn test_record_cmp_time() {
         let r1 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
@@ -460,6 +411,9 @@ mod tests {
         };
         let r2 = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
@@ -485,6 +439,9 @@ mod tests {
     fn test_serde_channel_record() {
         let obj = ChannelRecord {
             user_id: Arc::new("u1".to_string()),
+            self_user_id: Arc::new("self1".to_string()),
+            messenger_id: Arc::new("telegram".to_string()),
+            group_id: Arc::new("g1".to_string()),
             is_self: 0,
             messenger_name: Arc::new("M1Name".to_string()),
             user_name: Arc::new("U1Name".to_string()),
@@ -496,6 +453,9 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.self_user_id, "self1");
+        assert_eq!(*deserialized.messenger_id, "telegram");
+        assert_eq!(*deserialized.group_id, "g1");
         assert_eq!(*deserialized.messenger_name, "M1Name");
         assert_eq!(*deserialized.user_name, "U1Name");
         assert_eq!(*deserialized.group_name, "G1Name");
@@ -547,23 +507,6 @@ mod tests {
     }
 
     // ========== Key serde ==========
-
-    #[test]
-    fn test_serde_channel_record_key() {
-        let obj = ChannelRecordKey {
-            agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            date: Arc::new("2026-06-24".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ChannelRecordKey = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.messenger_id, "telegram");
-        assert_eq!(*deserialized.date, "2026-06-24");
-    }
 
     #[test]
     fn test_serde_record_key() {
