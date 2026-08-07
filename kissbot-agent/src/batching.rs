@@ -128,11 +128,6 @@ pub fn pack_events(events: &[BatchItem]) -> String {
     }).collect::<Vec<_>>().join("\n")
 }
 
-/// 触发判定：非强制且未超 deadline → 不 flush；强制 → flush
-pub fn flush_ready(producer: &BatchProducer, force: bool) -> bool {
-    force || producer.deadline_passed()
-}
-
 /// 触发任务：随 session_manager.get_or_create 调用（consumer 创建后立即移入）；唯一消费者（独占 &mut consumer，零锁）
 /// 持 BatchProducer clone（deadline 经 Arc 字段共享）——不阻止 session drop
 pub fn spawn_trigger(producer: BatchProducer, mut consumer: BatchConsumer) {
@@ -180,11 +175,11 @@ pub async fn try_flush(
     consumer: &mut BatchConsumer,
     force: bool,
 ) {
-    if !flush_ready(producer, force) {
+    if !(force || producer.deadline_passed()) {
         return;   // 非强制且未超 deadline：空转（等下一个到期触发）
     }
     // 先清 deadline 再 drain：并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
-    // （flush_ready 与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
+    // （触发判定与 clear 之间无 await，不插队）；drain 期间到达的消息并入本次 flush，
     // 其 At 触发稍后空转——语义可接受
     producer.clear_deadline();
     let mut items = Vec::new();
@@ -280,27 +275,10 @@ mod tests {
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
     }
 
-    #[tokio::test]
-    async fn flush_ready_respects_deadline_and_force() {
-        // 各用例独立 producer：CAS-max 只抬不降，同一 producer 上后设的较早截止会被保持拒绝
-        // 无 deadline：非强制不 flush
-        let (producer, _, _) = new_producer();
-        assert!(!flush_ready(&producer, false));
-        // 未超 deadline：非强制不 flush；强制无视 deadline
-        let (producer, _, _) = new_producer();
-        producer.set_deadline(Instant::now() + Duration::from_secs(10));
-        assert!(!flush_ready(&producer, false), "未超时非强制不应 flush");
-        assert!(flush_ready(&producer, true), "强制应 flush");
-        // 已超 deadline：非强制 flush（过去截止锚定编码下饱和为 1ms，sleep 保证已过）
-        let (producer, _, _) = new_producer();
-        producer.set_deadline(Instant::now() - Duration::from_secs(1));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(flush_ready(&producer, false), "超时非强制应 flush");
-    }
 
     // ===== trigger 循环测试（回归网：拦住空队列立即退出缺陷）=====
 
-    /// 等待任务执行 flush：try_flush 的 flush_ready 通过后先 clear_deadline 再 drain，
+    /// 等待任务执行 flush：try_flush 判定通过后先 clear_deadline 再 drain，
     /// 观测 deadline 变 0 即确认 flush 路径已执行（consumer 已移入任务，不做二次 drain）
     async fn wait_flushed(producer: &BatchProducer) -> bool {
         let deadline = Instant::now() + Duration::from_millis(500);
