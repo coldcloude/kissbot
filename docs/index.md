@@ -40,6 +40,7 @@ docs/
 │   ├── memory-store.md              # memory-store 记录写入
 │   ├── memory-index.md              # 记忆索引机制
 │   ├── memory-ego.md                # 自我认知模块文件存储
+│   ├── kissbot-agent-modules.md     # Agent 组件模块调用关系
 │   └── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │
 └── plan/                       # 任务计划
