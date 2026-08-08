@@ -126,7 +126,6 @@ impl AgentCoordinator {
 | kissbot-agent/src/session_manager.rs | Session 删 coordinator；get_or_create/create_session 删参数；accept_batch 用 instance() |
 | kissbot-agent/src/command_router.rs | execute 参数 `&AgentCoordinator`；set_session_model 调用调整 |
 | kissbot-agent/src/main.rs | new() 返回 Result<()>；run 经 instance() |
-| docs/spec/kissbot-agent-modules.md | **实施完成后同步更新**：组件清单、总览图、启动/上行/下行/合批/断线流、对外交互边界按新架构改写（Terminal→ChannelManager、BatchProducer 删除、单例化） |
 
 ## 五、测试
 
