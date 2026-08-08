@@ -259,7 +259,7 @@ impl ChannelManager {
 #[async_trait]
 impl Terminal for ChannelManager {
     /// 收到上行消息：先做回显过滤（通道层），再转发 Coordinator 业务处理
-    async fn incoming_message(self: Arc<Self>, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+    async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务
         if self.consume_pending(channel_id, event.incoming_message.msg_id.as_str()) {
             return;
@@ -268,24 +268,24 @@ impl Terminal for ChannelManager {
         AgentCoordinator::instance().incoming_message(channel_id, event).await;
     }
 
-    async fn join_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
+    async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
         // 群组加入事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
     }
 
-    async fn leave_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {
         // 群组离开事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
     }
 
-    async fn user_removed(self: Arc<Self>, _id: &str, _notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(&self, _id: &str, _notification: Arc<UserRemoveNotification>) {
         // 用户删除事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
     }
 
-    async fn download_chunk(self: Arc<Self>, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
+    async fn download_chunk(&self, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
         // 当前未使用附件下载
         Ok(())
     }
 
-    async fn closed(self: Arc<Self>, id: &str) {
+    async fn closed(&self, id: &str) {
         info!("channel 连接关闭: {}，准备重连", id);
         // 通知重连循环
         if let Some(notify) = self.disconnect_notify.get(id) {
