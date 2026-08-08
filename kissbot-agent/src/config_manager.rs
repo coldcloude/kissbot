@@ -166,6 +166,29 @@ pub struct ModelConfig {
     pub reasoning_effort: Option<String>,
 }
 
+/// 合成 provider 默认 + model 覆盖的有效参数（与 merge_context_config 同模式：
+/// provider 默认 ← model 覆盖，model 未配字段继承 provider；model 为 None 时用 provider 默认值合成）
+pub fn merge_model_config(
+    provider: &ProviderConfig,
+    model: Option<&ModelConfig>,
+    model_name: &str,
+) -> EffectiveModelConfig {
+    EffectiveModelConfig {
+        provider_type: provider.provider_type.clone(),
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: model_name.to_string(),   // 用切换指令的模型名（未配置也有效）
+        max_tokens: model.and_then(|m| m.max_tokens).unwrap_or(provider.default_max_tokens),
+        temperature: model.and_then(|m| m.temperature).or(provider.default_temperature),
+        timeout_secs: model.and_then(|m| m.timeout_secs).unwrap_or(provider.default_timeout_secs),
+        retry_count: model.and_then(|m| m.retry_count).unwrap_or(provider.default_retry_count),
+        context_length: model.and_then(|m| m.context_length).unwrap_or(provider.default_context_length),
+        max_context_messages: model.and_then(|m| m.max_context_messages).unwrap_or(provider.default_max_context_messages),
+        thinking: model.and_then(|m| m.thinking.clone()).or(provider.default_thinking.clone()),
+        reasoning_effort: model.and_then(|m| m.reasoning_effort.clone()).or(provider.default_reasoning_effort.clone()),
+    }
+}
+
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexusRepo {
@@ -476,20 +499,7 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         let provider = repo.providers.get(&pm.provider)?.load_full();
         let model_cfg = provider.models.get(&pm.model).map(|s| s.load_full());
-        Some(EffectiveModelConfig {
-            provider_type: provider.provider_type.clone(),
-            base_url: provider.base_url.clone(),
-            api_key: provider.api_key.clone(),
-            model: pm.model.clone(),   // 用切换指令的模型名（未配置也有效）
-            max_tokens: model_cfg.as_ref().and_then(|m| m.max_tokens).unwrap_or(provider.default_max_tokens),
-            temperature: model_cfg.as_ref().and_then(|m| m.temperature).or(provider.default_temperature),
-            timeout_secs: model_cfg.as_ref().and_then(|m| m.timeout_secs).unwrap_or(provider.default_timeout_secs),
-            retry_count: model_cfg.as_ref().and_then(|m| m.retry_count).unwrap_or(provider.default_retry_count),
-            context_length: model_cfg.as_ref().and_then(|m| m.context_length).unwrap_or(provider.default_context_length),
-            max_context_messages: model_cfg.as_ref().and_then(|m| m.max_context_messages).unwrap_or(provider.default_max_context_messages),
-            thinking: model_cfg.as_ref().and_then(|m| m.thinking.clone()).or(provider.default_thinking.clone()),
-            reasoning_effort: model_cfg.as_ref().and_then(|m| m.reasoning_effort.clone()).or(provider.default_reasoning_effort.clone()),
-        })
+        Some(merge_model_config(&provider, model_cfg.as_deref(), &pm.model))
     }
 
     /// 按名取 provider 配置（Arc 快照），供 provider 构造（model_client.list_models 使用）
