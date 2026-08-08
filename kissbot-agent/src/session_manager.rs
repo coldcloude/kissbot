@@ -88,24 +88,19 @@ pub struct Session {
     /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
     /// 取记忆/ego 一律用本字段（agent_name 仅作 context 配置查找，不参与记忆/ego 定位）
     pub agent_id: Arc<String>,
-    /// coordinator 弱引用（accept_batch 升级调用 run_agentic_loop/out_channel 解析；弱引用破环：
-    /// coordinator → session_manager → session → coordinator 会形成强环）
-    coordinator: Weak<AgentCoordinator>,
     /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
     pub notify: Arc<Notify>,
 }
 
 impl Session {
     /// 合批 flush 入口：trigger 任务经 consumer.session 弱引用升级后调用（原 coordinator.flush_batch 职责迁至会话侧）
-    /// 模型检查 → coordinator 弱引用升级 → out_channel 解析 → agentic loop
+    /// 模型检查 → coordinator 单例 → out_channel 解析 → agentic loop
     pub(crate) async fn accept_batch(self: &Arc<Self>, content: String) {
         // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
         if self.model.load().is_none() {
             return;
         }
-        let Some(coordinator) = self.coordinator.upgrade() else {
-            return;
-        };
+        let coordinator = AgentCoordinator::instance();
         let Some(out_channel) = coordinator.resolve_out_channel_for_session(self).await else {
             warn!("accept_batch: 会话无 out_channel，跳过");
             return;
@@ -278,8 +273,8 @@ impl SessionManager {
         self.sessions.get(key).map(|e| e.value().clone())
     }
 
-    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果；
-    /// coordinator 弱引用由 Arc 链调用方降级传入）；返回 (会话, 是否新建)
+    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；
+    /// 返回 (会话, 是否新建)
     /// 创建时依赖序组装（内联 new_producer/BatchConsumer::new）：notify → 2 mpsc → producer → session → consumer → spawn
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
@@ -289,7 +284,6 @@ impl SessionManager {
         key: &SessionKey,
         model: Option<ProviderModel>,
         agent_id: Arc<String>,
-        coordinator: Weak<AgentCoordinator>,
     ) -> (Arc<Session>, bool) {
         if let Some(s) = self.get(key) {
             return (s, false);
@@ -298,7 +292,7 @@ impl SessionManager {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
                 // 创建部分抽出（create_session）：依赖序组装 + spawn 触发任务
-                let session = Self::create_session(key, model, agent_id, coordinator);
+                let session = Self::create_session(key, model, agent_id);
                 e.insert(session.clone());
                 (session, true)
             }
@@ -313,7 +307,6 @@ impl SessionManager {
         key: &SessionKey,
         model: Option<ProviderModel>,
         agent_id: Arc<String>,
-        coordinator: Weak<AgentCoordinator>,
     ) -> Arc<Session> {
         // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
         let notify = Arc::new(Notify::new());
@@ -337,7 +330,6 @@ impl SessionManager {
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
             agent_id,
-            coordinator,
             notify: notify.clone(),
         });
         // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
@@ -412,7 +404,6 @@ mod tests {
             batch_producer: producer.clone(),
             model: ArcSwap::from_pointee(None),
             agent_id: Arc::new("aid".into()),
-            coordinator: Weak::new(),
             notify: notify.clone(),
         });
         let consumer = BatchConsumer {
@@ -470,14 +461,14 @@ mod tests {
         let mgr = SessionManager::new();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()), Weak::new());
+        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
         assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()), Weak::new());
+        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()), Weak::new());
+        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()));
         assert!(created3, "事件模式是独立会话");
     }
 
@@ -487,8 +478,8 @@ mod tests {
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
         let k2 = key("a2", "r2");
-        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()), Weak::new());
-        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()), Weak::new());
+        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()));
+        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()));
         let mut keep = HashSet::new();
         keep.insert(k1.clone());
         mgr.retain(&keep);
@@ -500,7 +491,7 @@ mod tests {
     async fn get_or_create_with_none_model() {
         let mgr = SessionManager::new();
         let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()), Weak::new());
+        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
         assert!(created);
         assert!(s.model.load().is_none());
     }
@@ -529,7 +520,6 @@ mod tests {
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
             agent_id,
-            coordinator: Weak::new(),
             notify,
         };
         assert_eq!(session.role_name.as_str(), "r1");

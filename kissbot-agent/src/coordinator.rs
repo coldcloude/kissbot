@@ -1,10 +1,8 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use arc_swap::ArcSwap;
-use bytes::Bytes;
 use chrono::Local;
 use dashmap::DashMap;
 use tracing::{info, warn};
@@ -23,10 +21,9 @@ use crate::memory_reader::{MemoryReader, pack_memory_messages};
 use crate::memory_store_client::MemoryStoreClient;
 use crate::station::{self, StationRuntime};
 
-use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, BindRequest, ChannelUser};
+use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
-use kissbot_api::message::{Content, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
-use kissbot_channel_client::{ChannelClient, Terminal};
+use kissbot_api::message::Content;
 /// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
 /// 保留 agent 的 memory-store/ego agent_id 为 RESERVED_AGENT_ID（"0"）。
 pub const RESERVED_AGENT_NAME: &str = "";
@@ -46,6 +43,10 @@ enum ConfigChange {
     ApplyKey { channel_id: String, new_key: SessionKey, agent_id: Option<Arc<String>>, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
+/// AgentCoordinator 全局单例（进程内唯一；new() 完成时注册，此后 instance() 可用）。
+/// 所有使用 coordinator 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
+static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
+
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
     /// 上下文本地缓存（agent-data/context）
@@ -58,10 +59,8 @@ pub struct AgentCoordinator {
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
     valid_default: ArcSwap<Option<ProviderModel>>,
-    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/agent_id/mode/client/producer）
+    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/agent_id/mode/client）
     channel_manager: Arc<ChannelManager>,
-    /// 断线通知：channel_id → Notify，closed() 通知重连循环
-    disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
     /// station_id → StationRuntime（启动时按配置构建；base_url 为空的本地 station 注册内置 Read 工具）
@@ -69,9 +68,14 @@ pub struct AgentCoordinator {
 }
 
 impl AgentCoordinator {
+    /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
+    pub fn instance() -> &'static AgentCoordinator {
+        SINGLETON.get().expect("AgentCoordinator 未初始化")
+    }
+
     pub async fn new(
         config: Arc<ConfigManager>,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<()> {
         let memory_reader = Arc::new(MemoryReader::new());
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let session_manager = SessionManager::new();
@@ -80,7 +84,7 @@ impl AgentCoordinator {
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
-        let coordinator = Arc::new(Self {
+        let coordinator = Self {
             config: config.clone(),
             cache: Arc::new(ContextCache::new(&data_dir)),
             history: Arc::new(HistoryArchive::new(&data_dir)),
@@ -88,27 +92,11 @@ impl AgentCoordinator {
             memory_store_client,
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
-            channel_manager: Arc::new(ChannelManager::new()),
-            disconnect_notify: Arc::new(DashMap::new()),
+            channel_manager: Arc::new(ChannelManager::new(config.clone())),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
             station_runtimes: Arc::new(DashMap::new()),
-        });
-
-        // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
-        {
-            let coordinator = coordinator.clone();
-            tokio::spawn(async move {
-                while let Some(change) = command_rx.recv().await {
-                    match change {
-                        ConfigChange::ApplyKey { channel_id, new_key, agent_id, done } => {
-                            let rst = coordinator.clone().apply_channel_key(&channel_id, &new_key, agent_id).await;
-                            let _ = done.send(rst);
-                        }
-                    }
-                }
-            });
-        }
+        };
 
         // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
         let default_model = config.default_model().await;
@@ -135,17 +123,27 @@ impl AgentCoordinator {
 
         // 启动：为全部 channel 绑定运行态 agent（解析失败回退保留 agent），
         // 再按 channel 绑定三元组初始化会话集合（agent_name 为空 = 保留 agent，同样建会话）
-        for (_, ch) in config.channels().await {
-            coordinator.bind_channel_runtime(&ch.channel_id).await;
-            let key = coordinator.session_key_for(&ch);
-            coordinator.clone().ensure_session(&key, &ch.channel_id).await;
-        }
+        // 以及连接全部 enabled channel——已整体移入 run()（启动动作统一在 run 中执行）
 
-        // 连接所有 enabled 的 channel（connect_channels 取 Arc 值，clone 保留 new 末尾返回用）
-        coordinator.clone().connect_channels().await;
+        // 注册全局单例（此后 instance() 可用；run() 中启动动作与连接回调均晚于此）
+        let _ = SINGLETON.set(coordinator);
+
+        // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
+        // spawn 晚于 SINGLETON.set，任务内 instance() 必然就绪
+        tokio::spawn(async move {
+            while let Some(change) = command_rx.recv().await {
+                match change {
+                    ConfigChange::ApplyKey { channel_id, new_key, agent_id, done } => {
+                        let coordinator = AgentCoordinator::instance();
+                        let rst = coordinator.apply_channel_key(&channel_id, &new_key, agent_id).await;
+                        let _ = done.send(rst);
+                    }
+                }
+            }
+        });
 
         info!("AgentCoordinator 初始化完成");
-        Ok(coordinator)
+        Ok(())
     }
 
     // ==================== 会话定位与构建 ====================
@@ -155,16 +153,6 @@ impl AgentCoordinator {
         // 运行态 mode 参与会话定位（从 ChannelManager 读）；无脱离态，agent_name 为空 = 保留 agent
         let mode = self.channel_mode(&ch.channel_id);
         session_key_of(&ch.agent_name, &ch.role_name, mode)
-    }
-
-    /// 记录已发出的 outgoing msg_id 到该 channel 的 pending 集合（回显判定用）
-    async fn record_outgoing_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) {
-        self.channel_manager.add_pending(channel_id, msg_id.as_str().to_string());
-    }
-
-    /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
-    async fn is_self_echo_by_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) -> bool {
-        self.channel_manager.consume_pending(channel_id, msg_id.as_str())
     }
 
     /// 读取 channel 运行态 agent_id；未绑定（异常路径）时懒绑定
@@ -202,11 +190,6 @@ impl AgentCoordinator {
         agent_id
     }
 
-    /// 绑定会话后刷新合批生产侧（从 session.batch_producer 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
-    async fn bind_batch(&self, channel_id: &str, session: &Arc<Session>) {
-        self.channel_manager.bind_producer(channel_id, Arc::new(session.batch_producer.clone()));
-    }
-
     /// 设置 channel 运行态模式（写 Channel.mode；/mode 切换，不回写，重启回 Role）
     pub fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
         self.channel_manager.set_mode(channel_id, mode);
@@ -225,18 +208,15 @@ impl AgentCoordinator {
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
     /// channel_id 为触发会话创建/重置的来源 channel（新建会话的 agent_id 取自该 channel 运行态绑定）
-    async fn ensure_session(self: Arc<Self>, key: &SessionKey, channel_id: &str) -> (Arc<Session>, bool) {
+    async fn ensure_session(&self, key: &SessionKey, channel_id: &str) -> (Arc<Session>, bool) {
         // valid_default.load_full() 返回 Arc<Option<ProviderModel>>，解引用克隆得 Option
         let model = (*self.valid_default.load_full()).clone();
         // 会话状态保存 agent_id：新建会话从来源 channel 运行态绑定取得（原子写入 get_or_create）
         let agent_id = self.channel_agent(channel_id).await;
-        // coordinator 弱引用直接降级传入（依赖序构造，无 OnceLock 后置设置）
-        let (session, created) = self.session_manager.get_or_create(key, model, agent_id, Arc::downgrade(&self));
+        let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
         if created {
             self.build_initial_context(&session).await;
         }
-        // 绑定合批生产侧（每次调用幂等；多 channel 共享同一 session 时共享同一 producer 对）
-        self.bind_batch(channel_id, &session).await;
         (session, created)
     }
 
@@ -290,13 +270,13 @@ impl AgentCoordinator {
     }
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
-    async fn relocate_channel(self: Arc<Self>, channel_id: &str) {
+    async fn relocate_channel(&self, channel_id: &str) {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取该 channel 运行态绑定）
         if let Some(ch) = self.config.channel(channel_id).await {
             let key = self.session_key_for(&ch);
-            self.clone().ensure_session(&key, channel_id).await;
+            self.ensure_session(&key, channel_id).await;
         }
     }
 
@@ -500,7 +480,7 @@ impl AgentCoordinator {
 
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
-    async fn apply_channel_key(self: Arc<Self>, channel_id: &str, new_key: &SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
+    async fn apply_channel_key(&self, channel_id: &str, new_key: &SessionKey, agent_id: Option<Arc<String>>) -> Result<()> {
         self.config.update_channel(channel_id, |c| {
             c.agent_name = Arc::new(new_key.agent_name.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
@@ -509,19 +489,12 @@ impl AgentCoordinator {
         if let Some(agent_id) = agent_id {
             self.set_channel_runtime(channel_id, agent_id).await;
         }
-        self.clone().relocate_channel(channel_id).await;
-        // 会话重定位后刷新合批生产侧（channel 绑定新的会话三元组，created 会话已由 ensure_session 绑定）
-        if let Some(ch) = self.config.channel(channel_id).await {
-            let key = self.session_key_for(&ch);
-            if let Some(session) = self.session_manager.get(&key) {
-                self.bind_batch(channel_id, &session).await;
-            }
-        }
+        self.relocate_channel(channel_id).await;
         Ok(())
     }
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
-    pub async fn set_session_model(self: Arc<Self>, channel_id: &str, pm: ProviderModel) -> Result<()> {
+    pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
         let Some(ch) = self.config.channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
@@ -533,7 +506,7 @@ impl AgentCoordinator {
             return Err(Error::ModelProviderNotSupported(format!(
                 "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
         }
-        let (session, _) = self.clone().ensure_session(&key, channel_id).await;
+        let (session, _) = self.ensure_session(&key, channel_id).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
@@ -557,73 +530,18 @@ impl AgentCoordinator {
         }
     }
 
-    // ==================== 通道连接 ====================
-
-    /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
-    /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
-    async fn connect_channels(self: Arc<Self>) {
-        let reconnect_secs = self.config.ws_reconnect_interval_secs();
-        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
-        let coordinator = self.clone();
-
-        // Terminal 即 Coordinator 自身（全局唯一）：不再新建 TerminalHandle 适配器，
-        // 循环外建一次 Terminal 视图，所有 channel client 的 Weak<dyn Terminal> 指向同一目标；
-        // 强引用由 coordinator 其余 Arc（command_rx 循环等）保活——无需任务内 _keepalive
-        let terminal: Arc<dyn Terminal> = coordinator.clone();
-
-        // 遍历 NexusRepo 中所有 channel，enabled 才连接
-        for (_, ch) in self.config.channels().await {
-            if !ch.enabled {
-                continue; // 未启用：不连接
-            }
-            let channel_id = ch.channel_id.to_string();
-            let ws_url = ch.ws_url.to_string();
-
-            let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
-
-            // 断线通知
-            let notify = Arc::new(tokio::sync::Notify::new());
-            coordinator.disconnect_notify.insert(channel_id.clone(), notify.clone());
-            // ChannelClient 归入该 channel 的 ChannelManager（懒建后 bind；消息/回复路径从 manager 取 client）
-            coordinator.channel_manager.bind_client(&channel_id, client.clone());
-
-            let client_clone = client;
-            let api_key = api_key.clone();
-            // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 coordinator 引用
-            let coordinator_clone = coordinator.clone();
-
-            tokio::spawn(async move {
-                loop {
-                    match client_clone.connect(&ws_url, &api_key).await {
-                        Ok(()) => {
-                            info!("已连接 channel: {}", channel_id);
-                            // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let bind_users = coordinator_clone.config.channel(&channel_id).await
-                                .map(|c| c.bind_users.clone());
-                            if let Some(bus) = bind_users {
-                                for bu in bus {
-                                    let _ = client_clone.bind(BindRequest {
-                                        messenger_id: Arc::new(bu.messenger_id.clone()),
-                                        user_id: Arc::new(bu.user_id.clone()),
-                                    }).await;
-                                }
-                            }
-                            // 等待断线通知（closed() 回调中 notify_one）
-                            notify.notified().await;
-                        }
-                        Err(e) => {
-                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", channel_id, e, reconnect_secs);
-                            tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
-                        }
-                    }
-                }
-            });
-        }
-    }
-
-    /// 启动主循环（保持进程运行）
+    /// 启动主循环（保持进程运行）：绑定运行态 agent + 初始化会话 + 连接全部 channel
     pub async fn run(&self) {
         info!("AgentCoordinator 启动，等待外部输入...");
+        // 启动：为全部 channel 绑定运行态 agent（解析失败回退保留 agent），
+        // 再按 channel 绑定三元组初始化会话集合（agent_name 为空 = 保留 agent，同样建会话）
+        for (_, ch) in self.config.channels().await {
+            self.bind_channel_runtime(&ch.channel_id).await;
+            let key = self.session_key_for(&ch);
+            self.ensure_session(&key, &ch.channel_id).await;
+        }
+        // 连接所有 enabled 的 channel（连接/重连/回显/发送全部归 ChannelManager 通道适配层）
+        self.channel_manager.connect_all().await;
         // channel-client 通过 Terminal 回调驱动，此处保持进程不退出
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
@@ -631,24 +549,15 @@ impl AgentCoordinator {
     }
 }
 
-// ==================== Terminal 回调（AgentCoordinator 直接实现；固有方法） ====================
+// ==================== 消息处理 ====================
 
-/// Terminal 即 Coordinator 自身（全局唯一）：trait receiver 为 self: Arc<Self>（by-value Arc），
-/// 方法内可直接持 Arc 调用 Arc 链方法（构造会话降级自身弱引用）——不再需要 TerminalHandle 适配器；
-/// ChannelClient 持 Weak<dyn Terminal>，connect_channels 中全部 client 弱引用指向同一 coordinator
-#[async_trait]
-impl Terminal for AgentCoordinator {
-    /// 收到上行消息（event 含接收方 recipient_user_id）
-    async fn incoming_message(self: Arc<Self>, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+impl AgentCoordinator {
+    /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
+    pub(crate) async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
         let Some(ch) = self.config.channel(channel_id).await else { return; };
 
-        // 2. msg_id 回显判定：命中（已发未回显）则跳过，不存 record、不进 agentic loop
-        if self.is_self_echo_by_msg_id(channel_id, &event.incoming_message.msg_id).await {
-            return;
-        }
-
-        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取来源 channel 运行态绑定，事件模式编码）
+        // 2. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取来源 channel 运行态绑定，事件模式编码）
         let key = self.session_key_for(&ch);
         let role_name = memory_role(&key.role_name, &key.mode);
         let agent_id = self.channel_agent(channel_id).await;
@@ -668,41 +577,14 @@ impl Terminal for AgentCoordinator {
             time: event.incoming_message.time.clone(),
         }).await;
 
-        // 4. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
-        self.clone().handle_incoming(channel_id, ch, event).await;
-    }
-
-    async fn join_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
-        // 群组加入事件，当前暂不处理
-    }
-
-    async fn leave_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
-        // 群组离开事件，当前暂不处理
-    }
-
-    async fn user_removed(self: Arc<Self>, _id: &str, _notification: Arc<UserRemoveNotification>) {
-        // 用户删除事件，当前暂不处理
-    }
-
-    async fn download_chunk(self: Arc<Self>, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
-        // 当前未使用附件下载
-        Ok(())
-    }
-
-    async fn closed(self: Arc<Self>, id: &str) {
-        info!("channel 连接关闭: {}，准备重连", id);
-        // 通知重连循环
-        if let Some(notify) = self.disconnect_notify.get(id) {
-            notify.notify_one();
-        }
+        // 3. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
+        self.handle_incoming(channel_id, ch, event).await;
     }
 }
 
-// ==================== 消息处理 ====================
-
 impl AgentCoordinator {
     async fn handle_incoming(
-        self: Arc<Self>,
+        &self,
         channel_id: &str,
         ch: Arc<crate::config_manager::ChannelConfig>,
         event: Arc<IncomingMessageEvent>,
@@ -720,7 +602,7 @@ impl AgentCoordinator {
         // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(&self.config, channel_id, &messenger_id, &user_id).await {
-                self.clone().handle_admin_command(channel_id, &event, &content_text).await;
+                self.handle_admin_command(channel_id, &event, &content_text).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
@@ -731,26 +613,18 @@ impl AgentCoordinator {
             return;
         };
         let key = self.session_key_for(&ch);
-        let (session, _) = self.clone().ensure_session(&key, channel_id).await;
-        self.enqueue_batch(channel_id, &session, event).await;
+        let (session, _) = self.ensure_session(&key, channel_id).await;
+        self.enqueue_batch(&session, event).await;
     }
 
-    /// 合批：数据经 channel 持有的生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
+    /// 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
     /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
-    async fn enqueue_batch(&self, channel_id: &str, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
+    /// BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧直接取 session.batch_producer，无 Channel 中转
+    async fn enqueue_batch(&self, session: &Arc<Session>, event: Arc<IncomingMessageEvent>) {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
         let interval = Duration::from_secs(cfg.channel_batch_interval_secs);
 
-        // 懒绑定：无生产侧则从会话取（正常路径在 ensure_session 创建/apply_channel_key 已绑定）
-        let mut producer = self.channel_manager.producer(channel_id);
-        if producer.is_none() {
-            self.bind_batch(channel_id, session).await;
-            producer = self.channel_manager.producer(channel_id);
-        }
-        let Some(producer) = producer else {
-            warn!("enqueue_batch: channel {} 无合批生产侧", channel_id);
-            return;
-        };
+        let producer = Arc::new(session.batch_producer.clone());
         let _ = producer.tx.send(event);                                // 数据入队（队列累积，不逐条消费）
         let at = Instant::now() + interval;                             // 单次计算：deadline 与触发时间同源
         producer.set_deadline(at);                                      // 更新截止（防抖，后推覆盖）
@@ -758,14 +632,14 @@ impl AgentCoordinator {
     }
 
     async fn handle_admin_command(
-        self: Arc<Self>,
+        &self,
         channel_id: &str,
         event: &Arc<IncomingMessageEvent>,
         content: &str,
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, &self.config, &self, channel_id).await {
+                match CommandRouter::execute(&cmd, &self.config, channel_id).await {
                     Ok((reply, effect)) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
@@ -794,10 +668,6 @@ impl AgentCoordinator {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: &Arc<IncomingMessageEvent>, content: String) {
-        let Some(client) = self.channel_manager.client(channel_id) else {
-            warn!("send_admin_reply: 未找到 channel client: {}", channel_id);
-            return;
-        };
         let Some(ch) = self.config.channel(channel_id).await else {
             warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
             return;
@@ -810,13 +680,13 @@ impl AgentCoordinator {
             content: Content::Text(Arc::new(content.clone())),
         };
 
-        match client.send_message(msg).await {
+        // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
+        match self.channel_manager.send(channel_id, msg).await {
             Ok(response) => {
-                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
+                // 下行成功后：推记忆（is_self=1）
                 let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(channel_id).await;
-                self.record_outgoing_msg_id(channel_id, &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id,
                     role_name: Arc::new(role_name),
@@ -1105,10 +975,6 @@ impl AgentCoordinator {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     async fn send_outgoing(&self, out_channel: &OutChannel, content: String) {
-        let Some(client) = self.channel_manager.client(out_channel.channel_id.as_str()) else {
-            warn!("send_outgoing: 未找到 channel client: {}", out_channel.channel_id);
-            return;
-        };
         let Some(ch) = self.config.channel(out_channel.channel_id.as_str()).await else {
             warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
@@ -1121,13 +987,13 @@ impl AgentCoordinator {
             content: Content::Text(Arc::new(content.clone())),
         };
 
-        match client.send_message(msg).await {
+        // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
+        match self.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
             Ok(response) => {
-                // 下行成功后：先记 msg_id 到 pending（回显判定），再推记忆（is_self=1）
+                // 下行成功后：推记忆（is_self=1）
                 let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = self.channel_agent(out_channel.channel_id.as_str()).await;
-                self.record_outgoing_msg_id(out_channel.channel_id.as_str(), &response.msg_id).await;
                 self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id,
                     role_name: Arc::new(role_name),
@@ -1313,7 +1179,7 @@ mod tests {
         // 构造最小 Session + OutChannel（参照既有测试模式；经 get_or_create 走真实构造路径）
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
         let mgr = SessionManager::new();
-        let (session, _) = mgr.get_or_create(&key, None, Arc::new("aid".into()), std::sync::Weak::new());
+        let (session, _) = mgr.get_or_create(&key, None, Arc::new("aid".into()));
         let out_channel = OutChannel {
             channel_id: Arc::new("c1".into()),
             user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },

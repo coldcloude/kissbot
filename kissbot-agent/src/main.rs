@@ -33,8 +33,8 @@ async fn main() {
             .expect("初始化配置失败")
     );
 
-    // 2. 初始化 Coordinator（内部启动 ChannelClient 连接和 MemoryStoreClient，记忆推送统一走 MemoryStoreClient）
-    let coordinator = coordinator::AgentCoordinator::new(config.clone())
+    // 2. 初始化 Coordinator（装配 + 注册单例；连接与启动动作在 run() 中执行）
+    coordinator::AgentCoordinator::new(config.clone())
         .await
         .expect("初始化 Coordinator 失败");
 
@@ -47,7 +47,7 @@ async fn main() {
         }
     });
 
-    // 4. 运行主循环
+    // 4. 运行主循环（内部：绑定 agent/会话 + 连接全部 channel + 保持进程）
     info!("进入主循环");
-    coordinator.run().await;
+    coordinator::AgentCoordinator::instance().run().await;
 }

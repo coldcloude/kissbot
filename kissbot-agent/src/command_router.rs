@@ -7,8 +7,8 @@ use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NA
 
 /// 取 channel 当前会话三元组（config agent_name/role_name + 运行态 mode；异常回退空 + 角色模式）
 /// 命令构造新三元组用（agent/role/mode 变更统一走 change_channel_key）
-async fn channel_current_key(coordinator: &AgentCoordinator, channel_id: &str) -> SessionKey {
-    coordinator.channel_session_key(channel_id).await
+async fn channel_current_key(channel_id: &str) -> SessionKey {
+    AgentCoordinator::instance().channel_session_key(channel_id).await
         .unwrap_or_else(|| SessionKey { agent_name: String::new(), role_name: String::new(), mode: Mode::Role })
 }
 
@@ -169,12 +169,13 @@ impl CommandRouter {
     /// 执行管理命令（返回回复文本和协调器后续动作）
     /// bind/agent/role/bind-outgoing/admin/unadmin 走 ConfigManager 回写；
     /// mode/reenter 改运行态模式（coordinator）；model 改会话模型（运行态）。
+    /// coordinator 一律从单例取（不传参数）
     pub async fn execute(
         command: &AdminCommand,
         config: &ConfigManager,
-        coordinator: &Arc<AgentCoordinator>,
         channel_id: &str,
     ) -> Result<(String, CommandEffect)> {
+        let coordinator = AgentCoordinator::instance();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {
@@ -216,33 +217,33 @@ impl CommandRouter {
                 // 切换前先解析新 agent：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
                 let agent_id = coordinator.resolve_agent_id_for_bind(&new_agent).await?;
                 // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
-                let cur = channel_current_key(coordinator, channel_id).await;
+                let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: new_agent.clone(), role_name: new_role.clone(), mode: cur.mode };
                 coordinator.change_channel_key(channel_id, new_key, Some(agent_id)).await?;
                 Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::None))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                let cur = channel_current_key(coordinator, channel_id).await;
+                let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: new_role.clone(), mode: cur.mode };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
                 Ok((format!("✅ 已设置 role: {}", new_role), CommandEffect::None))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let cur = channel_current_key(coordinator, channel_id).await;
+                let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
                 Ok((format!("✅ 新事件 ID: {}", id), CommandEffect::None))
             }
             AdminCommand::ModeRole => {
-                let cur = channel_current_key(coordinator, channel_id).await;
+                let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Role };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
                 Ok(("✅ 已切换为角色模式".to_string(), CommandEffect::None))
             }
             AdminCommand::Reenter(event_id) => {
-                let cur = channel_current_key(coordinator, channel_id).await;
+                let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
                 Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::None))
@@ -293,7 +294,7 @@ impl CommandRouter {
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
-                coordinator.clone().set_session_model(channel_id, pm.clone()).await?;
+                coordinator.set_session_model(channel_id, pm.clone()).await?;
                 if *set_default {
                     config.set_default_model(pm.clone()).await?;
                 }

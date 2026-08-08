@@ -1,16 +1,22 @@
 //! channel 运行态管理：Channel（单 channel 运行态）+ ChannelManager（全部 channel 的集合管理）
-//! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id/mode + 运行时绑定的 client/producer；
+//! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id/mode + 运行时绑定的 client；
 //! ChannelManager 持有全部 Channel（DashMap 无锁并发），coordinator 经 ChannelManager 访问各 channel 运行态。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use arc_swap::{ArcSwap, ArcSwapOption};
+use bytes::Bytes;
 use dashmap::DashMap;
+use tracing::{info, warn};
 
-use kissbot_channel_client::ChannelClient;
+use kissbot_api::channel::{BindRequest, IncomingMessageEvent, OutgoingMessage, OutgoingMessageResponse};
+use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+use kissbot_channel_client::{ChannelClient, Terminal};
 
-use crate::session_manager::BatchProducer;
+use crate::config_manager::ConfigManager;
+use crate::coordinator::AgentCoordinator;
 use crate::types::Mode;
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
@@ -19,7 +25,7 @@ const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
 
 /// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id；
-/// client/producer 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
+/// client 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
 /// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
 /// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
 pub struct Channel {
@@ -29,12 +35,9 @@ pub struct Channel {
     agent_id: ArcSwapOption<String>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
-    /// 本 channel 的 ChannelClient（connect_channels 时绑定；消息/回复路径从本字段取 client，
+    /// 本 channel 的 ChannelClient（connect_all 时绑定；消息/回复路径从本字段取 client，
     /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
     client: ArcSwapOption<ChannelClient>,
-    /// 合批生产侧（绑定会话时从 session.batch_producer 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
-    /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
-    producer: ArcSwapOption<BatchProducer>,
 }
 
 impl Channel {
@@ -44,11 +47,10 @@ impl Channel {
             agent_id: ArcSwapOption::new(None),
             mode: ArcSwap::from_pointee(Mode::Role),
             client: ArcSwapOption::new(None),
-            producer: ArcSwapOption::new(None),
         }
     }
 
-    /// 绑定 channel client（connect_channels 时绑定；每次重连循环启动更新）
+    /// 绑定 channel client（connect_all 时绑定；每次重连循环启动更新）
     fn bind_client(&self, client: Arc<ChannelClient>) {
         self.client.store(Some(client));
     }
@@ -83,16 +85,6 @@ impl Channel {
         self.agent_id.load_full()
     }
 
-    /// 绑定合批生产侧（绑定会话时调用；None 时 enqueue 懒绑定）
-    fn bind_producer(&self, producer: Arc<BatchProducer>) {
-        self.producer.store(Some(producer));
-    }
-
-    /// 取合批生产侧（未绑定为 None）
-    fn producer(&self) -> Option<Arc<BatchProducer>> {
-        self.producer.load_full()
-    }
-
     /// 设置运行态模式（/mode 切换，不回写，重启回 Role）
     fn set_mode(&self, mode: Mode) {
         self.mode.store(Arc::new(mode));
@@ -115,17 +107,23 @@ impl Channel {
     }
 }
 
-/// channel 集合管理器：持有全部 channel 的运行态（Channel），按 channel_id 懒建/读取；
-/// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>，
-/// 消息/回复/合批/命令路径统一经其访问各 channel 运行态
+/// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）、通道配置与断线通知；
+/// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_all/send）
+/// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_all 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 pub struct ChannelManager {
+    /// 通道配置（连接/重连实时读 bind_users，/bind 回写后重连即生效）
+    config: Arc<ConfigManager>,
     channels: DashMap<String, Arc<Channel>>,
+    /// 断线通知：channel_id → Notify，closed() 回调通知重连循环
+    disconnect_notify: DashMap<String, Arc<tokio::sync::Notify>>,
 }
 
 impl ChannelManager {
-    pub fn new() -> Self {
+    pub fn new(config: Arc<ConfigManager>) -> Self {
         Self {
+            config,
             channels: DashMap::new(),
+            disconnect_notify: DashMap::new(),
         }
     }
 
@@ -137,7 +135,7 @@ impl ChannelManager {
             .clone()
     }
 
-    /// 绑定 channel client（connect_channels 时绑定；每次重连循环启动更新）
+    /// 绑定 channel client（connect_all 时绑定；每次重连循环启动更新）
     pub fn bind_client(&self, channel_id: &str, client: Arc<ChannelClient>) {
         self.get_or_create(channel_id).bind_client(client);
     }
@@ -170,16 +168,6 @@ impl ChannelManager {
         self.channels.get(channel_id).and_then(|c| c.agent_id())
     }
 
-    /// 绑定合批生产侧（绑定会话后刷新；None 时 enqueue 懒绑定）
-    pub fn bind_producer(&self, channel_id: &str, producer: Arc<BatchProducer>) {
-        self.get_or_create(channel_id).bind_producer(producer);
-    }
-
-    /// 取合批生产侧（未绑定为 None）
-    pub fn producer(&self, channel_id: &str) -> Option<Arc<BatchProducer>> {
-        self.channels.get(channel_id).and_then(|c| c.producer())
-    }
-
     /// 设置 channel 运行态模式（/mode 切换，不回写，重启回 Role）
     pub fn set_mode(&self, channel_id: &str, mode: Mode) {
         self.get_or_create(channel_id).set_mode(mode);
@@ -190,6 +178,118 @@ impl ChannelManager {
         match self.channels.get(channel_id) {
             Some(c) => c.mode(),
             None => Mode::Role,
+        }
+    }
+
+    /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
+    /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
+    pub async fn connect_all(self: &Arc<Self>) {
+        let reconnect_secs = self.config.ws_reconnect_interval_secs();
+        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
+        // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
+        // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 coordinator 的 Arc<ChannelManager> 保活
+        let terminal: Arc<dyn Terminal> = self.clone();
+        // 遍历 NexusRepo 中所有 channel，enabled 才连接
+        for (_, ch) in self.config.channels().await {
+            if !ch.enabled {
+                continue; // 未启用：不连接
+            }
+            let channel_id = ch.channel_id.to_string();
+            let ws_url = ch.ws_url.to_string();
+
+            let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
+
+            // 断线通知
+            let notify = Arc::new(tokio::sync::Notify::new());
+            self.disconnect_notify.insert(channel_id.clone(), notify.clone());
+            // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client）
+            self.bind_client(&channel_id, client.clone());
+
+            let client_clone = client;
+            let api_key = api_key.clone();
+            // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 config 引用
+            let config = self.config.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    match client_clone.connect(&ws_url, &api_key).await {
+                        Ok(()) => {
+                            info!("已连接 channel: {}", channel_id);
+                            // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
+                            let bind_users = config.channel(&channel_id).await
+                                .map(|c| c.bind_users.clone());
+                            if let Some(bus) = bind_users {
+                                for bu in bus {
+                                    let _ = client_clone.bind(BindRequest {
+                                        messenger_id: Arc::new(bu.messenger_id.clone()),
+                                        user_id: Arc::new(bu.user_id.clone()),
+                                    }).await;
+                                }
+                            }
+                            // 等待断线通知（closed() 回调中 notify_one）
+                            notify.notified().await;
+                        }
+                        Err(e) => {
+                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", channel_id, e, reconnect_secs);
+                            tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    /// 发送消息到 channel（通道适配层封装：取 client + 发送 + 记录 pending msg_id 供回显判定）
+    pub async fn send(&self, channel_id: &str, msg: OutgoingMessage) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel_client::Error> {
+        let Some(client) = self.client(channel_id) else {
+            warn!("send: 未找到 channel client: {}", channel_id);
+            return Err(kissbot_channel_client::Error::NotConnected);
+        };
+        let response = client.send_message(msg).await?;
+        // 记录已发出未回显的 msg_id（入站回显命中时 consume_pending 消费丢弃）
+        self.add_pending(channel_id, response.msg_id.as_str().to_string());
+        Ok(response)
+    }
+}
+
+// ==================== Terminal 回调（ChannelManager 实现：通道适配层） ====================
+
+/// ChannelManager 即 Terminal 实现者：回显过滤在通道层完成（Coordinator 不见自身回显），
+/// 有业务意义的事件（群组变更/用户移除等）已由服务端转化为 IncomingMessage 推送，其余回调不重复处理
+#[async_trait]
+impl Terminal for ChannelManager {
+    /// 收到上行消息：先做回显过滤（通道层），再转发 Coordinator 业务处理
+    async fn incoming_message(self: Arc<Self>, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+        // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务
+        if self.consume_pending(channel_id, event.incoming_message.msg_id.as_str()) {
+            return;
+        }
+        // 2. 转发业务处理（单例；run() 中 connect_all 之后必然已注册）
+        AgentCoordinator::instance().incoming_message(channel_id, event).await;
+    }
+
+    async fn join_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
+        // 群组加入事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
+    }
+
+    async fn leave_group(self: Arc<Self>, _id: &str, _notification: Arc<GroupChangeNotification>) {
+        // 群组离开事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
+    }
+
+    async fn user_removed(self: Arc<Self>, _id: &str, _notification: Arc<UserRemoveNotification>) {
+        // 用户删除事件，当前暂不处理（服务端已转化为 IncomingMessage 推送）
+    }
+
+    async fn download_chunk(self: Arc<Self>, _id: &str, _info: Arc<AttachmentInfoResponse>, _pos: u64, _data: Bytes) -> std::result::Result<(), kissbot_channel_client::Error> {
+        // 当前未使用附件下载
+        Ok(())
+    }
+
+    async fn closed(self: Arc<Self>, id: &str) {
+        info!("channel 连接关闭: {}，准备重连", id);
+        // 通知重连循环
+        if let Some(notify) = self.disconnect_notify.get(id) {
+            notify.notify_one();
         }
     }
 }
@@ -224,21 +324,15 @@ mod tests {
     }
 
     #[test]
-    fn channel_manager_lazy_create_and_isolated_state() {
-        let mgr = ChannelManager::new();
-        // 未创建 channel：懒建后读写分离，互不干扰
-        mgr.add_pending("c1", "msg1".to_string());
-        assert!(mgr.consume_pending("c1", "msg1"));
-        assert!(!mgr.consume_pending("c1", "msg1"));
+    fn channel_mode_and_agent_state() {
+        let ctx = Channel::new();
         // mode 默认 Role，设置后读回
-        assert_eq!(mgr.mode("c1"), Mode::Role);
-        mgr.set_mode("c1", Mode::Event("e1".into()));
-        assert_eq!(mgr.mode("c1"), Mode::Event("e1".into()));
-        // 未创建 channel mode 回退 Role
-        assert_eq!(mgr.mode("c2"), Mode::Role);
+        assert_eq!(ctx.mode(), Mode::Role);
+        ctx.set_mode(Mode::Event("e1".into()));
+        assert_eq!(ctx.mode(), Mode::Event("e1".into()));
         // agent_id 未绑定 None，绑定后读回
-        assert!(mgr.agent_id("c1").is_none());
-        mgr.set_agent_id("c1", Arc::new("aid".into()));
-        assert_eq!(mgr.agent_id("c1").unwrap().as_str(), "aid");
+        assert!(ctx.agent_id().is_none());
+        ctx.set_agent_id(Arc::new("aid".into()));
+        assert_eq!(ctx.agent_id().unwrap().as_str(), "aid");
     }
 }
