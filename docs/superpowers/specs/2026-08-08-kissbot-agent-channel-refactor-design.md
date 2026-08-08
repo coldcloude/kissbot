@@ -22,6 +22,7 @@
 | Q3 | coordinator 弱引用如何传递 | 不用后置 OnceLock、不做参数穿透：AgentCoordinator 改全局单例（`OnceLock<AgentCoordinator>` 存值），Session / Channel 不存 weak，需要时 `AgentCoordinator::instance()` |
 | Q4 | 测试策略 | 转发路径不单独单测（升级真实 Coordinator 太重，与项目现有模式一致）；不引入 mock trait |
 | Q5 | Terminal receiver | `&self`（对象安全成立；三个实现者方法体均不依赖 `Arc<Self>` 的 clone/降级） |
+| Q6 | 所有使用 coordinator 的位置 | **一律不传 coordinator 参数，统一从单例获取**：command_router::execute 删 coordinator 参数、session_manager 删 Weak、各模块需要 coordinator 时 `AgentCoordinator::instance()` |
 
 ## 三、架构
 
@@ -80,8 +81,8 @@ impl AgentCoordinator {
 - `accept_batch`（trigger 任务 flush 入口）：`AgentCoordinator::instance()` 直接取，替代弱引用升级
 
 **command_router**
-- `execute` 的 coordinator 参数从 `&Arc<AgentCoordinator>` 改为 `&AgentCoordinator`
-- 内部 `coordinator.clone().set_session_model(...)` 改 `coordinator.set_session_model(...)`（set_session_model 已改 &self）
+- `execute` **删除 coordinator 参数**（原 `&Arc<AgentCoordinator>`），内部经 `AgentCoordinator::instance()` 取单例调用各 coordinator 方法（channel_session_key / resolve_agent_id_for_bind / change_channel_key / set_session_model / list_events 等）
+- 辅助函数 `channel_current_key` 同样删除 coordinator 参数，内部取单例
 
 **Terminal trait（kissbot-channel-client）**
 - 全部方法 receiver `self: Arc<Self>` → `&self`，更新注释（`&self` 可对象化；实现者不再需要方法内持有/降级 Arc 自身）
@@ -124,7 +125,7 @@ impl AgentCoordinator {
 | kissbot-agent/src/channel_manager.rs | Channel 删 producer；ChannelManager 加 config/disconnect_notify/Terminal/connect_all/send |
 | kissbot-agent/src/coordinator.rs | 删 Terminal/connect_channels/disconnect_notify/record_outgoing_msg_id/is_self_echo_by_msg_id/bind_batch；单例化；全部方法 `&self`；send 走 channel_manager |
 | kissbot-agent/src/session_manager.rs | Session 删 coordinator；get_or_create/create_session 删参数；accept_batch 用 instance() |
-| kissbot-agent/src/command_router.rs | execute 参数 `&AgentCoordinator`；set_session_model 调用调整 |
+| kissbot-agent/src/command_router.rs | execute / channel_current_key 删除 coordinator 参数，内部经 instance() 取单例 |
 | kissbot-agent/src/main.rs | new() 返回 Result<()>；run 经 instance() |
 
 ## 五、测试
