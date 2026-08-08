@@ -39,7 +39,7 @@ impl AgentCoordinator {
 
     /// 构造 + 初始化 + 注册单例；不再返回 Arc
     pub async fn new(config: Arc<ConfigManager>) -> Result<()> {
-        // 构造值 → 用 &self 完成全部初始化（bind agent/session/connect_all）→ SINGLETON.set(self) → Ok(())
+        // 构造值 → 用 &self 完成全部初始化（bind agent/session）→ SINGLETON.set(self) → Ok(())
     }
 }
 ```
@@ -73,7 +73,8 @@ impl AgentCoordinator {
 - `send_admin_reply` / `send_outgoing`：改用 `channel_manager.send(...)`（msg_id 的 pending 记录由 send 内部完成），成功后推记忆 is_self=1
 - 其余方法全部改 `&self`：`ensure_session` / `apply_channel_key` / `relocate_channel` / `set_session_model` 等（内部 `self.clone().xxx()` 改直接调用）
 - command_rx 任务：任务内 `let coordinator = AgentCoordinator::instance();`（&'static）
-- `new()`：构造值 → 校验 default_model / 建 station_runtimes → `connect_all()`（预建全部 channel）→ 每 channel `bind_channel_runtime` + `ensure_session` → `SINGLETON.set`
+- `new()`：构造值 → 校验 default_model / 建 station_runtimes → 每 channel `bind_channel_runtime` + `ensure_session` → `SINGLETON.set`（**不做连接**）
+- `run()`：`channel_manager.connect_all()`（预建全部 channel + spawn 重连循环）→ 主循环（保持进程）；连接晚于单例注册，消息回调必然在 set 之后
 
 **SessionManager**
 - Session 删除 `coordinator: Weak<AgentCoordinator>` 字段
@@ -98,9 +99,12 @@ impl AgentCoordinator {
 ```
 启动：AgentCoordinator::new
   → 构造值 → 校验 default_model → 建 station_runtimes
-  → channel_manager.connect_all()（预建全部 Channel + spawn 重连）
   → 每 channel：bind_channel_runtime（写 agent_id）+ ensure_session（建会话）
   → SINGLETON.set(self) → Ok(())
+
+运行：AgentCoordinator::instance().run()
+  → channel_manager.connect_all()（预建全部 Channel + spawn 重连循环）
+  → 主循环（保持进程）
 
 上行：ChannelClient ──incoming_message──▶ ChannelManager(Terminal)
   → consume_pending 回显过滤（命中丢弃）
