@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use chrono::Local;
 use dashmap::DashMap;
 use tracing::{info, warn};
 
+use crate::channel_manager::ChannelManager;
 use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
 };
@@ -32,83 +33,11 @@ pub const RESERVED_AGENT_NAME: &str = "";
 pub const RESERVED_AGENT_ID: &str = "0";
 pub const RESERVED_ROLE_NAME: &str = "";
 
-/// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
-const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
-/// 上述 TTL 的 Duration 形式（evict 入参）
-const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
-
 /// Agentic Loop 工具调用轮次上限（防死循环）
 const MAX_TOOL_ROUNDS: usize = 10;
 
 // 上下文消息数量上限（溢出触发重置/压缩）已废弃硬编码常量 MAX_CONTEXT_MESSAGES——
 // 阈值统一由会话模型 effective.max_context_messages（provider/model 配置合成）决定，见 run_agentic_loop 溢出检查。
-
-/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id；
-/// client/producer 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
-/// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
-/// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
-struct ChannelContext {
-    /// 已发出未回显的 msg_id -> 记录时间（DashMap 无锁并发访问）
-    pending_outgoing: DashMap<String, Instant>,
-    /// 运行态 agent_id（ArcSwapOption 无锁读写；未绑定为 None，channel_agent 懒绑定）
-    agent_id: ArcSwapOption<String>,
-    /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
-    mode: ArcSwap<Mode>,
-    /// 本 channel 的 ChannelClient（connect_channels 时绑定；消息/回复路径从本字段取 client，
-    /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
-    client: ArcSwapOption<ChannelClient>,
-    /// 合批生产侧（绑定会话时从 session.batch_producer 取 clone；会话重定位后刷新，None 时 enqueue 懒绑定）
-    /// BatchProducer 字段全 Clone/Arc，无需锁——ArcSwapOption 原子替换/读取（与 agent_id 同模式）
-    producer: ArcSwapOption<crate::session_manager::BatchProducer>,
-}
-
-impl ChannelContext {
-    fn new() -> Self {
-        Self {
-            pending_outgoing: DashMap::new(),
-            agent_id: ArcSwapOption::new(None),
-            mode: ArcSwap::from_pointee(Mode::Role),
-            client: ArcSwapOption::new(None),
-            producer: ArcSwapOption::new(None),
-        }
-    }
-
-    /// 绑定 channel client（connect_channels 时绑定；每次重连循环启动更新）
-    fn bind_client(&self, client: Arc<ChannelClient>) {
-        self.client.store(Some(client));
-    }
-
-    /// 取 channel client（未连接/未绑定为 None）
-    fn client(&self) -> Option<Arc<ChannelClient>> {
-        self.client.load_full()
-    }
-
-    fn add_pending(&self, msg_id: String) {
-        self.evict(CHANNEL_CONTEXT_TTL);
-        self.pending_outgoing.insert(msg_id, Instant::now());
-    }
-
-    /// 命中则移除并返回 true（回显消费）；未命中再清理过期条目（懒清理）
-    fn consume_pending(&self, msg_id: &str) -> bool {
-        // 先尝试匹配消费（命中直接返回，避免每次消费都遍历清理）
-        if self.pending_outgoing.remove(msg_id).is_some() {
-            return true;
-        }
-        self.evict(CHANNEL_CONTEXT_TTL);
-        false
-    }
-
-    /// TTL 懒清理：先遍历收集过期条目，再逐个删除（DashMap 迭代期间不可修改，两步防死锁）
-    fn evict(&self, ttl: Duration) {
-        let expired: Vec<String> = self.pending_outgoing.iter()
-            .filter(|e| e.value().elapsed() >= ttl)
-            .map(|e| e.key().clone())
-            .collect();
-        for key in expired {
-            self.pending_outgoing.remove(&key);
-        }
-    }
-}
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话三元组」：写 config + 运行态 mode + （可选）agent_id + 会话重定位
@@ -129,8 +58,8 @@ pub struct AgentCoordinator {
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
     valid_default: ArcSwap<Option<ProviderModel>>,
-    /// 每 channel 运行时上下文（无锁：DashMap pending + ArcSwapOption agent_id）
-    channel_contexts: Arc<DashMap<String, Arc<ChannelContext>>>,
+    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/agent_id/mode/client/producer）
+    channel_manager: Arc<ChannelManager>,
     /// 断线通知：channel_id → Notify，closed() 通知重连循环
     disconnect_notify: Arc<DashMap<String, Arc<tokio::sync::Notify>>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -159,7 +88,7 @@ impl AgentCoordinator {
             memory_store_client,
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
-            channel_contexts: Arc::new(DashMap::new()),
+            channel_manager: Arc::new(ChannelManager::new()),
             disconnect_notify: Arc::new(DashMap::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
@@ -223,36 +152,25 @@ impl AgentCoordinator {
 
     /// 按来源 channel 的绑定配置 + 运行态 mode 计算会话 key（agent/role 取绑定配置，纯函数逻辑见 session_key_of）
     fn session_key_for(&self, ch: &crate::config_manager::ChannelConfig) -> SessionKey {
-        // 运行态 mode 参与会话定位（从 ChannelContext 读）；无脱离态，agent_name 为空 = 保留 agent
+        // 运行态 mode 参与会话定位（从 ChannelManager 读）；无脱离态，agent_name 为空 = 保留 agent
         let mode = self.channel_mode(&ch.channel_id);
         session_key_of(&ch.agent_name, &ch.role_name, mode)
     }
 
     /// 记录已发出的 outgoing msg_id 到该 channel 的 pending 集合（回显判定用）
     async fn record_outgoing_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) {
-        let ctx = self.channel_contexts
-            .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(ChannelContext::new()))
-            .clone();
-        ctx.add_pending(msg_id.as_str().to_string());
+        self.channel_manager.add_pending(channel_id, msg_id.as_str().to_string());
     }
 
     /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
     async fn is_self_echo_by_msg_id(&self, channel_id: &str, msg_id: &Arc<String>) -> bool {
-        if let Some(ctx) = self.channel_contexts.get(channel_id) {
-            ctx.consume_pending(msg_id.as_str())
-        } else {
-            false
-        }
+        self.channel_manager.consume_pending(channel_id, msg_id.as_str())
     }
 
     /// 读取 channel 运行态 agent_id；未绑定（异常路径）时懒绑定
     async fn channel_agent(&self, channel_id: &str) -> Arc<String> {
-        let ctx = self.channel_contexts.get(channel_id).map(|c| c.clone());
-        if let Some(ctx) = ctx {
-            if let Some(agent_id) = ctx.agent_id.load_full() {
-                return agent_id;
-            }
+        if let Some(agent_id) = self.channel_manager.agent_id(channel_id) {
+            return agent_id;
         }
         // 未绑定/缺失：懒绑定（正常启动路径已在 new() 中绑定全部 channel）
         self.bind_channel_runtime(channel_id).await
@@ -280,38 +198,23 @@ impl AgentCoordinator {
 
     /// 写入 channel 运行态 agent_id（切换成功时由命令入口调用）
     pub async fn set_channel_runtime(&self, channel_id: &str, agent_id: Arc<String>) -> Arc<String> {
-        let ctx = self.channel_contexts
-            .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(ChannelContext::new()))
-            .clone();
-        ctx.agent_id.store(Some(agent_id.clone()));
+        self.channel_manager.set_agent_id(channel_id, agent_id.clone());
         agent_id
     }
 
     /// 绑定会话后刷新合批生产侧（从 session.batch_producer 取 clone；会话创建/重定位时调用，None 时 enqueue 懒绑定）
     async fn bind_batch(&self, channel_id: &str, session: &Arc<Session>) {
-        let ctx = self.channel_contexts
-            .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(ChannelContext::new()))
-            .clone();
-        ctx.producer.store(Some(Arc::new(session.batch_producer.clone())));
+        self.channel_manager.bind_producer(channel_id, Arc::new(session.batch_producer.clone()));
     }
 
-    /// 设置 channel 运行态模式（写 ChannelContext.mode；/mode 切换，不回写，重启回 Role）
+    /// 设置 channel 运行态模式（写 Channel.mode；/mode 切换，不回写，重启回 Role）
     pub fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
-        let ctx = self.channel_contexts
-            .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(ChannelContext::new()))
-            .clone();
-        ctx.mode.store(Arc::new(mode));
+        self.channel_manager.set_mode(channel_id, mode);
     }
 
     /// 取 channel 运行态模式（未绑定/缺失回退角色模式）
     pub fn channel_mode(&self, channel_id: &str) -> Mode {
-        match self.channel_contexts.get(channel_id) {
-            Some(c) => (*c.mode.load_full()).clone(),
-            None => Mode::Role,
-        }
+        self.channel_manager.mode(channel_id)
     }
 
     /// 解析 agent_name -> agent_id（不缓存）：空 agent_name 返回保留 id；
@@ -681,12 +584,8 @@ impl AgentCoordinator {
             // 断线通知
             let notify = Arc::new(tokio::sync::Notify::new());
             coordinator.disconnect_notify.insert(channel_id.clone(), notify.clone());
-            // ChannelClient 归入该 channel 的 ChannelContext（懒建后 bind；消息/回复路径从 ctx 取 client）
-            let ctx = coordinator.channel_contexts
-                .entry(channel_id.clone())
-                .or_insert_with(|| Arc::new(ChannelContext::new()))
-                .clone();
-            ctx.bind_client(client.clone());
+            // ChannelClient 归入该 channel 的 ChannelManager（懒建后 bind；消息/回复路径从 manager 取 client）
+            coordinator.channel_manager.bind_client(&channel_id, client.clone());
 
             let client_clone = client;
             let api_key = api_key.clone();
@@ -842,15 +741,11 @@ impl AgentCoordinator {
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
         let interval = Duration::from_secs(cfg.channel_batch_interval_secs);
 
-        let ctx = self.channel_contexts
-            .entry(channel_id.to_string())
-            .or_insert_with(|| Arc::new(ChannelContext::new()))
-            .clone();
         // 懒绑定：无生产侧则从会话取（正常路径在 ensure_session 创建/apply_channel_key 已绑定）
-        let mut producer = ctx.producer.load_full();
+        let mut producer = self.channel_manager.producer(channel_id);
         if producer.is_none() {
             self.bind_batch(channel_id, session).await;
-            producer = ctx.producer.load_full();
+            producer = self.channel_manager.producer(channel_id);
         }
         let Some(producer) = producer else {
             warn!("enqueue_batch: channel {} 无合批生产侧", channel_id);
@@ -899,7 +794,7 @@ impl AgentCoordinator {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: &Arc<IncomingMessageEvent>, content: String) {
-        let Some(client) = self.channel_contexts.get(channel_id).and_then(|ctx| ctx.client()) else {
+        let Some(client) = self.channel_manager.client(channel_id) else {
             warn!("send_admin_reply: 未找到 channel client: {}", channel_id);
             return;
         };
@@ -1210,7 +1105,7 @@ impl AgentCoordinator {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     async fn send_outgoing(&self, out_channel: &OutChannel, content: String) {
-        let Some(client) = self.channel_contexts.get(out_channel.channel_id.as_str()).and_then(|ctx| ctx.client()) else {
+        let Some(client) = self.channel_manager.client(out_channel.channel_id.as_str()) else {
             warn!("send_outgoing: 未找到 channel client: {}", out_channel.channel_id);
             return;
         };
@@ -1348,31 +1243,6 @@ async fn resolve_agent_id_http(agent_name: &str, ego_url: &str) -> Result<Arc<St
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn channel_context_msg_id_consume() {
-        let ctx = ChannelContext::new();
-        // 加入后命中且消费移除
-        ctx.add_pending("msg1".to_string());
-        assert!(ctx.consume_pending("msg1"));
-        // 已消费，再次查询为 false
-        assert!(!ctx.consume_pending("msg1"));
-        // 未加入的 msg_id
-        assert!(!ctx.consume_pending("nonexistent"));
-    }
-
-    #[test]
-    fn channel_context_ttl_evict() {
-        let ctx = ChannelContext::new();
-        // TTL=0：插入即过期（走真实 add_pending 路径），下次操作即被淘汰
-        ctx.add_pending("expired".to_string());
-        ctx.evict(Duration::from_secs(0));
-        assert!(!ctx.consume_pending("expired"), "TTL=0 插入即过期，应被淘汰");
-        // 正常 TTL：未过期条目保留
-        ctx.add_pending("fresh".to_string());
-        ctx.evict(Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS));
-        assert!(ctx.consume_pending("fresh"));
-    }
 
     #[test]
     fn session_key_of_always_builds_key() {

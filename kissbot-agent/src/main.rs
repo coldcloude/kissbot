@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
+mod channel_manager;
 mod command_router;
 mod config_manager;
 mod context_cache;
