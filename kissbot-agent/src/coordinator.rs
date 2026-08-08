@@ -160,7 +160,7 @@ impl AgentCoordinator {
         if let Some(agent_id) = self.channel_manager.agent_id(channel_id) {
             return agent_id;
         }
-        // 未绑定/缺失：懒绑定（正常启动路径已在 new() 中绑定全部 channel）
+        // 未绑定/缺失：懒绑定（正常启动路径已在 run() 中绑定全部 channel）
         self.bind_channel_runtime(channel_id).await
     }
 
