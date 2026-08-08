@@ -85,7 +85,7 @@ impl AgentCoordinator {
 - 辅助函数 `channel_current_key` 同样删除 coordinator 参数，内部取单例
 
 **Terminal trait（kissbot-channel-client）**
-- 全部方法 receiver `self: Arc<Self>` → `&self`，更新注释（`&self` 可对象化；实现者不再需要方法内持有/降级 Arc 自身）
+- 全部方法 receiver `self: Arc<Self>` → `&self`；原解释 `Arc<Self>` receiver 的注释（trait 定义上方）**直接删除，不新增替代注释**
 - 同步更新：`tests/mock.rs`（MockTerminal）、`kissbot-channel-client-cli/src/main.rs`（CliTerminal）的方法签名（方法体不变）
 - `channel_client.rs` 调用点无需改动（upgrade 的 `Arc<dyn Terminal>` 自动解引用调 `&self`）
 
