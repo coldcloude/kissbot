@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::config_manager::ConfigManager;
-use crate::context_config::EffectiveContextConfig;
+use crate::config_manager::{ConfigManager, EffectiveContextConfig};
 use crate::types::{Message, Mode, Result, Error};
 
 /// 记忆消息（channel record 的最小视图：name + content，id 类不保留）

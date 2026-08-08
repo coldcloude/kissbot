@@ -5,7 +5,6 @@ use tracing::info;
 mod command_router;
 mod config_manager;
 mod context_cache;
-mod context_config;
 mod coordinator;
 mod ego_md;
 mod history;

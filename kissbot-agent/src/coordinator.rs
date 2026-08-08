@@ -13,9 +13,8 @@ use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
 };
 use crate::context_cache::ContextCache;
-use crate::context_config::EffectiveContextConfig;
 use crate::history::HistoryArchive;
-use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
+use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig, EffectiveContextConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::session_manager::{Session, SessionManager};
