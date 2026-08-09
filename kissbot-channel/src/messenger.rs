@@ -3,7 +3,7 @@ use bytes::Bytes;
 use kissbot_api::{channel::*, message::*};
 
 use crate::error::Result;
-use crate::channel_manager::ChannelManager;
+use crate::channel_server::ChannelServer;
 use std::sync::{Arc, Weak};
 
 // Messenger trait
@@ -23,5 +23,5 @@ pub trait Messenger: Send + Sync + 'static {
 /// Messenger 创建器。M 为具体 Messenger 类型，create 返回 Arc<M> 供调用方直接使用。
 #[async_trait]
 pub trait MessengerCreator<M: Messenger> {
-    async fn create(&self, manager: Weak<ChannelManager>) -> Result<Arc<M>>;
+    async fn create(&self, manager: Weak<ChannelServer>) -> Result<Arc<M>>;
 }

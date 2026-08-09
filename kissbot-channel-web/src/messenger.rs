@@ -16,7 +16,7 @@ use kissbot_api::channel::{
 };
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel::{
-    ChannelManager, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
+    ChannelServer, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
     Messenger, MessengerCreator,
 };
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ pub struct WebMessenger {
     repo_path: PathBuf,
     config: Arc<RwLock<WebMessengerRepo>>,
     msg_id_seq: AtomicU32,
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
     pub message_store: Arc<MessageStore>,
@@ -92,7 +92,7 @@ impl WebMessenger {
         messenger_id: Arc<String>,
         repo_path: PathBuf,
         config: Arc<RwLock<WebMessengerRepo>>,
-        manager: Weak<ChannelManager>,
+        manager: Weak<ChannelServer>,
         attachment_dir: &str,
         message_base_dir: &str,
     ) -> Arc<Self> {
@@ -599,7 +599,7 @@ impl WebMessengerCreator {
 impl MessengerCreator<WebMessenger> for WebMessengerCreator {
     async fn create(
         &self,
-        manager: Weak<ChannelManager>,
+        manager: Weak<ChannelServer>,
     ) -> std::result::Result<Arc<WebMessenger>, kissbot_channel::Error> {
         let mid = self.config.read().await.messenger_id.clone();
 

@@ -7,7 +7,7 @@ mod message_store;
 
 use std::sync::Arc;
 
-use kissbot_channel::ChannelManager;
+use kissbot_channel::ChannelServer;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
 use tower_http::cors::CorsLayer;
@@ -30,8 +30,8 @@ async fn main() {
     ).await
     .expect("Failed to load messenger config");
 
-    // 3. 创建 ChannelManager
-    let channel_manager = Arc::new(ChannelManager::new());
+    // 3. 创建 ChannelServer
+    let channel_manager = Arc::new(ChannelServer::new());
 
     // 4. 注册 WebMessenger
     let mid = creator.messenger_id().await;
@@ -40,11 +40,11 @@ async fn main() {
         creator
     ).await.expect("Failed to register messenger");
 
-    // 5. 启动 ChannelManager WS 服务器（后台）
+    // 5. 启动 ChannelServer WS 服务器（后台）
     let ws_addr = config.ws_listen_addr.clone();
     tokio::spawn(async move {
         channel_manager.start(&ws_addr).await
-        .expect("Failed to start ChannelManager");
+        .expect("Failed to start ChannelServer");
     });
 
     // 6. 创建 HTTP 服务器

@@ -38,7 +38,7 @@ struct AttachmentSenderContext {
     pub info: Arc<AttachmentInfo>,
 }
 
-pub struct ChannelManager {
+pub struct ChannelServer {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
     messenger_map: DashMap<String, Arc<MessengerContext>>,
@@ -49,7 +49,7 @@ pub struct ChannelManager {
 }
 
 struct ConnectCloseProcessor {
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
     connect_id: u32,
 }
 
@@ -151,7 +151,7 @@ trait BinaryProcessorWrapper {
 }
 
 struct MessengerInfoRequestProcessor {
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
 }
 
 #[async_trait]
@@ -185,7 +185,7 @@ impl WsJsonProcessor for MessengerInfoRequestProcessor {
 }
 
 struct BindAgentUserProcessor {
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
     connect_context: Weak<ConnectContext>,
 }
 
@@ -232,7 +232,7 @@ impl WsJsonProcessor for BindAgentUserProcessor {
 }
 
 struct UnbindAgentUserProcessor {
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
     connect_context: Weak<ConnectContext>,
 }
 
@@ -281,13 +281,13 @@ impl WsJsonProcessor for UnbindAgentUserProcessor {
 
 struct OutgoingMessageProcessor {
     connect_id: u32,
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
 }
 
 /// 遍历 content 中的 AttachmentInfoResponse，注册已有的 transfer_id 到 receiver_map
 fn register_attachment_receivers(
     content: &Content,
-    manager: &ChannelManager,
+    manager: &ChannelServer,
     messenger: Weak<dyn Messenger>,
 ) {
     match content {
@@ -348,7 +348,7 @@ impl WsJsonProcessor for OutgoingMessageProcessor {
 }
 
 struct AttachmentPayloadProcessor {
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
 }
 
 #[async_trait]
@@ -423,7 +423,7 @@ impl WsJsonProcessorMut for DownloadResponseHandler {
 
 struct AttachmentDownloadRequestProcessor {
     connect_context: Weak<ConnectContext>,
-    manager: Weak<ChannelManager>,
+    manager: Weak<ChannelServer>,
 }
 
 impl AttachmentDownloadRequestProcessor {
@@ -524,7 +524,7 @@ impl WsJsonProcessor for AttachmentDownloadRequestProcessor {
 }
 
 #[async_trait]
-impl WsProcessorContext for ChannelManager {
+impl WsProcessorContext for ChannelServer {
     async fn init(self: Arc<Self>, ws_context: Arc<WsContext>) -> std::result::Result<(), kai_ws::Error> {
         //保存context
         let connect_id = self.global_connect_id.fetch_add(1, Ordering::Relaxed);
@@ -582,7 +582,7 @@ impl WsProcessorContext for ChannelManager {
     }
 }
 
-impl ChannelManager {
+impl ChannelServer {
     pub fn new() -> Self {
         Self {
             global_connect_id: AtomicU32::new(0),
@@ -732,7 +732,7 @@ impl ChannelManager {
         Ok(response)
     }
 
-    // === 以下方法原为 handler trait，Messenger 通过 Weak<ChannelManager> 直接调用 ===
+    // === 以下方法原为 handler trait，Messenger 通过 Weak<ChannelServer> 直接调用 ===
 
     pub async fn handle_group_change(&self, event: Arc<GroupChangeEvent>) {
         let span = span!(Level::INFO, "channel_manager handle group change");

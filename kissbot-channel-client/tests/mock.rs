@@ -6,7 +6,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
-use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelManager};
+use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelServer};
 use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent};
 use kissbot_channel_client::error::Result as ClientResult;
 use kissbot_channel_client::Terminal;
@@ -14,7 +14,7 @@ use kissbot_channel_client::Terminal;
 pub const TEST_TIME: &str = "2026-07-27 00:00:00";
 pub const DOWNLOAD_CHUNK_SIZE: usize = 4;
 
-/// 测试配置：ChannelManager 内部会读取 config.json（memory-store 推送、api key 校验），
+/// 测试配置：ChannelServer 内部会读取 config.json（memory-store 推送、api key 校验），
 /// 测试用临时配置文件，memory_store_url 指向不可达地址（错误由 NoopErrorHandler 吞掉）。
 pub fn test_config_setup() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -59,7 +59,7 @@ pub struct MockMessenger {
     pub download_data: Bytes,
     next_transfer_id: AtomicU32,
     next_msg_id: AtomicU32,
-    manager: RwLock<Option<Weak<ChannelManager>>>,
+    manager: RwLock<Option<Weak<ChannelServer>>>,
     pub sent_messages: flume::Sender<OutgoingMessage>,
     sent_messages_rx: flume::Receiver<OutgoingMessage>,
     pub upload_chunks: flume::Sender<(u32, u64, Bytes)>,
@@ -91,7 +91,7 @@ impl MockMessenger {
         self.upload_chunks_rx.clone()
     }
 
-    /// 模拟外部消息到达，经 ChannelManager 推送给终端
+    /// 模拟外部消息到达，经 ChannelServer 推送给终端
     pub fn push_incoming(&self, msg: IncomingMessage) {
         let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
         if let Some(manager) = handler {
@@ -236,7 +236,7 @@ pub struct MockMessengerCreator {
 
 #[async_trait]
 impl MessengerCreator<MockMessenger> for MockMessengerCreator {
-    async fn create(&self, manager: Weak<ChannelManager>) -> Result<Arc<MockMessenger>, ChannelError> {
+    async fn create(&self, manager: Weak<ChannelServer>) -> Result<Arc<MockMessenger>, ChannelError> {
         *self.messenger.manager.write().unwrap() = Some(manager);
         Ok(self.messenger.clone())
     }
@@ -321,9 +321,9 @@ impl Terminal for MockTerminal {
 
 // ========== 测试辅助 ==========
 
-/// 启动带一个 mock messenger 的 ChannelManager，监听指定端口
-pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<kissbot_channel::ChannelManager> {
-    let manager = Arc::new(kissbot_channel::ChannelManager::new());
+/// 启动带一个 mock messenger 的 ChannelServer，监听指定端口
+pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<kissbot_channel::ChannelServer> {
+    let manager = Arc::new(kissbot_channel::ChannelServer::new());
     let messenger_id = messenger.info.messenger_id.to_string();
     manager.register_messenger(&messenger_id, MockMessengerCreator { messenger }).await.unwrap();
     let m = manager.clone();
