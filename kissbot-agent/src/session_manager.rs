@@ -90,7 +90,35 @@ impl SessionContext {
 
     /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；文件不存在为空
     pub async fn recover_from_cache(&mut self) -> Result<()> {
-        self.messages = self.read_cache().await?;
+        let path = self.cache_path();
+        if !path.exists() {
+            self.messages = Vec::new();
+            return Ok(());
+        }
+        let mut reader = kai_file::ReverseLineReader::new(&path, None, None).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        let mut msgs = Vec::new();
+        while let Some(line) = reader.next_line().await
+            .map_err(|e| Error::IoError(e.to_string()))?
+        {
+            let s = line.line.trim();
+            if s.is_empty() { continue; }
+            if let Ok(m) = serde_json::from_str::<Message>(s) {
+                msgs.push(m);
+            }
+        }
+        msgs.reverse();
+        // 崩溃一致性清理：恢复应从完整轮次开始。
+        // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
+        //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
+        // 2) 丢弃开头的 Tool 消息（恢复起点之前的残留）。
+        if let Some(Message::Assistant { tool_calls: Some(_), .. }) = msgs.last() {
+            msgs.pop();
+        }
+        while matches!(msgs.first(), Some(Message::Tool { .. })) {
+            msgs.remove(0);
+        }
+        self.messages = msgs;
         Ok(())
     }
 
@@ -189,38 +217,6 @@ impl SessionContext {
                 .map_err(|e| Error::IoError(e.to_string()))?;
         }
         Ok(())
-    }
-
-    /// 全量回读（按时间顺序）；文件不存在返回空
-    async fn read_cache(&self) -> Result<Vec<Message>> {
-        let path = self.cache_path();
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let mut reader = kai_file::ReverseLineReader::new(&path, None, None).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
-        let mut msgs = Vec::new();
-        while let Some(line) = reader.next_line().await
-            .map_err(|e| Error::IoError(e.to_string()))?
-        {
-            let s = line.line.trim();
-            if s.is_empty() { continue; }
-            if let Ok(m) = serde_json::from_str::<Message>(s) {
-                msgs.push(m);
-            }
-        }
-        msgs.reverse();
-        // 崩溃一致性清理：恢复应从完整轮次开始。
-        // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
-        //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
-        // 2) 丢弃开头的 Tool 消息（恢复起点之前的残留）。
-        if let Some(Message::Assistant { tool_calls: Some(_), .. }) = msgs.last() {
-            msgs.pop();
-        }
-        while matches!(msgs.first(), Some(Message::Tool { .. })) {
-            msgs.remove(0);
-        }
-        Ok(msgs)
     }
 
     /// 缓存清空重写：按当前内存（不含 system）重写（压缩重建用）
