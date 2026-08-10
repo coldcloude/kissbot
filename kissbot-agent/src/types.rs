@@ -123,7 +123,6 @@ pub enum AdminCommand {
     ModeEvent(Option<String>),
     ModeRole,
     Reenter(String),
-    Events,
     Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
     /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_name=""、role_name=""）
     SetAgent { agent_name: Option<String>, role: Option<String> },

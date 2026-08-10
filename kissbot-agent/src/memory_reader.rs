@@ -1,8 +1,6 @@
 use std::collections::{btree_map::Entry, BTreeMap};
 use std::sync::Arc;
 
-use serde_json::json;
-
 use crate::config_manager::{ConfigManager, EffectiveContextConfig};
 use crate::types::{Message, Mode, Result, Error};
 use kissbot_api::memory::{ChannelRecord, QueryRequest, RecentQuery, RecordKey};
@@ -99,39 +97,6 @@ impl MemoryReader {
         Ok(Vec::new())
     }
 
-    /// 查询事件列表
-    /// agent_id/role_name 为 coordinator 传入的当前运行状态快照
-    #[allow(dead_code)]
-    pub async fn list_events(
-        &self,
-        _config: &ConfigManager,
-        agent_id: &str,
-        role_name: &str,
-    ) -> Result<Vec<String>> {
-        let store_url = kissbot_api::ApiConfig::get().memory_store_url.clone();
-
-        let url = format!("{}/events", store_url.trim_end_matches('/'));
-
-        let body = json!({
-            "agent_id": agent_id,
-            "role_name": role_name,
-        });
-
-        let resp = self.client.post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::MemoryStoreError(format!("查询事件失败: {}", e)))?;
-
-        let data: serde_json::Value = resp.json().await?;
-        let events = data["events"].as_array()
-            .map(|arr| {
-                arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-            })
-            .unwrap_or_default();
-
-        Ok(events)
-    }
 
     /// role 模式记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
     /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
@@ -255,6 +220,7 @@ mod tests {
     use crate::types::Message;
     use axum::routing::post;
     use axum::{Json, Router};
+    use serde_json::json;
     use tokio::net::TcpListener;
 
     // 测试用上下文配置（非记忆字段用默认值占位）

@@ -86,7 +86,6 @@
 | mode | `/mode event` | 生成新 event-id 进入事件模式 |
 | mode | `/mode role` | 回到角色模式 |
 | reenter | `/reenter <event-id>` | 重进指定事件会话 |
-| events | `/events` | 查询事件列表 |
 
 ### 命令处理状态码
 
@@ -145,12 +144,6 @@
 ### 后续记忆搜索（Agentic Loop 内 Tool Call）
 
 在 agentic loop 中，当 LLM 需要回顾更早的历史时，通过内置工具 call 调用 memory-struct 的搜索接口。由 ToolCallDispatcher 识别为内置工具，不经过 station。由 ToolCallDispatcher 实现。
-
-### 事件查询
-
-| 方法 | 路径 | 请求体 |
-|------|------|--------|
-| POST | /events | { "agent_id": "...", "role_name": "..." } — 返回事件列表 |
 
 ## Memory-Ego API 交互
 

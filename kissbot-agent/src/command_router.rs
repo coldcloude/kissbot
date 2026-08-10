@@ -142,7 +142,6 @@ impl CommandRouter {
                     group_id: parts[3].to_string(),
                 })))
             }
-            "events" => Ok(AdminCommand::Events),
             "model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
                 if parts.len() < 3 || parts.len() > 4 {
@@ -283,10 +282,6 @@ impl CommandRouter {
                         Ok("✅ 已取消发送通道（只存不回复）".to_string())
                     }
                 }
-            }
-            AdminCommand::Events => {
-                let reply = coordinator.list_events(channel_id).await?;
-                Ok(reply)
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo

@@ -446,25 +446,6 @@ impl AgentCoordinator {
         Ok(())
     }
 
-    /// 查询来源 channel 所属会话的事件列表
-    pub async fn list_events(&self, channel_id: &str) -> Result<String> {
-        let Some(ch) = self.config.channel(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
-        };
-        let key = self.session_key_for(&ch);
-        // 取记忆用会话保存的 agent_id
-        let session = self.session_manager.get(&key)
-            .ok_or_else(|| Error::ConfigNotFound(format!("会话不存在: {:?}", key)))?;
-        let events = self.memory_reader
-            .list_events(&self.config, session.agent_id.as_str(), &key.role_name)
-            .await?;
-        if events.is_empty() {
-            Ok("📋 暂无事件".to_string())
-        } else {
-            Ok(format!("📋 事件列表:\n{}", events.join("\n")))
-        }
-    }
-
     /// 启动主循环（保持进程运行）：绑定运行态 agent + 初始化会话 + 连接全部 channel
     pub async fn run(&self) {
         info!("AgentCoordinator 启动，等待外部输入...");
