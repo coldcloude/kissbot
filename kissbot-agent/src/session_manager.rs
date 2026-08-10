@@ -171,19 +171,15 @@ impl SessionContext {
         Ok(true)
     }
 
-    /// 清空缓存文件（重建/重置时调用；文件不存在幂等）
-    pub async fn clear_cache(&self) -> Result<()> {
+    /// 归档当前内存（如有内容）并清空缓存文件（重置/重建前的持久化清理；文件不存在幂等）
+    pub async fn archive_and_clear_cache(&self) -> Result<()> {
+        let _ = self.archive().await?;
+        // 清空缓存文件（文件不存在幂等）
         match tokio::fs::remove_file(&self.cache_path()).await {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::IoError(e.to_string())),
         }
-    }
-
-    /// 归档当前内存（如有内容）并清空缓存文件（重置/重建前的持久化清理）
-    pub async fn archive_and_clear_cache(&self) -> Result<()> {
-        let _ = self.archive().await?;
-        self.clear_cache().await
     }
 
     /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
@@ -267,7 +263,12 @@ impl SessionContext {
     /// 缓存清空重写：按当前系统消息 + 当前内存重写（System 首行；系统消息变更/压缩重建用）
     /// 清空后由 append_cache 的新文件逻辑落 System 首行，这里只写消息行（避免 System 重复）
     async fn rewrite_cache(&self) -> Result<()> {
-        self.clear_cache().await?;
+        // 清空旧缓存（文件不存在幂等），再按当前内容重写
+        match tokio::fs::remove_file(&self.cache_path()).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::IoError(e.to_string())),
+        }
         self.append_cache(&self.messages).await
     }
 }
