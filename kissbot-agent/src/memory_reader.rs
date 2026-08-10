@@ -178,8 +178,7 @@ impl MemoryReader {
         // ===== 解析（parse_channel_records 内联）：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
         // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
         let mut map: BTreeMap<(Arc<String>, u64), MemoryMsg> = BTreeMap::new();
-        // groups 后文 ln 计算仍需借用 → 首次解析传 clone（记录数量 ≤ count，代价可忽略）
-        parse_channel_groups(groups.clone(), &mut map);
+        parse_channel_groups(groups, &mut map);
 
         if map.is_empty() || count == 0 {
             return Ok(Vec::new());
@@ -188,13 +187,10 @@ impl MemoryReader {
         if recent_raw < count {
             return Ok(map.into_values().collect());
         }
-        // ln = Query1 最旧一条（原始记录）的 time；M = min(时间窗起点 start, ln)
-        let ln = groups.iter().flat_map(|(_, v)| v.iter())
-            .map(|(_, r)| r.time.as_str())
-            .min()
-            .expect("Query1 非空（recent_raw >= count >= 1）")
-            .to_string();
-        let m = if start.as_str() < ln.as_str() { start } else { ln.clone() };  // M = min(cutoff, ln)
+        // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；Query1 最旧若为非文本，其同时间组除非文本外
+        // 无其他记录（否则文本记录会占据更小首键）→ 与取原始最旧等价；M = min(时间窗起点 start, ln)
+        let ln = map.keys().next().expect("map 非空（is_empty 已早退）").0.clone();
+        let m = if start.as_str() < ln.as_str() { start } else { ln.to_string() };  // M = min(cutoff, ln)
 
         // ===== Query2（query_channel 内联）：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
         // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 seen 集去重）
@@ -203,7 +199,7 @@ impl MemoryReader {
             agent_id,
             role_name,
             start_time: Arc::new(m),
-            end_time: Arc::new(ln),
+            end_time: ln,
         };
         let resp = self.client.post(&url)
             .json(&body)
