@@ -22,7 +22,7 @@ use crate::station::{self, StationRuntime};
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::message::Content;
-/// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 build_initial_context）；
+/// 保留 agent/role：agent_name 为空 = 保留 agent（建会话但初始上下文用默认系统提示词，见 ensure_session）；
 /// 保留 agent 的 memory-store/ego agent_id 为 RESERVED_AGENT_ID（"0"）。
 pub const RESERVED_AGENT_NAME: &str = "";
 pub const RESERVED_AGENT_ID: &str = "0";
@@ -207,48 +207,48 @@ impl AgentCoordinator {
         let agent_id = self.channel_agent(channel_id).await;
         let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
         if created {
-            self.build_initial_context(&session).await;
+            // 新建会话上下文：event 从缓存恢复（不清理）；role 查询记忆重建（归档+清空在 build_role_context 内部）
+            match &*session.mode {
+                Mode::Event(_) => {
+                    let _ = session.context.lock().await.recover_from_cache().await;
+                }
+                Mode::Role => {
+                    self.build_role_context(&session).await;
+                }
+            }
+            // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 load_ego_info。
+            // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
+            if session.agent_id.as_str() == RESERVED_AGENT_ID {
+                let prompt = self.config.default_system_prompt().await;
+                session.context.lock().await.set_system_message(prompt);
+            } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
+                session.context.lock().await.set_system_message(ego_info);
+            }
+            // 顶层记忆索引（memory-struct 未实现时静默跳过）
+            let _ = self.memory_reader
+                .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
+                .await;
         }
         (session, created)
     }
 
-    /// 会话创建/重置时：加载 ego（保留 agent 用默认提示词）+ 历史记录 + 顶层记忆索引构建初始上下文
-    /// 取记忆/ego 一律用会话状态保存的 agent_id（session_key 仅去重，不从 key 提取 agent_name）
-    async fn build_initial_context(&self, session: &Arc<Session>) {
-        // 按模式加载上下文：event 从缓存恢复（含系统消息→当前）；role 从记忆打包（两查询比较取并集，打包为一条 user 消息）
-        match &*session.mode {
-            Mode::Event(_) => {
-                // 从缓存恢复上下文（全量回读；文件不存在为空）
-                let _ = session.context.lock().await.recover_from_cache().await;
-            }
-            Mode::Role => {
-                // 重新进入既有 role 会话：旧上下文先归档为历史（重建后缓存将被清空重写）
-                // reset_context 已先归档+清空，此处缓存不存在不会重复归档
-                let _ = session.context.lock().await.archive_and_clear_cache().await;
-                // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），打包为一条 user 消息作为首条内容
-                let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
-                if let Ok(msgs) = self.memory_reader
-                    .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg)
-                    .await
-                {
-                    if let Some(packed) = pack_memory_messages(&msgs) {
-                        session.context.lock().await.push(packed);
-                    }
-                }
-            }
-        }
-        // 系统消息：保留 agent（agent_id="0"）不调 memory-ego，用 NexusRepo 默认系统提示词；其余走 load_ego_info。
-        // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
-        if session.agent_id.as_str() == RESERVED_AGENT_ID {
-            let prompt = self.config.default_system_prompt().await;
-            session.context.lock().await.set_system_message(prompt);
-        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
-            session.context.lock().await.set_system_message(ego_info);
-        }
-        // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
-        let _ = self.memory_reader
-            .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
-            .await;
+    /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
+    /// 取记忆用会话状态保存的 agent_id（session_key 仅去重，不从 key 提取 agent_name）
+    async fn build_role_context(&self, session: &Arc<Session>) {
+        // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），打包为一条 user 消息作为首条内容
+        let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
+        let packed = if let Ok(msgs) = self.memory_reader
+            .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg)
+            .await
+        {
+            pack_memory_messages(&msgs)
+        } else {
+            None
+        };
+        // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
+        let _ = session.context.lock().await.archive_and_clear_cache().await;
+        let msgs = packed.map(|m| vec![m]).unwrap_or_default();
+        let _ = session.context.lock().await.rebuild(msgs).await;
     }
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
@@ -270,21 +270,6 @@ impl AgentCoordinator {
             keys.insert(self.session_key_for(ch));
         }
         self.session_manager.retain(&keys);
-    }
-
-    /// 上下文重置（新 session_key 或超长）：按模式归档当前缓存 → 清空 → 重建
-    /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
-    /// role：归档 + 记忆打包重建
-    /// 合批：数据留队（新机制不清空），期间消息并入重置后统一打包；
-    /// 重置末尾发送 Trigger::Forced 强制 flush（不检查 deadline，重置期间消息即刻并入新上下文）
-    async fn reset_context(&self, session: &Arc<Session>) {
-        // 上下文一体化重置：归档当前缓存（如存在）→ 清空缓存 → 清空内存（system 保留）
-        let _ = session.context.lock().await.reset().await;
-        self.build_initial_context(session).await;
-        // 重置完成：强制 flush（不检查 deadline），重置期间到达的消息即刻并入新上下文
-        // （reset 可能由 trigger 任务的 flush → run_agentic_loop 溢出路径调用，Forced 入队后由任务串行处理）
-        session.batch_producer.trigger_tx.send(crate::session_manager::Trigger::Forced).ok();
-        info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
     }
 
     /// event 模式超长压缩：归档当前缓存 → LLM 总结（compress_prompt + 当前上下文）→
@@ -853,12 +838,18 @@ impl AgentCoordinator {
             }
         };
         if overflow {
-            warn!("会话上下文超长，触发重置: role={} mode={:?}", session.role_name, session.mode);
-            // 按模式处理：event 超长压缩（LLM 总结归档），role 归档后从记忆重建
+            warn!("会话上下文超长，触发重建: role={} mode={:?}", session.role_name, session.mode);
+            // 按模式重建：event 超长压缩（LLM 总结归档）；role 从记忆重建（新建/重置共用 build_role_context）
             match &*session.mode {
                 Mode::Event(_) => self.compress_context(session).await,
-                Mode::Role => self.reset_context(session).await,
+                Mode::Role => {
+                    self.build_role_context(session).await;
+                    info!("会话上下文已重置: role={} mode={:?}", session.role_name, session.mode);
+                }
             }
+            // 重建完成：强制 flush（不检查 deadline），重建期间到达的消息即刻并入新上下文（Role/Event 共通）
+            // （重建可能由 trigger 任务的 flush → run_agentic_loop 溢出路径调用，Forced 入队后由任务串行处理）
+            session.batch_producer.trigger_tx.send(crate::session_manager::Trigger::Forced).ok();
         }
     }
 
