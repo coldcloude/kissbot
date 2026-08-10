@@ -11,14 +11,11 @@ use kissbot_api::{ApiResponse, Content};
 /// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
 type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
 
-/// 记忆消息（channel record 的最小视图：name + content + is_self，id 类不保留）
+/// 记忆消息（channel record 的最小视图：name + content + is_self，id 类不保留；时间由排序键承担，不保留）
 #[derive(Debug, Clone)]
 pub struct MemoryMsg {
     pub user_name: Arc<String>,
     pub content: Arc<String>,
-    /// 记录时间（生产路径排序已由 BTreeMap 键 (time, sn) 承担；保留供测试断言与后续消费方读取）
-    #[allow(dead_code)]
-    pub time: Arc<String>,
     /// 是否 agent 自身消息（来自 ChannelRecord.is_self：1=self，0=他人）
     pub is_self: bool,
 }
@@ -177,7 +174,7 @@ impl MemoryReader {
 
         // ===== 解析（parse_channel_records 内联）：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
         // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
-        let mut map: BTreeMap<(Arc<String>, u64), MemoryMsg> = BTreeMap::new();
+        let mut map: BTreeMap<(String, u64), MemoryMsg> = BTreeMap::new();
         parse_channel_groups(groups, &mut map);
 
         // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
@@ -191,7 +188,7 @@ impl MemoryReader {
             return Ok(map.into_values().collect());
         }
         // M = min(时间窗起点 start, ln)
-        let m = if start.as_str() < ln.as_str() { start } else { ln.to_string() };  // M = min(cutoff, ln)
+        let m = if start.as_str() < ln.as_str() { start } else { ln.clone() };  // M = min(cutoff, ln)
 
         // ===== Query2（query_channel 内联）：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
         // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 seen 集去重）
@@ -200,7 +197,7 @@ impl MemoryReader {
             agent_id,
             role_name,
             start_time: Arc::new(m),
-            end_time: ln,
+            end_time: Arc::new(ln),
         };
         let resp = self.client.post(&url)
             .json(&body)
@@ -219,10 +216,10 @@ impl MemoryReader {
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
 /// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
-fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(Arc<String>, u64), MemoryMsg>) {
+fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MemoryMsg>) {
     for (_, records) in groups {
         for (_, rec) in records {
-            let time = rec.time.clone();
+            let time = rec.time.as_str().to_string();  // 键用（MemoryMsg 值不再保留 time）
             let user_name = rec.user_name.clone();
             let is_self = rec.is_self != 0;
             let sn = rec.sn;
@@ -230,8 +227,8 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(Arc<String
             if content.is_empty() {
                 continue;  // 非文本记录跳过
             }
-            if let Entry::Vacant(e) = map.entry((time.clone(), sn)) {
-                e.insert(MemoryMsg { user_name, content, time, is_self });
+            if let Entry::Vacant(e) = map.entry((time, sn)) {
+                e.insert(MemoryMsg { user_name, content, is_self });
             }
         }
     }
@@ -376,7 +373,6 @@ mod tests {
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
         assert_eq!(out[0].content.as_str(), "m0");
         assert_eq!(out[29].content.as_str(), "m29");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
@@ -434,11 +430,8 @@ mod tests {
         let cfg = ctx_config(250, 10);  // cutoff=now-250 介于 t0 与 t1 之间 → M = cutoff
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
-        assert_eq!(out[0].time.as_str(), t1.as_str(), "起点 = ln 同时间组");
-        // 同时间组内部顺序 = 稳定排序的插入序（设计只契约时间正序，MemoryMsg 无 sn 可打破平局）
-        // → 只断言 m4 被取回，不断言其在组内的具体位置
+        // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
         assert!(out.iter().any(|m| m.content.as_str() == "m4"), "start_idx 之前的同时间记录被并集取回");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
@@ -458,10 +451,8 @@ mod tests {
         let cfg = ctx_config(150, 10);  // cutoff=now-150 晚于 ln(t1=now-200) → M = ln → [ln, ln]
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
-        assert_eq!(out[0].time.as_str(), t1.as_str(), "起点 = ln 同时间组");
-        // 同时间组内部顺序 = 稳定排序的插入序（设计只契约时间正序）→ 只断言 m2 被取回
+        // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
         assert!(out.iter().any(|m| m.content.as_str() == "m2"), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
@@ -516,7 +507,6 @@ mod tests {
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
         assert_eq!(out[0].content.as_str(), "m0");
         assert_eq!(out[11].content.as_str(), "m11");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
@@ -540,7 +530,6 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "raw 数达标（10）不早退，Query2 补回 m0,m1，非文本 m5 跳过");
         assert!(!out.iter().any(|m| m.content.as_str() == "m5"), "非文本 m5 被解析跳过");
-        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
@@ -567,7 +556,7 @@ mod tests {
 
     // 构造测试用 MemoryMsg
     fn msg(name: &str, content: &str, is_self: bool) -> MemoryMsg {
-        MemoryMsg { user_name: Arc::new(name.to_string()), content: Arc::new(content.to_string()), time: Arc::new("t".to_string()), is_self }
+        MemoryMsg { user_name: Arc::new(name.to_string()), content: Arc::new(content.to_string()), is_self }
     }
 
     #[test]
