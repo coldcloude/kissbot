@@ -1,29 +1,58 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
+use chrono::Local;
 use dashmap::DashMap;
 use futures_util::StreamExt;
 use kissbot_api::channel::IncomingMessageEvent;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Notify};
 use tokio_util::time::DelayQueue;
 use tracing::warn;
 
 use crate::config_manager::ProviderModel;
 use crate::coordinator::{AgentCoordinator, extract_text};
-use crate::types::{Message, Mode, SessionKey};
+use crate::types::{Error, Message, Mode, Result, SessionKey};
 
-/// 会话上下文：纯内存消息序列 + system 消息（缓存/历史持久化由 coordinator 负责）
+/// session_key → 文件名：{agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
+pub fn encode_session_key(key: &SessionKey) -> String {
+    match &key.mode {
+        Mode::Role => format!("{}-{}", key.agent_name, key.role_name),
+        Mode::Event(e) => format!("{}-{}-{}", key.agent_name, key.role_name, e),
+    }
+}
+
+/// 会话上下文：内存消息 + 本地缓存 + 历史归档一体管理（持久化由 SessionContext 自身负责，coordinator 不感知）
+///
+/// ========== 会话上下文本地缓存 ==========
+/// 缓存文件：<data_dir>/context/<session_key编码>.jsonl，每行一条 Message（JSON）
+/// 存储时不截断（tokio::fs 追加）；读取时全量回读（ReverseLineReader 从尾读再反转）
+///
+/// ========== 历史上下文归档 ==========
+/// 归档 = 直接把当前内存写成一个历史文件并加上时间戳文件名（无包装格式，不复制缓存文件），本轮只写不读
+/// 历史与当前缓存格式完全一致（都是 <session_key编码>.jsonl 每行一条 Message），
+/// 因此内存、缓存、历史三者统一在本结构体实现（会话上下文唯一入口）。
 pub struct SessionContext {
     messages: Vec<Message>,
     system_message: Option<String>,
+    /// 当前缓存文件（<data_dir>/context/<session_key编码>.jsonl）
+    cache_path: PathBuf,
+    /// 历史归档目录（<data_dir>/context-history）
+    history_dir: PathBuf,
 }
 
 impl SessionContext {
-    pub fn new() -> Self {
-        Self { messages: Vec::new(), system_message: None }
+    pub fn new(data_dir: &str, key: &SessionKey) -> Self {
+        Self {
+            messages: Vec::new(),
+            system_message: None,
+            cache_path: PathBuf::from(data_dir).join("context").join(format!("{}.jsonl", encode_session_key(key))),
+            history_dir: PathBuf::from(data_dir).join("context-history"),
+        }
     }
 
     /// 设置系统消息（会话创建或重置时）
@@ -37,15 +66,70 @@ impl SessionContext {
         self.system_message.as_deref()
     }
 
-    /// 从缓存/记忆加载历史消息重建上下文（system 之外的部分）
-    pub fn load_messages(&mut self, messages: Vec<Message>) {
-        self.messages.clear();
-        self.messages = messages;
+    /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
+    /// best-effort：缓存失败仅丢缓存不阻塞流程（内存已装入，调用方按 Result 决定）
+    pub async fn append(&mut self, messages: &[Message]) -> Result<()> {
+        self.messages.extend(messages.iter().cloned());
+        self.append_cache(messages).await
     }
 
-    /// 追加一条消息
+    /// 仅追加到内存（记忆打包/压缩重建用，不落缓存）
     pub fn push(&mut self, msg: Message) {
         self.messages.push(msg);
+    }
+
+    /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；文件不存在为空
+    pub async fn recover_from_cache(&mut self) -> Result<()> {
+        self.messages = self.read_cache().await?;
+        Ok(())
+    }
+
+    /// 归档当前上下文到历史：直接把内存消息写成一个历史文件（<key编码>-<时间戳>.jsonl，无包装格式），
+    /// 不复制缓存文件；内存为空则无可归档内容（幂等，返回 false）
+    pub async fn archive(&self) -> Result<bool> {
+        if self.messages.is_empty() {
+            return Ok(false);
+        }
+        tokio::fs::create_dir_all(&self.history_dir).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        let ts = Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+        // 历史文件名复用缓存文件名的 key 编码段（<key编码>-<时间戳>.jsonl）
+        let stem = self.cache_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+        let dest = self.history_dir.join(format!("{}-{}.jsonl", stem, ts));
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true).write(true).truncate(true).open(&dest).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        self.write_lines(&mut file, &self.messages).await?;
+        Ok(true)
+    }
+
+    /// 清空缓存文件（重建/重置时调用；文件不存在幂等）
+    pub async fn clear_cache(&self) -> Result<()> {
+        match tokio::fs::remove_file(&self.cache_path).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::IoError(e.to_string())),
+        }
+    }
+
+    /// 归档当前内存（如有内容）并清空缓存文件（重置/重建前的持久化清理）
+    pub async fn archive_and_clear_cache(&self) -> Result<()> {
+        let _ = self.archive().await?;
+        self.clear_cache().await
+    }
+
+    /// 重置上下文：归档当前内存 → 清空缓存 → 清空内存（system 保留）
+    pub async fn reset(&mut self) -> Result<()> {
+        self.archive_and_clear_cache().await?;
+        self.messages.clear();
+        Ok(())
+    }
+
+    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 缓存清空重写（不含 system）
+    pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
+        self.messages.clear();
+        self.messages.extend(messages);
+        self.rewrite_cache().await
     }
 
     /// 构建模型消息列表（system 在最前）
@@ -69,9 +153,73 @@ impl SessionContext {
         self.messages.len() >= max
     }
 
-    /// 清空上下文（重置时调用；system 保留）
-    pub fn clear(&mut self) {
-        self.messages.clear();
+    // ========== 私有：缓存文件读写 ==========
+
+    /// 缓存追加（每行一条 Message JSON；不截断）
+    async fn append_cache(&self, messages: &[Message]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.cache_path.parent() {
+            tokio::fs::create_dir_all(parent).await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+        }
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true).append(true).open(&self.cache_path).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        self.write_lines(&mut file, messages).await
+    }
+
+    /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
+    async fn write_lines(&self, file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
+        for m in messages {
+            let line = serde_json::to_string(m)?;
+            file.write_all(line.as_bytes()).await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            file.write_all(b"\n").await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// 全量回读（按时间顺序）；文件不存在返回空
+    async fn read_cache(&self) -> Result<Vec<Message>> {
+        if !self.cache_path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut reader = kai_file::ReverseLineReader::new(&self.cache_path, None, None).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        let mut msgs = Vec::new();
+        while let Some(line) = reader.next_line().await
+            .map_err(|e| Error::IoError(e.to_string()))?
+        {
+            let s = line.line.trim();
+            if s.is_empty() { continue; }
+            if let Ok(m) = serde_json::from_str::<Message>(s) {
+                msgs.push(m);
+            }
+        }
+        msgs.reverse();
+        // 崩溃一致性清理：恢复应从完整轮次开始。
+        // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
+        //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
+        // 2) 丢弃开头的 Tool 消息（恢复起点之前的残留）。
+        if let Some(Message::Assistant { tool_calls: Some(_), .. }) = msgs.last() {
+            msgs.pop();
+        }
+        while matches!(msgs.first(), Some(Message::Tool { .. })) {
+            msgs.remove(0);
+        }
+        Ok(msgs)
+    }
+
+    /// 缓存清空重写：按当前内存（不含 system）重写（压缩重建用）
+    async fn rewrite_cache(&self) -> Result<()> {
+        self.clear_cache().await?;
+        // 缓存不含 system：只存 user+assistant（恢复时 set_system 在前）
+        let store: Vec<Message> = self.build().into_iter()
+            .filter(|m| !matches!(m, Message::System { .. })).collect();
+        self.append_cache(&store).await
     }
 }
 
@@ -259,12 +407,15 @@ impl BatchConsumer {
 /// （session_key 仅用于去重；agent_id 解析结果由各 channel 运行态绑定保存，不在此提取）
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
+    /// 数据目录（会话上下文缓存/历史归档路径基准）
+    data_dir: String,
 }
 
 impl SessionManager {
-    pub fn new() -> Arc<Self> {
+    pub fn new(data_dir: &str) -> Arc<Self> {
         Arc::new(Self {
             sessions: DashMap::new(),
+            data_dir: data_dir.to_string(),
         })
     }
 
@@ -292,7 +443,7 @@ impl SessionManager {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
                 // 创建部分抽出（create_session）：依赖序组装 + spawn 触发任务
-                let session = Self::create_session(key, model, agent_id);
+                let session = Self::create_session(key, model, agent_id, &self.data_dir);
                 e.insert(session.clone());
                 (session, true)
             }
@@ -307,6 +458,7 @@ impl SessionManager {
         key: &SessionKey,
         model: Option<ProviderModel>,
         agent_id: Arc<String>,
+        data_dir: &str,
     ) -> Arc<Session> {
         // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
         let notify = Arc::new(Notify::new());
@@ -326,7 +478,7 @@ impl SessionManager {
             agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
-            context: tokio::sync::Mutex::new(SessionContext::new()),
+            context: tokio::sync::Mutex::new(SessionContext::new(data_dir, key)),
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
             agent_id,
@@ -385,6 +537,7 @@ mod tests {
     /// 测试 producer/consumer 对（未 spawn；consumer 持测试会话弱引用 + 会话 notify）
     /// 与 get_or_create 内联构造同构：2 mpsc → producer → session → consumer
     fn test_pair() -> (BatchProducer, BatchConsumer, Arc<Session>) {
+        let dir = tempfile::tempdir().unwrap();
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
         let notify = Arc::new(Notify::new());
         let (tx, rx) = mpsc::unbounded_channel();
@@ -400,7 +553,7 @@ mod tests {
             agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
-            context: tokio::sync::Mutex::new(SessionContext::new()),
+            context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
             model: ArcSwap::from_pointee(None),
             agent_id: Arc::new("aid".into()),
@@ -456,9 +609,15 @@ mod tests {
         }
     }
 
+    /// 测试用 SessionManager（data_dir 指向临时目录；会话持久化路径仅构造不落盘）
+    fn mgr() -> Arc<SessionManager> {
+        let dir = tempfile::tempdir().unwrap();
+        SessionManager::new(dir.path().to_str().unwrap())
+    }
+
     #[tokio::test]
     async fn get_or_create_dedupes() {
-        let mgr = SessionManager::new();
+        let mgr = mgr();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
         let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
@@ -474,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn retain_prunes_unbound() {
-        let mgr = SessionManager::new();
+        let mgr = mgr();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k1 = key("a1", "r1");
         let k2 = key("a2", "r2");
@@ -489,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_or_create_with_none_model() {
-        let mgr = SessionManager::new();
+        let mgr = mgr();
         let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
         let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
         assert!(created);
@@ -498,6 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_copies_role_name_and_mode_from_key() {
+        let dir = tempfile::tempdir().unwrap();
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
         let agent_id = Arc::new("uuid".to_string());
@@ -516,7 +676,7 @@ mod tests {
             agent_name: Arc::new(key.agent_name.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
-            context: tokio::sync::Mutex::new(SessionContext::new()),
+            context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
             agent_id,
@@ -524,5 +684,175 @@ mod tests {
         };
         assert_eq!(session.role_name.as_str(), "r1");
         assert_eq!(*session.mode, Mode::Event("e1".into()));
+    }
+
+    // ===== 会话上下文（内存 + 缓存 + 历史一体）测试 =====
+
+    fn cache_key() -> SessionKey {
+        SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) }
+    }
+
+    fn role_key() -> SessionKey {
+        SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role }
+    }
+
+    fn sample_msgs() -> Vec<Message> {
+        vec![
+            Message::User { content: Arc::new("你好".into()) },
+            Message::Assistant { content: Arc::new("在的".into()), reasoning_content: Some(Arc::new("思考".into())), tool_calls: None },
+        ]
+    }
+
+    #[test]
+    fn encode_session_key_distinguishes() {
+        let k1 = cache_key();
+        let k2 = SessionKey { agent_name: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
+        let k3 = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e2".into()) };
+        assert_ne!(encode_session_key(&k1), encode_session_key(&k2), "不同 role 不同编码");
+        assert_ne!(encode_session_key(&k1), encode_session_key(&k3), "不同 event 不同编码");
+        // 格式 = {agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
+        assert_eq!(encode_session_key(&cache_key()), "a1-r1-e1");
+        let role = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        assert_eq!(encode_session_key(&role), "a1-r1");
+        // 编码不含路径分隔符（文件名安全）
+        let enc = encode_session_key(&cache_key());
+        assert!(!enc.contains('/'), "编码应文件名安全");
+    }
+
+    #[tokio::test]
+    async fn append_persists_and_recover_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = cache_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        assert!(ctx.build().is_empty(), "初始为空");
+        assert!(!dir.path().join("context").exists(), "未写入前不落盘");
+        ctx.append(&sample_msgs()).await.unwrap();
+        // 同 key 新上下文从缓存恢复（内存为空）：append 已同时写内存 + 缓存
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        recovered.recover_from_cache().await.unwrap();
+        let back = recovered.build();
+        assert_eq!(back.len(), 2);
+        assert!(matches!(&back[0], Message::User { content } if content.as_str() == "你好"));
+        assert!(matches!(&back[1], Message::Assistant { reasoning_content: Some(r), .. } if r.as_str() == "思考"), "reasoning_content 应保留");
+    }
+
+    #[tokio::test]
+    async fn append_twice_accumulates_and_reset_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = cache_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        ctx.append(&sample_msgs()).await.unwrap();
+        ctx.append(&[Message::User { content: Arc::new("再问".into()) }]).await.unwrap();
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        recovered.recover_from_cache().await.unwrap();
+        assert_eq!(recovered.len(), 3, "追加不截断");
+        // 重置：归档（如存在）→ 清空缓存 → 清空内存
+        ctx.reset().await.unwrap();
+        let mut after = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        after.recover_from_cache().await.unwrap();
+        assert!(after.build().is_empty(), "reset 后缓存为空");
+        // 无缓存时 reset 幂等
+        ctx.reset().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recover_sanitizes_dangling_tool_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        // 用例 A：完整轮次 user → assistant(tool_calls) → tool，末尾再追一条悬挂 assistant(tool_calls)
+        // （崩溃发生在追加 assistant(tool_calls) 后、Tool 响应写入前）→ 回读丢弃悬挂尾巴，保留完整轮次
+        let k_a = cache_key();
+        let mut ctx_a = SessionContext::new(dir.path().to_str().unwrap(), &k_a);
+        ctx_a.append(&[
+            Message::User { content: Arc::new("查一下".into()) },
+            Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) },
+            Message::Tool { tool_call_id: Arc::new("c1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
+        ]).await.unwrap();
+        ctx_a.append(&[Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) }]).await.unwrap();
+        let mut rec_a = SessionContext::new(dir.path().to_str().unwrap(), &k_a);
+        rec_a.recover_from_cache().await.unwrap();
+        let back = rec_a.build();
+        assert_eq!(back.len(), 3, "悬挂的 assistant(tool_calls) 应被丢弃，保留完整轮次");
+        assert!(matches!(&back[1], Message::Assistant { tool_calls: Some(_), .. }), "完整轮次的 assistant(tool_calls) 保留");
+        assert!(matches!(&back[2], Message::Tool { .. }), "tool 响应保留");
+
+        // 用例 B：仅一条悬挂 assistant(tool_calls) → 恢复为空
+        let k_b = SessionKey { agent_name: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
+        let mut ctx_b = SessionContext::new(dir.path().to_str().unwrap(), &k_b);
+        ctx_b.append(&[Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) }]).await.unwrap();
+        let mut rec_b = SessionContext::new(dir.path().to_str().unwrap(), &k_b);
+        rec_b.recover_from_cache().await.unwrap();
+        assert!(rec_b.build().is_empty(), "仅悬挂 assistant 时恢复为空");
+
+        // 用例 C：开头的 Tool 残留（恢复起点之前的半条轮次）被丢弃
+        let k_c = SessionKey { agent_name: "a1".into(), role_name: "r3".into(), mode: Mode::Role };
+        let mut ctx_c = SessionContext::new(dir.path().to_str().unwrap(), &k_c);
+        ctx_c.append(&[
+            Message::Tool { tool_call_id: Arc::new("c9".into()), name: Arc::new("read".into()), content: Arc::new("残留".into()) },
+            Message::User { content: Arc::new("继续".into()) },
+        ]).await.unwrap();
+        let mut rec_c = SessionContext::new(dir.path().to_str().unwrap(), &k_c);
+        rec_c.recover_from_cache().await.unwrap();
+        let back_c = rec_c.build();
+        assert_eq!(back_c.len(), 1, "开头 Tool 残留被丢弃，保留后续完整消息");
+        assert!(matches!(&back_c[0], Message::User { content } if content.as_str() == "继续"));
+    }
+
+    #[tokio::test]
+    async fn archive_writes_memory_to_history_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = role_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        ctx.append(&sample_msgs()).await.unwrap();
+        assert!(ctx.archive().await.unwrap(), "内存有内容时应归档");
+        // 目标文件名 = <key编码>-<时间戳>.jsonl（历史目录内恰有一个文件）
+        let history_dir = dir.path().join("context-history");
+        let mut files = Vec::new();
+        let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            files.push(entry);
+        }
+        assert_eq!(files.len(), 1, "归档生成一个历史文件");
+        let dest = files.remove(0).path();
+        let fname = dest.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(fname.starts_with(&encode_session_key(&k)), "文件名以 key 编码开头: {}", fname);
+        assert!(fname.ends_with(".jsonl"));
+        // 内容与内存一致（逐行 Message JSON；不复制缓存）
+        let expect = sample_msgs().iter()
+            .map(|m| serde_json::to_string(m).unwrap())
+            .collect::<Vec<_>>().join("\n") + "\n";
+        assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), expect);
+        // 归档不改动缓存文件（append 已建缓存，仍存在）
+        let source = dir.path().join("context").join(format!("{}.jsonl", encode_session_key(&k)));
+        assert!(source.exists());
+    }
+
+    #[tokio::test]
+    async fn archive_writes_memory_without_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = role_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        // 仅内存有消息（如记忆打包的 packed 消息），缓存文件不存在——归档直接从内存写历史
+        ctx.push(Message::User { content: Arc::new("记忆打包".into()) });
+        assert!(ctx.archive().await.unwrap(), "内存有内容应归档");
+        let history_dir = dir.path().join("context-history");
+        let mut files = Vec::new();
+        let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            files.push(entry);
+        }
+        assert_eq!(files.len(), 1, "归档生成一个历史文件");
+        let dest = files.remove(0).path();
+        let dest_text = tokio::fs::read_to_string(&dest).await.unwrap();
+        assert!(dest_text.contains("记忆打包"), "历史内容来自内存");
+        assert!(!dir.path().join("context").exists(), "未写缓存时不创建缓存目录");
+    }
+
+    #[tokio::test]
+    async fn archive_with_empty_memory_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = SessionContext::new(dir.path().to_str().unwrap(), &role_key());
+        // 内存为空：无可归档内容（不报错、不创建历史目录）
+        assert!(!ctx.archive().await.unwrap(), "内存为空时归档为空操作");
+        assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
     }
 }

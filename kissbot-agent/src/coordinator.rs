@@ -11,12 +11,10 @@ use crate::channel_manager::ChannelManager;
 use crate::types::{
     Mode, Message, Result, Error, SessionKey, memory_role,
 };
-use crate::context_cache::ContextCache;
-use crate::history::HistoryArchive;
+use crate::session_manager::{Session, SessionManager};
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig, EffectiveContextConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
-use crate::session_manager::{Session, SessionManager};
 use crate::memory_reader::{MemoryReader, pack_memory_messages};
 use crate::memory_store_client::MemoryStoreClient;
 use crate::station::{self, StationRuntime};
@@ -49,10 +47,6 @@ static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
-    /// 上下文本地缓存（agent-data/context）
-    cache: Arc<ContextCache>,
-    /// 历史上下文归档（agent-data/context-history）
-    history: Arc<HistoryArchive>,
     memory_reader: Arc<MemoryReader>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
@@ -78,16 +72,14 @@ impl AgentCoordinator {
     ) -> Result<()> {
         let memory_reader = Arc::new(MemoryReader::new());
         let memory_store_client = Arc::new(MemoryStoreClient::new());
-        let session_manager = SessionManager::new();
-        let model_client = ModelClient::new(config.clone());
         let data_dir = config.data_dir().to_string();
+        let session_manager = SessionManager::new(&data_dir);
+        let model_client = ModelClient::new(config.clone());
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
         let coordinator = Self {
             config: config.clone(),
-            cache: Arc::new(ContextCache::new(&data_dir)),
-            history: Arc::new(HistoryArchive::new(&data_dir)),
             memory_reader,
             memory_store_client,
             session_manager,
@@ -231,21 +223,15 @@ impl AgentCoordinator {
             session.context.lock().await.set_system_message(ego_info);
         }
         // 按模式加载上下文：event 从缓存恢复；role 从记忆打包（两查询比较取并集，打包为一条 user 消息）
-        let key = self.session_key_of_session(session);
         match &*session.mode {
             Mode::Event(_) => {
-                if let Ok(history) = self.cache.read_all(&key).await {
-                    session.context.lock().await.load_messages(history);
-                }
+                // 从缓存恢复上下文（全量回读；文件不存在为空）
+                let _ = session.context.lock().await.recover_from_cache().await;
             }
             Mode::Role => {
                 // 重新进入既有 role 会话：旧上下文先归档为历史（重建后缓存将被清空重写）
                 // reset_context 已先归档+清空，此处缓存不存在不会重复归档
-                let path = self.cache.path_for(&key);
-                if path.exists() {
-                    let _ = self.history.archive(&key, &path).await;
-                    let _ = self.cache.clear(&key).await;
-                }
+                let _ = session.context.lock().await.archive_and_clear_cache().await;
                 // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），打包为一条 user 消息作为首条内容
                 let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
                 if let Ok(msgs) = self.memory_reader
@@ -262,11 +248,6 @@ impl AgentCoordinator {
         let _ = self.memory_reader
             .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
             .await;
-    }
-
-    /// 从 Session 运行态构造 SessionKey（缓存/历史定位用）
-    fn session_key_of_session(&self, session: &Arc<Session>) -> SessionKey {
-        session_key_of(session.agent_name.as_str(), session.role_name.as_str(), (*session.mode).clone())
     }
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
@@ -308,13 +289,8 @@ impl AgentCoordinator {
     /// 合批：数据留队（新机制不清空），期间消息并入重置后统一打包；
     /// 重置末尾发送 Trigger::Forced 强制 flush（不检查 deadline，重置期间消息即刻并入新上下文）
     async fn reset_context(&self, session: &Arc<Session>) {
-        let key = self.session_key_of_session(session);
-        let path = self.cache.path_for(&key);
-        if path.exists() {
-            let _ = self.history.archive(&key, &path).await;
-        }
-        let _ = self.cache.clear(&key).await;
-        session.context.lock().await.clear();
+        // 上下文一体化重置：归档当前缓存（如存在）→ 清空缓存 → 清空内存（system 保留）
+        let _ = session.context.lock().await.reset().await;
         self.build_initial_context(session).await;
         // 重置完成：强制 flush（不检查 deadline），重置期间到达的消息即刻并入新上下文
         // （reset 可能由 trigger 任务的 flush → run_agentic_loop 溢出路径调用，Forced 入队后由任务串行处理）
@@ -325,14 +301,11 @@ impl AgentCoordinator {
     /// event 模式超长压缩：归档当前缓存 → LLM 总结（compress_prompt + 当前上下文）→
     /// 重写缓存为 system + user(压缩指令) + assistant(总结)，等待后续 channel 消息
     async fn compress_context(&self, session: &Arc<Session>) {
-        let key = self.session_key_of_session(session);
         // 0. 先校验模型可用（无模型早退，避免留下冗余归档副本）
         let model = session.model.load_full();
         let Some(pm) = model.as_ref() else { return; };
-        let path = self.cache.path_for(&key);
-        if path.exists() {
-            let _ = self.history.archive(&key, &path).await;
-        }
+        // 归档当前缓存（如存在；压缩前旧上下文入历史）
+        let _ = session.context.lock().await.archive().await;
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
         // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息
         let messages = {
@@ -350,19 +323,8 @@ impl AgentCoordinator {
             warn!("上下文压缩总结为空，保留原上下文");
             return;
         }
-        // 3. 重建：清空内存（system 保留）→ user(压缩指令) + assistant(总结) → 缓存重写
-        {
-            let mut ctx = session.context.lock().await;
-            ctx.clear();
-            for m in compressed_messages(&cfg, &summary) {
-                ctx.push(m);
-            }
-        }
-        let _ = self.cache.clear(&key).await;
-        let msgs = { session.context.lock().await.build() };
-        // 缓存不含 system：只存 user+assistant（恢复时 set_system 在前）
-        let store: Vec<Message> = msgs.into_iter().filter(|m| !matches!(m, Message::System { .. })).collect();
-        let _ = self.cache.append(&key, &store).await;
+        // 3. 重建：清空内存（system 保留）→ user(压缩指令) + assistant(总结) → 缓存清空重写（不含 system）
+        let _ = session.context.lock().await.rebuild(compressed_messages(&cfg, &summary)).await;
         info!("会话上下文已压缩: role={} mode={:?}", session.role_name, session.mode);
     }
 
@@ -758,16 +720,9 @@ impl AgentCoordinator {
             return;
         }
 
-        // 会话 key（缓存定位）
-        let key = self.session_key_of_session(session);
-
         // 1. 追加用户消息到该会话上下文（合批已打包为一条 user 消息，time/messenger 等不保留，只留文本）
-        {
-            let mut ctx = session.context.lock().await;
-            ctx.push(Message::User { content: Arc::new(content_text.clone()) });
-        }
-        // 1b. 用户消息写缓存（best-effort，失败仅丢缓存不阻塞流程）
-        let _ = self.cache.append(&key, &[Message::User { content: Arc::new(content_text.clone()) }]).await;
+        // 内存 + 缓存一体追加（best-effort，失败仅丢缓存不阻塞流程）
+        let _ = session.context.lock().await.append(&[Message::User { content: Arc::new(content_text.clone()) }]).await;
 
         // 2. tools 聚合（会话 context 配置的启用 station）
         let tools = self.tools_for_session(session).await;
@@ -787,18 +742,10 @@ impl AgentCoordinator {
 
             match response {
                 Ok(model_resp) if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS => {
-                    // 4. 追加 assistant(tool_calls) + 写缓存
+                    // 4. 追加 assistant(tool_calls)（内存 + 缓存一体）
                     // reasoning_content 必须保留并随请求回传：DeepSeek 带 tools 的请求须完整回传否则 400；
                     // Kimi 单轮工具循环（多步推理）须保留并回传全部思考内容；openai_body 自动序列化
-                    {
-                        let mut ctx = session.context.lock().await;
-                        ctx.push(Message::Assistant {
-                            content: Arc::new(String::new()),
-                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
-                            tool_calls: Some(model_resp.tool_calls.clone()),
-                        });
-                    }
-                    let _ = self.cache.append(&key, &[Message::Assistant {
+                    let _ = session.context.lock().await.append(&[Message::Assistant {
                         content: Arc::new(String::new()),
                         reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: Some(model_resp.tool_calls.clone()),
@@ -818,11 +765,8 @@ impl AgentCoordinator {
                         // 5c. 执行工具
                         let result = self.execute_tool_call(session, call).await;
                         let result_text = result.to_string();
-                        {
-                            let mut ctx = session.context.lock().await;
-                            ctx.push(Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) });
-                        }
-                        let _ = self.cache.append(&key, &[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) }]).await;
+                        // 5d. Tool 消息（内存 + 缓存一体）
+                        let _ = session.context.lock().await.append(&[Message::Tool { tool_call_id: call.id.clone(), name: call.name.clone(), content: Arc::new(result_text.clone()) }]).await;
                         // 5e. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
                         self.memory_store_client.push_tool_call(ToolCallRequest {
                             agent_id: agent_id.clone(),
@@ -848,7 +792,7 @@ impl AgentCoordinator {
                 Ok(model_resp) => {
                     let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-                    // 6. 追加 assistant 回复 + 写缓存
+                    // 6. 追加 assistant 回复（内存 + 缓存一体）
                     // 超限兜底：rounds 超过 MAX_TOOL_ROUNDS 后模型仍返回 tool_calls 时 content 为空，
                     // 用兜底文案作为回复（不把空内容发送给用户）
                     // reasoning_content 保留并回传：带 tools 的请求须完整回传所有 assistant 的思考内容
@@ -858,15 +802,7 @@ impl AgentCoordinator {
                     } else {
                         "工具调用轮次已达上限，请稍后再试".to_string()
                     };
-                    {
-                        let mut ctx = session.context.lock().await;
-                        ctx.push(Message::Assistant {
-                            content: Arc::new(reply_content.clone()),
-                            reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
-                            tool_calls: None,
-                        });
-                    }
-                    let _ = self.cache.append(&key, &[Message::Assistant {
+                    let _ = session.context.lock().await.append(&[Message::Assistant {
                         content: Arc::new(reply_content.clone()),
                         reasoning_content: model_resp.reasoning_content.clone().map(Arc::new),
                         tool_calls: None,
@@ -1178,7 +1114,8 @@ mod tests {
     async fn tool_placeholder_uses_same_key_for_call_and_result() {
         // 构造最小 Session + OutChannel（参照既有测试模式；经 get_or_create 走真实构造路径）
         let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let mgr = SessionManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(dir.path().to_str().unwrap());
         let (session, _) = mgr.get_or_create(&key, None, Arc::new("aid".into()));
         let out_channel = OutChannel {
             channel_id: Arc::new("c1".into()),

@@ -11,10 +11,8 @@
 | config_manager | ConfigManager | 配置加载与读写（channel、provider/model、context、station、admin）；合成 effective 模型配置 | 被几乎所有模块调用 |
 | coordinator | AgentCoordinator | **编排中心**：实现 Terminal trait、消息处理、会话管理、agentic loop、工具分派、命令执行、通道连接 | 持有全部运行时组件；被 command_router / session_manager（弱引用）回调 |
 | channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 coordinator 调用；无外部依赖 |
-| session_manager | SessionManager / Session / BatchProducer / BatchConsumer | 会话三元组去重创建；合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
+| session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message；归档 = 直接把当前内存写成一个历史文件，不复制缓存；持久化对 coordinator 透明） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model、/reset 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
-| context_cache | ContextCache | 会话上下文本地缓存（agent-data/context）读写 | 被 coordinator 调用 |
-| history | HistoryArchive | 历史上下文归档（agent-data/context-history） | 被 coordinator 调用 |
 | memory_reader | MemoryReader | 从 memory-store 读记忆构建上下文（组合查询 + 并集打包、事件列表、记忆索引） | 被 coordinator 调用；依赖 config + memory-store |
 | memory_store_client | MemoryStoreClient | 向 memory-store 推记录（channel / tool_call / tool_result / think） | 被 coordinator 调用 |
 | model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 coordinator 调用；依赖 config（provider/model） |
@@ -42,10 +40,8 @@ graph TB
         CFG["config_manager<br/>ConfigManager"]
         CO["coordinator<br/>AgentCoordinator<br/>+ Terminal 实现"]
         CHM["channel_manager<br/>ChannelManager / Channel"]
-        SM["session_manager<br/>SessionManager / Session<br/>BatchProducer / Consumer"]
+        SM["session_manager<br/>SessionManager / Session<br/>BatchProducer / Consumer<br/>SessionContext（内存+缓存+历史）"]
         CRT["command_router<br/>CommandRouter"]
-        CACHE["context_cache<br/>ContextCache"]
-        HIST["history<br/>HistoryArchive"]
         MR["memory_reader<br/>MemoryReader"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MLC["model_client<br/>ModelClient"]
@@ -62,8 +58,6 @@ graph TB
     CO --> CFG
     CO --> CHM
     CO --> SM
-    CO --> CACHE
-    CO --> HIST
     CO --> MR
     CO --> MSC
     CO --> MLC
@@ -154,8 +148,7 @@ sequenceDiagram
 sequenceDiagram
     participant BP as BatchConsumer / trigger 任务
     participant CO as AgentCoordinator
-    participant CTX as SessionContext
-    participant CACHE as ContextCache
+    participant CTX as SessionContext（内存 + 缓存 + 历史一体）
     participant MLC as ModelClient
     participant ST as StationRuntime
     participant MSC as MemoryStoreClient
@@ -163,24 +156,20 @@ sequenceDiagram
     participant CC as ChannelClient
 
     BP->>CO: resolve_out_channel_for_session + run_agentic_loop(session, out_channel)
-    CO->>CTX: push(User)（合批已打包为一条）
-    CO->>CACHE: append（best-effort）
+    CO->>CTX: append(User)（内存 + 缓存一体）
     loop 多轮（≤ MAX_TOOL_ROUNDS）
         CO->>MLC: call(pm, messages, tools)
         alt 返回 tool_calls
-            CO->>CTX: push(Assistant + tool_calls)
-            CO->>CACHE: append
+            CO->>CTX: append(Assistant + tool_calls)
             loop 每个 tool call
                 CO->>MSC: push_channel_record(ToolCall 占位)
                 CO->>ST: call_tool(name, args)
-                CO->>CTX: push(Tool)
-                CO->>CACHE: append
+                CO->>CTX: append(Tool)
                 CO->>MSC: push_tool_call / push_tool_result（同 key 关联）
                 CO->>MSC: push_channel_record(ToolResult 占位)
             end
         else 最终回复
-            CO->>CTX: push(Assistant)
-            CO->>CACHE: append
+            CO->>CTX: append(Assistant)
             CO->>MSC: push_think（reasoning/thinking 任一有值）
             CO->>CHM: client(out_channel.channel_id)
             CO->>CC: send_message(reply)（发往 out_channel）
@@ -197,8 +186,7 @@ sequenceDiagram
 sequenceDiagram
     participant CO as AgentCoordinator
     participant EG as memory-ego
-    participant CACHE as ContextCache
-    participant HIST as HistoryArchive
+    participant SC as SessionContext（内存 + 缓存 + 历史一体）
     participant MR as MemoryReader
     participant SM as SessionManager
     participant BP as BatchProducer
@@ -210,14 +198,13 @@ sequenceDiagram
         CO->>EG: load_ego_info（agent 元数据 + 个体识别 + 角色设定 → markdown）
     end
     alt event 模式
-        CO->>CACHE: read_all(key) 恢复上下文
+        CO->>SC: recover_from_cache()（全量回读恢复）
     else role 模式
-        CO->>HIST: archive(key)（旧上下文归档）
-        CO->>CACHE: clear(key)
+        CO->>SC: archive_and_clear_cache()（旧上下文归档，缓存清空）
         CO->>MR: read_recent_for_context（组合查询 + 并集打包为一条 user 消息）
     end
     CO->>MR: read_memory_struct_index（顶层记忆索引，未实现时跳过）
-    Note over CO: reset_context：archive → clear → build_initial_context → Trigger::Forced 强制 flush<br/>compress_context（event 超长）：archive → LLM 总结 → 重建为 user(压缩指令)+assistant(总结)
+    Note over CO: reset_context：SessionContext.reset()（archive → clear cache → clear 内存）→ build_initial_context → Trigger::Forced 强制 flush<br/>compress_context（event 超长）：archive → LLM 总结 → rebuild（user(压缩指令)+assistant(总结)，缓存清空重写）
 ```
 
 ## 七、对外交互边界

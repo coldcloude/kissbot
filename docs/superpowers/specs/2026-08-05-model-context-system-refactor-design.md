@@ -101,13 +101,13 @@ pub struct RoleContextConfig {
 - 位置：`<data_dir>/context/<session_key编码>.jsonl`，每行一条 `Message`（JSON）
 - 存储：`tokio::fs` 追加（OpenOptions append），**存储时不截断**——正常追加永不全量重写
 - 读取：`ReverseLineReader` 从尾部读，event 恢复时**全部回读**（无需截断配置：缓存生命周期 = 当前上下文，超长即压缩，天然有界，见第 5 节）
-- 重建（压缩/重置）时：先归档当前缓存到历史，再**清空重写**缓存文件为新上下文（否则新旧消息混在一起，尾部读取会读到压缩前内容）
-- session_key 编码：`agent|role|mode` 字符串做文件名安全编码（如 base64url），避免路径/非法字符问题
+- 重建（压缩/重置）时：先归档当前内存到历史，再**清空重写**缓存文件为新上下文（否则新旧消息混在一起，尾部读取会读到压缩前内容）
+- session_key 文件名：`{agent_name}-{role_name}`（角色模式）/ `{agent_name}-{role_name}-{event}`（事件模式），可读格式
 
 ### 历史归档（已结束的上下文，本轮只写不读）
 
 - 位置：`<data_dir>/context-history/<session_key编码>-<时间戳>.jsonl`
-- 归档 = **直接复制当前缓存文件**到历史目录并加上时间戳文件名（无需包装格式）
+- 归档 = **直接把当前内存写成一个历史文件**并加上时间戳文件名（无需包装格式，不复制缓存文件）
 - 归档时机：event 压缩前、role 重置/重新进入前
 - 本轮只写不读，为后续长期记忆/历史查询铺路
 
@@ -138,8 +138,8 @@ pub struct RoleContextConfig {
 | 场景 | 流程 |
 |---|---|
 | **event · 新 key / 重新进入** | 缓存全部回读恢复（空则为仅 system）→ 等 channel 消息继续 |
-| **event · 超长**（压缩模式） | ① 当前缓存复制归档历史 → ② 用会话模型调 LLM（prompt = `compress_prompt` 模板 + 当前上下文）得总结 → ③ 缓存清空重写为 `system + user(压缩指令) + assistant(总结)` → ④ 等 channel 消息继续 |
-| **role · 新 key / 重启 / 重新进入 / 超长** | ① 缓存有内容则复制归档历史 → ② 缓存清空 → ③ 记忆打包构造首条 user 消息 → ④ 等 channel 消息继续 |
+| **event · 超长**（压缩模式） | ① 当前内存归档历史 → ② 用会话模型调 LLM（prompt = `compress_prompt` 模板 + 当前上下文）得总结 → ③ 缓存清空重写为 `system + user(压缩指令) + assistant(总结)` → ④ 等 channel 消息继续 |
+| **role · 新 key / 重启 / 重新进入 / 超长** | ① 内存有内容则归档历史 → ② 缓存清空 → ③ 记忆打包构造首条 user 消息 → ④ 等 channel 消息继续 |
 
 启动流程（`ensure_session → build_initial_context`）改为按 mode 走对应重置分支（role 走记忆打包、event 走缓存恢复），ego/system 消息照旧在最前。
 
