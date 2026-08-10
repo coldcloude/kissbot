@@ -85,13 +85,13 @@ impl SessionContext {
         }
         self.archive_and_clear_cache().await?;
         self.system_message = Some(pending);
-        // 从内存写回缓存（只写消息行；System 首行由 open_cache_append 对新文件落，避免 System 重复）
+        // 从内存写回缓存（只写消息行；System 首行由 open_cache_and_write_system_line 对新文件落，避免 System 重复）
         // 消息源为自身内存：直接借用 self.messages，无需 clone；无消息不写
         if self.messages.is_empty() {
             return Ok(());
         }
-        let mut file = self.open_cache_append().await?;
-        write_lines(&mut file, &self.messages).await
+        let mut file = self.open_cache_and_write_system_line().await?;
+        write_cache_lines(&mut file, &self.messages).await
     }
 
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
@@ -102,8 +102,8 @@ impl SessionContext {
         }
         self.messages.extend(messages.iter().cloned());
         // 缓存追加（新文件先落 System 首行；无消息不写）
-        let mut file = self.open_cache_append().await?;
-        write_lines(&mut file, messages).await
+        let mut file = self.open_cache_and_write_system_line().await?;
+        write_cache_lines(&mut file, messages).await
     }
 
     /// 从缓存恢复上下文（event 模式）：正序全量回读（LineReader 按时间顺序）装入内存；
@@ -169,7 +169,7 @@ impl SessionContext {
                 lines.push(Message::System { content: Arc::new(system.clone()) });
             }
             lines.extend(self.messages.iter().cloned());
-            write_lines(&mut file, &lines).await?;
+            write_cache_lines(&mut file, &lines).await?;
         }
         // 2. 清空缓存文件（文件不存在幂等）
         match tokio::fs::remove_file(&self.cache_path()).await {
@@ -205,7 +205,7 @@ impl SessionContext {
     // ========== 私有：缓存文件读写 ==========
 
     /// 打开缓存文件（追加模式；新文件先落 System 首行）——&mut self 排他：写入须独占，避免并发交叉写坏行
-    async fn open_cache_append(&mut self) -> Result<tokio::fs::File> {
+    async fn open_cache_and_write_system_line(&mut self) -> Result<tokio::fs::File> {
         let path = self.cache_path();
         let is_new = !path.exists();
         if let Some(parent) = path.parent() {
@@ -231,7 +231,7 @@ impl SessionContext {
 
 /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
 /// 自由函数（不依赖 self 字段）：排他性由 &mut self 调用方（append / apply_pending_system / archive_and_clear_cache）保证
-async fn write_lines(file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
+async fn write_cache_lines(file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
     for m in messages {
         let line = serde_json::to_string(m)?;
         file.write_all(line.as_bytes()).await
