@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::types::{AdminCommand, CommandEffect, Error, Mode, OutChannelParams, Result, SessionKey};
+use crate::types::{AdminCommand, Error, Mode, OutChannelParams, Result, SessionKey};
 use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
@@ -143,7 +143,6 @@ impl CommandRouter {
                 })))
             }
             "events" => Ok(AdminCommand::Events),
-            "reset" => Ok(AdminCommand::Reset),
             "model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
                 if parts.len() < 3 || parts.len() > 4 {
@@ -174,7 +173,7 @@ impl CommandRouter {
         command: &AdminCommand,
         config: &ConfigManager,
         channel_id: &str,
-    ) -> Result<(String, CommandEffect)> {
+    ) -> Result<String> {
         let coordinator = AgentCoordinator::instance();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
@@ -185,7 +184,7 @@ impl CommandRouter {
                         c.bind_users.push(cu);
                     }
                 }).await?;
-                Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))
+                Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unbind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {
@@ -198,18 +197,18 @@ impl CommandRouter {
                         }
                     }
                 }).await?;
-                Ok((format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))
+                Ok(format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
                 config.add_admin(channel_id, &ChannelUser {
                     messenger_id: messenger_id.clone(),
                     user_id: user_id.clone(),
                 }).await?;
-                Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
+                Ok(format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
                 config.remove_admin(channel_id, messenger_id, user_id).await?;
-                Ok((format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))
+                Ok(format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id))
             }
             AdminCommand::SetAgent { agent_name, role } => {
                 let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());
@@ -220,33 +219,33 @@ impl CommandRouter {
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: new_agent.clone(), role_name: new_role.clone(), mode: cur.mode };
                 coordinator.change_channel_key(channel_id, new_key, Some(agent_id)).await?;
-                Ok((format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role), CommandEffect::None))
+                Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: new_role.clone(), mode: cur.mode };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
-                Ok((format!("✅ 已设置 role: {}", new_role), CommandEffect::None))
+                Ok(format!("✅ 已设置 role: {}", new_role))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
-                Ok((format!("✅ 新事件 ID: {}", id), CommandEffect::None))
+                Ok(format!("✅ 新事件 ID: {}", id))
             }
             AdminCommand::ModeRole => {
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Role };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
-                Ok(("✅ 已切换为角色模式".to_string(), CommandEffect::None))
+                Ok("✅ 已切换为角色模式".to_string())
             }
             AdminCommand::Reenter(event_id) => {
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
                 coordinator.change_channel_key(channel_id, new_key, None).await?;
-                Ok((format!("✅ 将重进事件: {}", event_id), CommandEffect::None))
+                Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
                 match params {
@@ -277,20 +276,17 @@ impl CommandRouter {
                                 group_id: Arc::new(p.group_id.clone()),
                             });
                         }).await?;
-                        Ok((format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id), CommandEffect::None))
+                        Ok(format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id))
                     }
                     None => {
                         config.update_channel(channel_id, |c| c.outgoing = None).await?;
-                        Ok(("✅ 已取消发送通道（只存不回复）".to_string(), CommandEffect::None))
+                        Ok("✅ 已取消发送通道（只存不回复）".to_string())
                     }
                 }
             }
             AdminCommand::Events => {
                 let reply = coordinator.list_events(channel_id).await?;
-                Ok((reply, CommandEffect::None))
-            }
-            AdminCommand::Reset => {
-                Ok(("🔄 正在重置上下文...".to_string(), CommandEffect::ResetSession))
+                Ok(reply)
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
@@ -302,7 +298,7 @@ impl CommandRouter {
                 if *set_default {
                     reply.push_str("（已设为默认）");
                 }
-                Ok((reply, CommandEffect::None))
+                Ok(reply)
             }
         }
     }

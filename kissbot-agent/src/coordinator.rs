@@ -272,18 +272,6 @@ impl AgentCoordinator {
         self.session_manager.retain(&keys);
     }
 
-    /// 重置来源 channel 所属会话的上下文
-    async fn reset_session_for(&self, channel_id: &str) {
-        if let Some(ch) = self.config.channel(channel_id).await {
-            let key = self.session_key_for(&ch);
-            if let Some(session) = self.session_manager.get(&key) {
-                self.reset_context(&session).await;
-                return;
-            }
-        }
-        warn!("reset: channel {} 无会话可重置", channel_id);
-    }
-
     /// 上下文重置（新 session_key 或超长）：按模式归档当前缓存 → 清空 → 重建
     /// event：归档（超长时调用方先 compress，此处仅归档+清空+重建空白缓存）
     /// role：归档 + 记忆打包重建
@@ -605,17 +593,9 @@ impl AgentCoordinator {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
                 match CommandRouter::execute(&cmd, &self.config, channel_id).await {
-                    Ok((reply, effect)) => {
+                    Ok(reply) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
-
-                        // 应用命令执行效果
-                        match effect {
-                            crate::types::CommandEffect::ResetSession => {
-                                self.reset_session_for(channel_id).await;
-                            }
-                            crate::types::CommandEffect::None => {}
-                        }
                     }
                     Err(e) => {
                         self.send_admin_reply(channel_id, event,

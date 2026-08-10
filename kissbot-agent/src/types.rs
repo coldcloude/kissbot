@@ -121,7 +121,6 @@ pub enum AdminCommand {
     ModeRole,
     Reenter(String),
     Events,
-    Reset,
     Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
     /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_name=""、role_name=""）
     SetAgent { agent_name: Option<String>, role: Option<String> },
@@ -133,16 +132,6 @@ pub struct OutChannelParams {
     pub messenger_id: String,
     pub user_id: String,
     pub group_id: String,
-}
-
-// ========== 管理命令执行效果 ==========
-
-/// 命令执行后协调器需做的后续动作
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandEffect {
-    None,
-    /// 重置来源 channel 所属会话的上下文
-    ResetSession,
 }
 
 // ========== 模型相关 ==========

@@ -87,7 +87,6 @@
 | mode | `/mode role` | 回到角色模式 |
 | reenter | `/reenter <event-id>` | 重进指定事件会话 |
 | events | `/events` | 查询事件列表 |
-| reset | `/reset` | 上下文重置 |
 
 ### 命令处理状态码
 
