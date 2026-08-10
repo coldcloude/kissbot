@@ -178,13 +178,6 @@ impl SessionContext {
         }
     }
 
-    /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
-    pub async fn reset(&mut self) -> Result<()> {
-        self.archive_and_clear_cache().await?;
-        self.messages.clear();
-        Ok(())
-    }
-
     /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 从内存写回缓存
     /// （System + 消息行；不负责清理，调用方保证先 archive_and_clear_cache）
     pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
@@ -762,7 +755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_twice_accumulates_and_reset_clears() {
+    async fn append_twice_accumulates_and_rebuild_clears() {
         let dir = tempfile::tempdir().unwrap();
         let k = cache_key();
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
@@ -771,13 +764,16 @@ mod tests {
         let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
         recovered.recover_from_cache().await.unwrap();
         assert_eq!(recovered.len(), 3, "追加不截断");
-        // 重置：归档（如存在）→ 清空缓存 → 清空内存
-        ctx.reset().await.unwrap();
+        // 重建（role 构建路径：archive_and_clear_cache → rebuild，替代 reset 语义）：清空内存，缓存不残留
+        ctx.archive_and_clear_cache().await.unwrap();
+        ctx.rebuild(vec![]).await.unwrap();
+        assert!(ctx.build().is_empty(), "重建后内存为空");
         let mut after = SessionContext::new(dir.path().to_str().unwrap(), &k);
         after.recover_from_cache().await.unwrap();
-        assert!(after.build().is_empty(), "reset 后缓存为空");
-        // 无缓存时 reset 幂等
-        ctx.reset().await.unwrap();
+        assert!(after.build().is_empty(), "重建后缓存为空");
+        // 无内容时重复重建幂等
+        ctx.archive_and_clear_cache().await.unwrap();
+        ctx.rebuild(vec![]).await.unwrap();
     }
 
     #[tokio::test]
