@@ -194,7 +194,8 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
             let user_name = rec.user_name.clone();
             let is_self = rec.is_self != 0;
             let sn = rec.sn;
-            let content = collect_text_parts(&rec.content);
+            let mut content: Vec<Arc<String>> = Vec::new();
+            collect_text_parts(&rec.content, &mut content);
             if content.is_empty() {
                 continue;  // 非文本记录跳过
             }
@@ -205,14 +206,18 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
     }
 }
 
-/// 递归收集 Content 中的全部 Text 段：Text 直接 clone 其 Arc<String>；Multi 递归遍历（可嵌套任意深度），
+/// 递归收集 Content 中的全部 Text 段到 parts：Text 直接 clone 其 Arc<String>；Multi 递归遍历（可嵌套任意深度），
 /// 各 Text 子项各占一个元素；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）不产生段（调用方跳过空结果）
 /// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
-fn collect_text_parts(content: &Content) -> Vec<Arc<String>> {
+fn collect_text_parts(content: &Content, parts: &mut Vec<Arc<String>>) {
     match content {
-        Content::Text(text) => vec![text.clone()],
-        Content::Multi(items) => items.iter().flat_map(collect_text_parts).collect(),
-        _ => Vec::new(),
+        Content::Text(text) => parts.push(text.clone()),
+        Content::Multi(items) => {
+            for item in items {
+                collect_text_parts(item, parts);
+            }
+        }
+        _ => {}
     }
 }
 
