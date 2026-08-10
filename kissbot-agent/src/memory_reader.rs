@@ -24,16 +24,30 @@ pub struct MemoryMsg {
 /// 连续同 is_self 的记录合并为一条消息，User/Assistant 交替；
 /// User 段 content 逐行 "name: text"（name 为空只留 text），Assistant 段只保留 content（不含 name/time）；
 /// 若以 User 结尾则补一条 Content 为空的 Assistant；空输入/无 User 返回空 Vec
+/// 打包记忆消息为交替的 User/Assistant 消息序列：
+/// content 为空的记录（非文本）跳过；
+/// 找到第一条非 self（User）消息（之前的 self 消息丢弃，对话必须以 User 开头），
+/// 连续同 is_self 的记录合并为一条消息，User/Assistant 交替；
+/// User 段 content 逐行 "name: text"（name 为空只留 text），Assistant 段只保留 content（不含 name/time）；
+/// 若以 User 结尾则补一条 Content 为空的 Assistant；空输入/无 User 返回空 Vec
 pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
-    // 对话必须以 User 开头：找到第一条非 self 消息
-    let Some(first_user) = msgs.iter().position(|m| !m.is_self) else {
-        return Vec::new();
-    };
     let mut out: Vec<Message> = Vec::new();
     let mut user_buf: Vec<String> = Vec::new();
     let mut asst_buf: Vec<String> = Vec::new();
-    let mut is_asst = msgs[first_user].is_self;  // 当前段类型（false=User 段）
-    for m in &msgs[first_user..] {
+    let mut is_asst = false;  // 当前段类型（false=User 段）
+    let mut started = false;  // 是否已开始对话（找到第一条非 self 消息）；此前 self 全部丢弃
+    for m in msgs {
+        if m.content.is_empty() {
+            continue;  // 非文本记录（空 content）跳过
+        }
+        if !started {
+            // 对话必须以 User 开头：丢弃前导 self
+            if m.is_self {
+                continue;
+            }
+            started = true;
+            is_asst = false;
+        }
         if m.is_self != is_asst {
             // 段类型切换：flush 上一段（连续同 is_self 已合并）
             if is_asst {
@@ -53,13 +67,15 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
             user_buf.push(format!("{}: {}", m.user_name, join_content(&m.content)));
         }
     }
-    // flush 最后一段
-    if is_asst {
-        out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
-    } else {
-        out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
-        // 以 User 结尾：补一条空 Assistant（模型对话需以待回答的 Assistant 结尾）
-        out.push(Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: None });
+    // flush 最后一段（仅当已开始对话）
+    if started {
+        if is_asst {
+            out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
+        } else {
+            out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
+            // 以 User 结尾：补一条空 Assistant（模型对话需以待回答的 Assistant 结尾）
+            out.push(Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: None });
+        }
     }
     out
 }
@@ -198,12 +214,9 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
                 continue;
             }
             let user_name = rec.user_name.clone();
-            let is_self = rec.is_self != 0;
+            let is_self = rec.is_self > 0;
             let mut content: Vec<Arc<String>> = Vec::new();
             collect_text_parts(&rec.content, &mut content);
-            if content.is_empty() {
-                continue;  // 非文本记录跳过
-            }
             map.insert(key, MemoryMsg { user_name, content, is_self });
         }
     }
@@ -432,10 +445,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_recent_skips_non_text_records_and_joins_multi() {
-        // Multi 内容取其中 Text 子项拼接；非文本记录跳过（parse_channel_records 内联行为）
+    async fn read_recent_keeps_non_text_as_empty_content() {
+        // 非文本记录不再在解析阶段跳过：以空 content Vec 保留在结果中（pack 时跳过）；Multi 取其中 Text 子项拼接
         let t = time_ago(60);
-        // 非 Text 变体（ToolCall 等）内容为空 → 跳过；Multi 取其中 Text 子项拼接
+        // 非 Text 变体（ToolCall 等）content 为空 Vec；Multi 取其中 Text 子项拼接
         // 注意：旧测试数据用的 "Image" 不是真实 Content 变体，typed 反序列化会失败
         let data = json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, [
             [0, channel_record_json(&t, "u1", json!({ "msg_type": "Text", "data": "你好" }), false, 0)],
@@ -446,9 +459,12 @@ mod tests {
         ]]]);
         let url = start_mock_store(data).await;
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
-        assert_eq!(out.len(), 2, "非文本记录跳过");
+        assert_eq!(out.len(), 3, "非文本记录保留在结果中（空 content）");
         assert_eq!(join_content(&out[0].content), "你好");
         assert_eq!(join_content(&out[1].content), "a\nb", "Multi 内容取 Text 子项拼接");
+        assert!(out[2].content.is_empty(), "ToolCall 记录 content 为空 Vec");
+        // pack 时跳过空 content 记录 → 2 条 User 合并为 1 条 + 末尾空 Assistant
+        assert_eq!(pack_memory_messages(&out).len(), 2, "pack 跳过空 content 记录");
     }
 
     #[tokio::test]
@@ -486,10 +502,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_recent_early_exit_uses_map_len_after_parse() {
-        // 语义锁定：不足 N 条早退按解析后 map.len()（文本数）判断——理论上记录不重复，map 大小即取到的数量。
-        // 12 条记录 m0..m11（时间 now-1200+i*60），其中 m5 为非文本（ToolCall，解析跳过）；
-        // count=10 → Query1 解析后 map=9 < 10 → 直接返回 9 条（不发起 Query2，[cutoff, ln] 窗口不补）
+    async fn read_recent_map_len_counts_non_text_records() {
+        // 语义锁定：map.len() 含非文本记录（解析不再跳过）→ 即取到的数量。
+        // 12 条记录 m0..m11（时间 now-1200+i*60），其中 m5 为非文本（ToolCall，content 为空 Vec）；
+        // count=10 → Query1 解析后 map=10（= count，不早退）→ Query2 补 m0,m1 → 12 条（m5 以空 content 保留）
         let records: Vec<serde_json::Value> = (0..12)
             .map(|i| {
                 let t = time_ago(1200 - i * 60);
@@ -501,10 +517,12 @@ mod tests {
             })
             .collect();
         let url = start_mock_store(channel_data(records)).await;
-        let cfg = ctx_config(1800, 10);  // cutoff=now-1800（若走 Query2 会补 m0,m1，但 map.len()<count 已早退）
+        let cfg = ctx_config(1800, 10);  // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
-        assert_eq!(out.len(), 9, "map.len()=9 < count=10 → 早退返回 Query1 解析结果（m5 跳过，不发起 Query2）");
-        assert!(!out.iter().any(|m| join_content(&m.content) == "m5"), "非文本 m5 被解析跳过");
+        assert_eq!(out.len(), 12, "map.len()=10=count 不早退，Query2 补 m0,m1 → 12 条（含空 content 的 m5）");
+        assert!(out.iter().any(|m| m.content.is_empty()), "非文本 m5 以空 content 保留在结果中");
+        assert_eq!(join_content(&out[0].content), "m0");
+        assert_eq!(join_content(&out[11].content), "m11");
     }
 
     #[tokio::test]
@@ -579,6 +597,24 @@ mod tests {
         assert!(pack_memory_messages(&[]).is_empty());
         // 全 self（无 User 开头）→ 无可打包
         assert!(pack_memory_messages(&[msg("agent", "a", true), msg("agent", "b", true)]).is_empty());
+    }
+
+    #[test]
+    fn pack_memory_messages_skips_empty_content_records() {
+        // 非文本记录（content 为空 Vec）→ 跳过：不产生消息、不触发段切换、不阻止后续合并
+        let empty = || MemoryMsg { user_name: Arc::new("agent".to_string()), content: vec![], is_self: true };
+        let msgs = vec![
+            msg("u1", "hi", false),
+            empty(),                       // 空 content → 跳过（夹在两条 User 之间也不切段）
+            msg("u2", "there", false),
+            msg("agent", "ok", true),
+            empty(),                       // 结尾空 content → 跳过（不影响末尾 Assistant flush）
+        ];
+        let out = pack_memory_messages(&msgs);
+        // 期望：[User("u1: hi\nu2: there"), Assistant("ok")]
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: hi\nu2: there"));
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "ok"));
     }
 
     #[test]
