@@ -186,9 +186,7 @@ impl MemoryReader {
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
 /// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
-/// 文本提取内联于此（原 extract_record_text）：Text 直接 clone 其 Arc<String> 进结果 Vec；
-/// Multi 取其中 Text 子项的 Arc；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）为空 → 跳过
-/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
+/// 文本提取走 collect_text_parts（递归收集全部 Text 段）
 fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MemoryMsg>) {
     for (_, records) in groups {
         for (_, rec) in records {
@@ -196,16 +194,7 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
             let user_name = rec.user_name.clone();
             let is_self = rec.is_self != 0;
             let sn = rec.sn;
-            let content: Vec<Arc<String>> = match &rec.content {
-                Content::Text(text) => vec![text.clone()],
-                Content::Multi(items) => items.iter()
-                    .filter_map(|c| match c {
-                        Content::Text(text) => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
+            let content = collect_text_parts(&rec.content);
             if content.is_empty() {
                 continue;  // 非文本记录跳过
             }
@@ -213,6 +202,17 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
                 e.insert(MemoryMsg { user_name, content, is_self });
             }
         }
+    }
+}
+
+/// 递归收集 Content 中的全部 Text 段：Text 直接 clone 其 Arc<String>；Multi 递归遍历（可嵌套任意深度），
+/// 各 Text 子项各占一个元素；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）不产生段（调用方跳过空结果）
+/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
+fn collect_text_parts(content: &Content) -> Vec<Arc<String>> {
+    match content {
+        Content::Text(text) => vec![text.clone()],
+        Content::Multi(items) => items.iter().flat_map(collect_text_parts).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -497,6 +497,27 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 9, "map.len()=9 < count=10 → 早退返回 Query1 解析结果（m5 跳过，不发起 Query2）");
         assert!(!out.iter().any(|m| join_content(&m.content) == "m5"), "非文本 m5 被解析跳过");
+    }
+
+    #[tokio::test]
+    async fn read_recent_recursively_collects_nested_multi_text() {
+        // 嵌套 Multi：递归收集全部 Text 段（任意深度），非文本子项跳过
+        let t = time_ago(60);
+        let data = json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, [
+            [0, channel_record_json(&t, "u1", json!({ "msg_type": "Multi", "data": [
+                { "msg_type": "Text", "data": "a" },
+                { "msg_type": "Multi", "data": [
+                    { "msg_type": "Text", "data": "b" },
+                    { "msg_type": "ToolCall", "data": "k" },
+                    { "msg_type": "Text", "data": "c" },
+                ] },
+                { "msg_type": "Text", "data": "d" },
+            ] }), false, 0)],
+        ]]]);
+        let url = start_mock_store(data).await;
+        let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(join_content(&out[0].content), "a\nb\nc\nd", "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
     }
 
     #[tokio::test]
