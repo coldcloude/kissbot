@@ -180,16 +180,17 @@ impl MemoryReader {
         let mut map: BTreeMap<(Arc<String>, u64), MemoryMsg> = BTreeMap::new();
         parse_channel_groups(groups, &mut map);
 
-        if map.is_empty() || count == 0 {
+        // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
+        // 一并在此处理；Query1 最旧若为非文本，其同时间组除非文本外无其他记录（否则文本记录会占据更小首键）
+        let Some((ln, _)) = map.keys().next() else {
             return Ok(Vec::new());
-        }
+        };
+        let ln = ln.clone();
         // 不足 N 条：Query1 已含全部记录，直接返回（无需 Query2）
         if recent_raw < count {
             return Ok(map.into_values().collect());
         }
-        // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；Query1 最旧若为非文本，其同时间组除非文本外
-        // 无其他记录（否则文本记录会占据更小首键）→ 与取原始最旧等价；M = min(时间窗起点 start, ln)
-        let ln = map.keys().next().expect("map 非空（is_empty 已早退）").0.clone();
+        // M = min(时间窗起点 start, ln)
         let m = if start.as_str() < ln.as_str() { start } else { ln.to_string() };  // M = min(cutoff, ln)
 
         // ===== Query2（query_channel 内联）：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
