@@ -13,7 +13,8 @@ type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
 #[derive(Debug, Clone)]
 pub struct MemoryMsg {
     pub user_name: Arc<String>,
-    pub content: Arc<String>,
+    /// 文本段列表：每个元素为 Content::Text 的 Arc 克隆（Multi 拆多个元素；pack 时以 \n 拼接）
+    pub content: Vec<Arc<String>>,
     /// 是否 agent 自身消息（来自 ChannelRecord.is_self：1=self，0=他人）
     pub is_self: bool,
 }
@@ -45,11 +46,11 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
             is_asst = m.is_self;
         }
         if m.is_self {
-            asst_buf.push(m.content.to_string());  // Assistant：只要 content，不带 name/time
+            asst_buf.push(join_content(&m.content));  // Assistant：只要 content，不带 name/time
         } else if m.user_name.is_empty() {
-            user_buf.push(m.content.to_string());
+            user_buf.push(join_content(&m.content));
         } else {
-            user_buf.push(format!("{}: {}", m.user_name, m.content));
+            user_buf.push(format!("{}: {}", m.user_name, join_content(&m.content)));
         }
     }
     // flush 最后一段
@@ -61,6 +62,11 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
         out.push(Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: None });
     }
     out
+}
+
+/// 拼接文本段（pack 用）：与旧 extract_record_text 的 Multi join("\n") 语义一致；元素为 Content::Text 的 Arc 克隆
+fn join_content(parts: &[Arc<String>]) -> String {
+    parts.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
 }
 
 pub struct MemoryReader {
@@ -180,6 +186,9 @@ impl MemoryReader {
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
 /// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
+/// 文本提取内联于此（原 extract_record_text）：Text 直接 clone 其 Arc<String> 进结果 Vec；
+/// Multi 取其中 Text 子项的 Arc；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）为空 → 跳过
+/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
 fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MemoryMsg>) {
     for (_, records) in groups {
         for (_, rec) in records {
@@ -187,7 +196,16 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
             let user_name = rec.user_name.clone();
             let is_self = rec.is_self != 0;
             let sn = rec.sn;
-            let content = Arc::new(extract_record_text(&rec.content));
+            let content: Vec<Arc<String>> = match &rec.content {
+                Content::Text(text) => vec![text.clone()],
+                Content::Multi(items) => items.iter()
+                    .filter_map(|c| match c {
+                        Content::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
             if content.is_empty() {
                 continue;  // 非文本记录跳过
             }
@@ -195,21 +213,6 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
                 e.insert(MemoryMsg { user_name, content, is_self });
             }
         }
-    }
-}
-
-/// 从 Content 枚举提取文本：Text 取内容；Multi 取其中 Text 子项拼接；其余（附件/系统通知/Think/ToolCall/ToolResult 等）返回空串（调用方跳过）
-/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
-fn extract_record_text(content: &Content) -> String {
-    match content {
-        Content::Text(text) => text.as_str().to_string(),
-        Content::Multi(items) => items.iter()
-            .filter_map(|c| match c {
-                Content::Text(text) => Some(text.as_str().to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>().join("\n"),
-        _ => String::new(),
     }
 }
 
@@ -336,8 +339,8 @@ mod tests {
         let cfg = ctx_config(7200, 10);  // cutoff=now-7200 早于 ln=now-600 → M = cutoff
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
-        assert_eq!(out[0].content.as_str(), "m0");
-        assert_eq!(out[29].content.as_str(), "m29");
+        assert_eq!(join_content(&out[0].content), "m0");
+        assert_eq!(join_content(&out[29].content), "m29");
     }
 
     #[tokio::test]
@@ -351,7 +354,7 @@ mod tests {
         let cfg = ctx_config(60, 10);  // 窗口起点 now-60s 晚于全部记录 → M = ln
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
-        assert_eq!(out[0].content.as_str(), "m5", "起点 = 第 6 条（最后 10 条最旧一条）");
+        assert_eq!(join_content(&out[0].content), "m5", "起点 = 第 6 条（最后 10 条最旧一条）");
     }
 
     #[tokio::test]
@@ -396,7 +399,7 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
-        assert!(out.iter().any(|m| m.content.as_str() == "m4"), "start_idx 之前的同时间记录被并集取回");
+        assert!(out.iter().any(|m| join_content(&m.content) == "m4"), "start_idx 之前的同时间记录被并集取回");
     }
 
     #[tokio::test]
@@ -417,7 +420,7 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
-        assert!(out.iter().any(|m| m.content.as_str() == "m2"), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
+        assert!(out.iter().any(|m| join_content(&m.content) == "m2"), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
     }
 
     #[tokio::test]
@@ -436,8 +439,8 @@ mod tests {
         let url = start_mock_store(data).await;
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 2, "非文本记录跳过");
-        assert_eq!(out[0].content.as_str(), "你好");
-        assert_eq!(out[1].content.as_str(), "a\nb", "Multi 内容取 Text 子项拼接");
+        assert_eq!(join_content(&out[0].content), "你好");
+        assert_eq!(join_content(&out[1].content), "a\nb", "Multi 内容取 Text 子项拼接");
     }
 
     #[tokio::test]
@@ -455,7 +458,7 @@ mod tests {
         // 不足 N 条（4 → count=10）：直接返回 msgs，重复记录也不得泄漏
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
-        assert_eq!(out.iter().filter(|m| m.content.as_str() == "hello").count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
+        assert_eq!(out.iter().filter(|m| join_content(&m.content) == "hello").count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
     }
 
     #[tokio::test]
@@ -470,8 +473,8 @@ mod tests {
         let cfg = ctx_config(1800, 10);
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
-        assert_eq!(out[0].content.as_str(), "m0");
-        assert_eq!(out[11].content.as_str(), "m11");
+        assert_eq!(join_content(&out[0].content), "m0");
+        assert_eq!(join_content(&out[11].content), "m11");
     }
 
     #[tokio::test]
@@ -493,7 +496,7 @@ mod tests {
         let cfg = ctx_config(1800, 10);  // cutoff=now-1800（若走 Query2 会补 m0,m1，但 map.len()<count 已早退）
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 9, "map.len()=9 < count=10 → 早退返回 Query1 解析结果（m5 跳过，不发起 Query2）");
-        assert!(!out.iter().any(|m| m.content.as_str() == "m5"), "非文本 m5 被解析跳过");
+        assert!(!out.iter().any(|m| join_content(&m.content) == "m5"), "非文本 m5 被解析跳过");
     }
 
     #[tokio::test]
@@ -520,7 +523,7 @@ mod tests {
 
     // 构造测试用 MemoryMsg
     fn msg(name: &str, content: &str, is_self: bool) -> MemoryMsg {
-        MemoryMsg { user_name: Arc::new(name.to_string()), content: Arc::new(content.to_string()), is_self }
+        MemoryMsg { user_name: Arc::new(name.to_string()), content: vec![Arc::new(content.to_string())], is_self }
     }
 
     #[test]
