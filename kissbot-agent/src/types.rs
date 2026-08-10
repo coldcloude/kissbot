@@ -23,6 +23,9 @@ pub enum Error {
     #[error("Memory store error: {0}")]
     MemoryStoreError(String),
 
+    #[error("Memory time window error: {0}")]
+    MemoryTimeWindow(String),
+
     #[allow(dead_code)]
     #[error("Memory ego error: {0}")]
     MemoryEgoError(String),

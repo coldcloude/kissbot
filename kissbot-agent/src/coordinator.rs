@@ -239,7 +239,7 @@ impl AgentCoordinator {
         // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
         let new_messages = self.memory_reader
-            .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg).await
+            .read_recent_for_context(session.agent_id.clone(), session.role_name.clone(), &cfg).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs));
         // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
         let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
