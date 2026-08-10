@@ -87,6 +87,14 @@ pub struct QueryRequest {
     pub end_time: Arc<String>,
 }
 
+/// 最近 N 条 channel 记录查询（无时间参数：取该 agent+role 最近 count 条，跨日期文件）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentQuery {
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
+    pub count: u32,
+}
+
 //===================== Record in file ======================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +220,19 @@ mod tests {
         assert_eq!(*deserialized.user_name, "U1Name");
         assert_eq!(*deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(s) if s.as_str() == "Hello"));
+    }
+
+    #[test]
+    fn test_serde_recent_query() {
+        let obj = RecentQuery {
+            agent_id: Arc::new("a".into()),
+            role_name: Arc::new("r".into()),
+            count: 5,
+        };
+        let s = serde_json::to_string(&obj).unwrap();
+        assert_eq!(s, r#"{"agent_id":"a","role_name":"r","count":5}"#);
+        let back: RecentQuery = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.count, 5);
     }
 
     #[test]
