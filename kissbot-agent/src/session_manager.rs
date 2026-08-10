@@ -173,10 +173,10 @@ impl SessionContext {
             write_cache_lines(&mut file, &lines).await?;
         }
         // 2. 清空缓存文件（文件不存在幂等）
-        match tokio::fs::remove_file(&self.cache_path()).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(Error::IoError(e.to_string())),
+        if let Err(e) = tokio::fs::remove_file(&self.cache_path()).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(Error::IoError(e.to_string()));
+            }
         }
         // 3. 重置消息（只有清空缓存文件后才允许重置消息）
         if let Some(messages) = messages {
