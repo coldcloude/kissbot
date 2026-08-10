@@ -92,7 +92,7 @@ d) 删除 Reset 执行分支：
 
 e) 全部分支返回值去掉 `, CommandEffect::None)` 后缀：把每个
 `Ok((X, CommandEffect::None))` 改为 `Ok(X)`，`Ok(("文字".to_string(), CommandEffect::None))` 改为 `Ok("文字".to_string())`。
-共 12 处（execute 内 11 处 + Events 分支 1 处），逐条改为：
+共 13 处（execute 内 12 处 + Events 分支 1 处），逐条改为：
 - `Ok((format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))` → `Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))`
 - `Ok((format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id), CommandEffect::None))` → 同上模式
 - `Ok((format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id), CommandEffect::None))` → 同上模式
@@ -168,77 +168,14 @@ git add -A && git commit -m "refactor(agent): 删除 /reset 命令整条路径�
 
 ---
 
-### Task 2: SessionContext 删除 reset() + 测试调整
-
-**Files:**
-- Modify: `kissbot-agent/src/session_manager.rs`
-
-**Interfaces:**
-- Consumes: Task 3 不再调用 `SessionContext::reset()`（reset_context 将在 Task 3 删除）
-- Produces: `SessionContext` 公共方法收敛为：`new` / `set_system_message` / `apply_pending_system` / `system_message` / `append` / `push` / `recover_from_cache` / `archive_and_clear_cache` / `rebuild` / `build` / `len` / `is_overflow`
-
-- [ ] **Step 1: 删除 reset() 方法**
-
-在 `kissbot-agent/src/session_manager.rs` 中删除：
-
-```rust
-    /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
-    pub async fn reset(&mut self) -> Result<()> {
-        self.archive_and_clear_cache().await?;
-        self.messages.clear();
-        Ok(())
-    }
-```
-
-（reset() 职责已被 archive_and_clear_cache + rebuild 覆盖，role 构建/压缩路径统一走这两者。）
-
-- [ ] **Step 2: 改写测试 append_twice_accumulates_and_reset_clears**
-
-将 `kissbot-agent/src/session_manager.rs` 中 `append_twice_accumulates_and_reset_clears` 整个改为（用 rebuild 替代 reset 语义）：
-
-```rust
-    #[tokio::test]
-    async fn append_twice_accumulates_and_rebuild_clears() {
-        let dir = tempfile::tempdir().unwrap();
-        let k = cache_key();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
-        ctx.append(&sample_msgs()).await.unwrap();
-        ctx.append(&[Message::User { content: Arc::new("再问".into()) }]).await.unwrap();
-        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
-        recovered.recover_from_cache().await.unwrap();
-        assert_eq!(recovered.len(), 3, "追加不截断");
-        // 重建（role 构建路径的一部分）：rebuild 空消息 → 清空内存，缓存不残留
-        ctx.rebuild(vec![]).await.unwrap();
-        assert!(ctx.build().is_empty(), "rebuild 清空内存");
-        let mut after = SessionContext::new(dir.path().to_str().unwrap(), &k);
-        after.recover_from_cache().await.unwrap();
-        assert!(after.build().is_empty(), "rebuild 后缓存为空");
-        // 无内容时 rebuild 幂等
-        ctx.rebuild(vec![]).await.unwrap();
-    }
-```
-
-- [ ] **Step 3: 测试通过 + 提交**
-
-```bash
-cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | grep -E "^test result"
-```
-预期：全部通过。
-
-```bash
-git add -A && git commit -m "refactor(agent): SessionContext 删除 reset()（职责由 archive_and_clear_cache + rebuild 覆盖），测试改用 rebuild 验证清空"
-```
-
----
-
-### Task 3: coordinator 上下文构建重构（build_role_context + ensure_session 内联 + 溢出路径）
+### Task 2: coordinator 上下文构建重构（build_role_context + ensure_session 内联 + 溢出路径）
 
 **Files:**
 - Modify: `kissbot-agent/src/coordinator.rs`
 
 **Interfaces:**
-- Consumes: `SessionContext::{recover_from_cache, archive_and_clear_cache, rebuild, set_system_message}`（Task 2 后的 API）、`MemoryReader::read_recent_for_context`、`pack_memory_messages`、`MemoryReader::read_memory_struct_index`
-- Produces: `fn build_role_context(&self, session: &Arc<Session>)`（私有方法，新建/溢出共用）；`ensure_session` 的 `if created` 分支内联构建；溢出分支共用 Forced flush
+- Consumes: `SessionContext::{recover_from_cache, archive_and_clear_cache, rebuild, set_system_message}`（现行 API，Task 3 之前均存在）、`MemoryReader::read_recent_for_context`、`pack_memory_messages`、`MemoryReader::read_memory_struct_index`
+- Produces: `fn build_role_context(&self, session: &Arc<Session>)`（私有方法，新建/溢出共用）；`ensure_session` 的 `if created` 分支内联构建；溢出分支共用 Forced flush；**删除 `build_initial_context` 与 `reset_context`（后者是 `SessionContext::reset()` 的唯一调用方，Task 3 删 reset() 的前提）**
 
 - [ ] **Step 1: 新增 build_role_context 方法**
 
@@ -368,6 +305,69 @@ git add -A && git commit -m "refactor(agent): 删除 build_initial_context 与 r
 
 ---
 
+### Task 3: SessionContext 删除 reset() + 测试调整
+
+**Files:**
+- Modify: `kissbot-agent/src/session_manager.rs`
+
+**Interfaces:**
+- Consumes: Task 2 已删除 `reset_context`（`SessionContext::reset()` 的唯一调用方）
+- Produces: `SessionContext` 公共方法收敛为：`new` / `set_system_message` / `apply_pending_system` / `system_message` / `append` / `push` / `recover_from_cache` / `archive_and_clear_cache` / `rebuild` / `build` / `len` / `is_overflow`
+
+- [ ] **Step 1: 删除 reset() 方法**
+
+在 `kissbot-agent/src/session_manager.rs` 中删除：
+
+```rust
+    /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
+    pub async fn reset(&mut self) -> Result<()> {
+        self.archive_and_clear_cache().await?;
+        self.messages.clear();
+        Ok(())
+    }
+```
+
+（reset() 职责已被 archive_and_clear_cache + rebuild 覆盖，role 构建/压缩路径统一走这两者。）
+
+- [ ] **Step 2: 改写测试 append_twice_accumulates_and_reset_clears**
+
+将 `kissbot-agent/src/session_manager.rs` 中 `append_twice_accumulates_and_reset_clears` 整个改为（用 rebuild 替代 reset 语义）：
+
+```rust
+    #[tokio::test]
+    async fn append_twice_accumulates_and_rebuild_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = cache_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        ctx.append(&sample_msgs()).await.unwrap();
+        ctx.append(&[Message::User { content: Arc::new("再问".into()) }]).await.unwrap();
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        recovered.recover_from_cache().await.unwrap();
+        assert_eq!(recovered.len(), 3, "追加不截断");
+        // 重建（role 构建路径的一部分）：rebuild 空消息 → 清空内存，缓存不残留
+        ctx.rebuild(vec![]).await.unwrap();
+        assert!(ctx.build().is_empty(), "rebuild 清空内存");
+        let mut after = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        after.recover_from_cache().await.unwrap();
+        assert!(after.build().is_empty(), "rebuild 后缓存为空");
+        // 无内容时 rebuild 幂等
+        ctx.rebuild(vec![]).await.unwrap();
+    }
+```
+
+- [ ] **Step 3: 测试通过 + 提交**
+
+```bash
+cd /home/admin/project/kissbot/kissbot-agent && cargo test 2>&1 | grep -E "^test result"
+```
+预期：全部通过。
+
+```bash
+git add -A && git commit -m "refactor(agent): SessionContext 删除 reset()（职责由 archive_and_clear_cache + rebuild 覆盖），测试改用 rebuild 验证清空"
+```
+
+---
+
 ### Task 4: 文档同步 + 残留验证
 
 **Files:**
@@ -427,10 +427,10 @@ git add -A && git commit -m "docs: 同步移除 /reset 后的命令描述与上�
 
 **Spec 覆盖：**
 - 命令基础设施删除（AdminCommand::Reset、CommandEffect、router、handle_admin_command、reset_session_for、nexus.md）→ Task 1 ✓
-- ensure_session 内联（event recover / role build_role_context + 系统消息 set + read_memory_struct_index）→ Task 3 Step 2 ✓
-- build_role_context（查询记忆 → archive_and_clear_cache → rebuild，新建/溢出共用）→ Task 3 Step 1 ✓
-- 溢出重建（Role/Event 共通 Forced flush 尾部；reset_context 删除）→ Task 3 Step 4-5 ✓
-- SessionContext::reset() 删除 + 测试 → Task 2 ✓
+- ensure_session 内联（event recover / role build_role_context + 系统消息 set + read_memory_struct_index）→ Task 2 Step 2 ✓
+- build_role_context（查询记忆 → archive_and_clear_cache → rebuild，新建/溢出共用）→ Task 2 Step 1 ✓
+- 溢出重建（Role/Event 共通 Forced flush 尾部；reset_context 删除）→ Task 2 Step 4-5 ✓
+- SessionContext::reset() 删除 + 测试 → Task 3 ✓
 - 文档同步 → Task 4 ✓
 
-**类型一致性：** `build_role_context(&self, session: &Arc<Session>)` 在 Task 3 Step 1 定义，Step 2/4 调用，签名一致；`CommandRouter::execute` 返回 `Result<String>` 在 Task 1 定义，coordinator 调用点在 Task 1 Step 3 同步；SessionContext API 在 Task 2 收敛后，Task 3 只使用现存方法。
+**类型一致性：** `build_role_context(&self, session: &Arc<Session>)` 在 Task 2 Step 1 定义，Step 2/4 调用，签名一致；`CommandRouter::execute` 返回 `Result<String>` 在 Task 1 定义，coordinator 调用点在 Task 1 Step 3 同步；Task 2 删除 reset_context（SessionContext::reset() 唯一调用方）后，Task 3 才删 reset()，全程可编译。
