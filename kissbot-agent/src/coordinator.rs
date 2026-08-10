@@ -207,7 +207,7 @@ impl AgentCoordinator {
         let agent_id = self.channel_agent(channel_id).await;
         let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
         if created {
-            // 新建会话上下文：event 从缓存恢复（不清理）；role 查询记忆重建（归档+清空在 build_role_context 内部）
+            // 新建会话上下文：event 从缓存恢复（全量回读；文件不存在为空，不清理）；role 查询记忆重建（归档+清空在 build_role_context 内部）
             match &*session.mode {
                 Mode::Event(_) => {
                     let _ = session.context.lock().await.recover_from_cache().await;

@@ -165,7 +165,7 @@ impl CommandRouter {
         }
     }
 
-    /// 执行管理命令（返回回复文本和协调器后续动作）
+    /// 执行管理命令（返回回复文本）
     /// bind/agent/role/bind-outgoing/admin/unadmin 走 ConfigManager 回写；
     /// mode/reenter 改运行态模式（coordinator）；model 改会话模型（运行态）。
     /// coordinator 一律从单例取（不传参数）
