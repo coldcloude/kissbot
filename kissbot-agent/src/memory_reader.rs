@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::config_manager::{ConfigManager, EffectiveContextConfig};
 use crate::types::{Message, Mode, Result, Error};
-use kissbot_api::memory::{ChannelRecord, QueryRequest, RecordKey};
+use kissbot_api::memory::{ChannelRecord, QueryRequest, RecentQuery, RecordKey};
 use kissbot_api::{ApiResponse, Content};
 
 /// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
@@ -134,27 +134,29 @@ impl MemoryReader {
         Ok(events)
     }
 
-    /// role 模式记忆打包：单次全史查询 → 解析 → 并集算法 → 升序结果
-    /// （channel 记录已合并为单文件，无需组合枚举；query_channel / parse_channel_records / recent_memory 均为单处引用，已内联于此）
+    /// role 模式记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
+    /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
+    /// 结果 = ① ∪ ②（两次解析共用 (time, sn) seen 集 → 自动去重），时间正序
+    /// （query_channel_recent / query_channel / parse_channel_records 均为单处引用，已内联于此）
     pub async fn read_recent_for_context(
         &self,
         agent_id: &str,
         role_name: &str,
         cfg: &EffectiveContextConfig,
     ) -> Result<Vec<MemoryMsg>> {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let start = chrono::Local::now()
             .checked_sub_signed(chrono::Duration::seconds(cfg.memory_time_secs as i64))
             .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "2000-01-01 00:00:00".to_string());
 
-        // ===== 单次全史查询（query_channel 内联）：POST {store}/store/query/channel（QueryRequest，所有 channel 记录同文件，取该时间全部） =====
-        let url = format!("{}/store/query/channel", self.store_url.trim_end_matches('/'));
-        let body = QueryRequest {
+        let count = cfg.memory_count;
+
+        // ===== Query1（query_channel_recent 内联）：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
+        let url = format!("{}/store/query/channel/recent", self.store_url.trim_end_matches('/'));
+        let body = RecentQuery {
             agent_id: Arc::new(agent_id.to_string()),
             role_name: Arc::new(role_name.to_string()),
-            start_time: Arc::new("2000-01-01 00:00:00".to_string()),  // 全史查询，范围覆盖即可
-            end_time: Arc::new(now),
+            count: count as u32,
         };
         let resp = self.client.post(&url)
             .json(&body)
@@ -164,54 +166,75 @@ impl MemoryReader {
         if !resp.status().is_success() {
             return Err(Error::MemoryStoreError(format!("记忆读取返回 {}", resp.status())));
         }
-        // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
         let resp: ApiResponse<QueryChannelData> = resp.json().await?;
         let groups = resp.data.unwrap_or_default();
+        // Query1 返回的原始记录数（含非文本）："不足 N 条直接返回"须基于原始记录而非解析后文本
+        let recent_raw = groups.iter().map(|(_, v)| v.len()).sum::<usize>();
 
-        // ===== 解析（parse_channel_records 内联）：按 time 升序转 MemoryMsg =====
-        // 先去重再转 MemoryMsg：以 (time, sn) 为唯一键过滤重复记录（sn 为同文件内唯一序号），
-        // 保证后续所有分支（含不足 N 条直接返回）都不含重复记录
+        // ===== 解析（parse_channel_records 内联）：以 (time, sn) 为唯一键去重（两次查询共用同一 seen 集 → 并集自动去重） =====
         let mut seen: HashSet<(String, u64)> = HashSet::new();
         let mut msgs: Vec<MemoryMsg> = Vec::new();
-        for (_, records) in groups {
-            for (_, rec) in records {
-                let time = rec.time.as_str().to_string();
-                let user_name = rec.user_name.as_str().to_string();
-                let is_self = rec.is_self != 0;
-                let sn = rec.sn;
-                let content = extract_record_text(&rec.content);
-                if content.is_empty() {
-                    continue;  // 非文本记录跳过
-                }
-                if !seen.insert((time.clone(), sn)) {
-                    continue;  // 同 (time, sn) 的重复记录只保留一条
-                }
-                msgs.push(MemoryMsg { user_name, content, time, is_self });
-            }
-        }
+        // groups 后文 ln 计算仍需借用 → 首次解析传 clone（记录数量 ≤ count，代价可忽略）
+        parse_channel_groups(groups.clone(), &mut seen, &mut msgs);
         msgs.sort_by(|a, b| a.time.cmp(&b.time));
 
-        // ===== 并集算法（recent_memory 内联，修正设计 2.3）：(1) 取最后 N 条 → T_N；(2) M = max(cutoff, T_N)；
-        // (3) [M, T_N]（含两端）取该时间全部；最终 = (1) ∪ (3)，时间正序
-        // msgs 为解析阶段已按 (time, sn) 去重的全史升序结果；不足 N 条已全取，直接返回 =====
-        let count = cfg.memory_count;
         if msgs.is_empty() || count == 0 {
             return Ok(Vec::new());
         }
-        // 不足 N 条：已全部取出，直接返回（无需 T_N/M/(3)，避免空并集计算）
-        if msgs.len() <= count {
+        // 不足 N 条：Query1 已含全部记录，直接返回（无需 Query2）
+        if recent_raw < count {
             return Ok(msgs);
         }
-        let start_idx = msgs.len() - count;
-        let t_n = &msgs[start_idx].time;   // 最后 N 条最旧一条
-        // 窗口起点晚于 T_N（M = start > T_N）：(3) 区间 [M, T_N] 为空 → 结果 = 最后 N 条
-        if start.as_str() > t_n.as_str() {
-            return Ok(msgs[start_idx..].to_vec());
+        // ln = Query1 最旧一条（原始记录）的 time；M = min(时间窗起点 start, ln)
+        let ln = groups.iter().flat_map(|(_, v)| v.iter())
+            .map(|(_, r)| r.time.as_str())
+            .min()
+            .expect("Query1 非空（recent_raw >= count >= 1）")
+            .to_string();
+        let m = if start.as_str() < ln.as_str() { start } else { ln.clone() };  // M = min(cutoff, ln)
+
+        // ===== Query2（query_channel 内联）：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
+        // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 seen 集去重）
+        let url = format!("{}/store/query/channel", self.store_url.trim_end_matches('/'));
+        let body = QueryRequest {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            start_time: Arc::new(m),
+            end_time: Arc::new(ln),
+        };
+        let resp = self.client.post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e)))?;
+        if !resp.status().is_success() {
+            return Err(Error::MemoryStoreError(format!("记忆读取返回 {}", resp.status())));
         }
-        // 窗口覆盖 T_N（M = T_N）：(3) 取全部 time == T_N 的记录；(3) ∪ (1) 等价于从第一条
-        // time == T_N 的记录取到末尾（T_N 同时间组必横跨 start_idx，天然无重复，无需末尾排序去重）
-        let head = msgs.iter().position(|m| m.time == *t_n).expect("T_N 记录必然存在（msgs[start_idx]）");  // 第一条 T_N 同时间记录
-        Ok(msgs[head..].to_vec())
+        let resp: ApiResponse<QueryChannelData> = resp.json().await?;
+        parse_channel_groups(resp.data.unwrap_or_default(), &mut seen, &mut msgs);
+        msgs.sort_by(|a, b| a.time.cmp(&b.time));
+        Ok(msgs)
+    }
+}
+
+/// 解析 query 响应分组 → 去重追加到 msgs：(time, sn) 为唯一键（sn 为同文件内唯一序号）；
+/// 两次查询共用同一 seen 集 → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
+fn parse_channel_groups(groups: QueryChannelData, seen: &mut HashSet<(String, u64)>, msgs: &mut Vec<MemoryMsg>) {
+    for (_, records) in groups {
+        for (_, rec) in records {
+            let time = rec.time.as_str().to_string();
+            let user_name = rec.user_name.as_str().to_string();
+            let is_self = rec.is_self != 0;
+            let sn = rec.sn;
+            let content = extract_record_text(&rec.content);
+            if content.is_empty() {
+                continue;  // 非文本记录跳过
+            }
+            if !seen.insert((time.clone(), sn)) {
+                continue;  // 同 (time, sn) 的重复记录只保留一条
+            }
+            msgs.push(MemoryMsg { user_name, content, time, is_self });
+        }
     }
 }
 
@@ -298,11 +321,35 @@ mod tests {
         json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, entries]])
     }
 
-    // 启动本地 mock memory-store（POST /store/query/channel 固定返回该 data），返回根地址
+    // 启动本地 mock memory-store：
+    // /store/query/channel/recent —— 按 (time, sn) 排序取后 count 条（无时间过滤，与真实 store 一致）
+    // /store/query/channel —— 按 [start_time, end_time] 过滤（无 limit，与真实 store 一致）
     async fn start_mock_store(data: serde_json::Value) -> String {
-        let app = Router::new().route("/store/query/channel", post(move || async move {
-            Json(json!({ "success": true, "data": data, "error": null }))
-        }));
+        // 展平所有组为 [(sn, record)]，模拟 store 内部记录流
+        let all: Vec<(u64, serde_json::Value)> = data.as_array().unwrap().iter()
+            .flat_map(|group| group[1].as_array().unwrap().iter()
+                .map(|entry| (entry[0].as_u64().unwrap(), entry[1].clone())))
+            .collect();
+        let recent_all = all.clone();
+        let range_all = all.clone();
+        let app = Router::new()
+            .route("/store/query/channel/recent", post(move |Json(req): Json<RecentQuery>| async move {
+                let mut v = recent_all.clone();
+                v.sort_by(|a, b| a.1["time"].as_str().cmp(&b.1["time"].as_str()).then(a.0.cmp(&b.0)));
+                let tail: Vec<_> = v.into_iter().rev().take(req.count as usize).collect();
+                let entries: Vec<_> = tail.into_iter().rev().map(|(sn, rec)| json!([sn, rec])).collect();
+                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_name": req.role_name, "date": "2026-08-05" }, entries]], "error": null }))
+            }))
+            .route("/store/query/channel", post(move |Json(req): Json<QueryRequest>| async move {
+                let entries: Vec<_> = range_all.iter()
+                    .filter(|(_, r)| {
+                        let t = r["time"].as_str().unwrap();
+                        t >= req.start_time.as_str() && t <= req.end_time.as_str()
+                    })
+                    .map(|(sn, rec)| json!([sn, rec.clone()]))
+                    .collect();
+                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_name": req.role_name, "date": "2026-08-05" }, entries]], "error": null }))
+            }));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -318,29 +365,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_recent_dense_keeps_order_and_same_time_group() {
-        // dense 场景：30 条全部落在窗口内（now-1800s ~ now-60s），最后 N=10
+    async fn read_recent_window_covers_ln_returns_all_window_records() {
+        // cutoff ≤ ln（窗口覆盖最后 N 边界）：M = cutoff → Query2 = [cutoff, ln] 整段 → 并集 = 窗口内全部记录
+        // 30 条全部落在窗口内（now-1800 ~ now-60），count=10 → 结果 = 全部 30 条（m0..m29），时间正序
         let records: Vec<serde_json::Value> = (0..30)
             .map(|i| record_json(&time_ago(1800 - i * 60), "u", &format!("m{}", i)))
             .collect();
         let url = start_mock_store(channel_data(records)).await;
-        let cfg = ctx_config(7200, 10);  // 窗口起点 now-7200s 早于所有记录 → M = T_N
+        let cfg = ctx_config(7200, 10);  // cutoff=now-7200 早于 ln=now-600 → M = cutoff
         let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
-        // 结果 = 最后 10 条（m20..m29），时间正序
-        assert_eq!(out.len(), 10);
-        assert_eq!(out[0].content, "m20");
+        assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
+        assert_eq!(out[0].content, "m0");
+        assert_eq!(out[29].content, "m29");
         assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
     async fn read_recent_sparse_extends_beyond_window() {
-        // 稀疏分支：len > count（15 条）且全部记录早于窗口起点 cutoff=now-60s
-        // → T_N < cutoff → M = cutoff → (3) 过滤 [cutoff, T_N] 为空 → 结果 = 最后 N 条（跨更早时间）
+        // cutoff > ln（最后 N 条全在窗口内，ln 早于窗口起点）：M = min(cutoff, ln) = ln →
+        // Query2 退化为单点 [ln, ln]（ln 同时间组），并集后仍为最后 N 条（跨更早时间）
         let records: Vec<serde_json::Value> = (0..15)
             .map(|i| record_json(&time_ago(600 - i * 20), "u", &format!("m{}", i)))
             .collect();
         let url = start_mock_store(channel_data(records)).await;
-        let cfg = ctx_config(60, 10);  // 窗口起点 now-60s 晚于全部记录
+        let cfg = ctx_config(60, 10);  // 窗口起点 now-60s 晚于全部记录 → M = ln
         let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
         assert_eq!(out[0].content, "m5", "起点 = 第 6 条（最后 10 条最旧一条）");
@@ -373,8 +421,9 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_includes_same_time_group_beyond_n() {
-        // 同时间组横跨 N 边界：索引 4,5,6 同在 T=now-200s，count=10 → start_idx=5 →
-        // 最后 10 条 = 索引 5..14，T_N = now-200s；索引 4 在 start_idx 之前但同在 T_N → 应被 (3) 取回
+        // 同时间组横跨 N 边界：索引 4,5,6 同在 t1=now-200s，count=10 → Query1 = 索引 5..14，ln = t1；
+        // cutoff=now-250 介于 t0 与 t1 之间 → M = cutoff → Query2 = [now-250, t1] 整段（含完整 t1 组）
+        // → 并集 = 索引 4..14 共 11 条（m4 在 start_idx 之前但同 ln 时间，被取回）
         let t0 = time_ago(300);
         let t1 = time_ago(200);
         let t2 = time_ago(100);
@@ -383,12 +432,13 @@ mod tests {
         for i in 4..7 { records.push(record_json(&t1, "u", &format!("m{}", i))); }
         for i in 7..15 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
         let url = start_mock_store(channel_data(records)).await;
-        let cfg = ctx_config(7200, 10);  // cutoff=now-7200s ≤ T_N → M = T_N
+        let cfg = ctx_config(250, 10);  // cutoff=now-250 介于 t0 与 t1 之间 → M = cutoff
         let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
-        // 结果 = 最后 10 条（索引 5..14）∪ 同 T_N 的索引 4 = 11 条，升序
-        assert_eq!(out.len(), 11, "T_N 同时间组横跨 N 边界时完整保留（含 start_idx 之前同时间记录）");
-        assert_eq!(out[0].time, t1, "起点 = T_N 同时间组");
-        assert_eq!(out[0].content, "m4", "start_idx 之前的同时间记录被 (3) 取回");
+        assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
+        assert_eq!(out[0].time, t1, "起点 = ln 同时间组");
+        // 同时间组内部顺序 = 稳定排序的插入序（设计只契约时间正序，MemoryMsg 无 sn 可打破平局）
+        // → 只断言 m4 被取回，不断言其在组内的具体位置
+        assert!(out.iter().any(|m| m.content == "m4"), "start_idx 之前的同时间记录被并集取回");
         assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
@@ -428,6 +478,23 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context("agent", "role", &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
         assert_eq!(out.iter().filter(|m| m.content == "hello").count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
+    }
+
+    #[tokio::test]
+    async fn read_recent_unions_both_queries_and_dedups() {
+        // 两次查询并集去重：Query2 区间 [M, ln] 与 Query1 尾部在 ln 处重叠（m2 两查询都有）
+        // 12 条 m0..m11 时间 now-1200+i*60，count=10 → Query1 = m2..m11，ln = m2 的时间 now-1080；
+        // cutoff=now-1800 ≤ ln → M = cutoff → Query2 = [now-1800, now-1080] → m0,m1,m2 → 共用 seen 去重 → 12 条
+        let records: Vec<serde_json::Value> = (0..12)
+            .map(|i| record_json(&time_ago(1200 - i * 60), "u", &format!("m{}", i)))
+            .collect();
+        let url = start_mock_store(channel_data(records)).await;
+        let cfg = ctx_config(1800, 10);
+        let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
+        assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
+        assert_eq!(out[0].content, "m0");
+        assert_eq!(out[11].content, "m11");
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
     #[tokio::test]
