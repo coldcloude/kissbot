@@ -18,14 +18,6 @@ use crate::config_manager::ProviderModel;
 use crate::coordinator::{AgentCoordinator, extract_text};
 use crate::types::{Error, Message, Mode, Result, SessionKey};
 
-/// session_key → 文件名：{agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
-pub fn encode_session_key(key: &SessionKey) -> String {
-    match &key.mode {
-        Mode::Role => format!("{}-{}", key.agent_name, key.role_name),
-        Mode::Event(e) => format!("{}-{}-{}", key.agent_name, key.role_name, e),
-    }
-}
-
 /// 会话上下文：内存消息 + 本地缓存 + 历史归档一体管理（持久化由 SessionContext 自身负责，coordinator 不感知）
 ///
 /// ========== 会话上下文本地缓存 ==========
@@ -52,12 +44,17 @@ pub struct SessionContext {
 
 impl SessionContext {
     pub fn new(data_dir: &str, key: &SessionKey) -> Self {
+        // session_key → 文件名：{agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
+        let key_enc = match &key.mode {
+            Mode::Role => format!("{}-{}", key.agent_name, key.role_name),
+            Mode::Event(e) => format!("{}-{}-{}", key.agent_name, key.role_name, e),
+        };
         Self {
             messages: Vec::new(),
             system_message: None,
             pending_system: None,
             data_dir: PathBuf::from(data_dir),
-            key_enc: encode_session_key(key),
+            key_enc,
         }
     }
 
@@ -755,22 +752,6 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn encode_session_key_distinguishes() {
-        let k1 = cache_key();
-        let k2 = SessionKey { agent_name: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
-        let k3 = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e2".into()) };
-        assert_ne!(encode_session_key(&k1), encode_session_key(&k2), "不同 role 不同编码");
-        assert_ne!(encode_session_key(&k1), encode_session_key(&k3), "不同 event 不同编码");
-        // 格式 = {agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
-        assert_eq!(encode_session_key(&cache_key()), "a1-r1-e1");
-        let role = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        assert_eq!(encode_session_key(&role), "a1-r1");
-        // 编码不含路径分隔符（文件名安全）
-        let enc = encode_session_key(&cache_key());
-        assert!(!enc.contains('/'), "编码应文件名安全");
-    }
-
     #[tokio::test]
     async fn append_persists_and_recover_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -856,7 +837,7 @@ mod tests {
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
         ctx.append(&sample_msgs()).await.unwrap();
         assert!(ctx.archive().await.unwrap(), "内存有内容时应归档");
-        // 目标文件名 = <key编码>-<时间戳>.jsonl（历史目录内恰有一个文件）
+        // 目标文件名 = <key编码>-<时间戳>.jsonl（历史目录内恰有一个文件；role_key = a1-r1）
         let history_dir = dir.path().join("context-history");
         let mut files = Vec::new();
         let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
@@ -866,7 +847,7 @@ mod tests {
         assert_eq!(files.len(), 1, "归档生成一个历史文件");
         let dest = files.remove(0).path();
         let fname = dest.file_name().unwrap().to_str().unwrap().to_string();
-        assert!(fname.starts_with(&encode_session_key(&k)), "文件名以 key 编码开头: {}", fname);
+        assert!(fname.starts_with("a1-r1"), "文件名以 key 编码开头: {}", fname);
         assert!(fname.ends_with(".jsonl"));
         // 内容与内存一致（逐行 Message JSON；不复制缓存）
         let expect = sample_msgs().iter()
@@ -874,7 +855,7 @@ mod tests {
             .collect::<Vec<_>>().join("\n") + "\n";
         assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), expect);
         // 归档不改动缓存文件（append 已建缓存，仍存在）
-        let source = dir.path().join("context").join(format!("{}.jsonl", encode_session_key(&k)));
+        let source = dir.path().join("context").join("a1-r1.jsonl");
         assert!(source.exists());
     }
 
