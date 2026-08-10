@@ -307,10 +307,8 @@ impl AgentCoordinator {
         let Some(pm) = model.as_ref() else { return; };
         // 发送前应用待定系统消息（压缩也是一次发送：不一致时旧系统上下文先归档，再按新系统压缩）
         let _ = session.context.lock().await.apply_pending_system().await;
-        // 归档当前缓存（如存在；压缩前旧上下文入历史）
-        let _ = session.context.lock().await.archive().await;
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
-        // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息
+        // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息（压缩基于当前 session）
         let messages = {
             let ctx = session.context.lock().await;
             let mut msgs = ctx.build();
@@ -326,7 +324,9 @@ impl AgentCoordinator {
             warn!("上下文压缩总结为空，保留原上下文");
             return;
         }
-        // 3. 重建：清空内存（system 保留）→ user(压缩指令) + assistant(总结) → 缓存清空重写（不含 system）
+        // 3. 压缩完成后：归档当前上下文（含原系统消息）→ 清空缓存 → 重建压缩后上下文
+        // （归档与清空连在一起，中间不隔压缩；压缩前 apply_pending_system 已处理系统切换）
+        let _ = session.context.lock().await.archive_and_clear_cache().await;
         let _ = session.context.lock().await.rebuild(compressed_messages(&cfg, &summary)).await;
         info!("会话上下文已压缩: role={} mode={:?}", session.role_name, session.mode);
     }

@@ -205,7 +205,7 @@ sequenceDiagram
         CO->>MR: read_recent_for_context（组合查询 + 并集打包为一条 user 消息）
     end
     CO->>MR: read_memory_struct_index（顶层记忆索引，未实现时跳过）
-    Note over CO: 配置/ego 生成系统消息执行一次 set（待定）；下次发送前 apply_pending_system 对比应用<br/>reset_context：SessionContext.reset()（archive → clear cache → clear 内存）→ build_initial_context → Trigger::Forced 强制 flush<br/>compress_context（event 超长）：apply_pending_system → archive → LLM 总结 → rebuild（user(压缩指令)+assistant(总结)，缓存清空重写）
+    Note over CO: 配置/ego 生成系统消息执行一次 set（待定）；下次发送前 apply_pending_system 对比应用<br/>reset_context：SessionContext.reset()（archive_and_clear_cache → clear 内存）→ build_initial_context → Trigger::Forced 强制 flush<br/>compress_context（event 超长）：apply_pending_system → LLM 总结 → archive_and_clear_cache → rebuild（user(压缩指令)+assistant(总结)，从内存写回缓存）
 ```
 
 ## 七、对外交互边界

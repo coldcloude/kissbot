@@ -26,8 +26,8 @@ use crate::types::{Error, Message, Mode, Result, SessionKey};
 /// 存储时不截断（tokio::fs 追加）；读取时全量回读（ReverseLineReader 从尾读再反转）
 ///
 /// ========== 历史上下文归档 ==========
-/// 归档 = 直接把当前内存（含当前系统消息，System 首行）写成一个历史文件并加上时间戳文件名
-/// （无包装格式，不复制缓存文件），本轮只写不读
+/// 归档与清空缓存永远配对（archive_and_clear_cache）：把当前内存（含当前系统消息，System 首行）
+/// 写成一个历史文件并加上时间戳文件名（无包装格式，不复制缓存文件），然后清空缓存文件，本轮只写不读
 /// 历史与当前缓存格式完全一致（都是 <session_key编码>.jsonl 每行一条 Message），
 /// 因此内存、缓存、历史三者统一在本结构体实现（会话上下文唯一入口）。
 pub struct SessionContext {
@@ -75,14 +75,15 @@ impl SessionContext {
     }
 
     /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
-    /// 与当前一致 → 仅清空待定；不一致 → 把当前内存（用原系统消息）写成历史 →
-    /// 替换为新系统消息 → 重建缓存（System + 消息行）
+    /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
+    /// 与当前一致 → 仅清空待定；不一致 → 归档并清空旧上下文（用原系统消息）→
+    /// 替换为新系统消息 → 从内存写回缓存（System + 消息行）
     pub async fn apply_pending_system(&mut self) -> Result<()> {
         let Some(pending) = self.pending_system.take() else { return Ok(()); };
         if self.system_message.as_deref() == Some(pending.as_str()) {
             return Ok(());   // 一致：无需变更（set 消息已清空）
         }
-        self.archive().await?;
+        self.archive_and_clear_cache().await?;
         self.system_message = Some(pending);
         self.rewrite_cache().await
     }
@@ -146,44 +147,35 @@ impl SessionContext {
         Ok(())
     }
 
-    /// 归档当前上下文到历史：把当前内存（含当前系统消息，System 首行）写成一个历史文件
-    /// （<key编码>-<时间戳>.jsonl，无包装格式），不复制缓存文件；
-    /// 内存为空则无可归档内容（幂等，返回 false；仅有系统消息不归档）
-    pub async fn archive(&self) -> Result<bool> {
-        if self.messages.is_empty() {
-            return Ok(false);
+    /// 归档当前上下文到历史并清空缓存文件（归档与清空永远配对；重置/重建/系统切换前的持久化清理）：
+    /// 1) 把当前内存（含当前系统消息，System 首行）写成一个历史文件（<key编码>-<时间戳>.jsonl，无包装格式），
+    ///    不复制缓存文件；内存为空则无可归档内容（仅有系统消息不归档，幂等）
+    /// 2) 清空缓存文件（文件不存在幂等）
+    pub async fn archive_and_clear_cache(&self) -> Result<()> {
+        // 1. 归档：当前内存（含当前系统消息）→ 历史
+        if !self.messages.is_empty() {
+            tokio::fs::create_dir_all(&self.history_dir()).await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            let ts = Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+            // 历史文件名 = <key编码>-<时间戳>.jsonl（key 编码即缓存文件名段）
+            let dest = self.history_dir().join(format!("{}-{}.jsonl", self.key_enc, ts));
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true).write(true).truncate(true).open(&dest).await
+                .map_err(|e| Error::IoError(e.to_string()))?;
+            // 历史格式与缓存一致：System 首行（如有），其后为消息行
+            let mut lines = Vec::with_capacity(self.messages.len() + 1);
+            if let Some(system) = &self.system_message {
+                lines.push(Message::System { content: Arc::new(system.clone()) });
+            }
+            lines.extend(self.messages.iter().cloned());
+            self.write_lines(&mut file, &lines).await?;
         }
-        tokio::fs::create_dir_all(&self.history_dir()).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
-        let ts = Local::now().format("%Y-%m-%d-%H%M%S").to_string();
-        // 历史文件名 = <key编码>-<时间戳>.jsonl（key 编码即缓存文件名段）
-        let dest = self.history_dir().join(format!("{}-{}.jsonl", self.key_enc, ts));
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true).write(true).truncate(true).open(&dest).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
-        // 历史格式与缓存一致：System 首行（如有），其后为消息行
-        let mut lines = Vec::with_capacity(self.messages.len() + 1);
-        if let Some(system) = &self.system_message {
-            lines.push(Message::System { content: Arc::new(system.clone()) });
-        }
-        lines.extend(self.messages.iter().cloned());
-        self.write_lines(&mut file, &lines).await?;
-        Ok(true)
-    }
-
-    /// 清空缓存文件（重建/重置时调用；文件不存在幂等）
-    pub async fn clear_cache(&self) -> Result<()> {
+        // 2. 清空缓存文件（文件不存在幂等）
         match tokio::fs::remove_file(&self.cache_path()).await {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::IoError(e.to_string())),
         }
-    }
-
-    /// 归档当前内存（如有内容）并清空缓存文件（重置/重建前的持久化清理）
-    pub async fn archive_and_clear_cache(&self) -> Result<()> {
-        let _ = self.archive().await?;
-        self.clear_cache().await
     }
 
     /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
@@ -193,7 +185,8 @@ impl SessionContext {
         Ok(())
     }
 
-    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 缓存清空重写（System + 消息行）
+    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 从内存写回缓存
+    /// （System + 消息行；不负责清理，调用方保证先 archive_and_clear_cache）
     pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
         self.messages.clear();
         self.messages.extend(messages);
@@ -264,10 +257,9 @@ impl SessionContext {
         Ok(())
     }
 
-    /// 缓存清空重写：按当前系统消息 + 当前内存重写（System 首行；系统消息变更/压缩重建用）
-    /// 清空后由 append_cache 的新文件逻辑落 System 首行，这里只写消息行（避免 System 重复）
+    /// 从内存写回缓存（System 首行 + 消息行；不负责清理——调用方保证先 archive_and_clear_cache，
+    /// 新文件由 append_cache 落 System 首行，这里只写消息行，避免 System 重复）
     async fn rewrite_cache(&self) -> Result<()> {
-        self.clear_cache().await?;
         self.append_cache(&self.messages).await
     }
 }
@@ -831,12 +823,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_writes_memory_to_history_file() {
+    async fn archive_and_clear_writes_history_and_removes_cache() {
         let dir = tempfile::tempdir().unwrap();
         let k = role_key();
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
         ctx.append(&sample_msgs()).await.unwrap();
-        assert!(ctx.archive().await.unwrap(), "内存有内容时应归档");
+        let cache_path = dir.path().join("context").join("a1-r1.jsonl");
+        assert!(cache_path.exists(), "append 已建缓存");
+        // 归档 + 清空一体：历史生成，缓存移除
+        ctx.archive_and_clear_cache().await.unwrap();
         // 目标文件名 = <key编码>-<时间戳>.jsonl（历史目录内恰有一个文件；role_key = a1-r1）
         let history_dir = dir.path().join("context-history");
         let mut files = Vec::new();
@@ -854,19 +849,18 @@ mod tests {
             .map(|m| serde_json::to_string(m).unwrap())
             .collect::<Vec<_>>().join("\n") + "\n";
         assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), expect);
-        // 归档不改动缓存文件（append 已建缓存，仍存在）
-        let source = dir.path().join("context").join("a1-r1.jsonl");
-        assert!(source.exists());
+        // 归档同时清空缓存（重写/重建前旧缓存不残留）
+        assert!(!cache_path.exists(), "归档并清空后缓存不存在");
     }
 
     #[tokio::test]
-    async fn archive_writes_memory_without_cache_file() {
+    async fn archive_and_clear_writes_memory_without_cache_file() {
         let dir = tempfile::tempdir().unwrap();
         let k = role_key();
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
         // 仅内存有消息（如记忆打包的 packed 消息），缓存文件不存在——归档直接从内存写历史
         ctx.push(Message::User { content: Arc::new("记忆打包".into()) });
-        assert!(ctx.archive().await.unwrap(), "内存有内容应归档");
+        ctx.archive_and_clear_cache().await.unwrap();
         let history_dir = dir.path().join("context-history");
         let mut files = Vec::new();
         let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
@@ -881,17 +875,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_with_empty_memory_is_noop() {
+    async fn archive_and_clear_with_empty_memory_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let k = role_key();
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
-        // 内存为空：无可归档内容（不报错、不创建历史目录）
-        assert!(!ctx.archive().await.unwrap(), "内存为空时归档为空操作");
+        // 内存为空：无归档、无报错、不创建历史目录
+        ctx.archive_and_clear_cache().await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
         // 仅有系统消息同样不归档（历史只记录有消息的上下文）
         ctx.set_system_message("仅系统".into());
         ctx.apply_pending_system().await.unwrap();
-        assert!(!ctx.archive().await.unwrap(), "仅有系统消息时归档为空操作");
+        ctx.archive_and_clear_cache().await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "系统消息不产生历史");
     }
 
