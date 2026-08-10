@@ -445,6 +445,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_recent_ln_group_beyond_n_when_cutoff_after_ln() {
+        // 锁定分支：cutoff > ln → M = ln → Query2 退化为单点 [ln, ln]，取回最后 N 边界之前同 ln 时间的记录（不拆散）
+        // 13 条：m0,m1@t0；m2,m3,m4@t1；m5..m12@t2（t0 < t1 < t2），count=10 →
+        // Query1 = m3..m12（最后 10 条），ln = t1；cutoff=now-150 > ln(t1=now-200) → M = ln →
+        // Query2 = [t1, t1] → m2,m3,m4（m3,m4 已去重）→ 并集 = m2..m12 共 11 条
+        let t0 = time_ago(300);
+        let t1 = time_ago(200);
+        let t2 = time_ago(100);
+        let mut records = Vec::new();
+        for i in 0..2 { records.push(record_json(&t0, "u", &format!("m{}", i))); }
+        for i in 2..5 { records.push(record_json(&t1, "u", &format!("m{}", i))); }
+        for i in 5..13 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
+        let url = start_mock_store(channel_data(records)).await;
+        let cfg = ctx_config(150, 10);  // cutoff=now-150 晚于 ln(t1=now-200) → M = ln → [ln, ln]
+        let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
+        assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
+        assert_eq!(out[0].time, t1, "起点 = ln 同时间组");
+        // 同时间组内部顺序 = 稳定排序的插入序（设计只契约时间正序）→ 只断言 m2 被取回
+        assert!(out.iter().any(|m| m.content == "m2"), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
+    }
+
+    #[tokio::test]
     async fn read_recent_skips_non_text_records_and_joins_multi() {
         // Multi 内容取其中 Text 子项拼接；非文本记录跳过（parse_channel_records 内联行为）
         let t = time_ago(60);
