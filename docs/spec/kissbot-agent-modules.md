@@ -13,7 +13,7 @@
 | channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 coordinator 调用；无外部依赖 |
 | session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message，首行 System（如有）；归档 = 直接把当前内存写成一个历史文件，不复制缓存；系统消息变更走待定懒切换：set 只存待定，下次发送前对比应用，不一致则旧上下文（含原系统消息）先归档再替换重建；持久化对 coordinator 透明） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
-| memory_reader | MemoryReader | 从 memory-store 读记忆构建上下文（组合查询 + 并集打包、事件列表、记忆索引） | 被 coordinator 调用；依赖 config + memory-store |
+| memory_reader | MemoryReader | 从 memory-store 读记忆构建上下文（最近 N + 时间段两次查询并集打包、事件列表、记忆索引） | 被 coordinator 调用；依赖 config + memory-store |
 | memory_store_client | MemoryStoreClient | 向 memory-store 推记录（channel / tool_call / tool_result / think） | 被 coordinator 调用 |
 | model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 coordinator 调用；依赖 config（provider/model） |
 | provider | Provider | 模型提供方（provider type → body 构造）解析 | 被 model_client 调用 |
@@ -200,7 +200,7 @@ sequenceDiagram
     alt event 模式（新建）
         CO->>SC: recover_from_cache()（全量回读恢复；缓存 System 首行 → 当前系统消息）
     else role 模式（新建/溢出共用 build_role_context）
-        CO->>MR: read_recent_for_context（组合查询 + 并集打包为一条 user 消息）
+        CO->>MR: read_recent_for_context（最近 N + 时间段两次查询并集打包为一条 user 消息）
         CO->>SC: archive_and_clear_cache()（旧上下文归档，缓存清空；新建无内容幂等）
         CO->>SC: rebuild(packed)（清空内存 + 从内存写回缓存）
     end
