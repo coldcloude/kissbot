@@ -148,9 +148,9 @@ impl SessionContext {
 
     /// 归档当前上下文到历史：把当前内存（含当前系统消息，System 首行）写成一个历史文件
     /// （<key编码>-<时间戳>.jsonl，无包装格式），不复制缓存文件；
-    /// 内存为空且无系统消息则无可归档内容（幂等，返回 false）
+    /// 内存为空则无可归档内容（幂等，返回 false；仅有系统消息不归档）
     pub async fn archive(&self) -> Result<bool> {
-        if self.messages.is_empty() && self.system_message.is_none() {
+        if self.messages.is_empty() {
             return Ok(false);
         }
         tokio::fs::create_dir_all(&self.history_dir()).await
@@ -224,14 +224,14 @@ impl SessionContext {
     // ========== 私有：缓存文件读写 ==========
 
     /// 缓存追加（每行一条 Message JSON；不截断）
-    /// 新缓存文件（未落盘）先写 System 首行（如有当前系统消息），再追加消息行
+    /// 新缓存文件（未落盘）先写 System 首行（如有当前系统消息），再追加消息行；
+    /// 无消息不写（仅有系统消息不落缓存）
     async fn append_cache(&self, messages: &[Message]) -> Result<()> {
-        let path = self.cache_path();
-        let is_new = !path.exists();
-        // 无内容可写：既有文件追加空 / 新文件且无系统消息（避免创建空文件）
-        if messages.is_empty() && (!is_new || self.system_message.is_none()) {
+        if messages.is_empty() {
             return Ok(());
         }
+        let path = self.cache_path();
+        let is_new = !path.exists();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| Error::IoError(e.to_string()))?;
@@ -883,10 +883,16 @@ mod tests {
     #[tokio::test]
     async fn archive_with_empty_memory_is_noop() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = SessionContext::new(dir.path().to_str().unwrap(), &role_key());
+        let k = role_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
         // 内存为空：无可归档内容（不报错、不创建历史目录）
         assert!(!ctx.archive().await.unwrap(), "内存为空时归档为空操作");
         assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
+        // 仅有系统消息同样不归档（历史只记录有消息的上下文）
+        ctx.set_system_message("仅系统".into());
+        ctx.apply_pending_system().await.unwrap();
+        assert!(!ctx.archive().await.unwrap(), "仅有系统消息时归档为空操作");
+        assert!(!dir.path().join("context-history").exists(), "系统消息不产生历史");
     }
 
     // ===== 系统消息：缓存/历史持久化 + 待定懒切换 =====
@@ -900,14 +906,18 @@ mod tests {
         ctx.set_system_message("旧系统".into());
         ctx.set_system_message("新系统".into());
         assert!(ctx.build().iter().all(|m| !matches!(m, Message::System { .. })), "set 不立即生效");
-        // 发送前应用：当前系统为空 → 不一致 → 替换 + 重建缓存
+        // 发送前应用：当前系统为空 → 不一致 → 替换（仅有系统消息不落缓存）
         ctx.apply_pending_system().await.unwrap();
         assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"), "取最近一次 set");
-        // 缓存首行为 System：同 key 新上下文恢复得到系统消息
+        assert!(!dir.path().join("context").exists(), "仅有系统消息不写缓存");
+        // 追加消息后缓存含 System 首行：同 key 新上下文恢复得到系统消息
+        ctx.append(&[Message::User { content: Arc::new("你好".into()) }]).await.unwrap();
         let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
         recovered.recover_from_cache().await.unwrap();
         assert_eq!(recovered.system_message(), Some("新系统"), "缓存读出的系统消息放当前");
-        assert_eq!(recovered.build().len(), 1, "恢复后仅系统消息");
+        let back = recovered.build();
+        assert_eq!(back.len(), 2, "系统 + 消息");
+        assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"));
         // 再次 set 同值：一致 → 无变更（set 消息清空）
         ctx.set_system_message("新系统".into());
         ctx.apply_pending_system().await.unwrap();
