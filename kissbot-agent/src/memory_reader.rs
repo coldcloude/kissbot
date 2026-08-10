@@ -1,4 +1,4 @@
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::config_manager::{ConfigManager, EffectiveContextConfig};
@@ -191,17 +191,20 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u6
     for (_, records) in groups {
         for (_, rec) in records {
             let time = rec.time.as_str().to_string();  // 键用（MemoryMsg 值不再保留 time）
+            let sn = rec.sn;
+            let key = (time, sn);
+            // 同 (time, sn) 已存在（两查询并集在 ln 处重叠）→ 提前跳过，免去 user_name clone 与文本提取
+            if map.contains_key(&key) {
+                continue;
+            }
             let user_name = rec.user_name.clone();
             let is_self = rec.is_self != 0;
-            let sn = rec.sn;
             let mut content: Vec<Arc<String>> = Vec::new();
             collect_text_parts(&rec.content, &mut content);
             if content.is_empty() {
                 continue;  // 非文本记录跳过
             }
-            if let Entry::Vacant(e) = map.entry((time, sn)) {
-                e.insert(MemoryMsg { user_name, content, is_self });
-            }
+            map.insert(key, MemoryMsg { user_name, content, is_self });
         }
     }
 }
