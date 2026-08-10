@@ -86,7 +86,9 @@ impl SessionContext {
         self.archive_and_clear_cache().await?;
         self.system_message = Some(pending);
         // 从内存写回缓存（只写消息行；System 首行由 append_cache 对新文件落，避免 System 重复）
-        self.append_cache(&self.messages).await
+        // 先 clone 消息再调用（&mut self 排他，不能同时借用 self.messages）
+        let msgs = self.messages.clone();
+        self.append_cache(&msgs).await
     }
 
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
@@ -140,7 +142,9 @@ impl SessionContext {
     /// 1) 把当前内存（含当前系统消息，System 首行）写成一个历史文件（<key编码>-<时间戳>.jsonl，无包装格式），
     ///    不复制缓存文件；内存为空则无可归档内容（仅有系统消息不归档，幂等）
     /// 2) 清空缓存文件（文件不存在幂等）
-    pub async fn archive_and_clear_cache(&self) -> Result<()> {
+    ///
+    /// &mut self 强制排他：调用方须持独占引用（经 session.context 互斥锁），避免并发归档/清空交错
+    pub async fn archive_and_clear_cache(&mut self) -> Result<()> {
         // 1. 归档：当前内存（含当前系统消息）→ 历史
         if !self.messages.is_empty() {
             tokio::fs::create_dir_all(&self.history_dir()).await
@@ -194,8 +198,8 @@ impl SessionContext {
 
     /// 缓存追加（每行一条 Message JSON；不截断）
     /// 新缓存文件（未落盘）先写 System 首行（如有当前系统消息），再追加消息行；
-    /// 无消息不写（仅有系统消息不落缓存）
-    async fn append_cache(&self, messages: &[Message]) -> Result<()> {
+    /// 无消息不写（仅有系统消息不落缓存）；&mut self 排他：写入须独占，避免并发交叉写坏行
+    async fn append_cache(&mut self, messages: &[Message]) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
         }
@@ -221,8 +225,8 @@ impl SessionContext {
         self.write_lines(&mut file, messages).await
     }
 
-    /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
-    async fn write_lines(&self, file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
+    /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用；&mut self 排他，调用方须持独占引用）
+    async fn write_lines(&mut self, file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
         for m in messages {
             let line = serde_json::to_string(m)?;
             file.write_all(line.as_bytes()).await
