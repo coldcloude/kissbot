@@ -1,8 +1,13 @@
-use kissbot_api::QueryRequest;
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
+
+use dashmap::DashMap;
+use kissbot_api::QueryRequest;
+use tokio::sync::OnceCell;
 
 use crate::data::{ChannelParser, ThinkParser, ToolCallParser, ToolResultParser};
 use crate::error::Result;
+use crate::DirectoryManager;
 use kai_file::FileIndexContext;
 
 use kissbot_api::memory::*;
@@ -12,6 +17,10 @@ pub struct MemoryIndexer {
     think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkParser>,
     tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallParser>,
     tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultParser>,
+    /// channel 文件日期缓存：(agent_id, role_name) → 已存在的日期（懒加载扫描 + append 钩子增量维护）
+    channel_date_sets: DashMap<(String, String), BTreeSet<String>>,
+    /// date_sets 懒加载守卫（首次 recent 查询前扫描一次存量文件）
+    channel_dates_loaded: OnceCell<()>,
 }
 
 static MEMORY_INDEXER: OnceLock<MemoryIndexer> = OnceLock::new();
@@ -23,6 +32,8 @@ impl MemoryIndexer {
             think_indices: FileIndexContext::new(ThinkParser {}),
             tool_call_indices: FileIndexContext::new(ToolCallParser {}),
             tool_result_indices: FileIndexContext::new(ToolResultParser {}),
+            channel_date_sets: DashMap::new(),
+            channel_dates_loaded: OnceCell::new(),
         }
     }
 
@@ -32,10 +43,16 @@ impl MemoryIndexer {
 
     pub fn mark_channel_obsolete(&self, key: &RecordKey) {
         self.channel_indices.mark_obsolete(key);
+        // date_sets 增量维护：append 后该日期的 channel 文件必然存在（与懒加载扫描幂等）
+        self.channel_date_sets.entry((key.agent_id.as_str().to_string(), key.role_name.as_str().to_string()))
+            .or_default().insert(key.date.as_str().to_string());
     }
 
     pub fn mark_channel_all_obsolete(&self, key: &RecordKey) {
         self.channel_indices.mark_all_obsolete(key);
+        // 全量重写后文件仍存在（日期不变），同样补入 date_sets
+        self.channel_date_sets.entry((key.agent_id.as_str().to_string(), key.role_name.as_str().to_string()))
+            .or_default().insert(key.date.as_str().to_string());
     }
 
     pub fn mark_think_obsolete(&self, key: &RecordKey) {
@@ -64,6 +81,71 @@ impl MemoryIndexer {
 
     pub async fn query_channel_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
         Ok(self.channel_indices.query_all(query).await?)
+    }
+
+    /// 最近 N 条 channel 记录（跨日期文件，参考 channel-web message_store::get_recent）：
+    /// date_sets 日期倒序逐个 query_last(remaining)，取满即停；组按日期升序返回、组内升序；无时间过滤
+    pub async fn query_channel_recent(&self, agent_id: &str, role_name: &str, count: u32) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        // 懒加载：首次 recent 查询前扫描一次存量 channel 文件（此后由 mark_channel_obsolete/all_obsolete 增量维护）
+        // 扫描为尽力而为：失败仅影响存量发现，增量 append 仍可用，故忽略结果
+        let _ = self.channel_dates_loaded.get_or_init(|| async {
+            let _ = self.scan_channel_dates().await;
+        }).await;
+
+        let mut remaining = count;
+        let mut results: Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)> = Vec::new();
+        if let Some(dates) = self.channel_date_sets.get(&(agent_id.to_string(), role_name.to_string())) {
+            for date in dates.iter().rev() {  // 最新日期在前
+                if remaining == 0 { break; }
+                let key = RecordKey {
+                    agent_id: Arc::new(agent_id.to_string()),
+                    role_name: Arc::new(role_name.to_string()),
+                    date: Arc::new(date.clone()),
+                };
+                let msgs = self.channel_indices.query_last(&key, remaining).await?;
+                if !msgs.is_empty() {
+                    remaining -= msgs.len() as u32;
+                    results.push((key, msgs));
+                }
+            }
+        }
+        results.reverse();  // 日期倒序收集 → 升序返回（与 query_all 一致）
+        Ok(results)
+    }
+
+    /// 扫描存量 channel 文件填充 date_sets：枚举 <root>/<agent_id>/memory-store/<year>-<role_name>/channel-records-<date>.jsonl
+    async fn scan_channel_dates(&self) -> Result<()> {
+        let root = DirectoryManager::get().root_dir().to_path_buf();
+        let mut agent_entries = tokio::fs::read_dir(&root).await?;
+        while let Some(agent_entry) = agent_entries.next_entry().await? {
+            if !agent_entry.path().is_dir() { continue; }
+            let Some(agent_id) = agent_entry.file_name().to_str().map(String::from) else { continue; };
+            // 真实 agent 判断：有 memory-store 子目录（store 写路径只建 memory-store，不建 uuid 文件，
+            // 故不能照抄 list_agents 的 uuid 过滤；read_dir 失败（无 store 目录）自然跳过）
+            let store_dir = agent_entry.path().join("memory-store");
+            let mut year_entries = match tokio::fs::read_dir(&store_dir).await {
+                Ok(d) => d,
+                Err(_) => continue,  // 无 store 目录 → 跳过该 agent
+            };
+            while let Some(year_entry) = year_entries.next_entry().await? {
+                if !year_entry.path().is_dir() { continue; }
+                // year-role 目录形如 "2026-default"；role = 去掉 "YYYY-" 前缀
+                let year_name = year_entry.file_name().to_string_lossy().to_string();
+                let Some(role_name) = year_name.get(5..).map(String::from) else { continue; };
+                let mut file_entries = tokio::fs::read_dir(year_entry.path()).await?;
+                while let Some(file_entry) = file_entries.next_entry().await? {
+                    let name = file_entry.file_name().to_string_lossy().to_string();
+                    if let Some(date) = name.strip_prefix("channel-records-").and_then(|n| n.strip_suffix(".jsonl")) {
+                        self.channel_date_sets.entry((agent_id.clone(), role_name.clone()))
+                            .or_default().insert(date.to_string());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ThinkRecord>)>)>> {
@@ -338,5 +420,70 @@ use tokio;
         indexer.mark_tool_result_all_obsolete(&key);
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
+    }
+
+    // 提取 ChannelRecord 的 Text 内容（测试断言用）
+    fn text_of(r: &Arc<ChannelRecord>) -> String {
+        match &r.content {
+            Content::Text(t) => t.as_str().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_query_channel_recent_cross_files() {
+        init_test_config();
+        // 用独立 agent id 避免与其他测试共享全局 temp root 时相互污染
+        let agent_id = "recent_agent";
+        let role_name = "r1";
+        let rec = |time: &str, text: &str| format!(
+            r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
+            text, time);
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 10:00:00", "b")).await;
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "c")).await;
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 09:00:00", "d")).await;
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 10:00:00", "e")).await;
+
+        let indexer = MemoryIndexer::new();
+        // 懒加载扫描 → 跨文件取最近 3 条（c, d, e），按时间升序
+        let results = indexer.query_channel_recent(agent_id, role_name, 3).await.unwrap();
+        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        assert_eq!(flat, vec!["c", "d", "e"], "跨日期文件取最近 3 条");
+
+        // count 超总量 → 全部（按时间升序）
+        let results = indexer.query_channel_recent(agent_id, role_name, 100).await.unwrap();
+        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        assert_eq!(flat, vec!["a", "b", "c", "d", "e"], "count 超总量返回全部");
+
+        // count == 0 → 空
+        assert!(indexer.query_channel_recent(agent_id, role_name, 0).await.unwrap().is_empty(), "count=0 返回空");
+    }
+
+    #[tokio::test]
+    async fn test_query_channel_recent_incremental_after_obsolete() {
+        init_test_config();
+        let agent_id = "recent_agent2";
+        let role_name = "r1";
+        let rec = |time: &str, text: &str| format!(
+            r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
+            text, time);
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
+
+        let indexer = MemoryIndexer::new();
+        let out = indexer.query_channel_recent(agent_id, role_name, 10).await.unwrap();
+        assert_eq!(out.iter().map(|(_, v)| v.len()).sum::<usize>(), 1);
+
+        // 新日期文件 + mark_channel_obsolete（append 钩子路径）→ date_sets 增量补入
+        append_jsonl(agent_id, role_name, "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "b")).await;
+        let key = RecordKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
+            date: Arc::new("2026-08-02".to_string()),
+        };
+        indexer.mark_channel_obsolete(&key);
+        let out = indexer.query_channel_recent(agent_id, role_name, 10).await.unwrap();
+        let flat: Vec<String> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        assert_eq!(flat, vec!["a", "b"], "mark_channel_obsolete 后新日期可查");
     }
 }

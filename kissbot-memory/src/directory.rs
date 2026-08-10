@@ -60,6 +60,10 @@ impl DirectoryManager {
         })
     }
 
+    pub fn root_dir(&self) -> &Path {
+        &self.root_dir
+    }
+
     pub async fn list_agents(&self) -> Result<Vec<String>> {
         ensure_dir_exists(&self.root_dir).await?;
 
