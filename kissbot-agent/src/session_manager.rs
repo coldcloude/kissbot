@@ -86,9 +86,8 @@ impl SessionContext {
         self.archive_and_clear_cache().await?;
         self.system_message = Some(pending);
         // 从内存写回缓存（只写消息行；System 首行由 append_cache 对新文件落，避免 System 重复）
-        // 先 clone 消息再调用（&mut self 排他，不能同时借用 self.messages）
-        let msgs = self.messages.clone();
-        self.append_cache(&msgs).await
+        // 写自身内存：append_self_cache 内部借用 self.messages，无需 clone
+        self.append_self_cache().await
     }
 
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
@@ -161,7 +160,7 @@ impl SessionContext {
                 lines.push(Message::System { content: Arc::new(system.clone()) });
             }
             lines.extend(self.messages.iter().cloned());
-            self.write_lines(&mut file, &lines).await?;
+            write_lines(&mut file, &lines).await?;
         }
         // 2. 清空缓存文件（文件不存在幂等）
         match tokio::fs::remove_file(&self.cache_path()).await {
@@ -196,13 +195,28 @@ impl SessionContext {
 
     // ========== 私有：缓存文件读写 ==========
 
-    /// 缓存追加（每行一条 Message JSON；不截断）
+    /// 缓存追加外部消息（每行一条 Message JSON；不截断）——append 用；
     /// 新缓存文件（未落盘）先写 System 首行（如有当前系统消息），再追加消息行；
-    /// 无消息不写（仅有系统消息不落缓存）；&mut self 排他：写入须独占，避免并发交叉写坏行
+    /// 无消息不写（仅有系统消息不落缓存）
     async fn append_cache(&mut self, messages: &[Message]) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
         }
+        let mut file = self.open_cache_append().await?;
+        write_lines(&mut file, messages).await
+    }
+
+    /// 缓存追加自身内存（self.messages）——apply_pending_system 系统切换后写回用，内部借用无需 clone
+    async fn append_self_cache(&mut self) -> Result<()> {
+        if self.messages.is_empty() {
+            return Ok(());
+        }
+        let mut file = self.open_cache_append().await?;
+        write_lines(&mut file, &self.messages).await
+    }
+
+    /// 打开缓存文件（追加模式；新文件先落 System 首行）——&mut self 排他：写入须独占，避免并发交叉写坏行
+    async fn open_cache_append(&mut self) -> Result<tokio::fs::File> {
         let path = self.cache_path();
         let is_new = !path.exists();
         if let Some(parent) = path.parent() {
@@ -222,20 +236,21 @@ impl SessionContext {
                     .map_err(|e| Error::IoError(e.to_string()))?;
             }
         }
-        self.write_lines(&mut file, messages).await
+        Ok(file)
     }
+}
 
-    /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用；&mut self 排他，调用方须持独占引用）
-    async fn write_lines(&mut self, file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
-        for m in messages {
-            let line = serde_json::to_string(m)?;
-            file.write_all(line.as_bytes()).await
-                .map_err(|e| Error::IoError(e.to_string()))?;
-            file.write_all(b"\n").await
-                .map_err(|e| Error::IoError(e.to_string()))?;
-        }
-        Ok(())
+/// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
+/// 自由函数（不依赖 self 字段）：排他性由 &mut self 调用方（append_cache / append_self_cache / archive_and_clear_cache）保证
+async fn write_lines(file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
+    for m in messages {
+        let line = serde_json::to_string(m)?;
+        file.write_all(line.as_bytes()).await
+            .map_err(|e| Error::IoError(e.to_string()))?;
+        file.write_all(b"\n").await
+            .map_err(|e| Error::IoError(e.to_string()))?;
     }
+    Ok(())
 }
 
 /// 单个会话：独立上下文、模型与模式状态
