@@ -235,19 +235,13 @@ impl AgentCoordinator {
     /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
     /// 取记忆用会话状态保存的 agent_id（session_key 仅去重，不从 key 提取 agent_name）
     async fn build_role_context(&self, session: &Arc<Session>) {
-        // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），打包为一条 user 消息作为首条内容
+        // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
+        // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
-        let packed = self.memory_reader
+        let new_messages = self.memory_reader
             .read_recent_for_context(session.agent_id.as_str(), session.role_name.as_str(), &cfg).await
-            .map_or_else(|_| None, |msgs| pack_memory_messages(&msgs));
+            .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs));
         // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
-        let new_messages = match packed {
-            None => vec![],
-            Some(msg) => vec![
-                msg,
-                Message::Assistant { content: Arc::new("".to_string()), reasoning_content: None, tool_calls: None },
-            ],
-        };
         let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
     }
 
