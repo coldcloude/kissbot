@@ -39,10 +39,10 @@ pub fn encode_session_key(key: &SessionKey) -> String {
 pub struct SessionContext {
     messages: Vec<Message>,
     system_message: Option<String>,
-    /// 当前缓存文件（<data_dir>/context/<session_key编码>.jsonl）
-    cache_path: PathBuf,
-    /// 历史归档目录（<data_dir>/context-history）
-    history_dir: PathBuf,
+    /// 数据目录：缓存/历史路径用时按 data_dir + key 编码构造（不冗余存路径）
+    data_dir: PathBuf,
+    /// session_key 文件名编码（缓存文件与历史文件的 key 编码段）
+    key_enc: String,
 }
 
 impl SessionContext {
@@ -50,9 +50,19 @@ impl SessionContext {
         Self {
             messages: Vec::new(),
             system_message: None,
-            cache_path: PathBuf::from(data_dir).join("context").join(format!("{}.jsonl", encode_session_key(key))),
-            history_dir: PathBuf::from(data_dir).join("context-history"),
+            data_dir: PathBuf::from(data_dir),
+            key_enc: encode_session_key(key),
         }
+    }
+
+    /// 当前缓存文件路径（<data_dir>/context/<session_key编码>.jsonl）
+    fn cache_path(&self) -> PathBuf {
+        self.data_dir.join("context").join(format!("{}.jsonl", self.key_enc))
+    }
+
+    /// 历史归档目录（<data_dir>/context-history）
+    fn history_dir(&self) -> PathBuf {
+        self.data_dir.join("context-history")
     }
 
     /// 设置系统消息（会话创建或重置时）
@@ -90,12 +100,11 @@ impl SessionContext {
         if self.messages.is_empty() {
             return Ok(false);
         }
-        tokio::fs::create_dir_all(&self.history_dir).await
+        tokio::fs::create_dir_all(&self.history_dir()).await
             .map_err(|e| Error::IoError(e.to_string()))?;
         let ts = Local::now().format("%Y-%m-%d-%H%M%S").to_string();
-        // 历史文件名复用缓存文件名的 key 编码段（<key编码>-<时间戳>.jsonl）
-        let stem = self.cache_path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
-        let dest = self.history_dir.join(format!("{}-{}.jsonl", stem, ts));
+        // 历史文件名 = <key编码>-<时间戳>.jsonl（key 编码即缓存文件名段）
+        let dest = self.history_dir().join(format!("{}-{}.jsonl", self.key_enc, ts));
         let mut file = tokio::fs::OpenOptions::new()
             .create(true).write(true).truncate(true).open(&dest).await
             .map_err(|e| Error::IoError(e.to_string()))?;
@@ -105,7 +114,7 @@ impl SessionContext {
 
     /// 清空缓存文件（重建/重置时调用；文件不存在幂等）
     pub async fn clear_cache(&self) -> Result<()> {
-        match tokio::fs::remove_file(&self.cache_path).await {
+        match tokio::fs::remove_file(&self.cache_path()).await {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::IoError(e.to_string())),
@@ -160,12 +169,12 @@ impl SessionContext {
         if messages.is_empty() {
             return Ok(());
         }
-        if let Some(parent) = self.cache_path.parent() {
+        if let Some(parent) = self.cache_path().parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| Error::IoError(e.to_string()))?;
         }
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true).append(true).open(&self.cache_path).await
+            .create(true).append(true).open(&self.cache_path()).await
             .map_err(|e| Error::IoError(e.to_string()))?;
         self.write_lines(&mut file, messages).await
     }
@@ -184,10 +193,11 @@ impl SessionContext {
 
     /// 全量回读（按时间顺序）；文件不存在返回空
     async fn read_cache(&self) -> Result<Vec<Message>> {
-        if !self.cache_path.exists() {
+        let path = self.cache_path();
+        if !path.exists() {
             return Ok(Vec::new());
         }
-        let mut reader = kai_file::ReverseLineReader::new(&self.cache_path, None, None).await
+        let mut reader = kai_file::ReverseLineReader::new(&path, None, None).await
             .map_err(|e| Error::IoError(e.to_string()))?;
         let mut msgs = Vec::new();
         while let Some(line) = reader.next_line().await
