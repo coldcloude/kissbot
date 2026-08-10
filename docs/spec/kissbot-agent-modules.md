@@ -12,7 +12,7 @@
 | coordinator | AgentCoordinator | **编排中心**：实现 Terminal trait、消息处理、会话管理、agentic loop、工具分派、命令执行、通道连接 | 持有全部运行时组件；被 command_router / session_manager（弱引用）回调 |
 | channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 coordinator 调用；无外部依赖 |
 | session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message，首行 System（如有）；归档 = 直接把当前内存写成一个历史文件，不复制缓存；系统消息变更走待定懒切换：set 只存待定，下次发送前对比应用，不一致则旧上下文（含原系统消息）先归档再替换重建；持久化对 coordinator 透明） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
-| command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model、/reset 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
+| command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
 | memory_reader | MemoryReader | 从 memory-store 读记忆构建上下文（组合查询 + 并集打包、事件列表、记忆索引） | 被 coordinator 调用；依赖 config + memory-store |
 | memory_store_client | MemoryStoreClient | 向 memory-store 推记录（channel / tool_call / tool_result / think） | 被 coordinator 调用 |
 | model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 coordinator 调用；依赖 config（provider/model） |
@@ -128,12 +128,11 @@ sequenceDiagram
         CO->>MSC: push_channel_record(is_self=0)
         alt 管理命令（is_command + check_admin）
             CO->>CRT: parse + execute(config, coordinator)
-            CRT-->>CO: (reply, effect)
+            CRT-->>CO: reply
             CO->>CHM: client(channel_id)
             CO->>CC: send_message(reply)（回来源 channel）
             CO->>CHM: add_pending(msg_id)
             CO->>MSC: push_channel_record(is_self=1)
-            CO->>CO: 应用 effect（ResetSession → reset_session_for 等）
         else 普通消息
             CO->>SM: ensure_session(key, channel_id)
             CO->>BP: enqueue_batch（tx 入队 + set_deadline + Trigger::At）
@@ -176,7 +175,7 @@ sequenceDiagram
             CO->>CC: send_message(reply)（发往 out_channel）
             CO->>CHM: add_pending(msg_id)
             CO->>MSC: push_channel_record(is_self=1)
-            Note over CO: 溢出检查（effective.max_context_messages）<br/>event → compress_context；role → reset_context
+            Note over CO: 溢出检查（effective.max_context_messages）<br/>event → compress_context；role → build_role_context；重建后共通 Forced flush
         end
     end
 ```
@@ -192,20 +191,21 @@ sequenceDiagram
     participant SM as SessionManager
     participant BP as BatchProducer
 
-    Note over CO: build_initial_context（会话创建 / 重置时）
+    Note over CO: ensure_session 新建上下文（event 恢复 / role 记忆重建）
     alt 保留 agent（agent_id="0"）
         CO->>CO: 用默认系统提示词（config.default_system_prompt）
     else 普通 agent
         CO->>EG: load_ego_info（agent 元数据 + 个体识别 + 角色设定 → markdown）
     end
-    alt event 模式
+    alt event 模式（新建）
         CO->>SC: recover_from_cache()（全量回读恢复；缓存 System 首行 → 当前系统消息）
-    else role 模式
-        CO->>SC: archive_and_clear_cache()（旧上下文归档，缓存清空）
+    else role 模式（新建/溢出共用 build_role_context）
         CO->>MR: read_recent_for_context（组合查询 + 并集打包为一条 user 消息）
+        CO->>SC: archive_and_clear_cache()（旧上下文归档，缓存清空；新建无内容幂等）
+        CO->>SC: rebuild(packed)（清空内存 + 从内存写回缓存）
     end
     CO->>MR: read_memory_struct_index（顶层记忆索引，未实现时跳过）
-    Note over CO: 配置/ego 生成系统消息执行一次 set（待定）；下次发送前 apply_pending_system 对比应用<br/>reset_context：SessionContext.reset()（archive_and_clear_cache → clear 内存）→ build_initial_context → Trigger::Forced 强制 flush<br/>compress_context（event 超长）：apply_pending_system → LLM 总结 → archive_and_clear_cache → rebuild（user(压缩指令)+assistant(总结)，从内存写回缓存）
+    Note over CO: 配置/ego 生成系统消息执行一次 set（待定）；下次发送前 apply_pending_system 对比应用<br/>role 新建/溢出共用 build_role_context（查询记忆 → archive_and_clear_cache → rebuild）；溢出尾部共通 Forced flush<br/>compress_context（event 超长）：apply_pending_system → LLM 总结 → archive_and_clear_cache → rebuild（user(压缩指令)+assistant(总结)，从内存写回缓存）
 ```
 
 ## 七、对外交互边界
