@@ -23,7 +23,7 @@ use crate::types::{Error, Message, Mode, Result, SessionKey};
 /// ========== 会话上下文本地缓存 ==========
 /// 缓存文件：<data_dir>/context/<session_key编码>.jsonl，每行一条 Message（JSON）
 /// 首行 System（如有当前系统消息），其后为消息行
-/// 存储时不截断（tokio::fs 追加）；读取时全量回读（ReverseLineReader 从尾读再反转）
+/// 存储时不截断（tokio::fs 追加）；读取时全量回读（LineReader 正序）
 ///
 /// ========== 历史上下文归档 ==========
 /// 归档与清空缓存永远配对（archive_and_clear_cache）：把当前内存（含当前系统消息，System 首行）
@@ -102,7 +102,7 @@ impl SessionContext {
         self.append_cache(messages).await
     }
 
-    /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；
+    /// 从缓存恢复上下文（event 模式）：正序全量回读（LineReader 按时间顺序）装入内存；
     /// 首行 System（如有）放当前系统消息；文件不存在清空
     pub async fn recover_from_cache(&mut self) -> Result<()> {
         let path = self.cache_path();
@@ -111,7 +111,7 @@ impl SessionContext {
             self.system_message = None;
             return Ok(());
         }
-        let mut reader = kai_file::ReverseLineReader::new(&path, None, None).await
+        let mut reader = kai_file::LineReader::new(&path, None, None).await
             .map_err(|e| Error::IoError(e.to_string()))?;
         let mut msgs = Vec::new();
         while let Some(line) = reader.next_line().await
@@ -123,7 +123,6 @@ impl SessionContext {
                 msgs.push(m);
             }
         }
-        msgs.reverse();
         // 首行 System → 当前系统消息（缓存格式：System 行在最前，其后为消息行）
         if let Some(Message::System { content }) = msgs.first() {
             self.system_message = Some(content.as_str().to_string());
@@ -178,9 +177,8 @@ impl SessionContext {
     /// （System + 消息行；不负责清理，调用方保证先 archive_and_clear_cache）
     pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
         self.messages.clear();
-        self.messages.extend(messages);
-        // 从内存写回缓存（System 首行由 append_cache 对新文件落，避免 System 重复）
-        self.append_cache(&self.messages).await
+        // append 复用内存装入 + 缓存写回（不负责清理，调用方保证先 archive_and_clear_cache）
+        self.append(&messages).await
     }
 
     /// 构建模型消息列表（system 在最前）
