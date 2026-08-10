@@ -166,6 +166,7 @@ impl MemoryReader {
         if !resp.status().is_success() {
             return Err(Error::MemoryStoreError(format!("记忆读取返回 {}", resp.status())));
         }
+        // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
         let resp: ApiResponse<QueryChannelData> = resp.json().await?;
         let groups = resp.data.unwrap_or_default();
         // Query1 返回的原始记录数（含非文本）："不足 N 条直接返回"须基于原始记录而非解析后文本
@@ -210,6 +211,7 @@ impl MemoryReader {
         if !resp.status().is_success() {
             return Err(Error::MemoryStoreError(format!("记忆读取返回 {}", resp.status())));
         }
+        // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
         let resp: ApiResponse<QueryChannelData> = resp.json().await?;
         parse_channel_groups(resp.data.unwrap_or_default(), &mut seen, &mut msgs);
         msgs.sort_by(|a, b| a.time.cmp(&b.time));
@@ -494,6 +496,30 @@ mod tests {
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
         assert_eq!(out[0].content, "m0");
         assert_eq!(out[11].content, "m11");
+        assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
+    }
+
+    #[tokio::test]
+    async fn read_recent_uses_raw_count_not_parsed_count_for_early_exit() {
+        // 语义锁定：不足 N 条早退按 Query1 原始记录数（含非文本）判断，而非解析后文本数。
+        // 12 条记录 m0..m11（时间 now-1200+i*60），其中 m5 为非文本（ToolCall，解析跳过）；
+        // count=10 → recent_raw=10（= count，不早退）→ 走 Query2 [cutoff, ln] 补 m0,m1
+        // → 结果 11 条文本记录（m5 被跳过）；若误用解析后计数（9 < 10）会早退只回 9 条
+        let records: Vec<serde_json::Value> = (0..12)
+            .map(|i| {
+                let t = time_ago(1200 - i * 60);
+                if i == 5 {
+                    channel_record_json(&t, "u", json!({ "msg_type": "ToolCall", "data": "k" }), false, i as u64)
+                } else {
+                    record_json(&t, "u", &format!("m{}", i))
+                }
+            })
+            .collect();
+        let url = start_mock_store(channel_data(records)).await;
+        let cfg = ctx_config(1800, 10);  // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
+        let out = reader_at(&url).read_recent_for_context("agent", "role", &cfg).await.unwrap();
+        assert_eq!(out.len(), 11, "raw 数达标（10）不早退，Query2 补回 m0,m1，非文本 m5 跳过");
+        assert!(!out.iter().any(|m| m.content == "m5"), "非文本 m5 被解析跳过");
         assert!(out.windows(2).all(|w| w[0].time <= w[1].time), "时间正序");
     }
 
