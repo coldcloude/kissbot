@@ -40,6 +40,8 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
         if m.content.is_empty() {
             continue;  // 非文本记录（空 content）跳过
         }
+        // 拼接文本提前算一遍（三个分支都要用；元素为 Content::Text 的 Arc 克隆）
+        let text = m.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         if !started {
             // 对话必须以 User 开头：丢弃前导 self
             if m.is_self {
@@ -60,11 +62,11 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
             is_asst = m.is_self;
         }
         if m.is_self {
-            asst_buf.push(join_content(&m.content));  // Assistant：只要 content，不带 name/time
+            asst_buf.push(text);  // Assistant：只要 content，不带 name/time
         } else if m.user_name.is_empty() {
-            user_buf.push(join_content(&m.content));
+            user_buf.push(text);
         } else {
-            user_buf.push(format!("{}: {}", m.user_name, join_content(&m.content)));
+            user_buf.push(format!("{}: {}", m.user_name, text));
         }
     }
     // flush 最后一段（仅当已开始对话）
@@ -78,11 +80,6 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
         }
     }
     out
-}
-
-/// 拼接文本段（pack 用）：与旧 extract_record_text 的 Multi join("\n") 语义一致；元素为 Content::Text 的 Arc 克隆
-fn join_content(parts: &[Arc<String>]) -> String {
-    parts.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
 }
 
 pub struct MemoryReader {
@@ -360,8 +357,8 @@ mod tests {
         let cfg = ctx_config(7200, 10);  // cutoff=now-7200 早于 ln=now-600 → M = cutoff
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
-        assert_eq!(join_content(&out[0].content), "m0");
-        assert_eq!(join_content(&out[29].content), "m29");
+        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
+        assert_eq!(out[29].content, vec![Arc::new("m29".to_string())]);
     }
 
     #[tokio::test]
@@ -375,7 +372,7 @@ mod tests {
         let cfg = ctx_config(60, 10);  // 窗口起点 now-60s 晚于全部记录 → M = ln
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
-        assert_eq!(join_content(&out[0].content), "m5", "起点 = 第 6 条（最后 10 条最旧一条）");
+        assert_eq!(out[0].content, vec![Arc::new("m5".to_string())], "起点 = 第 6 条（最后 10 条最旧一条）");
     }
 
     #[tokio::test]
@@ -420,7 +417,7 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
-        assert!(out.iter().any(|m| join_content(&m.content) == "m4"), "start_idx 之前的同时间记录被并集取回");
+        assert!(out.iter().any(|m| m.content == vec![Arc::new("m4".to_string())]), "start_idx 之前的同时间记录被并集取回");
     }
 
     #[tokio::test]
@@ -441,7 +438,7 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
-        assert!(out.iter().any(|m| join_content(&m.content) == "m2"), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
+        assert!(out.iter().any(|m| m.content == vec![Arc::new("m2".to_string())]), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
     }
 
     #[tokio::test]
@@ -460,8 +457,8 @@ mod tests {
         let url = start_mock_store(data).await;
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 3, "非文本记录保留在结果中（空 content）");
-        assert_eq!(join_content(&out[0].content), "你好");
-        assert_eq!(join_content(&out[1].content), "a\nb", "Multi 内容取 Text 子项拼接");
+        assert_eq!(out[0].content, vec![Arc::new("你好".to_string())]);
+        assert_eq!(out[1].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())], "Multi 内容取 Text 子项拼接");
         assert!(out[2].content.is_empty(), "ToolCall 记录 content 为空 Vec");
         // pack 时跳过空 content 记录 → 2 条 User 合并为 1 条 + 末尾空 Assistant
         assert_eq!(pack_memory_messages(&out).len(), 2, "pack 跳过空 content 记录");
@@ -482,7 +479,7 @@ mod tests {
         // 不足 N 条（4 → count=10）：直接返回 msgs，重复记录也不得泄漏
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
-        assert_eq!(out.iter().filter(|m| join_content(&m.content) == "hello").count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
+        assert_eq!(out.iter().filter(|m| m.content == vec![Arc::new("hello".to_string())]).count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
     }
 
     #[tokio::test]
@@ -497,8 +494,8 @@ mod tests {
         let cfg = ctx_config(1800, 10);
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
-        assert_eq!(join_content(&out[0].content), "m0");
-        assert_eq!(join_content(&out[11].content), "m11");
+        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
+        assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
     }
 
     #[tokio::test]
@@ -521,8 +518,8 @@ mod tests {
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
         assert_eq!(out.len(), 12, "map.len()=10=count 不早退，Query2 补 m0,m1 → 12 条（含空 content 的 m5）");
         assert!(out.iter().any(|m| m.content.is_empty()), "非文本 m5 以空 content 保留在结果中");
-        assert_eq!(join_content(&out[0].content), "m0");
-        assert_eq!(join_content(&out[11].content), "m11");
+        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
+        assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
     }
 
     #[tokio::test]
@@ -543,7 +540,7 @@ mod tests {
         let url = start_mock_store(data).await;
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &ctx_config(7200, 10)).await.unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(join_content(&out[0].content), "a\nb\nc\nd", "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
+        assert_eq!(out[0].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string()), Arc::new("c".to_string()), Arc::new("d".to_string())], "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
     }
 
     #[tokio::test]
