@@ -20,11 +20,6 @@ pub struct MemoryMsg {
 }
 
 /// 打包记忆消息为交替的 User/Assistant 消息序列：
-/// 找到第一条非 self（User）消息（之前的 self 消息丢弃，对话必须以 User 开头），
-/// 连续同 is_self 的记录合并为一条消息，User/Assistant 交替；
-/// User 段 content 逐行 "name: text"（name 为空只留 text），Assistant 段只保留 content（不含 name/time）；
-/// 若以 User 结尾则补一条 Content 为空的 Assistant；空输入/无 User 返回空 Vec
-/// 打包记忆消息为交替的 User/Assistant 消息序列：
 /// content 为空的记录（非文本）跳过；
 /// 找到第一条非 self（User）消息（之前的 self 消息丢弃，对话必须以 User 开头），
 /// 连续同 is_self 的记录合并为一条消息，User/Assistant 交替；
@@ -40,8 +35,6 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
         if m.content.is_empty() {
             continue;  // 非文本记录（空 content）跳过
         }
-        // 拼接文本提前算一遍（三个分支都要用；元素为 Content::Text 的 Arc 克隆）
-        let text = m.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         if !started {
             // 对话必须以 User 开头：丢弃前导 self
             if m.is_self {
@@ -61,6 +54,7 @@ pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
             asst_buf.clear();
             is_asst = m.is_self;
         }
+        let text = m.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         if m.is_self {
             asst_buf.push(text);  // Assistant：只要 content，不带 name/time
         } else if m.user_name.is_empty() {
