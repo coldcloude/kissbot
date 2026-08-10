@@ -85,7 +85,8 @@ impl SessionContext {
         }
         self.archive_and_clear_cache().await?;
         self.system_message = Some(pending);
-        self.rewrite_cache().await
+        // 从内存写回缓存（只写消息行；System 首行由 append_cache 对新文件落，避免 System 重复）
+        self.append_cache(&self.messages).await
     }
 
     /// 取系统消息（当前；应用待定后为最新，测试/对比用）
@@ -183,7 +184,8 @@ impl SessionContext {
     pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
         self.messages.clear();
         self.messages.extend(messages);
-        self.rewrite_cache().await
+        // 从内存写回缓存（System 首行由 append_cache 对新文件落，避免 System 重复）
+        self.append_cache(&self.messages).await
     }
 
     /// 构建模型消息列表（system 在最前）
@@ -248,12 +250,6 @@ impl SessionContext {
                 .map_err(|e| Error::IoError(e.to_string()))?;
         }
         Ok(())
-    }
-
-    /// 从内存写回缓存（System 首行 + 消息行；不负责清理——调用方保证先 archive_and_clear_cache，
-    /// 新文件由 append_cache 落 System 首行，这里只写消息行，避免 System 重复）
-    async fn rewrite_cache(&self) -> Result<()> {
-        self.append_cache(&self.messages).await
     }
 }
 
