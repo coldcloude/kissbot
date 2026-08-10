@@ -89,12 +89,6 @@ impl SessionContext {
         self.append_cache(&self.messages).await
     }
 
-    /// 取系统消息（当前；应用待定后为最新，测试/对比用）
-    #[allow(dead_code)]
-    pub fn system_message(&self) -> Option<&str> {
-        self.system_message.as_deref()
-    }
-
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
     /// best-effort：缓存失败仅丢缓存不阻塞流程（内存已装入，调用方按 Result 决定）
     pub async fn append(&mut self, messages: &[Message]) -> Result<()> {
@@ -189,12 +183,6 @@ impl SessionContext {
         }
         items.extend(self.messages.iter().cloned());
         items
-    }
-
-    /// 消息条数（不含 system；is_overflow 内部直接算，保留供调用方读取）
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.messages.len()
     }
 
     /// 检查是否超长（threshold 来自模型 effective 配置的 max_context_messages）
@@ -752,7 +740,7 @@ mod tests {
         ctx.append(&[Message::User { content: Arc::new("再问".into()) }]).await.unwrap();
         let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
         recovered.recover_from_cache().await.unwrap();
-        assert_eq!(recovered.len(), 3, "追加不截断");
+        assert_eq!(recovered.build().len(), 3, "追加不截断");
         // 重建（role 构建路径：archive_and_clear_cache → rebuild，替代 reset 语义）：清空内存，缓存不残留
         ctx.archive_and_clear_cache().await.unwrap();
         ctx.rebuild(vec![]).await.unwrap();
@@ -872,14 +860,14 @@ mod tests {
         ctx.append(&[Message::User { content: Arc::new("你好".into()) }]).await.unwrap();
         let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
         recovered.recover_from_cache().await.unwrap();
-        assert_eq!(recovered.system_message(), Some("新系统"), "缓存读出的系统消息放当前");
+        assert!(matches!(&recovered.build()[0], Message::System { content } if content.as_str() == "新系统"), "缓存读出的系统消息放当前");
         let back = recovered.build();
         assert_eq!(back.len(), 2, "系统 + 消息");
         assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"));
         // 再次 set 同值：一致 → 无变更（set 消息清空）
         ctx.set_system_message("新系统".into());
         ctx.apply_pending_system().await.unwrap();
-        assert_eq!(ctx.system_message(), Some("新系统"));
+        assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"));
         assert!(!dir.path().join("context-history").exists(), "一致时不产生归档");
     }
 
@@ -894,7 +882,7 @@ mod tests {
         // 变更系统：不一致 → 旧上下文（含原系统消息）写成历史 → 替换 → 重建缓存
         ctx.set_system_message("新系统".into());
         ctx.apply_pending_system().await.unwrap();
-        assert_eq!(ctx.system_message(), Some("新系统"));
+        assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"));
         // 历史：System 旧 + User 你好
         let history_dir = dir.path().join("context-history");
         let mut files = Vec::new();
@@ -909,7 +897,7 @@ mod tests {
         // 缓存：System 新 + User 你好（消息保留）
         let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
         recovered.recover_from_cache().await.unwrap();
-        assert_eq!(recovered.system_message(), Some("新系统"));
+        assert!(matches!(&recovered.build()[0], Message::System { content } if content.as_str() == "新系统"));
         let back = recovered.build();
         assert_eq!(back.len(), 2);
         assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"), "消息保留");
