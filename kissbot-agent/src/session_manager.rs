@@ -102,11 +102,6 @@ impl SessionContext {
         self.append_cache(messages).await
     }
 
-    /// 仅追加到内存（记忆打包/压缩重建用，不落缓存）
-    pub fn push(&mut self, msg: Message) {
-        self.messages.push(msg);
-    }
-
     /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；
     /// 首行 System（如有）放当前系统消息；文件不存在清空
     pub async fn recover_from_cache(&mut self) -> Result<()> {
@@ -843,27 +838,6 @@ mod tests {
         assert_eq!(tokio::fs::read_to_string(&dest).await.unwrap(), expect);
         // 归档同时清空缓存（重写/重建前旧缓存不残留）
         assert!(!cache_path.exists(), "归档并清空后缓存不存在");
-    }
-
-    #[tokio::test]
-    async fn archive_and_clear_writes_memory_without_cache_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let k = role_key();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
-        // 仅内存有消息（如记忆打包的 packed 消息），缓存文件不存在——归档直接从内存写历史
-        ctx.push(Message::User { content: Arc::new("记忆打包".into()) });
-        ctx.archive_and_clear_cache().await.unwrap();
-        let history_dir = dir.path().join("context-history");
-        let mut files = Vec::new();
-        let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
-        while let Some(entry) = rd.next_entry().await.unwrap() {
-            files.push(entry);
-        }
-        assert_eq!(files.len(), 1, "归档生成一个历史文件");
-        let dest = files.remove(0).path();
-        let dest_text = tokio::fs::read_to_string(&dest).await.unwrap();
-        assert!(dest_text.contains("记忆打包"), "历史内容来自内存");
-        assert!(!dir.path().join("context").exists(), "未写缓存时不创建缓存目录");
     }
 
     #[tokio::test]

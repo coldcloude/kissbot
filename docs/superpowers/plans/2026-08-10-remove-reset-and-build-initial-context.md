@@ -312,7 +312,7 @@ git add -A && git commit -m "refactor(agent): 删除 build_initial_context 与 r
 
 **Interfaces:**
 - Consumes: Task 2 已删除 `reset_context`（`SessionContext::reset()` 的唯一调用方）
-- Produces: `SessionContext` 公共方法收敛为：`new` / `set_system_message` / `apply_pending_system` / `system_message` / `append` / `push` / `recover_from_cache` / `archive_and_clear_cache` / `rebuild` / `build` / `len` / `is_overflow`
+- Produces: `SessionContext` 公共方法收敛为：`new` / `set_system_message` / `apply_pending_system` / `system_message` / `append` / `recover_from_cache` / `archive_and_clear_cache` / `rebuild` / `build` / `len` / `is_overflow`
 
 - [ ] **Step 1: 删除 reset() 方法**
 

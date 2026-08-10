@@ -82,7 +82,7 @@
 - role 新建与溢出重置**完全同一路径**（build_role_context），不再有独立 reset_context
 - event 无重置路径：新建恢复缓存，溢出压缩
 - 归档与清空始终配对（archive_and_clear_cache）；rewrite_cache 只写回不清理
-- SessionContext API 收敛：append / push / recover_from_cache / archive_and_clear_cache /
+- SessionContext API 收敛：append / recover_from_cache / archive_and_clear_cache /
   rebuild / apply_pending_system / build / is_overflow / set_system_message
 
 ## 测试
