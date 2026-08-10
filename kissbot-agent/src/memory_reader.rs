@@ -134,8 +134,6 @@ impl MemoryReader {
         // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
         let resp: ApiResponse<QueryChannelData> = resp.json().await?;
         let groups = resp.data.unwrap_or_default();
-        // Query1 返回的原始记录数（含非文本）："不足 N 条直接返回"须基于原始记录而非解析后文本
-        let recent_raw = groups.iter().map(|(_, v)| v.len()).sum::<usize>();
 
         // ===== 解析（parse_channel_records 内联）：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
         // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
@@ -148,8 +146,9 @@ impl MemoryReader {
             return Ok(Vec::new());
         };
         let ln = ln.clone();
-        // 不足 N 条：Query1 已含全部记录，直接返回（无需 Query2）
-        if recent_raw < count {
+        // 不足 N 条：直接返回（无需 Query2）。理论上去重后记录不重复，map 大小即取到的数量；
+        // 注意：以解析后文本数（map.len()）判定——非文本记录在最后 N 内被跳过时也会提前返回
+        if map.len() < count {
             return Ok(map.into_values().collect());
         }
         // M = min(时间窗起点 start, ln)
@@ -476,11 +475,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_recent_uses_raw_count_not_parsed_count_for_early_exit() {
-        // 语义锁定：不足 N 条早退按 Query1 原始记录数（含非文本）判断，而非解析后文本数。
+    async fn read_recent_early_exit_uses_map_len_after_parse() {
+        // 语义锁定：不足 N 条早退按解析后 map.len()（文本数）判断——理论上记录不重复，map 大小即取到的数量。
         // 12 条记录 m0..m11（时间 now-1200+i*60），其中 m5 为非文本（ToolCall，解析跳过）；
-        // count=10 → recent_raw=10（= count，不早退）→ 走 Query2 [cutoff, ln] 补 m0,m1
-        // → 结果 11 条文本记录（m5 被跳过）；若误用解析后计数（9 < 10）会早退只回 9 条
+        // count=10 → Query1 解析后 map=9 < 10 → 直接返回 9 条（不发起 Query2，[cutoff, ln] 窗口不补）
         let records: Vec<serde_json::Value> = (0..12)
             .map(|i| {
                 let t = time_ago(1200 - i * 60);
@@ -492,9 +490,9 @@ mod tests {
             })
             .collect();
         let url = start_mock_store(channel_data(records)).await;
-        let cfg = ctx_config(1800, 10);  // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
+        let cfg = ctx_config(1800, 10);  // cutoff=now-1800（若走 Query2 会补 m0,m1，但 map.len()<count 已早退）
         let out = reader_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), &cfg).await.unwrap();
-        assert_eq!(out.len(), 11, "raw 数达标（10）不早退，Query2 补回 m0,m1，非文本 m5 跳过");
+        assert_eq!(out.len(), 9, "map.len()=9 < count=10 → 早退返回 Query1 解析结果（m5 跳过，不发起 Query2）");
         assert!(!out.iter().any(|m| m.content.as_str() == "m5"), "非文本 m5 被解析跳过");
     }
 
