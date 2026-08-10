@@ -83,10 +83,10 @@ impl SessionContext {
         if self.system_message.as_deref() == Some(pending.as_str()) {
             return Ok(());   // 一致：无需变更（set 消息已清空）
         }
-        self.archive_and_clear_cache().await?;
+        self.archive_and_clear_cache_and_reset_messages(None).await?;
         self.system_message = Some(pending);
         // 从内存写回缓存（只写消息行；System 首行由 open_cache_and_write_system_line 对新文件落，避免 System 重复）
-        // 消息源为自身内存：直接借用 self.messages，无需 clone；无消息不写
+        // 消息源为自身内存：直接借用 self.messages；无消息不写
         if self.messages.is_empty() {
             return Ok(());
         }
@@ -150,9 +150,10 @@ impl SessionContext {
     /// 1) 把当前内存（含当前系统消息，System 首行）写成一个历史文件（<key编码>-<时间戳>.jsonl，无包装格式），
     ///    不复制缓存文件；内存为空则无可归档内容（仅有系统消息不归档，幂等）
     /// 2) 清空缓存文件（文件不存在幂等）
+    /// 3) 重置上下文（可选）：清空内存（system 保留）→ messages 写入内存、缓存
     ///
     /// &mut self 强制排他：调用方须持独占引用（经 session.context 互斥锁），避免并发归档/清空交错
-    pub async fn archive_and_clear_cache(&mut self) -> Result<()> {
+    pub async fn archive_and_clear_cache_and_reset_messages(&mut self, messages: Option<Vec<Message>>) -> Result<()> {
         // 1. 归档：当前内存（含当前系统消息）→ 历史
         if !self.messages.is_empty() {
             tokio::fs::create_dir_all(&self.history_dir()).await
@@ -173,18 +174,17 @@ impl SessionContext {
         }
         // 2. 清空缓存文件（文件不存在幂等）
         match tokio::fs::remove_file(&self.cache_path()).await {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::IoError(e.to_string())),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::IoError(e.to_string())),
         }
-    }
-
-    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 从内存写回缓存
-    /// （System + 消息行；不负责清理，调用方保证先 archive_and_clear_cache）
-    pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
-        self.messages.clear();
-        // append 复用内存装入 + 缓存写回（不负责清理，调用方保证先 archive_and_clear_cache）
-        self.append(&messages).await
+        // 3. 重置消息（只有清空缓存文件后才允许重置消息）
+        if let Some(messages) = messages {
+            self.messages.clear();
+            // append 复用内存装入 + 缓存写回
+            self.append(&messages).await?;
+        }
+        Ok(())
     }
 
     /// 构建模型消息列表（system 在最前）
@@ -750,15 +750,13 @@ mod tests {
         recovered.recover_from_cache().await.unwrap();
         assert_eq!(recovered.build().len(), 3, "追加不截断");
         // 重建（role 构建路径：archive_and_clear_cache → rebuild，替代 reset 语义）：清空内存，缓存不残留
-        ctx.archive_and_clear_cache().await.unwrap();
-        ctx.rebuild(vec![]).await.unwrap();
+        ctx.archive_and_clear_cache_and_reset_messages(Some(vec![])).await.unwrap();
         assert!(ctx.build().is_empty(), "重建后内存为空");
         let mut after = SessionContext::new(dir.path().to_str().unwrap(), &k);
         after.recover_from_cache().await.unwrap();
         assert!(after.build().is_empty(), "重建后缓存为空");
         // 无内容时重复重建幂等
-        ctx.archive_and_clear_cache().await.unwrap();
-        ctx.rebuild(vec![]).await.unwrap();
+        ctx.archive_and_clear_cache_and_reset_messages(Some(vec![])).await.unwrap();
     }
 
     #[tokio::test]
@@ -812,7 +810,7 @@ mod tests {
         let cache_path = dir.path().join("context").join("a1-r1.jsonl");
         assert!(cache_path.exists(), "append 已建缓存");
         // 归档 + 清空一体：历史生成，缓存移除
-        ctx.archive_and_clear_cache().await.unwrap();
+        ctx.archive_and_clear_cache_and_reset_messages(None).await.unwrap();
         // 目标文件名 = <key编码>-<时间戳>.jsonl（历史目录内恰有一个文件；role_key = a1-r1）
         let history_dir = dir.path().join("context-history");
         let mut files = Vec::new();
@@ -840,12 +838,12 @@ mod tests {
         let k = role_key();
         let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
         // 内存为空：无归档、无报错、不创建历史目录
-        ctx.archive_and_clear_cache().await.unwrap();
+        ctx.archive_and_clear_cache_and_reset_messages(None).await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
         // 仅有系统消息同样不归档（历史只记录有消息的上下文）
         ctx.set_system_message("仅系统".into());
         ctx.apply_pending_system().await.unwrap();
-        ctx.archive_and_clear_cache().await.unwrap();
+        ctx.archive_and_clear_cache_and_reset_messages(None).await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "系统消息不产生历史");
     }
 
