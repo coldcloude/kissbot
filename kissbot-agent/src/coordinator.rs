@@ -215,14 +215,7 @@ impl AgentCoordinator {
     /// 会话创建/重置时：加载 ego（保留 agent 用默认提示词）+ 历史记录 + 顶层记忆索引构建初始上下文
     /// 取记忆/ego 一律用会话状态保存的 agent_id（session_key 仅去重，不从 key 提取 agent_name）
     async fn build_initial_context(&self, session: &Arc<Session>) {
-        // 保留 agent（agent_id="0"）不调 memory-ego，用 NexusRepo 默认系统提示词；其余走 load_ego_info
-        if session.agent_id.as_str() == RESERVED_AGENT_ID {
-            let prompt = self.config.default_system_prompt().await;
-            session.context.lock().await.set_system_message(prompt);
-        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
-            session.context.lock().await.set_system_message(ego_info);
-        }
-        // 按模式加载上下文：event 从缓存恢复；role 从记忆打包（两查询比较取并集，打包为一条 user 消息）
+        // 按模式加载上下文：event 从缓存恢复（含系统消息→当前）；role 从记忆打包（两查询比较取并集，打包为一条 user 消息）
         match &*session.mode {
             Mode::Event(_) => {
                 // 从缓存恢复上下文（全量回读；文件不存在为空）
@@ -243,6 +236,14 @@ impl AgentCoordinator {
                     }
                 }
             }
+        }
+        // 系统消息：保留 agent（agent_id="0"）不调 memory-ego，用 NexusRepo 默认系统提示词；其余走 load_ego_info。
+        // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
+        if session.agent_id.as_str() == RESERVED_AGENT_ID {
+            let prompt = self.config.default_system_prompt().await;
+            session.context.lock().await.set_system_message(prompt);
+        } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
+            session.context.lock().await.set_system_message(ego_info);
         }
         // 顶层记忆索引（memory-struct 未实现时静默跳过）——保持不变
         let _ = self.memory_reader
@@ -304,6 +305,8 @@ impl AgentCoordinator {
         // 0. 先校验模型可用（无模型早退，避免留下冗余归档副本）
         let model = session.model.load_full();
         let Some(pm) = model.as_ref() else { return; };
+        // 发送前应用待定系统消息（压缩也是一次发送：不一致时旧系统上下文先归档，再按新系统压缩）
+        let _ = session.context.lock().await.apply_pending_system().await;
         // 归档当前缓存（如存在；压缩前旧上下文入历史）
         let _ = session.context.lock().await.archive().await;
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
@@ -720,6 +723,8 @@ impl AgentCoordinator {
             return;
         }
 
+        // 0. 发送前应用待定系统消息变更（对比当前；不一致 → 旧上下文（含原系统消息）归档历史 → 替换 → 重建缓存）
+        let _ = session.context.lock().await.apply_pending_system().await;
         // 1. 追加用户消息到该会话上下文（合批已打包为一条 user 消息，time/messenger 等不保留，只留文本）
         // 内存 + 缓存一体追加（best-effort，失败仅丢缓存不阻塞流程）
         let _ = session.context.lock().await.append(&[Message::User { content: Arc::new(content_text.clone()) }]).await;

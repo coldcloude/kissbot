@@ -30,15 +30,20 @@ pub fn encode_session_key(key: &SessionKey) -> String {
 ///
 /// ========== 会话上下文本地缓存 ==========
 /// 缓存文件：<data_dir>/context/<session_key编码>.jsonl，每行一条 Message（JSON）
+/// 首行 System（如有当前系统消息），其后为消息行
 /// 存储时不截断（tokio::fs 追加）；读取时全量回读（ReverseLineReader 从尾读再反转）
 ///
 /// ========== 历史上下文归档 ==========
-/// 归档 = 直接把当前内存写成一个历史文件并加上时间戳文件名（无包装格式，不复制缓存文件），本轮只写不读
+/// 归档 = 直接把当前内存（含当前系统消息，System 首行）写成一个历史文件并加上时间戳文件名
+/// （无包装格式，不复制缓存文件），本轮只写不读
 /// 历史与当前缓存格式完全一致（都是 <session_key编码>.jsonl 每行一条 Message），
 /// 因此内存、缓存、历史三者统一在本结构体实现（会话上下文唯一入口）。
 pub struct SessionContext {
     messages: Vec<Message>,
+    /// 当前系统消息（模型上下文首条；含从缓存恢复的，直到下次发送前对比替换）
     system_message: Option<String>,
+    /// 待定系统消息（set 只写这里，多次 set 只保留最近一次；下次发送前对比应用）
+    pending_system: Option<String>,
     /// 数据目录：缓存/历史路径用时按 data_dir + key 编码构造（不冗余存路径）
     data_dir: PathBuf,
     /// session_key 文件名编码（缓存文件与历史文件的 key 编码段）
@@ -50,6 +55,7 @@ impl SessionContext {
         Self {
             messages: Vec::new(),
             system_message: None,
+            pending_system: None,
             data_dir: PathBuf::from(data_dir),
             key_enc: encode_session_key(key),
         }
@@ -65,12 +71,26 @@ impl SessionContext {
         self.data_dir.join("context-history")
     }
 
-    /// 设置系统消息（会话创建或重置时）
+    /// 设置系统消息（会话创建/重置时，配置或 ego 生成后调用）：只保存待定，
+    /// 当前系统消息保留到下次发送前对比应用（多次 set 只保留最近一次）
     pub fn set_system_message(&mut self, content: String) {
-        self.system_message = Some(content);
+        self.pending_system = Some(content);
     }
 
-    /// 取系统消息（压缩/恢复用；当前调用方经 build() 内部读取，保留供后续使用）
+    /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
+    /// 与当前一致 → 仅清空待定；不一致 → 把当前内存（用原系统消息）写成历史 →
+    /// 替换为新系统消息 → 重建缓存（System + 消息行）
+    pub async fn apply_pending_system(&mut self) -> Result<()> {
+        let Some(pending) = self.pending_system.take() else { return Ok(()); };
+        if self.system_message.as_deref() == Some(pending.as_str()) {
+            return Ok(());   // 一致：无需变更（set 消息已清空）
+        }
+        self.archive().await?;
+        self.system_message = Some(pending);
+        self.rewrite_cache().await
+    }
+
+    /// 取系统消息（当前；应用待定后为最新，测试/对比用）
     #[allow(dead_code)]
     pub fn system_message(&self) -> Option<&str> {
         self.system_message.as_deref()
@@ -88,11 +108,13 @@ impl SessionContext {
         self.messages.push(msg);
     }
 
-    /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；文件不存在为空
+    /// 从缓存恢复上下文（event 模式）：全量回读（按时间顺序）装入内存；
+    /// 首行 System（如有）放当前系统消息；文件不存在清空
     pub async fn recover_from_cache(&mut self) -> Result<()> {
         let path = self.cache_path();
         if !path.exists() {
             self.messages = Vec::new();
+            self.system_message = None;
             return Ok(());
         }
         let mut reader = kai_file::ReverseLineReader::new(&path, None, None).await
@@ -108,6 +130,11 @@ impl SessionContext {
             }
         }
         msgs.reverse();
+        // 首行 System → 当前系统消息（缓存格式：System 行在最前，其后为消息行）
+        if let Some(Message::System { content }) = msgs.first() {
+            self.system_message = Some(content.as_str().to_string());
+            msgs.remove(0);
+        }
         // 崩溃一致性清理：恢复应从完整轮次开始。
         // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
         //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
@@ -122,10 +149,11 @@ impl SessionContext {
         Ok(())
     }
 
-    /// 归档当前上下文到历史：直接把内存消息写成一个历史文件（<key编码>-<时间戳>.jsonl，无包装格式），
-    /// 不复制缓存文件；内存为空则无可归档内容（幂等，返回 false）
+    /// 归档当前上下文到历史：把当前内存（含当前系统消息，System 首行）写成一个历史文件
+    /// （<key编码>-<时间戳>.jsonl，无包装格式），不复制缓存文件；
+    /// 内存为空且无系统消息则无可归档内容（幂等，返回 false）
     pub async fn archive(&self) -> Result<bool> {
-        if self.messages.is_empty() {
+        if self.messages.is_empty() && self.system_message.is_none() {
             return Ok(false);
         }
         tokio::fs::create_dir_all(&self.history_dir()).await
@@ -136,7 +164,13 @@ impl SessionContext {
         let mut file = tokio::fs::OpenOptions::new()
             .create(true).write(true).truncate(true).open(&dest).await
             .map_err(|e| Error::IoError(e.to_string()))?;
-        self.write_lines(&mut file, &self.messages).await?;
+        // 历史格式与缓存一致：System 首行（如有），其后为消息行
+        let mut lines = Vec::with_capacity(self.messages.len() + 1);
+        if let Some(system) = &self.system_message {
+            lines.push(Message::System { content: Arc::new(system.clone()) });
+        }
+        lines.extend(self.messages.iter().cloned());
+        self.write_lines(&mut file, &lines).await?;
         Ok(true)
     }
 
@@ -155,14 +189,14 @@ impl SessionContext {
         self.clear_cache().await
     }
 
-    /// 重置上下文：归档当前内存 → 清空缓存 → 清空内存（system 保留）
+    /// 重置上下文：归档当前内存（含当前系统消息）→ 清空缓存 → 清空内存（system 保留，待下次发送前对比替换）
     pub async fn reset(&mut self) -> Result<()> {
         self.archive_and_clear_cache().await?;
         self.messages.clear();
         Ok(())
     }
 
-    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 缓存清空重写（不含 system）
+    /// 重建上下文（压缩后）：清空内存（system 保留）→ 装入 messages → 缓存清空重写（System + 消息行）
     pub async fn rebuild(&mut self, messages: Vec<Message>) -> Result<()> {
         self.messages.clear();
         self.messages.extend(messages);
@@ -193,17 +227,31 @@ impl SessionContext {
     // ========== 私有：缓存文件读写 ==========
 
     /// 缓存追加（每行一条 Message JSON；不截断）
+    /// 新缓存文件（未落盘）先写 System 首行（如有当前系统消息），再追加消息行
     async fn append_cache(&self, messages: &[Message]) -> Result<()> {
-        if messages.is_empty() {
+        let path = self.cache_path();
+        let is_new = !path.exists();
+        // 无内容可写：既有文件追加空 / 新文件且无系统消息（避免创建空文件）
+        if messages.is_empty() && (!is_new || self.system_message.is_none()) {
             return Ok(());
         }
-        if let Some(parent) = self.cache_path().parent() {
+        if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| Error::IoError(e.to_string()))?;
         }
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true).append(true).open(&self.cache_path()).await
+            .create(true).append(true).open(&path).await
             .map_err(|e| Error::IoError(e.to_string()))?;
+        if is_new {
+            // 缓存格式：System 行在最前；新文件创建时落当前系统消息
+            if let Some(system) = &self.system_message {
+                let line = serde_json::to_string(&Message::System { content: Arc::new(system.clone()) })?;
+                file.write_all(line.as_bytes()).await
+                    .map_err(|e| Error::IoError(e.to_string()))?;
+                file.write_all(b"\n").await
+                    .map_err(|e| Error::IoError(e.to_string()))?;
+            }
+        }
         self.write_lines(&mut file, messages).await
     }
 
@@ -219,13 +267,11 @@ impl SessionContext {
         Ok(())
     }
 
-    /// 缓存清空重写：按当前内存（不含 system）重写（压缩重建用）
+    /// 缓存清空重写：按当前系统消息 + 当前内存重写（System 首行；系统消息变更/压缩重建用）
+    /// 清空后由 append_cache 的新文件逻辑落 System 首行，这里只写消息行（避免 System 重复）
     async fn rewrite_cache(&self) -> Result<()> {
         self.clear_cache().await?;
-        // 缓存不含 system：只存 user+assistant（恢复时 set_system 在前）
-        let store: Vec<Message> = self.build().into_iter()
-            .filter(|m| !matches!(m, Message::System { .. })).collect();
-        self.append_cache(&store).await
+        self.append_cache(&self.messages).await
     }
 }
 
@@ -860,5 +906,63 @@ mod tests {
         // 内存为空：无可归档内容（不报错、不创建历史目录）
         assert!(!ctx.archive().await.unwrap(), "内存为空时归档为空操作");
         assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
+    }
+
+    // ===== 系统消息：缓存/历史持久化 + 待定懒切换 =====
+
+    #[tokio::test]
+    async fn set_system_message_is_lazy_and_applies_on_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = role_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        // set 只保存待定（多次 set 只保留最近一次），build 不立即带 system
+        ctx.set_system_message("旧系统".into());
+        ctx.set_system_message("新系统".into());
+        assert!(ctx.build().iter().all(|m| !matches!(m, Message::System { .. })), "set 不立即生效");
+        // 发送前应用：当前系统为空 → 不一致 → 替换 + 重建缓存
+        ctx.apply_pending_system().await.unwrap();
+        assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"), "取最近一次 set");
+        // 缓存首行为 System：同 key 新上下文恢复得到系统消息
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        recovered.recover_from_cache().await.unwrap();
+        assert_eq!(recovered.system_message(), Some("新系统"), "缓存读出的系统消息放当前");
+        assert_eq!(recovered.build().len(), 1, "恢复后仅系统消息");
+        // 再次 set 同值：一致 → 无变更（set 消息清空）
+        ctx.set_system_message("新系统".into());
+        ctx.apply_pending_system().await.unwrap();
+        assert_eq!(ctx.system_message(), Some("新系统"));
+        assert!(!dir.path().join("context-history").exists(), "一致时不产生归档");
+    }
+
+    #[tokio::test]
+    async fn system_change_archives_old_context_with_old_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let k = role_key();
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        ctx.set_system_message("旧系统".into());
+        ctx.apply_pending_system().await.unwrap();
+        ctx.append(&[Message::User { content: Arc::new("你好".into()) }]).await.unwrap();
+        // 变更系统：不一致 → 旧上下文（含原系统消息）写成历史 → 替换 → 重建缓存
+        ctx.set_system_message("新系统".into());
+        ctx.apply_pending_system().await.unwrap();
+        assert_eq!(ctx.system_message(), Some("新系统"));
+        // 历史：System 旧 + User 你好
+        let history_dir = dir.path().join("context-history");
+        let mut files = Vec::new();
+        let mut rd = tokio::fs::read_dir(&history_dir).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            files.push(entry);
+        }
+        assert_eq!(files.len(), 1, "系统变更时旧上下文归档一次");
+        let dest_text = tokio::fs::read_to_string(files.remove(0).path()).await.unwrap();
+        assert!(dest_text.contains("旧系统"), "历史含原系统消息");
+        assert!(dest_text.contains("你好"), "历史含原内存消息");
+        // 缓存：System 新 + User 你好（消息保留）
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), &k);
+        recovered.recover_from_cache().await.unwrap();
+        assert_eq!(recovered.system_message(), Some("新系统"));
+        let back = recovered.build();
+        assert_eq!(back.len(), 2);
+        assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"), "消息保留");
     }
 }
