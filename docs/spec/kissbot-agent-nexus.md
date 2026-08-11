@@ -126,20 +126,13 @@
 
 请求结构体定义在 kissbot-api 的 store.rs 中。
 
-### 读取（MemoryReader）
+### 读取（MemoryStoreClient）
 
 | 方法 | 路径 | 请求体 |
 |------|------|--------|
 | POST | /query/channel | QueryRequest — 按 (agent_id, role_name) + 时间范围查询（所有 channel 记录同文件，无需组合枚举） |
+| POST | /query/channel/recent | RecentQuery — 按 (agent_id, role_name) 取最近 count 条（跨日期文件） |
 | POST | /query | QueryRequest — 按 (agent_id, role_name) + 时间范围查询 |
-
-### 记忆索引读取（MemoryReader → Memory-Struct）
-
-在启动、模式切换、上下文重置时通过 HTTP 调用 memory-struct 获取顶层记忆索引，作为初始上下文的一部分。memory-struct 未配置时跳过。
-
-| 方法 | 路径 | 请求体 |
-|------|------|--------|
-| POST | /index | { "agent_id": "...", "role_name": "..." } — 返回记忆索引列表（如摘要） |
 
 ### 后续记忆搜索（Agentic Loop 内 Tool Call）
 

@@ -13,8 +13,8 @@
 | channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 coordinator 调用；无外部依赖 |
 | session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message，首行 System（如有）；归档 = 直接把当前内存写成一个历史文件，不复制缓存；系统消息变更走待定懒切换：set 只存待定，下次发送前对比应用，不一致则旧上下文（含原系统消息）先归档再替换重建；持久化对 coordinator 透明） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
-| memory_reader | MemoryReader | 从 memory-store 读记忆构建上下文（最近 N + 时间段两次查询并集打包、事件列表、记忆索引） | 被 coordinator 调用；依赖 config + memory-store |
-| memory_store_client | MemoryStoreClient | 向 memory-store 推记录（channel / tool_call / tool_result / think） | 被 coordinator 调用 |
+| message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / session_manager / coordinator 调用 |
+| memory_store_client | MemoryStoreClient | memory-store 全读写：推记录（channel / think / tool_call / tool_result）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 coordinator 调用；读经共享 StoreHttpConfig |
 | model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 coordinator 调用；依赖 config（provider/model） |
 | provider | Provider | 模型提供方（provider type → body 构造）解析 | 被 model_client 调用 |
 | station | StationRuntime / Tool | 本地 tool 执行主机（内置 Read 工具等）；configured_tools / call_tool | 被 coordinator 调用 |
@@ -42,7 +42,7 @@ graph TB
         CHM["channel_manager<br/>ChannelManager / Channel"]
         SM["session_manager<br/>SessionManager / Session<br/>BatchProducer / Consumer<br/>SessionContext（内存+缓存+历史）"]
         CRT["command_router<br/>CommandRouter"]
-        MR["memory_reader<br/>MemoryReader"]
+        MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MLC["model_client<br/>ModelClient"]
         PRV["provider"]
@@ -58,7 +58,7 @@ graph TB
     CO --> CFG
     CO --> CHM
     CO --> SM
-    CO --> MR
+    CO --> MSG
     CO --> MSC
     CO --> MLC
     CO --> ST
@@ -68,12 +68,10 @@ graph TB
     CRT -->|执行命令回调| CO
     MLC --> CFG
     MLC --> PRV
-    MR --> CFG
     CO -. 创建 client / 重连循环 .-> CC
     CC -. Terminal 回调（incoming_message 等） .-> CO
     SM -. trigger flush 升级弱引用 .-> CO
     MSC --> MS
-    MR --> MS
     CO -->|resolve_agent_id / load_ego_info| EG
     MLC --> LLM
     UI --> HS
@@ -187,7 +185,7 @@ sequenceDiagram
     participant CO as AgentCoordinator
     participant EG as memory-ego
     participant SC as SessionContext（内存 + 缓存 + 历史一体）
-    participant MR as MemoryReader
+    participant MSC as MemoryStoreClient
     participant SM as SessionManager
     participant BP as BatchProducer
 
@@ -200,11 +198,10 @@ sequenceDiagram
     alt event 模式（新建）
         CO->>SC: recover_from_cache()（全量回读恢复；缓存 System 首行 → 当前系统消息）
     else role 模式（新建/溢出共用 build_role_context）
-        CO->>MR: read_recent_for_context（最近 N + 时间段两次查询并集打包为一条 user 消息）
+        CO->>MSC: read_recent_for_context（最近 N + 时间段两次查询并集打包为一条 user 消息）
         CO->>SC: archive_and_clear_cache()（旧上下文归档，缓存清空；新建无内容幂等）
         CO->>SC: rebuild(packed)（清空内存 + 从内存写回缓存）
     end
-    CO->>MR: read_memory_struct_index（顶层记忆索引，未实现时跳过）
     Note over CO: 配置/ego 生成系统消息执行一次 set（待定）；下次发送前 apply_pending_system 对比应用<br/>role 新建/溢出共用 build_role_context（查询记忆 → archive_and_clear_cache → rebuild）；溢出尾部共通 Forced flush<br/>compress_context（event 超长）：apply_pending_system → LLM 总结 → archive_and_clear_cache → rebuild（user(压缩指令)+assistant(总结)，从内存写回缓存）
 ```
 
@@ -213,7 +210,7 @@ sequenceDiagram
 | 方向 | 组件 | 协议 | 说明 |
 |------|------|------|------|
 | agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 coordinator（incoming_message / join_group / leave_group / user_removed / download_chunk / closed） |
-| agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录、MemoryReader 读记忆 |
+| agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录 + 读记忆 |
 | agent → memory-ego | kissbot-memory-ego | HTTP | resolve_agent_id（search-name）、load_ego_info（agent/individual/role 查询） |
 | agent → LLM | 模型提供方 API | HTTP | ModelClient 调用（支持重试、工具调用、reasoning 回传） |
 | agent ← 管理界面 | HttpServer | HTTP | 当前仅 config CRUD（操作 ConfigManager）；管理命令走 channel 消息（/ 开头） |
