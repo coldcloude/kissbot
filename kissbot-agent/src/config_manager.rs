@@ -545,6 +545,7 @@ impl ConfigManager {
     }
 
     // ---------- memory_structs ----------
+    #[allow(dead_code)] // memory-struct 功能未实现，待后续接入时使用
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
         repo.memory_structs.iter().map(|(_, v)| (*v.load_full()).clone()).collect()

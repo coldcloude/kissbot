@@ -15,7 +15,6 @@ use crate::session_manager::{Session, SessionManager};
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
-use crate::memory_reader::MemoryReader;
 use crate::message::pack_memory_messages;
 use crate::memory_store_client::MemoryStoreClient;
 use crate::station::{self, StationRuntime};
@@ -48,7 +47,6 @@ static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
 
 pub struct AgentCoordinator {
     config: Arc<ConfigManager>,
-    memory_reader: Arc<MemoryReader>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
     model_client: Arc<tokio::sync::Mutex<ModelClient>>,
@@ -71,7 +69,6 @@ impl AgentCoordinator {
     pub async fn new(
         config: Arc<ConfigManager>,
     ) -> Result<()> {
-        let memory_reader = Arc::new(MemoryReader::new());
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
@@ -81,7 +78,6 @@ impl AgentCoordinator {
 
         let coordinator = Self {
             config: config.clone(),
-            memory_reader,
             memory_store_client,
             session_manager,
             model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
@@ -225,10 +221,6 @@ impl AgentCoordinator {
             } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
                 session.context.lock().await.set_system_message(ego_info);
             }
-            // 顶层记忆索引（memory-struct 未实现时静默跳过）
-            let _ = self.memory_reader
-                .read_memory_struct_index(&self.config, session.agent_id.as_str(), &session.role_name, &session.mode)
-                .await;
         }
         (session, created)
     }
@@ -239,7 +231,7 @@ impl AgentCoordinator {
         // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
         // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
         let cfg = self.config.context_config(session.agent_name.as_str(), session.role_name.as_str()).await;
-        let new_messages = self.memory_reader
+        let new_messages = self.memory_store_client
             .read_recent_for_context(session.agent_id.clone(), session.role_name.clone(), &cfg).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs));
         // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）

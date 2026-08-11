@@ -10,7 +10,6 @@ mod ego_md;
 mod http_server;
 mod model_client;
 mod provider;
-mod memory_reader;
 mod memory_store_client;
 mod message;
 mod session_manager;
