@@ -15,7 +15,8 @@ use crate::session_manager::{Session, SessionManager};
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
-use crate::memory_reader::{MemoryReader, pack_memory_messages};
+use crate::memory_reader::MemoryReader;
+use crate::message::pack_memory_messages;
 use crate::memory_store_client::MemoryStoreClient;
 use crate::station::{self, StationRuntime};
 

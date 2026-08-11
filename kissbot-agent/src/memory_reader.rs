@@ -2,79 +2,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::config_manager::{ConfigManager, EffectiveContextConfig};
-use crate::types::{Message, Mode, Result, Error};
+use crate::message::{MessageContent, extract_content};
+use crate::types::{Mode, Result, Error};
 use kissbot_api::memory::{ChannelRecord, QueryRequest, RecentQuery, RecordKey};
-use kissbot_api::{ApiResponse, Content};
+use kissbot_api::ApiResponse;
 
 /// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
 type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
-
-/// 记忆消息（channel record 的最小视图：name + content + is_self，id 类不保留；时间由排序键承担，不保留）
-#[derive(Debug, Clone)]
-pub struct MemoryMsg {
-    pub user_name: Arc<String>,
-    /// 文本段列表：每个元素为 Content::Text 的 Arc 克隆（Multi 拆多个元素；pack 时以 \n 拼接）
-    pub content: Vec<Arc<String>>,
-    /// 是否 agent 自身消息（来自 ChannelRecord.is_self：1=self，0=他人）
-    pub is_self: bool,
-}
-
-/// 打包记忆消息为交替的 User/Assistant 消息序列：
-/// content 为空的记录（非文本）跳过；
-/// 找到第一条非 self（User）消息（之前的 self 消息丢弃，对话必须以 User 开头），
-/// 连续同 is_self 的记录合并为一条消息，User/Assistant 交替；
-/// User 段 content 逐行 "name: text"（name 为空只留 text），Assistant 段只保留 content（不含 name/time）；
-/// 若以 User 结尾则补一条 Content 为空的 Assistant；空输入/无 User 返回空 Vec
-pub fn pack_memory_messages(msgs: &[MemoryMsg]) -> Vec<Message> {
-    let mut out: Vec<Message> = Vec::new();
-    let mut user_buf: Vec<String> = Vec::new();
-    let mut asst_buf: Vec<String> = Vec::new();
-    let mut is_asst = false;  // 当前段类型（false=User 段）
-    let mut started = false;  // 是否已开始对话（找到第一条非 self 消息）；此前 self 全部丢弃
-    for m in msgs {
-        if m.content.is_empty() {
-            continue;  // 非文本记录（空 content）跳过
-        }
-        if !started {
-            // 对话必须以 User 开头：丢弃前导 self
-            if m.is_self {
-                continue;
-            }
-            started = true;
-            is_asst = false;
-        }
-        if m.is_self != is_asst {
-            // 段类型切换：flush 上一段（连续同 is_self 已合并）
-            if is_asst {
-                out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
-            } else {
-                out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
-            }
-            user_buf.clear();
-            asst_buf.clear();
-            is_asst = m.is_self;
-        }
-        let text = m.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
-        if m.is_self {
-            asst_buf.push(text);  // Assistant：只要 content，不带 name/time
-        } else if m.user_name.is_empty() {
-            user_buf.push(text);
-        } else {
-            user_buf.push(format!("{}: {}", m.user_name, text));
-        }
-    }
-    // flush 最后一段（仅当已开始对话）
-    if started {
-        if is_asst {
-            out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
-        } else {
-            out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
-            // 以 User 结尾：补一条空 Assistant（模型对话需以待回答的 Assistant 结尾）
-            out.push(Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: None });
-        }
-    }
-    out
-}
 
 pub struct MemoryReader {
     client: reqwest::Client,
@@ -120,7 +54,7 @@ impl MemoryReader {
         agent_id: Arc<String>,
         role_name: Arc<String>,
         cfg: &EffectiveContextConfig,
-    ) -> Result<Vec<MemoryMsg>> {
+    ) -> Result<Vec<MessageContent>> {
         // 时间窗起点计算失败（checked_sub_signed 溢出）→ 直接报错，不静默回退
         let start = chrono::Local::now()
             .checked_sub_signed(chrono::Duration::seconds(cfg.memory_time_secs as i64))
@@ -150,7 +84,7 @@ impl MemoryReader {
 
         // ===== 解析（parse_channel_records 内联）：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
         // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
-        let mut map: BTreeMap<(String, u64), MemoryMsg> = BTreeMap::new();
+        let mut map: BTreeMap<(String, u64), MessageContent> = BTreeMap::new();
         parse_channel_groups(groups, &mut map);
 
         // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
@@ -193,44 +127,26 @@ impl MemoryReader {
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
 /// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
-/// 文本提取走 collect_text_parts（递归收集全部 Text 段）
-fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MemoryMsg>) {
+/// 文本提取走 extract_content（递归收集全部 Text 段）
+fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MessageContent>) {
     for (_, records) in groups {
         for (_, rec) in records {
-            let time = rec.time.as_str().to_string();  // 键用（MemoryMsg 值不再保留 time）
+            let time = rec.time.as_str().to_string();  // 键用（MessageContent 值不再保留 time）
             let sn = rec.sn;
             let key = (time, sn);
             // 同 (time, sn) 已存在（两查询并集在 ln 处重叠）→ 提前跳过，免去 user_name clone 与文本提取
             if map.contains_key(&key) {
                 continue;
             }
-            let user_name = rec.user_name.clone();
-            let is_self = rec.is_self > 0;
-            let mut content: Vec<Arc<String>> = Vec::new();
-            collect_text_parts(&rec.content, &mut content);
-            map.insert(key, MemoryMsg { user_name, content, is_self });
+            map.insert(key, extract_content(&rec.user_name, rec.is_self, &rec.content));
         }
-    }
-}
-
-/// 递归收集 Content 中的全部 Text 段到 parts：Text 直接 clone 其 Arc<String>；Multi 递归遍历（可嵌套任意深度），
-/// 各 Text 子项各占一个元素；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）不产生段（调用方跳过空结果）
-/// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
-fn collect_text_parts(content: &Content, parts: &mut Vec<Arc<String>>) {
-    match content {
-        Content::Text(text) => parts.push(text.clone()),
-        Content::Multi(items) => {
-            for item in items {
-                collect_text_parts(item, parts);
-            }
-        }
-        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::pack_memory_messages;
     use crate::types::Message;
     use axum::routing::post;
     use axum::{Json, Router};
@@ -557,62 +473,5 @@ mod tests {
         assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "a2"));
         assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
         assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_empty()));
-    }
-
-    // 构造测试用 MemoryMsg
-    fn msg(name: &str, content: &str, is_self: bool) -> MemoryMsg {
-        MemoryMsg { user_name: Arc::new(name.to_string()), content: vec![Arc::new(content.to_string())], is_self }
-    }
-
-    #[test]
-    fn pack_memory_messages_alternates_merges_and_appends_empty_assistant() {
-        let msgs = vec![
-            msg("agent", "a0", true),   // 开头 self → 丢弃（对话必须以 User 开头）
-            msg("u1", "m0", false),
-            msg("", "m1", false),       // 空 name → 只留 content
-            msg("agent", "line1", true),
-            msg("agent", "line2", true),
-            msg("u3", "m2", false),
-        ];
-        let out = pack_memory_messages(&msgs);
-        // 期望：[User("u1: m0\nm1"), Assistant("line1\nline2"), User("u3: m2"), Assistant("")]
-        assert_eq!(out.len(), 4);
-        assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: m0\nm1"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "line1\nline2"));
-        assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
-        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_empty()));
-    }
-
-    #[test]
-    fn pack_memory_messages_empty_or_all_self_returns_empty() {
-        assert!(pack_memory_messages(&[]).is_empty());
-        // 全 self（无 User 开头）→ 无可打包
-        assert!(pack_memory_messages(&[msg("agent", "a", true), msg("agent", "b", true)]).is_empty());
-    }
-
-    #[test]
-    fn pack_memory_messages_skips_empty_content_records() {
-        // 非文本记录（content 为空 Vec）→ 跳过：不产生消息、不触发段切换、不阻止后续合并
-        let empty = || MemoryMsg { user_name: Arc::new("agent".to_string()), content: vec![], is_self: true };
-        let msgs = vec![
-            msg("u1", "hi", false),
-            empty(),                       // 空 content → 跳过（夹在两条 User 之间也不切段）
-            msg("u2", "there", false),
-            msg("agent", "ok", true),
-            empty(),                       // 结尾空 content → 跳过（不影响末尾 Assistant flush）
-        ];
-        let out = pack_memory_messages(&msgs);
-        // 期望：[User("u1: hi\nu2: there"), Assistant("ok")]
-        assert_eq!(out.len(), 2);
-        assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: hi\nu2: there"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "ok"));
-    }
-
-    #[test]
-    fn pack_memory_messages_single_user_appends_empty_assistant() {
-        let out = pack_memory_messages(&[msg("u", "hi", false)]);
-        assert_eq!(out.len(), 2);
-        assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u: hi"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.is_empty()));
     }
 }
