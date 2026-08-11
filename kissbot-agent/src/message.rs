@@ -107,7 +107,6 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
 /// 将一批 IncomingMessageEvent 打包为一条 User Message（替换 session_manager BatchConsumer 的内联拼接）：
 /// 每 event 经 extract_content 构造（is_self=0），空 content（非文本）跳过，逐行 user_line 拼接（\n 连接）；
 /// 全部跳过时返回空 content 的 User（try_flush 已在 items 为空时提前返回，此处输入必非空）
-#[allow(dead_code)]  // 下一任务（session_manager BatchConsumer 接入）后使用
 pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
     let mut lines: Vec<String> = Vec::new();
     for e in events {

@@ -15,7 +15,8 @@ use tokio_util::time::DelayQueue;
 use tracing::warn;
 
 use crate::config_manager::ProviderModel;
-use crate::coordinator::{AgentCoordinator, extract_text};
+use crate::coordinator::AgentCoordinator;
+use crate::message::pack_batch;
 use crate::types::{Error, Message, Mode, Result, SessionKey};
 
 /// 会话上下文：内存消息 + 本地缓存 + 历史归档一体管理（持久化由 SessionContext 自身负责，coordinator 不感知）
@@ -412,12 +413,11 @@ impl BatchConsumer {
         let Some(session) = self.session.upgrade() else {
             return;
         };
-        // 打包为一条 user 消息的 content（内联 pack_events）：逐行 "name: text"（name 为空只留 text）
-        let content = items.iter().map(|e| {
-            let name = e.incoming_message.user_name.as_str();
-            let text = extract_text(&e.incoming_message.content);
-            if name.is_empty() { text } else { format!("{}: {}", name, text) }
-        }).collect::<Vec<_>>().join("\n");
+        // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
+        let content = match pack_batch(&items) {
+            Message::User { content } => (*content).clone(),
+            _ => unreachable!("pack_batch 恒返回 User"),
+        };
         session.accept_batch(content).await;
     }
 }
