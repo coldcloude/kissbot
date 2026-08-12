@@ -7,7 +7,7 @@ use kissbot_api::{ArcSwapHashMap, ChannelUser};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::types::{Result, Error};
+use crate::types::{Result, Error, RESERVED_AGENT_ID};
 
 // ========== 配置数据结构 ==========
 
@@ -26,7 +26,7 @@ pub const DEFAULT_COMPRESS_PROMPT: &str = "请用简洁的语言总结以上对�
 
 // ---- 配置结构 ----
 
-/// agent 级 context 配置（key = agent_name，覆盖全局默认；类似 ProviderConfig 的 default_*）
+/// agent 级 context 配置（key = agent_id，覆盖全局默认；类似 ProviderConfig 的 default_*）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentContextConfig {
     pub default_channel_batch_interval_secs: u64,
@@ -197,7 +197,7 @@ pub struct NexusRepo {
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     // nexus 可对接的 station 列表
     pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
-    /// agent_name → AgentContextConfig（上下文配置，三层继承见 merge_context_config）
+    /// agent_id → AgentContextConfig（上下文配置，三层继承见 merge_context_config）
     /// serde(default)：旧 nexus.json 无 context 段时反序列化为空 map（= 全局默认，兼容旧配置）
     #[serde(default)]
     pub context: Arc<ArcSwapHashMap<String, AgentContextConfig>>,
@@ -220,6 +220,20 @@ impl Default for NexusRepo {
     }
 }
 
+/// ChannelConfig.agent_id 缺省值：保留 agent（"0"）
+fn default_agent_id() -> Arc<String> {
+    Arc::new(RESERVED_AGENT_ID.to_string())
+}
+
+/// ChannelConfig.agent_id 反序列化：空串自动归一化为保留 agent（"0"），非空原样
+fn deserialize_agent_id<'de, D>(d: D) -> std::result::Result<Arc<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(d)?;
+    Ok(Arc::new(if s.is_empty() { RESERVED_AGENT_ID.to_string() } else { s }))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfig {
     pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
@@ -229,9 +243,9 @@ pub struct ChannelConfig {
     pub bind_users: Vec<ChannelUser>,
     /// out_channel 配置（Option，至多 1 个；存于被绑定的 channel 下）
     pub outgoing: Option<OutChannelConfig>,
-    /// 绑定的 agent_name（代号；空 = 保留 agent，建会话用默认系统提示词，不调 memory-ego）
-    #[serde(default)]
-    pub agent_name: Arc<String>,
+    /// 绑定的 agent_id（UUID；缺省/空 = 保留 agent = "0"，建会话用默认系统提示词，不调 memory-ego）
+    #[serde(default = "default_agent_id", deserialize_with = "deserialize_agent_id")]
+    pub agent_id: Arc<String>,
     #[serde(default)]
     pub role_name: Arc<String>,
     /// 是否启用（连接由 enabled 控制）
@@ -508,10 +522,10 @@ impl ConfigManager {
         self.nexus_repo.read().await.providers.get(name).map(|s| s.load_full())
     }
 
-    /// 按 (agent_name, role_name) 合并 context 配置（三层继承：全局默认 ← agent ← role）
-    pub async fn context_config(&self, agent_name: &str, role_name: &str) -> EffectiveContextConfig {
+    /// 按 (agent_id, role_name) 合并 context 配置（三层继承：全局默认 ← agent ← role）
+    pub async fn context_config(&self, agent_id: &str, role_name: &str) -> EffectiveContextConfig {
         let repo = self.nexus_repo.read().await;
-        let agent = repo.context.get(agent_name).map(|s| s.load_full());
+        let agent = repo.context.get(agent_id).map(|s| s.load_full());
         let role = agent.as_ref().and_then(|a| a.roles.get(role_name).map(|s| s.load_full()));
         merge_context_config(agent.as_deref(), role.as_deref())
     }
@@ -680,10 +694,10 @@ mod tests {
         assert_eq!(before, after, "op 失败不应写入文件");
 
         // 成功路径：落盘可见
-        manager.update_channel("web-main", |c| c.agent_name = Arc::new("a1".into())).await.unwrap();
+        manager.update_channel("web-main", |c| c.agent_id = Arc::new("a1".into())).await.unwrap();
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
-        assert_eq!(saved["channels"]["web-main"]["agent_name"], "a1");
+        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
     }
 
     #[tokio::test]
@@ -713,7 +727,7 @@ mod tests {
             admins: Arc::new(HashSet::new()),
             bind_users: vec![ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }],
             outgoing: None,
-            agent_name: Arc::new("".into()),
+            agent_id: Arc::new("0".into()),
             role_name: Arc::new("".into()),
             enabled: true,
         }
@@ -734,7 +748,7 @@ mod tests {
                 user_id: Arc::new("u1".into()),
                 group_id: Arc::new("g1".into()),
             }),
-            agent_name: Arc::new("a1".into()),
+            agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
             enabled: true,
         };
@@ -752,7 +766,7 @@ mod tests {
         let ch = sample_channel("web-main");
         let json = serde_json::to_string(&ch).unwrap();
         assert!(json.contains("\"bind_users\""), "应序列化 bind_users");
-        assert!(json.contains("\"agent_name\""));
+        assert!(json.contains("\"agent_id\""));
         assert!(json.contains("\"role_name\""));
         assert!(!json.contains("\"is_send_channel\""), "is_send_channel 已删除");
         assert!(json.contains("\"enabled\""));
@@ -775,6 +789,22 @@ mod tests {
         assert!(serde_json::from_str::<ChannelConfig>(old).is_err(), "旧格式应解析失败（不兼容）");
     }
 
+    #[test]
+    fn channel_config_agent_id_empty_normalizes_to_reserved() {
+        // 显式空串 → 归一化为 "0"
+        let json = r#"{"channel_id":"c1","ws_url":"ws://127.0.0.1:8201","admins":[],"bind_users":[],"agent_id":"","role_name":"","enabled":true}"#;
+        let ch: ChannelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(ch.agent_id.as_str(), "0", "空串应归一化为保留 id");
+    }
+
+    #[test]
+    fn channel_config_agent_id_missing_defaults_to_reserved() {
+        // 字段缺省 → "0"
+        let json = r#"{"channel_id":"c1","ws_url":"ws://127.0.0.1:8201","admins":[],"bind_users":[],"role_name":"","enabled":true}"#;
+        let ch: ChannelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(ch.agent_id.as_str(), "0", "缺省应回退保留 id");
+    }
+
     #[tokio::test]
     async fn update_channel_mutates_and_persists() {
         let dir = tempdir().unwrap();
@@ -789,9 +819,9 @@ mod tests {
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
 
-        // 修改 agent_name/role_name/bind_users（is_send_channel 已删除，绑定改为数组追加）
+        // 修改 agent_id/role_name/bind_users（is_send_channel 已删除，绑定改为数组追加）
         manager.update_channel("web-main", |c| {
-            c.agent_name = Arc::new("a1".into());
+            c.agent_id = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
             c.bind_users.push(ChannelUser { messenger_id: "web".into(), user_id: "u2".into() });
         }).await.unwrap();
@@ -799,13 +829,13 @@ mod tests {
         // 内存可见
         let ch = manager.channels().await.into_iter()
             .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
-        assert_eq!(*ch.agent_name, "a1");
+        assert_eq!(*ch.agent_id, "a1");
         assert_eq!(ch.bind_users.len(), 2, "bind_users 追加应可见");
 
         // 落盘可见（重新读文件）
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("nexus.json")).unwrap()).unwrap();
-        assert_eq!(saved["channels"]["web-main"]["agent_name"], "a1");
+        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
 
         // channel 不存在报错
         let err = manager.update_channel("nope", |_| {}).await.unwrap_err();

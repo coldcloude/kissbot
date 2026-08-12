@@ -90,6 +90,9 @@ pub enum Mode {
 
 // ========== 会话标识 ==========
 
+/// 保留 agent 的 memory-store/ego agent_id（"0"）：配置缺省/空串归一化目标，会话构建判保留用
+pub const RESERVED_AGENT_ID: &str = "0";
+
 /// 会话唯一标识：agent_id + role_name + mode 三元组
 /// 所有绑定 channel 的信息去重，每个三元组 = 一个会话
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -124,7 +127,7 @@ pub enum AdminCommand {
     ModeRole,
     Reenter(String),
     Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
-    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_id=""、role_name=""）
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_id="0"、role_name=""）
     SetAgent { agent_id: Option<String>, role: Option<String> },
 }
 

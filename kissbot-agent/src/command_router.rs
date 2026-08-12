@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use crate::types::{AdminCommand, Error, Mode, OutChannelParams, Result, SessionKey};
+use crate::types::{AdminCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result, SessionKey};
 use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
-use crate::coordinator::{AgentCoordinator, RESERVED_AGENT_NAME, RESERVED_ROLE_NAME};
+use crate::coordinator::{AgentCoordinator, RESERVED_ROLE_NAME};
 
-/// 取 channel 当前会话三元组（config agent_name/role_name + 运行态 mode；异常回退空 + 角色模式）
+/// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode；异常回退保留 agent + 角色模式）
 /// 命令构造新三元组用（agent/role/mode 变更统一走 change_channel_key）
 async fn channel_current_key(channel_id: &str) -> SessionKey {
     AgentCoordinator::instance().channel_session_key(channel_id).await
-        .unwrap_or_else(|| SessionKey { agent_name: String::new(), role_name: String::new(), mode: Mode::Role })
+        .unwrap_or_else(|| SessionKey { agent_id: RESERVED_AGENT_ID.to_string(), role_name: String::new(), mode: Mode::Role })
 }
 
 pub struct CommandRouter;
@@ -90,10 +90,10 @@ impl CommandRouter {
                 })
             }
             "agent" => {
-                // /agent [name] [role]：缺省 agent_name 用保留 agent（空），缺省 role 用保留 role（空）
-                let agent_name = parts.get(1).map(|s| s.to_string());
+                // /agent [agent_id] [role]：缺省 agent_id 用保留 agent（"0"），缺省 role 用保留 role（空）
+                let agent_id = parts.get(1).map(|s| s.to_string());
                 let role = parts.get(2).map(|s| s.to_string());
-                Ok(AdminCommand::SetAgent { agent_name, role })
+                Ok(AdminCommand::SetAgent { agent_id, role })
             }
             "role" => {
                 // /role [name]：缺省用保留 role（空）
@@ -209,41 +209,41 @@ impl CommandRouter {
                 config.remove_admin(channel_id, messenger_id, user_id).await?;
                 Ok(format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id))
             }
-            AdminCommand::SetAgent { agent_name, role } => {
-                let new_agent = agent_name.clone().unwrap_or_else(|| RESERVED_AGENT_NAME.to_string());
+            AdminCommand::SetAgent { agent_id, role } => {
+                let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 切换前先解析新 agent：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
-                let agent_id = coordinator.resolve_agent_id_for_bind(&new_agent).await?;
+                // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
+                coordinator.verify_agent_exists(&new_agent_id).await?;
                 // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
                 let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_name: new_agent.clone(), role_name: new_role.clone(), mode: cur.mode };
-                coordinator.change_channel_key(channel_id, new_key, Some(agent_id)).await?;
-                Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent, new_role))
+                let new_key = SessionKey { agent_id: new_agent_id.clone(), role_name: new_role.clone(), mode: cur.mode };
+                coordinator.change_channel_key(channel_id, new_key).await?;
+                Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_name: cur.agent_name, role_name: new_role.clone(), mode: cur.mode };
-                coordinator.change_channel_key(channel_id, new_key, None).await?;
+                let new_key = SessionKey { agent_id: cur.agent_id, role_name: new_role.clone(), mode: cur.mode };
+                coordinator.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
-                coordinator.change_channel_key(channel_id, new_key, None).await?;
+                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
+                coordinator.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 新事件 ID: {}", id))
             }
             AdminCommand::ModeRole => {
                 let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Role };
-                coordinator.change_channel_key(channel_id, new_key, None).await?;
+                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Role };
+                coordinator.change_channel_key(channel_id, new_key).await?;
                 Ok("✅ 已切换为角色模式".to_string())
             }
             AdminCommand::Reenter(event_id) => {
                 let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_name: cur.agent_name, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
-                coordinator.change_channel_key(channel_id, new_key, None).await?;
+                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
+                coordinator.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
@@ -259,9 +259,9 @@ impl CommandRouter {
                             return Err(Error::InvalidCommand(format!(
                                 "ChannelUser 未绑定: {} / {}", p.messenger_id, p.user_id)));
                         }
-                        // 2. 清空同 (agent_name, role_name) 其他 channel 的 outgoing（保证至多 1 个）
+                        // 2. 清空同 (agent_id, role_name) 其他 channel 的 outgoing（保证至多 1 个）
                         for (cid, c) in channels.iter() {
-                            if cid != channel_id && c.agent_name == src.agent_name && c.role_name == src.role_name {
+                            if cid != channel_id && c.agent_id == src.agent_id && c.role_name == src.role_name {
                                 if c.outgoing.is_some() {
                                     config.update_channel(cid, |cc| cc.outgoing = None).await?;
                                 }

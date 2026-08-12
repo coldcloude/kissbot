@@ -270,13 +270,13 @@ impl Session {
     }
 
     pub(crate) async fn run_agentic_loop(self: Arc<Self>, message: Message) {
-        let coordinator = AgentCoordinator::instance();
-
-        // 无可用模型：静默忽略普通消息（仅管理指令可用）
+        // 无可用模型：静默忽略普通消息（仅管理指令可用；先于单例获取，测试/无模型环境不触碰 coordinator）
         let model = self.model.load_full();
         let Some(pm) = model.as_ref() else {
             return;
         };
+
+        let coordinator = AgentCoordinator::instance();
 
         let Some(out_channel) = coordinator.resolve_out_channel_for_session(self.clone()).await else {
             warn!("accept_batch: 会话无 out_channel，跳过");
@@ -574,7 +574,7 @@ impl BatchConsumer {
 }
 
 /// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_name, mode) 去重维护会话集合
-/// （session_key 仅用于去重；agent_id 解析结果由各 channel 运行态绑定保存，不在此提取）
+/// （session_key 仅用于去重；agent_id 直接取 key 的 agent_id 字段）
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
     /// 数据目录（会话上下文缓存/历史归档路径基准）

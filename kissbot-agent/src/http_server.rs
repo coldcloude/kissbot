@@ -270,7 +270,7 @@ mod tests {
                 "channel_id": "web-main", "ws_url": "ws://127.0.0.1:8201",
                 "admins": [],
                 "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
-                "agent_name": "", "role_name": "",
+                "agent_id": "0", "role_name": "",
                 "enabled": true
             }))).await;
         assert_eq!(status, StatusCode::OK);
