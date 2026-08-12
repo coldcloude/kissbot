@@ -737,4 +737,66 @@ async fn verify_agent_exists_http(agent_id: &str, ego_url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== verify_agent_exists_http：保留 id / ego 校验 =====
+
+    #[tokio::test]
+    async fn verify_agent_exists_http_reserved_or_empty_passes() {
+        // 保留 id "0" 与空串直接 Ok，无需 ego
+        assert!(verify_agent_exists_http("0", "http://127.0.0.1:1").await.is_ok());
+        assert!(verify_agent_exists_http("", "http://127.0.0.1:1").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_agent_exists_http_ego_unconfigured_errors() {
+        // ego_url 为空 -> Err
+        assert!(verify_agent_exists_http("alice", "").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn verify_agent_exists_http_unreachable_errors() {
+        // 需 SecurityConfig 提供 api_key 头，先确保 KISSBOT_CONFIG 就绪
+        let _cfg = ensure_test_config();
+        // ego_url 指向不可达端口 -> 连接失败 Err
+        assert!(verify_agent_exists_http("carol", "http://127.0.0.1:1").await.is_err());
+    }
+
+    /// 确保 kissbot_config 单例可用：写入临时 KISSBOT_CONFIG（含 security 段，verify_agent_exists_http 需读 api_key）。
+    /// kissbot-config 是进程级 OnceLock 单例，首次触发即锁定；本测试与 http_server::tests::test_manager
+    /// 都写含 security 段的合法配置，先后顺序互不影响。返回 TempDir 保持配置存活至测试结束。
+    fn ensure_test_config() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("config.json");
+        let cfg_json = r#"{"security":{"api_key":"user-key-456","admin_api_key":"admin-key-123"}}"#;
+        std::fs::write(&cfg_path, cfg_json).unwrap();
+        // 2024 edition：设置环境变量需要 unsafe
+        unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
+        dir
+    }
+
+    /// 起本地 axum mock：/agent/get 返回 data 为给定值
+    async fn mock_ego(data: Option<serde_json::Value>) -> String {
+        use axum::{routing::post, Router};
+        let app = Router::new().route("/agent/get", post(move || async move {
+            axum::Json(serde_json::json!({ "success": true, "data": data }))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        format!("http://{}", addr)
+    }
+
+    #[tokio::test]
+    async fn verify_agent_exists_http_found_passes() {
+        let _cfg = ensure_test_config();
+        let url = mock_ego(Some(serde_json::json!({ "name": "alice" }))).await;
+        assert!(verify_agent_exists_http("alice", &url).await.is_ok(), "data 非 null 应 Ok");
+    }
+
+    #[tokio::test]
+    async fn verify_agent_exists_http_not_found_errors() {
+        let _cfg = ensure_test_config();
+        let url = mock_ego(None).await;
+        assert!(verify_agent_exists_http("nobody", &url).await.is_err(), "data 为 null 应 Err");
+    }
 }
