@@ -1,5 +1,5 @@
 //! channel 运行态管理：Channel（单 channel 运行态）+ ChannelManager（全部 channel 的集合管理）
-//! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id/mode + 运行时绑定的 client；
+//! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 mode + 运行时绑定的 client；
 //! ChannelManager 持有全部 Channel（DashMap 无锁并发），coordinator 经 ChannelManager 访问各 channel 运行态。
 
 use std::sync::Arc;
