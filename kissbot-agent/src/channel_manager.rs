@@ -24,15 +24,11 @@ const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
 /// 上述 TTL 的 Duration 形式（evict 入参）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
 
-/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 agent_id；
+/// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合；
 /// client 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
-/// 运行态 agent_id（UUID）在启动绑定/切换 agent 时确定并自主保存；
-/// 解析失败回退保留 agent_id（"0"，等同 agent_name="" 的保留语义）
 pub struct Channel {
     /// 已发出未回显的 msg_id -> 记录时间（DashMap 无锁并发访问）
     pending_outgoing: DashMap<String, Instant>,
-    /// 运行态 agent_id（ArcSwapOption 无锁读写；未绑定为 None，channel_agent 懒绑定）
-    agent_id: ArcSwapOption<String>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
     /// 本 channel 的 ChannelClient（connect_all 时绑定；消息/回复路径从本字段取 client，
@@ -44,7 +40,6 @@ impl Channel {
     fn new() -> Self {
         Self {
             pending_outgoing: DashMap::new(),
-            agent_id: ArcSwapOption::new(None),
             mode: ArcSwap::from_pointee(Mode::Role),
             client: ArcSwapOption::new(None),
         }
@@ -73,16 +68,6 @@ impl Channel {
         }
         self.evict(CHANNEL_CONTEXT_TTL);
         false
-    }
-
-    /// 写入运行态 agent_id（启动绑定/切换 agent 时由 ChannelManager 调用）
-    fn set_agent_id(&self, agent_id: Arc<String>) {
-        self.agent_id.store(Some(agent_id));
-    }
-
-    /// 读运行态 agent_id（未绑定为 None，channel_agent 懒绑定）
-    fn agent_id(&self) -> Option<Arc<String>> {
-        self.agent_id.load_full()
     }
 
     /// 设置运行态模式（/mode 切换，不回写，重启回 Role）
@@ -158,16 +143,6 @@ impl ChannelManager {
         }
     }
 
-    /// 写入 channel 运行态 agent_id（启动绑定/切换 agent 时由 coordinator 调用）
-    pub fn set_agent_id(&self, channel_id: &str, agent_id: Arc<String>) {
-        self.get_or_create(channel_id).set_agent_id(agent_id);
-    }
-
-    /// 读 channel 运行态 agent_id（未绑定为 None，channel_agent 懒绑定）
-    pub fn agent_id(&self, channel_id: &str) -> Option<Arc<String>> {
-        self.channels.get(channel_id).and_then(|c| c.agent_id())
-    }
-
     /// 设置 channel 运行态模式（/mode 切换，不回写，重启回 Role）
     pub fn set_mode(&self, channel_id: &str, mode: Mode) {
         self.get_or_create(channel_id).set_mode(mode);
@@ -183,7 +158,7 @@ impl ChannelManager {
 
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
     /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
-    pub async fn connect_all(self: &Arc<Self>) {
+    pub async fn connect_all(self: Arc<Self>) {
         let reconnect_secs = self.config.ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
@@ -205,14 +180,14 @@ impl ChannelManager {
             // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client）
             self.bind_client(&channel_id, client.clone());
 
-            let client_clone = client;
+            let client_clone = client.clone();
             let api_key = api_key.clone();
             // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 config 引用
             let config = self.config.clone();
 
             tokio::spawn(async move {
                 loop {
-                    match client_clone.connect(&ws_url, &api_key).await {
+                    match client_clone.clone().connect(&ws_url, &api_key).await {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
                             // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
@@ -324,15 +299,11 @@ mod tests {
     }
 
     #[test]
-    fn channel_mode_and_agent_state() {
+    fn channel_mode_state() {
         let ctx = Channel::new();
         // mode 默认 Role，设置后读回
         assert_eq!(ctx.mode(), Mode::Role);
         ctx.set_mode(Mode::Event("e1".into()));
         assert_eq!(ctx.mode(), Mode::Event("e1".into()));
-        // agent_id 未绑定 None，绑定后读回
-        assert!(ctx.agent_id().is_none());
-        ctx.set_agent_id(Arc::new("aid".into()));
-        assert_eq!(ctx.agent_id().unwrap().as_str(), "aid");
     }
 }

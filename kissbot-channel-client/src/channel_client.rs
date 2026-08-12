@@ -63,7 +63,7 @@ impl ChannelClient {
     }
 
     /// 连接 channel 的 ws 服务
-    pub async fn connect(self: &Arc<Self>, url: &str, api_key: &str) -> Result<()> {
+    pub async fn connect(self: Arc<Self>, url: &str, api_key: &str) -> Result<()> {
         let headers = [(HEADER_API_KEY.to_string(), api_key.to_string())];
         kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone()).await?;
         Ok(())

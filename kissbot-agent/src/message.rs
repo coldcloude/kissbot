@@ -17,7 +17,7 @@ pub struct MessageContent {
 
 /// parse_channel_groups 与 pack_batch 共用的 MessageContent 构造：
 /// user_name 克隆 Arc；content 递归提取 Text 段（collect_text_parts）；is_self 按 >0 转 bool
-pub fn extract_content(user_name: &Arc<String>, is_self: usize, content: &Content) -> MessageContent {
+pub fn extract_content(user_name: Arc<String>, content: &Content, is_self: usize) -> MessageContent {
     let mut parts = Vec::new();
     collect_text_parts(content, &mut parts);
     MessageContent { user_name: user_name.clone(), content: parts, is_self: is_self > 0 }
@@ -110,7 +110,7 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
 pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
     let mut lines: Vec<String> = Vec::new();
     for e in events {
-        let mc = extract_content(&e.incoming_message.user_name, 0, &e.incoming_message.content);
+        let mc = extract_content(e.incoming_message.user_name.clone(), &e.incoming_message.content, 0);
         if mc.content.is_empty() {
             continue;  // 非文本事件跳过（与 pack_memory_messages 的 is_self=0 处理一致）
         }
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn extract_content_collects_text_parts_and_is_self_flag() {
         // Text → 单段；is_self > 0 → true
-        let mc = extract_content(&Arc::new("u".to_string()), 1, &Content::Text(Arc::new("hi".into())));
+        let mc = extract_content(Arc::new("u".to_string()), &Content::Text(Arc::new("hi".into())), 1);
         assert_eq!(mc.content, vec![Arc::new("hi".to_string())]);
         assert!(mc.is_self, "is_self>0 → true");
         // Multi 递归收集 Text 段；非文本子项跳过
@@ -195,11 +195,11 @@ mod tests {
             Content::ToolCall(Arc::new("k".into())),
             Content::Multi(vec![Content::Text(Arc::new("b".into()))]),
         ]);
-        let mc2 = extract_content(&Arc::new("u".to_string()), 0, &multi);
+        let mc2 = extract_content(Arc::new("u".to_string()), &multi, 0);
         assert_eq!(mc2.content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())]);
         assert!(!mc2.is_self, "is_self=0 → false");
         // 非文本 → 空 content
-        let mc3 = extract_content(&Arc::new("u".to_string()), 0, &Content::ToolCall(Arc::new("k".into())));
+        let mc3 = extract_content(Arc::new("u".to_string()), &Content::ToolCall(Arc::new("k".into())), 0);
         assert!(mc3.content.is_empty());
     }
 

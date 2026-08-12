@@ -423,7 +423,7 @@ use tokio;
     }
 
     // 提取 ChannelRecord 的 Text 内容（测试断言用）
-    fn text_of(r: &Arc<ChannelRecord>) -> String {
+    fn text_of(r: Arc<ChannelRecord>) -> String {
         match &r.content {
             Content::Text(t) => t.as_str().to_string(),
             _ => String::new(),
@@ -448,12 +448,12 @@ use tokio;
         let indexer = MemoryIndexer::new();
         // 懒加载扫描 → 跨文件取最近 3 条（c, d, e），按时间升序
         let results = indexer.query_channel_recent(agent_id, role_name, 3).await.unwrap();
-        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["c", "d", "e"], "跨日期文件取最近 3 条");
 
         // count 超总量 → 全部（按时间升序）
         let results = indexer.query_channel_recent(agent_id, role_name, 100).await.unwrap();
-        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b", "c", "d", "e"], "count 超总量返回全部");
 
         // count == 0 → 空
@@ -483,7 +483,7 @@ use tokio;
         };
         indexer.mark_channel_obsolete(&key);
         let out = indexer.query_channel_recent(agent_id, role_name, 10).await.unwrap();
-        let flat: Vec<String> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r)).collect();
+        let flat: Vec<String> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b"], "mark_channel_obsolete 后新日期可查");
     }
 }

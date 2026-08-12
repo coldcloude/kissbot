@@ -593,7 +593,7 @@ impl ChannelServer {
         }
     }
 
-    pub async fn start(self: &Arc<Self>, addr: &str) -> Result<()> {
+    pub async fn start(self: Arc<Self>, addr: &str) -> Result<()> {
         //start ws server
         let span = span!(Level::INFO, "ws server start");
         let _enter = span.enter();
@@ -606,14 +606,14 @@ impl ChannelServer {
         Ok(())
     }
     
-    pub async fn register_messenger<M,MC>(self: &Arc<Self>, messenger_id: &str, messenger_creator: MC) -> Result<Arc<M>>
+    pub async fn register_messenger<M,MC>(self: Arc<Self>, messenger_id: &str, messenger_creator: MC) -> Result<Arc<M>>
     where
         M: Messenger,
         MC: MessengerCreator<M>
     {
         match self.messenger_map.entry(messenger_id.to_string()) {
             Entry::Vacant(entry) => {
-                let messenger = messenger_creator.create(Arc::downgrade(self)).await?;
+                let messenger = messenger_creator.create(Arc::downgrade(&self)).await?;
                 let messenger_context = Arc::new(MessengerContext {
                     messenger: messenger.clone() as Arc<dyn Messenger>,
                     bound_map: DashMap::new(),

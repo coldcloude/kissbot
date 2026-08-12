@@ -90,11 +90,11 @@ pub enum Mode {
 
 // ========== 会话标识 ==========
 
-/// 会话唯一标识：agent_name + role_name + mode 三元组
+/// 会话唯一标识：agent_id + role_name + mode 三元组
 /// 所有绑定 channel 的信息去重，每个三元组 = 一个会话
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
-    pub agent_name: String,
+    pub agent_id: String,
     pub role_name: String,
     pub mode: Mode,
 }
@@ -124,8 +124,8 @@ pub enum AdminCommand {
     ModeRole,
     Reenter(String),
     Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
-    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_name=""、role_name=""）
-    SetAgent { agent_name: Option<String>, role: Option<String> },
+    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_id=""、role_name=""）
+    SetAgent { agent_id: Option<String>, role: Option<String> },
 }
 
 /// /bind-outgoing 命令参数（转 OutChannelConfig 持久化）
@@ -201,15 +201,15 @@ impl<'de> serde::Deserialize<'de> for ToolCall {
 
 #[derive(Debug, Clone)]
 pub struct ModelResponse {
-    pub content: String,
+    pub content: Arc<String>,
     /// 思考内容：API 字段（DeepSeek reasoning_content / anthropic thinking block）
-    pub reasoning_content: Option<String>,
+    pub reasoning_content: Arc<String>,
     /// 思考内容：<think> 标签解析（去标签）；与 reasoning_content 独立，不合并
-    pub thinking: Option<String>,
+    pub thinking: Arc<String>,
     #[allow(dead_code)]
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<Arc<ToolCall>>,
     #[allow(dead_code)]
-    pub finish_reason: String,
+    pub finish_reason: Arc<String>,
 }
 
 /// OpenAI 兼容上下文消息：role 即枚举变体（内部标签序列化，role 与其他字段平级）
@@ -226,7 +226,7 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<Arc<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        tool_calls: Option<Vec<ToolCall>>,
+        tool_calls: Option<Vec<Arc<ToolCall>>>,
     },
     Tool {
         tool_call_id: Arc<String>,
@@ -244,9 +244,9 @@ mod tests {
     #[test]
     fn session_key_hash_eq_by_value() {
         use std::collections::HashSet;
-        let a = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let b = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let c = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let a = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let b = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let c = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 SessionKey 应命中 HashSet");
@@ -269,7 +269,7 @@ mod tests {
             (Message::Assistant {
                 content: Arc::new(String::new()),
                 reasoning_content: None,
-                tool_calls: Some(vec![ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) }]),
+                tool_calls: Some(vec![Arc::new(ToolCall { id: Arc::new("call_1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/tmp/a.txt"})) })]),
             }, r#"{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"/tmp/a.txt\"}"}}]}"#),
             (Message::Tool { tool_call_id: Arc::new("call_1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) }, r#"{"role":"tool","tool_call_id":"call_1","name":"read","content":"内容"}"#),
         ];

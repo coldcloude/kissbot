@@ -8,16 +8,20 @@ use arc_swap::ArcSwap;
 use chrono::Local;
 use dashmap::DashMap;
 use futures_util::StreamExt;
+use kissbot_api::{ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::channel::IncomingMessageEvent;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Notify};
 use tokio_util::time::DelayQueue;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::config_manager::ProviderModel;
 use crate::coordinator::AgentCoordinator;
 use crate::message::pack_batch;
-use crate::types::{Error, Message, Mode, Result, SessionKey};
+use crate::types::{Error, Message, Mode, Result, SessionKey, memory_role};
+
+/// Agentic Loop 工具调用轮次上限（防死循环）
+const MAX_TOOL_ROUNDS: usize = 10;
 
 /// 会话上下文：内存消息 + 本地缓存 + 历史归档一体管理（持久化由 SessionContext 自身负责，coordinator 不感知）
 ///
@@ -45,10 +49,10 @@ pub struct SessionContext {
 
 impl SessionContext {
     pub fn new(data_dir: &str, key: &SessionKey) -> Self {
-        // session_key → 文件名：{agent_name}-{role_name}（角色模式）或 {agent_name}-{role_name}-{event}（事件模式）
+        // session_key → 文件名：{agent_id}-{role_name}（角色模式）或 {agent_id}-{role_name}-{event}（事件模式）
         let key_enc = match &key.mode {
-            Mode::Role => format!("{}-{}", key.agent_name, key.role_name),
-            Mode::Event(e) => format!("{}-{}-{}", key.agent_name, key.role_name, e),
+            Mode::Role => format!("{}-{}", key.agent_id, key.role_name),
+            Mode::Event(e) => format!("{}-{}-{}", key.agent_id, key.role_name, e),
         };
         Self {
             messages: Vec::new(),
@@ -245,35 +249,216 @@ async fn write_cache_lines(file: &mut tokio::fs::File, messages: &[Message]) -> 
 
 /// 单个会话：独立上下文、模型与模式状态
 pub struct Session {
-    pub agent_name: Arc<String>,    // 运行态：从 key 复制（context 配置查找用）
-    pub role_name: Arc<String>,     // 运行态：从 key 复制（身份读取源；SessionKey 仅作去重，不存于 Session）
+    pub agent_id: Arc<String>,      // 运行态：从 key 复制
+    pub role_name: Arc<String>,     // 运行态：从 key 复制
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
     pub context: tokio::sync::Mutex<SessionContext>,
     /// 合批生产侧（依赖序构造时经 create_session 传入；channel 均从本字段取 clone 绑定）
     pub batch_producer: BatchProducer,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
-    /// 会话状态保存的 agent_id（UUID；创建时取自触发 channel 的运行态绑定，之后不变）
-    /// 取记忆/ego 一律用本字段（agent_name 仅作 context 配置查找，不参与记忆/ego 定位）
-    pub agent_id: Arc<String>,
     /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
     pub notify: Arc<Notify>,
 }
 
 impl Session {
-    /// 合批 flush 入口：trigger 任务经 consumer.session 弱引用升级后调用（原 coordinator.flush_batch 职责迁至会话侧）
-    /// 模型检查 → coordinator 单例 → out_channel 解析 → agentic loop
-    pub(crate) async fn accept_batch(self: &Arc<Self>, content: String) {
-        // 无可用模型：静默忽略（与 run_agentic_loop 入口一致）
-        if self.model.load().is_none() {
-            return;
-        }
+    pub(crate) async fn enqueue_batch(&self, event: Arc<IncomingMessageEvent>, interval: u64) {
+        let _ = self.batch_producer.tx.send(event);
+        let at = Instant::now() + Duration::from_secs(interval);
+        self.batch_producer.set_deadline(at);
+        let _ = self.batch_producer.trigger_tx.send(at);
+    }
+
+    pub async fn reset_context(&self, new_messages: Vec<Message>) -> Result<()> {
+        self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await
+    }
+
+    pub async fn rebuild_context(&self) {
         let coordinator = AgentCoordinator::instance();
-        let Some(out_channel) = coordinator.resolve_out_channel_for_session(self).await else {
+        // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
+        // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
+        let new_messages = coordinator.build_context_from_memory_store(self.agent_id.clone(), self.role_name.clone()).await;
+        // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
+        let _ = self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
+    }
+
+    pub(crate) async fn run_agentic_loop(self: Arc<Self>, message: Message) {
+        let coordinator = AgentCoordinator::instance();
+
+        // 无可用模型：静默忽略普通消息（仅管理指令可用）
+        let model = self.model.load_full();
+        let Some(pm) = model.as_ref() else {
+            return;
+        };
+
+        let Some(out_channel) = coordinator.resolve_out_channel_for_session(self.clone()).await else {
             warn!("accept_batch: 会话无 out_channel，跳过");
             return;
         };
-        coordinator.run_agentic_loop("", self, content, &out_channel).await;
+
+        // 0. 发送前应用待定系统消息变更（对比当前；不一致 → 旧上下文（含原系统消息）归档历史 → 替换 → 重建缓存）
+        let _ = self.context.lock().await.apply_pending_system().await;
+
+        // 1. 检查上下文超长（阈值来自会话模型的 effective.max_context_messages）
+        let overflow = {
+            let ctx = self.context.lock().await;
+            let model = self.model.load_full();
+            match model.as_ref() {
+                Some(pm) => match coordinator.config.resolve_effective_config(pm).await {
+                    Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
+                    None => false,
+                },
+                None => false,
+            }
+        };
+        if overflow {
+            warn!("会话上下文超长，触发重建: role={} mode={:?}", self.role_name, self.mode);
+            // 按模式重建：event 超长压缩（LLM 总结归档）；role 从记忆重建（新建/重置共用 build_role_context）
+            match self.mode.as_ref() {
+                Mode::Event(_) => {
+                    let cfg = coordinator.config.context_config(self.agent_id.as_str(), self.role_name.as_str()).await;
+                    // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息（压缩基于当前 session）
+                    let messages = {
+                        let ctx = self.context.lock().await;
+                        let mut msgs = ctx.build();
+                        msgs.push(Message::User { content: Arc::new(cfg.compress_prompt.clone()) });
+                        msgs
+                    };
+                    // 2. 调会话模型总结（压缩不携带工具定义）
+                    let response = coordinator.call_provider_model(pm, &messages, &Vec::new()).await;
+                    let summary = if let Ok(model_resp) = response {
+                        model_resp.content
+                    } else {
+                        warn!("上下文压缩总结为空，保留原上下文");
+                        return;
+                    };
+                    // 3. 压缩完成后：归档当前上下文（含原系统消息）→ 清空缓存 → 重建压缩后上下文
+                    // （归档与清空连在一起，中间不隔压缩；压缩前 apply_pending_system 已处理系统切换）
+                    let new_messages = vec![
+                        Message::User { content: Arc::new(cfg.compress_prompt.clone()) },
+                        Message::Assistant { content: Arc::new(summary.to_string()), reasoning_content: None, tool_calls: None },
+                    ];
+                    let _ = self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
+                    info!("会话上下文已压缩: role={} mode={:?}", self.role_name.as_str(), self.mode.as_ref());
+                },
+                Mode::Role => {
+                    // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
+                    // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
+                    let new_messages = coordinator.build_context_from_memory_store(self.agent_id.clone(), self.role_name.clone()).await;
+                    // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
+                    let _ = self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
+                    info!("会话上下文已重置: role={} mode={:?}", self.role_name, self.mode);
+                }
+            }
+        }
+
+        // 2. tools 聚合（会话 context 配置的启用 station）
+        let tools = coordinator.tools_for_session(self.clone()).await;
+
+        // 3. 追加用户消息到该会话上下文（合批已打包为一条 user 消息，time/messenger 等不保留，只留文本）
+        // 内存 + 缓存一体追加（best-effort，失败仅丢缓存不阻塞流程）
+        let _ = self.context.lock().await.append(&[message]).await;
+
+        // 4. 多轮工具循环：LLM 返回 tool_calls 则执行工具并继续，直到返回最终回复（上限 MAX_TOOL_ROUNDS 防死循环）
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            let response = {
+                let ctx = self.context.lock().await;
+                let messages = ctx.build();
+                coordinator.call_provider_model(pm, &messages, &tools).await
+            };
+            match response {
+                Ok(model_resp) => {
+                    let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+                    let agent_id = self.agent_id.clone();
+                    let role_name = Arc::new(memory_role(self.role_name.as_str(), &self.mode));
+                    let src_content = if model_resp.thinking.is_empty() { model_resp.content.clone() } else { Arc::new(format!("<think>{}</think>{}", model_resp.thinking.as_str(), model_resp.content.as_str())) };
+                    let src_reasoning_content = if model_resp.reasoning_content.is_empty() { None } else { Some(model_resp.reasoning_content.clone()) };
+                    if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS {
+                        // 5. 追加 assistant(tool_calls)（内存 + 缓存一体）
+                        // reasoning_content 必须保留并随请求回传：DeepSeek 带 tools 的请求须完整回传否则 400；
+                        // Kimi 单轮工具循环（多步推理）须保留并回传全部思考内容；openai_body 自动序列化
+                        let _ = self.context.lock().await.append(&[Message::Assistant {
+                            content: src_content,
+                            reasoning_content: src_reasoning_content,
+                            tool_calls: Some(model_resp.tool_calls.clone()),
+                        }]).await;
+
+                        // 5. 逐个执行 tool call → 工具 key + channel 占位记录 + Tool 消息 + 写缓存 + 记忆写入
+                        // 5a/5f 占位与 5e 详情共用同一 key（经 channel 时间线关联），仿 think 流程
+                        for call in model_resp.tool_calls {
+                            // 5a. 工具调用 key：UUID（ToolCall/ToolResult 详情与 channel 占位同 key 关联）
+                            let tool_key = Arc::new(uuid::Uuid::new_v4().to_string());
+                            // 5b. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
+                            coordinator.write_memory_tool_call(ToolCallRequest {
+                                agent_id: agent_id.clone(),
+                                role_name: role_name.clone(),
+                                tool_name: call.name.clone(),
+                                tool_params: call.arguments.clone(),
+                                key: tool_key.clone(),
+                                time: now.clone(),
+                            }, &out_channel).await;
+                            // 5c. 执行工具
+                            let result = coordinator.execute_tool_call(self.clone(), call.clone()).await;
+                            let result_text = Arc::new(result.to_string());
+                            // 5d. Tool 消息（内存 + 缓存一体）
+                            let _ = self.context.lock().await.append(&[Message::Tool {
+                                tool_call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                content: result_text.clone()
+                            }]).await;
+                            // 5e. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
+                            coordinator.write_memory_tool_result(ToolResultRequest {
+                                agent_id: agent_id.clone(),
+                                role_name: role_name.clone(),
+                                tool_result: Arc::new(result),
+                                key: tool_key.clone(),
+                                time: now.clone(),
+                            }, &out_channel).await;
+                        }
+                        continue;  // 继续下一轮
+                    }
+
+                    // 6. 追加 assistant 回复（内存 + 缓存一体）
+                    // 超限兜底：rounds 超过 MAX_TOOL_ROUNDS 后模型仍返回 tool_calls 时 content 为空，
+                    // 用兜底文案作为回复（不把空内容发送给用户）
+                    // reasoning_content 保留并回传：带 tools 的请求须完整回传所有 assistant 的思考内容
+                    // （DeepSeek 400 规则 / Kimi 保留式思考）；同时思考内容在步骤 7 写 memory-store think 记录
+                    let reply_content = if model_resp.tool_calls.is_empty() {
+                        src_content
+                    } else {
+                        Arc::new("工具调用轮次已达上限，请稍后再试".to_string())
+                    };
+                    let _ = self.context.lock().await.append(&[Message::Assistant {
+                        content: reply_content,
+                        reasoning_content: src_reasoning_content,
+                        tool_calls: None,
+                    }]).await;
+
+                    // 7. 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
+                    // 身份来自 out_channel；任一有值才写，都 None 跳过
+                    if !model_resp.reasoning_content.is_empty() || !model_resp.thinking.is_empty() {
+                        coordinator.write_memory_think(ThinkRequest {
+                            agent_id: self.agent_id.clone(),
+                            role_name: Arc::new(memory_role(self.role_name.as_str(), &self.mode)),
+                            reasoning_content: model_resp.reasoning_content.clone(),
+                            thinking: model_resp.thinking.clone(),
+                            key: Arc::new(uuid::Uuid::new_v4().to_string()),
+                            time: now.clone(),
+                        }, &out_channel).await;
+                    }
+
+                    // 8. 发送回复到该会话的 out_channel
+                    coordinator.send_outgoing(&out_channel, model_resp.content).await;
+                    break;  //到回复文本时结束
+                }
+                Err(e) => {
+                    warn!("模型调用失败: {:?}", e);
+                    break;  //失败后结束
+                }
+            }
+        }
     }
 }
 
@@ -284,24 +469,13 @@ impl Drop for Session {
     }
 }
 
-// ===== 新合批（mpsc×2 + DelayQueue，spec 2026-08-07-channel-batching-mpsc-design；原 batching.rs 迁入，属 session 功能）=====
-
-/// 合批数据：直接用 IncomingMessageEvent（不新建 BatchItem）
-pub type BatchItem = Arc<IncomingMessageEvent>;
-
-/// 触发器消息：channel 发送触发时间；reset 发送强制
-pub enum Trigger {
-    /// 非强制：到期后按当前 deadline 判断（可能被后续消息延长而空转）
-    At(Instant),
-    /// 强制：立即 flush（上下文重置用）
-    Forced,
-}
+// ===== 新合批（mpsc×2 + DelayQueue，spec 2026-08-07-channel-batching-mpsc-design）=====
 
 /// 生产侧：Session 持有（直接值，可 Clone——字段均为 Clone/Arc 共享类型）；全无锁共享
 #[derive(Clone)]
 pub struct BatchProducer {
-    pub tx: mpsc::UnboundedSender<BatchItem>,
-    pub trigger_tx: mpsc::UnboundedSender<Trigger>,
+    pub tx: mpsc::UnboundedSender<Arc<IncomingMessageEvent>>,
+    pub trigger_tx: mpsc::UnboundedSender<Instant>,
     /// 编码基准：固定 Instant（所有 clone 共享）；u64 毫秒 = 相对此基准（参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
     anchor: Arc<Instant>,
     /// 截止时间（u64 毫秒，相对 anchor；0 = 无待 flush（原 None）哨兵）——Arc<AtomicU64> 无锁共享
@@ -333,9 +507,9 @@ impl BatchProducer {
 /// 持 notify（任务 select 等待会话销毁通知；与 Session.notify 同一 Arc，见 get_or_create 组装）
 /// 持 anchor/deadline（与 producer 共享同一 Arc：enqueue 侧 set_deadline 写、任务侧 try_flush 读/清，见 get_or_create 组装）
 pub struct BatchConsumer {
-    rx: mpsc::UnboundedReceiver<BatchItem>,
-    trigger_rx: mpsc::UnboundedReceiver<Trigger>,
-    delay: DelayQueue<Trigger>,
+    rx: mpsc::UnboundedReceiver<Arc<IncomingMessageEvent>>,
+    trigger_rx: mpsc::UnboundedReceiver<Instant>,
+    delay: DelayQueue<Instant>,
     session: Weak<Session>,
     notify: Arc<Notify>,
     /// 编码基准（与 producer 共享同一 Arc<Instant>；try_flush 判定用，参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
@@ -358,12 +532,8 @@ impl BatchConsumer {
                 t = self.trigger_rx.recv() => {
                     match t {
                         // 按剩余时长插入（DelayQueue::insert 收 Duration；at 为 std::time::Instant）
-                        Some(Trigger::At(at)) => {
-                            self.delay.insert(Trigger::At(at), at.saturating_duration_since(Instant::now()));
-                        }
-                        // 强制：立即到期
-                        Some(Trigger::Forced) => {
-                            self.delay.insert(Trigger::Forced, Duration::ZERO);
+                        Some(at) => {
+                            self.delay.insert(at, at.saturating_duration_since(Instant::now()));
                         }
                         None => break,                      // trigger channel 关闭
                     }
@@ -376,10 +546,7 @@ impl BatchConsumer {
                 // 分支是否就绪无关，故 delay 分支不会被饿死，也不会错过已插入的数据。
                 item = self.delay.next(), if !self.delay.is_empty() => {
                     match item {
-                        Some(expired) => match expired.get_ref() {
-                            Trigger::Forced => self.try_flush(true).await,
-                            Trigger::At(_) => self.try_flush(false).await,
-                        },
+                        Some(_) => self.try_flush().await,
                         None => break,                      // 仅防御（队列非空时 poll_next 不返回 None）
                     }
                 }
@@ -387,12 +554,12 @@ impl BatchConsumer {
         }
     }
 
-    pub async fn try_flush(&mut self, force: bool) {
+    pub async fn try_flush(&mut self) {
         // 触发判定（内联 deadline_passed：0 = 无待 flush → false；now_millis = 相对 anchor 的 u64 毫秒）
         let deadline = self.deadline.load(Ordering::Relaxed);
         let now_millis = Instant::now().duration_since(*self.anchor).as_millis() as u64;
-        if !(force || (deadline != 0 && now_millis >= deadline)) {
-            return;   // 非强制且未超 deadline：空转（等下一个到期触发）
+        if deadline == 0 || now_millis < deadline {
+            return;   // 未设deadline或未超 deadline：空转（等下一个到期触发）
         }
         // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
         // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
@@ -414,15 +581,12 @@ impl BatchConsumer {
             return;
         };
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
-        let content = match pack_batch(&items) {
-            Message::User { content } => (*content).clone(),
-            _ => unreachable!("pack_batch 恒返回 User"),
-        };
-        session.accept_batch(content).await;
+        let content = pack_batch(&items);
+        session.run_agentic_loop(content).await;
     }
 }
 
-/// 会话管理器：汇总所有绑定 channel 的 (agent_name, role_name, mode) 去重维护会话集合
+/// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_name, mode) 去重维护会话集合
 /// （session_key 仅用于去重；agent_id 解析结果由各 channel 运行态绑定保存，不在此提取）
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
@@ -438,31 +602,26 @@ impl SessionManager {
         })
     }
 
-    /// 按 key 取会话
-    pub fn get(&self, key: &SessionKey) -> Option<Arc<Session>> {
-        self.sessions.get(key).map(|e| e.value().clone())
-    }
-
     /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；
     /// 返回 (会话, 是否新建)
     /// 创建时依赖序组装（内联 new_producer/BatchConsumer::new）：notify → 2 mpsc → producer → session → consumer → spawn
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
     /// 双重锁定：先 get 快速路径（命中直接返回），未命中再走 entry API 原子创建（并发下仅一个创建成功）
+
     pub fn get_or_create(
         &self,
         key: &SessionKey,
         model: Option<ProviderModel>,
-        agent_id: Arc<String>,
     ) -> (Arc<Session>, bool) {
-        if let Some(s) = self.get(key) {
-            return (s, false);
+        if let Some(s) = self.sessions.get(key) {
+            return (s.clone(), false);
         }
         match self.sessions.entry(key.clone()) {
             dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
             dashmap::mapref::entry::Entry::Vacant(e) => {
                 // 创建部分抽出（create_session）：依赖序组装 + spawn 触发任务
-                let session = Self::create_session(key, model, agent_id, &self.data_dir);
+                let session = Self::create_session(key, model, &self.data_dir);
                 e.insert(session.clone());
                 (session, true)
             }
@@ -476,7 +635,6 @@ impl SessionManager {
     fn create_session(
         key: &SessionKey,
         model: Option<ProviderModel>,
-        agent_id: Arc<String>,
         data_dir: &str,
     ) -> Arc<Session> {
         // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
@@ -494,13 +652,12 @@ impl SessionManager {
         };
         // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
         let session = Arc::new(Session {
-            agent_name: Arc::new(key.agent_name.clone()),
+            agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new(data_dir, key)),
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
-            agent_id,
             notify: notify.clone(),
         });
         // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
@@ -533,7 +690,7 @@ mod tests {
     use kissbot_api::message::Content;
 
     fn key(agent: &str, role: &str) -> SessionKey {
-        SessionKey { agent_name: agent.into(), role_name: role.into(), mode: Mode::Role }
+        SessionKey { agent_id: agent.into(), role_name: role.into(), mode: Mode::Role }
     }
 
     fn ev(name: &str, text: &str) -> Arc<IncomingMessageEvent> {
@@ -557,7 +714,7 @@ mod tests {
     /// 与 get_or_create 内联构造同构：2 mpsc → producer → session → consumer
     fn test_pair() -> (BatchProducer, BatchConsumer, Arc<Session>) {
         let dir = tempfile::tempdir().unwrap();
-        let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
+        let key = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
         let notify = Arc::new(Notify::new());
         let (tx, rx) = mpsc::unbounded_channel();
         let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
@@ -569,13 +726,12 @@ mod tests {
         };
         // 3. 用 producer 构造 session（字面量，与 create_session 同构）
         let session = Arc::new(Session {
-            agent_name: Arc::new(key.agent_name.clone()),
+            agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
             model: ArcSwap::from_pointee(None),
-            agent_id: Arc::new("aid".into()),
             notify: notify.clone(),
         });
         let consumer = BatchConsumer {
@@ -599,13 +755,13 @@ mod tests {
         // 过去 deadline：anchor 编码下饱和为 1ms，sleep 保证 now_millis > 1（判定必已过）
         producer.set_deadline(Instant::now() - Duration::from_secs(1));
         tokio::time::sleep(Duration::from_millis(10)).await;
-        consumer.try_flush(false).await;
+        consumer.try_flush().await;
         assert!(consumer.rx.try_recv().is_err(), "已 drain");
         // 未超 deadline：不 drain
         let (p2, mut c2, _) = test_pair();
         p2.tx.send(ev("u1", "x")).unwrap();
         p2.set_deadline(Instant::now() + Duration::from_secs(10));
-        c2.try_flush(false).await;
+        c2.try_flush().await;
         assert!(c2.rx.try_recv().is_ok(), "未超时不应 drain");
     }
 
@@ -618,9 +774,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         session.notify.notify_one();
         // 任务退出后 trigger_rx 已 drop → channel 关闭 → send 返回 Err
-        let deadline = Instant::now() + Duration::from_millis(500);
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(500);
         loop {
-            if producer.trigger_tx.send(Trigger::Forced).is_err() {
+            if producer.trigger_tx.send(now).is_err() {
                 break;
             }
             assert!(Instant::now() < deadline, "任务应在 notify 后退出");
@@ -639,37 +796,22 @@ mod tests {
         let mgr = mgr();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
+        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()));
         assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()), Arc::new("a1".into()));
+        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()));
         assert!(!created2, "同 key 复用");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
-        let k_event = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model), Arc::new("a1".into()));
+        let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model));
         assert!(created3, "事件模式是独立会话");
-    }
-
-    #[tokio::test]
-    async fn retain_prunes_unbound() {
-        let mgr = mgr();
-        let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
-        let k1 = key("a1", "r1");
-        let k2 = key("a2", "r2");
-        mgr.get_or_create(&k1, Some(model.clone()), Arc::new("a1".into()));
-        mgr.get_or_create(&k2, Some(model), Arc::new("a2".into()));
-        let mut keep = HashSet::new();
-        keep.insert(k1.clone());
-        mgr.retain(&keep);
-        assert!(mgr.get(&k1).is_some(), "仍在绑定集合的会话保留");
-        assert!(mgr.get(&k2).is_none(), "无绑定会话销毁");
     }
 
     #[tokio::test]
     async fn get_or_create_with_none_model() {
         let mgr = mgr();
-        let key = SessionKey { agent_name: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let (s, created) = mgr.get_or_create(&key, None, Arc::new("a".into()));
+        let key = SessionKey { agent_id: "a".into(), role_name: "r".into(), mode: Mode::Role };
+        let (s, created) = mgr.get_or_create(&key, None);
         assert!(created);
         assert!(s.model.load().is_none());
     }
@@ -677,9 +819,8 @@ mod tests {
     #[tokio::test]
     async fn session_copies_role_name_and_mode_from_key() {
         let dir = tempfile::tempdir().unwrap();
-        let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let key = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
         let model = Some(ProviderModel { provider: "p".into(), model: "m".into() });
-        let agent_id = Arc::new("uuid".to_string());
         let notify = Arc::new(Notify::new());
         // 与 get_or_create 内联构造同构：2 mpsc → producer（测试丢弃接收端）
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -692,13 +833,12 @@ mod tests {
         };
         // 3. 用 producer 构造 session（字面量，与 create_session 同构）
         let session = Session {
-            agent_name: Arc::new(key.agent_name.clone()),
+            agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
             model: ArcSwap::from_pointee(model),
-            agent_id,
             notify,
         };
         assert_eq!(session.role_name.as_str(), "r1");
@@ -708,11 +848,11 @@ mod tests {
     // ===== 会话上下文（内存 + 缓存 + 历史一体）测试 =====
 
     fn cache_key() -> SessionKey {
-        SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) }
+        SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) }
     }
 
     fn role_key() -> SessionKey {
-        SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role }
+        SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role }
     }
 
     fn sample_msgs() -> Vec<Message> {
@@ -780,7 +920,7 @@ mod tests {
         assert!(matches!(&back[2], Message::Tool { .. }), "tool 响应保留");
 
         // 用例 B：仅一条悬挂 assistant(tool_calls) → 恢复为空
-        let k_b = SessionKey { agent_name: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
+        let k_b = SessionKey { agent_id: "a1".into(), role_name: "r2".into(), mode: Mode::Role };
         let mut ctx_b = SessionContext::new(dir.path().to_str().unwrap(), &k_b);
         ctx_b.append(&[Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: Some(vec![]) }]).await.unwrap();
         let mut rec_b = SessionContext::new(dir.path().to_str().unwrap(), &k_b);
@@ -788,7 +928,7 @@ mod tests {
         assert!(rec_b.build().is_empty(), "仅悬挂 assistant 时恢复为空");
 
         // 用例 C：开头的 Tool 残留（恢复起点之前的半条轮次）被丢弃
-        let k_c = SessionKey { agent_name: "a1".into(), role_name: "r3".into(), mode: Mode::Role };
+        let k_c = SessionKey { agent_id: "a1".into(), role_name: "r3".into(), mode: Mode::Role };
         let mut ctx_c = SessionContext::new(dir.path().to_str().unwrap(), &k_c);
         ctx_c.append(&[
             Message::Tool { tool_call_id: Arc::new("c9".into()), name: Arc::new("read".into()), content: Arc::new("残留".into()) },
