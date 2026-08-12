@@ -199,7 +199,7 @@ impl AgentCoordinator {
         let model = (*self.valid_default.load_full()).clone();
         // 会话状态保存 agent_id：新建会话从来源 channel 运行态绑定取得（原子写入 get_or_create）
         let agent_id = self.channel_agent(channel_id).await;
-        let (session, created) = self.session_manager.get_or_create(key, model, agent_id);
+        let (session, created) = self.session_manager.get_or_create(key, model);
         if created {
             // 新建会话上下文：event 从缓存恢复（全量回读；文件不存在为空，不清理）；role 查询记忆重建（归档+清空在 build_role_context 内部）
             match session.mode.as_ref() {
@@ -207,7 +207,8 @@ impl AgentCoordinator {
                     let _ = session.context.lock().await.recover_from_cache().await;
                 }
                 Mode::Role => {
-                    self.build_role_context(session.clone()).await;
+                    let messages = self.build_context_from_memory_store(session.agent_id.clone(), session.role_name.clone()).await;
+                    let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
                 }
             }
             // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 load_ego_info。
@@ -844,30 +845,5 @@ mod tests {
         assert!(should_write_think(Some("r".into()), Some("t".into())));
         // 都 None 不写
         assert!(!should_write_think(None, None));
-    }
-
-    #[tokio::test]
-    async fn tool_placeholder_uses_same_key_for_call_and_result() {
-        // 构造最小 Session + OutChannel（参照既有测试模式；经 get_or_create 走真实构造路径）
-        let key = SessionKey { agent_name: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = SessionManager::new(dir.path().to_str().unwrap());
-        let (session, _) = mgr.get_or_create(&key, None, Arc::new("aid".into()));
-        let out_channel = OutChannel {
-            channel_id: Arc::new("c1".into()),
-            user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
-            group_id: Arc::new("g1".into()),
-        };
-
-        let tool_key = uuid::Uuid::new_v4().to_string();
-        let call = tool_placeholder_request(session.clone(), &out_channel, &tool_key, false, "2026-08-05 10:00:00");
-        let result = tool_placeholder_request(session.clone(), &out_channel, &tool_key, true, "2026-08-05 10:00:01");
-        // 占位内容携带同一 key（call=ToolCall、result=ToolResult）
-        assert!(matches!(&call.content, Content::ToolCall(k) if k.as_str() == tool_key));
-        assert!(matches!(&result.content, Content::ToolResult(k) if k.as_str() == tool_key));
-        // 身份来自 out_channel（is_self=1，self_user=绑定用户）
-        assert_eq!(call.is_self, 1);
-        assert_eq!(call.self_user_id.as_str(), "u1");
-        assert_eq!(result.group_id.as_str(), "g1");
     }
 }

@@ -269,19 +269,6 @@ impl Session {
         let _ = self.batch_producer.trigger_tx.send(at);
     }
 
-    pub async fn reset_context(&self, new_messages: Vec<Message>) -> Result<()> {
-        self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await
-    }
-
-    pub async fn rebuild_context(&self) {
-        let coordinator = AgentCoordinator::instance();
-        // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
-        // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
-        let new_messages = coordinator.build_context_from_memory_store(self.agent_id.clone(), self.role_name.clone()).await;
-        // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
-        let _ = self.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
-    }
-
     pub(crate) async fn run_agentic_loop(self: Arc<Self>, message: Message) {
         let coordinator = AgentCoordinator::instance();
 
