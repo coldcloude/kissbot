@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
         // 落盘验证（ConfigManager data_dir = <tempdir>/data）
-        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("data/nexus.json")).unwrap()).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(ConfigManager::get().data_dir()).join("nexus.json")).unwrap()).unwrap();
         assert!(saved["providers"].is_object());
         assert_eq!(saved["default_model"]["model"], "deepseek-4-flash");
     }
