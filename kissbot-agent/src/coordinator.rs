@@ -65,7 +65,7 @@ impl AgentCoordinator {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
-        let model_client = ModelClient::new(config.clone());
+        let model_client = ModelClient::new();
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
