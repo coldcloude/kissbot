@@ -74,7 +74,7 @@ impl AgentCoordinator {
             memory_store_client,
             session_manager,
             model_client: Arc::new(model_client),
-            channel_manager: Arc::new(ChannelManager::new(config.clone())),
+            channel_manager: Arc::new(ChannelManager::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
             station_runtimes: Arc::new(DashMap::new()),

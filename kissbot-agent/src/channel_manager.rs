@@ -92,21 +92,18 @@ impl Channel {
     }
 }
 
-/// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）、通道配置与断线通知；
+/// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）与断线通知；
 /// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_all/send）
 /// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_all 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 pub struct ChannelManager {
-    /// 通道配置（连接/重连实时读 bind_users，/bind 回写后重连即生效）
-    config: Arc<ConfigManager>,
     channels: DashMap<String, Arc<Channel>>,
     /// 断线通知：channel_id → Notify，closed() 回调通知重连循环
     disconnect_notify: DashMap<String, Arc<tokio::sync::Notify>>,
 }
 
 impl ChannelManager {
-    pub fn new(config: Arc<ConfigManager>) -> Self {
+    pub fn new() -> Self {
         Self {
-            config,
             channels: DashMap::new(),
             disconnect_notify: DashMap::new(),
         }
@@ -159,13 +156,13 @@ impl ChannelManager {
     /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
     /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
     pub async fn connect_all(self: Arc<Self>) {
-        let reconnect_secs = self.config.ws_reconnect_interval_secs();
+        let reconnect_secs = ConfigManager::get().ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
         // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 coordinator 的 Arc<ChannelManager> 保活
         let terminal: Arc<dyn Terminal> = self.clone();
         // 遍历 NexusRepo 中所有 channel，enabled 才连接
-        for (_, ch) in self.config.channels().await {
+        for (_, ch) in ConfigManager::get().channels().await {
             if !ch.enabled {
                 continue; // 未启用：不连接
             }
@@ -182,8 +179,6 @@ impl ChannelManager {
 
             let client_clone = client.clone();
             let api_key = api_key.clone();
-            // 重连循环内实时读取绑定身份（/bind 回写后重连即生效），需持有 config 引用
-            let config = self.config.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -191,7 +186,7 @@ impl ChannelManager {
                         Ok(()) => {
                             info!("已连接 channel: {}", channel_id);
                             // 绑定身份实时读取（bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let bind_users = config.channel(&channel_id).await
+                            let bind_users = ConfigManager::get().channel(&channel_id).await
                                 .map(|c| c.bind_users.clone());
                             if let Some(bus) = bind_users {
                                 for bu in bus {
