@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use tracing::info;
 
 mod channel_manager;
@@ -25,21 +23,18 @@ async fn main() {
 
     info!("kissbot-agent 启动");
 
-    // 1. 加载配置（KISSBOT_CONFIG agent 段 → AgentConfig，按 data_dir 引导 NexusRepo/StationRepo）
-    let config = Arc::new(
-        config_manager::ConfigManager::new().await
-            .expect("初始化配置失败")
-    );
+    // 1. 加载配置并注册全局单例（KISSBOT_CONFIG agent 段 → AgentConfig，按 data_dir 引导 NexusRepo/StationRepo）
+    config_manager::ConfigManager::new().await
+        .expect("初始化配置失败");
 
     // 2. 初始化 Coordinator（装配 + 注册单例；连接与启动动作在 run() 中执行）
     coordinator::AgentCoordinator::new()
         .await
         .expect("初始化 Coordinator 失败");
 
-    // 3. 启动管理 API 服务器（后台，监听 config 的 mgmt_host:mgmt_port）
-    let mgr_config = config.clone();
+    // 3. 启动管理 API 服务器（后台，监听 ConfigManager 单例的 mgmt_host:mgmt_port）
     tokio::spawn(async move {
-        let server = http_server::HttpServer::new(mgr_config);
+        let server = http_server::HttpServer::new();
         if let Err(e) = server.start().await {
             tracing::error!("管理 API 服务器退出: {:?}", e);
         }

@@ -22,12 +22,11 @@ impl CommandRouter {
 
     /// 检查发送者是否为该来源 channel 的管理权限用户（per-channel，避免跨 channel 提权）
     pub async fn check_admin(
-        config: &ConfigManager,
         channel_id: &str,
         messenger_id: &str,
         user_id: &str,
     ) -> bool {
-        let admins = config.channel_admins(channel_id).await;
+        let admins = ConfigManager::get().channel_admins(channel_id).await;
         admins.iter().any(|a| a.messenger_id == messenger_id && a.user_id == user_id)
     }
 
@@ -170,13 +169,12 @@ impl CommandRouter {
     /// coordinator 一律从单例取（不传参数）
     pub async fn execute(
         command: &AdminCommand,
-        config: &ConfigManager,
         channel_id: &str,
     ) -> Result<String> {
         let coordinator = AgentCoordinator::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                config.update_channel(channel_id, |c| {
+                ConfigManager::get().update_channel(channel_id, |c| {
                     // 追加去重：已存在则幂等忽略
                     let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
                     if !c.bind_users.iter().any(|b| b == &cu) {
@@ -186,7 +184,7 @@ impl CommandRouter {
                 Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unbind { messenger_id, user_id } => {
-                config.update_channel(channel_id, |c| {
+                ConfigManager::get().update_channel(channel_id, |c| {
                     // 移除指定 ChannelUser
                     c.bind_users.retain(|b| !(b.messenger_id == *messenger_id && b.user_id == *user_id));
                     // 移除的是 outgoing 引用身份则清空 outgoing（避免悬空引用）
@@ -199,14 +197,14 @@ impl CommandRouter {
                 Ok(format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
-                config.add_admin(channel_id, &ChannelUser {
+                ConfigManager::get().add_admin(channel_id, &ChannelUser {
                     messenger_id: messenger_id.clone(),
                     user_id: user_id.clone(),
                 }).await?;
                 Ok(format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
-                config.remove_admin(channel_id, messenger_id, user_id).await?;
+                ConfigManager::get().remove_admin(channel_id, messenger_id, user_id).await?;
                 Ok(format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id))
             }
             AdminCommand::SetAgent { agent_id, role } => {
@@ -250,7 +248,7 @@ impl CommandRouter {
                 match params {
                     Some(p) => {
                         // 1. 校验 ChannelUser 已绑定
-                        let channels = config.channels().await;
+                        let channels = ConfigManager::get().channels().await;
                         let src = channels.iter().find(|(id, _)| id == channel_id).map(|(_, c)| c.clone())
                             .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
                         let bound = src.bind_users.iter()
@@ -263,12 +261,12 @@ impl CommandRouter {
                         for (cid, c) in channels.iter() {
                             if cid != channel_id && c.agent_id == src.agent_id && c.role_name == src.role_name {
                                 if c.outgoing.is_some() {
-                                    config.update_channel(cid, |cc| cc.outgoing = None).await?;
+                                    ConfigManager::get().update_channel(cid, |cc| cc.outgoing = None).await?;
                                 }
                             }
                         }
                         // 3. 设来源 channel 的 outgoing
-                        config.update_channel(channel_id, |c| {
+                        ConfigManager::get().update_channel(channel_id, |c| {
                             c.outgoing = Some(OutChannelConfig {
                                 messenger_id: Arc::new(p.messenger_id.clone()),
                                 user_id: Arc::new(p.user_id.clone()),
@@ -278,7 +276,7 @@ impl CommandRouter {
                         Ok(format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id))
                     }
                     None => {
-                        config.update_channel(channel_id, |c| c.outgoing = None).await?;
+                        ConfigManager::get().update_channel(channel_id, |c| c.outgoing = None).await?;
                         Ok("✅ 已取消发送通道（只存不回复）".to_string())
                     }
                 }
@@ -287,7 +285,7 @@ impl CommandRouter {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
                 coordinator.set_session_model(channel_id, pm.clone()).await?;
                 if *set_default {
-                    config.set_default_model(pm.clone()).await?;
+                    ConfigManager::get().set_default_model(pm.clone()).await?;
                 }
                 let mut reply = format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model);
                 if *set_default {

@@ -17,8 +17,6 @@ use crate::types::Result;
 
 /// 管理 REST API 服务器（axum，X-Api-Key 鉴权 layer，security.admin_api_key）
 pub struct HttpServer {
-    #[allow(dead_code)]
-    config: Arc<ConfigManager>,
     admin_api_key: String,
 }
 
@@ -50,15 +48,15 @@ struct RemoveAdminRequest {
 
 impl HttpServer {
     /// 从 kissbot_security 全局配置读取 admin_api_key（与 channel-web / memory-ego 一致）；
-    /// 监听地址取 config 的 mgmt_host / mgmt_port
-    pub fn new(config: Arc<ConfigManager>) -> Self {
+    /// 监听地址取 ConfigManager 单例的 mgmt_host / mgmt_port
+    pub fn new() -> Self {
         let admin_api_key = kissbot_security::SecurityConfig::get().admin_api_key.to_string();
-        Self { config, admin_api_key }
+        Self { admin_api_key }
     }
 
     /// 构建 Router：认证统一走 AuthLayer（kissbot-security，与 channel-web / memory-ego 同款）
     fn build_router(&self) -> Router {
-        let config = self.config.clone();
+        let config = ConfigManager::get();
         let admin_api_key = self.admin_api_key.clone();
         Router::new()
             .route("/config", get(get_config))
@@ -75,7 +73,7 @@ impl HttpServer {
 
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
     pub async fn start(&self) -> Result<()> {
-        let addr = format!("{}:{}", self.config.mgmt_host(), self.config.mgmt_port());
+        let addr = format!("{}:{}", ConfigManager::get().mgmt_host(), ConfigManager::get().mgmt_port());
         let listener = TcpListener::bind(&addr).await
             .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
         info!("管理 API 服务器启动: {}", addr);
@@ -87,7 +85,7 @@ impl HttpServer {
 
 #[derive(Clone)]
 struct AppState {
-    config: Arc<ConfigManager>,
+    config: &'static ConfigManager,
 }
 
 fn ok<T: serde::Serialize>(data: T) -> (StatusCode, Json<serde_json::Value>) {
@@ -187,10 +185,10 @@ mod tests {
     }
 
     // ConfigManager 字段私有，无法在模块外直接构造；
-    // 通过 ConfigManager::new() 加载临时 KISSBOT_CONFIG 构造（data_dir 指向 tempdir）。
-    // 注意：kissbot-config 是进程级 OnceLock 单例，本测试会触发它；coordinator 的
-    // verify_agent_exists 保留分支不触配置，无单例冲突。
-    async fn test_manager(dir: &tempfile::TempDir) -> Arc<ConfigManager> {
+    // 通过 ConfigManager::new() 加载临时 KISSBOT_CONFIG 构造（data_dir 指向 tempdir，完成即注册单例）。
+    // 注意：kissbot-config 是进程级 OnceLock 单例，本测试会触发它；ConfigManager 单例在测试进程内注册一次，
+    // 之后 get() 取同一实例。
+    async fn test_manager(dir: &tempfile::TempDir) {
         let data_dir = dir.path().join("data");
         let cfg_path = dir.path().join("config.json");
         let cfg_json = format!(
@@ -200,7 +198,7 @@ mod tests {
         std::fs::write(&cfg_path, cfg_json).unwrap();
         // 2024 edition：设置环境变量需要 unsafe
         unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-        Arc::new(ConfigManager::new().await.unwrap())
+        ConfigManager::new().await.unwrap();
     }
 
     async fn send(app: axum::Router, method: &str, uri: &str, key: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
@@ -223,8 +221,8 @@ mod tests {
     #[tokio::test]
     async fn config_endpoints_auth_and_crud() {
         let dir = tempdir().unwrap();
-        let manager = test_manager(&dir).await;
-        let server = HttpServer::new(manager.clone());
+        test_manager(&dir).await;
+        let server = HttpServer::new();
         let app = server.build_router();
 
         // 无 key → 401（AuthLayer 拦截）
@@ -256,7 +254,7 @@ mod tests {
             Some(serde_json::json!({ "provider": "deepseek", "model": "deepseek-4-flash" }))).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(manager.default_model().await.model, "deepseek-4-flash");
+        assert_eq!(ConfigManager::get().default_model().await.model, "deepseek-4-flash");
 
         // POST /config/providers/remove
         let (status, body) = send(app.clone(), "POST", "/config/providers/remove", "admin-key-123",

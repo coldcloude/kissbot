@@ -433,7 +433,7 @@ impl AgentCoordinator {
 
         // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
-            if CommandRouter::check_admin(ConfigManager::get(), channel_id, &messenger_id, &user_id).await {
+            if CommandRouter::check_admin(channel_id, &messenger_id, &user_id).await {
                 self.handle_admin_command(channel_id, event, &content_text).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
@@ -465,7 +465,7 @@ impl AgentCoordinator {
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, ConfigManager::get(), channel_id).await {
+                match CommandRouter::execute(&cmd, channel_id).await {
                     Ok(reply) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
