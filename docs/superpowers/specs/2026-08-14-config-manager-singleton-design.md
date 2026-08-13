@@ -16,21 +16,21 @@
 
 | # | 决策 | 说明 |
 |---|------|------|
-| 1 | 单例模式：std `OnceLock` + 显式 `init()` | `pub async fn init() -> Result<()>`（内部 OnceLock::set）；`pub fn get() -> &'static Self`（未初始化 panic）。与 `AgentCoordinator` 同一模式（async 构建无法惰性 `get_or_init`，显式 init 让失败在启动早期明确上报） |
-| 2 | `ConfigManager::new()` 私有化 | 仅供 `init()` 内部调用；测试同样走 `init()` |
-| 3 | 访问函数统一改名 `get()` | `AgentCoordinator::instance()` → `AgentCoordinator::get()`；新增 `ConfigManager::get()`；与 `ApiConfig::get()` / `SecurityConfig::get()` 命名一致 |
-| 4 | 各结构去除 config 引用 | Coordinator / ChannelManager / ModelClient / HttpServer 删字段，command_router 删参数，一律 `ConfigManager::get()` |
-| 5 | 装配顺序：init → coordinator → http_server | `main.rs` 第一步 `ConfigManager::init().await.expect(...)`，随后 `AgentCoordinator::new()`（无参）、`HttpServer::new()`（无参）均从单例取 |
-| 6 | 测试走单例 | `http_server::tests::test_manager` 改为 `ConfigManager::init()`（KISSBOT_CONFIG 指向 tempdir）；进程内 ConfigManager 全局唯一 |
-| 7 | 内部状态与写路径不变 | `RwLock<NexusRepo>`、update/add/remove 回写、落盘、listeners 机制全部不动 |
+| 1 | 单例模式：std `OnceLock`，`new()` 完成时注册 | `pub async fn new() -> Result<()>`（加载配置后内部 OnceLock::set，不返回实例）；`pub fn get() -> &'static Self`（未初始化 panic）。与 `AgentCoordinator` 同一模式（async 构建，new 末尾注册；无独立 init） |
+| 2 | 访问函数统一改名 `get()` | `AgentCoordinator::instance()` → `AgentCoordinator::get()`；新增 `ConfigManager::get()`；与 `ApiConfig::get()` / `SecurityConfig::get()` 命名一致 |
+| 3 | 各结构去除 config 引用 | Coordinator / ChannelManager / ModelClient / HttpServer 删字段，command_router 删参数，一律 `ConfigManager::get()` |
+| 4 | 装配顺序：new → coordinator → http_server | `main.rs` 第一步 `ConfigManager::new().await.expect(...)`（完成即注册），随后 `AgentCoordinator::new()`（无参）、`HttpServer::new()`（无参）均从单例取 |
+| 5 | 测试走单例 | `http_server::tests::test_manager` 仍调 `ConfigManager::new()`（tempdir data_dir，完成即注册）；进程内 ConfigManager 全局唯一 |
+| 6 | 内部状态与写路径不变 | `RwLock<NexusRepo>`、update/add/remove 回写、落盘、listeners 机制全部不动 |
 
 ## 3. 改动清单
 
 ### 3.1 config_manager.rs
 
 - 新增 `static INSTANCE: OnceLock<ConfigManager>`
-- `pub async fn new()` → 私有 `async fn new()`；新增 `pub async fn init() -> Result<()>`、`pub fn get() -> &'static ConfigManager`
-- 注释更新：全局单例说明（与 AgentCoordinator 同模式）
+- `pub async fn new() -> Result<Self>` → `pub async fn new() -> Result<()>`：加载配置后末尾 `let _ = INSTANCE.set(manager); Ok(())`（不返回实例；重复调用幂等，第二次 set 被忽略，与 AgentCoordinator 一致）
+- 新增 `pub fn get() -> &'static ConfigManager`
+- 注释更新：全局单例说明（与 AgentCoordinator 同模式，new 完成时注册）
 
 ### 3.2 coordinator.rs
 
@@ -40,7 +40,7 @@
 
 ### 3.3 main.rs
 
-- `ConfigManager::new()` → `ConfigManager::init().await.expect(...)`
+- `ConfigManager::new()` 调用不变（返回 Result<()>，完成即注册单例）
 - `AgentCoordinator::new(config.clone())` → `AgentCoordinator::new()`
 - `HttpServer::new(mgr_config)` → `HttpServer::new()`
 - `AgentCoordinator::instance().run()` → `AgentCoordinator::get().run()`
@@ -60,7 +60,7 @@
 
 - 删字段 `config: Arc<ConfigManager>`、`new()` 去参数
 - 各 endpoint 内改 `ConfigManager::get()`
-- 测试 `test_manager` 改为 `ConfigManager::init()`（tempdir data_dir）；注释同步（单例 init 一次）
+- 测试 `test_manager` 仍调 `ConfigManager::new()`（tempdir data_dir，完成即注册单例），注释同步
 
 ### 3.7 command_router.rs
 
@@ -75,8 +75,8 @@
 
 - **读**：任意模块 `ConfigManager::get().channels()` 等，行为不变（配置永远最新）
 - **写**：管理命令回写 → 内部 RwLock → 落盘，不变；listeners 机制保留（现无注册点）
-- **失败**：`init()` 失败在 main 里 `expect` 退出；未初始化调 `get()` panic（与 coordinator 一致）
-- **测试**：http_server 测试 init 一次（tempdir）；channel_manager / command_router 测试不依赖 ConfigManager，不受影响；coordinator 测试（verify_agent_exists 保留分支）不触配置，不受影响
+- **失败**：`new()` 失败在 main 里 `expect` 退出；未初始化调 `get()` panic（与 coordinator 一致）
+- **测试**：http_server 测试调 `new()` 一次（tempdir，完成即注册）；channel_manager / command_router 测试不依赖 ConfigManager，不受影响；coordinator 测试（verify_agent_exists 保留分支）不触配置，不受影响
 
 ## 5. 已知取舍
 
