@@ -8,7 +8,7 @@ use crate::coordinator::{AgentCoordinator, RESERVED_ROLE_NAME};
 /// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode；异常回退保留 agent + 角色模式）
 /// 命令构造新三元组用（agent/role/mode 变更统一走 change_channel_key）
 async fn channel_current_key(channel_id: &str) -> SessionKey {
-    AgentCoordinator::instance().channel_session_key(channel_id).await
+    AgentCoordinator::get().channel_session_key(channel_id).await
         .unwrap_or_else(|| SessionKey { agent_id: RESERVED_AGENT_ID.to_string(), role_name: String::new(), mode: Mode::Role })
 }
 
@@ -173,7 +173,7 @@ impl CommandRouter {
         config: &ConfigManager,
         channel_id: &str,
     ) -> Result<String> {
-        let coordinator = AgentCoordinator::instance();
+        let coordinator = AgentCoordinator::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 config.update_channel(channel_id, |c| {

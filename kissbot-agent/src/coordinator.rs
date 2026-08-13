@@ -34,12 +34,11 @@ enum ConfigChange {
     ApplyKey { channel_id: String, new_key: SessionKey, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
-/// AgentCoordinator 全局单例（进程内唯一；new() 完成时注册，此后 instance() 可用）。
+/// AgentCoordinator 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 coordinator 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
 static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
 
 pub struct AgentCoordinator {
-    pub config: Arc<ConfigManager>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
     model_client: Arc<ModelClient>,
@@ -55,13 +54,12 @@ pub struct AgentCoordinator {
 
 impl AgentCoordinator {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
-    pub fn instance() -> &'static AgentCoordinator {
+    pub fn get() -> &'static AgentCoordinator {
         SINGLETON.get().expect("AgentCoordinator 未初始化")
     }
 
-    pub async fn new(
-        config: Arc<ConfigManager>,
-    ) -> Result<()> {
+    pub async fn new() -> Result<()> {
+        let config = ConfigManager::get();
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
@@ -70,7 +68,6 @@ impl AgentCoordinator {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
 
         let coordinator = Self {
-            config: config.clone(),
             memory_store_client,
             session_manager,
             model_client: Arc::new(model_client),
@@ -107,16 +104,16 @@ impl AgentCoordinator {
 
         // 启动动作（绑定运行态 agent / 初始化会话 / 连接 channel）统一在 run() 中执行
 
-        // 注册全局单例（此后 instance() 可用；run() 中启动动作与连接回调均晚于此）
+        // 注册全局单例（此后 get() 可用；run() 中启动动作与连接回调均晚于此）
         let _ = SINGLETON.set(coordinator);
 
         // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
-        // spawn 晚于 SINGLETON.set，任务内 instance() 必然就绪
+        // spawn 晚于 SINGLETON.set，任务内 get() 必然就绪
         tokio::spawn(async move {
             while let Some(change) = command_rx.recv().await {
                 match change {
                     ConfigChange::ApplyKey { channel_id, new_key, done } => {
-                        let coordinator = AgentCoordinator::instance();
+                        let coordinator = AgentCoordinator::get();
                         let rst = coordinator.apply_channel_key(&channel_id, &new_key).await;
                         let _ = done.send(rst);
                     }
@@ -187,7 +184,7 @@ impl AgentCoordinator {
             // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 load_ego_info。
             // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
             if session.agent_id.as_str() == RESERVED_AGENT_ID {
-                let prompt = self.config.default_system_prompt().await;
+                let prompt = ConfigManager::get().default_system_prompt().await;
                 session.context.lock().await.set_system_message(prompt);
             } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
                 session.context.lock().await.set_system_message(ego_info);
@@ -199,7 +196,7 @@ impl AgentCoordinator {
     /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
     /// 取记忆用会话状态保存的 agent_id（来自会话 key）
     pub async fn build_context_from_memory_store(&self, agent_id: Arc<String>, role_name: Arc<String>) -> Vec<Message> {
-        let cfg = self.config.context_config(agent_id.as_str(), role_name.as_str()).await;
+        let cfg = ConfigManager::get().context_config(agent_id.as_str(), role_name.as_str()).await;
         self.memory_store_client
             .read_recent_for_context(agent_id, role_name, &cfg).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
@@ -207,7 +204,7 @@ impl AgentCoordinator {
 
     /// 按当前全部 channel 的绑定集合清理无绑定会话
     async fn prune_sessions(&self) {
-        let channels = self.config.channels().await;
+        let channels = ConfigManager::get().channels().await;
         let mut keys = HashSet::new();
         for (_, ch) in &channels {
             keys.insert(self.session_key_for(ch));
@@ -227,7 +224,7 @@ impl AgentCoordinator {
 
         // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
         let mut ids = std::collections::HashSet::new();
-        for (_, ch) in self.config.channels().await {
+        for (_, ch) in ConfigManager::get().channels().await {
             for bu in &ch.bind_users {
                 ids.insert(kissbot_api::ChannelUser {
                     messenger_id: bu.messenger_id.clone(),
@@ -318,7 +315,7 @@ impl AgentCoordinator {
 
     /// 取 channel 当前会话三元组（config 的 agent_id/role_name + 运行态 mode），命令构造新三元组用
     pub async fn channel_session_key(&self, channel_id: &str) -> Option<SessionKey> {
-        let ch = self.config.channel(channel_id).await?;
+        let ch = ConfigManager::get().channel(channel_id).await?;
         Some(self.session_key_for(&ch))
     }
 
@@ -327,7 +324,7 @@ impl AgentCoordinator {
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话（apply_channel_key 专用）
     /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
     async fn apply_channel_key(&self, channel_id: &str, new_key: &SessionKey) -> Result<()> {
-        self.config.update_channel(channel_id, |c| {
+        ConfigManager::get().update_channel(channel_id, |c| {
             c.agent_id = Arc::new(new_key.agent_id.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
         }).await?;
@@ -335,7 +332,7 @@ impl AgentCoordinator {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        if let Some(ch) = self.config.channel(channel_id).await {
+        if let Some(ch) = ConfigManager::get().channel(channel_id).await {
             let key = self.session_key_for(&ch);
             self.ensure_session(&key, channel_id).await;
         }
@@ -356,7 +353,7 @@ impl AgentCoordinator {
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
-        let Some(ch) = self.config.channel(channel_id).await else {
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         let key = self.session_key_for(&ch);
@@ -371,7 +368,7 @@ impl AgentCoordinator {
     pub async fn run(&self) {
         info!("AgentCoordinator 启动，等待外部输入...");
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
-        for (_, ch) in self.config.channels().await {
+        for (_, ch) in ConfigManager::get().channels().await {
             let key = self.session_key_for(&ch);
             self.ensure_session(&key, &ch.channel_id).await;
         }
@@ -390,7 +387,7 @@ impl AgentCoordinator {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     pub(crate) async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
-        let Some(ch) = self.config.channel(channel_id).await else { return; };
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else { return; };
 
         // 2. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
         let key = self.session_key_for(&ch);
@@ -436,7 +433,7 @@ impl AgentCoordinator {
 
         // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
-            if CommandRouter::check_admin(&self.config, channel_id, &messenger_id, &user_id).await {
+            if CommandRouter::check_admin(ConfigManager::get(), channel_id, &messenger_id, &user_id).await {
                 self.handle_admin_command(channel_id, event, &content_text).await;
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
@@ -456,7 +453,7 @@ impl AgentCoordinator {
     /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
     /// BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧直接取 session.batch_producer，无 Channel 中转
     async fn enqueue_batch(&self, session: Arc<Session>, event: Arc<IncomingMessageEvent>) {
-        let cfg = self.config.context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
+        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         session.enqueue_batch(event, cfg.channel_batch_interval_secs).await;
     }
 
@@ -468,7 +465,7 @@ impl AgentCoordinator {
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, &self.config, channel_id).await {
+                match CommandRouter::execute(&cmd, ConfigManager::get(), channel_id).await {
                     Ok(reply) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
@@ -489,7 +486,7 @@ impl AgentCoordinator {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: String) {
-        let Some(ch) = self.config.channel(channel_id).await else {
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
             warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
             return;
         };
@@ -532,8 +529,8 @@ impl AgentCoordinator {
     /// 取来源 channel 所属 (agent,role) 的 out_channel（跨 channel 找有 outgoing 配置的，至多 1 个）
     /// out_channel 跟 channel 不跟 mode：该 channel 所有 mode 的 session 共用
     async fn resolve_out_channel(&self, channel_id: &str) -> Option<OutChannel> {
-        let ch = self.config.channel(channel_id).await?;
-        let channels = self.config.channels().await;
+        let ch = ConfigManager::get().channel(channel_id).await?;
+        let channels = ConfigManager::get().channels().await;
         for (_, c) in &channels {
             if c.agent_id == ch.agent_id && c.role_name == ch.role_name {
                 if let Some(out) = &c.outgoing {
@@ -553,7 +550,7 @@ impl AgentCoordinator {
 
     /// 按会话 (agent, role) 找 out_channel（resolve_out_channel 的会话版，合批 trigger flush 用）
     pub(crate) async fn resolve_out_channel_for_session(&self, session: Arc<Session>) -> Option<OutChannel> {
-        let channels = self.config.channels().await;
+        let channels = ConfigManager::get().channels().await;
         for (_, c) in &channels {
             if c.agent_id.as_str() == session.agent_id.as_str()
                 && c.role_name.as_str() == session.role_name.as_str()
@@ -616,7 +613,7 @@ impl AgentCoordinator {
     /// 会话可用工具：context 配置的启用的 stations ∩ 实际配置的 station → 收集 ToolConfig
     /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
     pub async fn tools_for_session(&self, session: Arc<Session>) -> Vec<ToolConfig> {
-        let cfg = self.config.context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
+        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         let mut tools = Vec::new();
         for entry in self.station_runtimes.iter() {
             let (station_id, runtime) = entry.pair();
@@ -629,7 +626,7 @@ impl AgentCoordinator {
 
     /// 执行单个 tool call：在启用的 station 中查找并调用；找不到/调用失败返回错误 JSON
     pub async fn execute_tool_call(&self, session: Arc<Session>, call: Arc<ToolCall>) -> serde_json::Value {
-        let cfg = self.config.context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
+        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         // 先克隆出 Arc 列表（释放 DashMap 全局读锁），再逐项 await（不跨 await 持锁）
         let runtimes: Vec<(String, Arc<StationRuntime>)> = self.station_runtimes.iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
@@ -647,7 +644,7 @@ impl AgentCoordinator {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     pub async fn send_outgoing(&self, out_channel: &OutChannel, content: Arc<String>) {
-        let Some(ch) = self.config.channel(out_channel.channel_id.as_str()).await else {
+        let Some(ch) = ConfigManager::get().channel(out_channel.channel_id.as_str()).await else {
             warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
         };

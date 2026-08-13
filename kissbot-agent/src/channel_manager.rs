@@ -235,7 +235,7 @@ impl Terminal for ChannelManager {
             return;
         }
         // 2. 转发业务处理（单例；run() 中 connect_all 之后必然已注册）
-        AgentCoordinator::instance().incoming_message(channel_id, event).await;
+        AgentCoordinator::get().incoming_message(channel_id, event).await;
     }
 
     async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {

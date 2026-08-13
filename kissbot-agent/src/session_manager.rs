@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, Notify};
 use tokio_util::time::DelayQueue;
 use tracing::{info, warn};
 
-use crate::config_manager::ProviderModel;
+use crate::config_manager::{ConfigManager, ProviderModel};
 use crate::coordinator::AgentCoordinator;
 use crate::message::pack_batch;
 use crate::types::{Error, Message, Mode, Result, SessionKey, memory_role};
@@ -276,7 +276,7 @@ impl Session {
             return;
         };
 
-        let coordinator = AgentCoordinator::instance();
+        let coordinator = AgentCoordinator::get();
 
         let Some(out_channel) = coordinator.resolve_out_channel_for_session(self.clone()).await else {
             warn!("accept_batch: 会话无 out_channel，跳过");
@@ -291,7 +291,7 @@ impl Session {
             let ctx = self.context.lock().await;
             let model = self.model.load_full();
             match model.as_ref() {
-                Some(pm) => match coordinator.config.resolve_effective_config(pm).await {
+                Some(pm) => match ConfigManager::get().resolve_effective_config(pm).await {
                     Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
                     None => false,
                 },
@@ -303,7 +303,7 @@ impl Session {
             // 按模式重建：event 超长压缩（LLM 总结归档）；role 从记忆重建（新建/重置共用 build_role_context）
             match self.mode.as_ref() {
                 Mode::Event(_) => {
-                    let cfg = coordinator.config.context_config(self.agent_id.as_str(), self.role_name.as_str()).await;
+                    let cfg = ConfigManager::get().context_config(self.agent_id.as_str(), self.role_name.as_str()).await;
                     // 1. 取当前完整上下文（含 system），末尾追加压缩指令 user 消息（压缩基于当前 session）
                     let messages = {
                         let ctx = self.context.lock().await;
