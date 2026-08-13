@@ -328,9 +328,8 @@ pub trait ConfigChangeListener: Send + Sync {
 /// 与 AgentCoordinator 同模式：任何模块读配置直接 ConfigManager::get()，不传参、不持引用。
 static INSTANCE: OnceLock<ConfigManager> = OnceLock::new();
 
-// 注：过渡期 derive(Clone) 支持“仍返回实例 + 注册单例”双所有权；内部共享状态经 Arc<RwLock> 一致，
-// listeners 无消费方（add_listener 无调用点），Task 6 返回类型收敛 Result<()> 后可移除
-#[derive(Clone)]
+// 注：过渡期曾 derive(Clone) 支撑“仍返回实例 + 注册单例”双所有权（Task 6 前）；
+// 现 new() 不返回实例，无 Clone 消费方，移除
 pub struct ConfigManager {
     agent_config: AgentConfig,
     nexus_repo: Arc<RwLock<NexusRepo>>,
@@ -346,8 +345,9 @@ impl ConfigManager {
         INSTANCE.get().expect("ConfigManager 未初始化")
     }
 
-    /// 从公共配置加载 AgentConfig，按 data_dir 加载/引导 NexusRepo/StationRepo
-    pub async fn new() -> Result<Self> {
+    /// 从公共配置加载 AgentConfig，按 data_dir 加载/引导 NexusRepo/StationRepo；
+    /// 完成时注册全局单例（此后 get() 可用，不返回实例）
+    pub async fn new() -> Result<()> {
         let agent_config = AgentConfig::from_public_config();
         let data_dir = agent_config.data_dir.to_string();
         tokio::fs::create_dir_all(&data_dir).await
@@ -371,8 +371,8 @@ impl ConfigManager {
             listeners: DashMap::new(),
         };
         // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 AgentCoordinator 一致）
-        let _ = INSTANCE.set(manager.clone());
-        Ok(manager)
+        let _ = INSTANCE.set(manager);
+        Ok(())
     }
 
     async fn load_or_create_nexus(path: &str) -> Result<NexusRepo> {
