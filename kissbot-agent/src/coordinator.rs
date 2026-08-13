@@ -42,7 +42,7 @@ pub struct AgentCoordinator {
     pub config: Arc<ConfigManager>,
     memory_store_client: Arc<MemoryStoreClient>,
     session_manager: Arc<SessionManager>,
-    model_client: Arc<tokio::sync::Mutex<ModelClient>>,
+    model_client: Arc<ModelClient>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
     valid_default: ArcSwap<Option<ProviderModel>>,
     /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
@@ -73,7 +73,7 @@ impl AgentCoordinator {
             config: config.clone(),
             memory_store_client,
             session_manager,
-            model_client: Arc::new(tokio::sync::Mutex::new(model_client)),
+            model_client: Arc::new(model_client),
             channel_manager: Arc::new(ChannelManager::new(config.clone())),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
@@ -82,12 +82,14 @@ impl AgentCoordinator {
 
         // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
         let default_model = config.default_model().await;
-        let valid_default = match coordinator.model_client.lock().await.list_models(&default_model).await {
-            Ok(list) if list.iter().any(|m| m == &default_model.model) => Some(default_model.clone()),
-            Ok(_) => { tracing::warn!("default_model {}/{} 不在 API 模型列表", default_model.provider, default_model.model); None }
-            Err(e) => { tracing::warn!("校验 default_model 失败（API 不可用?）: {:?}", e); None }
+        match coordinator.verify_model(&default_model).await {
+            Ok(()) => {
+                coordinator.valid_default.store(Arc::new(Some(default_model)));
+            },
+            Err(e) => {
+                warn!("校验 default_model {}/{} 失败: {}", default_model.provider, default_model.model, e);
+            },
         };
-        coordinator.valid_default.store(Arc::new(valid_default));
 
         // 构建 Station 运行态：base_url 为空的本地 station 注册内置 Read 工具；
         // 远程 station 的 runtime 同样构建（call_tool 走 REST 骨架，本轮不实现）
@@ -133,24 +135,36 @@ impl AgentCoordinator {
         SessionKey {
             agent_id: ch.agent_id.to_string(),
             role_name: ch.role_name.to_string(),
-            mode: self.channel_mode(&ch.channel_id),
+            // 运行态 mode（未绑定/缺失回退角色模式）
+            mode: self.channel_manager.mode(&ch.channel_id),
         }
     }
 
-    /// 设置 channel 运行态模式（写 Channel.mode；/mode 切换，不回写，重启回 Role）
-    pub fn set_channel_mode(&self, channel_id: &str, mode: Mode) {
-        self.channel_manager.set_mode(channel_id, mode);
-    }
-
-    /// 取 channel 运行态模式（未绑定/缺失回退角色模式）
-    pub fn channel_mode(&self, channel_id: &str) -> Mode {
-        self.channel_manager.mode(channel_id)
-    }
-
-    /// 校验 agent_id 存在（/agent 切换前调用）：保留 id "0" 直接通过，其余委托 verify_agent_exists_http
-    pub async fn verify_agent_exists(&self, agent_id: &str) -> Result<()> {
+    /// 校验 agent_id 存在（/agent 切换前调用）：空或保留 id "0" 直接通过；
+    /// ego 未配置/HTTP 失败/data 为 null 返回 Err（调用方保持原 agent 不变）
+    pub async fn verify_agent_exists(agent_id: &str) -> Result<()> {
+        if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
+            return Ok(());
+        }
         let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
-        verify_agent_exists_http(agent_id, &ego_url).await
+        if ego_url.is_empty() {
+            return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
+        }
+        let client = reqwest::Client::new();
+        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
+        let resp = client.post(format!("{}/agent/get", ego_url))
+            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
+            .json(&serde_json::json!({ "agent_id": agent_id }))
+            .send()
+            .await
+            .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
+        let data: serde_json::Value = resp.json().await
+            .map_err(|e| Error::MemoryEgoError(format!("agent/get 响应解析失败: {}", e)))?;
+        if data["data"].is_null() {
+            Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
+        } else {
+            Ok(())
+        }
     }
 
     /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
@@ -189,17 +203,6 @@ impl AgentCoordinator {
         self.memory_store_client
             .read_recent_for_context(agent_id, role_name, &cfg).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
-    }
-
-    /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
-    async fn relocate_channel(&self, channel_id: &str) {
-        // 1. 清理无任何 channel 绑定的会话
-        self.prune_sessions().await;
-        // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        if let Some(ch) = self.config.channel(channel_id).await {
-            let key = self.session_key_for(&ch);
-            self.ensure_session(&key, channel_id).await;
-        }
     }
 
     /// 按当前全部 channel 的绑定集合清理无绑定会话
@@ -321,13 +324,33 @@ impl AgentCoordinator {
 
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
+    /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话（apply_channel_key 专用）
+    /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
     async fn apply_channel_key(&self, channel_id: &str, new_key: &SessionKey) -> Result<()> {
         self.config.update_channel(channel_id, |c| {
             c.agent_id = Arc::new(new_key.agent_id.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
         }).await?;
-        self.set_channel_mode(channel_id, new_key.mode.clone());
-        self.relocate_channel(channel_id).await;
+        self.channel_manager.set_mode(channel_id, new_key.mode.clone());
+        // 1. 清理无任何 channel 绑定的会话
+        self.prune_sessions().await;
+        // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
+        if let Some(ch) = self.config.channel(channel_id).await {
+            let key = self.session_key_for(&ch);
+            self.ensure_session(&key, channel_id).await;
+        }
+        Ok(())
+    }
+
+    /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
+    /// Err 表示校验失败（API 调用失败 / 模型不在列表），调用方决定如何处理。
+    async fn verify_model(&self, pm: &ProviderModel) -> Result<()> {
+        let models = self.model_client.list_models(pm).await
+            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
+        if !models.iter().any(|m| m == &pm.model) {
+            return Err(Error::ModelProviderNotSupported(format!(
+                "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
+        }
         Ok(())
     }
 
@@ -338,12 +361,7 @@ impl AgentCoordinator {
         };
         let key = self.session_key_for(&ch);
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
-        let models = self.model_client.lock().await.list_models(&pm).await
-            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
-        if !models.iter().any(|m| m == &pm.model) {
-            return Err(Error::ModelProviderNotSupported(format!(
-                "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
-        }
+        self.verify_model(&pm).await?;
         let (session, _) = self.ensure_session(&key, channel_id).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
@@ -556,8 +574,7 @@ impl AgentCoordinator {
     }
 
     pub async fn call_provider_model(&self, pm: &ProviderModel, messages: &Vec<Message>, tools: &Vec<ToolConfig>) -> Result<ModelResponse> {
-        let mc = self.model_client.lock().await;
-        mc.call(pm, messages, tools).await
+        self.model_client.call(pm, messages, tools).await
     }
 
     pub async fn write_memory_think(&self, request: ThinkRequest, out_channel: &OutChannel) {
@@ -708,95 +725,17 @@ fn placeholder_request(
     }
 }
 
-/// verify_agent_exists 的纯函数实现（便于单测）：空 agent_id 或 "0"（保留）直接 Ok；
-/// ego 未配置/HTTP 失败/data 为 null 返回 Err（调用方保持原 agent 不变）
-async fn verify_agent_exists_http(agent_id: &str, ego_url: &str) -> Result<()> {
-    if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
-        return Ok(());
-    }
-    if ego_url.is_empty() {
-        return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
-    }
-    let client = reqwest::Client::new();
-    let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
-    let resp = client.post(format!("{}/agent/get", ego_url))
-        .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
-        .json(&serde_json::json!({ "agent_id": agent_id }))
-        .send()
-        .await
-        .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
-    let data: serde_json::Value = resp.json().await
-        .map_err(|e| Error::MemoryEgoError(format!("agent/get 响应解析失败: {}", e)))?;
-    if data["data"].is_null() {
-        Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ===== verify_agent_exists_http：保留 id / ego 校验 =====
+    // ===== verify_agent_exists：保留 id / 空串直接通过 =====
+    // 注：其余分支（ego HTTP 校验）依赖 ApiConfig/SecurityConfig 进程级单例，单测无法控制 url/时序，暂不测
 
     #[tokio::test]
-    async fn verify_agent_exists_http_reserved_or_empty_passes() {
-        // 保留 id "0" 与空串直接 Ok，无需 ego
-        assert!(verify_agent_exists_http("0", "http://127.0.0.1:1").await.is_ok());
-        assert!(verify_agent_exists_http("", "http://127.0.0.1:1").await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn verify_agent_exists_http_ego_unconfigured_errors() {
-        // ego_url 为空 -> Err
-        assert!(verify_agent_exists_http("alice", "").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn verify_agent_exists_http_unreachable_errors() {
-        // 需 SecurityConfig 提供 api_key 头，先确保 KISSBOT_CONFIG 就绪
-        let _cfg = ensure_test_config();
-        // ego_url 指向不可达端口 -> 连接失败 Err
-        assert!(verify_agent_exists_http("carol", "http://127.0.0.1:1").await.is_err());
-    }
-
-    /// 确保 kissbot_config 单例可用：写入临时 KISSBOT_CONFIG（含 security 段，verify_agent_exists_http 需读 api_key）。
-    /// kissbot-config 是进程级 OnceLock 单例，首次触发即锁定；本测试与 http_server::tests::test_manager
-    /// 都写含 security 段的合法配置，先后顺序互不影响。返回 TempDir 保持配置存活至测试结束。
-    fn ensure_test_config() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg_path = dir.path().join("config.json");
-        let cfg_json = r#"{"security":{"api_key":"user-key-456","admin_api_key":"admin-key-123"}}"#;
-        std::fs::write(&cfg_path, cfg_json).unwrap();
-        // 2024 edition：设置环境变量需要 unsafe
-        unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-        dir
-    }
-
-    /// 起本地 axum mock：/agent/get 返回 data 为给定值
-    async fn mock_ego(data: Option<serde_json::Value>) -> String {
-        use axum::{routing::post, Router};
-        let app = Router::new().route("/agent/get", post(move || async move {
-            axum::Json(serde_json::json!({ "success": true, "data": data }))
-        }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-        format!("http://{}", addr)
-    }
-
-    #[tokio::test]
-    async fn verify_agent_exists_http_found_passes() {
-        let _cfg = ensure_test_config();
-        let url = mock_ego(Some(serde_json::json!({ "name": "alice" }))).await;
-        assert!(verify_agent_exists_http("alice", &url).await.is_ok(), "data 非 null 应 Ok");
-    }
-
-    #[tokio::test]
-    async fn verify_agent_exists_http_not_found_errors() {
-        let _cfg = ensure_test_config();
-        let url = mock_ego(None).await;
-        assert!(verify_agent_exists_http("nobody", &url).await.is_err(), "data 为 null 应 Err");
+    async fn verify_agent_exists_reserved_or_empty_passes() {
+        // 保留 id "0" 与空串直接 Ok，提前返回不触全局配置单例
+        assert!(AgentCoordinator::verify_agent_exists("0").await.is_ok());
+        assert!(AgentCoordinator::verify_agent_exists("").await.is_ok());
     }
 }

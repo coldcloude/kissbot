@@ -188,8 +188,8 @@ mod tests {
 
     // ConfigManager 字段私有，无法在模块外直接构造；
     // 通过 ConfigManager::new() 加载临时 KISSBOT_CONFIG 构造（data_dir 指向 tempdir）。
-    // 注意：kissbot-config 是进程级 OnceLock 单例，本测试与 coordinator 的 verify_agent_exists_http
-    // 测试（ensure_test_config）都会触发它；两者都写含 security 段的合法配置，先后顺序互不影响。
+    // 注意：kissbot-config 是进程级 OnceLock 单例，本测试会触发它；coordinator 的
+    // verify_agent_exists 保留分支不触配置，无单例冲突。
     async fn test_manager(dir: &tempfile::TempDir) -> Arc<ConfigManager> {
         let data_dir = dir.path().join("data");
         let cfg_path = dir.path().join("config.json");

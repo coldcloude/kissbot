@@ -213,7 +213,7 @@ impl CommandRouter {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
-                coordinator.verify_agent_exists(&new_agent_id).await?;
+                AgentCoordinator::verify_agent_exists(&new_agent_id).await?;
                 // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: new_agent_id.clone(), role_name: new_role.clone(), mode: cur.mode };
