@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::collections::HashSet;
 
 use arc_swap::ArcSwap;
@@ -324,6 +324,13 @@ pub trait ConfigChangeListener: Send + Sync {
     fn on_config_changed(&self, config_manager: &ConfigManager);
 }
 
+/// ConfigManager 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
+/// 与 AgentCoordinator 同模式：任何模块读配置直接 ConfigManager::get()，不传参、不持引用。
+static INSTANCE: OnceLock<ConfigManager> = OnceLock::new();
+
+// 注：过渡期 derive(Clone) 支持“仍返回实例 + 注册单例”双所有权；内部共享状态经 Arc<RwLock> 一致，
+// listeners 无消费方（add_listener 无调用点），Task 6 返回类型收敛 Result<()> 后可移除
+#[derive(Clone)]
 pub struct ConfigManager {
     agent_config: AgentConfig,
     nexus_repo: Arc<RwLock<NexusRepo>>,
@@ -334,6 +341,11 @@ pub struct ConfigManager {
 }
 
 impl ConfigManager {
+    /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
+    pub fn get() -> &'static ConfigManager {
+        INSTANCE.get().expect("ConfigManager 未初始化")
+    }
+
     /// 从公共配置加载 AgentConfig，按 data_dir 加载/引导 NexusRepo/StationRepo
     pub async fn new() -> Result<Self> {
         let agent_config = AgentConfig::from_public_config();
@@ -350,14 +362,17 @@ impl ConfigManager {
         let nexus_repo = Self::load_or_create_nexus(&nexus_path).await?;
         let station_repo = Self::load_or_create_station(&station_path).await?;
 
-        Ok(Self {
+        let manager = Self {
             agent_config,
             nexus_repo: Arc::new(RwLock::new(nexus_repo)),
             station_repo: Arc::new(RwLock::new(station_repo)),
             nexus_path,
             station_path,
             listeners: DashMap::new(),
-        })
+        };
+        // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 AgentCoordinator 一致）
+        let _ = INSTANCE.set(manager.clone());
+        Ok(manager)
     }
 
     async fn load_or_create_nexus(path: &str) -> Result<NexusRepo> {
