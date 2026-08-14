@@ -132,7 +132,19 @@ async fn create_session(key: &SessionKey, model: Arc<Option<ProviderModel>>, dat
 - 初始化移 spawn 前：consumer 任务启动前上下文已就绪，比原顺序（spawn 后才初始化）更安全，无行为差异。
 - session_manager → coordinator 单例依赖**已有先例**（run_agentic_loop 溢出重置 334 行已调 `coordinator.build_context_from_memory_store`）。
 
-### D6: 测试适配
+### D6: Session 字段可见性收窄
+
+改后 coordinator 对 Session 字段的直接访问情况：
+
+- **可去 pub（改后零跨模块访问，收窄为模块私有）**：
+  - `context`：coordinator 唯一使用在 ensure_session（175-190 行），初始化搬入 create_session 后零访问
+  - `batch_producer`：coordinator 经 `session.enqueue_batch(...)`（Session 的 pub(crate) 方法）调用，无字段直接访问
+  - `notify`：全仓无 coordinator 使用
+- **必须保留 pub（coordinator 仍直接访问）**：`agent_id` / `role_name` / `mode`（多处读取）、`model`（set_session_model 的 `session.model.store(...)`）
+
+session_manager 内部 tests mod 是子模块（`use super::*`），私有字段仍可访问（test_pair 构造、spawn_trigger_exits_on_notify 用 notify），不受影响。
+
+### D7: 测试适配
 
 session_manager tests：
 - `get_or_create_dedupes` / `get_or_create_with_none_model`：去 created 断言 + `.await` + model 参数 `Arc::new(Some(model.clone()))` / `Arc::new(None)`。
