@@ -26,22 +26,20 @@ pub const DEFAULT_COMPRESS_PROMPT: &str = "请用简洁的语言总结以上对�
 
 // ---- 配置结构 ----
 
-/// agent 级 context 配置（key = agent_id，覆盖全局默认；类似 ProviderConfig 的 default_*）
+/// agent 级 context 配置（key = agent_id，覆盖全局默认；未配字段回落全局默认常量）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentContextConfig {
-    pub default_channel_batch_interval_secs: u64,
-    pub default_memory_time_secs: u64,
-    pub default_memory_count: usize,
-    pub default_compress_prompt: Arc<String>,
-    /// 启用的 station_id 集合（Set 形式）
-    pub default_stations: Arc<HashSet<String>>,
-    /// key = role_name
-    pub roles: Arc<ArcSwapHashMap<String, RoleContextConfig>>,
+    /// agent 默认 context 配置（未配字段回落全局默认常量；缺省 = 全 None = 全局默认）
+    #[serde(default)]
+    pub default_context_config: ContextConfig,
+    /// key = role_name（role 覆盖 agent 默认）
+    pub roles: Arc<ArcSwapHashMap<String, ContextConfig>>,
 }
 
-/// role 级 context 配置（可选覆盖 agent 默认；类似 ModelConfig 的 Option 继承）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoleContextConfig {
+/// context 配置（可选覆盖字段；未配字段回落上一级：role → agent 默认 → 全局常量）
+/// 复用作 agent 默认值容器（AgentContextConfig.default_context_config）与 role 覆盖（roles map 值）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContextConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_batch_interval_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,11 +62,12 @@ pub struct EffectiveContextConfig {
     pub stations: HashSet<String>,
 }
 
-/// 三层合并：全局默认 ← agent ← role（role Some 覆盖 agent；无 agent 用全局默认）
-/// role 只可能来自 agent.roles（role 无 agent 时不可达），故 agent 为 None 时直接返回全局默认
+/// 三层逐字段合并：全局默认 ← agent 默认 ← role 覆盖（role Some 覆盖 agent；未配回落全局常量）。
+/// role 只可能来自 agent.roles（role 无 agent 时不可达），故 agent 为 None 时直接返回全局默认。
+/// 注：ContextConfig 全 Option——agent.default_context_config 与 role 各自缺省字段均回落全局常量。
 pub fn merge_context_config(
     agent: Option<&AgentContextConfig>,
-    role: Option<&RoleContextConfig>,
+    role: Option<&ContextConfig>,
 ) -> EffectiveContextConfig {
     let Some(a) = agent else {
         return EffectiveContextConfig {
@@ -79,18 +78,24 @@ pub fn merge_context_config(
             stations: HashSet::new(),
         };
     };
+    let d = &a.default_context_config;
     EffectiveContextConfig {
-        channel_batch_interval_secs: role.and_then(|x| x.channel_batch_interval_secs)
-            .unwrap_or(a.default_channel_batch_interval_secs),
-        memory_time_secs: role.and_then(|x| x.memory_time_secs)
-            .unwrap_or(a.default_memory_time_secs),
-        memory_count: role.and_then(|x| x.memory_count)
-            .unwrap_or(a.default_memory_count),
-        compress_prompt: role.and_then(|x| x.compress_prompt.as_ref().map(|s| s.to_string()))
-            .unwrap_or_else(|| a.default_compress_prompt.to_string()),
-        stations: role.and_then(|x| x.stations.clone())
+        channel_batch_interval_secs: role.and_then(|r| r.channel_batch_interval_secs)
+            .or(d.channel_batch_interval_secs)
+            .unwrap_or(DEFAULT_CHANNEL_BATCH_INTERVAL_SECS),
+        memory_time_secs: role.and_then(|r| r.memory_time_secs)
+            .or(d.memory_time_secs)
+            .unwrap_or(DEFAULT_MEMORY_TIME_SECS),
+        memory_count: role.and_then(|r| r.memory_count)
+            .or(d.memory_count)
+            .unwrap_or(DEFAULT_MEMORY_COUNT),
+        compress_prompt: role.and_then(|r| r.compress_prompt.as_ref().map(|s| s.to_string()))
+            .or_else(|| d.compress_prompt.as_ref().map(|s| s.to_string()))
+            .unwrap_or_else(|| DEFAULT_COMPRESS_PROMPT.to_string()),
+        stations: role.and_then(|r| r.stations.clone())
             .map(|s| (*s).clone())
-            .unwrap_or_else(|| (*a.default_stations).clone()),
+            .or_else(|| d.stations.clone().map(|s| (*s).clone()))
+            .unwrap_or_default(),
     }
 }
 
@@ -1183,14 +1188,16 @@ mod tests {
     #[test]
     fn merge_agent_then_role_override() {
         let agent = AgentContextConfig {
-            default_channel_batch_interval_secs: 5,
-            default_memory_time_secs: 7200,
-            default_memory_count: 100,
-            default_compress_prompt: Arc::new("agent模板".into()),
-            default_stations: Arc::new(["s1".into()].into_iter().collect()),
+            default_context_config: ContextConfig {
+                channel_batch_interval_secs: Some(5),
+                memory_time_secs: Some(7200),
+                memory_count: Some(100),
+                compress_prompt: Some(Arc::new("agent模板".into())),
+                stations: Some(Arc::new(["s1".into()].into_iter().collect())),
+            },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
-        let role = RoleContextConfig {
+        let role = ContextConfig {
             channel_batch_interval_secs: Some(7),
             memory_time_secs: None,
             memory_count: None,
@@ -1208,14 +1215,16 @@ mod tests {
     #[test]
     fn role_stations_override_agent() {
         let agent = AgentContextConfig {
-            default_channel_batch_interval_secs: 3,
-            default_memory_time_secs: 3600,
-            default_memory_count: 50,
-            default_compress_prompt: Arc::new("t".into()),
-            default_stations: Arc::new(["s1".into()].into_iter().collect()),
+            default_context_config: ContextConfig {
+                channel_batch_interval_secs: Some(3),
+                memory_time_secs: Some(3600),
+                memory_count: Some(50),
+                compress_prompt: Some(Arc::new("t".into())),
+                stations: Some(Arc::new(["s1".into()].into_iter().collect())),
+            },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
-        let role = RoleContextConfig {
+        let role = ContextConfig {
             channel_batch_interval_secs: None,
             memory_time_secs: None,
             memory_count: None,
@@ -1229,15 +1238,65 @@ mod tests {
     #[test]
     fn agent_role_config_serde_roundtrip() {
         let agent = AgentContextConfig {
-            default_channel_batch_interval_secs: 3,
-            default_memory_time_secs: 3600,
-            default_memory_count: 50,
-            default_compress_prompt: Arc::new("t".into()),
-            default_stations: Arc::new(HashSet::new()),
+            default_context_config: ContextConfig {
+                channel_batch_interval_secs: Some(3),
+                memory_time_secs: Some(3600),
+                memory_count: Some(50),
+                compress_prompt: Some(Arc::new("t".into())),
+                stations: Some(Arc::new(HashSet::new())),
+            },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: AgentContextConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.default_memory_count, 50);
+        assert_eq!(back.default_context_config.memory_count, Some(50));
+    }
+
+    #[test]
+    fn merge_agent_partial_defaults_fall_back_to_globals() {
+        // agent 默认仅配部分字段：未配字段回落全局常量；role 覆盖仍生效
+        let agent = AgentContextConfig {
+            default_context_config: ContextConfig {
+                channel_batch_interval_secs: Some(5),
+                memory_time_secs: None,
+                memory_count: None,
+                compress_prompt: None,
+                stations: None,
+            },
+            roles: Arc::new(ArcSwapHashMap::new()),
+        };
+        let role = ContextConfig {
+            channel_batch_interval_secs: None,
+            memory_time_secs: Some(7200),
+            memory_count: None,
+            compress_prompt: None,
+            stations: None,
+        };
+        let eff = merge_context_config(Some(&agent), Some(&role));
+        assert_eq!(eff.channel_batch_interval_secs, 5, "agent 配了用 agent");
+        assert_eq!(eff.memory_time_secs, 7200, "role 覆盖 agent");
+        assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT, "未配回落全局");
+        assert_eq!(eff.compress_prompt, DEFAULT_COMPRESS_PROMPT);
+        assert!(eff.stations.is_empty());
+    }
+
+    #[test]
+    fn merge_agent_all_default_and_role_overrides() {
+        // agent 全缺省（ContextConfig::default()）+ role 覆盖
+        let agent = AgentContextConfig {
+            default_context_config: ContextConfig::default(),
+            roles: Arc::new(ArcSwapHashMap::new()),
+        };
+        let role = ContextConfig {
+            channel_batch_interval_secs: Some(7),
+            memory_time_secs: None,
+            memory_count: None,
+            compress_prompt: None,
+            stations: None,
+        };
+        let eff = merge_context_config(Some(&agent), Some(&role));
+        assert_eq!(eff.channel_batch_interval_secs, 7, "role 覆盖生效");
+        assert_eq!(eff.memory_time_secs, DEFAULT_MEMORY_TIME_SECS, "agent 全缺省回落全局");
+        assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT);
     }
 }
