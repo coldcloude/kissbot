@@ -144,6 +144,8 @@ async fn create_session(key: &SessionKey, model: Arc<Option<ProviderModel>>, dat
 
 session_manager 内部 tests mod 是子模块（`use super::*`），私有字段仍可访问（test_pair 构造、spawn_trigger_exits_on_notify 用 notify），不受影响。
 
+**字段顺序调整**：`model` 移到 `context` 之前（生命周期相近字段相邻：model 与 context 同为会话核心状态），新顺序：`agent_id` / `role_name` / `mode` / `model` / `context` / `batch_producer` / `notify`；`create_session` 与 tests 的 Session 字面量构造同步调整。
+
 ### D7: 测试适配
 
 session_manager tests：
