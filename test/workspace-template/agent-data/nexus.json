@@ -17,13 +17,15 @@
       "provider_type": "openai",
       "base_url": "https://api.deepseek.com",
       "api_key": "",
-      "default_context_length": 65536,
-      "default_max_tokens": 4096,
-      "default_max_context_messages": 100,
-      "default_timeout_secs": 60,
-      "default_retry_count": 3,
-      "default_thinking": "enabled",
-      "default_reasoning_effort": "low",
+      "default_model_config": {
+        "max_tokens": 4096,
+        "context_length": 65536,
+        "max_context_messages": 100,
+        "timeout_secs": 60,
+        "retry_count": 3,
+        "thinking": "enabled",
+        "reasoning_effort": "low"
+      },
       "models": {}
     }
   },
