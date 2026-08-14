@@ -51,19 +51,23 @@
   },
   "context": {
     "": {
-      "default_channel_batch_interval_secs": 3,
-      "default_memory_time_secs": 3600,
-      "default_memory_count": 50,
-      "default_compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
-      "default_stations": ["local"],
+      "default_context_config": {
+        "channel_batch_interval_secs": 3,
+        "memory_time_secs": 3600,
+        "memory_count": 50,
+        "compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
+        "stations": ["local"]
+      },
       "roles": {}
     },
     "a1": {
-      "default_channel_batch_interval_secs": 3,
-      "default_memory_time_secs": 3600,
-      "default_memory_count": 50,
-      "default_compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
-      "default_stations": ["local"],
+      "default_context_config": {
+        "channel_batch_interval_secs": 3,
+        "memory_time_secs": 3600,
+        "memory_count": 50,
+        "compress_prompt": "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。",
+        "stations": ["local"]
+      },
       "roles": {}
     }
   },
@@ -73,7 +77,7 @@
 ```
 
 说明：
-- `context` 段按 `agent_name → role_name` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`（未声明 `default_stations` 时为空；示例显式声明 `["local"]`）；`default_stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
+- `context` 段按 `agent → role` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`；agent 默认在 `default_context_config` 中声明（未声明的字段回落全局默认；`stations` 未声明时为空，示例显式声明 `["local"]`）；`stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
 - `stations.local.base_url` 为空 = 本地 Station：agent 启动时注册内置 `read` 工具，工具调用在进程内执行
 - `default_max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
 - **迁移注意**：`providers.<provider>` 的 `default_max_context_messages` 为必填字段（旧版 nexus.json 需手工补充；模板已含）；`context` 与 `stations.*.tools` 缺省时反序列化为空 map（兼容旧配置）
