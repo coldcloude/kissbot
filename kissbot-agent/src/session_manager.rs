@@ -590,8 +590,10 @@ impl SessionManager {
         })
     }
 
-    /// 定位会话，不存在则创建（model 为初始模型，None = 无模型；agent_id 为会话状态保存的解析结果）；
-    /// 返回 (会话, 是否新建)
+    /// 定位会话，不存在则创建（model 为初始模型 Arc，None = 无模型；agent_id 为会话状态保存的解析结果）；
+    /// 返回会话（无"是否新建"标记；创建时的初始化——上下文恢复/重建 + 系统消息——在 create_session 内部完成）
+    /// 依赖 AgentCoordinator/ConfigManager 全局单例（create_session 初始化经 AgentCoordinator::get() 调
+    /// build_context_from_memory_store / system_prompt_for_agent；调用方需确保单例已装配）
     /// 创建时依赖序组装（内联 new_producer/BatchConsumer::new）：notify → 2 mpsc → producer → session → consumer → spawn
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
@@ -868,9 +870,9 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
+            model: ArcSwap::from_pointee(model),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
-            model: ArcSwap::from_pointee(model),
             notify,
         };
         assert_eq!(session.role_name.as_str(), "r1");
