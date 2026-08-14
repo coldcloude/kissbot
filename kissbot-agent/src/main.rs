@@ -8,6 +8,7 @@ mod ego_md;
 mod http_server;
 mod model_client;
 mod provider;
+mod memory_ego_client;
 mod memory_store_client;
 mod message;
 mod session_manager;

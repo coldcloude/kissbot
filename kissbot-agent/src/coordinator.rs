@@ -15,6 +15,7 @@ use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
 use crate::message::pack_memory_messages;
+use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
 use crate::station::{self, StationRuntime};
 
@@ -40,6 +41,8 @@ static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
 
 pub struct AgentCoordinator {
     memory_store_client: Arc<MemoryStoreClient>,
+    /// ego 服务 REST 客户端（共享连接池；system_prompt_for_agent / verify_agent_exists 经它发请求）
+    memory_ego_client: Arc<MemoryEgoClient>,
     session_manager: Arc<SessionManager>,
     model_client: Arc<ModelClient>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
@@ -61,6 +64,7 @@ impl AgentCoordinator {
     pub async fn new() -> Result<()> {
         let config = ConfigManager::get();
         let memory_store_client = Arc::new(MemoryStoreClient::new());
+        let memory_ego_client = Arc::new(MemoryEgoClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
         let model_client = ModelClient::new();
@@ -69,6 +73,7 @@ impl AgentCoordinator {
 
         let coordinator = Self {
             memory_store_client,
+            memory_ego_client,
             session_manager,
             model_client: Arc::new(model_client),
             channel_manager: Arc::new(ChannelManager::new()),
@@ -138,29 +143,15 @@ impl AgentCoordinator {
     }
 
     /// 校验 agent_id 存在（/agent 切换前调用）：空或保留 id "0" 直接通过；
-    /// ego 未配置/HTTP 失败/data 为 null 返回 Err（调用方保持原 agent 不变）
+    /// ego 未配置/HTTP 失败/agent 不存在返回 Err（调用方保持原 agent 不变）
     pub async fn verify_agent_exists(agent_id: &str) -> Result<()> {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
-        let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
-        if ego_url.is_empty() {
-            return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
-        }
-        let client = reqwest::Client::new();
-        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
-        let resp = client.post(format!("{}/agent/get", ego_url))
-            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
-            .json(&serde_json::json!({ "agent_id": agent_id }))
-            .send()
-            .await
-            .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
-        let data: serde_json::Value = resp.json().await
-            .map_err(|e| Error::MemoryEgoError(format!("agent/get 响应解析失败: {}", e)))?;
-        if data["data"].is_null() {
-            Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
-        } else {
+        if AgentCoordinator::get().memory_ego_client.agent_exists(agent_id).await? {
             Ok(())
+        } else {
+            Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
         }
     }
 
@@ -181,13 +172,10 @@ impl AgentCoordinator {
                     let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
                 }
             }
-            // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 load_ego_info。
+            // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 system_prompt_for_agent（ego REST）。
             // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
-            if session.agent_id.as_str() == RESERVED_AGENT_ID {
-                let prompt = ConfigManager::get().default_system_prompt().await;
+            if let Ok(prompt) = self.system_prompt_for_agent(session.agent_id.as_str(), &session.role_name).await {
                 session.context.lock().await.set_system_message(prompt);
-            } else if let Ok(ego_info) = self.load_ego_info(session.agent_id.as_str(), &session.role_name).await {
-                session.context.lock().await.set_system_message(ego_info);
             }
         }
         (session, created)
@@ -212,14 +200,14 @@ impl AgentCoordinator {
         self.session_manager.retain(&keys);
     }
 
-    /// 读取自我认知（agent 元数据 + 个体识别 + 角色设定）生成系统提示词，agent_id 为解析后的 UUID
+    /// 根据 agent_id 获取系统提示词（新建会话系统消息，create_session 内调用）：
+    /// 保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
+    /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
     /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
-    async fn load_ego_info(&self, agent_id: &str, role_name: &str) -> Result<String> {
-        let ego_url = kissbot_api::ApiConfig::get().memory_ego_url.clone();
-
-        let client = reqwest::Client::new();
-        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
-
+    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Result<String> {
+        if agent_id == RESERVED_AGENT_ID {
+            return Ok(ConfigManager::get().default_system_prompt().await);
+        }
         let mut system_parts = vec![];
 
         // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
@@ -236,59 +224,23 @@ impl AgentCoordinator {
         let mut individual_names = std::collections::HashSet::new();
 
         // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
-        if let Ok(agent_resp) = client.post(&format!("{}/agent/get", ego_url))
-            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
-            .json(&serde_json::json!({
-                "agent_id": agent_id,
-            }))
-            .send()
-            .await
-        {
-            if let Ok(envelope) = agent_resp.json::<kissbot_api::ApiResponse<kissbot_api::AgentMetadata>>().await {
-                if let Some(metadata) = envelope.data {
-                    system_parts.push(crate::ego_md::build_ego_identity_md(&metadata));
-                }
-            }
+        if let Ok(Some(metadata)) = self.memory_ego_client.get_agent(agent_id).await {
+            system_parts.push(crate::ego_md::build_ego_identity_md(&metadata));
         }
-
         // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
-        if let Ok(individual_resp) = client.post(&format!("{}/individual/get-all", ego_url))
-            .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
-            .json(&serde_json::json!({
-                "agent_id": agent_id,
-            }))
-            .send()
-            .await
-        {
-            if let Ok(envelope) = individual_resp.json::<kissbot_api::ApiResponse<kissbot_api::IndividualRecognition>>().await {
-                if let Some(individuals) = envelope.data {
-                    for (name, entry) in individuals.individual_map.iter() {
-                        let individual = entry.load();
-                        if individual.identifiers.iter().any(|id| ids.contains(id)) {
-                            individual_names.insert(name.clone());
-                        }
-                    }
-                    system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, &ids));
+        if let Ok(Some(individuals)) = self.memory_ego_client.get_individuals(agent_id).await {
+            for (name, entry) in individuals.individual_map.iter() {
+                let individual = entry.load();
+                if individual.identifiers.iter().any(|id| ids.contains(id)) {
+                    individual_names.insert(name.clone());
                 }
             }
+            system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, &ids));
         }
-
         // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
         if !role_name.is_empty() {
-            if let Ok(role_resp) = client.post(&format!("{}/role/get", ego_url))
-                .header(kissbot_security::HEADER_API_KEY, api_key.as_str())
-                .json(&serde_json::json!({
-                    "agent_id": agent_id,
-                    "role_name": role_name,
-                }))
-                .send()
-                .await
-            {
-                if let Ok(envelope) = role_resp.json::<kissbot_api::ApiResponse<kissbot_api::RolePlay>>().await {
-                    if let Some(role) = envelope.data {
-                        system_parts.push(crate::ego_md::build_role_play_md(&role, &individual_names));
-                    }
-                }
+            if let Ok(Some(role)) = self.memory_ego_client.get_role(agent_id, role_name).await {
+                system_parts.push(crate::ego_md::build_role_play_md(&role, &individual_names));
             }
         }
 
