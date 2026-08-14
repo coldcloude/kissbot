@@ -23,11 +23,13 @@
       "provider_type": "openai",
       "base_url": "https://api.deepseek.com",
       "api_key": "sk-xxxx",
-      "default_context_length": 65536,
-      "default_max_context_messages": 100,
-      "default_max_tokens": 4096,
-      "default_timeout_secs": 60,
-      "default_retry_count": 3,
+      "default_model_config": {
+        "max_tokens": 4096,
+        "context_length": 65536,
+        "max_context_messages": 100,
+        "timeout_secs": 60,
+        "retry_count": 3
+      },
       "models": {}
     }
   },
@@ -79,8 +81,8 @@
 说明：
 - `context` 段按 `agent → role` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 stations`；agent 默认在 `default_context_config` 中声明（未声明的字段回落全局默认；`stations` 未声明时为空，示例显式声明 `["local"]`）；`stations` 声明该 agent/role 启用的 station（tools 聚合只考虑这些 station）
 - `stations.local.base_url` 为空 = 本地 Station：agent 启动时注册内置 `read` 工具，工具调用在进程内执行
-- `default_max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
-- **迁移注意**：`providers.<provider>` 的 `default_max_context_messages` 为必填字段（旧版 nexus.json 需手工补充；模板已含）；`context` 与 `stations.*.tools` 缺省时反序列化为空 map（兼容旧配置）。`context` 段旧版扁平 `default_*` 字段（如 `default_channel_batch_interval_secs`）已不再识别，需迁移为 `default_context_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_context_config.channel_batch_interval_secs`），否则旧值静默回落全局默认（如 station 不再启用）
+- `default_model_config` 承载 provider 默认模型参数（`max_tokens` / `context_length` / `max_context_messages` / `timeout_secs` / `retry_count` / `temperature` / `thinking` / `reasoning_effort`，未声明的字段回落全局默认 4096 / 65536 / 100 / 60 / 3）；其中 `max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
+- **迁移注意**：`context` 与 `stations.*.tools` 缺省时反序列化为空 map（兼容旧配置）。`context` 段旧版扁平 `default_*` 字段（如 `default_channel_batch_interval_secs`）已不再识别，需迁移为 `default_context_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_context_config.channel_batch_interval_secs`），否则旧值静默回落全局默认（如 station 不再启用）。`providers.<provider>` 旧版扁平 `default_*` 字段（如 `default_max_tokens`）同样已不再识别，需迁移为 `default_model_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_model_config.max_tokens`），否则旧值静默回落全局默认（4096/65536/100/60/3）
 
 ### 2. 启动与验证步骤
 
