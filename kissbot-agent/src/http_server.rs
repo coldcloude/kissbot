@@ -194,7 +194,7 @@ mod tests {
         let data_dir = dir.path().join("data");
         let cfg_path = dir.path().join("config.json");
         let cfg_json = format!(
-            r#"{{"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5}}}}"#,
+            r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5}}}}"#,
             data_dir.to_str().unwrap()
         );
         std::fs::write(&cfg_path, cfg_json).unwrap();

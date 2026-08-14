@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
 use crate::types::{
-    Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
+    Error, Message, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
@@ -155,30 +155,11 @@ impl AgentCoordinator {
         }
     }
 
-    /// 定位会话，新建时构建初始上下文；返回 (会话, 是否新建)
-    /// channel_id 为触发会话创建/重置的来源 channel；新建会话的 agent_id 取自 key（config 绑定）
-    async fn ensure_session(&self, key: &SessionKey, _channel_id: &str) -> (Arc<Session>, bool) {
-        // valid_default.load_full() 返回 Arc<Option<ProviderModel>>，解引用克隆得 Option
-        let model = (*self.valid_default.load_full()).clone();
-        let (session, created) = self.session_manager.get_or_create(key, model);
-        if created {
-            // 新建会话上下文：event 从缓存恢复（全量回读；文件不存在为空，不清理）；role 查询记忆重建（归档+清空在 build_role_context 内部）
-            match session.mode.as_ref() {
-                Mode::Event(_) => {
-                    let _ = session.context.lock().await.recover_from_cache().await;
-                }
-                Mode::Role => {
-                    let messages = self.build_context_from_memory_store(session.agent_id.clone(), session.role_name.clone()).await;
-                    let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
-                }
-            }
-            // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 system_prompt_for_agent（ego REST）。
-            // 生成结果执行一次 set（待定，下次发送前对比应用；与缓存恢复的系统不一致时旧上下文先归档）
-            if let Ok(prompt) = self.system_prompt_for_agent(session.agent_id.as_str(), &session.role_name).await {
-                session.context.lock().await.set_system_message(prompt);
-            }
-        }
-        (session, created)
+    /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
+    async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
+        // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
+        let model = self.valid_default.load_full();
+        self.session_manager.get_or_create(key, model).await
     }
 
     /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
@@ -286,7 +267,7 @@ impl AgentCoordinator {
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
         if let Some(ch) = ConfigManager::get().channel(channel_id).await {
             let key = self.session_key_for(&ch);
-            self.ensure_session(&key, channel_id).await;
+            self.ensure_session(&key).await;
         }
         Ok(())
     }
@@ -311,7 +292,7 @@ impl AgentCoordinator {
         let key = self.session_key_for(&ch);
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(&pm).await?;
-        let (session, _) = self.ensure_session(&key, channel_id).await;
+        let session = self.ensure_session(&key).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
@@ -322,7 +303,7 @@ impl AgentCoordinator {
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
             let key = self.session_key_for(&ch);
-            self.ensure_session(&key, &ch.channel_id).await;
+            self.ensure_session(&key).await;
         }
         // 连接所有 enabled 的 channel（连接/重连/回显/发送全部归 ChannelManager 通道适配层）
         self.channel_manager.clone().connect_all().await;
@@ -397,13 +378,14 @@ impl AgentCoordinator {
             return;
         };
         let key = self.session_key_for(&ch);
-        let (session, _) = self.ensure_session(&key, channel_id).await;
+        let session = self.ensure_session(&key).await;
         self.enqueue_batch(session, event).await;
     }
 
     /// 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
     /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
-    /// BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧直接取 session.batch_producer，无 Channel 中转
+    /// BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧经 session.enqueue_batch 入队
+    /// （batch_producer 已收窄为 Session 私有字段，外部不直接访问），无 Channel 中转
     async fn enqueue_batch(&self, session: Arc<Session>, event: Arc<IncomingMessageEvent>) {
         let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         session.enqueue_batch(event, cfg.channel_batch_interval_secs).await;

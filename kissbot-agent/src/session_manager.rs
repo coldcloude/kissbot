@@ -252,13 +252,14 @@ pub struct Session {
     pub agent_id: Arc<String>,      // 运行态：从 key 复制
     pub role_name: Arc<String>,     // 运行态：从 key 复制
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
-    pub context: tokio::sync::Mutex<SessionContext>,
-    /// 合批生产侧（依赖序构造时经 create_session 传入；channel 均从本字段取 clone 绑定）
-    pub batch_producer: BatchProducer,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
+    /// 会话上下文（内存消息 + 本地缓存 + 历史归档；coordinator 不直接访问，统一经 Session 方法/内部逻辑）
+    context: tokio::sync::Mutex<SessionContext>,
+    /// 合批生产侧（依赖序构造时经 create_session 传入；channel 均从本字段取 clone 绑定）
+    batch_producer: BatchProducer,
     /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
-    pub notify: Arc<Notify>,
+    notify: Arc<Notify>,
 }
 
 impl Session {
@@ -596,32 +597,33 @@ impl SessionManager {
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
     /// 双重锁定：先 get 快速路径（命中直接返回），未命中再走 entry API 原子创建（并发下仅一个创建成功）
 
-    pub fn get_or_create(
+    pub async fn get_or_create(
         &self,
         key: &SessionKey,
-        model: Option<ProviderModel>,
-    ) -> (Arc<Session>, bool) {
+        model: Arc<Option<ProviderModel>>,
+    ) -> Arc<Session> {
         if let Some(s) = self.sessions.get(key) {
-            return (s.clone(), false);
+            return s.clone();
         }
         match self.sessions.entry(key.clone()) {
-            dashmap::mapref::entry::Entry::Occupied(e) => (e.get().clone(), false),
+            dashmap::mapref::entry::Entry::Occupied(e) => e.get().clone(),
             dashmap::mapref::entry::Entry::Vacant(e) => {
-                // 创建部分抽出（create_session）：依赖序组装 + spawn 触发任务
-                let session = Self::create_session(key, model, &self.data_dir);
+                // 创建部分抽出（create_session）：依赖序组装 + 新建会话初始化 + spawn 触发任务
+                let session = Self::create_session(key, model, &self.data_dir).await;
                 e.insert(session.clone());
-                (session, true)
+                session
             }
         }
     }
 
-    /// 创建会话（get_or_create 的 created 分支抽出）：依赖序组装（内联 new_producer/BatchConsumer::new）+
+    /// 创建会话（get_or_create 的创建分支抽出）：依赖序组装（内联 new_producer/BatchConsumer::new）+
+    /// 新建会话初始化（上下文恢复/重建 + 系统消息，原 Coordinator::ensure_session 的 created 分支搬入）+
     /// spawn 触发任务（内联 spawn_trigger：tokio::spawn(consumer.run())）；返回新建会话
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
-    fn create_session(
+    async fn create_session(
         key: &SessionKey,
-        model: Option<ProviderModel>,
+        model: Arc<Option<ProviderModel>>,
         data_dir: &str,
     ) -> Arc<Session> {
         // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
@@ -638,13 +640,14 @@ impl SessionManager {
             deadline: deadline.clone(),
         };
         // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
+        // model 经 ArcSwap::from(Arc) 直接转移（零深拷贝，替代旧 from_pointee 值克隆）
         let session = Arc::new(Session {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
+            model: ArcSwap::from(model),
             context: tokio::sync::Mutex::new(SessionContext::new(data_dir, key)),
             batch_producer: producer,
-            model: ArcSwap::from_pointee(model),
             notify: notify.clone(),
         });
         // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
@@ -657,7 +660,25 @@ impl SessionManager {
             anchor,
             deadline,
         };
-        // 5. consumer 去 spawn（内联 spawn_trigger）
+        // 5. 新建会话初始化（原 Coordinator::ensure_session 的 created 分支；spawn 前执行，任务启动时上下文已就绪）：
+        //    Event 从缓存恢复（全量回读；文件不存在为空，不清理）；Role 查询记忆重建（归档+清空在 archive_... 内部）
+        match session.mode.as_ref() {
+            Mode::Event(_) => {
+                let _ = session.context.lock().await.recover_from_cache().await;
+            }
+            Mode::Role => {
+                let messages = AgentCoordinator::get()
+                    .build_context_from_memory_store(session.agent_id.clone(), session.role_name.clone()).await;
+                let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
+            }
+        }
+        // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（失败跳过设置）
+        if let Ok(prompt) = AgentCoordinator::get()
+            .system_prompt_for_agent(session.agent_id.as_str(), &session.role_name).await
+        {
+            session.context.lock().await.set_system_message(prompt);
+        }
+        // 6. consumer 去 spawn（内联 spawn_trigger）
         tokio::spawn(consumer.run());
         session
     }
@@ -672,6 +693,9 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicBool;
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
@@ -716,9 +740,9 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
+            model: ArcSwap::from_pointee(None),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
-            model: ArcSwap::from_pointee(None),
             notify: notify.clone(),
         });
         let consumer = BatchConsumer {
@@ -772,6 +796,29 @@ mod tests {
         }
     }
 
+    /// 测试进程级装配（幂等）：ConfigManager/AgentCoordinator 单例各注册一次。
+    /// create_session 的初始化逻辑依赖这两个单例（build_context_from_memory_store / system_prompt_for_agent），
+    /// get_or_create 相关测试前需先装配；data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
+    static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static TEST_INIT_DONE: AtomicBool = AtomicBool::new(false);
+    async fn ensure_test_globals() {
+        if !TEST_INIT_DONE.load(Ordering::Relaxed) {
+            let dir = TEST_GLOBAL_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+            let cfg_path = dir.path().join("config.json");
+            let cfg_json = format!(
+                r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9091,"ws_reconnect_interval_secs":5}}}}"#,
+                dir.path().join("data").to_str().unwrap()
+            );
+            std::fs::write(&cfg_path, cfg_json).unwrap();
+            // 2024 edition：设置环境变量需要 unsafe
+            unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
+            // 幂等：ConfigManager::new() 注册一次（第二实例丢弃）；AgentCoordinator 同理（SINGLETON.set 失败被忽略）
+            let _ = ConfigManager::new().await;
+            let _ = AgentCoordinator::new().await;
+            TEST_INIT_DONE.store(true, Ordering::Relaxed);
+        }
+    }
+
     /// 测试用 SessionManager（data_dir 指向临时目录；会话持久化路径仅构造不落盘）
     fn mgr() -> Arc<SessionManager> {
         let dir = tempfile::tempdir().unwrap();
@@ -780,26 +827,24 @@ mod tests {
 
     #[tokio::test]
     async fn get_or_create_dedupes() {
+        ensure_test_globals().await;
         let mgr = mgr();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let (s1, created1) = mgr.get_or_create(&k, Some(model.clone()));
-        assert!(created1, "首次创建");
-        let (s2, created2) = mgr.get_or_create(&k, Some(model.clone()));
-        assert!(!created2, "同 key 复用");
+        let s1 = mgr.get_or_create(&k, Arc::new(Some(model.clone()))).await;
+        let s2 = mgr.get_or_create(&k, Arc::new(Some(model.clone()))).await;
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let (_s3, created3) = mgr.get_or_create(&k_event, Some(model));
-        assert!(created3, "事件模式是独立会话");
+        let _s3 = mgr.get_or_create(&k_event, Arc::new(Some(model))).await;
     }
 
     #[tokio::test]
     async fn get_or_create_with_none_model() {
+        ensure_test_globals().await;
         let mgr = mgr();
         let key = SessionKey { agent_id: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let (s, created) = mgr.get_or_create(&key, None);
-        assert!(created);
+        let s = mgr.get_or_create(&key, Arc::new(None)).await;
         assert!(s.model.load().is_none());
     }
 
