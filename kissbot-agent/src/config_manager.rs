@@ -48,6 +48,7 @@ pub struct ContextConfig {
     pub memory_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compress_prompt: Option<Arc<String>>,
+    /// 启用的 station_id 集合（Set 形式）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stations: Option<Arc<HashSet<String>>>,
 }
