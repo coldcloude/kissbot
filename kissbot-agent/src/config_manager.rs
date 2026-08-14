@@ -952,6 +952,23 @@ mod tests {
     }
 
     #[test]
+    fn provider_config_nested_roundtrip() {
+        // 新嵌套格式序列化/反序列化往返（锁定 default_model_config 契约）
+        let pc = sample_provider("deepseek");
+        let json = serde_json::to_string(&pc).unwrap();
+        let back: ProviderConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.default_model_config.max_tokens, Some(4096));
+        assert_eq!(back.default_model_config.context_length, Some(65536));
+        assert_eq!(back.default_model_config.max_context_messages, Some(100));
+        assert_eq!(back.default_model_config.timeout_secs, Some(60));
+        assert_eq!(back.default_model_config.retry_count, Some(3));
+        assert_eq!(back.default_model_config.temperature, Some(0.7));
+        assert_eq!(back.default_model_config.thinking, None);
+        assert_eq!(back.default_model_config.reasoning_effort, None);
+        assert_eq!(back.name.as_str(), "deepseek");
+    }
+
+    #[test]
     fn merge_model_provider_partial_defaults_fall_back_to_globals() {
         // provider 默认仅配部分字段：未配字段回落全局常量；model 覆盖仍生效
         let mut provider = sample_provider("deepseek");
