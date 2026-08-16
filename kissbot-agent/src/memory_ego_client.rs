@@ -1,6 +1,8 @@
 //! ego 服务 REST 客户端（与 memory_store_client 同模式）：共享 reqwest client + ego 配置单例读取
 
-use kissbot_api::{AgentMetadata, IndividualRecognition, RolePlay};
+use std::sync::Arc;
+
+use kissbot_api::{AgentMetadata, GetAgentRequest, GetIndividualsRequest, GetRoleRequest, IndividualRecognition, RolePlay};
 
 use crate::types::{Error, Result};
 
@@ -26,7 +28,7 @@ impl MemoryEgoClient {
     pub async fn get_agent(&self, agent_id: &str) -> Result<Option<AgentMetadata>> {
         let resp = self.client.post(format!("{}/agent/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
-            .json(&serde_json::json!({ "agent_id": agent_id }))
+            .json(&GetAgentRequest { agent_id: Arc::new(agent_id.to_string()) })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
@@ -39,7 +41,7 @@ impl MemoryEgoClient {
     pub async fn get_individuals(&self, agent_id: &str) -> Result<Option<IndividualRecognition>> {
         let resp = self.client.post(format!("{}/individual/get-all", self.base_url))
             .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
-            .json(&serde_json::json!({ "agent_id": agent_id }))
+            .json(&GetIndividualsRequest { agent_id: Arc::new(agent_id.to_string()) })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("individual/get-all 请求失败: {}", e)))?;
@@ -52,10 +54,10 @@ impl MemoryEgoClient {
     pub async fn get_role(&self, agent_id: &str, role_name: &str) -> Result<Option<RolePlay>> {
         let resp = self.client.post(format!("{}/role/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
-            .json(&serde_json::json!({
-                "agent_id": agent_id,
-                "role_name": role_name,
-            }))
+            .json(&GetRoleRequest {
+                agent_id: Arc::new(agent_id.to_string()),
+                role_name: Arc::new(role_name.to_string()),
+            })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("role/get 请求失败: {}", e)))?;
@@ -71,7 +73,7 @@ impl MemoryEgoClient {
         }
         let resp = self.client.post(format!("{}/agent/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
-            .json(&serde_json::json!({ "agent_id": agent_id }))
+            .json(&GetAgentRequest { agent_id: Arc::new(agent_id.to_string()) })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
