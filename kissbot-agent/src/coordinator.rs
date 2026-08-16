@@ -148,7 +148,7 @@ impl AgentCoordinator {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
-        if AgentCoordinator::get().memory_ego_client.agent_exists(agent_id).await? {
+        if AgentCoordinator::get().memory_ego_client.get_agent(agent_id).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))

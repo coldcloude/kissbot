@@ -24,8 +24,12 @@ impl MemoryEgoClient {
         }
     }
 
-    /// POST /agent/get 查询 agent 元数据；data null（agent 不存在）→ Ok(None)；网络/解析失败 → Err
+    /// POST /agent/get 查询 agent 元数据；data null（agent 不存在）→ Ok(None)；网络/解析失败 → Err；
+    /// base_url 空 → Err("ego 未配置（memory_ego_url 为空）")（agent 查询与存在性校验共用）
     pub async fn get_agent(&self, agent_id: &str) -> Result<Option<AgentMetadata>> {
+        if self.base_url.is_empty() {
+            return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
+        }
         let resp = self.client.post(format!("{}/agent/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
             .json(&GetAgentRequest { agent_id: Arc::new(agent_id.to_string()) })
@@ -64,21 +68,5 @@ impl MemoryEgoClient {
         let envelope = resp.json::<kissbot_api::ApiResponse<RolePlay>>().await
             .map_err(|e| Error::MemoryEgoError(format!("role/get 响应解析失败: {}", e)))?;
         Ok(envelope.data)
-    }
-
-    /// agent 是否存在（data 非 null）；base_url 空 → Err("ego 未配置（memory_ego_url 为空）")
-    pub async fn agent_exists(&self, agent_id: &str) -> Result<bool> {
-        if self.base_url.is_empty() {
-            return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".to_string()));
-        }
-        let resp = self.client.post(format!("{}/agent/get", self.base_url))
-            .header(kissbot_security::HEADER_API_KEY, self.api_key.as_str())
-            .json(&GetAgentRequest { agent_id: Arc::new(agent_id.to_string()) })
-            .send()
-            .await
-            .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e)))?;
-        let data: serde_json::Value = resp.json().await
-            .map_err(|e| Error::MemoryEgoError(format!("agent/get 响应解析失败: {}", e)))?;
-        Ok(!data["data"].is_null())
     }
 }
