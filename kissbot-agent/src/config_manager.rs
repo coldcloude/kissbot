@@ -61,9 +61,9 @@ pub struct ContextConfig {
     pub memory_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compress_prompt: Option<Arc<String>>,
-    /// 启用的 station_id 集合（Set 形式）
+    /// 启用的 toolkit 名集合（白名单；None/空 = 无工具；替代原 stations 字段）
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stations: Option<Arc<HashSet<String>>>,
+    pub toolkits: Option<Arc<HashSet<String>>>,
 }
 
 /// 合并后的有效配置（现场合成，不持久化）
@@ -73,7 +73,7 @@ pub struct EffectiveContextConfig {
     pub memory_time_secs: u64,
     pub memory_count: usize,
     pub compress_prompt: String,
-    pub stations: HashSet<String>,
+    pub toolkits: HashSet<String>,
 }
 
 /// 三层逐字段合并：全局默认 ← agent 默认 ← role 覆盖（role Some 覆盖 agent；未配回落全局常量）。
@@ -89,7 +89,7 @@ pub fn merge_context_config(
             memory_time_secs: DEFAULT_MEMORY_TIME_SECS,
             memory_count: DEFAULT_MEMORY_COUNT,
             compress_prompt: DEFAULT_COMPRESS_PROMPT.to_string(),
-            stations: HashSet::new(),
+            toolkits: HashSet::new(),
         };
     };
     let d = &a.default_context_config;
@@ -106,9 +106,9 @@ pub fn merge_context_config(
         compress_prompt: role.and_then(|r| r.compress_prompt.as_ref().map(|s| s.to_string()))
             .or_else(|| d.compress_prompt.as_ref().map(|s| s.to_string()))
             .unwrap_or_else(|| DEFAULT_COMPRESS_PROMPT.to_string()),
-        stations: role.and_then(|r| r.stations.clone())
+        toolkits: role.and_then(|r| r.toolkits.clone())
             .map(|s| (*s).clone())
-            .or_else(|| d.stations.clone().map(|s| (*s).clone()))
+            .or_else(|| d.toolkits.clone().map(|s| (*s).clone()))
             .unwrap_or_default(),
     }
 }
@@ -208,8 +208,6 @@ pub struct NexusRepo {
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
     pub providers: Arc<ArcSwapHashMap<String, ProviderConfig>>, // key = provider 名
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
-    // nexus 可对接的 station 列表
-    pub stations: Arc<ArcSwapHashMap<String, StationConfig>>,
     /// agent_id → AgentContextConfig（上下文配置，三层继承见 merge_context_config）
     /// serde(default)：旧 nexus.json 无 context 段时反序列化为空 map（= 全局默认，兼容旧配置）
     #[serde(default)]
@@ -225,7 +223,6 @@ impl Default for NexusRepo {
             channels: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
-            stations: Arc::new(ArcSwapHashMap::new()),
             context: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
             default_system_prompt: Arc::new(String::new()),
@@ -289,22 +286,47 @@ pub struct MemoryStructConfig {
     pub url: Arc<String>,
 }
 
-/// station 可改配置，持久化到 <data_dir>/station.json（本轮占位，暂无字段）
+/// station 可改配置，持久化到 <data_dir>/station.json
+/// 全局 Station 每 agent 一个：本地 toolkit 集合 + 直接子 Station 集合
+/// （子只能 HTTP 通信，父只存连接信息；toolkit 名全局唯一命名空间，含子 Station 不能重名）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StationRepo {}
+pub struct StationRepo {
+    /// 本地 toolkit 集合（key = toolkit 名）
+    pub toolkits: Arc<ArcSwapHashMap<String, ToolkitConfig>>,
+    /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
+    pub sub_stations: Arc<ArcSwapHashMap<String, SubStationConfig>>,
+}
 
+/// Toolkit 配置（StationRepo.toolkits 的 value；key = toolkit 名）
+/// Toolkit 中无子 Station；内置 toolkit（如 filesystem）由内置注册表填充元数据与实现，
+/// 配置声明的 tools/mcps 作为补充（仅元数据注册，无本地实现时调用返回未实现）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolkitConfig {
+    /// 工具元数据（key = 工具名）
+    #[serde(default)]
+    pub tools: Arc<ArcSwapHashMap<String, ToolConfig>>,
+    /// MCP 元数据（key = mcp 名；本轮占位，无实现）
+    #[serde(default)]
+    pub mcps: Arc<ArcSwapHashMap<String, McpConfig>>,
+}
+
+/// MCP 配置（占位：本轮仅建结构，不实现调用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StationConfig {
+pub struct McpConfig {
+    pub name: Arc<String>,
+    pub description: Arc<String>,
+}
+
+/// 子 Station 配置（StationRepo.sub_stations 的 value；key = station_id）
+/// 只存直接子连接信息；子 Station 内部结构（toolkits/孙子）由子进程自己管理，父通过 HTTP 查询
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubStationConfig {
     pub station_id: Arc<String>,
     pub base_url: Arc<String>,
     pub timeout_secs: u64,
-    /// 工具列表（key = 工具名）
-    /// serde(default)：旧 station 条目无 tools 时反序列化为空 map（= 不宣传任何工具，兼容旧配置）
-    #[serde(default)]
-    pub tools: Arc<ArcSwapHashMap<String, ToolConfig>>,
 }
 
-/// 工具配置（StationConfig.tools 的 value；name 与 map key 一致）
+/// 工具配置（ToolkitConfig.tools 的 value；name 与 map key 一致）
 /// 字段按编码规范用 Arc<String>/Arc<Value>
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
@@ -485,10 +507,9 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
     }
-    /// 返回所有 station 配置快照（station_id -> Arc<StationConfig>）
-    pub async fn stations(&self) -> Vec<(String, Arc<StationConfig>)> {
-        let repo = self.nexus_repo.read().await;
-        repo.stations.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
+    /// 返回 StationRepo 快照（Station 单例构建使用）
+    pub async fn station_repo_snapshot(&self) -> StationRepo {
+        self.station_repo.read().await.clone()
     }
     /// 按 channel_id 直接查找单个 channel 配置（map O(1) get，不克隆整个 map 再遍历）
     pub async fn channel(&self, channel_id: &str) -> Option<Arc<ChannelConfig>> {
@@ -885,7 +906,6 @@ mod tests {
             channels: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
-            stations: Arc::new(ArcSwapHashMap::new()),
             context: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
             default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
@@ -902,7 +922,6 @@ mod tests {
         assert!(repo.channels.is_empty());
         assert!(repo.providers.is_empty());
         assert!(repo.memory_structs.is_empty());
-        assert!(repo.stations.is_empty());
     }
 
     // ---------- Provider 配置 ----------
@@ -1234,19 +1253,41 @@ mod tests {
     }
 
     #[test]
-    fn station_config_tools_roundtrip() {
-        let sc = StationConfig {
-            station_id: Arc::new("local".into()),
-            base_url: Arc::new(String::new()),
-            timeout_secs: 5,
-            tools: Arc::new(ArcSwapHashMap::new()),
-        };
-        let json = serde_json::to_string(&sc).unwrap();
-        let back: StationConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(*back.station_id, "local");
-        assert!(back.tools.is_empty());
+    fn station_repo_new_shape_serde_roundtrip() {
+        // StationRepo 新形状：toolkits + sub_stations；McpConfig 占位序列化
+        let mut repo = StationRepo::default();
+        {
+            let map = Arc::make_mut(&mut repo.toolkits);
+            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(ToolkitConfig {
+                tools: Arc::new(ArcSwapHashMap::new()),
+                mcps: Arc::new({
+                    let mut m = ArcSwapHashMap::new();
+                    m.insert("mcp1".to_string(), ArcSwap::new(Arc::new(McpConfig {
+                        name: Arc::new("mcp1".into()),
+                        description: Arc::new("占位".into()),
+                    })));
+                    m
+                }),
+            })));
+        }
+        {
+            let map = Arc::make_mut(&mut repo.sub_stations);
+            map.insert("station-a".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
+                station_id: Arc::new("station-a".into()),
+                base_url: Arc::new("http://127.0.0.1:9001".into()),
+                timeout_secs: 30,
+            })));
+        }
+        let json = serde_json::to_string(&repo).unwrap();
+        assert!(json.contains("\"toolkits\"") && json.contains("\"sub_stations\""), "新形状字段");
+        let back: StationRepo = serde_json::from_str(&json).unwrap();
+        assert!(back.toolkits.contains_key("filesystem"));
+        let tcfg = back.toolkits.get("filesystem").unwrap().load_full();
+        assert_eq!(tcfg.mcps.get("mcp1").unwrap().load_full().name.as_str(), "mcp1");
+        let sub = back.sub_stations.get("station-a").unwrap().load_full();
+        assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
 
-        // ToolConfig 序列化
+        // ToolConfig 序列化（原 station_config_tools_roundtrip 保留部分）
         let tc = ToolConfig {
             name: Arc::new("read".into()),
             description: Arc::new("读取文本文件".into()),
@@ -1265,7 +1306,19 @@ mod tests {
         assert_eq!(eff.channel_batch_interval_secs, DEFAULT_CHANNEL_BATCH_INTERVAL_SECS);
         assert_eq!(eff.memory_time_secs, DEFAULT_MEMORY_TIME_SECS);
         assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT);
-        assert!(eff.stations.is_empty());
+        assert!(eff.toolkits.is_empty());
+    }
+
+    #[test]
+    fn context_config_toolkits_replaces_stations() {
+        // 新格式：toolkits 字段生效
+        let new = r#"{"toolkits": ["filesystem"]}"#;
+        let cfg: ContextConfig = serde_json::from_str(new).unwrap();
+        assert!(cfg.toolkits.as_ref().unwrap().contains("filesystem"));
+        // 旧格式：stations 字段被忽略（未知字段），toolkits 缺省为 None
+        let old = r#"{"stations": ["local"]}"#;
+        let cfg: ContextConfig = serde_json::from_str(old).unwrap();
+        assert!(cfg.toolkits.is_none(), "旧 stations 字段应被忽略");
     }
 
     #[test]
@@ -1276,7 +1329,7 @@ mod tests {
                 memory_time_secs: Some(7200),
                 memory_count: Some(100),
                 compress_prompt: Some(Arc::new("agent模板".into())),
-                stations: Some(Arc::new(["s1".into()].into_iter().collect())),
+                toolkits: Some(Arc::new(["s1".into()].into_iter().collect())),
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1285,25 +1338,25 @@ mod tests {
             memory_time_secs: None,
             memory_count: None,
             compress_prompt: None,
-            stations: None,
+            toolkits: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 7, "role 覆盖 agent");
         assert_eq!(eff.memory_time_secs, 7200, "role 未配继承 agent");
         assert_eq!(eff.memory_count, 100);
         assert_eq!(eff.compress_prompt, "agent模板");
-        assert!(eff.stations.contains("s1"));
+        assert!(eff.toolkits.contains("s1"));
     }
 
     #[test]
-    fn role_stations_override_agent() {
+    fn role_toolkits_override_agent() {
         let agent = AgentContextConfig {
             default_context_config: ContextConfig {
                 channel_batch_interval_secs: Some(3),
                 memory_time_secs: Some(3600),
                 memory_count: Some(50),
                 compress_prompt: Some(Arc::new("t".into())),
-                stations: Some(Arc::new(["s1".into()].into_iter().collect())),
+                toolkits: Some(Arc::new(["s1".into()].into_iter().collect())),
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1312,10 +1365,10 @@ mod tests {
             memory_time_secs: None,
             memory_count: None,
             compress_prompt: None,
-            stations: Some(Arc::new(["s2".into()].into_iter().collect())),
+            toolkits: Some(Arc::new(["s2".into()].into_iter().collect())),
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
-        assert!(eff.stations.contains("s2") && !eff.stations.contains("s1"), "role stations 整体覆盖");
+        assert!(eff.toolkits.contains("s2") && !eff.toolkits.contains("s1"), "role toolkits 整体覆盖");
     }
 
     #[test]
@@ -1326,7 +1379,7 @@ mod tests {
                 memory_time_secs: Some(3600),
                 memory_count: Some(50),
                 compress_prompt: Some(Arc::new("t".into())),
-                stations: Some(Arc::new(HashSet::new())),
+                toolkits: Some(Arc::new(HashSet::new())),
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1344,7 +1397,7 @@ mod tests {
                 memory_time_secs: None,
                 memory_count: None,
                 compress_prompt: None,
-                stations: None,
+                toolkits: None,
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1353,14 +1406,14 @@ mod tests {
             memory_time_secs: Some(7200),
             memory_count: None,
             compress_prompt: None,
-            stations: None,
+            toolkits: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 5, "agent 配了用 agent");
         assert_eq!(eff.memory_time_secs, 7200, "role 覆盖 agent");
         assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT, "未配回落全局");
         assert_eq!(eff.compress_prompt, DEFAULT_COMPRESS_PROMPT);
-        assert!(eff.stations.is_empty());
+        assert!(eff.toolkits.is_empty());
     }
 
     #[test]
@@ -1375,7 +1428,7 @@ mod tests {
             memory_time_secs: None,
             memory_count: None,
             compress_prompt: None,
-            stations: None,
+            toolkits: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 7, "role 覆盖生效");

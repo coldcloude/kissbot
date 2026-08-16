@@ -14,7 +14,6 @@ mod message;
 mod session_manager;
 mod station;
 mod station_client;
-mod station_router;
 mod types;
 
 #[tokio::main]

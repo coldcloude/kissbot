@@ -3,7 +3,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
@@ -17,7 +16,6 @@ use crate::model_client::ModelClient;
 use crate::message::pack_memory_messages;
 use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
-use crate::station::{self, StationRuntime};
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
@@ -51,8 +49,6 @@ pub struct AgentCoordinator {
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
-    /// station_id → StationRuntime（启动时按配置构建；base_url 为空的本地 station 注册内置 Read 工具）
-    station_runtimes: Arc<DashMap<String, Arc<StationRuntime>>>,
 }
 
 impl AgentCoordinator {
@@ -79,7 +75,6 @@ impl AgentCoordinator {
             channel_manager: Arc::new(ChannelManager::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
-            station_runtimes: Arc::new(DashMap::new()),
         };
 
         // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
@@ -92,20 +87,6 @@ impl AgentCoordinator {
                 warn!("校验 default_model {}/{} 失败: {}", default_model.provider, default_model.model, e);
             },
         };
-
-        // 构建 Station 运行态：base_url 为空的本地 station 注册内置 Read 工具；
-        // 远程 station 的 runtime 同样构建（call_tool 走 REST 骨架，本轮不实现）
-        {
-            let runtimes = coordinator.station_runtimes.clone();
-            for (_, sc) in config.stations().await {
-                let runtime = Arc::new(StationRuntime::new(sc));
-                if runtime.config().base_url.is_empty() {
-                    let cwd = std::env::current_dir().unwrap_or_default();
-                    runtime.register_local("read", Arc::new(station::ReadTool::new(cwd)));
-                }
-                runtimes.insert(runtime.station_id().to_string(), runtime);
-            }
-        }
 
         // 启动动作（绑定运行态 agent / 初始化会话 / 连接 channel）统一在 run() 中执行
 
@@ -544,35 +525,14 @@ impl AgentCoordinator {
         self.memory_store_client.push_tool_result(request).await;
     }
 
-    /// 会话可用工具：context 配置的启用的 stations ∩ 实际配置的 station → 收集 ToolConfig
-    /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
-    pub async fn tools_for_session(&self, session: Arc<Session>) -> Vec<ToolConfig> {
-        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
-        let mut tools = Vec::new();
-        for entry in self.station_runtimes.iter() {
-            let (station_id, runtime) = entry.pair();
-            if cfg.stations.contains(station_id.as_str()) {
-                tools.extend(runtime.configured_tools());
-            }
-        }
-        tools
+    /// 会话可用工具：context 配置的启用 toolkits 白名单 → Station 平铺查询（Task 4 接入 Station 单例）
+    /// 过渡期（Task 1-3）返回空：Station 运行时已从 Nexus 移除，待 station.rs 重写后恢复
+    pub async fn tools_for_session(&self, _session: Arc<Session>) -> Vec<ToolConfig> {
+        Vec::new()
     }
 
-    /// 执行单个 tool call：在启用的 station 中查找并调用；找不到/调用失败返回错误 JSON
-    pub async fn execute_tool_call(&self, session: Arc<Session>, call: Arc<ToolCall>) -> serde_json::Value {
-        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
-        // 先克隆出 Arc 列表（释放 DashMap 全局读锁），再逐项 await（不跨 await 持锁）
-        let runtimes: Vec<(String, Arc<StationRuntime>)> = self.station_runtimes.iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        for (station_id, runtime) in &runtimes {
-            if cfg.stations.contains(station_id.as_str()) && runtime.has_tool(call.name.as_str()) {
-                match runtime.call_tool(call.name.as_str(), (*call.arguments).clone()).await {
-                    Ok(v) => return v,
-                    Err(e) => return serde_json::json!({ "error": e.to_string() }),
-                }
-            }
-        }
+    /// 执行单个 tool call（Task 4 接入 Station 单例；过渡期返回工具不存在）
+    pub async fn execute_tool_call(&self, _session: Arc<Session>, call: Arc<ToolCall>) -> serde_json::Value {
         serde_json::json!({ "error": format!("工具不存在: {}", call.name) })
     }
 
