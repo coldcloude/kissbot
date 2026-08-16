@@ -120,7 +120,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 9. Station 运行态
 - 全局 Station 单例（每 agent 一个，`Station::get()`/`new()`）从 station.json 构建：本地 Toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station 集合（仅连接信息）
 - 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem toolkit 名才注册
-- 工具名整树全局唯一（本地硬约束 + 跨进程部署保证）
+- 工具名整树全局唯一（本地硬约束：本地 toolkit 间不得重名，构建时报错；跨进程冲突在 merge_sub_tools 合并时保留先到者（本地与先插入子优先），后到同名工具剔除并记 warn 日志）
 
 ### 10. Station 工具执行
 - 工具定义（name/description/parameters JSON Schema）存于 ToolkitConfig.tools（工具名 → 配置），由 nexus 按会话 context 配置的启用 toolkit 白名单聚合（`tools(filter)` 平铺递归）后随 LLM 请求发送

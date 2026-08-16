@@ -219,7 +219,7 @@ sequenceDiagram
 
 ## 八、未接线 / 预留
 
-- **station_client（子 Station HTTP 协议）**：子 Station 只能 HTTP 通信，StationClient 骨架（list_tools / list_mcps / call_tool）已就位，`Station::tools/mcps/call_tool` 直接子递归处捕获 Err 记 warn 日志跳过；HTTP 协议实现在 [kissbot-agent-station 技术规格](kissbot-agent-station.md) 中定义。
+- **station_client（子 Station HTTP 协议）**：子 Station 只能 HTTP 通信，StationClient 骨架（list_tools / list_mcps / call_tool）已就位；骨架期 list_tools / list_mcps 返回空集合（非报错无 warn 噪声），`Station::call_tool` 经 tool_routes 路由缓存路由到对应子（不再遍历全部子），Err 分支保留给 HTTP 实现后的网络错误（记日志跳过，不阻塞整体）；HTTP 协议实现在 [kissbot-agent-station 技术规格](kissbot-agent-station.md) 中定义。
 - **MCP 真实实现**：McpConfig 仅占位结构，`Station::mcps` 无生产消费方。
 - **Terminal 的 join_group / leave_group / user_removed / download_chunk**：回调已实现（no-op / 未使用），业务逻辑预留。
 - **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。

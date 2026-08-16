@@ -276,7 +276,7 @@ impl Station {
         Ok(out)
     }
 
-    /// MCP 元数据平铺查询（占位接口：本地返回配置，直接子 HTTP 骨架跳过）
+    /// MCP 元数据平铺查询（占位接口：本地返回配置；直接子骨架期返回空集合，Err 分支保留给未来 HTTP/网络错误）
     #[allow(dead_code)] // MCP 本轮占位，无生产消费方
     pub async fn mcps(&self, filter: Option<&HashSet<String>>) -> Result<Vec<McpConfig>> {
         let mut out = Vec::new();
