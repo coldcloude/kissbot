@@ -66,19 +66,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 {
   "toolkits": {
     "filesystem": {
-      "tools": {
-        "read": {
-          "name": "read",
-          "description": "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "path": { "type": "string", "description": "文件路径（相对或绝对，限工作目录内）" }
-            },
-            "required": ["path"]
-          }
-        }
-      },
+      "tools": {},
       "mcps": {
         "mcp1": { "name": "mcp1", "description": "占位" }
       }
@@ -95,7 +83,8 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 ```
 
 - **toolkits**：map<toolkit 名, ToolkitConfig>；toolkit 名全局唯一命名空间
-- **ToolkitConfig**：tools = map<工具名, ToolConfig>（name/description/parameters JSON Schema）+ mcps = map<mcp 名, McpConfig>（占位）
+- **内置注册表填充**：声明 `toolkits["filesystem"]` 时由内置注册表注册 read 工具（见第 5 节），配置中 tools 无需（也不应）声明 read——显式声明同名 read 会在 `Station::from_repo` 注册步骤 2 触发"工具名冲突: read（toolkit 内全局唯一）"导致启动失败
+- **ToolkitConfig**：tools = map<工具名, ToolConfig>（name/description/parameters JSON Schema）+ mcps = map<mcp 名, McpConfig>（占位，本轮仅建结构不实现调用，见第 7 节）
 - **sub_stations**：map<station_id, SubStationConfig>（station_id/base_url/timeout_secs），只存直接子连接信息
 - 兼容旧配置：toolkits/sub_stations 带 `#[serde(default)]`，旧 station.json 空对象 `{}` 可加载
 
