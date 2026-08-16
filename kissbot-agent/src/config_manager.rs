@@ -292,8 +292,12 @@ pub struct MemoryStructConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StationRepo {
     /// 本地 toolkit 集合（key = toolkit 名）
+    /// serde(default)：旧 station.json 空对象 {} 反序列化为空 map（兼容旧配置）
+    #[serde(default)]
     pub toolkits: Arc<ArcSwapHashMap<String, ToolkitConfig>>,
     /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
+    /// serde(default)：旧 station.json 空对象 {} 反序列化为空 map（兼容旧配置）
+    #[serde(default)]
     pub sub_stations: Arc<ArcSwapHashMap<String, SubStationConfig>>,
 }
 
@@ -1286,6 +1290,10 @@ mod tests {
         assert_eq!(tcfg.mcps.get("mcp1").unwrap().load_full().name.as_str(), "mcp1");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
+
+        // 兼容旧配置：空对象 {} 反序列化为空 map（station.json 缺省形状）
+        let empty: StationRepo = serde_json::from_str("{}").unwrap();
+        assert!(empty.toolkits.is_empty() && empty.sub_stations.is_empty());
 
         // ToolConfig 序列化（原 station_config_tools_roundtrip 保留部分）
         let tc = ToolConfig {
