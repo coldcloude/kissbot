@@ -149,6 +149,10 @@ static SINGLETON: OnceLock<Station> = OnceLock::new();
 pub struct Station {
     toolkits: DashMap<String, Arc<Toolkit>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
+    /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
+    /// tools() 拉取子 Station 成功时更新（快照语义：先清该子旧记录再逐个插入）；
+    /// 工具名整树全局唯一：与本地/先到子重名时保留先到者（后到者剔除 + warn）
+    tool_routes: DashMap<String, String>,
 }
 
 impl Station {
@@ -210,7 +214,7 @@ impl Station {
             };
             sub_stations.insert(id.clone(), Arc::new(sub));
         }
-        Ok(Station { toolkits, sub_stations })
+        Ok(Station { toolkits, sub_stations, tool_routes: DashMap::new() })
     }
 
     /// 工具名唯一性校验：本地 toolkit 间不得重名（工具名整树全局唯一，本地先硬约束）
@@ -221,10 +225,35 @@ impl Station {
         Ok(())
     }
 
-    /// 工具元数据平铺查询：本地 toolkit 白名单过滤 + 直接子递归（HTTP 骨架，本轮未实现跳过）
+    /// 合并单个子 Station 的工具进路由表（快照语义：先清该子旧记录，再逐个插入）
+    /// 工具名冲突（与本地或先到子重名）保留先到者：后到者不进路由表
+    /// 返回成功插入的工具名集合（调用方据此从返回列表剔除冲突项）
+    fn merge_sub_tools(&self, station_id: &str, tools: &[ToolConfig], local_names: &HashSet<String>) -> HashSet<String> {
+        // 1. 清该子旧路由记录（快照语义：该子当前拉取结果为准）
+        self.tool_routes.retain(|_, v| v.as_str() != station_id);
+        // 2. 逐个插入（冲突保留先到者：本地工具与先插入的其他子优先）
+        let mut inserted = HashSet::new();
+        for t in tools {
+            let name = t.name.to_string();
+            if self.tool_routes.contains_key(&name) || local_names.contains(&name) {
+                warn!("工具名冲突: {}（保留先到者，剔除子 Station {} 的同名工具）", name, station_id);
+                continue;
+            }
+            self.tool_routes.insert(name.clone(), station_id.to_string());
+            inserted.insert(name);
+        }
+        inserted
+    }
+
+    /// 工具元数据平铺查询：本地 toolkit 白名单过滤 + 直接子实时拉取（更新路由缓存）
     /// filter = None 返回全部；Some(空集) 返回空
     pub async fn tools(&self, filter: Option<&HashSet<String>>) -> Result<Vec<ToolConfig>> {
         let mut out = Vec::new();
+        // 本地工具名集合（冲突校验用：本地优先，子工具与本地重名剔除）
+        let local_names: HashSet<String> = self.toolkits.iter()
+            .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
+            .collect();
+        // 本地
         for entry in self.toolkits.iter() {
             let toolkit = entry.value();
             if let Some(f) = filter {
@@ -232,12 +261,15 @@ impl Station {
             }
             out.extend(toolkit.configured_tools());
         }
-        // 直接子递归（HTTP 骨架：未实现返回 Err → 记日志跳过，不阻塞整体）
+        // 直接子：实时拉取（带同一 filter）→ 更新路由缓存 → 合并元数据（剔除冲突项）
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
         for sub in subs {
             match sub.client.list_tools(filter).await {
-                Ok(tools) => out.extend(tools),
+                Ok(tools) => {
+                    let inserted = self.merge_sub_tools(sub.config.station_id.as_str(), &tools, &local_names);
+                    out.extend(tools.into_iter().filter(|t| inserted.contains(t.name.as_str())));
+                }
                 Err(e) => warn!("子 Station {} 查询工具失败: {}", sub.config.station_id.as_str(), e),
             }
         }
@@ -268,7 +300,7 @@ impl Station {
     }
 
     /// 执行工具：本地实现表（跨 toolkit，工具名全局唯一）命中执行；
-    /// 未命中 → 直接子递归（HTTP 骨架：子返回 Err 记日志跳过；全部未命中 → 工具不存在）
+    /// 未命中 → 查远程工具路由表（工具名 → 直接子 station_id）路由到对应子；路由未命中 → 工具不存在
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
         let local: Option<Option<Arc<dyn Tool>>> = {
@@ -287,13 +319,15 @@ impl Station {
                 None => Err(Error::InternalError(format!("工具未实现（仅元数据注册）: {}", name))),
             };
         }
-        // 直接子递归（骨架：子未实现返回 Err → 记日志跳过；全部未命中 → 工具不存在）
-        // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
-        let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
-        for sub in subs {
-            match sub.client.call_tool(name, params.clone()).await {
-                Ok(v) => return Ok(v),
-                Err(e) => warn!("子 Station {} 调用工具 {} 失败: {}", sub.config.station_id.as_str(), name, e),
+        // 远程路由：查缓存表（工具名 → 直接子 station_id），命中 → 该子 HTTP 调用
+        // 不再遍历全部子、不再远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
+        let routed = self.tool_routes.get(name).map(|r| r.value().clone());
+        if let Some(station_id) = routed {
+            if let Some(sub) = self.sub_stations.get(&station_id).map(|s| s.value().clone()) {
+                return match sub.client.call_tool(name, params).await {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(e),
+                };
             }
         }
         Err(Error::InternalError(format!("工具不存在: {}", name)))
@@ -400,10 +434,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_with_sub_skips_http_skeleton() {
-        // 子 Station HTTP 骨架未实现 → Err 记日志跳过；无本地工具时结果为空
+    async fn tools_with_sub_returns_empty_skeleton() {
+        // 子 Station 骨架查询返回空集合（非报错）→ 无 warn 噪声，路由表不更新，结果只有本地
         let station = Station::from_repo(&repo_with_sub()).unwrap();
-        assert!(station.tools(None).await.unwrap().is_empty());
+        assert!(station.tools(None).await.unwrap().is_empty(), "无本地工具，子骨架返回空");
+        assert!(station.tool_routes.is_empty(), "骨架期路由表恒空");
+    }
+
+    #[test]
+    fn merge_sub_tools_inserts_and_keeps_first_wins() {
+        let station = Station::from_repo(&repo_with_filesystem()).unwrap();
+        let local_names: HashSet<String> = station.toolkits.iter()
+            .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
+            .collect();
+        // 子 a 提供 x/y → 全插入
+        let ta = vec![tool_config("x"), tool_config("y")];
+        let ins_a = station.merge_sub_tools("station-a", &ta, &local_names);
+        assert_eq!(ins_a.len(), 2);
+        assert_eq!(station.tool_routes.get("x").unwrap().value().as_str(), "station-a");
+        // 子 b 提供 y（与 a 重名，先到者保留）与 z → y 剔除、z 插入
+        let tb = vec![tool_config("y"), tool_config("z")];
+        let ins_b = station.merge_sub_tools("station-b", &tb, &local_names);
+        assert_eq!(ins_b.len(), 1, "y 冲突剔除，仅 z 插入");
+        assert!(ins_b.contains("z") && !ins_b.contains("y"));
+        assert_eq!(station.tool_routes.get("y").unwrap().value().as_str(), "station-a", "先到者保留");
+        assert_eq!(station.tool_routes.get("z").unwrap().value().as_str(), "station-b");
+        // 子 c 提供 read（与本地 filesystem 内置重名，本地优先）→ 剔除
+        let tc = vec![tool_config("read")];
+        let ins_c = station.merge_sub_tools("station-c", &tc, &local_names);
+        assert!(ins_c.is_empty(), "与本地重名剔除");
+        assert!(!station.tool_routes.contains_key("read"), "本地工具不进路由表");
+        // 快照语义：子 a 重新拉取只含 x → 旧 y 记录被清
+        let ta2 = vec![tool_config("x")];
+        let _ = station.merge_sub_tools("station-a", &ta2, &local_names);
+        assert!(!station.tool_routes.contains_key("y"), "快照：该子旧记录清除");
+    }
+
+    fn tool_config(name: &str) -> ToolConfig {
+        ToolConfig {
+            name: Arc::new(name.into()),
+            description: Arc::new("d".into()),
+            parameters: Arc::new(serde_json::json!({})),
+        }
     }
 
     #[tokio::test]
@@ -471,19 +543,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_tool_local_hit_and_miss() {
+    async fn call_tool_routes_via_cache_table() {
+        let station = Station::from_repo(&repo_with_sub()).unwrap();
+        // 注入路由（模拟 tools() 拉取后缓存）：工具 x 属于 station-a
+        station.tool_routes.insert("x".to_string(), "station-a".to_string());
+        // 命中路由 → 调子 Station（骨架返回未实现 Err）→ 返回该错误（非"工具不存在"）
+        let err = station.call_tool("x", serde_json::json!({})).await.unwrap_err();
+        assert!(err.to_string().contains("未实现"), "路由命中应调子而非工具不存在: {}", err);
+        // 未命中路由（本地也无）→ 工具不存在
+        let miss = station.call_tool("nope", serde_json::json!({})).await;
+        assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_local_miss_returns_not_found() {
         let station = Station::from_repo(&repo_with_filesystem()).unwrap();
-        // 命中：read 本地实现执行（读测试目录内文件）
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "内容").unwrap();
-        let read = crate::station::ReadTool::new(dir.path().to_path_buf());
-        let station2 = Station::from_repo(&{
-            let repo = repo_with_filesystem();
-            // 替换内置实现无法直接注入，这里改用临时单实例验证路径：直接调 ReadTool
-            repo
-        }).unwrap();
-        let _ = (station2, read);
-        // 未注册工具 → 工具不存在
         let miss = station.call_tool("nope", serde_json::json!({})).await;
         assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
     }
