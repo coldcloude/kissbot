@@ -237,9 +237,9 @@ impl Station {
             out.extend(toolkit.configured_tools());
         }
         // 直接子递归（HTTP 骨架：未实现返回 Err → 记日志跳过，不阻塞整体）
-        for entry in self.sub_stations.iter() {
-            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
-            let sub = entry.value().clone();
+        // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
+        let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
+        for sub in subs {
             match sub.client.list_tools(filter).await {
                 Ok(tools) => out.extend(tools),
                 Err(e) => warn!("子 Station {} 查询工具失败: {}", sub.config.station_id.as_str(), e),
@@ -259,9 +259,9 @@ impl Station {
             }
             out.extend(toolkit.configured_mcps());
         }
-        for entry in self.sub_stations.iter() {
-            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
-            let sub = entry.value().clone();
+        // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
+        let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
+        for sub in subs {
             match sub.client.list_mcps(filter).await {
                 Ok(mcps) => out.extend(mcps),
                 Err(e) => warn!("子 Station {} 查询 MCP 失败: {}", sub.config.station_id.as_str(), e),
@@ -274,20 +274,27 @@ impl Station {
     /// 未命中 → 直接子递归（HTTP 骨架：子返回 Err 记日志跳过；全部未命中 → 工具不存在）
     #[allow(dead_code)] // 目前仅单测消费，Task 4 tools_for_session 接入
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
-        // 克隆出 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
-        for entry in self.toolkits.iter() {
-            if let Some(t) = entry.value().tools.get(name) {
-                let imp = t.value().imp.clone();
-                return match imp {
-                    Some(tool) => tool.call(params).await,
-                    None => Err(Error::InternalError(format!("工具未实现（仅元数据注册）: {}", name))),
-                };
+        // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
+        let local: Option<Option<Arc<dyn Tool>>> = {
+            let mut found = None;
+            for entry in self.toolkits.iter() {
+                if let Some(t) = entry.value().tools.get(name) {
+                    found = Some(t.value().imp.clone());
+                    break;
+                }
             }
+            found
+        };
+        if let Some(imp) = local {
+            return match imp {
+                Some(tool) => tool.call(params).await,
+                None => Err(Error::InternalError(format!("工具未实现（仅元数据注册）: {}", name))),
+            };
         }
         // 直接子递归（骨架：子未实现返回 Err → 记日志跳过；全部未命中 → 工具不存在）
-        for entry in self.sub_stations.iter() {
-            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
-            let sub = entry.value().clone();
+        // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
+        let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
+        for sub in subs {
             match sub.client.call_tool(name, params.clone()).await {
                 Ok(v) => return Ok(v),
                 Err(e) => warn!("子 Station {} 调用工具 {} 失败: {}", sub.config.station_id.as_str(), name, e),
