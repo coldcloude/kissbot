@@ -11,3 +11,9 @@
 1. [x] 去掉msg_type，直接使用Content枚举值的表示方法
 2. [ ] memory record乱序时，不重写整个文件，而是回溯到非乱序的记录，仅重写乱序+新记录
 3. [ ] 重构上下文长度控制以符合实际情况
+
+## Station 系统（2026-08-16 嵌套化改造遗留）
+1. [ ] MCP 真实实现（McpConfig 目前仅占位结构，mcps 查询无生产消费方）
+2. [ ] 子 Station HTTP 协议实现（StationClient list_tools/list_mcps/call_tool 骨架已就位，调用返回未实现）
+3. [ ] 跨进程工具名唯一性校验（本地硬约束已实现；跨进程由部署保证，查询时发现工具名冲突应报错）
+4. [ ] 配置热更新监听接入（ConfigManager 已预留 add_listener/notify_listeners，Station/Nexus 尚未订阅）

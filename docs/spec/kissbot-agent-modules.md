@@ -7,19 +7,19 @@
 
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
-| main | — | 启动入口：加载配置、构建 Coordinator、启动管理 API、进入主循环 | 调 ConfigManager / AgentCoordinator / HttpServer |
+| main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、启动管理 API、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer |
 | config_manager | ConfigManager | 配置加载与读写（channel、provider/model、context、station、admin）；合成 effective 模型配置 | 被几乎所有模块调用 |
-| coordinator | AgentCoordinator | **编排中心**：实现 Terminal trait、消息处理、会话管理、agentic loop、工具分派、命令执行、通道连接 | 持有全部运行时组件；被 command_router / session_manager（弱引用）回调 |
-| channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 coordinator 调用；无外部依赖 |
-| session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message，首行 System（如有）；归档 = 直接把当前内存写成一个历史文件，不复制缓存；系统消息变更走待定懒切换：set 只存待定，下次发送前对比应用，不一致则旧上下文（含原系统消息）先归档再替换重建；持久化对 coordinator 透明） | 被 coordinator 调用；trigger 任务经 session.coordinator 弱引用回调 coordinator |
-| command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model 等） | 被 coordinator 调用；执行时回调 coordinator + 读 config |
-| message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / session_manager / coordinator 调用 |
-| memory_store_client | MemoryStoreClient | memory-store 全读写：推记录（channel / think / tool_call / tool_result）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 coordinator 调用；读经共享 StoreHttpConfig |
-| model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 coordinator 调用；依赖 config（provider/model） |
+| nexus | Nexus | **编排中心**：实现 Terminal trait、消息处理、会话管理、agentic loop、工具分派（委托全局 Station）、命令执行、通道连接 | 持有全部运行时组件；被 command_router / session_manager（弱引用）回调 |
+| channel_manager | ChannelManager / Channel | 每 channel 运行态：pending msg_id（回显判定）、agent_id、mode、client、合批 producer | 仅被 nexus 调用；无外部依赖 |
+| session_manager | SessionManager / Session / SessionContext / BatchProducer / BatchConsumer | 会话全功能：三元组去重创建、合批生产侧（producer）与触发任务（consumer，DelayQueue 定时 flush）、会话上下文一体化（SessionContext 内存 + 缓存 agent-data/context + 历史归档 agent-data/context-history；三者格式一致，均为 <session_key编码>.jsonl 每行一条 Message，首行 System（如有）；归档 = 直接把当前内存写成一个历史文件，不复制缓存；系统消息变更走待定懒切换：set 只存待定，下次发送前对比应用，不一致则旧上下文（含原系统消息）先归档再替换重建；持久化对 nexus 透明） | 被 nexus 调用；trigger 任务持 session 弱引用升级后调 run_agentic_loop（内部经 Nexus 单例回调） |
+| command_router | CommandRouter | 管理命令解析与执行（/bind、/mode、/model 等） | 被 nexus 调用；执行时回调 nexus + 读 config |
+| message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / session_manager / nexus 调用 |
+| memory_store_client | MemoryStoreClient | memory-store 全读写：推记录（channel / think / tool_call / tool_result）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用；读经共享 StoreHttpConfig |
+| model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 nexus 调用；依赖 config（provider/model） |
 | provider | Provider | 模型提供方（provider type → body 构造）解析 | 被 model_client 调用 |
-| station | StationRuntime / Tool | 本地 tool 执行主机（内置 Read 工具等）；configured_tools / call_tool | 被 coordinator 调用 |
-| station_client / station_router | StationClient / StationRouter | 远程 station 连接骨架与路由表 | **尚未接线**（预留；coordinator 当前只用本地 station） |
-| ego_md | build_ego_* | ego 结构 → 系统提示词 markdown | 被 coordinator 调用 |
+| station | Station / Toolkit / SubStation / Tool | 全局 Station 单例：本地 toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station（仅连接信息，HTTP 递归）；tools(filter) 平铺查询 / call_tool | 被 nexus 调用 |
+| station_client | StationClient | 子 Station HTTP 客户端骨架（list_tools / list_mcps / call_tool，本轮未实现） | 被 station（子 Station 递归）调用 |
+| ego_md | build_ego_* | ego 结构 → 系统提示词 markdown | 被 nexus 调用 |
 | http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
 | types | Mode / Message / SessionKey / ToolCall … | 共享数据类型 | 被几乎所有模块引用 |
 
@@ -38,7 +38,7 @@ graph TB
     subgraph Agent["kissbot-agent"]
         MAIN["main"]
         CFG["config_manager<br/>ConfigManager"]
-        CO["coordinator<br/>AgentCoordinator<br/>+ Terminal 实现"]
+        CO["nexus<br/>Nexus<br/>+ Terminal 实现"]
         CHM["channel_manager<br/>ChannelManager / Channel"]
         SM["session_manager<br/>SessionManager / Session<br/>BatchProducer / Consumer<br/>SessionContext（内存+缓存+历史）"]
         CRT["command_router<br/>CommandRouter"]
@@ -46,7 +46,7 @@ graph TB
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MLC["model_client<br/>ModelClient"]
         PRV["provider"]
-        ST["station<br/>StationRuntime / Tool"]
+        ST["station<br/>Station / Toolkit / SubStation / Tool"]
         EGO["ego_md"]
         HS["http_server<br/>HttpServer"]
     end
@@ -83,14 +83,16 @@ graph TB
 sequenceDiagram
     participant main
     participant CFG as ConfigManager
-    participant CO as AgentCoordinator
+    participant ST as Station
+    participant CO as Nexus
     participant CHM as ChannelManager
     participant SM as SessionManager
     participant EG as memory-ego
     participant CC as ChannelClient
 
     main->>CFG: new()（加载/引导配置）
-    main->>CO: new(config)
+    main->>ST: Station::new()（读 station.json 构建全局单例）
+    main->>CO: Nexus::new()（装配 + 注册单例）
     CO->>CO: 校验 default_model（ModelClient.list_models）
     loop 每个 channel
         CO->>EG: resolve_agent_id_http(agent_name)（绑定运行态 agent_id）
@@ -98,7 +100,7 @@ sequenceDiagram
         SM-->>CO: (Session, created)
         CO->>CHM: bind_producer(session.batch_producer)
     end
-    CO->>CC: ChannelClient::new（id + 指向 coordinator 的 Terminal 弱引用）
+    CO->>CC: ChannelClient::new（id + 指向 Nexus 的 Terminal 弱引用）
     CO->>CHM: bind_client(channel_id, client)
     CO->>CC: connect(ws_url, api_key)（spawn 重连循环，绑定用户）
     main->>HS: start()（后台管理 API）
@@ -110,7 +112,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant CC as ChannelClient
-    participant CO as AgentCoordinator（Terminal）
+    participant CO as Nexus（Terminal）
     participant CHM as ChannelManager
     participant MSC as MemoryStoreClient
     participant CRT as CommandRouter
@@ -125,7 +127,7 @@ sequenceDiagram
     else 非回显
         CO->>MSC: push_channel_record(is_self=0)
         alt 管理命令（is_command + check_admin）
-            CO->>CRT: parse + execute(config, coordinator)
+            CO->>CRT: parse + execute(config, nexus)
             CRT-->>CO: reply
             CO->>CHM: client(channel_id)
             CO->>CC: send_message(reply)（回来源 channel）
@@ -134,7 +136,7 @@ sequenceDiagram
         else 普通消息
             CO->>SM: ensure_session(key, channel_id)
             CO->>BP: enqueue_batch（tx 入队 + set_deadline + Trigger::At）
-            Note over BP: trigger 任务（DelayQueue）到期 → try_flush → 升级 coordinator 弱引用 → run_agentic_loop
+            Note over BP: trigger 任务（DelayQueue）到期 → try_flush → 升级 Nexus 弱引用 → run_agentic_loop
         end
     end
 ```
@@ -144,10 +146,10 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant BP as BatchConsumer / trigger 任务
-    participant CO as AgentCoordinator
+    participant CO as Nexus
     participant CTX as SessionContext（内存 + 缓存 + 历史一体）
     participant MLC as ModelClient
-    participant ST as StationRuntime
+    participant ST as Station
     participant MSC as MemoryStoreClient
     participant CHM as ChannelManager
     participant CC as ChannelClient
@@ -182,7 +184,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant CO as AgentCoordinator
+    participant CO as Nexus
     participant EG as memory-ego
     participant SC as SessionContext（内存 + 缓存 + 历史一体）
     participant MSC as MemoryStoreClient
@@ -209,7 +211,7 @@ sequenceDiagram
 
 | 方向 | 组件 | 协议 | 说明 |
 |------|------|------|------|
-| agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 coordinator（incoming_message / join_group / leave_group / user_removed / download_chunk / closed） |
+| agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 nexus（incoming_message / join_group / leave_group / user_removed / download_chunk / closed） |
 | agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录 + 读记忆 |
 | agent → memory-ego | kissbot-memory-ego | HTTP | resolve_agent_id（search-name）、load_ego_info（agent/individual/role 查询） |
 | agent → LLM | 模型提供方 API | HTTP | ModelClient 调用（支持重试、工具调用、reasoning 回传） |
@@ -217,6 +219,7 @@ sequenceDiagram
 
 ## 八、未接线 / 预留
 
-- **station_client / station_router**：远程 station 连接与路由表，当前 coordinator 只用本地 `station_runtimes`（base_url 为空的本地 station 注册内置工具），远程调用走 REST 骨架、本轮未实现。
+- **station_client（子 Station HTTP 协议）**：子 Station 只能 HTTP 通信，StationClient 骨架（list_tools / list_mcps / call_tool）已就位，`Station::tools/mcps/call_tool` 直接子递归处捕获 Err 记 warn 日志跳过；HTTP 协议实现在 [kissbot-agent-station 技术规格](kissbot-agent-station.md) 中定义。
+- **MCP 真实实现**：McpConfig 仅占位结构，`Station::mcps` 无生产消费方。
 - **Terminal 的 join_group / leave_group / user_removed / download_chunk**：回调已实现（no-op / 未使用），业务逻辑预留。
-- **http_server ↔ coordinator**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 coordinator。
+- **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。

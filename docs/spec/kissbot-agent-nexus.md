@@ -33,13 +33,6 @@
       "user_id": "admin_user_001"
     }
   ],
-  "stations": [
-    {
-      "station_id": "local-station",
-      "base_url": "http://127.0.0.1:9001",
-      "timeout_secs": 30
-    }
-  ],
   "memory_store_url": "http://127.0.0.1:8080",
   "memory_ego_url": "http://127.0.0.1:8081",
   "memory_struct_url": "http://127.0.0.1:8082",
@@ -58,7 +51,6 @@
 | current_mode.event_id | 事件模式时的事件 ID | - |
 | channel_bindings | 绑定的 channel 用户列表 | [] |
 | admin_users | 管理权限用户列表 | [] |
-| stations | Station 地址列表 | [] |
 | memory_store_url | Memory-Store 服务地址 | 必填 |
 | memory_ego_url | Memory-Ego 服务地址 | 必填 |
 | memory_struct_url | Memory-Struct 服务地址 | 可选 |
@@ -154,7 +146,7 @@
 - channel 绑定使用 **agent_name**（= memory-ego 的 `AgentMetadata.individual_name`，代号）记录，配置字段为 `ChannelConfig.agent_name`
 - **保留 agent**：`agent_name == ""` 表示保留 agent（建会话、用 `default_system_prompt`、不调 memory-ego），其内部 agent_id 固定为 `"0"`
 - **agent_name == "0"** 为普通代号（正常解析，与保留无关）；不再有脱离态（`session_key_of` 去掉 Option，始终返回 SessionKey）
-- **解析**：coordinator 维护 `agent_name -> agent_id` 缓存（`resolve_agent_id`）；非空 agent_name 调 `/agent/search-name` 全匹配得 agent_id，失败/不可用回退 `agent_id="0"`
+- **解析**：Nexus 维护 `agent_name -> agent_id` 缓存（`resolve_agent_id`）；非空 agent_name 调 `/agent/search-name` 全匹配得 agent_id，失败/不可用回退 `agent_id="0"`
 - **memory-store/ego 用 agent_id（UUID）**：会话 key 用 agent_name（同步、无需解析），memory-store 目录与 ego 读取用解析后的 agent_id
 
 ## LLM API 适配

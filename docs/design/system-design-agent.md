@@ -36,12 +36,16 @@ graph TB
 详见 [kissbot-agent-nexus 内部设计](components-design/kissbot-agent-nexus.md)
 
 ### Station（Tool 执行主机）
+- 每 agent 一个**全局单例**（`Station::get()` / `Station::new()`），启动时从 station.json 构建
+- **嵌套结构**：本地 **Toolkit 集合**（工具实现表 + MCP 占位）+ 直接**子 Station 集合**（仅连接信息，HTTP 通信）；Toolkit 中无子 Station，孙子由子进程递归
+- 工具元数据经 `tools(filter)` **递归平铺**（本地 toolkit 白名单过滤 + 直接子 HTTP 递归），工具名整树全局唯一
+- 内置 filesystem toolkit（read 工具，配置显式声明 toolkit 名才注册）
 - 接收来自 nexus 的 tool call 并执行
 - 不直接与 LLM 通信
 - 不直接对接记忆系统（tool 结果由 nexus 统一推送记忆）
 - 可运行在通用服务器、网络设备、智能家电、机器人等多种形态上
 
-详见 [kissbot-agent-station 内部设计](components-design/kissbot-agent-station.md)
+详见 [kissbot-agent-station 内部设计](components-design/kissbot-agent-station.md) 与 [技术规格](../spec/kissbot-agent-station.md)
 
 ### 记忆系统
 - 由 nexus 对接记忆系统
@@ -53,8 +57,8 @@ graph TB
 ### 配置管理器
 配置按三分结构管理：
 - **AgentConfig（静态）**：从 KISSBOT_CONFIG 的 `agent` 段加载，启动后不变，含 `data_dir`、`mgmt_host`、`mgmt_port`、`ws_reconnect_interval_secs`（default_system_prompt / init_model 已移入 NexusRepo，init_model 与 default_model 语义重复已删）
-- **NexusRepo / StationRepo（可改、落盘）**：持久化到 `<data_dir>/nexus.json` 与 `<data_dir>/station.json`，修改经 COW 写回；NexusRepo 存 channels / providers / memory_structs / stations 与默认值（default_model、default_system_prompt），StationRepo 存 stations（本轮占位）
-- **运行状态（不落盘）**：作为 AgentCoordinator 字段，标量用 `ArcSwap`、集合用 `DashMap`，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
+- **NexusRepo / StationRepo（可改、落盘）**：持久化到 `<data_dir>/nexus.json` 与 `<data_dir>/station.json`，修改经 COW 写回；NexusRepo 存 channels / providers / memory_structs / context 与默认值（default_model、default_system_prompt），StationRepo 存 toolkits / sub_stations（station.json，见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)）
+- **运行状态（不落盘）**：作为 Nexus 字段，标量用 `ArcSwap`、集合用 `DashMap`，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
 
 ## 组合模式
 
@@ -75,12 +79,14 @@ Agent 组件内部包含两大模块：
 - 上下文构建器：构建发送给 LLM 的完整上下文
 - Tool 调用分派器：区分内置工具和外置工具，将外置工具分派到 Station
 - 记忆读取器/写入器：对接记忆系统，处理角色记忆和事件记忆
-- Station 路由器：维护 Station 连接和工具路由表
+- Station 委托：经全局 Station 单例执行 tools_for_session / execute_tool_call（toolkit 白名单平铺查询 + 工具调用）
 - 外部输入处理器：对接消息通道
 - 内置工具集（含记忆查询 tool）
 
 **Station 模块**：负责工具执行
-- 工具注册表：管理可用工具列表
-- 工具执行器：接收并执行 tool call
-- HTTPS 服务器：处理 nexus 的 tool call 请求
-Nexus 通过内部调用与同进程 station 通信，通过 HTTPS 与远程 station 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。
+- 全局 Station 单例：本地 toolkit 集合 + 直接子 Station 集合（工具名整树全局唯一）
+- Toolkit：工具实现表（跨 toolkit 全局唯一）+ MCP 占位
+- 子 Station：仅连接信息 + StationClient HTTP 骨架（本轮未实现）
+- 内置注册表：filesystem → read 工具
+- 工具执行器：接收并执行 tool call（本地实现表 → 直接子 HTTP 递归）
+Nexus 通过内部调用与全局 Station 单例通信（tools_for_session / execute_tool_call），子 Station 通过 HTTP 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。

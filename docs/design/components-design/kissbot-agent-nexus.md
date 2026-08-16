@@ -54,7 +54,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息，以让智能体收发消息并获取发送结果
 
 ### Epic 6：工具调用分派
-- **目标**：解析 LLM 返回中的 tool call，按工具名路由到会话启用的 Station 运行态执行（本地进程内执行 / 远程 REST 骨架）
+- **目标**：解析 LLM 返回中的 tool call，按工具名路由到全局 Station 执行（本地 Toolkit 进程内执行 / 直接子 Station HTTP 递归）
 - **依赖**：Epic 2（LLM 交互）、Station 组件
 - **用户故事**：
   - 作为一个用户，我要向智能体提出需要执行工具的任务，以触发智能体执行工具调用
@@ -71,7 +71,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 2. 配置管理器
 - 从配置文件加载所有配置
-- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode）、管理权限用户列表、station 地址列表、memory 组件地址
+- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode）、管理权限用户列表、memory 组件地址（station 连接信息在 station.json 的 sub_stations，见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)）
 - 支持运行时通过管理命令修改配置，修改后自动保存并通知监听器
 
 ### 3. LLM 客户端
@@ -118,12 +118,13 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 事件模式会话自动生成新事件标识，支持按事件标识重新进入指定事件
 
 ### 9. Station 运行态
-- 按配置为每个 Station 构建 StationRuntime：base_url 为空的本地 Station 注册内置工具实现，非空的远程 Station 工具调用走 REST（本轮骨架未实现）
-- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长
+- 全局 Station 单例（每 agent 一个，`Station::get()`/`new()`）从 station.json 构建：本地 Toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station 集合（仅连接信息）
+- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem toolkit 名才注册
+- 工具名整树全局唯一（本地硬约束 + 跨进程部署保证）
 
 ### 10. Station 工具执行
-- 工具定义（name/description/parameters JSON Schema）存于 StationConfig.tools（工具名 → 配置），由 nexus 按会话启用的 station 集合聚合后随 LLM 请求发送
-- 本地工具：按工具名在本地工具表查找并执行（未注册报错）；远程工具：通过 HTTP 请求调用（本轮骨架，返回未实现错误）
+- 工具定义（name/description/parameters JSON Schema）存于 ToolkitConfig.tools（工具名 → 配置），由 nexus 按会话 context 配置的启用 toolkit 白名单聚合（`tools(filter)` 平铺递归）后随 LLM 请求发送
+- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：经 StationClient HTTP 递归调用（本轮骨架，返回未实现错误）
 
 ### 11. 通信客户端
 - 作为客户端连接消息通道的服务端
@@ -134,8 +135,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 12. 工具调用分派器
 - 解析 LLM 返回中的 tool call（工具名 + 参数）
-- 工具定义按会话 context 配置的启用 station 集合聚合，随 LLM 请求发送
-- 工具调用按工具名在启用 station 的运行态中路由执行，结果作为 tool 消息追加回上下文
+- 工具定义按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随 LLM 请求发送
+- 工具调用经 `Station::call_tool` 按工具名执行（本地实现表 → 直接子 HTTP 递归），结果作为 tool 消息追加回上下文
 - 支持多轮嵌套：LLM 返回 tool_calls 时执行后继续调用，直至返回无 tool_calls 的回复（上限防死循环）
 
 ### 13. 管理 API 服务器
@@ -167,9 +168,9 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ```
 普通消息 → 合批队列（同一会话连续消息等待合批间隔后打包为一条 user 消息，仅保留 name 与 content）
   → 追加到该会话的上下文，每步同步写入本地缓存
-  → LLM 客户端调用 LLM API（传入该会话的完整上下文 + 启用 station 聚合的工具定义）
+  → LLM 客户端调用 LLM API（传入该会话的完整上下文 + 会话 toolkit 白名单聚合的工具定义）
   → LLM 返回 tool_calls
-    → 逐个执行工具调用（本地 Station 进程内执行 / 远程 REST 骨架），结果作为 tool 消息追加回上下文
+    → 逐个执行工具调用（全局 Station：本地 Toolkit 进程内执行 / 直接子 HTTP 递归骨架），结果作为 tool 消息追加回上下文
     → 再次调用 LLM，循环直至返回无 tool_calls 的回复（上限防死循环）
   → LLM 返回最终回复
     → 记忆写入器推送思考内容到写入队列
@@ -191,7 +192,7 @@ kissbot-agent 启动
   → 初始化记忆读取器
   → 初始化上下文构建器（含本地缓存与历史归档目录）
   → 初始化 LLM 客户端
-  → 构建各 Station 运行态（本地 Station 注册内置工具）
+  → 构建全局 Station 单例（读 station.json：本地 Toolkit + 直接子 Station 连接信息）
   → 初始化通信模块（连接所有配置的通道，获取通道信息并发送绑定请求）
   → 对每个会话按模式构建初始上下文：event 从本地缓存全量恢复（空则为仅 system）；role 从 memory-store 读取最近消息打包为一条 user 消息
   → 记忆读取器从 memory-struct 读取顶层记忆索引（memory-struct 未实现时跳过）
@@ -275,8 +276,8 @@ kissbot-agent 启动
 ### 工具调用分派
 
 - LLM 返回 tool call 时解析工具名称和参数
-- 工具定义（name/description/parameters）按会话 context 配置的启用 station 集合聚合，随每次 LLM 请求发送
-- 工具调用按工具名在启用 station 中路由：base_url 为空的本地 station 在进程内执行，非空走 REST（本轮骨架未实现）；找不到工具返回错误结果
+- 工具定义（name/description/parameters）按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随每次 LLM 请求发送
+- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树全局唯一）在进程内执行，未命中走直接子 Station HTTP 递归（本轮骨架，子返回 Err 记日志跳过）；全部未命中返回错误结果
 - 工具结果作为 tool 消息（tool_call_id/name/content）追加回上下文，再次触发 LLM tool call 时支持多轮嵌套处理（上限防死循环）
 - 每个工具调用生成 UUID key，写 channel 占位记录（Content::ToolCall(key) / Content::ToolResult(key)），ToolCallRequest 与 ToolResultRequest 详情记录用同一 key 关联（think 同款机制），经 channel 时间线可见工具调用锚点
 

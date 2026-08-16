@@ -41,7 +41,8 @@ docs/
 │   ├── memory-index.md              # 记忆索引机制
 │   ├── memory-ego.md                # 自我认知模块文件存储
 │   ├── kissbot-agent-modules.md     # Agent 组件模块调用关系
-│   └── kissbot-agent-nexus.md       # Agent Nexus 技术约定
+│   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
+│   └── kissbot-agent-station.md     # Agent Station 技术约定（嵌套结构/递归平铺/子 Station HTTP 骨架）
 │
 └── plan/                       # 任务计划
     ├── system-plan.md       # 组件和流程的实现顺序规划

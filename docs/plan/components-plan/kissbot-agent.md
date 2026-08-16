@@ -22,21 +22,20 @@ Agent 组件包含 nexus 和 station 两个内部模块，启动时可选择启�
 - [x] 实现管理 HTTP 服务器（骨架）
 - [ ] 实现 ToolCallDispatcher：内置工具识别和外置工具分派
 - [ ] 实现内置记忆查询 tool（通过 tool call 调用 memory-struct）
-- [ ] 实现外置工具接入（整合 StationRouter 到 ToolCallDispatcher）
+- [ ] 实现外置工具接入（子 Station HTTP 协议实现后，经 StationClient 递归接入）
 - [ ] 实现自主行为触发机制（空闲检测、自主目标加载）
 - [ ] 完善管理 API 路由
 
 ## Station 模块
 
-**实现状态：未开始**
+**实现状态：已完成嵌套化改造**（2026-08-16 Station 系统重做，见 [kissbot-agent-station 实现计划](kissbot-agent-station.md)）
 
-- [ ] 配置 Cargo.toml，定义模块结构
-- [ ] 实现 HTTP 服务器：接收 nexus 的 tool call 请求
-- [ ] 实现多 nexus 并行连接管理
-- [ ] 实现工具注册信息发送（station → nexus）
-- [ ] 实现 ToolRegistry：工具定义、注册、查找
-- [ ] 实现 ToolExecutor：同步/异步执行、错误处理
-- [ ] 实现工程工具：文件操作（Read、Write、Edit）、命令执行（Bash）
-- [ ] 实现网络工具：WebSearch、WebFetch
-- [ ] 实现设备站支持：精简版协议、设备工具注册规范
-- [ ] 完善测试：单元测试、集成测试、性能优化
+Station 采用嵌套结构：全局单例（每 agent 一个）+ Toolkit 级别 + 子 Station 递归平铺。已实现：
+
+- [x] 配置层：StationRepo.toolkits/sub_stations（station.json），ToolkitConfig/McpConfig/SubStationConfig
+- [x] 全局 Station 单例：`Station::get()`/`new()`，内置注册表 filesystem（read 工具），工具名整树全局唯一（本地硬约束）
+- [x] 递归平铺查询：`tools(filter)` 本地 toolkit 白名单过滤 + 直接子 Station HTTP 递归（骨架）
+- [x] 工具执行：`call_tool` 本地实现表命中执行 / 直接子 HTTP 递归（骨架）
+- [x] StationClient 子 Station HTTP 客户端骨架（list_tools/list_mcps/call_tool）
+- [ ] MCP 真实实现（当前仅占位，见 [遗留事项](../../roadmap/pending.md)）
+- [ ] 子 Station HTTP 协议实现（骨架已就位，见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)）
