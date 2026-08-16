@@ -238,7 +238,8 @@ impl Station {
         }
         // 直接子递归（HTTP 骨架：未实现返回 Err → 记日志跳过，不阻塞整体）
         for entry in self.sub_stations.iter() {
-            let sub = entry.value();
+            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
+            let sub = entry.value().clone();
             match sub.client.list_tools(filter).await {
                 Ok(tools) => out.extend(tools),
                 Err(e) => warn!("子 Station {} 查询工具失败: {}", sub.config.station_id.as_str(), e),
@@ -259,7 +260,8 @@ impl Station {
             out.extend(toolkit.configured_mcps());
         }
         for entry in self.sub_stations.iter() {
-            let sub = entry.value();
+            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
+            let sub = entry.value().clone();
             match sub.client.list_mcps(filter).await {
                 Ok(mcps) => out.extend(mcps),
                 Err(e) => warn!("子 Station {} 查询 MCP 失败: {}", sub.config.station_id.as_str(), e),
@@ -284,7 +286,8 @@ impl Station {
         }
         // 直接子递归（骨架：子未实现返回 Err → 记日志跳过；全部未命中 → 工具不存在）
         for entry in self.sub_stations.iter() {
-            let sub = entry.value();
+            // 先克隆 Arc 立即释放 DashMap 读锁（不跨 await 持锁，防同 shard 写者死锁）
+            let sub = entry.value().clone();
             match sub.client.call_tool(name, params.clone()).await {
                 Ok(v) => return Ok(v),
                 Err(e) => warn!("子 Station {} 调用工具 {} 失败: {}", sub.config.station_id.as_str(), name, e),
