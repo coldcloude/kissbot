@@ -103,26 +103,35 @@ Nexus::tools_for_session(session)
   → ContextConfig.toolkits（白名单；None/空集合 = 无工具，与现状 stations 语义一致，不调 Station）
   → 非空 → Station::get().tools(Some(&toolkits))
       ├─ 本地：filter 命中 toolkit 名 → 收集该 toolkit 全部 ToolConfig
-      └─ 直接子：逐个 HTTP 查询（带同一 filter；骨架期未实现 → 跳过）
-  → 合并平铺（工具名全局唯一校验，冲突报错）
+      └─ 直接子：逐个 HTTP 查询（带同一 filter；骨架期返回空集合）→ 更新工具路由缓存（见下）
+  → 合并平铺（跨进程工具名冲突：保留先到者，后到者剔除 + warn）
 ```
 
 注：`tools(None)` 返回全部 与 `tools(Some(&[]))` 返回空 是两种不同语义，勿混淆。
+
+### 远程工具路由缓存（tool call 专用）
+
+- **缓存位置**：`Station.tool_routes: DashMap<String, String>`（工具名 → 直接子 station_id），仅用于 `call_tool` 路由；本地工具不走缓存表（`call_tool` 先查本地实现表）
+- **更新时机**：`tools()` 拉取子 Station 成功时更新（快照语义——先移除该子旧路由记录，再逐个插入；该子拉取失败保留旧缓存）
+- **冲突处理**：合并时发现工具名已存在（与先到子/其他子重名）→ warn 日志，保留先到者，后到者不进缓存表、不进返回列表
+- **MCP 不建缓存表**（MCP 与 Tool 有嵌套关系，实现 MCP 时再设计）；`mcps()` 实时拉取平铺返回
+- **骨架期行为**：子 `list_tools` 返回空集合 → 每次 `tools()` 清空该子路由（快照）→ `tool_routes` 恒空 → 远程工具不可用（与现状等价，无 warn 噪声）
 
 ### 工具调用
 
 ```
 Nexus::execute_tool_call → Station::get().call_tool(name, params)
   ├─ 本地 toolkit 实现表查 name（跨 toolkit 合并查，工具名全局唯一）→ 命中执行
-  └─ 未命中 → 遍历直接子 → 子 HTTP /tool/call（骨架期未实现）
-     （父不管孙子：子收到请求后自己递归自己的子）
-  → 全部未命中 → Err(工具不存在)
+  └─ 未命中 → 查 tool_routes 缓存表（工具名 → 直接子 station_id）→ 命中 → 该子 HTTP /tool/call
+     （父不管孙子：子收到请求后自己递归自己的子；不再遍历全部子、不再远程获取列表）
+  → 未命中 → Err(工具不存在)
 ```
 
-### 子 Station HTTP 协议（骨架期只定义请求/响应结构，调用返回未实现）
+### 子 Station HTTP 协议（骨架期：查询返回空集合，调用返回未实现）
 
-- 查询工具元数据：`POST /tools`，请求体可带 `toolkits: Vec<String>`（白名单过滤），响应平铺 `ToolConfig` 列表
-- 调用工具：`POST /tool/call`，请求体 `{ name, params }`，响应执行结果
+- 查询工具元数据：`POST /tools`，请求体可带 `toolkits: Vec<String>`（白名单过滤），响应平铺 `ToolConfig` 列表；骨架期返回空列表（非报错）
+- 查询 MCP 元数据：`POST /mcps`，同模式；骨架期返回空列表
+- 调用工具：`POST /tool/call`，请求体 `{ name, params }`，响应执行结果；骨架期返回未实现错误
 - MCP 相关接口占位（不实现）
 - 子 Station 收到查询/调用请求后自己递归自己的子（孙子）
 
@@ -136,17 +145,18 @@ Nexus::execute_tool_call → Station::get().call_tool(name, params)
 ## 错误处理与唯一性
 
 - **本地工具名冲突**（同一 Station 内跨 toolkit）：配置加载/注册时报 `InternalError`，启动失败——工具名必须整树唯一，本地先硬约束
-- **平铺查询冲突**：跨进程（子 Station HTTP 返回与本地/其他子重名）→ 查询返回 `Err`，调用方记日志并跳过（骨架期不可达，逻辑留接口）
-- **调用未命中**：本地与全部直接子都无 → `Err(工具不存在)`（与现状同语义，错误 JSON 由 Nexus 包装）
-- **子 Station HTTP 失败**：记 warn 日志、跳过该子（不阻塞整体）；调用时返回错误 JSON
+- **平铺查询冲突**（跨进程）：合并子 Station 返回时发现工具名已存在 → warn 日志，保留先到者，后到者剔除（不进缓存表、不进返回列表）
+- **调用未命中**：本地实现表与 tool_routes 缓存表都无 → `Err(工具不存在)`（与现状同语义，错误 JSON 由 Nexus 包装）
+- **子 Station 查询失败**（HTTP 实现后网络错误）：记 warn 日志、跳过该子（不阻塞整体），旧缓存保留；骨架期查询恒返回空集合，不触发此分支
 
 ## 测试
 
 - `station.rs` 单测：
   - 本地 toolkits 工具名冲突 → 构建报错
   - `tools(filter)`：无 filter 返回全部；白名单 filter 只返回命中的 toolkit；空 filter（无工具）
-  - `call_tool`：本地实现命中执行；未注册报"工具不存在"
+  - `call_tool`：本地实现命中执行；未注册报"工具不存在"；注入 tool_routes 后路由到对应子（骨架 Err → warn）
   - 内置 filesystem toolkit：声明后 read 工具可用（ToolConfig + 实现）
+  - 合并逻辑 `merge_sub_tools`：正常插入；冲突保留先到者（后到者剔除 + warn）
 - `config_manager.rs` 单测：`StationRepo` 新形状 serde 往返；`McpConfig` 占位序列化；`ContextConfig.toolkits` 改名后旧 `stations` 字段被忽略（静默回退空工具集）
 - 现有测试更新：`AgentCoordinator` → `Nexus` 引用、`station_config` helper 形状
 
