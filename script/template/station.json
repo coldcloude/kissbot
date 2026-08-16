@@ -1,1 +1,6 @@
-{}
+{
+  "toolkits": {
+    "filesystem": {}
+  },
+  "sub_stations": {}
+}
