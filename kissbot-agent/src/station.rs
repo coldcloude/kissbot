@@ -153,13 +153,11 @@ pub struct Station {
 
 impl Station {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
-    #[allow(dead_code)] // Task 4 装配时接入（tools_for_session 过渡期空实现，尚无消费方）
     pub fn get() -> &'static Station {
         SINGLETON.get().expect("Station 未初始化")
     }
 
     /// 从 ConfigManager 读 station.json 构建全局 Station 并注册单例
-    #[allow(dead_code)] // Task 4 装配时接入（tools_for_session 过渡期空实现，尚无消费方）
     pub async fn new() -> Result<()> {
         let repo = ConfigManager::get().station_repo_snapshot().await;
         let station = Self::from_repo(&repo)?;
@@ -167,10 +165,9 @@ impl Station {
         Ok(())
     }
 
-    /// 按配置构建 Station（纯构造，不注册单例，单测用）：
+    /// 按配置构建 Station（纯构造，不注册单例；Task 4 起为生产入口 new() 的构建步骤，单测直接消费）：
     /// 内置注册表填充声明 toolkit 的实现；配置声明的 tools/mcps 补充元数据；
     /// 工具名整树全局唯一（本地硬约束，冲突启动失败）
-    #[allow(dead_code)] // 目前仅单测消费，Task 4 装配时成为生产入口
     pub fn from_repo(repo: &StationRepo) -> Result<Station> {
         let registry = builtin_registry();
         let toolkits = DashMap::new();
@@ -226,7 +223,6 @@ impl Station {
 
     /// 工具元数据平铺查询：本地 toolkit 白名单过滤 + 直接子递归（HTTP 骨架，本轮未实现跳过）
     /// filter = None 返回全部；Some(空集) 返回空
-    #[allow(dead_code)] // 目前仅单测消费，Task 4 tools_for_session 接入
     pub async fn tools(&self, filter: Option<&HashSet<String>>) -> Result<Vec<ToolConfig>> {
         let mut out = Vec::new();
         for entry in self.toolkits.iter() {
@@ -272,7 +268,6 @@ impl Station {
 
     /// 执行工具：本地实现表（跨 toolkit，工具名全局唯一）命中执行；
     /// 未命中 → 直接子递归（HTTP 骨架：子返回 Err 记日志跳过；全部未命中 → 工具不存在）
-    #[allow(dead_code)] // 目前仅单测消费，Task 4 tools_for_session 接入
     pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
         let local: Option<Option<Arc<dyn Tool>>> = {

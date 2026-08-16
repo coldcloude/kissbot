@@ -16,7 +16,7 @@ use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, User
 use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
-use crate::coordinator::AgentCoordinator;
+use crate::nexus::Nexus;
 use crate::types::Mode;
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
@@ -235,7 +235,7 @@ impl Terminal for ChannelManager {
             return;
         }
         // 2. 转发业务处理（单例；run() 中 connect_all 之后必然已注册）
-        AgentCoordinator::get().incoming_message(channel_id, event).await;
+        Nexus::get().incoming_message(channel_id, event).await;
     }
 
     async fn join_group(&self, _id: &str, _notification: Arc<GroupChangeNotification>) {

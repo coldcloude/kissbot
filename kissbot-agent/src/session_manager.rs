@@ -16,7 +16,7 @@ use tokio_util::time::DelayQueue;
 use tracing::{info, warn};
 
 use crate::config_manager::{ConfigManager, ProviderModel};
-use crate::coordinator::AgentCoordinator;
+use crate::nexus::Nexus;
 use crate::message::pack_batch;
 use crate::types::{Error, Message, Mode, Result, SessionKey, memory_role};
 
@@ -277,7 +277,7 @@ impl Session {
             return;
         };
 
-        let coordinator = AgentCoordinator::get();
+        let coordinator = Nexus::get();
 
         let Some(out_channel) = coordinator.resolve_out_channel_for_session(self.clone()).await else {
             warn!("accept_batch: 会话无 out_channel，跳过");
@@ -388,7 +388,7 @@ impl Session {
                                 time: now.clone(),
                             }, &out_channel).await;
                             // 5c. 执行工具
-                            let result = coordinator.execute_tool_call(self.clone(), call.clone()).await;
+                            let result = coordinator.execute_tool_call(call.clone()).await;
                             let result_text = Arc::new(result.to_string());
                             // 5d. Tool 消息（内存 + 缓存一体）
                             let _ = self.context.lock().await.append(&[Message::Tool {
@@ -592,7 +592,7 @@ impl SessionManager {
 
     /// 定位会话，不存在则创建（model 为初始模型 Arc，None = 无模型；agent_id 为会话状态保存的解析结果）；
     /// 返回会话（无"是否新建"标记；创建时的初始化——上下文恢复/重建 + 系统消息——在 create_session 内部完成）
-    /// 依赖 AgentCoordinator/ConfigManager 全局单例（create_session 初始化经 AgentCoordinator::get() 调
+    /// 依赖 Nexus/ConfigManager 全局单例（create_session 初始化经 Nexus::get() 调
     /// build_context_from_memory_store / system_prompt_for_agent；调用方需确保单例已装配）
     /// 创建时依赖序组装（内联 new_producer/BatchConsumer::new）：notify → 2 mpsc → producer → session → consumer → spawn
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
@@ -669,13 +669,13 @@ impl SessionManager {
                 let _ = session.context.lock().await.recover_from_cache().await;
             }
             Mode::Role => {
-                let messages = AgentCoordinator::get()
+                let messages = Nexus::get()
                     .build_context_from_memory_store(session.agent_id.clone(), session.role_name.clone()).await;
                 let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
             }
         }
         // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（失败跳过设置）
-        if let Ok(prompt) = AgentCoordinator::get()
+        if let Ok(prompt) = Nexus::get()
             .system_prompt_for_agent(session.agent_id.as_str(), &session.role_name).await
         {
             session.context.lock().await.set_system_message(prompt);
@@ -798,8 +798,8 @@ mod tests {
         }
     }
 
-    /// 测试进程级装配（幂等）：ConfigManager/AgentCoordinator 单例各注册一次。
-    /// create_session 的初始化逻辑依赖这两个单例（build_context_from_memory_store / system_prompt_for_agent），
+    /// 测试进程级装配（幂等）：ConfigManager/Station/Nexus 单例各注册一次。
+    /// create_session 的初始化逻辑依赖这几个单例（build_context_from_memory_store / system_prompt_for_agent / Station 工具查询），
     /// get_or_create 相关测试前需先装配；data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
     static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static TEST_INIT_DONE: AtomicBool = AtomicBool::new(false);
@@ -814,9 +814,10 @@ mod tests {
             std::fs::write(&cfg_path, cfg_json).unwrap();
             // 2024 edition：设置环境变量需要 unsafe
             unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-            // 幂等：ConfigManager::new() 注册一次（第二实例丢弃）；AgentCoordinator 同理（SINGLETON.set 失败被忽略）
+            // 幂等：ConfigManager::new() 注册一次（第二实例丢弃）；Station/Nexus 同理（SINGLETON.set 失败被忽略）
             let _ = ConfigManager::new().await;
-            let _ = AgentCoordinator::new().await;
+            let _ = crate::station::Station::new().await;
+            let _ = Nexus::new().await;
             TEST_INIT_DONE.store(true, Ordering::Relaxed);
         }
     }

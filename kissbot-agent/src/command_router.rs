@@ -3,12 +3,12 @@ use std::sync::Arc;
 use crate::types::{AdminCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result, SessionKey};
 use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
-use crate::coordinator::{AgentCoordinator, RESERVED_ROLE_NAME};
+use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
 
 /// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode；异常回退保留 agent + 角色模式）
 /// 命令构造新三元组用（agent/role/mode 变更统一走 change_channel_key）
 async fn channel_current_key(channel_id: &str) -> SessionKey {
-    AgentCoordinator::get().channel_session_key(channel_id).await
+    Nexus::get().channel_session_key(channel_id).await
         .unwrap_or_else(|| SessionKey { agent_id: RESERVED_AGENT_ID.to_string(), role_name: String::new(), mode: Mode::Role })
 }
 
@@ -171,7 +171,7 @@ impl CommandRouter {
         command: &AdminCommand,
         channel_id: &str,
     ) -> Result<String> {
-        let coordinator = AgentCoordinator::get();
+        let coordinator = Nexus::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 ConfigManager::get().update_channel(channel_id, |c| {
@@ -211,7 +211,7 @@ impl CommandRouter {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
-                AgentCoordinator::verify_agent_exists(&new_agent_id).await?;
+                Nexus::verify_agent_exists(&new_agent_id).await?;
                 // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: new_agent_id.clone(), role_name: new_role.clone(), mode: cur.mode };

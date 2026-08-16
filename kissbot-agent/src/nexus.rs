@@ -10,6 +10,7 @@ use crate::types::{
     Error, Message, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
 };
 use crate::session_manager::{Session, SessionManager};
+use crate::station::Station;
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
 use crate::command_router::CommandRouter;
 use crate::model_client::ModelClient;
@@ -33,11 +34,11 @@ enum ConfigChange {
     ApplyKey { channel_id: String, new_key: SessionKey, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
-/// AgentCoordinator 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
+/// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 coordinator 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
-static SINGLETON: OnceLock<AgentCoordinator> = OnceLock::new();
+static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 
-pub struct AgentCoordinator {
+pub struct Nexus {
     memory_store_client: Arc<MemoryStoreClient>,
     /// ego 服务 REST 客户端（共享连接池；system_prompt_for_agent / verify_agent_exists 经它发请求）
     memory_ego_client: Arc<MemoryEgoClient>,
@@ -51,10 +52,10 @@ pub struct AgentCoordinator {
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
 }
 
-impl AgentCoordinator {
+impl Nexus {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
-    pub fn get() -> &'static AgentCoordinator {
-        SINGLETON.get().expect("AgentCoordinator 未初始化")
+    pub fn get() -> &'static Nexus {
+        SINGLETON.get().expect("Nexus 未初始化")
     }
 
     pub async fn new() -> Result<()> {
@@ -99,7 +100,7 @@ impl AgentCoordinator {
             while let Some(change) = command_rx.recv().await {
                 match change {
                     ConfigChange::ApplyKey { channel_id, new_key, done } => {
-                        let coordinator = AgentCoordinator::get();
+                        let coordinator = Nexus::get();
                         let rst = coordinator.apply_channel_key(&channel_id, &new_key).await;
                         let _ = done.send(rst);
                     }
@@ -107,7 +108,7 @@ impl AgentCoordinator {
             }
         });
 
-        info!("AgentCoordinator 初始化完成");
+        info!("Nexus 初始化完成");
         Ok(())
     }
 
@@ -129,7 +130,7 @@ impl AgentCoordinator {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
-        if AgentCoordinator::get().memory_ego_client.get_agent(agent_id).await?.is_some() {
+        if Nexus::get().memory_ego_client.get_agent(agent_id).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
@@ -280,7 +281,7 @@ impl AgentCoordinator {
 
     /// 启动主循环（保持进程运行）：初始化会话 + 连接全部 channel
     pub async fn run(&self) {
-        info!("AgentCoordinator 启动，等待外部输入...");
+        info!("Nexus 启动，等待外部输入...");
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
             let key = self.session_key_for(&ch);
@@ -297,7 +298,7 @@ impl AgentCoordinator {
 
 // ==================== 消息处理 ====================
 
-impl AgentCoordinator {
+impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     pub(crate) async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中
@@ -328,7 +329,7 @@ impl AgentCoordinator {
     }
 }
 
-impl AgentCoordinator {
+impl Nexus {
     async fn handle_incoming(
         &self,
         channel_id: &str,
@@ -525,15 +526,28 @@ impl AgentCoordinator {
         self.memory_store_client.push_tool_result(request).await;
     }
 
-    /// 会话可用工具：context 配置的启用 toolkits 白名单 → Station 平铺查询（Task 4 接入 Station 单例）
-    /// 过渡期（Task 1-3）返回空：Station 运行时已从 Nexus 移除，待 station.rs 重写后恢复
-    pub async fn tools_for_session(&self, _session: Arc<Session>) -> Vec<ToolConfig> {
-        Vec::new()
+    /// 会话可用工具：context 配置的启用 toolkits 白名单 → Station 平铺查询（本地 + 直接子递归）
+    /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
+    pub async fn tools_for_session(&self, session: Arc<Session>) -> Vec<ToolConfig> {
+        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
+        if cfg.toolkits.is_empty() {
+            return Vec::new();
+        }
+        match Station::get().tools(Some(&cfg.toolkits)).await {
+            Ok(tools) => tools,
+            Err(e) => {
+                warn!("工具查询失败: {}", e);
+                Vec::new()
+            }
+        }
     }
 
-    /// 执行单个 tool call（Task 4 接入 Station 单例；过渡期返回工具不存在）
-    pub async fn execute_tool_call(&self, _session: Arc<Session>, call: Arc<ToolCall>) -> serde_json::Value {
-        serde_json::json!({ "error": format!("工具不存在: {}", call.name) })
+    /// 执行单个 tool call：全局 Station 本地实现表 → 直接子递归；找不到/调用失败返回错误 JSON
+    pub async fn execute_tool_call(&self, call: Arc<ToolCall>) -> serde_json::Value {
+        match Station::get().call_tool(call.name.as_str(), (*call.arguments).clone()).await {
+            Ok(v) => v,
+            Err(e) => serde_json::json!({ "error": e.to_string() }),
+        }
     }
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
@@ -626,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn verify_agent_exists_reserved_or_empty_passes() {
         // 保留 id "0" 与空串直接 Ok，提前返回不触全局配置单例
-        assert!(AgentCoordinator::verify_agent_exists("0").await.is_ok());
-        assert!(AgentCoordinator::verify_agent_exists("").await.is_ok());
+        assert!(Nexus::verify_agent_exists("0").await.is_ok());
+        assert!(Nexus::verify_agent_exists("").await.is_ok());
     }
 }

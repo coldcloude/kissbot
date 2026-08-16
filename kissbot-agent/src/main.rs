@@ -3,7 +3,7 @@ use tracing::info;
 mod channel_manager;
 mod command_router;
 mod config_manager;
-mod coordinator;
+mod nexus;
 mod ego_md;
 mod http_server;
 mod model_client;
@@ -27,12 +27,15 @@ async fn main() {
     config_manager::ConfigManager::new().await
         .expect("初始化配置失败");
 
-    // 2. 初始化 Coordinator（装配 + 注册单例；连接与启动动作在 run() 中执行）
-    coordinator::AgentCoordinator::new()
-        .await
-        .expect("初始化 Coordinator 失败");
+    // 2. 构建全局 Station 单例（读 station.json：本地 toolkit + 直接子 Station）
+    station::Station::new().await
+        .expect("初始化 Station 失败");
 
-    // 3. 启动管理 API 服务器（后台，监听 ConfigManager 单例的 mgmt_host:mgmt_port）
+    // 3. 初始化 Nexus（装配 + 注册单例；连接与启动动作在 run() 中执行）
+    nexus::Nexus::new().await
+        .expect("初始化 Nexus 失败");
+
+    // 4. 启动管理 API 服务器（后台，监听 ConfigManager 单例的 mgmt_host:mgmt_port）
     tokio::spawn(async move {
         let server = http_server::HttpServer::new();
         if let Err(e) = server.start().await {
@@ -40,7 +43,7 @@ async fn main() {
         }
     });
 
-    // 4. 运行主循环（内部：绑定 agent/会话 + 连接全部 channel + 保持进程）
+    // 5. 运行主循环（内部：绑定 agent/会话 + 连接全部 channel + 保持进程）
     info!("进入主循环");
-    coordinator::AgentCoordinator::get().run().await;
+    nexus::Nexus::get().run().await;
 }
