@@ -167,7 +167,7 @@ impl AgentCoordinator {
     pub async fn build_context_from_memory_store(&self, agent_id: Arc<String>, role_name: Arc<String>) -> Vec<Message> {
         let cfg = ConfigManager::get().context_config(agent_id.as_str(), role_name.as_str()).await;
         self.memory_store_client
-            .read_recent_for_context(agent_id, role_name, &cfg).await
+            .read_recent_for_context(agent_id, role_name, cfg.memory_time_secs, cfg.memory_count).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
     }
 
