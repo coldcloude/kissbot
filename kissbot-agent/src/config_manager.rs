@@ -270,7 +270,7 @@ pub struct OutChannelConfig {
     pub group_id: Arc<String>,
 }
 
-/// out_channel 运行态（coordinator 实时从配置构造）
+/// out_channel 运行态（Nexus 实时从配置构造）
 #[derive(Debug, Clone)]
 pub struct OutChannel {
     pub channel_id: Arc<String>,
@@ -364,7 +364,7 @@ pub trait ConfigChangeListener: Send + Sync {
 }
 
 /// ConfigManager 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
-/// 与 AgentCoordinator 同模式：任何模块读配置直接 ConfigManager::get()，不传参、不持引用。
+/// 与 Nexus 同模式：任何模块读配置直接 ConfigManager::get()，不传参、不持引用。
 static INSTANCE: OnceLock<ConfigManager> = OnceLock::new();
 
 // 注：过渡期曾 derive(Clone) 支撑“仍返回实例 + 注册单例”双所有权（Task 6 前）；
@@ -409,7 +409,7 @@ impl ConfigManager {
             station_path,
             listeners: DashMap::new(),
         };
-        // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 AgentCoordinator 一致）
+        // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 Nexus 一致）
         let _ = INSTANCE.set(manager);
         Ok(())
     }

@@ -9,6 +9,7 @@ use crate::types::{Error, Result};
 /// 本轮骨架：请求/响应结构定义好（list_tools / list_mcps / call_tool），调用返回未实现错误；
 /// 后续实现 HTTP 协议（查询元数据带 toolkit 白名单过滤 / 工具调用）
 pub struct StationClient {
+    #[allow(dead_code)] // 骨架期未消费：HTTP 协议落地后由请求发送消费（已知骨架警告）
     client: reqwest::Client,
     _default_timeout: Duration,
 }

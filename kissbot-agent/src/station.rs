@@ -255,6 +255,7 @@ impl Station {
             }
             out.extend(toolkit.configured_mcps());
         }
+        // 直接子递归（HTTP 骨架：未实现返回 Err → 记日志跳过，不阻塞整体）
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
         for sub in subs {
@@ -421,6 +422,34 @@ mod tests {
             let map = Arc::make_mut(&mut repo.toolkits);
             map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(filesystem_toolkit())));
             map.insert("other".to_string(), ArcSwap::new(Arc::new(ToolkitConfig {
+                tools: Arc::new({
+                    let mut m = ArcSwapHashMap::new();
+                    m.insert("read".to_string(), ArcSwap::new(Arc::new(ToolConfig {
+                        name: Arc::new("read".into()),
+                        description: Arc::new("d".into()),
+                        parameters: Arc::new(serde_json::json!({})),
+                    })));
+                    m
+                }),
+                mcps: Arc::new(ArcSwapHashMap::new()),
+            })));
+        }
+        // Station 不含 Debug（含 Arc<dyn Tool>），用 match 取错而非 unwrap_err
+        let err = match Station::from_repo(&repo) {
+            Err(e) => e,
+            Ok(_) => panic!("应冲突"),
+        };
+        assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
+    }
+
+    #[test]
+    fn from_repo_rejects_same_toolkit_tool_conflict() {
+        // 同一 toolkit 内配置声明的工具与内置注册表填充的工具重名 → 冲突
+        // （走 from_repo 步骤 2 的 toolkit.tools.contains_key 分支，非跨 toolkit 的 check_unique）
+        let mut repo = StationRepo::default();
+        {
+            let map = Arc::make_mut(&mut repo.toolkits);
+            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(ToolkitConfig {
                 tools: Arc::new({
                     let mut m = ArcSwapHashMap::new();
                     m.insert("read".to_string(), ArcSwap::new(Arc::new(ToolConfig {

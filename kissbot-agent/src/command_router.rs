@@ -165,13 +165,13 @@ impl CommandRouter {
 
     /// 执行管理命令（返回回复文本）
     /// bind/agent/role/bind-outgoing/admin/unadmin 走 ConfigManager 回写；
-    /// mode/reenter 改运行态模式（coordinator）；model 改会话模型（运行态）。
-    /// coordinator 一律从单例取（不传参数）
+    /// mode/reenter 改运行态模式（Nexus）；model 改会话模型（运行态）。
+    /// Nexus 一律从单例取（不传参数）
     pub async fn execute(
         command: &AdminCommand,
         channel_id: &str,
     ) -> Result<String> {
-        let coordinator = Nexus::get();
+        let nexus = Nexus::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 ConfigManager::get().update_channel(channel_id, |c| {
@@ -215,33 +215,33 @@ impl CommandRouter {
                 // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: new_agent_id.clone(), role_name: new_role.clone(), mode: cur.mode };
-                coordinator.change_channel_key(channel_id, new_key).await?;
+                nexus.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: cur.agent_id, role_name: new_role.clone(), mode: cur.mode };
-                coordinator.change_channel_key(channel_id, new_key).await?;
+                nexus.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
-                coordinator.change_channel_key(channel_id, new_key).await?;
+                nexus.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 新事件 ID: {}", id))
             }
             AdminCommand::ModeRole => {
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Role };
-                coordinator.change_channel_key(channel_id, new_key).await?;
+                nexus.change_channel_key(channel_id, new_key).await?;
                 Ok("✅ 已切换为角色模式".to_string())
             }
             AdminCommand::Reenter(event_id) => {
                 let cur = channel_current_key(channel_id).await;
                 let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
-                coordinator.change_channel_key(channel_id, new_key).await?;
+                nexus.change_channel_key(channel_id, new_key).await?;
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
@@ -283,7 +283,7 @@ impl CommandRouter {
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
-                coordinator.set_session_model(channel_id, pm.clone()).await?;
+                nexus.set_session_model(channel_id, pm.clone()).await?;
                 if *set_default {
                     ConfigManager::get().set_default_model(pm.clone()).await?;
                 }
