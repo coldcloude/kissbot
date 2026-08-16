@@ -1,6 +1,6 @@
 # kissbot-agent-station 技术规格
 
-Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、toolkit 全局唯一命名空间、递归平铺语义、工具名整树唯一、子 Station HTTP 协议骨架、ContextConfig.toolkits 白名单与 Session 对应关系。
+Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、toolkit 全局唯一命名空间、递归平铺语义、工具名整树唯一、远程工具路由缓存、子 Station HTTP 协议骨架、ContextConfig.toolkits 白名单与 Session 对应关系。
 
 ## 配置格式
 
@@ -96,18 +96,27 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 | Some(白名单) | 只返回命中白名单的 toolkit 的元数据 |
 
 - 本地：遍历本地 toolkit，白名单外的跳过，命中的收集 `configured_tools()`/`configured_mcps()`
-- 直接子：经 `StationClient.list_tools/list_mcps(filter)` 递归查询（HTTP 骨架未实现 → Err 记 warn 日志跳过，不阻塞整体）
+- 直接子（tools）：经 `StationClient.list_tools(filter)` 实时拉取（骨架期返回空集合，非报错无 warn 噪声）；成功时更新 tool_routes 路由缓存（快照语义：先清该子旧记录再逐个插入，跨进程冲突保留先到者 + warn），查询失败（HTTP 实现后网络错误）→ warn 跳过、旧缓存保留
+- 直接子（mcps）：经 `StationClient.list_mcps(filter)` 实时拉取（骨架期返回空集合）；不建缓存表（MCP 与 Tool 嵌套关系，实现 MCP 时再设计）
 - 聚合为空 → 请求不携带 tools 字段（兼容无工具场景）
 
 ## 工具名整树唯一
 
 - 工具名在整棵 Station 树（本地所有 toolkit + 所有子 Station 递归）上全局唯一
 - **本地硬约束**：`Station::from_repo` 构建时对每个 toolkit 的工具做去重校验，重名（含与内置实现同名）启动失败返回"工具名冲突"
-- **跨进程部署保证**：本地硬约束只能约束本进程，跨进程（父子 Station 间）重名由部署配置保证；查询时发现跨进程工具名冲突应报错——该校验为遗留事项，本轮未实现
+- **跨进程冲突处理**：`tools()` 拉取子 Station 合并进 tool_routes 缓存时发现工具名已存在（与本地或先到子重名）→ warn 日志，保留先到者，后到者剔除（不进缓存表、不进返回列表）
+
+## 远程工具路由缓存（tool_routes）
+
+- **缓存位置**：`Station.tool_routes: DashMap<String, String>`（工具名 → 直接子 station_id）；仅用于 `call_tool` 路由，不用于元数据查询；本地工具不走缓存表（`call_tool` 先查本地实现表）
+- **更新时机**：`tools()` 拉取子 Station 成功时更新（快照语义——先清该子旧路由记录，再逐个插入；该子拉取失败保留旧缓存）
+- **冲突处理**：合并时工具名已存在（与本地或先到子重名）→ warn 日志，保留先到者，后到者不进缓存表、不进返回列表
+- **MCP 不建缓存表**：MCP 与 Tool 为嵌套关系，缓存设计留待实现 MCP 时再设计；`mcps()` 实时拉取平铺返回
+- **骨架期行为**：子 `list_tools` 返回空集合 → 每次 `tools()` 按快照清空该子路由 → `tool_routes` 恒空 → 远程工具不可用（本地命中/工具不存在，与现状等价，无 warn 噪声）
 
 ## 子 Station HTTP 协议骨架
 
-子 Station 只能通过 HTTP 与父 Station 通信，不可本地调用。协议骨架定义如下（本轮未实现，调用返回未实现错误）：
+子 Station 只能通过 HTTP 与父 Station 通信，不可本地调用。协议骨架定义如下（本轮未实现：查询返回空集合，调用返回未实现错误）：
 
 ### list_tools
 
@@ -142,7 +151,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 { "result": "文件内容..." }       // 成功；失败返回错误（结构后续实现时定）
 ```
 
-当前实现：`StationClient::{list_tools, list_mcps, call_tool}` 返回未实现错误；`Station::tools/mcps/call_tool` 在子递归处捕获 Err 记 warn 日志跳过。
+当前实现（骨架期）：`StationClient::{list_tools, list_mcps}` 返回空集合（非报错，无 warn 噪声），`call_tool` 返回未实现错误；`Station::tools` 拉取成功时更新 tool_routes 缓存，`call_tool` 本地未命中查缓存表路由到对应子（骨架期返回未实现错误），路由未命中报"工具不存在"。
 
 ## ContextConfig.toolkits 白名单与 Session 对应关系
 

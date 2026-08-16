@@ -38,7 +38,7 @@ graph TB
 ### Station（Tool 执行主机）
 - 每 agent 一个**全局单例**（`Station::get()` / `Station::new()`），启动时从 station.json 构建
 - **嵌套结构**：本地 **Toolkit 集合**（工具实现表 + MCP 占位）+ 直接**子 Station 集合**（仅连接信息，HTTP 通信）；Toolkit 中无子 Station，孙子由子进程递归
-- 工具元数据经 `tools(filter)` **递归平铺**（本地 toolkit 白名单过滤 + 直接子 HTTP 递归），工具名整树全局唯一
+- 工具元数据经 `tools(filter)` **递归平铺**（本地 toolkit 白名单过滤 + 直接子 HTTP 实时拉取并更新 tool_routes 路由缓存），工具名整树全局唯一（本地硬约束，跨进程冲突缓存合并时保留先到者）
 - 内置 filesystem toolkit（read 工具，配置显式声明 toolkit 名才注册）
 - 接收来自 nexus 的 tool call 并执行
 - 不直接与 LLM 通信
@@ -88,5 +88,5 @@ Agent 组件内部包含两大模块：
 - Toolkit：工具实现表（跨 toolkit 全局唯一）+ MCP 占位
 - 子 Station：仅连接信息 + StationClient HTTP 骨架（本轮未实现）
 - 内置注册表：filesystem → read 工具
-- 工具执行器：接收并执行 tool call（本地实现表 → 直接子 HTTP 递归）
+- 工具执行器：接收并执行 tool call（本地实现表 → tool_routes 路由缓存 → 对应子 HTTP）
 Nexus 通过内部调用与全局 Station 单例通信（tools_for_session / execute_tool_call），子 Station 通过 HTTP 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。

@@ -124,7 +124,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 10. Station 工具执行
 - 工具定义（name/description/parameters JSON Schema）存于 ToolkitConfig.tools（工具名 → 配置），由 nexus 按会话 context 配置的启用 toolkit 白名单聚合（`tools(filter)` 平铺递归）后随 LLM 请求发送
-- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：经 StationClient HTTP 递归调用（本轮骨架，返回未实现错误）
+- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：本地未命中查 tool_routes 路由缓存（工具名 → 直接子 station_id）调对应子（本轮骨架，返回未实现错误；不遍历全部子）
 
 ### 11. 通信客户端
 - 作为客户端连接消息通道的服务端
@@ -136,7 +136,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 12. 工具调用分派器
 - 解析 LLM 返回中的 tool call（工具名 + 参数）
 - 工具定义按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随 LLM 请求发送
-- 工具调用经 `Station::call_tool` 按工具名执行（本地实现表 → 直接子 HTTP 递归），结果作为 tool 消息追加回上下文
+- 工具调用经 `Station::call_tool` 按工具名执行（本地实现表 → tool_routes 路由缓存 → 对应子 HTTP），结果作为 tool 消息追加回上下文
 - 支持多轮嵌套：LLM 返回 tool_calls 时执行后继续调用，直至返回无 tool_calls 的回复（上限防死循环）
 
 ### 13. 管理 API 服务器
@@ -170,7 +170,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 追加到该会话的上下文，每步同步写入本地缓存
   → LLM 客户端调用 LLM API（传入该会话的完整上下文 + 会话 toolkit 白名单聚合的工具定义）
   → LLM 返回 tool_calls
-    → 逐个执行工具调用（全局 Station：本地 Toolkit 进程内执行 / 直接子 HTTP 递归骨架），结果作为 tool 消息追加回上下文
+    → 逐个执行工具调用（全局 Station：本地 Toolkit 进程内执行 / tool_routes 路由缓存 → 对应子 HTTP 骨架），结果作为 tool 消息追加回上下文
     → 再次调用 LLM，循环直至返回无 tool_calls 的回复（上限防死循环）
   → LLM 返回最终回复
     → 记忆写入器推送思考内容到写入队列
@@ -277,7 +277,7 @@ kissbot-agent 启动
 
 - LLM 返回 tool call 时解析工具名称和参数
 - 工具定义（name/description/parameters）按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随每次 LLM 请求发送
-- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树全局唯一）在进程内执行，未命中走直接子 Station HTTP 递归（本轮骨架，子返回 Err 记日志跳过）；全部未命中返回错误结果
+- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树全局唯一）在进程内执行，未命中查 tool_routes 路由缓存（工具名 → 直接子 station_id）调对应子（骨架期返回未实现错误）；路由未命中返回错误结果
 - 工具结果作为 tool 消息（tool_call_id/name/content）追加回上下文，再次触发 LLM tool call 时支持多轮嵌套处理（上限防死循环）
 - 每个工具调用生成 UUID key，写 channel 占位记录（Content::ToolCall(key) / Content::ToolResult(key)），ToolCallRequest 与 ToolResultRequest 详情记录用同一 key 关联（think 同款机制），经 channel 时间线可见工具调用锚点
 

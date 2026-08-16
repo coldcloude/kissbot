@@ -287,7 +287,8 @@ impl Station {
             }
             out.extend(toolkit.configured_mcps());
         }
-        // 直接子递归（HTTP 骨架：未实现返回 Err → 记日志跳过，不阻塞整体）
+        // 直接子：实时拉取（带同一 filter；骨架期返回空集合，非报错无 warn 噪声；MCP 不建缓存表）
+        // Err 分支保留（HTTP 实现后网络错误 → 记日志跳过，不阻塞整体）
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
         for sub in subs {

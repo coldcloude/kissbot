@@ -14,6 +14,7 @@
 
 ## Station 系统（2026-08-16 嵌套化改造遗留）
 1. [ ] MCP 真实实现（McpConfig 目前仅占位结构，mcps 查询无生产消费方）
-2. [ ] 子 Station HTTP 协议实现（StationClient list_tools/list_mcps/call_tool 骨架已就位，调用返回未实现）
-3. [ ] 跨进程工具名唯一性校验（本地硬约束已实现；跨进程由部署保证，查询时发现工具名冲突应报错）
+2. [ ] 子 Station HTTP 协议实现（StationClient list_tools/list_mcps 骨架返回空集合、call_tool 返回未实现，HTTP 请求/响应待实现）
+3. [x] 跨进程工具名唯一性校验（已实现为路由缓存合并时保留先到者 + warn：tools() 拉取子工具进 tool_routes 时，与本地/先到子重名者剔除并 warn——见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)"工具名整树唯一"）
 4. [ ] 配置热更新监听接入（ConfigManager 已预留 add_listener/notify_listeners，Station/Nexus 尚未订阅）
+5. [ ] MCP 缓存设计（MCP 与 Tool 为嵌套关系，缓存表设计留待实现 MCP 时设计；当前 mcps() 实时拉取不缓存）

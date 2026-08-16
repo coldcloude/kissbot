@@ -19,7 +19,7 @@ Station 是 [kissbot-agent](kissbot-agent.md) 组件的内部模块。实现计�
 
 - MCP 真实实现（本轮仅占位）
 - 子 Station HTTP 协议实现（骨架就位，见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)）
-- 跨进程工具名唯一性校验（查询时发现冲突报错）
+- 跨进程工具名唯一性校验（已实现：路由缓存合并时保留先到者 + warn，见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)"工具名整树唯一"）
 - 配置热更新监听接入
 
 详见 [遗留事项](../../roadmap/pending.md)。
