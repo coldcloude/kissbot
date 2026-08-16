@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
 use crate::types::{
-    Error, Message, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
+    Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
@@ -30,8 +30,8 @@ pub const RESERVED_ROLE_NAME: &str = "";
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位
 enum ConfigChange {
-    /// 应用新会话三元组（agent/role/mode 任一变化）
-    ApplyKey { channel_id: String, new_key: SessionKey, done: tokio::sync::oneshot::Sender<Result<()>> },
+    /// 应用新会话三元组（agent/role/mode 独立 Option，None = 保持当前值；队列内结合当前状态合成新三元组）
+    ApplyKey { channel_id: String, agent_id: Option<String>, role_name: Option<String>, mode: Option<Mode>, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
@@ -99,9 +99,9 @@ impl Nexus {
         tokio::spawn(async move {
             while let Some(change) = command_rx.recv().await {
                 match change {
-                    ConfigChange::ApplyKey { channel_id, new_key, done } => {
+                    ConfigChange::ApplyKey { channel_id, agent_id, role_name, mode, done } => {
                         let coordinator = Nexus::get();
-                        let rst = coordinator.apply_channel_key(&channel_id, &new_key).await;
+                        let rst = coordinator.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
                         let _ = done.send(rst);
                     }
                 }
@@ -113,16 +113,6 @@ impl Nexus {
     }
 
     // ==================== 会话定位与构建 ====================
-
-    /// 按来源 channel 的绑定配置 + 运行态 mode 计算会话 key（agent/role 取绑定配置）
-    fn session_key_for(&self, ch: &crate::config_manager::ChannelConfig) -> SessionKey {
-        SessionKey {
-            agent_id: ch.agent_id.to_string(),
-            role_name: ch.role_name.to_string(),
-            // 运行态 mode（未绑定/缺失回退角色模式）
-            mode: self.channel_manager.mode(&ch.channel_id),
-        }
-    }
 
     /// 校验 agent_id 存在（/agent 切换前调用）：空或保留 id "0" 直接通过；
     /// ego 未配置/HTTP 失败/agent 不存在返回 Err（调用方保持原 agent 不变）
@@ -158,7 +148,9 @@ impl Nexus {
         let channels = ConfigManager::get().channels().await;
         let mut keys = HashSet::new();
         for (_, ch) in &channels {
-            keys.insert(self.session_key_for(ch));
+            if let Some(key) = self.channel_manager.session_key(ch.channel_id.as_str()).await {
+                keys.insert(key);
+            }
         }
         self.session_manager.retain(&keys);
     }
@@ -216,29 +208,48 @@ impl Nexus {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
-    /// agent/role/mode 变更统一入口：应用新会话三元组（写 config agent_id/role_name + 运行态 mode + 会话重定位），
+    /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
+    /// Nexus 结合 channel_manager 当前状态合成新三元组（写 config agent_id/role_name + 运行态 mode + 会话重定位），
     /// 走串行队列，返回时已生效
-    pub async fn change_channel_key(&self, channel_id: &str, new_key: SessionKey) -> Result<()> {
+    pub async fn change_channel_key(
+        &self,
+        channel_id: &str,
+        agent_id: Option<String>,
+        role_name: Option<String>,
+        mode: Option<Mode>,
+    ) -> Result<()> {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         self.command_tx.send(ConfigChange::ApplyKey {
             channel_id: channel_id.to_string(),
-            new_key,
+            agent_id,
+            role_name,
+            mode,
             done: done_tx,
         }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
-    }
-
-    /// 取 channel 当前会话三元组（config 的 agent_id/role_name + 运行态 mode），命令构造新三元组用
-    pub async fn channel_session_key(&self, channel_id: &str) -> Option<SessionKey> {
-        let ch = ConfigManager::get().channel(channel_id).await?;
-        Some(self.session_key_for(&ch))
     }
 
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话（apply_channel_key 专用）
     /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
-    async fn apply_channel_key(&self, channel_id: &str, new_key: &SessionKey) -> Result<()> {
+    /// None 字段 = 保持当前值：队列内结合 channel_manager 当前状态合成新三元组（写-写串行，读-改-写无竞态）
+    async fn apply_channel_key(
+        &self,
+        channel_id: &str,
+        agent_id: Option<String>,
+        role_name: Option<String>,
+        mode: Option<Mode>,
+    ) -> Result<()> {
+        // 结合当前会话三元组生成新 key（None 字段保持当前值）
+        let Some(cur) = self.channel_manager.session_key(channel_id).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+        };
+        let new_key = SessionKey {
+            agent_id: agent_id.unwrap_or(cur.agent_id),
+            role_name: role_name.unwrap_or(cur.role_name),
+            mode: mode.unwrap_or(cur.mode),
+        };
         ConfigManager::get().update_channel(channel_id, |c| {
             c.agent_id = Arc::new(new_key.agent_id.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
@@ -247,8 +258,7 @@ impl Nexus {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        if let Some(ch) = ConfigManager::get().channel(channel_id).await {
-            let key = self.session_key_for(&ch);
+        if let Some(key) = self.channel_manager.session_key(channel_id).await {
             self.ensure_session(&key).await;
         }
         Ok(())
@@ -268,10 +278,9 @@ impl Nexus {
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
-        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
+        let Some(key) = self.channel_manager.session_key(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
-        let key = self.session_key_for(&ch);
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(&pm).await?;
         let session = self.ensure_session(&key).await;
@@ -284,8 +293,9 @@ impl Nexus {
         info!("Nexus 启动，等待外部输入...");
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
-            let key = self.session_key_for(&ch);
-            self.ensure_session(&key).await;
+            if let Some(key) = self.channel_manager.session_key(ch.channel_id.as_str()).await {
+                self.ensure_session(&key).await;
+            }
         }
         // 连接所有 enabled 的 channel（连接/重连/回显/发送全部归 ChannelManager 通道适配层）
         self.channel_manager.clone().connect_all().await;
@@ -301,11 +311,10 @@ impl Nexus {
 impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     pub(crate) async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
-        // 1. 来源 channel 必须在配置中
-        let Some(ch) = ConfigManager::get().channel(channel_id).await else { return; };
+        // 1. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
+        let Some(key) = self.channel_manager.session_key(channel_id).await else { return; };
 
         // 2. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
-        let key = self.session_key_for(&ch);
         let role_name = memory_role(&key.role_name, &key.mode);
         let agent_id = Arc::new(key.agent_id.clone());
         self.memory_store_client.push_channel_record(ChannelRequest {
@@ -324,8 +333,8 @@ impl Nexus {
             time: event.incoming_message.time.clone(),
         }).await;
 
-        // 3. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id）
-        self.handle_incoming(channel_id, ch, event).await;
+        // 3. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id；会话三元组透传，避免重复计算）
+        self.handle_incoming(channel_id, key, event).await;
     }
 }
 
@@ -333,7 +342,7 @@ impl Nexus {
     async fn handle_incoming(
         &self,
         channel_id: &str,
-        ch: Arc<crate::config_manager::ChannelConfig>,
+        key: SessionKey,
         event: Arc<IncomingMessageEvent>,
     ) {
         let messenger_id = event.incoming_message.messenger_id.to_string();
@@ -359,7 +368,6 @@ impl Nexus {
         let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
             return;
         };
-        let key = self.session_key_for(&ch);
         let session = self.ensure_session(&key).await;
         self.enqueue_batch(session, event).await;
     }
@@ -402,7 +410,7 @@ impl Nexus {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: String) {
-        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
+        let Some(key) = self.channel_manager.session_key(channel_id).await else {
             warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
             return;
         };
@@ -418,7 +426,6 @@ impl Nexus {
         match self.channel_manager.send(channel_id, msg).await {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
-                let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = Arc::new(key.agent_id.clone());
                 self.memory_store_client.push_channel_record(ChannelRequest {
@@ -552,7 +559,7 @@ impl Nexus {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     pub async fn send_outgoing(&self, out_channel: &OutChannel, content: Arc<String>) {
-        let Some(ch) = ConfigManager::get().channel(out_channel.channel_id.as_str()).await else {
+        let Some(key) = self.channel_manager.session_key(out_channel.channel_id.as_str()).await else {
             warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
         };
@@ -568,7 +575,6 @@ impl Nexus {
         match self.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
-                let key = self.session_key_for(&ch);
                 let role_name = memory_role(&key.role_name, &key.mode);
                 let agent_id = Arc::new(key.agent_id.clone());
                 self.memory_store_client.push_channel_record(ChannelRequest {

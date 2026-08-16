@@ -1,16 +1,9 @@
 use std::sync::Arc;
 
-use crate::types::{AdminCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result, SessionKey};
+use crate::types::{AdminCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result};
 use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
-
-/// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode；异常回退保留 agent + 角色模式）
-/// 命令构造新三元组用（agent/role/mode 变更统一走 change_channel_key）
-async fn channel_current_key(channel_id: &str) -> SessionKey {
-    Nexus::get().channel_session_key(channel_id).await
-        .unwrap_or_else(|| SessionKey { agent_id: RESERVED_AGENT_ID.to_string(), role_name: String::new(), mode: Mode::Role })
-}
 
 pub struct CommandRouter;
 
@@ -212,36 +205,30 @@ impl CommandRouter {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
                 Nexus::verify_agent_exists(&new_agent_id).await?;
-                // 构造新会话三元组（mode 保持当前运行态），统一走串行队列应用（防写-写竞态）
-                let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_id: new_agent_id.clone(), role_name: new_role.clone(), mode: cur.mode };
-                nexus.change_channel_key(channel_id, new_key).await?;
+                // 统一走串行队列应用（防写-写竞态）；None = 保持当前值（mode 保持当前运行态）
+                nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_id: cur.agent_id, role_name: new_role.clone(), mode: cur.mode };
-                nexus.change_channel_key(channel_id, new_key).await?;
+                // None = 保持当前值（agent/mode 不变）
+                nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
             AdminCommand::ModeEvent(event_id) => {
                 let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(id.clone()) };
-                nexus.change_channel_key(channel_id, new_key).await?;
+                // None = 保持当前值（agent/role 不变）
+                nexus.change_channel_key(channel_id, None, None, Some(Mode::Event(id.clone()))).await?;
                 Ok(format!("✅ 新事件 ID: {}", id))
             }
             AdminCommand::ModeRole => {
-                let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Role };
-                nexus.change_channel_key(channel_id, new_key).await?;
+                // None = 保持当前值（agent/role 不变）
+                nexus.change_channel_key(channel_id, None, None, Some(Mode::Role)).await?;
                 Ok("✅ 已切换为角色模式".to_string())
             }
             AdminCommand::Reenter(event_id) => {
-                let cur = channel_current_key(channel_id).await;
-                let new_key = SessionKey { agent_id: cur.agent_id, role_name: cur.role_name, mode: Mode::Event(event_id.clone()) };
-                nexus.change_channel_key(channel_id, new_key).await?;
+                // None = 保持当前值（agent/role 不变）
+                nexus.change_channel_key(channel_id, None, None, Some(Mode::Event(event_id.clone()))).await?;
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
