@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
-use crate::types::{AdminCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result};
-use crate::config_manager::{ConfigManager, OutChannelConfig, ProviderModel};
+use crate::types::{AdminCommand, ChannelCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result};
+use crate::config_manager::{ConfigManager, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
 
@@ -167,25 +165,15 @@ impl CommandRouter {
         let nexus = Nexus::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                ConfigManager::get().update_channel(channel_id, |c| {
-                    // HashSet 天然去重：已存在则幂等忽略
-                    let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
-                    Arc::make_mut(&mut c.bind_users).insert(cu);
-                }).await?;
+                let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
+                nexus.channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await?;
                 Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unbind { messenger_id, user_id } => {
-                ConfigManager::get().update_channel(channel_id, |c| {
-                    // 移除指定 ChannelUser
-                    let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
-                    Arc::make_mut(&mut c.bind_users).remove(&cu);
-                    // 移除的是 outgoing 引用身份则清空 outgoing（避免悬空引用）
-                    if let Some(out) = &c.outgoing {
-                        if out.messenger_id.as_str() == messenger_id && out.user_id.as_str() == user_id {
-                            c.outgoing = None;
-                        }
-                    }
-                }).await?;
+                let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                // 统一走串行队列应用（防写-写竞态；移除 bind_users，outgoing 引用该身份则一并清空）
+                nexus.channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await?;
                 Ok(format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Admin { messenger_id, user_id } => {
@@ -233,36 +221,13 @@ impl CommandRouter {
             AdminCommand::BindOutgoing(params) => {
                 match params {
                     Some(p) => {
-                        // 1. 校验 ChannelUser 已绑定（src 按 channel_id 直接 map get，O(1) 不遍历）
-                        let channels = ConfigManager::get().channels().await;
-                        let src = ConfigManager::get().channel(channel_id).await
-                            .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
-                        let cu = ChannelUser { messenger_id: p.messenger_id.clone(), user_id: p.user_id.clone() };
-                        let bound = src.bind_users.contains(&cu);
-                        if !bound {
-                            return Err(Error::InvalidCommand(format!(
-                                "ChannelUser 未绑定: {} / {}", p.messenger_id, p.user_id)));
-                        }
-                        // 2. 清空同 (agent_id, role_name) 其他 channel 的 outgoing（保证至多 1 个）
-                        for (cid, c) in channels.iter() {
-                            if cid != channel_id && c.agent_id == src.agent_id && c.role_name == src.role_name {
-                                if c.outgoing.is_some() {
-                                    ConfigManager::get().update_channel(cid, |cc| cc.outgoing = None).await?;
-                                }
-                            }
-                        }
-                        // 3. 设来源 channel 的 outgoing
-                        ConfigManager::get().update_channel(channel_id, |c| {
-                            c.outgoing = Some(Arc::new(OutChannelConfig {
-                                messenger_id: Arc::new(p.messenger_id.clone()),
-                                user_id: Arc::new(p.user_id.clone()),
-                                group_id: Arc::new(p.group_id.clone()),
-                            }));
-                        }).await?;
-                        Ok(format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id))
+                        // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行
+                        let reply = format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id);
+                        nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params: p.clone() }).await?;
+                        Ok(reply)
                     }
                     None => {
-                        ConfigManager::get().update_channel(channel_id, |c| c.outgoing = None).await?;
+                        nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await?;
                         Ok("✅ 已取消发送通道（只存不回复）".to_string())
                     }
                 }
