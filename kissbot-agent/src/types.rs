@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use kissbot_api::channel::ChannelUser;
+
 use crate::config_manager::ProviderModel;
 
 // ========== 错误类型 ==========
@@ -137,6 +139,19 @@ pub struct OutChannelParams {
     pub messenger_id: String,
     pub user_id: String,
     pub group_id: String,
+}
+
+/// channel 配置变更任务（纯数据；CommandRouter 构造，Nexus 排队调 ChannelManager 执行）
+/// /bind、/unbind、/bind-outgoing、/bind-outgoing off 统一走此枚举
+pub enum ChannelCommand {
+    /// 绑定 channel 用户（bind_users 追加，HashSet 天然去重幂等）
+    BindUser { channel_id: String, user: ChannelUser },
+    /// 解绑 channel 用户（移除 bind_users；若 outgoing 引用该身份则清空）
+    UnbindUser { channel_id: String, user: ChannelUser },
+    /// 设 out_channel（校验已绑 + 清同 agent/role 其他 channel outgoing + 设来源，单任务原子）
+    BindOutgoing { channel_id: String, params: OutChannelParams },
+    /// 清空 out_channel（回到只存不回复模式）
+    ClearOutgoing { channel_id: String },
 }
 
 // ========== 模型相关 ==========
