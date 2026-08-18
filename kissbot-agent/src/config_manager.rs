@@ -806,7 +806,10 @@ mod tests {
             enabled: true,
         };
         let json = serde_json::to_value(&ch).unwrap();
-        assert_eq!(json["bind_users"][0]["user_id"], "u1", "bind_users 数组序列化");
+        // bind_users 为 HashSet，序列化数组顺序不定——按内容断言而非下标
+        let json_bind_users = json["bind_users"].as_array().unwrap();
+        assert!(json_bind_users.iter().any(|u| u["user_id"] == "u1"), "bind_users 应序列化 u1");
+        assert!(json_bind_users.iter().any(|u| u["user_id"] == "u2"), "bind_users 应序列化 u2");
         assert_eq!(json["outgoing"]["group_id"], "g1");
         assert!(json.get("is_send_channel").is_none(), "is_send_channel 已删除");
         let back: ChannelConfig = serde_json::from_value(json).unwrap();

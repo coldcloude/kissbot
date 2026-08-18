@@ -7,7 +7,8 @@ use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
 use crate::types::{
-    Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result, SessionKey, ToolCall, memory_role,
+    ChannelCommand, Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result,
+    SessionKey, ToolCall, memory_role,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
@@ -34,6 +35,12 @@ enum ConfigChange {
     ApplyKey { channel_id: String, agent_id: Option<String>, role_name: Option<String>, mode: Option<Mode>, done: tokio::sync::oneshot::Sender<Result<()>> },
 }
 
+/// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ConfigChange 同消费者串行，写-写无竞态）
+struct ChannelTask {
+    cmd: ChannelCommand,
+    done: tokio::sync::oneshot::Sender<Result<()>>,
+}
+
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 coordinator 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
 static SINGLETON: OnceLock<Nexus> = OnceLock::new();
@@ -50,6 +57,8 @@ pub struct Nexus {
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
+    /// channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
+    channel_task_tx: tokio::sync::mpsc::UnboundedSender<ChannelTask>,
 }
 
 impl Nexus {
@@ -67,6 +76,8 @@ impl Nexus {
         let model_client = ModelClient::new();
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
+        // channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
+        let (channel_task_tx, mut channel_task_rx) = tokio::sync::mpsc::unbounded_channel::<ChannelTask>();
 
         let coordinator = Self {
             memory_store_client,
@@ -76,6 +87,7 @@ impl Nexus {
             channel_manager: Arc::new(ChannelManager::new()),
             valid_default: ArcSwap::from_pointee(None),
             command_tx,
+            channel_task_tx,
         };
 
         // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
@@ -94,15 +106,32 @@ impl Nexus {
         // 注册全局单例（此后 get() 可用；run() 中启动动作与连接回调均晚于此）
         let _ = SINGLETON.set(coordinator);
 
-        // 启动变更消费者：agent/role/event 变更串行处理（避免写-写竞态；读不受影响）
+        // 启动变更消费者：agent/role/event 变更 + channel 配置变更串行处理（避免写-写竞态；读不受影响）
+        // 两队列经 select! 合并到同一消费者，所有 channel 配置写全局串行
         // spawn 晚于 SINGLETON.set，任务内 get() 必然就绪
         tokio::spawn(async move {
-            while let Some(change) = command_rx.recv().await {
-                match change {
-                    ConfigChange::ApplyKey { channel_id, agent_id, role_name, mode, done } => {
-                        let coordinator = Nexus::get();
-                        let rst = coordinator.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
-                        let _ = done.send(rst);
+            loop {
+                tokio::select! {
+                    change = command_rx.recv() => {
+                        match change {
+                            Some(ConfigChange::ApplyKey { channel_id, agent_id, role_name, mode, done }) => {
+                                let coordinator = Nexus::get();
+                                let rst = coordinator.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
+                                let _ = done.send(rst);
+                            }
+                            // 任一队列关闭则消费者退出（进程内 tx 存于单例不会发生，break 仅防御）
+                            None => break,
+                        }
+                    }
+                    task = channel_task_rx.recv() => {
+                        match task {
+                            Some(ChannelTask { cmd, done }) => {
+                                let coordinator = Nexus::get();
+                                let rst = coordinator.apply_channel_command(cmd).await;
+                                let _ = done.send(rst);
+                            }
+                            None => break,
+                        }
                     }
                 }
             }
@@ -229,6 +258,15 @@ impl Nexus {
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
     }
 
+    /// channel 配置变更统一入口（/bind、/unbind、/bind-outgoing、/bind-outgoing off）：
+    /// 排队调 ChannelManager 方法执行，与 change_channel_key 同一消费者串行；返回时已生效
+    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<()> {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
+            .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    }
+
     // ---- 变更消费者（队列内串行执行，不对外） ----
 
     /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话（apply_channel_key 专用）
@@ -262,6 +300,16 @@ impl Nexus {
             self.ensure_session(&key).await;
         }
         Ok(())
+    }
+
+    /// channel 配置变更执行（队列内串行，不对外）：分发到 ChannelManager 方法
+    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<()> {
+        match cmd {
+            ChannelCommand::BindUser { channel_id, user } => self.channel_manager.bind_user(&channel_id, &user).await,
+            ChannelCommand::UnbindUser { channel_id, user } => self.channel_manager.unbind_user(&channel_id, &user).await,
+            ChannelCommand::BindOutgoing { channel_id, params } => self.channel_manager.bind_outgoing(&channel_id, &params).await,
+            ChannelCommand::ClearOutgoing { channel_id } => self.channel_manager.clear_outgoing(&channel_id).await,
+        }
     }
 
     /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
