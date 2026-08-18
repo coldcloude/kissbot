@@ -10,6 +10,7 @@ use std::sync::Arc;
 use kissbot_channel::ChannelServer;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
+use tokio::select;
 use tower_http::cors::CorsLayer;
 
 use crate::config::Config;
@@ -35,17 +36,13 @@ async fn main() {
 
     // 4. 注册 WebMessenger
     let mid = creator.messenger_id().await;
-    let messenger = channel_manager.register_messenger(
+    let messenger = channel_manager.clone().register_messenger(
         &mid,
         creator
     ).await.expect("Failed to register messenger");
 
-    // 5. 启动 ChannelServer WS 服务器（后台）
+    // 5. 准备 ChannelServer WS 服务器
     let ws_addr = config.ws_listen_addr.clone();
-    tokio::spawn(async move {
-        channel_manager.start(&ws_addr).await
-        .expect("Failed to start ChannelServer");
-    });
 
     // 6. 创建 HTTP 服务器
     let app = http::create_router(messenger.clone())
@@ -56,5 +53,13 @@ async fn main() {
     let listener = TcpListener::bind(&addr).await.unwrap();
     println!("kissbot-channel-web HTTP server listening on {}", addr);
 
-    axum::serve(listener, app).await.unwrap();
+    // 7. 启动所有服务器
+    select! {
+        r = channel_manager.start(&ws_addr) => {
+            r.expect("Failed to start ChannelServer");
+        }
+        r = axum::serve(listener, app) => {
+            r.expect("HTTP server failed")
+        }
+    }
 }
