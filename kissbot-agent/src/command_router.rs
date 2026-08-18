@@ -168,18 +168,17 @@ impl CommandRouter {
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
                 ConfigManager::get().update_channel(channel_id, |c| {
-                    // 追加去重：已存在则幂等忽略
+                    // HashSet 天然去重：已存在则幂等忽略
                     let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
-                    if !c.bind_users.iter().any(|b| b == &cu) {
-                        c.bind_users.push(cu);
-                    }
+                    Arc::make_mut(&mut c.bind_users).insert(cu);
                 }).await?;
                 Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))
             }
             AdminCommand::Unbind { messenger_id, user_id } => {
                 ConfigManager::get().update_channel(channel_id, |c| {
                     // 移除指定 ChannelUser
-                    c.bind_users.retain(|b| !(b.messenger_id == *messenger_id && b.user_id == *user_id));
+                    let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                    Arc::make_mut(&mut c.bind_users).remove(&cu);
                     // 移除的是 outgoing 引用身份则清空 outgoing（避免悬空引用）
                     if let Some(out) = &c.outgoing {
                         if out.messenger_id.as_str() == messenger_id && out.user_id.as_str() == user_id {
@@ -234,12 +233,12 @@ impl CommandRouter {
             AdminCommand::BindOutgoing(params) => {
                 match params {
                     Some(p) => {
-                        // 1. 校验 ChannelUser 已绑定
+                        // 1. 校验 ChannelUser 已绑定（src 按 channel_id 直接 map get，O(1) 不遍历）
                         let channels = ConfigManager::get().channels().await;
-                        let src = channels.iter().find(|(id, _)| id == channel_id).map(|(_, c)| c.clone())
+                        let src = ConfigManager::get().channel(channel_id).await
                             .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
-                        let bound = src.bind_users.iter()
-                            .any(|b| b.messenger_id == p.messenger_id && b.user_id == p.user_id);
+                        let cu = ChannelUser { messenger_id: p.messenger_id.clone(), user_id: p.user_id.clone() };
+                        let bound = src.bind_users.contains(&cu);
                         if !bound {
                             return Err(Error::InvalidCommand(format!(
                                 "ChannelUser 未绑定: {} / {}", p.messenger_id, p.user_id)));
@@ -254,11 +253,11 @@ impl CommandRouter {
                         }
                         // 3. 设来源 channel 的 outgoing
                         ConfigManager::get().update_channel(channel_id, |c| {
-                            c.outgoing = Some(OutChannelConfig {
+                            c.outgoing = Some(Arc::new(OutChannelConfig {
                                 messenger_id: Arc::new(p.messenger_id.clone()),
                                 user_id: Arc::new(p.user_id.clone()),
                                 group_id: Arc::new(p.group_id.clone()),
-                            });
+                            }));
                         }).await?;
                         Ok(format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id))
                     }

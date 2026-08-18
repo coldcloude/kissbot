@@ -201,7 +201,7 @@ impl ChannelManager {
                             let bind_users = ConfigManager::get().channel(&channel_id).await
                                 .map(|c| c.bind_users.clone());
                             if let Some(bus) = bind_users {
-                                for bu in bus {
+                                for bu in bus.iter() {
                                     let _ = client_clone.bind(BindRequest {
                                         messenger_id: Arc::new(bu.messenger_id.clone()),
                                         user_id: Arc::new(bu.user_id.clone()),

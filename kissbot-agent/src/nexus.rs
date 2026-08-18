@@ -168,7 +168,7 @@ impl Nexus {
         // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
         let mut ids = std::collections::HashSet::new();
         for (_, ch) in ConfigManager::get().channels().await {
-            for bu in &ch.bind_users {
+            for bu in ch.bind_users.iter() {
                 ids.insert(kissbot_api::ChannelUser {
                     messenger_id: bu.messenger_id.clone(),
                     user_id: bu.user_id.clone(),

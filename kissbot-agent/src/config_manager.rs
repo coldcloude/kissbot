@@ -249,10 +249,10 @@ pub struct ChannelConfig {
     pub channel_id: Arc<String>,         // agent 内部唯一标识，与消息方 messenger 无关
     pub ws_url: Arc<String>,
     pub admins: Arc<HashSet<ChannelUser>>,
-    /// 多绑定身份（bind 追加去重，unbind 带 ChannelUser 移除）
-    pub bind_users: Vec<ChannelUser>,
+    /// 多绑定身份（bind 追加去重，unbind 带 ChannelUser 移除；HashSet 天然去重 + O(1) contains）
+    pub bind_users: Arc<HashSet<ChannelUser>>,
     /// out_channel 配置（Option，至多 1 个；存于被绑定的 channel 下）
-    pub outgoing: Option<OutChannelConfig>,
+    pub outgoing: Option<Arc<OutChannelConfig>>,
     /// 绑定的 agent_id（UUID；缺省/空 = 保留 agent = "0"，建会话用默认系统提示词，不调 memory-ego）
     #[serde(default = "default_agent_id", deserialize_with = "deserialize_agent_id")]
     pub agent_id: Arc<String>,
@@ -778,7 +778,7 @@ mod tests {
             channel_id: Arc::new(id.into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_users: vec![ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }],
+            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }])),
             outgoing: None,
             agent_id: Arc::new("0".into()),
             role_name: Arc::new("".into()),
@@ -792,15 +792,15 @@ mod tests {
             channel_id: Arc::new("c1".into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_users: vec![
+            bind_users: Arc::new(HashSet::from([
                 ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
                 ChannelUser { messenger_id: "web".into(), user_id: "u2".into() },
-            ],
-            outgoing: Some(OutChannelConfig {
+            ])),
+            outgoing: Some(Arc::new(OutChannelConfig {
                 messenger_id: Arc::new("web".into()),
                 user_id: Arc::new("u1".into()),
                 group_id: Arc::new("g1".into()),
-            }),
+            })),
             agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
             enabled: true,
@@ -825,7 +825,7 @@ mod tests {
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.channel_id, "web-main");
-        assert_eq!(back.bind_users[0].user_id, "u1");
+        assert!(back.bind_users.contains(&ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }), "bind_users 应包含 web/u1");
     }
 
     #[test]
@@ -876,7 +876,8 @@ mod tests {
         manager.update_channel("web-main", |c| {
             c.agent_id = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
-            c.bind_users.push(ChannelUser { messenger_id: "web".into(), user_id: "u2".into() });
+            // HashSet 追加（Arc::make_mut 写时复制）
+            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: "web".into(), user_id: "u2".into() });
         }).await.unwrap();
 
         // 内存可见
