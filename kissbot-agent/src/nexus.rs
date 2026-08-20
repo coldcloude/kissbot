@@ -250,10 +250,13 @@ impl Nexus {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
-    /// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode），命令层构造校验用（channel 不存在返回 None）
-    /// 薄封装 channel_manager.session_key：CommandRouter 不直接访问 channel_manager
-    pub async fn channel_session_key(&self, channel_id: &str) -> Option<SessionKey> {
-        self.channel_manager.session_key(channel_id).await
+    /// 校验 role 存在（/role 切换前调用）：经 channel_id 取当前 agent_id（role 变更保持 agent 不变，
+    /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
+    pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
+        let Some(key) = self.channel_manager.session_key(channel_id).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+        };
+        self.verify_role_exists(&key.agent_id, role_name).await
     }
 
     /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
