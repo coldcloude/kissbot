@@ -250,6 +250,12 @@ impl Nexus {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
+    /// 取 channel 当前会话三元组（config agent_id/role_name + 运行态 mode），命令层构造校验用（channel 不存在返回 None）
+    /// 薄封装 channel_manager.session_key：CommandRouter 不直接访问 channel_manager
+    pub async fn channel_session_key(&self, channel_id: &str) -> Option<SessionKey> {
+        self.channel_manager.session_key(channel_id).await
+    }
+
     /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
     /// Nexus 结合 channel_manager 当前状态合成新三元组（写 config agent_id/role_name + 运行态 mode + 会话重定位），
     /// 走串行队列，返回时已生效
@@ -301,10 +307,6 @@ impl Nexus {
             role_name: role_name.unwrap_or(cur.role_name),
             mode: mode.unwrap_or(cur.mode),
         };
-        // 队列内校验 agent/role 存在（verify_agent_exists 空/保留 id、verify_role_exists 空串直接通过；
-        // 失败返回 Err，写 config 前中断，保持原绑定不变——校验与写入原子，不阻塞命令层）
-        self.verify_agent_exists(&new_key.agent_id).await?;
-        self.verify_role_exists(&new_key.agent_id, &new_key.role_name).await?;
         ConfigManager::get().update_channel(channel_id, |c| {
             c.agent_id = Arc::new(new_key.agent_id.clone());
             c.role_name = Arc::new(new_key.role_name.clone());

@@ -190,13 +190,22 @@ impl CommandRouter {
             AdminCommand::SetAgent { agent_id, role } => {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 校验（agent/role 存在）在队列内 apply_channel_key 原子执行；None = 保持当前值（mode 保持当前运行态）
+                // 校验 agent 存在（空/保留 id 直接通过）；role 非空时一并校验（agent+role 联合校验）
+                nexus.verify_agent_exists(&new_agent_id).await?;
+                if !new_role.is_empty() {
+                    nexus.verify_role_exists(&new_agent_id, &new_role).await?;
+                }
+                // None = 保持当前值（mode 保持当前运行态）
                 nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 校验（role 存在）在队列内 apply_channel_key 原子执行；None = 保持当前值（agent/mode 不变）
+                // 经 channel_id 取当前 agent_id（role 变更保持 agent 不变），校验 role 存在（空串保留 role 直接通过）
+                let cur = nexus.channel_session_key(channel_id).await
+                    .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+                nexus.verify_role_exists(&cur.agent_id, &new_role).await?;
+                // None = 保持当前值（agent/mode 不变）
                 nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
