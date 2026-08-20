@@ -145,11 +145,11 @@ impl Nexus {
 
     /// 校验 agent_id 存在（/agent 切换前调用）：空或保留 id "0" 直接通过；
     /// ego 未配置/HTTP 失败/agent 不存在返回 Err（调用方保持原 agent 不变）
-    pub async fn verify_agent_exists(agent_id: &str) -> Result<()> {
+    pub async fn verify_agent_exists(&self, agent_id: &str) -> Result<()> {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
-        if Nexus::get().memory_ego_client.get_agent(agent_id).await?.is_some() {
+        if self.memory_ego_client.get_agent(agent_id).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
@@ -689,12 +689,38 @@ mod tests {
     use super::*;
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
-    // 注：其余分支（ego HTTP 校验）依赖 ApiConfig/SecurityConfig 进程级单例，单测无法控制 url/时序，暂不测
+    // 成员函数化后需构造实例取 &self；MemoryEgoClient/MemoryStoreClient 构造读 ApiConfig/SecurityConfig
+    // 进程级单例（kissbot_config::Config::get 读 KISSBOT_CONFIG env），按 http_server 测试先例写临时配置
+    async fn test_nexus(dir: &tempfile::TempDir) -> Nexus {
+        let data_dir = dir.path().join("data");
+        let cfg_path = dir.path().join("config.json");
+        let cfg_json = format!(
+            r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5}}}}"#,
+            data_dir.to_str().unwrap()
+        );
+        std::fs::write(&cfg_path, cfg_json).unwrap();
+        // 2024 edition：设置环境变量需要 unsafe
+        unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
+        let (command_tx, _command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (channel_task_tx, _channel_task_rx) = tokio::sync::mpsc::unbounded_channel();
+        Nexus {
+            memory_store_client: Arc::new(MemoryStoreClient::new()),
+            memory_ego_client: Arc::new(MemoryEgoClient::new()),
+            session_manager: SessionManager::new(data_dir.to_str().unwrap()),
+            model_client: Arc::new(ModelClient::new()),
+            valid_default: ArcSwap::from_pointee(None),
+            channel_manager: Arc::new(ChannelManager::new()),
+            command_tx,
+            channel_task_tx,
+        }
+    }
 
     #[tokio::test]
     async fn verify_agent_exists_reserved_or_empty_passes() {
-        // 保留 id "0" 与空串直接 Ok，提前返回不触全局配置单例
-        assert!(Nexus::verify_agent_exists("0").await.is_ok());
-        assert!(Nexus::verify_agent_exists("").await.is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let nexus = test_nexus(&dir).await;
+        // 保留 id "0" 与空串直接 Ok，提前返回不触 ego HTTP
+        assert!(nexus.verify_agent_exists("0").await.is_ok());
+        assert!(nexus.verify_agent_exists("").await.is_ok());
     }
 }

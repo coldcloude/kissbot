@@ -191,7 +191,7 @@ impl CommandRouter {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
                 // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
-                Nexus::verify_agent_exists(&new_agent_id).await?;
+                nexus.verify_agent_exists(&new_agent_id).await?;
                 // 统一走串行队列应用（防写-写竞态）；None = 保持当前值（mode 保持当前运行态）
                 nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
