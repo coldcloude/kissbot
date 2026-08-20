@@ -117,20 +117,26 @@ impl CommandRouter {
                 Ok(AdminCommand::Reenter(parts[1].to_string()))
             }
             "bind-outgoing" => {
-                // /bind-outgoing <messenger_id> <user_id> <group_id> 或 /bind-outgoing off
-                if parts.len() == 2 && parts[1] == "off" {
-                    return Ok(AdminCommand::BindOutgoing(None));
-                }
+                // /bind-outgoing <messenger_id> <user_id> <group_id>
                 if parts.len() < 4 {
                     return Err(Error::InvalidCommand(
-                        "格式: /bind-outgoing <messenger_id> <user_id> <group_id> 或 /bind-outgoing off".to_string()
+                        "格式: /bind-outgoing <messenger_id> <user_id> <group_id>".to_string()
                     ));
                 }
-                Ok(AdminCommand::BindOutgoing(Some(OutChannelParams {
+                Ok(AdminCommand::BindOutgoing(OutChannelParams {
                     messenger_id: parts[1].to_string(),
                     user_id: parts[2].to_string(),
                     group_id: parts[3].to_string(),
-                })))
+                }))
+            }
+            "unbind-outgoing" => {
+                // /unbind-outgoing：清空 out_channel（回到只存不回复模式）
+                if parts.len() > 1 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /unbind-outgoing（无参数）".to_string()
+                    ));
+                }
+                Ok(AdminCommand::UnbindOutgoing)
             }
             "model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
@@ -224,18 +230,15 @@ impl CommandRouter {
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
-                match params {
-                    Some(p) => {
-                        // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行
-                        let reply = format!("✅ 已设发送通道: {} / {} -> {}", p.messenger_id, p.user_id, p.group_id);
-                        nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params: p.clone() }).await?;
-                        Ok(reply)
-                    }
-                    None => {
-                        nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await?;
-                        Ok("✅ 已取消发送通道（只存不回复）".to_string())
-                    }
-                }
+                // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行
+                let reply = format!("✅ 已设发送通道: {} / {} -> {}", params.messenger_id, params.user_id, params.group_id);
+                nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params: params.clone() }).await?;
+                Ok(reply)
+            }
+            AdminCommand::UnbindOutgoing => {
+                // 清空经队列内 ChannelManager.clear_outgoing 执行（回到只存不回复模式）
+                nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await?;
+                Ok("✅ 已取消发送通道（只存不回复）".to_string())
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
@@ -306,23 +309,29 @@ mod tests {
         assert!(CommandRouter::parse("/model deepseek deepseek-v4-flash true extra").is_err());
     }
 
-    // ===== /bind-outgoing 解析：<m> <u> <g> 或 off =====
+    // ===== /bind-outgoing /unbind-outgoing 解析 =====
 
     #[test]
-    fn parse_bind_outgoing_params_and_off() {
+    fn parse_bind_outgoing_params() {
         let cmd = CommandRouter::parse("/bind-outgoing web u1 g1").unwrap();
         match cmd {
-            AdminCommand::BindOutgoing(Some(p)) => {
+            AdminCommand::BindOutgoing(p) => {
                 assert_eq!(p.messenger_id, "web");
                 assert_eq!(p.user_id, "u1");
                 assert_eq!(p.group_id, "g1");
             }
-            _ => panic!("expected BindOutgoing(Some)"),
+            _ => panic!("expected BindOutgoing"),
         }
-        let off = CommandRouter::parse("/bind-outgoing off").unwrap();
-        assert!(matches!(off, AdminCommand::BindOutgoing(None)), "off 应清空");
         // 参数不足拒绝
         assert!(CommandRouter::parse("/bind-outgoing web u1").is_err());
+    }
+
+    #[test]
+    fn parse_unbind_outgoing() {
+        let cmd = CommandRouter::parse("/unbind-outgoing").unwrap();
+        assert!(matches!(cmd, AdminCommand::UnbindOutgoing), "unbind-outgoing 应清空");
+        // 多余参数拒绝
+        assert!(CommandRouter::parse("/unbind-outgoing web").is_err());
     }
 
     // ===== /unbind 解析：必须带 user_id =====

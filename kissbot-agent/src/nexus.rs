@@ -280,7 +280,7 @@ impl Nexus {
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
     }
 
-    /// channel 配置变更统一入口（/bind、/unbind、/bind-outgoing、/bind-outgoing off）：
+    /// channel 配置变更统一入口（/bind、/unbind、/bind-outgoing、/unbind-outgoing）：
     /// 排队调 ChannelManager 方法执行，与 change_channel_key 同一消费者串行；返回时已生效
     pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<()> {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();

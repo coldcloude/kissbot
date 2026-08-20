@@ -216,7 +216,7 @@ impl ChannelManager {
         }).await
     }
 
-    /// 清空 out_channel（/bind-outgoing off：回到只存不回复模式）
+    /// 清空 out_channel（/unbind-outgoing：回到只存不回复模式）
     pub async fn clear_outgoing(&self, channel_id: &str) -> Result<()> {
         ConfigManager::get().update_channel(channel_id, |c| c.outgoing = None).await
     }
