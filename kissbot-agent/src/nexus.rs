@@ -156,17 +156,13 @@ impl Nexus {
         }
     }
 
-    /// 校验 role 存在（/role 切换前调用）：显式空串（保留 role）直接通过；
+    /// 校验 role 存在（apply_channel_key 应用前调用）：显式空串（保留 role）直接通过；
     /// 其余必须 ego 中存在，否则 Err（调用方保持原 role 不变）
-    /// agent_id 取当前 channel 会话三元组（role 变更保持 agent 不变，校验与生效一致）
-    pub async fn verify_role_exists(&self, channel_id: &str, role_name: &str) -> Result<()> {
+    pub async fn verify_role_exists(&self, agent_id: &str, role_name: &str) -> Result<()> {
         if role_name.is_empty() {
             return Ok(());
         }
-        let Some(key) = self.channel_manager.session_key(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
-        };
-        if self.memory_ego_client.get_role(&key.agent_id, role_name).await?.is_some() {
+        if self.memory_ego_client.get_role(agent_id, role_name).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name)))
@@ -305,6 +301,10 @@ impl Nexus {
             role_name: role_name.unwrap_or(cur.role_name),
             mode: mode.unwrap_or(cur.mode),
         };
+        // 队列内校验 agent/role 存在（verify_agent_exists 空/保留 id、verify_role_exists 空串直接通过；
+        // 失败返回 Err，写 config 前中断，保持原绑定不变——校验与写入原子，不阻塞命令层）
+        self.verify_agent_exists(&new_key.agent_id).await?;
+        self.verify_role_exists(&new_key.agent_id, &new_key.role_name).await?;
         ConfigManager::get().update_channel(channel_id, |c| {
             c.agent_id = Arc::new(new_key.agent_id.clone());
             c.role_name = Arc::new(new_key.role_name.clone());
@@ -745,8 +745,8 @@ mod tests {
     async fn verify_role_exists_empty_passes() {
         let dir = tempfile::tempdir().unwrap();
         let nexus = test_nexus(&dir).await;
-        // 显式空串（保留 role）直接 Ok，提前返回不触 channel 查询与 ego HTTP；
+        // 显式空串（保留 role）直接 Ok，提前返回不触 ego HTTP；
         // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
-        assert!(nexus.verify_role_exists("web-main", "").await.is_ok());
+        assert!(nexus.verify_role_exists("a1", "").await.is_ok());
     }
 }

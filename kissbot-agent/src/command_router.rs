@@ -190,17 +190,13 @@ impl CommandRouter {
             AdminCommand::SetAgent { agent_id, role } => {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 切换前先校验新 agent 存在：失败则保持原有 agent 不变（只读 API，队列外，避免阻塞变更队列）
-                nexus.verify_agent_exists(&new_agent_id).await?;
-                // 统一走串行队列应用（防写-写竞态）；None = 保持当前值（mode 保持当前运行态）
+                // 校验（agent/role 存在）在队列内 apply_channel_key 原子执行；None = 保持当前值（mode 保持当前运行态）
                 nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
-                // 切换前校验 role 存在：显式空串（保留 role）或 ego 中存在，否则报错（只读 API，队列外，避免阻塞变更队列）
-                nexus.verify_role_exists(channel_id, &new_role).await?;
-                // None = 保持当前值（agent/mode 不变）
+                // 校验（role 存在）在队列内 apply_channel_key 原子执行；None = 保持当前值（agent/mode 不变）
                 nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
