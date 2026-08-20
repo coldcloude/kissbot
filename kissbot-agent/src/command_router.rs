@@ -198,6 +198,8 @@ impl CommandRouter {
             }
             AdminCommand::SetRole(role) => {
                 let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                // 切换前校验 role 存在：显式空串（保留 role）或 ego 中存在，否则报错（只读 API，队列外，避免阻塞变更队列）
+                nexus.verify_role_exists(channel_id, &new_role).await?;
                 // None = 保持当前值（agent/mode 不变）
                 nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))

@@ -156,6 +156,23 @@ impl Nexus {
         }
     }
 
+    /// 校验 role 存在（/role 切换前调用）：显式空串（保留 role）直接通过；
+    /// 其余必须 ego 中存在，否则 Err（调用方保持原 role 不变）
+    /// agent_id 取当前 channel 会话三元组（role 变更保持 agent 不变，校验与生效一致）
+    pub async fn verify_role_exists(&self, channel_id: &str, role_name: &str) -> Result<()> {
+        if role_name.is_empty() {
+            return Ok(());
+        }
+        let Some(key) = self.channel_manager.session_key(channel_id).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+        };
+        if self.memory_ego_client.get_role(&key.agent_id, role_name).await?.is_some() {
+            Ok(())
+        } else {
+            Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name)))
+        }
+    }
+
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
     async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
         // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
@@ -722,5 +739,14 @@ mod tests {
         // 保留 id "0" 与空串直接 Ok，提前返回不触 ego HTTP
         assert!(nexus.verify_agent_exists("0").await.is_ok());
         assert!(nexus.verify_agent_exists("").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_role_exists_empty_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let nexus = test_nexus(&dir).await;
+        // 显式空串（保留 role）直接 Ok，提前返回不触 channel 查询与 ego HTTP；
+        // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
+        assert!(nexus.verify_role_exists("web-main", "").await.is_ok());
     }
 }
