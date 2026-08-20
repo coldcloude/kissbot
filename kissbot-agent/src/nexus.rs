@@ -169,6 +169,15 @@ impl Nexus {
         }
     }
 
+    /// 校验 role 存在（/role 切换前调用）：经 channel_id 取当前 agent_id（role 变更保持 agent 不变，
+    /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
+    pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
+        let Some(key) = self.channel_manager.session_key(channel_id).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+        };
+        self.verify_role_exists(&key.agent_id, role_name).await
+    }
+
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
     async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
         // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
@@ -249,15 +258,6 @@ impl Nexus {
     }
 
     // ==================== 运行状态修改（管理命令入口） ====================
-
-    /// 校验 role 存在（/role 切换前调用）：经 channel_id 取当前 agent_id（role 变更保持 agent 不变，
-    /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
-    pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
-        let Some(key) = self.channel_manager.session_key(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
-        };
-        self.verify_role_exists(&key.agent_id, role_name).await
-    }
 
     /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
     /// Nexus 结合 channel_manager 当前状态合成新三元组（写 config agent_id/role_name + 运行态 mode + 会话重定位），
