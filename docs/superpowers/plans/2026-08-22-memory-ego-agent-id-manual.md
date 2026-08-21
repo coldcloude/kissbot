@@ -132,11 +132,11 @@ git commit -m "kissbot-api: AgentMetadata 删除 individual_name，CreateAgentRe
         setup().await;
         let manager = AgentManager::get();
         manager.create_agent(
-            Arc::new("dup-alice".to_string()),
+            Arc::new("dup_alice".to_string()),
             Arc::new("Test agent".to_string()),
         ).await.unwrap();
         let result = manager.create_agent(
-            Arc::new("dup-alice".to_string()),
+            Arc::new("dup_alice".to_string()),
             Arc::new("Another agent".to_string()),
         ).await;
         assert!(matches!(result, Err(Error::AgentAlreadyExists(_))));
@@ -378,17 +378,18 @@ impl SearchMetadata {
     #[tokio::test]
     async fn test_agent_name_completion() {
         crate::test_util::init_test_config();
-        create_test_agent("alice", "", "").await;
-        create_test_agent("albert", "", "").await;
-        create_test_agent("bob", "", "").await;
+        // 注意：agent_id 须与其他测试（agent.rs 的 alice/Alice/dup_alice/alice_orig 等）互不冲突
+        create_test_agent("alice_comp", "").await;
+        create_test_agent("albert", "").await;
+        create_test_agent("bob", "").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("alice").await;
+        manager.force_sync_identity("alice_comp").await;
         manager.force_sync_identity("albert").await;
         manager.force_sync_identity("bob").await;
         let results = manager.name_completion("al").await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
         let ids: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
-        assert!(ids.contains(&"alice"));
+        assert!(ids.contains(&"alice_comp"));
         assert!(ids.contains(&"albert"));
     }
 ```
@@ -483,7 +484,7 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
         crate::test_util::init_test_config();
 
         let app = create_router();
-        let body = r#"{"agent_id":"dup-http","description":"First"}"#.to_string();
+        let body = r#"{"agent_id":"dup_http","description":"First"}"#.to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/agent/create")
@@ -497,7 +498,7 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
             .method("POST")
             .uri("/agent/create")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"agent_id":"dup-http","description":"Second"}"#.to_string()))
+            .body(Body::from(r#"{"agent_id":"dup_http","description":"Second"}"#.to_string()))
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -506,6 +507,7 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
         assert_eq!(json["success"], false);
     }
 ```
+（注意：agent_id 须通过 validate_code，仅 [A-Za-z0-9_]，不能用连字符，否则 InvalidCode 走 500 而非 409。）
 
 - [ ] **Step 4: 运行测试确认通过**
 
