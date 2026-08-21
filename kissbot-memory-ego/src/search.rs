@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
@@ -22,7 +21,7 @@ struct SearchMetadata {
 impl SearchMetadata {
     pub fn new(metadata: &AgentMetadata) -> Self {
         Self {
-            value: vec![metadata.individual_name.clone(), metadata.description.clone()],
+            value: vec![metadata.agent_id.clone(), metadata.description.clone()],
         }
     }
 }
@@ -90,12 +89,10 @@ fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> 
 
 pub struct SearchManager {
     identity_dirty: DashSet<String>,
-    name_index: Arc<RwLock<HashMap<String, String>>>,
     name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
     name_completion: SimplePrefixCompletion<String>,
     search_metadata: DashMap<String, SearchMetadata>,
     role_dirty: DashSet<RoleKey>,
-    role_name_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
     role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
     role_name_completion: SimplePrefixCompletion<RoleKey>,
     role_search_metadata: DashMap<RoleKey, RoleSearchMetadata>,
@@ -107,12 +104,10 @@ impl SearchManager {
     pub fn new() -> Self {
         Self {
             identity_dirty: DashSet::new(),
-            name_index: Arc::new(RwLock::new(HashMap::new())),
             name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             name_completion: SimplePrefixCompletion::new(),
             search_metadata: DashMap::new(),
             role_dirty: DashSet::new(),
-            role_name_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             role_name_descr_index: Arc::new(RwLock::new(SubstringIndex::new(32))),
             role_name_completion: SimplePrefixCompletion::new(),
             role_search_metadata: DashMap::new(),
@@ -137,77 +132,42 @@ impl SearchManager {
     }
 
     pub async fn force_sync_identity(&self, agent_id: &str) {
-        let old_search_metadata_or_none = self.search_metadata.remove(agent_id);
-        let mut old_name_or_none = match old_search_metadata_or_none.as_ref() {
-            Some((_, old_search_metadata)) => Some(old_search_metadata.value[0].clone()),
-            None => None,
-        };
+        let old_metadata = self.search_metadata.remove(agent_id).map(|(_, m)| m);
+        let was_indexed = old_metadata.is_some();
         if let Ok(metadata) = AgentManager::get().get_agent(agent_id).await {
             //存在agent，更新索引
             let new_search_metadata = SearchMetadata::new(&metadata);
-            let new_name = metadata.individual_name.clone();
-            let new_descr = metadata.description.clone();
-            let mut name_obsolute = true;
-            let mut descr_obsolute = true;
-            //没旧值，或新旧值不同，则需要变更索引
-            if let Some((_,old_search_metadata)) = old_search_metadata_or_none.as_ref() {
-                //检查name是否变化
-                let old_name = old_search_metadata.value[0].clone();
-                if old_name == new_name {
-                    name_obsolute = false;
-                }
-                else {
-                    old_name_or_none = Some(old_name);
-                }
-                //检查description是否变化
-                let old_descr = old_search_metadata.value[1].clone();
-                if old_descr == new_descr {
-                    descr_obsolute = false;
+            let mut fulltext_obsolute = true;
+            //没旧值，或新旧值不同，则需要变更全文索引
+            if let Some(old) = old_metadata.as_ref() {
+                if old.value == new_search_metadata.value {
+                    fulltext_obsolute = false;
                 }
             }
-            //name变更
-            if name_obsolute {
-                let mut guard = self.name_index.write().await;
-                //有旧值，先移除
-                if let Some(old_name) = old_name_or_none.as_ref() {
-                    guard.remove(old_name.as_str());
-                }
-                //插入新值
-                guard.insert(new_name.as_str().to_string(), agent_id.to_string());
-                //name_completion（仍索引 individual_name，逻辑不变）
-                let mut old_doc_name = old_name_or_none.clone();
-                if let Some(old_name) = old_doc_name.take() {
-                    let old_name_document = to_document(old_name);
-                    self.name_completion.remove(&agent_id.to_string(), &old_name_document);
-                }
-                let new_name_document = to_document(new_name.clone());
-                self.name_completion.insert(&agent_id.to_string(), &new_name_document);
-            }
-            //name或description变更
-            if name_obsolute || descr_obsolute {
+            if fulltext_obsolute {
                 let mut guard = self.name_descr_index.write().await;
                 //有旧值，先移除
-                if let Some((_,old_metadata)) = old_search_metadata_or_none {
-                    guard.remove(&agent_id.to_string(), &old_metadata);
+                if let Some(old) = old_metadata {
+                    guard.remove(&agent_id.to_string(), &old);
                 }
                 //插入新值
                 guard.insert(&agent_id.to_string(), &new_search_metadata);
+            }
+            //name_completion（索引 agent_id，不可变，仅首次索引时插入）
+            if !was_indexed {
+                let new_id_document = to_document(metadata.agent_id.clone());
+                self.name_completion.insert(&agent_id.to_string(), &new_id_document);
             }
             //保存search_metadata
             self.search_metadata.insert(agent_id.to_string(), new_search_metadata);
         }
         else {
-            //移除旧名称索引
-            if let Some(old_name) = old_name_or_none {
-                let mut guard = self.name_index.write().await;
-                guard.remove(old_name.as_str());
-                let old_name_document = to_document(old_name);
-                self.name_completion.remove(&agent_id.to_string(), &old_name_document);
-            }
-            //移除旧全文索引
-            if let Some((_, old_metadata)) = old_search_metadata_or_none {
+            //移除旧全文索引与补全索引
+            if let Some(old) = old_metadata {
                 let mut guard = self.name_descr_index.write().await;
-                guard.remove(&agent_id.to_string(), &old_metadata);
+                guard.remove(&agent_id.to_string(), &old);
+                let old_id_document = to_document(old.value[0].clone());
+                self.name_completion.remove(&agent_id.to_string(), &old_id_document);
             }
         }
     }
@@ -247,14 +207,6 @@ impl SearchManager {
 
     pub fn mark_identity_dirty(&self, agent_id: &str) {
         self.identity_dirty.insert(agent_id.to_string());
-    }
-
-    pub async fn search_by_name(&self, query: &str) -> Option<String> {
-        //先同步脏数据
-        self.sync_all_identity().await;
-        //搜索（全匹配）
-        let guard = self.name_index.read().await;
-        guard.get(query).cloned()
     }
 
     pub async fn search_by_description(&self, query: &str) -> Vec<String> {
@@ -312,18 +264,15 @@ impl SearchManager {
                     descr_obsolute = false;
                 }
             }
-            //name变更
+            //name变更（role_name_index 已删除，仅维护 role_name_completion）
             if name_obsolute {
-                let mut guard = self.role_name_index.write().await;
                 //有旧值，先移除
                 if let Some(old_name) = old_name_or_none {
                     let old_name_document = to_document(old_name);
-                    guard.remove(&role_key, &old_name_document);
                     self.role_name_completion.remove(&role_key, &old_name_document);
                 }
                 //插入新值
                 let new_name_document = to_document(new_name);
-                guard.insert(&role_key, &new_name_document);
                 self.role_name_completion.insert(&role_key, &new_name_document);
             }
             //name或full_name或description变更（全文索引 value 含 role_name/full_name/description）
@@ -340,11 +289,9 @@ impl SearchManager {
             self.role_search_metadata.insert(role_key, new_search_metadata);
         }
         else {
-            //移除旧名称索引
+            //移除旧名称补全索引（role_name_index 已删除）
             if let Some(old_name) = old_name_or_none {
                 let old_name_document = to_document(old_name);
-                let mut guard = self.role_name_index.write().await;
-                guard.remove(&role_key, &old_name_document);
                 self.role_name_completion.remove(&role_key, &old_name_document);
             }
             //移除旧全文索引
@@ -397,15 +344,6 @@ impl SearchManager {
         self.role_dirty.insert(role_key);
     }
 
-    pub async fn search_role_by_name(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
-        //先同步脏数据
-        self.sync_all_roles().await;
-        //搜索
-        let guard = self.role_name_index.read().await;
-        let results = guard.find_all_keys(query, false);
-        filter_results(results, agent_id)
-    }
-
     pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
         //先同步脏数据
         self.sync_all_roles().await;
@@ -429,12 +367,11 @@ mod tests {
     use super::*;
     use kissbot_memory::DirectoryManager;
 
-    async fn create_test_agent(agent_id: &str, name: &str, description: &str) {
+    async fn create_test_agent(agent_id: &str, description: &str) {
         let dm = DirectoryManager::get();
         let agent_dir = dm.ensure_agent_dir(agent_id).await.unwrap();
         let metadata = serde_json::json!({
             "agent_id": agent_id,
-            "individual_name": name,
             "description": description,
             "created_at": "2026-06-25 10:00:00"
         });
@@ -464,35 +401,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_by_name() {
-        crate::test_util::init_test_config();
-        create_test_agent("name-agt1", "Alice", "Test user").await;
-        create_test_agent("name-agt2", "Bob", "Another user").await;
-        let manager = SearchManager::new();
-        manager.force_sync_identity("name-agt1").await;
-        manager.force_sync_identity("name-agt2").await;
-        // 全匹配：返回 Some(agent_id)
-        let result = manager.search_by_name("Alice").await;
-        assert_eq!(result, Some("name-agt1".to_string()), "expected Some(name-agt1), got {:?}", result);
-        // 前缀不是全匹配：返回 None
-        let result = manager.search_by_name("Al").await;
-        assert_eq!(result, None, "expected None for prefix, got {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn test_search_by_name_no_match() {
-        crate::test_util::init_test_config();
-        create_test_agent("noname-agt", "Alice", "Test").await;
-        let manager = SearchManager::new();
-        manager.force_sync_identity("noname-agt").await;
-        let result = manager.search_by_name("Nonexistent").await;
-        assert_eq!(result, None, "expected None, got {:?}", result);
-    }
-
-    #[tokio::test]
     async fn test_search_by_description() {
         crate::test_util::init_test_config();
-        create_test_agent("desc-agt", "Alice", "Some searchable text here").await;
+        create_test_agent("desc-agt", "Some searchable text here").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("desc-agt").await;
         let results = manager.search_by_description("searchable").await;
@@ -503,37 +414,25 @@ mod tests {
     #[tokio::test]
     async fn test_agent_name_completion() {
         crate::test_util::init_test_config();
-        create_test_agent("comp-agt1", "Alice", "").await;
-        create_test_agent("comp-agt2", "Albert", "").await;
-        create_test_agent("comp-agt3", "Bob", "").await;
+        // 注意：agent_id 须与其他测试（agent.rs 的 alice/Alice/dup_alice/alice_orig 等）互不冲突
+        create_test_agent("alice_comp", "").await;
+        create_test_agent("albert", "").await;
+        create_test_agent("bob", "").await;
         let manager = SearchManager::new();
-        manager.force_sync_identity("comp-agt1").await;
-        manager.force_sync_identity("comp-agt2").await;
-        manager.force_sync_identity("comp-agt3").await;
-        let results = manager.name_completion("Al").await;
+        manager.force_sync_identity("alice_comp").await;
+        manager.force_sync_identity("albert").await;
+        manager.force_sync_identity("bob").await;
+        let results = manager.name_completion("al").await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
         let ids: Vec<&str> = results.iter().map(|r| r.key.as_str()).collect();
-        assert!(ids.contains(&"comp-agt1"));
-        assert!(ids.contains(&"comp-agt2"));
-    }
-
-    #[tokio::test]
-    async fn test_search_role_by_name() {
-        crate::test_util::init_test_config();
-        create_test_agent("role-name-agt", "Alice", "").await;
-        create_test_role("role-name-agt", "admin", "", "Administrator").await;
-        let manager = SearchManager::new();
-        manager.force_sync_identity("role-name-agt").await;
-        manager.force_sync_role("role-name-agt", "admin").await;
-        let results = manager.search_role_by_name("admin", None).await;
-        assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
-        assert_eq!(results[0].role_name, "admin");
+        assert!(ids.contains(&"alice_comp"));
+        assert!(ids.contains(&"albert"));
     }
 
     #[tokio::test]
     async fn test_search_role_by_description() {
         crate::test_util::init_test_config();
-        create_test_agent("role-desc-agt", "Alice", "").await;
+        create_test_agent("role-desc-agt", "").await;
         create_test_role("role-desc-agt", "admin", "", "Special role description").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("role-desc-agt").await;
@@ -545,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_role_by_description_matches_full_name() {
         crate::test_util::init_test_config();
-        create_test_agent("role-fn-agt", "Alice", "").await;
+        create_test_agent("role-fn-agt", "").await;
         // full_name 含可搜索文本，description 不含
         create_test_role("role-fn-agt", "admin", "超级管理员", "Administrator").await;
         let manager = SearchManager::new();
@@ -559,7 +458,7 @@ mod tests {
     #[tokio::test]
     async fn test_role_description_only_change_reindexes() {
         crate::test_util::init_test_config();
-        create_test_agent("role-desc-chg-agt", "Alice", "").await;
+        create_test_agent("role-desc-chg-agt", "").await;
         // 初始：旧描述可搜
         create_test_role("role-desc-chg-agt", "admin", "", "旧描述").await;
         let manager = SearchManager::new();
@@ -580,7 +479,7 @@ mod tests {
     #[tokio::test]
     async fn test_role_full_name_only_change_reindexes() {
         crate::test_util::init_test_config();
-        create_test_agent("role-fn-chg-agt", "Alice", "").await;
+        create_test_agent("role-fn-chg-agt", "").await;
         // 初始：旧全名可搜（全文索引含 full_name）
         create_test_role("role-fn-chg-agt", "admin", "旧全名", "Administrator").await;
         let manager = SearchManager::new();
@@ -601,8 +500,8 @@ mod tests {
     #[tokio::test]
     async fn test_retrieve_agents() {
         crate::test_util::init_test_config();
-        create_test_agent("ret-agt1", "Alice", "Desc1").await;
-        create_test_agent("ret-agt2", "Bob", "Desc2").await;
+        create_test_agent("ret-agt1", "Desc1").await;
+        create_test_agent("ret-agt2", "Desc2").await;
         let manager = SearchManager::new();
         manager.force_sync_identity("ret-agt1").await;
         manager.force_sync_identity("ret-agt2").await;
@@ -611,8 +510,8 @@ mod tests {
             Arc::new("ret-agt2".to_string()),
         ]).await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
-        let names: Vec<&str> = results.iter().map(|a| a.individual_name.as_str()).collect();
-        assert!(names.contains(&"Alice"));
-        assert!(names.contains(&"Bob"));
+        let names: Vec<&str> = results.iter().map(|a| a.agent_id.as_str()).collect();
+        assert!(names.contains(&"ret-agt1"));
+        assert!(names.contains(&"ret-agt2"));
     }
 }
