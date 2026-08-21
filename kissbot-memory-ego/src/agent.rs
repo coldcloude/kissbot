@@ -258,11 +258,11 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice-orig".to_string()),
+            Arc::new("alice_orig".to_string()),
             Arc::new("Test".to_string()),
         ).await.unwrap();
-        let new_id = manager.copy_agent(&agent_id, Arc::new("alice-copy".to_string())).await.unwrap();
-        assert_eq!(*new_id, "alice-copy");
+        let new_id = manager.copy_agent(&agent_id, Arc::new("alice_copy".to_string())).await.unwrap();
+        assert_eq!(*new_id, "alice_copy");
         let original = manager.get_agent(&agent_id).await.unwrap();
         let copy = manager.get_agent(&new_id).await.unwrap();
         assert_eq!(*original.description, *copy.description);
@@ -273,7 +273,7 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice-crud".to_string()),
+            Arc::new("alice_crud".to_string()),
             Arc::new("Original".to_string()),
         ).await.unwrap();
         manager.update_agent_description(&agent_id, Arc::new("Updated".to_string())).await.unwrap();
