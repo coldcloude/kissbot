@@ -69,7 +69,8 @@ pub struct CopyAgentRequest {
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-api`
-Expected: 全部 PASS，无编译错误
+Expected: 全部 PASS，无编译错误。
+注：kissbot-memory-ego / kissbot-agent 此时编译失败为计划内瞬态（individual_name 引用待 Task 2/4/5/6 清理），不影响本任务验收。
 
 - [ ] **Step 5: Commit**
 
@@ -223,10 +224,10 @@ git commit -m "kissbot-api: AgentMetadata 删除 individual_name，CreateAgentRe
 - `test_create_agent_valid_code`：断言 `*agent.agent_id, "alice_01"`，删除 individual_name 断言
 - `setup()` 中 metadata json 里的 `"individual_name": "Setup",` 一行删除
 
-- [ ] **Step 6: 运行测试确认通过**
+- [ ] **Step 6: 运行检查确认本任务改动无残留错误**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-memory-ego`
-Expected: 全部 PASS
+Run: `cd /home/admin/project/kissbot && cargo check -p kissbot-memory-ego 2>&1 | grep -E "error|warning" | head -40`
+Expected: 错误仅出现在 `search.rs` 与 `api.rs`（引用 individual_name / 旧 create_agent 签名，Task 4/5 清理）；`agent.rs` 无错误。crate 整体编译通过要等到 Task 5。
 
 - [ ] **Step 7: Commit**
 
@@ -255,10 +256,10 @@ git commit -m "memory-ego: agent_id 改为 create/copy 时手工指定（校验+
 
 删除 `test_remove_role`、`test_rename_role`、`test_rename_role_rejects_invalid_code` 三个测试函数。
 
-- [ ] **Step 3: 运行测试确认通过**
+- [ ] **Step 3: 运行检查确认本任务改动无残留错误**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-memory-ego`
-Expected: 全部 PASS
+Run: `cd /home/admin/project/kissbot && cargo check -p kissbot-memory-ego 2>&1 | grep -E "error|warning" | head -40`
+Expected: 错误仍仅出现在 `search.rs` 与 `api.rs`（Task 4/5 清理）；`role_play.rs` 无错误。crate 整体编译通过要等到 Task 5。
 
 - [ ] **Step 4: Commit**
 
@@ -393,10 +394,10 @@ impl SearchMetadata {
 - 删除 `test_search_role_by_name`
 - `test_retrieve_agents`：`let names: Vec<&str> = results.iter().map(|a| a.individual_name.as_str()).collect();` 改为 `let names: Vec<&str> = results.iter().map(|a| a.agent_id.as_str()).collect();`，`assert!(names.contains(&"Alice"))` 改为 `assert!(names.contains(&"ret-agt1"))`，`"Bob"` → `"ret-agt2"`
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 4: 运行检查确认本任务改动无残留错误**
 
-Run: `cd /home/admin/project/kissbot && cargo test -p kissbot-memory-ego`
-Expected: 全部 PASS
+Run: `cd /home/admin/project/kissbot && cargo check -p kissbot-memory-ego 2>&1 | grep -E "error|warning" | head -40`
+Expected: 错误仅剩 `api.rs`（旧 create_agent 签名调用、被删方法引用，Task 5 清理）；`search.rs` 无错误。crate 整体编译通过要等到 Task 5。
 
 - [ ] **Step 5: Commit**
 
