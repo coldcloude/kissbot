@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::types::{AdminCommand, ChannelCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result};
 use crate::config_manager::{ConfigManager, ProviderModel};
 use kissbot_api::ChannelUser;
@@ -194,39 +196,39 @@ impl CommandRouter {
                 Ok(reply)
             }
             AdminCommand::SetAgent { agent_id, role } => {
-                let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
-                let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                let new_agent_id = Arc::new(agent_id.filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string()));
+                let new_role = Arc::new(role.unwrap_or_else(|| RESERVED_ROLE_NAME.to_string()));
                 // 校验 agent 存在（空/保留 id 直接通过）；role 非空时一并校验（agent+role 联合校验）
-                nexus.verify_agent_exists(&new_agent_id).await?;
+                nexus.verify_agent_exists(new_agent_id.as_str()).await?;
                 if !new_role.is_empty() {
-                    nexus.verify_role_exists(&new_agent_id, &new_role).await?;
+                    nexus.verify_role_exists(new_agent_id.as_str(), new_role.as_str()).await?;
                 }
-                // None = 保持当前值（mode 保持当前运行态）
+                // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
                 nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             AdminCommand::SetRole(role) => {
-                let new_role = role.clone().unwrap_or_else(|| RESERVED_ROLE_NAME.to_string());
+                let new_role = Arc::new(role.unwrap_or_else(|| RESERVED_ROLE_NAME.to_string()));
                 // 经 channel_id 校验 role 存在（内部取当前 agent_id；空串保留 role 直接通过；channel 不存在报错）
-                nexus.verify_role_exists_for_channel(channel_id, &new_role).await?;
-                // None = 保持当前值（agent/mode 不变）
+                nexus.verify_role_exists_for_channel(channel_id, new_role.as_str()).await?;
+                // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
                 nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
             AdminCommand::ModeEvent(event_id) => {
-                let id = event_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                // None = 保持当前值（agent/role 不变）
-                nexus.change_channel_key(channel_id, None, None, Some(Mode::Event(id.clone()))).await?;
+                let id = Arc::new(event_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
+                // None = 保持当前值（agent/role 不变；mode 经 Arc 传入）
+                nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Event(id.as_str().to_string())))).await?;
                 Ok(format!("✅ 新事件 ID: {}", id))
             }
             AdminCommand::ModeRole => {
                 // None = 保持当前值（agent/role 不变）
-                nexus.change_channel_key(channel_id, None, None, Some(Mode::Role)).await?;
+                nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Role))).await?;
                 Ok("✅ 已切换为角色模式".to_string())
             }
             AdminCommand::Reenter(event_id) => {
-                // None = 保持当前值（agent/role 不变）
-                nexus.change_channel_key(channel_id, None, None, Some(Mode::Event(event_id.clone()))).await?;
+                // None = 保持当前值（agent/role 不变；mode 经 Arc 传入）
+                nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Event(event_id.clone())))).await?;
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {

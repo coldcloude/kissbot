@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
@@ -30,15 +31,19 @@ pub const RESERVED_ROLE_NAME: &str = "";
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位
-enum ConfigChange {
-    /// 应用新会话三元组（agent/role/mode 独立 Option，None = 保持当前值；队列内结合当前状态合成新三元组）
-    ApplyKey { channel_id: String, agent_id: Option<String>, role_name: Option<String>, mode: Option<Mode>, done: tokio::sync::oneshot::Sender<Result<()>> },
+struct ApplyChannelSessionKey {
+    channel_id: String,
+    agent_id: Option<Arc<String>>,
+    role_name: Option<Arc<String>>,
+    mode: Option<Arc<Mode>>,
+    done: oneshot::Sender<Result<()>>
 }
+
 
 /// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ConfigChange 同消费者串行，写-写无竞态）
 struct ChannelTask {
     cmd: ChannelCommand,
-    done: tokio::sync::oneshot::Sender<Result<String>>,
+    done: oneshot::Sender<Result<String>>,
 }
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
@@ -56,9 +61,9 @@ pub struct Nexus {
     /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-    command_tx: tokio::sync::mpsc::UnboundedSender<ConfigChange>,
+    apply_channel_session_key_tx: mpsc::UnboundedSender<ApplyChannelSessionKey>,
     /// channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
-    channel_task_tx: tokio::sync::mpsc::UnboundedSender<ChannelTask>,
+    channel_task_tx: mpsc::UnboundedSender<ChannelTask>,
 }
 
 impl Nexus {
@@ -75,9 +80,9 @@ impl Nexus {
         let session_manager = SessionManager::new(&data_dir);
         let model_client = ModelClient::new();
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChange>();
+        let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
         // channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
-        let (channel_task_tx, mut channel_task_rx) = tokio::sync::mpsc::unbounded_channel::<ChannelTask>();
+        let (channel_task_tx, mut channel_task_rx) = mpsc::unbounded_channel::<ChannelTask>();
 
         let coordinator = Self {
             memory_store_client,
@@ -86,7 +91,7 @@ impl Nexus {
             model_client: Arc::new(model_client),
             channel_manager: Arc::new(ChannelManager::new()),
             valid_default: ArcSwap::from_pointee(None),
-            command_tx,
+            apply_channel_session_key_tx,
             channel_task_tx,
         };
 
@@ -112,9 +117,9 @@ impl Nexus {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    change = command_rx.recv() => {
+                    change = apply_channel_session_key_rx.recv() => {
                         match change {
-                            Some(ConfigChange::ApplyKey { channel_id, agent_id, role_name, mode, done }) => {
+                            Some(ApplyChannelSessionKey { channel_id, agent_id, role_name, mode, done }) => {
                                 let coordinator = Nexus::get();
                                 let rst = coordinator.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
                                 let _ = done.send(rst);
@@ -265,12 +270,12 @@ impl Nexus {
     pub async fn change_channel_key(
         &self,
         channel_id: &str,
-        agent_id: Option<String>,
-        role_name: Option<String>,
-        mode: Option<Mode>,
+        agent_id: Option<Arc<String>>,
+        role_name: Option<Arc<String>>,
+        mode: Option<Arc<Mode>>,
     ) -> Result<()> {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        self.command_tx.send(ConfigChange::ApplyKey {
+        let (done_tx, done_rx) = oneshot::channel();
+        self.apply_channel_session_key_tx.send(ApplyChannelSessionKey {
             channel_id: channel_id.to_string(),
             agent_id,
             role_name,
@@ -283,7 +288,7 @@ impl Nexus {
     /// channel 配置变更统一入口（/bind、/unbind、/bind-outgoing、/unbind-outgoing）：
     /// 排队调 ChannelManager 方法执行，与 change_channel_key 同一消费者串行；返回时已生效
     pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<String> {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
         self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
             .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
@@ -297,24 +302,21 @@ impl Nexus {
     async fn apply_channel_key(
         &self,
         channel_id: &str,
-        agent_id: Option<String>,
-        role_name: Option<String>,
-        mode: Option<Mode>,
+        agent_id: Option<Arc<String>>,
+        role_name: Option<Arc<String>>,
+        mode: Option<Arc<Mode>>,
     ) -> Result<()> {
-        // 结合当前会话三元组生成新 key（None 字段保持当前值）
-        let Some(cur) = self.channel_manager.session_key(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
-        };
-        let new_key = SessionKey {
-            agent_id: agent_id.unwrap_or(cur.agent_id),
-            role_name: role_name.unwrap_or(cur.role_name),
-            mode: mode.unwrap_or(cur.mode),
-        };
         ConfigManager::get().update_channel(channel_id, |c| {
-            c.agent_id = Arc::new(new_key.agent_id.clone());
-            c.role_name = Arc::new(new_key.role_name.clone());
+            if let Some(agent_id) = agent_id.as_ref() {
+                c.agent_id = agent_id.clone();
+            }
+            if let Some(role_name) = role_name.as_ref() {
+                c.role_name = role_name.clone();
+            }
         }).await?;
-        self.channel_manager.set_mode(channel_id, new_key.mode.clone());
+        if let Some(mode) = mode.as_ref() {
+            self.channel_manager.set_mode(channel_id, mode.clone());
+        }
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
@@ -735,8 +737,8 @@ mod tests {
         std::fs::write(&cfg_path, cfg_json).unwrap();
         // 2024 edition：设置环境变量需要 unsafe
         unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-        let (command_tx, _command_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (channel_task_tx, _channel_task_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        let (channel_task_tx, _channel_task_rx) = mpsc::unbounded_channel();
         Nexus {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
@@ -744,7 +746,7 @@ mod tests {
             model_client: Arc::new(ModelClient::new()),
             valid_default: ArcSwap::from_pointee(None),
             channel_manager: Arc::new(ChannelManager::new()),
-            command_tx,
+            apply_channel_session_key_tx: command_tx,
             channel_task_tx,
         }
     }

@@ -71,13 +71,13 @@ impl Channel {
     }
 
     /// 设置运行态模式（/mode 切换，不回写，重启回 Role）
-    fn set_mode(&self, mode: Mode) {
-        self.mode.store(Arc::new(mode));
+    fn set_mode(&self, mode: Arc<Mode>) {
+        self.mode.store(mode);
     }
 
     /// 取运行态模式（未绑定/缺失回退角色模式）
-    fn mode(&self) -> Mode {
-        (*self.mode.load_full()).clone()
+    fn mode(&self) -> Arc<Mode> {
+        self.mode.load_full()
     }
 
     /// TTL 懒清理：先遍历收集过期条目，再逐个删除（DashMap 迭代期间不可修改，两步防死锁）
@@ -141,15 +141,15 @@ impl ChannelManager {
     }
 
     /// 设置 channel 运行态模式（/mode 切换，不回写，重启回 Role）
-    pub fn set_mode(&self, channel_id: &str, mode: Mode) {
+    pub fn set_mode(&self, channel_id: &str, mode: Arc<Mode>) {
         self.get_or_create(channel_id).set_mode(mode);
     }
 
     /// 取 channel 运行态模式（未绑定/缺失回退角色模式）
-    pub fn mode(&self, channel_id: &str) -> Mode {
+    pub fn mode(&self, channel_id: &str) -> Arc<Mode> {
         match self.channels.get(channel_id) {
             Some(c) => c.mode(),
-            None => Mode::Role,
+            None => Arc::new(Mode::Role),
         }
     }
 
@@ -161,7 +161,7 @@ impl ChannelManager {
             agent_id: ch.agent_id.to_string(),
             role_name: ch.role_name.to_string(),
             // 运行态 mode（未绑定/缺失回退角色模式）
-            mode: self.mode(channel_id),
+            mode: self.mode(channel_id).as_ref().clone(),
         })
     }
 
@@ -365,8 +365,8 @@ mod tests {
     fn channel_mode_state() {
         let ctx = Channel::new();
         // mode 默认 Role，设置后读回
-        assert_eq!(ctx.mode(), Mode::Role);
-        ctx.set_mode(Mode::Event("e1".into()));
-        assert_eq!(ctx.mode(), Mode::Event("e1".into()));
+        assert_eq!(ctx.mode().as_ref(), &Mode::Role);
+        ctx.set_mode(Arc::new(Mode::Event("e1".into())));
+        assert_eq!(ctx.mode().as_ref(), &Mode::Event("e1".into()));
     }
 }
