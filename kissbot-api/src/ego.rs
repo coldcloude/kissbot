@@ -44,7 +44,6 @@ pub struct IndividualRecognition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMetadata {
     pub agent_id: Arc<String>,
-    pub individual_name: Arc<String>,
     pub description: Arc<String>,
     pub created_at: Arc<String>,
 }
@@ -83,19 +82,13 @@ pub struct RolePlay {
 // Agent Management Requests
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateAgentRequest {
-    pub individual_name: Arc<String>,
+    pub agent_id: Arc<String>,
     pub description: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetAgentRequest {
     pub agent_id: Arc<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateAgentNameRequest {
-    pub agent_id: Arc<String>,
-    pub individual_name: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -107,6 +100,7 @@ pub struct UpdateAgentDescriptionRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CopyAgentRequest {
     pub agent_id: Arc<String>,
+    pub new_agent_id: Arc<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -222,19 +216,6 @@ pub struct CreateRoleFromRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct RemoveRoleRequest {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RenameRoleRequest {
-    pub agent_id: Arc<String>,
-    pub role_name: Arc<String>,
-    pub new_name: Arc<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateRoleDescriptionRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
@@ -324,7 +305,6 @@ mod tests {
     fn test_serde_agent_metadata() {
         let obj = AgentMetadata {
             agent_id: Arc::new("a1".to_string()),
-            individual_name: Arc::new("Alice".to_string()),
             description: Arc::new("An agent".to_string()),
             created_at: Arc::new("2026-01-01".to_string()),
         };
@@ -338,12 +318,12 @@ mod tests {
     #[test]
     fn test_serde_create_agent_request() {
         let obj = CreateAgentRequest {
-            individual_name: Arc::new("Alice".to_string()),
+            agent_id: Arc::new("a1".to_string()),
             description: Arc::new("An agent".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: CreateAgentRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.individual_name, "Alice");
+        assert_eq!(*deserialized.agent_id, "a1");
     }
 
     #[test]
@@ -352,17 +332,6 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: GetAgentRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "a1");
-    }
-
-    #[test]
-    fn test_serde_update_agent_name_request() {
-        let obj = UpdateAgentNameRequest {
-            agent_id: Arc::new("a1".to_string()),
-            individual_name: Arc::new("Alice".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: UpdateAgentNameRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.individual_name, "Alice");
     }
 
     #[test]
@@ -378,10 +347,14 @@ mod tests {
 
     #[test]
     fn test_serde_copy_agent_request() {
-        let obj = CopyAgentRequest { agent_id: Arc::new("a1".to_string()) };
+        let obj = CopyAgentRequest {
+            agent_id: Arc::new("a1".to_string()),
+            new_agent_id: Arc::new("a2".to_string()),
+        };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: CopyAgentRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "a1");
+        assert_eq!(*deserialized.new_agent_id, "a2");
     }
 
     #[test]
@@ -575,29 +548,6 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: CreateRoleFromRequest = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.new_name, "admin2");
-    }
-
-    #[test]
-    fn test_serde_remove_role_request() {
-        let obj = RemoveRoleRequest {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("admin".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: RemoveRoleRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.role_name, "admin");
-    }
-
-    #[test]
-    fn test_serde_rename_role_request() {
-        let obj = RenameRoleRequest {
-            agent_id: Arc::new("a1".to_string()),
-            role_name: Arc::new("admin".to_string()),
-            new_name: Arc::new("mod".to_string()),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: RenameRoleRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.new_name, "mod");
     }
 
     #[test]
