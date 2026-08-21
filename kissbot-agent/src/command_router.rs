@@ -189,8 +189,9 @@ impl CommandRouter {
                 Ok(reply)
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
+                let reply = format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id);
                 ConfigManager::get().remove_admin(channel_id, &messenger_id, &user_id).await?;
-                Ok(format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id))
+                Ok(reply)
             }
             AdminCommand::SetAgent { agent_id, role } => {
                 let new_agent_id = agent_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string());
