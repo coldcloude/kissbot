@@ -98,22 +98,6 @@ impl RolePlayManager {
         Ok(entry.load().clone())
     }
 
-    async fn remove_role_play_ref(&self, agent_id: &str, role_name: &str) -> Result<()> {
-        let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
-        let json_path = ego_role_play_path(&ego_dir, role_name);
-
-        let lock = self.get_or_create_lock(agent_id, role_name).await;
-        let mut guard = lock.write().await;
-
-        guard.take();
-
-        if json_path.exists() {
-            tokio::fs::remove_file(json_path).await?;
-        }
-
-        Ok(())
-    }
-
     async fn write_role_play_ref<F>(&self, agent_id: &str, role_name: &str, op: F) -> Result<()>
     where
         F: FnOnce(Option<Arc<RolePlay>>) -> Result<Arc<RolePlay>>,
@@ -233,39 +217,6 @@ impl RolePlayManager {
         let role = self.get_role(agent_id, role_name).await?;
         self.create_role(agent_id, new_name.clone(), role.role.description.clone()).await?;
         SearchManager::get().await.mark_role_dirty(agent_id, new_name.as_str());
-        Ok(())
-    }
-
-    pub async fn remove_role(&self, agent_id: &str, role_name: &str) -> Result<()> {
-        self.remove_role_play_ref(agent_id, role_name).await?;
-        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
-        Ok(())
-    }
-
-    pub async fn rename_role(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
-        validate_code(new_name.as_str())?;
-        let role = self.get_role(agent_id, role_name).await?;
-        self.write_role_play_ref(agent_id, new_name.as_str(), |old| {
-            match old {
-                Some(_) => {
-                    Err(Error::AgentRoleAlreadyExists(agent_id.to_string(), new_name.to_string()))
-                }
-                None => {
-                    Ok(Arc::new(RolePlay {
-                        role: Arc::new(Role {
-                            agent_id: role.role.agent_id.clone(),
-                            role_name: new_name.clone(),
-                            full_name: role.role.full_name.clone(),
-                            description: role.role.description.clone(),
-                        }),
-                        other_roles: role.other_roles.clone()
-                    }))
-                }
-            }
-        }).await?;
-        SearchManager::get().await.mark_role_dirty(agent_id, new_name.as_str());
-        self.remove_role(agent_id, role_name).await?;
-        SearchManager::get().await.mark_role_dirty(agent_id, role_name);
         Ok(())
     }
 
@@ -500,34 +451,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_role() {
-        setup().await;
-        let dm = kissbot_memory::DirectoryManager::get();
-        dm.ensure_agent_dir("agent-remove-role").await.unwrap();
-        dm.ensure_agent_ego_dir("agent-remove-role").await.unwrap();
-        let manager = RolePlayManager::get();
-        manager.create_role("agent-remove-role", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
-        manager.remove_role("agent-remove-role", "admin").await.unwrap();
-        let result = manager.get_role("agent-remove-role", "admin").await;
-        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
-    }
-
-    #[tokio::test]
-    async fn test_rename_role() {
-        setup().await;
-        let dm = kissbot_memory::DirectoryManager::get();
-        dm.ensure_agent_dir("agent-rename-role").await.unwrap();
-        dm.ensure_agent_ego_dir("agent-rename-role").await.unwrap();
-        let manager = RolePlayManager::get();
-        manager.create_role("agent-rename-role", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
-        manager.rename_role("agent-rename-role", "admin", Arc::new("mod".to_string())).await.unwrap();
-        let role = manager.get_role("agent-rename-role", "mod").await.unwrap();
-        assert_eq!(*role.role.role_name, "mod");
-        let result = manager.get_role("agent-rename-role", "admin").await;
-        assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
-    }
-
-    #[tokio::test]
     async fn test_update_role_description() {
         setup().await;
         let dm = kissbot_memory::DirectoryManager::get();
@@ -705,18 +628,6 @@ mod tests {
         let manager = RolePlayManager::get();
         manager.create_role("agent-from-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
         let result = manager.create_role_from("agent-from-invalid", "admin", Arc::new("a b".to_string())).await;
-        assert!(matches!(result, Err(Error::InvalidCode(_))));
-    }
-
-    #[tokio::test]
-    async fn test_rename_role_rejects_invalid_code() {
-        setup().await;
-        let dm = kissbot_memory::DirectoryManager::get();
-        dm.ensure_agent_dir("agent-rename-invalid").await.unwrap();
-        dm.ensure_agent_ego_dir("agent-rename-invalid").await.unwrap();
-        let manager = RolePlayManager::get();
-        manager.create_role("agent-rename-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
-        let result = manager.rename_role("agent-rename-invalid", "admin", Arc::new("a b".to_string())).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
 
