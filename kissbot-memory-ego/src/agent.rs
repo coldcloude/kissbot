@@ -223,11 +223,11 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         manager.create_agent(
-            Arc::new("dup-alice".to_string()),
+            Arc::new("dup_alice".to_string()),
             Arc::new("Test agent".to_string()),
         ).await.unwrap();
         let result = manager.create_agent(
-            Arc::new("dup-alice".to_string()),
+            Arc::new("dup_alice".to_string()),
             Arc::new("Another agent".to_string()),
         ).await;
         assert!(matches!(result, Err(Error::AgentAlreadyExists(_))));
