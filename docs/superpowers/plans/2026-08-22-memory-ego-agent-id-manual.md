@@ -182,7 +182,7 @@ git commit -m "kissbot-api: AgentMetadata 删除 individual_name，CreateAgentRe
 
 - [ ] **Step 5: 更新其余 agent.rs 测试**
 
-注意：测试目录为进程级共享（test_util OnceLock<TempDir>），且 create_agent 现在有查重逻辑，各测试必须使用互不相同的 agent_id（"alice"/"alice-orig"/"alice-crud"/"Alice"/"alice_01"/"dup-alice" 均不同）。
+注意：测试目录为进程级共享（test_util OnceLock<TempDir>），且 create_agent 现在有查重逻辑，各测试必须使用互不相同的 agent_id（"alice"/"alice_orig"/"alice_crud"/"Alice"/"alice_01"/"dup_alice" 均不同）；且 agent_id 须通过 validate_code（仅 [A-Za-z0-9_]，不能含连字符）。
 
 - `test_update_agent_name`：整块删除
 - `test_update_agent_description`：删除 `assert_eq!(*agent.individual_name, "Alice");` 一行
@@ -194,11 +194,11 @@ git commit -m "kissbot-api: AgentMetadata 删除 individual_name，CreateAgentRe
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice-orig".to_string()),
+            Arc::new("alice_orig".to_string()),
             Arc::new("Test".to_string()),
         ).await.unwrap();
-        let new_id = manager.copy_agent(&agent_id, Arc::new("alice-copy".to_string())).await.unwrap();
-        assert_eq!(*new_id, "alice-copy");
+        let new_id = manager.copy_agent(&agent_id, Arc::new("alice_copy".to_string())).await.unwrap();
+        assert_eq!(*new_id, "alice_copy");
         let original = manager.get_agent(&agent_id).await.unwrap();
         let copy = manager.get_agent(&new_id).await.unwrap();
         assert_eq!(*original.description, *copy.description);
@@ -213,7 +213,7 @@ git commit -m "kissbot-api: AgentMetadata 删除 individual_name，CreateAgentRe
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice-crud".to_string()),
+            Arc::new("alice_crud".to_string()),
             Arc::new("Original".to_string()),
         ).await.unwrap();
         manager.update_agent_description(&agent_id, Arc::new("Updated".to_string())).await.unwrap();
