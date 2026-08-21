@@ -258,7 +258,7 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice".to_string()),
+            Arc::new("alice-orig".to_string()),
             Arc::new("Test".to_string()),
         ).await.unwrap();
         let new_id = manager.copy_agent(&agent_id, Arc::new("alice-copy".to_string())).await.unwrap();
@@ -273,7 +273,7 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("alice".to_string()),
+            Arc::new("alice-crud".to_string()),
             Arc::new("Original".to_string()),
         ).await.unwrap();
         manager.update_agent_description(&agent_id, Arc::new("Updated".to_string())).await.unwrap();
