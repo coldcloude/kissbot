@@ -165,32 +165,31 @@ impl CommandRouter {
     /// agent/role/mode/reenter 走 change_channel_key 队列；model 改会话模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
     pub async fn execute(
-        command: &AdminCommand,
+        command: AdminCommand,
         channel_id: &str,
     ) -> Result<String> {
         let nexus = Nexus::get();
         match command {
             AdminCommand::Bind { messenger_id, user_id } => {
-                let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                let cu = ChannelUser { messenger_id: messenger_id, user_id: user_id };
                 // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
-                nexus.channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await?;
-                Ok(format!("✅ 已绑定 channel 用户: {} / {}", messenger_id, user_id))
+                nexus.channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
             AdminCommand::Unbind { messenger_id, user_id } => {
-                let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
-                // 统一走串行队列应用（防写-写竞态；移除 bind_users，outgoing 引用该身份则一并清空）
-                nexus.channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await?;
-                Ok(format!("✅ 已移除 channel 用户: {} / {}", messenger_id, user_id))
+                let cu = ChannelUser { messenger_id: messenger_id, user_id: user_id };
+                // 统一走串行队列应用（防写-写竞态；移除 bind_users，outgoing 引用该身份则一并清空；回复文本队列内生成）
+                nexus.channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
             AdminCommand::Admin { messenger_id, user_id } => {
+                let reply = format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id);
                 ConfigManager::get().add_admin(channel_id, &ChannelUser {
-                    messenger_id: messenger_id.clone(),
-                    user_id: user_id.clone(),
+                    messenger_id: messenger_id,
+                    user_id: user_id,
                 }).await?;
-                Ok(format!("✅ 已添加管理权限: {} / {}", messenger_id, user_id))
+                Ok(reply)
             }
             AdminCommand::Unadmin { messenger_id, user_id } => {
-                ConfigManager::get().remove_admin(channel_id, messenger_id, user_id).await?;
+                ConfigManager::get().remove_admin(channel_id, &messenger_id, &user_id).await?;
                 Ok(format!("✅ 已移除管理权限: {} / {}", messenger_id, user_id))
             }
             AdminCommand::SetAgent { agent_id, role } => {
@@ -230,24 +229,21 @@ impl CommandRouter {
                 Ok(format!("✅ 将重进事件: {}", event_id))
             }
             AdminCommand::BindOutgoing(params) => {
-                // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行
-                let reply = format!("✅ 已设发送通道: {} / {} -> {}", params.messenger_id, params.user_id, params.group_id);
-                nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params: params.clone() }).await?;
-                Ok(reply)
+                // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行（回复文本队列内生成）
+                nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params }).await
             }
             AdminCommand::UnbindOutgoing => {
-                // 清空经队列内 ChannelManager.clear_outgoing 执行（回到只存不回复模式）
-                nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await?;
-                Ok("✅ 已取消发送通道（只存不回复）".to_string())
+                // 清空经队列内 ChannelManager.clear_outgoing 执行（回到只存不回复模式；回复文本队列内生成）
+                nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await
             }
             AdminCommand::Model(pm, set_default) => {
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
                 nexus.set_session_model(channel_id, pm.clone()).await?;
-                if *set_default {
+                if set_default {
                     ConfigManager::get().set_default_model(pm.clone()).await?;
                 }
                 let mut reply = format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model);
-                if *set_default {
+                if set_default {
                     reply.push_str("（已设为默认）");
                 }
                 Ok(reply)

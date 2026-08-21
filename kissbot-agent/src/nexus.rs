@@ -38,7 +38,7 @@ enum ConfigChange {
 /// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ConfigChange 同消费者串行，写-写无竞态）
 struct ChannelTask {
     cmd: ChannelCommand,
-    done: tokio::sync::oneshot::Sender<Result<()>>,
+    done: tokio::sync::oneshot::Sender<Result<String>>,
 }
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
@@ -282,7 +282,7 @@ impl Nexus {
 
     /// channel 配置变更统一入口（/bind、/unbind、/bind-outgoing、/unbind-outgoing）：
     /// 排队调 ChannelManager 方法执行，与 change_channel_key 同一消费者串行；返回时已生效
-    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<()> {
+    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<String> {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
             .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
@@ -325,12 +325,24 @@ impl Nexus {
     }
 
     /// channel 配置变更执行（队列内串行，不对外）：分发到 ChannelManager 方法
-    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<()> {
+    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
         match cmd {
-            ChannelCommand::BindUser { channel_id, user } => self.channel_manager.bind_user(&channel_id, &user).await,
-            ChannelCommand::UnbindUser { channel_id, user } => self.channel_manager.unbind_user(&channel_id, &user).await,
-            ChannelCommand::BindOutgoing { channel_id, params } => self.channel_manager.bind_outgoing(&channel_id, &params).await,
-            ChannelCommand::ClearOutgoing { channel_id } => self.channel_manager.clear_outgoing(&channel_id).await,
+            ChannelCommand::BindUser { channel_id, user } => {
+                self.channel_manager.bind_user(&channel_id, &user).await?;
+                Ok(format!("✅ 已绑定 channel 用户: {} / {}", user.messenger_id, user.user_id))
+            },
+            ChannelCommand::UnbindUser { channel_id, user } => {
+                self.channel_manager.unbind_user(&channel_id, &user).await?;
+                Ok(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id))
+            },
+            ChannelCommand::BindOutgoing { channel_id, params } => {
+                self.channel_manager.bind_outgoing(&channel_id, &params).await?;
+                Ok(format!("✅ 已设发送通道: {} / {} -> {}", params.messenger_id, params.user_id, params.group_id))
+            },
+            ChannelCommand::ClearOutgoing { channel_id } => {
+                self.channel_manager.clear_outgoing(&channel_id).await?;
+                Ok("✅ 已取消发送通道（只存不回复）".to_string())
+            },
         }
     }
 
@@ -459,7 +471,7 @@ impl Nexus {
     ) {
         match CommandRouter::parse(content) {
             Ok(cmd) => {
-                match CommandRouter::execute(&cmd, channel_id).await {
+                match CommandRouter::execute(cmd, channel_id).await {
                     Ok(reply) => {
                         // 回复：系统命令始终发回来源 channel（不走 out_channel）
                         self.send_admin_reply(channel_id, event, reply).await;
