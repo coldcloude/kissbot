@@ -1,7 +1,7 @@
 use axum::{
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use futures::future;
@@ -24,10 +24,8 @@ pub fn create_router() -> Router {
         .route("/agent/create", post(create_agent))
         .route("/agent/list", get(list_agents))
         .route("/agent/get", post(get_agent))
-        .route("/agent/update-name", put(update_agent_name))
         .route("/agent/update-description", put(update_agent_description))
         .route("/agent/copy", post(copy_agent))
-        .route("/agent/search-name", post(search_by_name))
         .route("/agent/search-description", post(search_by_description))
         .route("/agent/retrieve", post(retrieve_agents))
         .route("/agent/name-completion", post(agent_name_completion))
@@ -43,11 +41,8 @@ pub fn create_router() -> Router {
         .route("/role/get", post(get_role))
         .route("/role/create", post(create_role))
         .route("/role/create-from", post(create_role_from))
-        .route("/role/remove", delete(remove_role))
-        .route("/role/rename", put(rename_role))
         .route("/role/update-description", put(update_role_description))
         .route("/role/update-full-name", put(update_role_full_name))
-        .route("/role/search-name", post(search_role_by_name))
         .route("/role/search-description", post(search_role_by_description))
         .route("/role/retrieve", post(retrieve_roles))
         .route("/role/name-completion", post(role_name_completion))
@@ -62,13 +57,12 @@ pub fn create_router() -> Router {
 
 // ========== Agent 管理 API ==========
 async fn create_agent(Json(req): Json<ego::CreateAgentRequest>) -> impl IntoResponse {
-    let result = {
-        let agent_manager = AgentManager::get();
-        agent_manager.create_agent(req.individual_name, req.description).await
-    };
+    let agent_id = req.agent_id.clone();
+    let result = AgentManager::get().create_agent(req.agent_id, req.description).await;
 
     match result {
         Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
+        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Agent {} already exists", agent_id)))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
 }
@@ -105,19 +99,6 @@ async fn get_agent(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
     }
 }
 
-async fn update_agent_name(Json(req): Json<ego::UpdateAgentNameRequest>) -> impl IntoResponse {
-    let result = {
-        let agent_manager = AgentManager::get();
-        agent_manager.update_agent_name(&req.agent_id, req.individual_name).await
-    };
-
-    match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
-    }
-}
-
 async fn update_agent_description(Json(req): Json<ego::UpdateAgentDescriptionRequest>) -> impl IntoResponse {
     let result = {
         let agent_manager = AgentManager::get();
@@ -132,22 +113,14 @@ async fn update_agent_description(Json(req): Json<ego::UpdateAgentDescriptionReq
 }
 
 async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse {
-    let result = {
-        let agent_manager = AgentManager::get();
-        agent_manager.copy_agent(&req.agent_id).await
-    };
+    let result = AgentManager::get().copy_agent(&req.agent_id, req.new_agent_id).await;
 
     match result {
         Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
         Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
+        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error("New agent already exists".to_string()))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
     }
-}
-
-async fn search_by_name(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
-    let ego_manager = SearchManager::get().await;
-    let agent_id = ego_manager.search_by_name(&req.keyword).await;
-    (StatusCode::OK, Json(ApiResponse::success(agent_id)))
 }
 
 async fn search_by_description(Json(req): Json<ego::SearchRequest>) -> impl IntoResponse {
@@ -166,12 +139,6 @@ async fn agent_name_completion(Json(req): Json<ego::NameCompletionRequest>) -> i
     let ego_manager = SearchManager::get().await;
     let results = ego_manager.name_completion(&req.prefix).await;
     (StatusCode::OK, Json(ApiResponse::success(results)))
-}
-
-async fn search_role_by_name(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
-    let ego_manager = SearchManager::get().await;
-    let roles = ego_manager.search_role_by_name(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
-    (StatusCode::OK, Json(ApiResponse::success(roles)))
 }
 
 async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
@@ -299,28 +266,6 @@ async fn create_role_from(Json(req): Json<ego::CreateRoleFromRequest>) -> impl I
     }
 }
 
-async fn remove_role(Json(req): Json<ego::RemoveRoleRequest>) -> impl IntoResponse {
-    let result = RolePlayManager::get().remove_role(&req.agent_id, &req.role_name).await;
-
-    match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
-    }
-}
-
-async fn rename_role(Json(req): Json<ego::RenameRoleRequest>) -> impl IntoResponse {
-    let new_name = req.new_name.clone();
-    let result = RolePlayManager::get().rename_role(&req.agent_id, &req.role_name, req.new_name).await;
-
-    match result {
-        Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Role {} already exists", new_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
-    }
-}
-
 async fn update_role_description(Json(req): Json<ego::UpdateRoleDescriptionRequest>) -> impl IntoResponse {
     let result = RolePlayManager::get().update_role_description(&req.agent_id, &req.role_name, req.description).await;
 
@@ -414,46 +359,32 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::util::ServiceExt;
 
-    // /agent/search-name HTTP 成功路径 mock 测试：
-    // 复用 kissbot-agent/src/http_server.rs 的 Router oneshot 模式（真实 handler + tempdir 数据），
-    // 覆盖「创建 agent 后按 individual_name 全匹配可搜到」与「未命中返回 null」。
+    // /agent/create 重复 agent_id mock 测试：第二次创建同一 agent_id 返回 409 CONFLICT
     #[tokio::test]
-    async fn search_name_http_success() {
+    async fn create_agent_http_duplicate() {
         crate::test_util::init_test_config();
 
-        // 创建 agent（create_agent 标记搜索索引脏，search 时同步）
-        let agent_id = AgentManager::get().create_agent(
-            Arc::new("alice".to_string()),
-            Arc::new("Alice 助理".to_string()),
-        ).await.unwrap();
-
-        // 成功路径：keyword 全匹配 individual_name → data 为 agent_id
         let app = create_router();
+        let body = r#"{"agent_id":"dup_http","description":"First"}"#.to_string();
         let req = Request::builder()
             .method("POST")
-            .uri("/agent/search-name")
+            .uri("/agent/create")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"keyword":"alice"}"#.to_string()))
+            .body(Body::from(body))
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["data"], serde_json::Value::String(agent_id.to_string()));
 
-        // 未命中：keyword 无匹配 → success=true、data 为 null
         let req = Request::builder()
             .method("POST")
-            .uri("/agent/search-name")
+            .uri("/agent/create")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"keyword":"nobody"}"#.to_string()))
+            .body(Body::from(r#"{"agent_id":"dup_http","description":"Second"}"#.to_string()))
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["success"], true);
-        assert_eq!(json["data"], serde_json::Value::Null);
+        assert_eq!(json["success"], false);
     }
 }
