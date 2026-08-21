@@ -198,6 +198,17 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
       data: { agent_id: agentId, role_name: 'r1', description: '测试角色' },
     })).json();
     expect(roleResp.success).toBe(true);
+    // 预建 out_channel 路由场景 role（out1/out2）：66f0b32 起 /agent 切换前经 ego 校验 role 存在
+    const out1Resp = await (await request.post(`${EGO_BASE}/role/create`, {
+      headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+      data: { agent_id: agentId, role_name: 'out1', description: '输出角色1' },
+    })).json();
+    expect(out1Resp.success).toBe(true);
+    const out2Resp = await (await request.post(`${EGO_BASE}/role/create`, {
+      headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+      data: { agent_id: agentId, role_name: 'out2', description: '输出角色2' },
+    })).json();
+    expect(out2Resp.success).toBe(true);
     // 解析确认：agent 存在
     const getResp = await (await request.post(`${EGO_BASE}/agent/get`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },

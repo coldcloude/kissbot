@@ -59,6 +59,17 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
       data: { agent_id: 'a1', description: '测试 agent' },
     })).json();
     expect(createResp.success).toBe(true);
+    // 预建 role r1/r2：66f0b32 起 /agent、/role 切换前经 ego 校验 role 存在
+    const roleResp = await (await request.post(`${EGO_BASE}/role/create`, {
+      headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
+      data: { agent_id: 'a1', role_name: 'r1', description: '测试角色' },
+    })).json();
+    expect(roleResp.success).toBe(true);
+    const role2Resp = await (await request.post(`${EGO_BASE}/role/create`, {
+      headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
+      data: { agent_id: 'a1', role_name: 'r2', description: '测试角色2' },
+    })).json();
+    expect(role2Resp.success).toBe(true);
     cliAdmin.stdin('/send /agent a1 r1');
     await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
   });
