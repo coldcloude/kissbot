@@ -6,7 +6,7 @@ use kissbot_api::{AgentMetadata, ChannelUser, IndividualRecognition, RolePlay};
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     format!(
         "# Agent Identity\n\n- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
-        metadata.individual_name, metadata.created_at, metadata.description
+        metadata.agent_id, metadata.created_at, metadata.description
     )
 }
 
