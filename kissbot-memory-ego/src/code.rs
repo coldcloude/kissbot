@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 
 /// 校验代号：仅字母/数字/下划线，且非空（等价于 `^[A-Za-z0-9_]+$`）。
-/// 用于 role_name / individual_name 等代号字段的写入入口。
+/// 用于 agent_id / role_name 等代号字段的写入入口。
 pub fn validate_code(code: &str) -> Result<()> {
     let valid = !code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if valid {

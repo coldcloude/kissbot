@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
 use crate::error::Result;
 use crate::error::Error;
@@ -121,14 +120,17 @@ impl AgentManager {
         }
     }
 
-    pub async fn create_agent(&self, individual_name: Arc<String>, description: Arc<String>) -> Result<Arc<String>> {
-        validate_code(individual_name.as_str())?;
-        let agent_id = Arc::new(Uuid::new_v4().to_string());
+    pub async fn create_agent(&self, agent_id: Arc<String>, description: Arc<String>) -> Result<Arc<String>> {
+        validate_code(agent_id.as_str())?;
+        // 查重：agent 目录下 metadata.json 已存在则报错，不覆盖已有数据
+        let metadata_path = agent_metadata_path(agent_id.as_str()).await?;
+        if metadata_path.exists() {
+            return Err(Error::AgentAlreadyExists(agent_id.to_string()));
+        }
         let created_at = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
         let metadata = AgentMetadata {
             agent_id: agent_id.clone(),
-            individual_name,
             description,
             created_at,
         };
@@ -136,8 +138,8 @@ impl AgentManager {
         self.write_agent_metadata_ref(metadata.agent_id.clone().as_str(), |_| {
             Ok(Arc::new(metadata))
         }).await?;
-        // 新 agent 需入搜索索引（/agent/search-name 全匹配依赖 name_index；
-        // 与 update_agent_name/update_agent_description 的 mark_identity_dirty 对齐）
+        // 新 agent 需入搜索索引（name_completion/name_descr_index 依赖 agent_id；
+        // 与 update_agent_description 的 mark_identity_dirty 对齐）
         SearchManager::get().await.mark_identity_dirty(agent_id.as_str());
         Ok(agent_id)
     }
@@ -150,30 +152,9 @@ impl AgentManager {
         self.read_agent_metadata(agent_id).await
     }
 
-    pub async fn copy_agent(&self, agent_id: &str) -> Result<Arc<String>> {
+    pub async fn copy_agent(&self, agent_id: &str, new_agent_id: Arc<String>) -> Result<Arc<String>> {
         let metadata = self.get_agent(agent_id).await?;
-        self.create_agent(metadata.individual_name.clone(), metadata.description.clone()).await
-    }
-
-    pub async fn update_agent_name(&self, agent_id: &str, individual_name: Arc<String>) -> Result<()> {
-        validate_code(individual_name.as_str())?;
-        self.write_agent_metadata_ref(agent_id, |metadata| {
-            match metadata {
-                Some(metadata) => {
-                    if individual_name.as_str() != metadata.individual_name.as_str() {
-                        let mut metadata_new_arc = metadata.clone();
-                        let metadata_new = Arc::make_mut(&mut metadata_new_arc);
-                        metadata_new.individual_name = individual_name.clone();
-                        Ok(metadata_new_arc)
-                    } else {
-                        Ok(metadata)
-                    }
-                }
-                None => Err(Error::AgentNotFound(agent_id.to_string()))
-            }
-        }).await?;
-        SearchManager::get().await.mark_identity_dirty(agent_id);
-        Ok(())
+        self.create_agent(new_agent_id, metadata.description.clone()).await
     }
 
     pub async fn update_agent_description(&self, agent_id: &str, description: Arc<String>) -> Result<()> {
@@ -212,7 +193,6 @@ mod tests {
             let agent_dir = dm.ensure_agent_dir("setup-agent").await.unwrap();
             let metadata = serde_json::json!({
                 "agent_id": "setup-agent",
-                "individual_name": "Setup",
                 "description": "Setup agent for SearchManager init",
                 "created_at": "2026-06-25 10:00:00"
             });
@@ -229,13 +209,28 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("Alice".to_string()),
+            Arc::new("alice".to_string()),
             Arc::new("Test agent".to_string()),
         ).await.unwrap();
+        assert_eq!(*agent_id, "alice");
         let agent = manager.get_agent(&agent_id).await.unwrap();
-        assert_eq!(*agent.individual_name, "Alice");
+        assert_eq!(*agent.agent_id, "alice");
         assert_eq!(*agent.description, "Test agent");
-        assert_eq!(*agent.agent_id, *agent_id);
+    }
+
+    #[tokio::test]
+    async fn test_create_agent_duplicate() {
+        setup().await;
+        let manager = AgentManager::get();
+        manager.create_agent(
+            Arc::new("dup-alice".to_string()),
+            Arc::new("Test agent".to_string()),
+        ).await.unwrap();
+        let result = manager.create_agent(
+            Arc::new("dup-alice".to_string()),
+            Arc::new("Another agent".to_string()),
+        ).await;
+        assert!(matches!(result, Err(Error::AgentAlreadyExists(_))));
     }
 
     #[tokio::test]
@@ -243,20 +238,6 @@ mod tests {
         setup().await;
         let result = AgentManager::get().get_agent("nonexistent").await;
         assert!(matches!(result, Err(Error::AgentNotFound(_))));
-    }
-
-    #[tokio::test]
-    async fn test_update_agent_name() {
-        setup().await;
-        let manager = AgentManager::get();
-        let agent_id = manager.create_agent(
-            Arc::new("Alice".to_string()),
-            Arc::new("Original description".to_string()),
-        ).await.unwrap();
-        manager.update_agent_name(&agent_id, Arc::new("Alice2".to_string())).await.unwrap();
-        let agent = manager.get_agent(&agent_id).await.unwrap();
-        assert_eq!(*agent.individual_name, "Alice2");
-        assert_eq!(*agent.description, "Original description");
     }
 
     #[tokio::test]
@@ -270,7 +251,6 @@ mod tests {
         manager.update_agent_description(&agent_id, Arc::new("New description".to_string())).await.unwrap();
         let agent = manager.get_agent(&agent_id).await.unwrap();
         assert_eq!(*agent.description, "New description");
-        assert_eq!(*agent.individual_name, "Alice");
     }
 
     #[tokio::test]
@@ -278,14 +258,14 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("Alice".to_string()),
+            Arc::new("alice".to_string()),
             Arc::new("Test".to_string()),
         ).await.unwrap();
-        let new_id = manager.copy_agent(&agent_id).await.unwrap();
-        assert_ne!(*agent_id, *new_id);
+        let new_id = manager.copy_agent(&agent_id, Arc::new("alice-copy".to_string())).await.unwrap();
+        assert_eq!(*new_id, "alice-copy");
         let original = manager.get_agent(&agent_id).await.unwrap();
         let copy = manager.get_agent(&new_id).await.unwrap();
-        assert_eq!(*original.individual_name, *copy.individual_name);
+        assert_eq!(*original.description, *copy.description);
     }
 
     #[tokio::test]
@@ -293,13 +273,11 @@ mod tests {
         setup().await;
         let manager = AgentManager::get();
         let agent_id = manager.create_agent(
-            Arc::new("Alice".to_string()),
+            Arc::new("alice".to_string()),
             Arc::new("Original".to_string()),
         ).await.unwrap();
-        manager.update_agent_name(&agent_id, Arc::new("Alice2".to_string())).await.unwrap();
         manager.update_agent_description(&agent_id, Arc::new("Updated".to_string())).await.unwrap();
         let agent = manager.get_agent(&agent_id).await.unwrap();
-        assert_eq!(*agent.individual_name, "Alice2");
         assert_eq!(*agent.description, "Updated");
     }
 
@@ -322,6 +300,6 @@ mod tests {
             Arc::new("Test agent".to_string()),
         ).await.unwrap();
         let agent = manager.get_agent(&agent_id).await.unwrap();
-        assert_eq!(*agent.individual_name, "alice_01");
+        assert_eq!(*agent.agent_id, "alice_01");
     }
 }

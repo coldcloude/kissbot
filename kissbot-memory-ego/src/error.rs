@@ -14,6 +14,9 @@ pub enum Error {
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
 
+    #[error("Agent already exists: {0}")]
+    AgentAlreadyExists(String),
+
     #[error("Agent individual not found: {0} {1}")]
     AgentIndividualNotFound(String, String),
 
