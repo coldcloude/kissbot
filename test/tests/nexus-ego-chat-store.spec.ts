@@ -20,7 +20,7 @@ let store: ChildProcess;
 let backend: ChildProcess;
 let agent: ChildProcess;
 let cli: SpawnedCli;   // u2（管理员）经 channel-web 与 nexus 通信；agent 以 bind_user u1 身份回复
-let agentId: string;   // ego 里预建 agent a1 的 UUID（由 /agent/search-name 解析）
+let agentId: string;   // ego 里预建 agent a1 的 agent_id（手工指定，创建时传入）
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -189,7 +189,7 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     // 预建 ego agent a1 及其角色 r1（正常场景的 role 需在 ego 中定义）
     const createResp = await (await request.post(`${EGO_BASE}/agent/create`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
-      data: { individual_name: 'a1', description: 'ego 测试 agent' },
+      data: { agent_id: 'a1', description: 'ego 测试 agent' },
     })).json();
     expect(createResp.success).toBe(true);
     agentId = createResp.data;
@@ -198,13 +198,13 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
       data: { agent_id: agentId, role_name: 'r1', description: '测试角色' },
     })).json();
     expect(roleResp.success).toBe(true);
-    // 解析确认：search-name 可命中
-    const searchResp = await (await request.post(`${EGO_BASE}/agent/search-name`, {
+    // 解析确认：agent 存在
+    const getResp = await (await request.post(`${EGO_BASE}/agent/get`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
-      data: { keyword: 'a1' },
+      data: { agent_id: agentId },
     })).json();
-    expect(searchResp.success).toBe(true);
-    expect(searchResp.data).toBe(agentId);
+    expect(getResp.success).toBe(true);
+    expect(getResp.data.agent_id).toBe(agentId);
 
     backend = startBackend(WORKSPACE);
     await waitForPort(8301, '127.0.0.1', 30000);

@@ -53,10 +53,10 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
   });
 
   test('TC-02: 管理员（u2）发送 /agent a1 r1 设置 channel 的 agent 与 role', async ({ request }) => {
-    // 预建 ego agent a1：/agent 切换前先解析（search-name 全匹配），不可解析则保持原 agent 并报错
+    // 预建 ego agent a1：/agent 切换前先解析（按 agent_id 解析），不可解析则保持原 agent 并报错
     const createResp = await (await request.post(`${EGO_BASE}/agent/create`, {
       headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
-      data: { individual_name: 'a1', description: '测试 agent' },
+      data: { agent_id: 'a1', description: '测试 agent' },
     })).json();
     expect(createResp.success).toBe(true);
     cliAdmin.stdin('/send /agent a1 r1');

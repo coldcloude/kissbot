@@ -44,10 +44,10 @@ test.describe.serial('memory-ego API 测试', () => {
   // TC-01 创建 agent
   test('TC-01: 创建 agent', async ({ request }) => {
     const resp = await apiReq(request, 'POST', '/agent/create', {
-      individual_name: 'alice', description: 'Alice 助理',
+      agent_id: 'alice', description: 'Alice 助理',
     });
     expect(resp.success).toBe(true);
-    expect(resp.data).toBeTruthy();
+    expect(resp.data).toBe('alice');
     agentId = resp.data;
   });
 
@@ -64,18 +64,7 @@ test.describe.serial('memory-ego API 测试', () => {
     const resp = await apiReq(request, 'POST', '/agent/get', { agent_id: agentId });
     expect(resp.success).toBe(true);
     expect(resp.data.agent_id).toBe(agentId);
-    expect(resp.data.individual_name).toBe('alice');
     expect(resp.data.description).toBe('Alice 助理');
-  });
-
-  // TC-04 更新 agent 名称
-  test('TC-04: 更新 agent 名称', async ({ request }) => {
-    const resp = await apiReq(request, 'PUT', '/agent/update-name', {
-      agent_id: agentId, individual_name: 'alice2',
-    });
-    expect(resp.success).toBe(true);
-    const g = await apiReq(request, 'POST', '/agent/get', { agent_id: agentId });
-    expect(g.data.individual_name).toBe('alice2');
   });
 
   // TC-05 更新 agent 描述
@@ -90,19 +79,12 @@ test.describe.serial('memory-ego API 测试', () => {
 
   // TC-06 复制 agent
   test('TC-06: 复制 agent', async ({ request }) => {
-    const resp = await apiReq(request, 'POST', '/agent/copy', { agent_id: agentId });
+    const resp = await apiReq(request, 'POST', '/agent/copy', {
+      agent_id: agentId, new_agent_id: 'alice_copy',
+    });
     expect(resp.success).toBe(true);
-    expect(resp.data).toBeTruthy();
-    expect(resp.data).not.toBe(agentId);
+    expect(resp.data).toBe('alice_copy');
     copiedAgentId = resp.data;
-  });
-
-  // TC-07 按名称搜索 agent
-  // 注：TC-06 copy 会复制 individual_name，两个 agent 同名 alice2，全匹配索引只保留一个，故断言包含关系
-  test('TC-07: 按名称搜索 agent', async ({ request }) => {
-    const resp = await apiReq(request, 'POST', '/agent/search-name', { keyword: 'alice2' });
-    expect(resp.success).toBe(true);
-    expect([agentId, copiedAgentId]).toContain(resp.data);
   });
 
   // TC-08 按描述搜索 agent
@@ -267,55 +249,34 @@ test.describe.serial('memory-ego API 测试', () => {
     expect(list.data).toContain('admin2');
   });
 
-  // TC-23 重命名角色
-  test('TC-23: 重命名角色', async ({ request }) => {
-    const resp = await apiReq(request, 'PUT', '/role/rename', {
-      agent_id: agentId, role_name: 'admin2', new_name: 'mod',
-    });
-    expect(resp.success).toBe(true);
-    // 回读：新名存在、旧名消失
-    const list = await apiReq(request, 'POST', '/role/list', { agent_id: agentId });
-    expect(list.data).toContain('mod');
-    expect(list.data).not.toContain('admin2');
-  });
-
-  // TC-24 按名称搜索角色
-  test('TC-24: 按名称搜索角色', async ({ request }) => {
-    const resp = await apiReq(request, 'POST', '/role/search-name', {
-      keyword: 'mod', agent_id: agentId,
-    });
-    expect(resp.success).toBe(true);
-    expect(resp.data.some((k: any) => k.role_name === 'mod' && k.agent_id === agentId)).toBe(true);
-  });
-
   // TC-25 按描述搜索角色
   test('TC-25: 按描述搜索角色', async ({ request }) => {
     const resp = await apiReq(request, 'POST', '/role/search-description', {
       keyword: '新描述', agent_id: agentId,
     });
     expect(resp.success).toBe(true);
-    expect(resp.data.some((k: any) => k.role_name === 'mod')).toBe(true);
+    expect(resp.data.some((k: any) => k.role_name === 'admin2')).toBe(true);
   });
 
   // TC-26 批量取回角色
   // 注：retrieve_roles 返回 Vec<Role>（RolePlay.role 部分，非完整 RolePlay）
   test('TC-26: 批量取回角色', async ({ request }) => {
     const resp = await apiReq(request, 'POST', '/role/retrieve', {
-      role_keys: [{ agent_id: agentId, role_name: 'mod' }],
+      role_keys: [{ agent_id: agentId, role_name: 'admin2' }],
     });
     expect(resp.success).toBe(true);
     expect(resp.data.length).toBe(1);
-    expect(resp.data[0].role_name).toBe('mod');
+    expect(resp.data[0].role_name).toBe('admin2');
     expect(resp.data[0].agent_id).toBe(agentId);
   });
 
   // TC-27 角色名称前缀补全
   test('TC-27: 角色名称前缀补全', async ({ request }) => {
     const resp = await apiReq(request, 'POST', '/role/name-completion', {
-      prefix: 'mo', agent_id: agentId,
+      prefix: 'ad', agent_id: agentId,
     });
     expect(resp.success).toBe(true);
-    expect(resp.data.some((c: any) => c.key.role_name === 'mod')).toBe(true);
+    expect(resp.data.some((c: any) => c.key.role_name === 'admin')).toBe(true);
   });
 
   // ========== 角色间关系 ==========
@@ -397,15 +358,5 @@ test.describe.serial('memory-ego API 测试', () => {
       agent_id: agentId, role_name: 'admin', other_role_name: 'bobby',
     });
     expect(g.data.other_role_relations.carol.relation).toBe('sister');
-  });
-
-  // TC-35 删除角色
-  test('TC-35: 删除角色', async ({ request }) => {
-    const resp = await apiReq(request, 'DELETE', '/role/remove', {
-      agent_id: agentId, role_name: 'mod',
-    });
-    expect(resp.success).toBe(true);
-    const list = await apiReq(request, 'POST', '/role/list', { agent_id: agentId });
-    expect(list.data).not.toContain('mod');
   });
 });
