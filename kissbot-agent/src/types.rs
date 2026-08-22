@@ -230,6 +230,8 @@ pub struct ModelResponse {
     pub tool_calls: Vec<Arc<ToolCall>>,
     #[allow(dead_code)]
     pub finish_reason: Arc<String>,
+    /// 本次请求 token 总占用（usage.total_tokens；openai 解析、anthropic 暂固定 0）
+    pub total_tokens: u64,
 }
 
 /// OpenAI 兼容上下文消息：role 即枚举变体（内部标签序列化，role 与其他字段平级）

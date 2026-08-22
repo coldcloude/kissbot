@@ -83,6 +83,8 @@ fn openai_body(effective: &EffectiveModelConfig, messages: &[Message], tools: &[
 }
 
 fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
+    // usage.total_tokens：本次请求 prompt+completion token 总占用（DeepSeek/Kimi 均返回）；缺字段回退 0
+    let total_tokens = data["usage"]["total_tokens"].as_u64().unwrap_or(0);
     let choice = &data["choices"][0];
     let content = choice["message"]["content"].as_str().unwrap_or("").to_string();
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("").to_string();
@@ -101,6 +103,7 @@ fn parse_openai_response(data: &serde_json::Value) -> ModelResponse {
         thinking: Arc::new(thinking),
         tool_calls: tool_calls,
         finish_reason: Arc::new(finish_reason),
+        total_tokens,
     }
 }
 
@@ -246,6 +249,7 @@ fn parse_anthropic_response(data: &serde_json::Value) -> ModelResponse {
         thinking: Arc::new(thinking),
         tool_calls: Vec::new(),
         finish_reason: Arc::new(finish_reason),
+        total_tokens: 0,   // Anthropic API 文档未找到，暂固定 0（永不触发重置）
     }
 }
 
@@ -686,5 +690,36 @@ mod tests {
         let err = provider_for(client, "typo", "u", "k").err().expect("未知 provider_type 应返回 Err");
         assert!(matches!(err, Error::ModelProviderNotSupported(_)), "未知类型应返回 ModelProviderNotSupported");
         assert!(err.to_string().contains("未知 provider_type: typo"), "错误信息应指明未知类型");
+    }
+
+    #[test]
+    fn parse_openai_response_extracts_total_tokens() {
+        // DeepSeek/Kimi 非流式响应：usage.total_tokens = prompt + completion
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.total_tokens, 15, "应取 usage.total_tokens");
+    }
+
+    #[test]
+    fn parse_openai_response_missing_usage_defaults_zero() {
+        // 无 usage 字段（容错）→ 0
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = parse_openai_response(&data);
+        assert_eq!(resp.total_tokens, 0, "缺 usage 回退 0");
+    }
+
+    #[test]
+    fn parse_anthropic_response_total_tokens_always_zero() {
+        let data = serde_json::json!({
+            "content": [{ "type": "text", "text": "答复" }],
+            "stop_reason": "end_turn"
+        });
+        let resp = parse_anthropic_response(&data);
+        assert_eq!(resp.total_tokens, 0, "anthropic 暂固定 0");
     }
 }
