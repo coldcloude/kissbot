@@ -312,11 +312,10 @@ mod tests {
             api_key: "sk-test".into(),
             model: "deepseek-4-flash".into(),
             max_tokens: 2048,
+            max_tokens_usage: 128000,
             temperature: Some(0.3),
             timeout_secs: 30,
             retry_count: 2,
-            context_length: 65536,
-            max_context_messages: 100,
             thinking: None,
             reasoning_effort: None,
         }

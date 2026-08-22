@@ -28,10 +28,6 @@ pub const DEFAULT_COMPRESS_PROMPT: &str = "请用简洁的语言总结以上对�
 
 /// 模型默认最大输出 token 数
 pub const DEFAULT_MAX_TOKENS: u32 = 4096;
-/// 模型默认上下文长度（token）
-pub const DEFAULT_CONTEXT_LENGTH: u32 = 65536;
-/// 模型默认上下文消息条数上限（溢出触发重置/压缩）
-pub const DEFAULT_MAX_CONTEXT_MESSAGES: usize = 100;
 /// 模型默认请求超时（秒）
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// 模型默认重试次数
@@ -129,8 +125,7 @@ pub struct ProviderConfig {
     pub provider_type: String,           // "openai" | "anthropic"，决定 Provider 实现
     pub base_url: String,                // URL 前缀，如 https://api.deepseek.com（原 endpoint）
     pub api_key: String,                 // provider 级密钥
-    /// provider 默认模型参数（未配字段回落全局常量；缺省 = 全 None = 全局默认）
-    #[serde(default)]
+    /// provider 默认模型参数（必填段：max_tokens_usage 必须声明；旧配置无 default_model_config 解析失败）
     pub default_model_config: ModelConfig,
     pub models: Arc<ArcSwapHashMap<String, ModelConfig>>,  // key = model 标识
 }
@@ -143,13 +138,11 @@ pub struct EffectiveModelConfig {
     pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
+    /// token 占用上限（必填：usage.total_tokens 超过其 80% 触发会话重置）
+    pub max_tokens_usage: u32,
     pub temperature: Option<f32>,
     pub timeout_secs: u64,
     pub retry_count: u32,
-    #[allow(dead_code)]   // 本期只落位：默认上下文长度（token），截断逻辑后续接入
-    pub context_length: u32,
-    /// 上下文消息条数上限（溢出触发重置/压缩；来自 provider 默认 + model 覆盖）
-    pub max_context_messages: usize,
     pub thinking: Option<String>,
     pub reasoning_effort: Option<String>,
 }
@@ -161,10 +154,9 @@ pub struct EffectiveModelConfig {
 pub struct ModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_length: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_context_messages: Option<usize>,
+    /// token 占用上限（必填非 Option：provider 默认与 model 覆盖均须声明，缺失解析失败——
+    /// 破坏性变更；usage.total_tokens 超过其 80% 触发会话重置）
+    pub max_tokens_usage: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,11 +184,11 @@ pub fn merge_model_config(
         api_key: provider.api_key.clone(),
         model: model_name.to_string(),   // 用切换指令的模型名（未配置也有效）
         max_tokens: model.and_then(|m| m.max_tokens).or(d.max_tokens).unwrap_or(DEFAULT_MAX_TOKENS),
+        // max_tokens_usage 必填非 Option：model 覆盖有值直接用，无该 model 键时用 provider 默认（无全局回落）
+        max_tokens_usage: model.map(|m| m.max_tokens_usage).unwrap_or(d.max_tokens_usage),
         temperature: model.and_then(|m| m.temperature).or(d.temperature),
         timeout_secs: model.and_then(|m| m.timeout_secs).or(d.timeout_secs).unwrap_or(DEFAULT_TIMEOUT_SECS),
         retry_count: model.and_then(|m| m.retry_count).or(d.retry_count).unwrap_or(DEFAULT_RETRY_COUNT),
-        context_length: model.and_then(|m| m.context_length).or(d.context_length).unwrap_or(DEFAULT_CONTEXT_LENGTH),
-        max_context_messages: model.and_then(|m| m.max_context_messages).or(d.max_context_messages).unwrap_or(DEFAULT_MAX_CONTEXT_MESSAGES),
         thinking: model.and_then(|m| m.thinking.clone()).or(d.thinking.clone()),
         reasoning_effort: model.and_then(|m| m.reasoning_effort.clone()).or(d.reasoning_effort.clone()),
     }
@@ -942,8 +934,7 @@ mod tests {
             api_key: "sk-test".into(),
             default_model_config: ModelConfig {
                 max_tokens: Some(4096),
-                context_length: Some(65536),
-                max_context_messages: Some(100),
+                max_tokens_usage: 128000,
                 timeout_secs: Some(60),
                 retry_count: Some(3),
                 temperature: Some(0.7),
@@ -955,9 +946,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_config_old_shape_migration() {
-        // 旧格式：扁平 default_* 字段（default_temperature 数值、无 thinking/reasoning_effort）
-        // 新结构：default_model_config 缺省（serde default）→ 全 None → 回落全局默认
+    fn provider_config_old_shape_no_longer_parses() {
+        // 旧扁平 default_* 字段格式无 default_model_config 段 → 解析失败（破坏性变更，配置文件需迁移）
         let old = r#"{
             "name": "deepseek",
             "provider_type": "openai",
@@ -971,11 +961,21 @@ mod tests {
             "default_max_context_messages": 100,
             "models": {}
         }"#;
-        let pc: ProviderConfig = serde_json::from_str(old).unwrap();
-        assert_eq!(pc.default_model_config.max_tokens, None, "旧扁平字段被忽略");
-        assert_eq!(pc.default_model_config.temperature, None);
-        assert_eq!(pc.default_model_config.thinking, None);
-        assert_eq!(pc.default_model_config.reasoning_effort, None);
+        assert!(serde_json::from_str::<ProviderConfig>(old).is_err(), "旧格式缺 default_model_config 应解析失败");
+    }
+
+    #[test]
+    fn provider_config_missing_max_tokens_usage_fails() {
+        // 必填语义：default_model_config 段内缺 max_tokens_usage → 解析失败
+        let json = r#"{
+            "name": "deepseek",
+            "provider_type": "openai",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "sk-test",
+            "default_model_config": { "max_tokens": 4096 },
+            "models": {}
+        }"#;
+        assert!(serde_json::from_str::<ProviderConfig>(json).is_err(), "缺 max_tokens_usage 应解析失败");
     }
 
     #[test]
@@ -985,8 +985,7 @@ mod tests {
         let json = serde_json::to_string(&pc).unwrap();
         let back: ProviderConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.default_model_config.max_tokens, Some(4096));
-        assert_eq!(back.default_model_config.context_length, Some(65536));
-        assert_eq!(back.default_model_config.max_context_messages, Some(100));
+        assert_eq!(back.default_model_config.max_tokens_usage, 128000);
         assert_eq!(back.default_model_config.timeout_secs, Some(60));
         assert_eq!(back.default_model_config.retry_count, Some(3));
         assert_eq!(back.default_model_config.temperature, Some(0.7));
@@ -1001,8 +1000,7 @@ mod tests {
         let mut provider = sample_provider("deepseek");
         provider.default_model_config = ModelConfig {
             max_tokens: Some(2048),
-            context_length: None,
-            max_context_messages: None,
+            max_tokens_usage: 128000,
             timeout_secs: None,
             retry_count: None,
             temperature: None,
@@ -1011,8 +1009,7 @@ mod tests {
         };
         let model = ModelConfig {
             max_tokens: None,
-            context_length: None,
-            max_context_messages: None,
+            max_tokens_usage: 128000,
             timeout_secs: Some(30),
             retry_count: None,
             temperature: None,
@@ -1021,8 +1018,7 @@ mod tests {
         };
         let eff = merge_model_config(&provider, Some(&model), "deepseek-4-flash");
         assert_eq!(eff.max_tokens, 2048, "provider 配了用 provider");
-        assert_eq!(eff.context_length, DEFAULT_CONTEXT_LENGTH, "未配回落全局");
-        assert_eq!(eff.max_context_messages, DEFAULT_MAX_CONTEXT_MESSAGES);
+        assert_eq!(eff.max_tokens_usage, 128000, "provider 默认值生效");
         assert_eq!(eff.timeout_secs, 30, "model 覆盖 provider");
         assert_eq!(eff.retry_count, DEFAULT_RETRY_COUNT);
         assert_eq!(eff.temperature, None, "无全局默认，None 传播");
@@ -1035,8 +1031,7 @@ mod tests {
         provider.default_model_config = ModelConfig::default();
         let model = ModelConfig {
             max_tokens: Some(4096),
-            context_length: None,
-            max_context_messages: None,
+            max_tokens_usage: 262144,
             timeout_secs: None,
             retry_count: None,
             temperature: None,
@@ -1045,10 +1040,9 @@ mod tests {
         };
         let eff = merge_model_config(&provider, Some(&model), "deepseek-4-flash");
         assert_eq!(eff.max_tokens, 4096, "model 覆盖生效");
-        assert_eq!(eff.context_length, DEFAULT_CONTEXT_LENGTH, "provider 全缺省回落全局");
+        assert_eq!(eff.max_tokens_usage, 262144, "model 覆盖生效");
         assert_eq!(eff.timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert_eq!(eff.retry_count, DEFAULT_RETRY_COUNT);
-        assert_eq!(eff.max_context_messages, DEFAULT_MAX_CONTEXT_MESSAGES);
     }
 
     #[tokio::test]
@@ -1069,11 +1063,10 @@ mod tests {
             let map = Arc::make_mut(&mut provider.models);
             map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
                 max_tokens: Some(2048),
+                max_tokens_usage: 131072,
                 temperature: Some(0.3),
                 timeout_secs: Some(30),
                 retry_count: Some(2),
-                context_length: None,  // 未配 → 继承 provider 默认
-                max_context_messages: Some(80),
                 thinking: Some("enabled".into()),
                 reasoning_effort: Some("high".into()),
             })));
@@ -1095,8 +1088,7 @@ mod tests {
         assert_eq!(eff.reasoning_effort.as_deref(), Some("high"), "model 的 reasoning_effort 应生效");
         assert_eq!(eff.timeout_secs, 30);
         assert_eq!(eff.retry_count, 2);
-        assert_eq!(eff.max_context_messages, 80, "model 的 max_context_messages 应生效");
-        assert_eq!(eff.context_length, 65536, "context_length 未配应继承 provider 默认");
+        assert_eq!(eff.max_tokens_usage, 131072, "model 的 max_tokens_usage 应生效");
     }
 
     #[tokio::test]
@@ -1119,11 +1111,10 @@ mod tests {
             let map = Arc::make_mut(&mut provider.models);
             map.insert("deepseek-4-flash".to_string(), ArcSwap::new(Arc::new(ModelConfig {
                 max_tokens: None,
+                max_tokens_usage: 131072,
                 temperature: None,
                 timeout_secs: None,
                 retry_count: None,
-                context_length: Some(131072),  // 覆盖 context_length
-                max_context_messages: None,  // 未配 → 继承 provider 默认
                 thinking: None,
                 reasoning_effort: None,
             })));
@@ -1139,8 +1130,7 @@ mod tests {
         assert_eq!(eff.temperature, Some(0.7));
         assert_eq!(eff.timeout_secs, 60);
         assert_eq!(eff.retry_count, 3);
-        assert_eq!(eff.context_length, 131072, "model 覆盖 context_length 应生效");
-        assert_eq!(eff.max_context_messages, 100, "max_context_messages 未配应继承 provider 默认");
+        assert_eq!(eff.max_tokens_usage, 131072, "model 覆盖 max_tokens_usage 应生效");
         assert_eq!(eff.thinking.as_deref(), Some("disabled"), "thinking 未配应继承 provider 默认");
         assert_eq!(eff.reasoning_effort.as_deref(), Some("low"), "reasoning_effort 未配应继承 provider 默认");
     }
@@ -1167,6 +1157,7 @@ mod tests {
         assert_eq!(eff.max_tokens, 4096, "未配置参数取 provider 默认值");
         assert_eq!(eff.temperature, Some(0.7));
         assert_eq!(eff.timeout_secs, 60);
+        assert_eq!(eff.max_tokens_usage, 128000, "model 未配置时用 provider 默认");
     }
 
     #[tokio::test]
@@ -1236,9 +1227,8 @@ mod tests {
         {
             let map = Arc::make_mut(&mut provider.models);
             map.insert("gpt-4o".into(), ArcSwap::new(Arc::new(ModelConfig {
-                max_tokens: None, temperature: None,
-                timeout_secs: None, retry_count: None, context_length: None,
-                max_context_messages: None, thinking: None, reasoning_effort: None,
+                max_tokens: None, max_tokens_usage: 128000, temperature: None,
+                timeout_secs: None, retry_count: None, thinking: None, reasoning_effort: None,
             })));
         }
         manager.add_provider(provider).await.unwrap();

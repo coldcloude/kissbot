@@ -202,11 +202,6 @@ impl SessionContext {
         items
     }
 
-    /// 检查是否超长（threshold 来自模型 effective 配置的 max_context_messages）
-    pub fn is_overflow(&self, max: usize) -> bool {
-        self.messages.len() >= max
-    }
-
     // ========== 私有：缓存文件读写 ==========
 
     /// 打开缓存文件（追加模式；新文件先落 System 首行）——&mut self 排他：写入须独占，避免并发交叉写坏行
@@ -247,6 +242,12 @@ async fn write_cache_lines(file: &mut tokio::fs::File, messages: &[Message]) -> 
     Ok(())
 }
 
+/// token 占用重置判定：usage 超过 max_tokens_usage 的 80%（整数运算避免浮点；u64 提升防 u32 乘法溢出）
+/// max_tokens_usage = 0 视为未启用（显式 0 永不触发，防御性兜底）
+fn should_reset(last_total_tokens: u64, max_tokens_usage: u32) -> bool {
+    max_tokens_usage > 0 && last_total_tokens * 10 > (max_tokens_usage as u64) * 8
+}
+
 /// 单个会话：独立上下文、模型与模式状态
 pub struct Session {
     pub agent_id: Arc<String>,      // 运行态：从 key 复制
@@ -260,6 +261,9 @@ pub struct Session {
     batch_producer: BatchProducer,
     /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
     notify: Arc<Notify>,
+    /// 最近一次模型响应的 token 总占用（usage.total_tokens；0 = 尚无请求或已重建）。
+    /// 每次请求成功后更新；run_agentic_loop 开头检查是否触发重置（延迟检查，无新消息不重置）
+    last_total_tokens: AtomicU64,
 }
 
 impl Session {
@@ -287,19 +291,19 @@ impl Session {
         // 0. 发送前应用待定系统消息变更（对比当前；不一致 → 旧上下文（含原系统消息）归档历史 → 替换 → 重建缓存）
         let _ = self.context.lock().await.apply_pending_system().await;
 
-        // 1. 检查上下文超长（阈值来自会话模型的 effective.max_context_messages）
-        let overflow = {
-            let ctx = self.context.lock().await;
+        // 1. 检查上下文 token 占用超限（阈值来自会话模型的 effective.max_tokens_usage；延迟检查：
+        //    上次模型响应的 usage.total_tokens 超过 80% 触发；无新消息不触发）
+        let should_reset = {
             let model = self.model.load_full();
             match model.as_ref() {
                 Some(pm) => match ConfigManager::get().resolve_effective_config(pm).await {
-                    Some(eff) => ctx.is_overflow(eff.max_context_messages as usize),
+                    Some(eff) => should_reset(self.last_total_tokens.load(Ordering::Relaxed), eff.max_tokens_usage),
                     None => false,
                 },
                 None => false,
             }
         };
-        if overflow {
+        if should_reset {
             warn!("会话上下文超长，触发重建: role={} mode={:?}", self.role_name, self.mode);
             // 按模式重建：event 超长压缩（LLM 总结归档）；role 从记忆重建（新建/重置共用 build_role_context）
             match self.mode.as_ref() {
@@ -338,6 +342,8 @@ impl Session {
                     info!("会话上下文已重置: role={} mode={:?}", self.role_name, self.mode);
                 }
             }
+            // 重建后清空 usage 记录（新上下文尚未产生 token 占用，避免下次立即再触发）
+            self.last_total_tokens.store(0, Ordering::Relaxed);
         }
 
         // 2. tools 聚合（会话 context 配置的启用 station）
@@ -358,6 +364,8 @@ impl Session {
             };
             match response {
                 Ok(model_resp) => {
+                    // 保存本次请求 token 占用（下次请求开头检查是否触发重置；工具轮次每次成功后均更新）
+                    self.last_total_tokens.store(model_resp.total_tokens, Ordering::Relaxed);
                     let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
                     let agent_id = self.agent_id.clone();
                     let role_name = Arc::new(memory_role(self.role_name.as_str(), &self.mode));
@@ -651,6 +659,7 @@ impl SessionManager {
             context: tokio::sync::Mutex::new(SessionContext::new(data_dir, key)),
             batch_producer: producer,
             notify: notify.clone(),
+            last_total_tokens: AtomicU64::new(0),
         });
         // 4. 用 rx 和 session 构造 consumer（anchor/deadline/notify 均与 producer 共享同一 Arc）
         let consumer = BatchConsumer {
@@ -746,6 +755,7 @@ mod tests {
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
             notify: notify.clone(),
+            last_total_tokens: AtomicU64::new(0),
         });
         let consumer = BatchConsumer {
             rx,
@@ -875,6 +885,7 @@ mod tests {
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
             notify,
+            last_total_tokens: AtomicU64::new(0),
         };
         assert_eq!(session.role_name.as_str(), "r1");
         assert_eq!(*session.mode, Mode::Event("e1".into()));
@@ -1082,5 +1093,20 @@ mod tests {
         let back = recovered.build();
         assert_eq!(back.len(), 2);
         assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"), "消息保留");
+    }
+
+    #[test]
+    fn should_reset_triggers_only_above_80_percent() {
+        assert!(!should_reset(0, 128000), "无 usage 不触发");
+        assert!(!should_reset(80, 100), "恰好 80% 不触发（严格大于）");
+        assert!(should_reset(81, 100), "超过 80% 触发");
+        assert!(!should_reset(102400, 128000), "恰好 80% 不触发");
+        assert!(should_reset(102401, 128000), "超过 80% 触发");
+    }
+
+    #[test]
+    fn should_reset_never_for_zero_budget() {
+        assert!(!should_reset(100, 0), "max_tokens_usage=0 视为未启用永不触发");
+        assert!(!should_reset(0, 0));
     }
 }

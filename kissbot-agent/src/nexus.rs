@@ -26,8 +26,8 @@ use kissbot_api::message::Content;
 /// 保留 role：空串 = 保留 role
 pub const RESERVED_ROLE_NAME: &str = "";
 
-// 上下文消息数量上限（溢出触发重置/压缩）已废弃硬编码常量 MAX_CONTEXT_MESSAGES——
-// 阈值统一由会话模型 effective.max_context_messages（provider/model 配置合成）决定，见 run_agentic_loop 溢出检查。
+// 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
+// 最近一次模型响应的 usage.total_tokens 超过其 80% 时触发重置，见 run_agentic_loop 检查。
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位

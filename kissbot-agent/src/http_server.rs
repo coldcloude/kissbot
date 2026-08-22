@@ -174,8 +174,7 @@ mod tests {
             api_key: "sk-test".into(),
             default_model_config: crate::config_manager::ModelConfig {
                 max_tokens: Some(4096),
-                context_length: Some(65536),
-                max_context_messages: Some(100),
+                max_tokens_usage: 128000,
                 timeout_secs: Some(60),
                 retry_count: Some(3),
                 temperature: Some(0.7),
