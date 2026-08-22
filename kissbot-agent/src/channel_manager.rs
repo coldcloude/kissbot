@@ -31,7 +31,7 @@ pub struct Channel {
     pending_outgoing: DashMap<String, Instant>,
     /// 运行态模式（ArcSwap 无锁读写；/mode 切换不回写，重启回 Role）
     mode: ArcSwap<Mode>,
-    /// 本 channel 的 ChannelClient（connect_all 时绑定；消息/回复路径从本字段取 client，
+    /// 本 channel 的 ChannelClient（connect_channel 时绑定；消息/回复路径从本字段取 client，
     /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
     client: ArcSwapOption<ChannelClient>,
 }
@@ -45,7 +45,7 @@ impl Channel {
         }
     }
 
-    /// 绑定 channel client（connect_all 时绑定；每次重连循环启动更新）
+    /// 绑定 channel client（connect_channel 时绑定；每次重连循环启动更新）
     fn bind_client(&self, client: Arc<ChannelClient>) {
         self.client.store(Some(client));
     }
@@ -93,8 +93,8 @@ impl Channel {
 }
 
 /// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）与断线通知；
-/// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_all/send）
-/// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_all 需要 Arc<Self> 作为 Arc<dyn Terminal>）
+/// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_channel/send）
+/// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 pub struct ChannelManager {
     channels: DashMap<String, Arc<Channel>>,
     /// 断线通知：channel_id → Notify，closed() 回调通知重连循环
@@ -117,7 +117,7 @@ impl ChannelManager {
             .clone()
     }
 
-    /// 绑定 channel client（connect_all 时绑定；每次重连循环启动更新）
+    /// 绑定 channel client（connect_channel 时绑定；每次重连循环启动更新）
     pub fn bind_client(&self, channel_id: &str, client: Arc<ChannelClient>) {
         self.get_or_create(channel_id).bind_client(client);
     }
@@ -221,60 +221,58 @@ impl ChannelManager {
         ConfigManager::get().update_channel(channel_id, |c| c.outgoing = None).await
     }
 
-    /// 连接所有 enabled 的 channel（NexusRepo channel 配置为连接来源）
-    /// 连接与绑定统一由 ChannelConfig 描述：enabled 控制连接，bind_users 为绑定身份（逐个绑定）
-    pub async fn connect_all(self: Arc<Self>) {
+    /// 连接单个 channel（Nexus 调度：启动遍历 enabled 逐个调用；将来运行时新建 channel 也由 Nexus 经此调度）
+    /// 连接与绑定统一由 ChannelConfig 描述：ws_url/bind_users 按 channel_id 读配置，bind_users 为绑定身份（逐个绑定）
+    pub async fn connect_channel(self: Arc<Self>, channel_id: &str) {
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
+            warn!("connect_channel: 未找到 channel 配置: {}", channel_id);
+            return;
+        };
         let reconnect_secs = ConfigManager::get().ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
         // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 coordinator 的 Arc<ChannelManager> 保活
         let terminal: Arc<dyn Terminal> = self.clone();
-        // 遍历 NexusRepo 中所有 channel，enabled 才连接
-        for (_, ch) in ConfigManager::get().channels().await {
-            if !ch.enabled {
-                continue; // 未启用：不连接
-            }
-            let channel_id = ch.channel_id.to_string();
-            let ws_url = ch.ws_url.to_string();
+        let channel_id = ch.channel_id.to_string();
+        let ws_url = ch.ws_url.to_string();
 
-            let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
+        let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
 
-            // 断线通知
-            let notify = Arc::new(tokio::sync::Notify::new());
-            self.disconnect_notify.insert(channel_id.clone(), notify.clone());
-            // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client）
-            self.bind_client(&channel_id, client.clone());
+        // 断线通知
+        let notify = Arc::new(tokio::sync::Notify::new());
+        self.disconnect_notify.insert(channel_id.clone(), notify.clone());
+        // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client）
+        self.bind_client(&channel_id, client.clone());
 
-            let client_clone = client.clone();
-            let api_key = api_key.clone();
+        let client_clone = client.clone();
+        let api_key = api_key.clone();
 
-            tokio::spawn(async move {
-                loop {
-                    match client_clone.clone().connect(&ws_url, &api_key).await {
-                        Ok(()) => {
-                            info!("已连接 channel: {}", channel_id);
-                            // 绑定身份实时读取（/bind 回写后重连即生效；bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
-                            let bind_users = ConfigManager::get().channel(&channel_id).await
-                                .map(|c| c.bind_users.clone());
-                            if let Some(bus) = bind_users {
-                                for bu in bus.iter() {
-                                    let _ = client_clone.bind(BindRequest {
-                                        messenger_id: Arc::new(bu.messenger_id.clone()),
-                                        user_id: Arc::new(bu.user_id.clone()),
-                                    }).await;
-                                }
+        tokio::spawn(async move {
+            loop {
+                match client_clone.clone().connect(&ws_url, &api_key).await {
+                    Ok(()) => {
+                        info!("已连接 channel: {}", channel_id);
+                        // 绑定身份实时读取（/bind 回写后重连即生效；bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
+                        let bind_users = ConfigManager::get().channel(&channel_id).await
+                            .map(|c| c.bind_users.clone());
+                        if let Some(bus) = bind_users {
+                            for bu in bus.iter() {
+                                let _ = client_clone.bind(BindRequest {
+                                    messenger_id: Arc::new(bu.messenger_id.clone()),
+                                    user_id: Arc::new(bu.user_id.clone()),
+                                }).await;
                             }
-                            // 等待断线通知（closed() 回调中 notify_one）
-                            notify.notified().await;
                         }
-                        Err(e) => {
-                            warn!("连接 channel {} 失败: {:?}，{}秒后重连", channel_id, e, reconnect_secs);
-                            tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
-                        }
+                        // 等待断线通知（closed() 回调中 notify_one）
+                        notify.notified().await;
+                    }
+                    Err(e) => {
+                        warn!("连接 channel {} 失败: {:?}，{}秒后重连", channel_id, e, reconnect_secs);
+                        tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
                     }
                 }
-            });
-        }
+            }
+        });
     }
 
     /// 发送消息到 channel（通道适配层封装：取 client + 发送 + 记录 pending msg_id 供回显判定）
@@ -302,7 +300,7 @@ impl Terminal for ChannelManager {
         if self.consume_pending(channel_id, event.incoming_message.msg_id.as_str()) {
             return;
         }
-        // 2. 转发业务处理（单例；run() 中 connect_all 之后必然已注册）
+        // 2. 转发业务处理（单例；run() 中 connect_channel 之后必然已注册）
         Nexus::get().incoming_message(channel_id, event).await;
     }
 

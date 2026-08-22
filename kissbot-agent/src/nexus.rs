@@ -381,8 +381,14 @@ impl Nexus {
                 self.ensure_session(&key).await;
             }
         }
-        // 连接所有 enabled 的 channel（连接/重连/回显/发送全部归 ChannelManager 通道适配层）
-        self.channel_manager.clone().connect_all().await;
+        // 连接全部 enabled 的 channel（连接/重连/回显/发送归 ChannelManager 通道适配层；
+        // 调度由 Nexus 负责：启动遍历 enabled 逐个连接，将来运行时新建 channel 也经此调度）
+        let channels = ConfigManager::get().channels().await;
+        for (_, ch) in &channels {
+            if ch.enabled {
+                self.channel_manager.clone().connect_channel(ch.channel_id.as_str()).await;
+            }
+        }
         // channel-client 通过 Terminal 回调驱动，此处保持进程不退出
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
