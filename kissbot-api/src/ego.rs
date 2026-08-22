@@ -45,7 +45,6 @@ pub struct IndividualRecognition {
 pub struct AgentMetadata {
     pub agent_id: Arc<String>,
     pub description: Arc<String>,
-    pub created_at: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,11 +305,11 @@ mod tests {
         let obj = AgentMetadata {
             agent_id: Arc::new("a1".to_string()),
             description: Arc::new("An agent".to_string()),
-            created_at: Arc::new("2026-01-01".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: AgentMetadata = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "a1");
+        assert_eq!(*deserialized.description, "An agent");
     }
 
     // === Agent Management Requests ===

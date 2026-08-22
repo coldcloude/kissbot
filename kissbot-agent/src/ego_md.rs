@@ -5,8 +5,8 @@ use kissbot_api::{AgentMetadata, ChannelUser, IndividualRecognition, RolePlay};
 /// 由 AgentMetadata 生成系统提示词 markdown（身份）
 pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
     format!(
-        "# Agent Identity\n\n- **Name**\n {}\n- **Created At**\n {}\n- **Description**\n {}\n",
-        metadata.agent_id, metadata.created_at, metadata.description
+        "# Agent Identity\n\n- **Name**\n {}\n- **Description**\n {}\n",
+        metadata.agent_id, metadata.description
     )
 }
 

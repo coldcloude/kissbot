@@ -1,4 +1,3 @@
-use chrono::Utc;
 use std::sync::Arc;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -127,12 +126,9 @@ impl AgentManager {
         if metadata_path.exists() {
             return Err(Error::AgentAlreadyExists(agent_id.to_string()));
         }
-        let created_at = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
-
         let metadata = AgentMetadata {
             agent_id: agent_id.clone(),
             description,
-            created_at,
         };
 
         self.write_agent_metadata_ref(metadata.agent_id.clone().as_str(), |_| {
@@ -193,8 +189,7 @@ mod tests {
             let agent_dir = dm.ensure_agent_dir("setup-agent").await.unwrap();
             let metadata = serde_json::json!({
                 "agent_id": "setup-agent",
-                "description": "Setup agent for SearchManager init",
-                "created_at": "2026-06-25 10:00:00"
+                "description": "Setup agent for SearchManager init"
             });
             tokio::fs::write(
                 agent_dir.join("metadata.json"),

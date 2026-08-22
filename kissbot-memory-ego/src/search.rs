@@ -372,8 +372,7 @@ mod tests {
         let agent_dir = dm.ensure_agent_dir(agent_id).await.unwrap();
         let metadata = serde_json::json!({
             "agent_id": agent_id,
-            "description": description,
-            "created_at": "2026-06-25 10:00:00"
+            "description": description
         });
         tokio::fs::write(
             agent_dir.join("metadata.json"),
