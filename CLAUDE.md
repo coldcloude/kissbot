@@ -20,7 +20,7 @@ Keep It Simple Stupid BOT - kissbot
   - **plan** 任务计划
     - **system-plan.md** 组件和流程的实现顺序规划
     - **components-plan** 组件内功能实现顺序（每个组件一个文件）
-  - **roadmap** 计划中要添加或修改的功能
+  - **roadmap** 计划中要添加或修改的功能。手工修改，不要编辑这个文件
 - **kissbot-\*** 每个代表kissbot项目一个组件，按照docs下的组件设计和规划文档实现组件的功能
 - **kai-rs** 本地Rust基础库
   - **docs** kai-rs各组件文档
