@@ -277,9 +277,9 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     await assertChannelRecords(request, 'r1-ev2');
   });
 
-  // 场景 5：out_channel 路由——bind-outgoing off 只存不回复，恢复后 agent 又回复
+  // 场景 5：out_channel 路由——unbind-outgoing 只存不回复，恢复后 agent 又回复
   // 模板 nexus.json 已带 outgoing（web/u1/g1），普通消息经 out_channel 回复；关掉后不进 Agentic Loop 只存 ChannelRecord
-  test('场景5-out_channel: bind-outgoing off 只存不回复，恢复后回复', async ({ request }) => {
+  test('场景5-out_channel: unbind-outgoing 只存不回复，恢复后回复', async ({ request }) => {
     // 切回角色模式并设 agent a1 / role out1（模板 outgoing web/u1/g1 生效）
     let base = cli.getOutput();
     cli.stdin('/send /mode role');
@@ -291,9 +291,9 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     // 1. 模板 outgoing web/u1/g1：普通消息经 out_channel 回复
     await sendAndWaitReply('你好，请确认你收到了这条消息');
 
-    // 2. 管理员关 out_channel（/bind-outgoing off）
+    // 2. 管理员关 out_channel（/unbind-outgoing）
     base = cli.getOutput();
-    cli.stdin('/send /bind-outgoing off');
+    cli.stdin('/send /unbind-outgoing');
     await waitNewOutput(base, /✅ 已取消发送通道（只存不回复）/);
     // 落盘验证：outgoing 已清空
     expect(readChannelConfig().outgoing).toBeNull();

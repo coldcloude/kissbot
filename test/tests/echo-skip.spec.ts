@@ -57,7 +57,7 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
 
   test('TC-1: 无参 /agent 挂到保留 agent（agent_name=""、agent_id="0"），/model 启用 deepseek', async () => {
     cli.stdin('/send /agent');
-    await cli.waitForOutput(/✅ 已设置 agent:  \/ role: /, 10000);
+    await cli.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
     cli.stdin('/send /model deepseek deepseek-v4-flash');
     await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-v4-flash/, 20000);
   });
