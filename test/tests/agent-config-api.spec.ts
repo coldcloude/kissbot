@@ -53,11 +53,11 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
       base_url: 'https://api.anthropic.com', api_key: '',
       // 新嵌套格式：default_model_config 承载 provider 默认（未配字段回落全局默认）
       default_model_config: {
-        max_tokens: 8192, context_length: 200000, temperature: 0.7,
+        max_tokens: 8192, max_tokens_usage: 200000, temperature: 0.7,
         timeout_secs: 60, retry_count: 3,
       },
-      // models map key 为模型标识（ModelConfig 无 model 字段）
-      models: { 'claude-sonnet-4': { max_tokens: 4096 } },
+      // models map key 为模型标识（ModelConfig 无 model 字段；max_tokens_usage 必填，model 覆盖亦须声明）
+      models: { 'claude-sonnet-4': { max_tokens: 4096, max_tokens_usage: 200000 } },
     });
     expect(resp.success).toBe(true);
     // GET 验证
@@ -67,7 +67,7 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
     // nexus.json 落盘验证
     const saved = JSON.parse(readFileSync(NEXUS_FILE, 'utf8'));
     expect(saved.providers.anthropic).toBeTruthy();
-    expect(saved.providers.anthropic.default_model_config.context_length).toBe(200000);
+    expect(saved.providers.anthropic.default_model_config.max_tokens_usage).toBe(200000);
   });
 
   test('TC-03: POST /config/default 修改默认模型', async ({ request }) => {
