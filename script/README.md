@@ -25,8 +25,7 @@
       "api_key": "sk-xxxx",
       "default_model_config": {
         "max_tokens": 4096,
-        "context_length": 65536,
-        "max_context_messages": 100,
+        "max_tokens_usage": 128000,
         "timeout_secs": 60,
         "retry_count": 3
       },
@@ -63,8 +62,8 @@
 说明：
 - 本地工具由 `../workspace/agent-data/station.json` 声明：`toolkits.filesystem` 为内置 toolkit（声明即由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行），`sub_stations` 为空
 - `context` 段按 `agent → role` 两级配置（本例 role 覆盖为空），全局默认值为 `3s / 1h / 50条 / 默认压缩模板 / 空 toolkits`；agent 默认在 `default_context_config` 中声明（未声明的字段回落全局默认；`toolkits` 未声明时为空，示例显式声明 `["filesystem"]`）；`toolkits` 声明该 agent/role 启用的 toolkit（工具聚合只考虑这些 toolkit）
-- `default_model_config` 承载 provider 默认模型参数（`max_tokens` / `context_length` / `max_context_messages` / `timeout_secs` / `retry_count` / `temperature` / `thinking` / `reasoning_effort`，未声明的数值字段回落全局默认 4096 / 65536 / 100 / 60 / 3，`temperature`/`thinking`/`reasoning_effort` 未配时不发送（无全局默认））；其中 `max_context_messages` 为上下文条数上限（溢出时 event 模式压缩、role 模式归档重建）
-- **迁移注意**：`context.toolkits` 缺省时为空（无工具）；`context` 段旧版 `stations` 键与旧 `nexus.json` 顶层 `stations` 段由 serde 忽略（兼容旧配置），需迁移为 `context.default_context_config.toolkits`（toolkit 名集合）。`context` 段旧版扁平 `default_*` 字段（如 `default_channel_batch_interval_secs`）已不再识别，需迁移为 `default_context_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_context_config.channel_batch_interval_secs`），否则旧值静默回落全局默认（如 toolkit 不再启用）。`providers.<provider>` 旧版扁平 `default_*` 字段（如 `default_max_tokens`）同样已不再识别，需迁移为 `default_model_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_model_config.max_tokens`），否则旧值静默回落全局默认（4096/65536/100/60/3）
+- `default_model_config` 承载 provider 默认模型参数（`max_tokens` / `max_tokens_usage` / `timeout_secs` / `retry_count` / `temperature` / `thinking` / `reasoning_effort`，未声明的数值字段回落全局默认 4096 / 60 / 3，`temperature`/`thinking`/`reasoning_effort` 未配时不发送（无全局默认）；`max_tokens_usage` 为必填项（旧配置缺该字段解析失败））；会话记录最近一次模型响应的 `usage.total_tokens`，下次请求开头超过 `max_tokens_usage` 的 80% 时触发重置（event 模式压缩、role 模式归档重建），无新消息不触发
+- **迁移注意**：`context.toolkits` 缺省时为空（无工具）；`context` 段旧版 `stations` 键与旧 `nexus.json` 顶层 `stations` 段由 serde 忽略（兼容旧配置），需迁移为 `context.default_context_config.toolkits`（toolkit 名集合）。`context` 段旧版扁平 `default_*` 字段（如 `default_channel_batch_interval_secs`）已不再识别，需迁移为 `default_context_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_context_config.channel_batch_interval_secs`），否则旧值静默回落全局默认（如 toolkit 不再启用）。`providers.<provider>` 旧版扁平 `default_*` 字段（如 `default_max_tokens`）同样已不再识别，需迁移为 `default_model_config.<字段>`（字段名去掉 `default_` 前缀，如 `default_model_config.max_tokens`），否则旧值静默回落全局默认（4096/60/3）；`context_length`、`max_context_messages` 已移除，`max_tokens_usage` 为必填项（旧配置缺该字段解析失败，需删除前两者并新增 `max_tokens_usage`，如 `"max_tokens_usage": 128000`）
 
 ### 2. 启动与验证步骤
 

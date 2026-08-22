@@ -19,8 +19,7 @@
       "api_key": "",
       "default_model_config": {
         "max_tokens": 4096,
-        "context_length": 65536,
-        "max_context_messages": 100,
+        "max_tokens_usage": 128000,
         "timeout_secs": 60,
         "retry_count": 3,
         "thinking": "enabled",
