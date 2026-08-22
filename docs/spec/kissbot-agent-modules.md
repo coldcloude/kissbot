@@ -213,7 +213,7 @@ sequenceDiagram
 |------|------|------|------|
 | agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 nexus（incoming_message / join_group / leave_group / user_removed / download_chunk / closed） |
 | agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录 + 读记忆 |
-| agent → memory-ego | kissbot-memory-ego | HTTP | resolve_agent_id（search-name）、load_ego_info（agent/individual/role 查询） |
+| agent → memory-ego | kissbot-memory-ego | HTTP | 按 agent_id 查询（/agent/get）、load_ego_info（agent/individual/role 查询） |
 | agent → LLM | 模型提供方 API | HTTP | ModelClient 调用（支持重试、工具调用、reasoning 回传） |
 | agent ← 管理界面 | HttpServer | HTTP | 当前仅 config CRUD（操作 ConfigManager）；管理命令走 channel 消息（/ 开头） |
 

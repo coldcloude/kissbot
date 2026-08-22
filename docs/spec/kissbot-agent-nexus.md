@@ -138,16 +138,14 @@
 |------|------|------|
 | POST | /role/get | 获取角色设定（role_name） |
 | POST | /agent/get | 获取 agent 元数据（按 agent_id） |
-| POST | /agent/search-name | 按 individual_name 全匹配返回 agent_id（Option） |
 | POST | /role/retrieve | 批量获取角色信息 |
 
-### agent_name 绑定与解析
+### agent_id 绑定与解析
 
-- channel 绑定使用 **agent_name**（= memory-ego 的 `AgentMetadata.individual_name`，代号）记录，配置字段为 `ChannelConfig.agent_name`
-- **保留 agent**：`agent_name == ""` 表示保留 agent（建会话、用 `default_system_prompt`、不调 memory-ego），其内部 agent_id 固定为 `"0"`
-- **agent_name == "0"** 为普通代号（正常解析，与保留无关）；不再有脱离态（`session_key_of` 去掉 Option，始终返回 SessionKey）
-- **解析**：Nexus 维护 `agent_name -> agent_id` 缓存（`resolve_agent_id`）；非空 agent_name 调 `/agent/search-name` 全匹配得 agent_id，失败/不可用回退 `agent_id="0"`
-- **memory-store/ego 用 agent_id（UUID）**：会话 key 用 agent_name（同步、无需解析），memory-store 目录与 ego 读取用解析后的 agent_id
+- channel 绑定使用 **agent_id**（= memory-ego 的 `AgentMetadata.agent_id`，create 时手工指定的易读标识）记录，配置字段为 `ChannelConfig.agent_id`
+- **保留 agent**：`agent_id == "0"` 表示保留 agent（建会话、用 `default_system_prompt`、不调 memory-ego）
+- **校验**：/agent 命令设置 agent_id 前经 ego `/agent/get` 校验存在（`verify_agent_exists`），失败保持原 agent 并报错；role 同理经 `/role/get` 校验（`verify_role_exists`）
+- **memory-store/ego 直接用 agent_id**：会话 key、memory-store 目录与 ego 读取均直接用 agent_id（同步、无需解析）
 
 ## LLM API 适配
 
