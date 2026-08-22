@@ -293,7 +293,7 @@ impl Session {
 
         // 1. 检查上下文 token 占用超限（阈值来自会话模型的 effective.max_tokens_usage；延迟检查：
         //    上次模型响应的 usage.total_tokens 超过 80% 触发；无新消息不触发）
-        let should_reset = {
+        let reset_needed = {
             let model = self.model.load_full();
             match model.as_ref() {
                 Some(pm) => match ConfigManager::get().resolve_effective_config(pm).await {
@@ -303,7 +303,7 @@ impl Session {
                 None => false,
             }
         };
-        if should_reset {
+        if reset_needed {
             warn!("会话上下文超长，触发重建: role={} mode={:?}", self.role_name, self.mode);
             // 按模式重建：event 超长压缩（LLM 总结归档）；role 从记忆重建（新建/重置共用 build_role_context）
             match self.mode.as_ref() {

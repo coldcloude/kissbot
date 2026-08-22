@@ -176,7 +176,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
     → 记忆写入器推送思考内容到写入队列
     → 通信模块通过该会话的回复 channel 发送回复到消息通道
     → 记忆写入器推送回复到写入队列
-  → 检查上下文消息数量是否超过上限（模型配置的 max_context_messages）
+  → 检查最近一次 usage.total_tokens 是否超过会话模型 effective.max_tokens_usage 的 80%（延迟检查：无新消息不重置）
     ├─ event 模式 → 压缩：归档当前缓存，LLM 总结后重写为 system+user(压缩指令)+assistant(总结)
     └─ role 模式 → 重置：归档当前缓存，按记忆打包重建
   → 等待下一条输入

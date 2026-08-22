@@ -175,7 +175,7 @@ sequenceDiagram
             CO->>CC: send_message(reply)（发往 out_channel）
             CO->>CHM: add_pending(msg_id)
             CO->>MSC: push_channel_record(is_self=1)
-            Note over CO: 溢出检查（effective.max_context_messages）<br/>event → compress_context；role → build_role_context；重建后共通 Forced flush
+            Note over CO: token 占用检查（最近 usage.total_tokens > effective.max_tokens_usage 的 80%）<br/>event → compress_context；role → build_role_context；重建后共通 Forced flush
         end
     end
 ```
