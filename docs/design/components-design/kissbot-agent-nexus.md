@@ -33,7 +33,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个管理员，我要启动智能体程序，以让智能体按会话恢复近期对话记忆并构建初始 LLM 上下文
   - 作为一个管理员，我要发送重置上下文命令，以让智能体重建对应会话的初始 LLM 上下文
   - 作为一个用户，我要向智能体发送消息，以让智能体保持对话连续性
-  - 作为一个管理员，我要设置上下文消息数量上限，以防止上下文无限增长
+  - 作为一个管理员，我要设置上下文 token 占用上限（max_tokens_usage），以防止上下文无限增长
 
 ### Epic 4：记忆读写
 - **目标**：在会话创建或重置时按会话模式读取上下文来源（event 模式从本地缓存恢复、role 模式从 memory-store 读取最近对话消息）并从 memory-struct 读取顶层记忆索引；在agentic loop中将思考、tool call、tool result 写入记忆系统；将收发的通道消息写入记忆系统；各会话按自身模式（角色/事件）隔离记忆范围
@@ -87,7 +87,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 运行时按会话增量追加用户消息、助手回复与工具调用/结果消息，每步同步写入缓存
 - 每个 channel 维护运行时 ChannelContext，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
 - channel 合批：合批状态分为生产侧与消费侧——生产侧（BatchProducer，会话持有）含数据发送端与触发发送端（channel 在绑定会话时取得同源 clone）、合批截止时间（deadline，ArcSwapOption 无锁）与退出通知；收到普通消息后推入数据队列（元素为 IncomingMessageEvent）并更新 deadline 与发送触发时间（Trigger::At，绝对时刻）；消费侧（BatchConsumer，数据/触发接收端与定时队列）由 trigger 任务独占，随会话创建 move 进任务、任务内直接访问（零锁）；trigger 任务 select! 并行等待触发到达 / 定时到期 / 会话销毁通知，到期后按 deadline 判断（非强制）或直接（强制）从数据队列一次性读出全部，打包为一条 user 消息（仅保留 name 与 content）进入 agentic loop；上下文重置末尾发送强制触发（Trigger::Forced），重置期间到达的消息即刻并入新上下文；触发器队列与定时队列随会话生命周期，会话销毁时通知任务退出（任务经会话上的升级槽升级会话与协调器引用）
-- 会话上下文消息数量超上限时按模式触发重置（event 压缩、role 归档重建）
+- 会话上下文 token 占用超限（最近一次 usage.total_tokens 超过 effective.max_tokens_usage 的 80%）时，下次消息开头按模式触发重置（event 压缩、role 归档重建）并清零记录
 
 ### 5. 记忆读取器
 - 在会话创建或重置时调用（role 模式）
@@ -253,7 +253,7 @@ kissbot-agent 启动
 
 ### 自动上下文重置
 
-上下文消息数量超过上限时自动触发重置：event 模式压缩（归档当前缓存 → LLM 总结 → 重写为 system+user(压缩指令)+assistant(总结)），role 模式归档后按记忆打包重建，防止 LLM token 占用无限增长。
+最近一次模型响应的 usage.total_tokens 超过 effective.max_tokens_usage 的 80% 时，下次消息开头自动触发重置：event 模式压缩（归档当前缓存 → LLM 总结 → 重写为 system+user(压缩指令)+assistant(总结)），role 模式归档后按记忆打包重建，重建后清零占用记录，防止 LLM token 占用无限增长（无新消息不触发）。
 
 ### 初始上下文构建
 
