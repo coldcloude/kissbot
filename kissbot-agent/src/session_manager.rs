@@ -372,7 +372,7 @@ impl Session {
                     self.last_total_tokens.store(model_resp.total_tokens, Ordering::Relaxed);
                     let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
                     let agent_id = self.agent_id.clone();
-                    let role_name = self.role_mode.clone();
+                    let role_mode = self.role_mode.clone();
                     let src_content = if model_resp.thinking.is_empty() { model_resp.content.clone() } else { Arc::new(format!("<think>{}</think>{}", model_resp.thinking.as_str(), model_resp.content.as_str())) };
                     let src_reasoning_content = if model_resp.reasoning_content.is_empty() { None } else { Some(model_resp.reasoning_content.clone()) };
                     if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS {
@@ -393,7 +393,7 @@ impl Session {
                             // 5b. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
                             coordinator.write_memory_tool_call(ToolCallRequest {
                                 agent_id: agent_id.clone(),
-                                role_name: role_name.clone(),
+                                role_name: role_mode.clone(),
                                 tool_name: call.name.clone(),
                                 tool_params: call.arguments.clone(),
                                 key: tool_key.clone(),
@@ -411,7 +411,7 @@ impl Session {
                             // 5e. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key（agent_id 取会话状态，role_name 含事件编码）
                             coordinator.write_memory_tool_result(ToolResultRequest {
                                 agent_id: agent_id.clone(),
-                                role_name: role_name.clone(),
+                                role_name: role_mode.clone(),
                                 tool_result: Arc::new(result),
                                 key: tool_key.clone(),
                                 time: now.clone(),

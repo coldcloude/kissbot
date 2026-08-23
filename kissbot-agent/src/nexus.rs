@@ -448,10 +448,10 @@ impl Nexus {
         // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 直接从 config clone Arc，
         //    不 clone string；role 编码由 role_event 按 config role + 运行态 mode 算）
         let agent_id = ch.agent_id.clone();
-        let role_name = role_event(ch.role_name.as_str(), mode.as_ref());
+        let role_mode = role_event(ch.role_name.as_str(), mode.as_ref());
         self.memory_store_client.push_channel_record(ChannelRequest {
             agent_id,
-            role_name: Arc::new(role_name),
+            role_name: Arc::new(role_mode),
             messenger_id: event.incoming_message.messenger_id.clone(),
             user_id: event.incoming_message.user_id.clone(),
             // 接收方身份 = event.recipient_user_id（agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
