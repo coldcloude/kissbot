@@ -278,7 +278,7 @@ impl Terminal for ChannelManager {
         if echo {
             return;
         }
-        // 2. 转发业务处理（单例；run() 中 connect_channel 之后必然已注册）
+        // 2. 转发业务处理
         Nexus::get().incoming_message(channel_id, event).await;
     }
 

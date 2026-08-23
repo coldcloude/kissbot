@@ -2,7 +2,6 @@ use std::sync::{Arc, OnceLock};
 use std::collections::HashSet;
 
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use kissbot_api::{ArcSwapHashMap, ChannelUser};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -198,10 +197,7 @@ pub struct NexusRepo {
     pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
     pub providers: Arc<ArcSwapHashMap<String, ProviderConfig>>, // key = provider 名
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
-    /// agent_id → AgentContextConfig（上下文配置，三层继承见 merge_context_config）
-    /// serde(default)：旧 nexus.json 无 context 段时反序列化为空 map（= 全局默认，兼容旧配置）
-    #[serde(default)]
-    pub context: Arc<ArcSwapHashMap<String, AgentContextConfig>>,
+    pub agent_contexts: Arc<ArcSwapHashMap<String, AgentContextConfig>>,
     pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
     /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
     pub default_system_prompt: Arc<String>,
@@ -213,7 +209,7 @@ impl Default for NexusRepo {
             channels: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
-            context: Arc::new(ArcSwapHashMap::new()),
+            agent_contexts: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: String::new(), model: String::new() }),
             default_system_prompt: Arc::new(String::new()),
         }
@@ -267,8 +263,6 @@ pub struct OutChannel {
     pub user: ChannelUser,
     pub group_id: Arc<String>,
 }
-
-/// 机器人绑定身份 / 管理员身份统一结构（定义于 kissbot-api::channel）
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStructConfig {
@@ -347,12 +341,6 @@ impl AgentConfig {
     }
 }
 
-/// 配置变更监听器：当配置被管理命令修改时，通知外部协调器
-pub trait ConfigChangeListener: Send + Sync {
-    #[allow(dead_code)]
-    fn on_config_changed(&self, config_manager: &ConfigManager);
-}
-
 /// ConfigManager 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 与 Nexus 同模式：任何模块读配置直接 ConfigManager::get()，不传参、不持引用。
 static INSTANCE: OnceLock<ConfigManager> = OnceLock::new();
@@ -365,7 +353,6 @@ pub struct ConfigManager {
     station_repo: Arc<RwLock<StationRepo>>,
     nexus_path: String,
     station_path: String,
-    listeners: DashMap<String, Arc<dyn ConfigChangeListener>>,
 }
 
 impl ConfigManager {
@@ -397,7 +384,6 @@ impl ConfigManager {
             station_repo: Arc::new(RwLock::new(station_repo)),
             nexus_path,
             station_path,
-            listeners: DashMap::new(),
         };
         // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 Nexus 一致）
         let _ = INSTANCE.set(manager);
@@ -465,32 +451,24 @@ impl ConfigManager {
 
     // ========== 静态配置 Getter（直接读，无锁） ==========
 
-    pub fn ws_reconnect_interval_secs(&self) -> u64 { self.agent_config.ws_reconnect_interval_secs }
-    pub fn mgmt_host(&self) -> &str { &self.agent_config.mgmt_host }
-    pub fn mgmt_port(&self) -> u16 { self.agent_config.mgmt_port }
-    #[allow(dead_code)]
-    pub fn data_dir(&self) -> &str { &self.agent_config.data_dir }
+    pub fn ws_reconnect_interval_secs(&self) -> u64 {
+        self.agent_config.ws_reconnect_interval_secs
+    }
 
-    #[allow(dead_code)]
-    /// 保留 agent 默认系统提示词（读 NexusRepo，nexus.json 可持久化修改）
+    pub fn mgmt_host(&self) -> &str {
+        &self.agent_config.mgmt_host
+    }
+
+    pub fn mgmt_port(&self) -> u16 {
+        self.agent_config.mgmt_port
+    }
+
+    pub fn data_dir(&self) -> &str {
+        self.agent_config.data_dir.as_str()
+    }
+
     pub async fn default_system_prompt(&self) -> String {
         self.nexus_repo.read().await.default_system_prompt.to_string()
-    }
-
-    /// 注册配置变更监听器
-    #[allow(dead_code)]
-    pub fn add_listener(&self, key: &str, listener: Arc<dyn ConfigChangeListener>) {
-        self.listeners.insert(key.to_string(), listener);
-    }
-
-    /// 通知所有监听器
-    #[allow(dead_code)]
-    async fn notify_listeners(&self) {
-        let listeners: Vec<Arc<dyn ConfigChangeListener>> = self.listeners
-            .iter().map(|e| e.value().clone()).collect();
-        for listener in &listeners {
-            listener.on_config_changed(self);
-        }
     }
 
     // ========== NexusRepo CRUD ==========
@@ -541,7 +519,7 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
-            let mut ch = swap.load().clone();
+            let mut ch = swap.load_full();
             let ch_mut = Arc::make_mut(&mut ch);
             f(ch_mut);
             swap.store(ch);
@@ -568,7 +546,7 @@ impl ConfigManager {
     /// 按 (agent_id, role_name) 合并 context 配置（三层继承：全局默认 ← agent ← role）
     pub async fn context_config(&self, agent_id: &str, role_name: &str) -> EffectiveContextConfig {
         let repo = self.nexus_repo.read().await;
-        let agent = repo.context.get(agent_id).map(|s| s.load_full());
+        let agent = repo.agent_contexts.get(agent_id).map(|s| s.load_full());
         let role = agent.as_ref().and_then(|a| a.roles.get(role_name).map(|s| s.load_full()));
         merge_context_config(agent.as_deref(), role.as_deref())
     }
@@ -718,7 +696,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
         let before = std::fs::read_to_string(dir.path().join("nexus.json")).unwrap();
@@ -746,7 +723,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         // channel 不存在：add_admin / remove_admin 都应返回 ConfigNotFound 而非静默成功
         let admin = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
@@ -854,7 +830,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
 
@@ -897,7 +872,7 @@ mod tests {
             channels: Arc::new(ArcSwapHashMap::new()),
             providers: Arc::new(ArcSwapHashMap::new()),
             memory_structs: Arc::new(ArcSwapHashMap::new()),
-            context: Arc::new(ArcSwapHashMap::new()),
+            agent_contexts: Arc::new(ArcSwapHashMap::new()),
             default_model: Arc::new(ProviderModel { provider: "deepseek".into(), model: "gpt-4o".into() }),
             default_system_prompt: Arc::new("你是 kissbot 智能助手".into()),
         };
@@ -1046,7 +1021,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         // 构造 provider + model（ModelConfig 为 Option 可继承参数）
         let mut provider = sample_provider("deepseek");
@@ -1092,7 +1066,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         let mut provider = sample_provider("deepseek");
         // 设置思考相关默认值（验证未配置时继承 provider 默认）
@@ -1136,7 +1109,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         // provider 不存在 → None
         assert!(manager.resolve_effective_config(&ProviderModel { provider: "nope".into(), model: "m".into() }).await.is_none());
@@ -1162,7 +1134,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         manager.add_provider(sample_provider("deepseek")).await.unwrap();
         let eff = manager.resolve_effective_config(&ProviderModel { provider: "deepseek".into(), model: "deepseek-v4-flash".into() }).await;
@@ -1184,7 +1155,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         // 未添加前 None
         assert!(manager.provider_config_by_name("deepseek").await.is_none());
@@ -1206,7 +1176,6 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
             station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
-            listeners: DashMap::new(),
         };
         // add_provider → resolve 可见
         manager.add_provider(sample_provider("deepseek")).await.unwrap();
