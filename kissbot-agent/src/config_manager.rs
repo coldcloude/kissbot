@@ -35,7 +35,7 @@ pub const DEFAULT_RETRY_COUNT: u32 = 3;
 // ---- 配置结构 ----
 
 /// agent 级 context 配置（key = agent_id，覆盖全局默认；未配字段回落全局默认常量）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentContextConfig {
     /// agent 默认 context 配置（未配字段回落全局默认常量；缺省 = 全 None = 全局默认）
     #[serde(default)]
@@ -59,6 +59,9 @@ pub struct ContextConfig {
     /// 启用的 toolkit 名集合（白名单；None/空 = 无工具；替代原 stations 字段）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toolkits: Option<Arc<HashSet<String>>>,
+    /// out_channel（agent+role 级回复通道；/bind-outgoing、/unbind-outgoing 修改；role 覆盖 or agent 默认回落）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_channel: Option<Arc<OutChannel>>,
 }
 
 /// 合并后的有效配置（现场合成，不持久化）
@@ -69,6 +72,8 @@ pub struct EffectiveContextConfig {
     pub memory_count: usize,
     pub compress_prompt: String,
     pub toolkits: HashSet<String>,
+    /// (agent, role) 有效 out_channel（role 覆盖 or agent 默认回落；None = 无回复通道）
+    pub out_channel: Option<Arc<OutChannel>>,
 }
 
 /// 三层逐字段合并：全局默认 ← agent 默认 ← role 覆盖（role Some 覆盖 agent；未配回落全局常量）。
@@ -85,6 +90,7 @@ pub fn merge_context_config(
             memory_count: DEFAULT_MEMORY_COUNT,
             compress_prompt: DEFAULT_COMPRESS_PROMPT.to_string(),
             toolkits: HashSet::new(),
+            out_channel: None,
         };
     };
     let d = &a.default_context_config;
@@ -105,6 +111,8 @@ pub fn merge_context_config(
             .map(|s| (*s).clone())
             .or_else(|| d.toolkits.clone().map(|s| (*s).clone()))
             .unwrap_or_default(),
+        out_channel: role.and_then(|r| r.out_channel.clone())
+            .or_else(|| d.out_channel.clone()),
     }
 }
 
@@ -256,8 +264,9 @@ pub struct OutChannelConfig {
     pub group_id: Arc<String>,
 }
 
-/// out_channel 运行态（Nexus 实时从配置构造）
-#[derive(Debug, Clone)]
+/// out_channel 配置（(agent, role) 级回复通道，持久化到 nexus.json；channel_id 为发送目标）
+/// 由 /bind-outgoing 在来源 channel 构造（channel_id = 来源 channel），Agentic Loop 回复经此发送
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutChannel {
     pub channel_id: Arc<String>,
     pub user: ChannelUser,
@@ -549,6 +558,31 @@ impl ConfigManager {
         let agent = repo.agent_contexts.get(agent_id).map(|s| s.load_full());
         let role = agent.as_ref().and_then(|a| a.roles.get(role_name).map(|s| s.load_full()));
         merge_context_config(agent.as_deref(), role.as_deref())
+    }
+
+    /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
+    /// 非空写 role 覆盖；None 清除；write_nexus_config 单次原子，无需串行队列；agent 条目懒建）
+    pub async fn set_out_channel(&self, agent_id: &str, role_name: &str, out: Option<Arc<OutChannel>>) -> Result<()> {
+        self.write_nexus_config(|repo| {
+            let map = Arc::make_mut(&mut repo.agent_contexts);
+            // agent 条目不存在则懒建（缺省 AgentContextConfig）
+            let entry = map.entry(agent_id.to_string()).or_insert_with(|| ArcSwap::new(Arc::new(AgentContextConfig::default())));
+            // 写时复制：load_full 取 Arc，Arc::make_mut 变更（多持有时克隆底层）
+            let mut agent = entry.load_full();
+            let agent_mut = Arc::make_mut(&mut agent);
+            if role_name.is_empty() {
+                agent_mut.default_context_config.out_channel = out;
+            } else {
+                let role_map = Arc::make_mut(&mut agent_mut.roles);
+                let role_entry = role_map.entry(role_name.to_string()).or_insert_with(|| ArcSwap::new(Arc::new(ContextConfig::default())));
+                let mut role = role_entry.load_full();
+                let role_mut = Arc::make_mut(&mut role);
+                role_mut.out_channel = out;
+                role_entry.store(role);
+            }
+            entry.store(agent);
+            Ok(())
+        }).await
     }
 
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
@@ -1292,6 +1326,7 @@ mod tests {
                 memory_count: Some(100),
                 compress_prompt: Some(Arc::new("agent模板".into())),
                 toolkits: Some(Arc::new(["s1".into()].into_iter().collect())),
+                out_channel: None,
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1301,6 +1336,7 @@ mod tests {
             memory_count: None,
             compress_prompt: None,
             toolkits: None,
+            out_channel: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 7, "role 覆盖 agent");
@@ -1319,6 +1355,7 @@ mod tests {
                 memory_count: Some(50),
                 compress_prompt: Some(Arc::new("t".into())),
                 toolkits: Some(Arc::new(["s1".into()].into_iter().collect())),
+                out_channel: None,
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1328,6 +1365,7 @@ mod tests {
             memory_count: None,
             compress_prompt: None,
             toolkits: Some(Arc::new(["s2".into()].into_iter().collect())),
+            out_channel: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert!(eff.toolkits.contains("s2") && !eff.toolkits.contains("s1"), "role toolkits 整体覆盖");
@@ -1342,6 +1380,7 @@ mod tests {
                 memory_count: Some(50),
                 compress_prompt: Some(Arc::new("t".into())),
                 toolkits: Some(Arc::new(HashSet::new())),
+                out_channel: None,
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1360,6 +1399,7 @@ mod tests {
                 memory_count: None,
                 compress_prompt: None,
                 toolkits: None,
+                out_channel: None,
             },
             roles: Arc::new(ArcSwapHashMap::new()),
         };
@@ -1369,6 +1409,7 @@ mod tests {
             memory_count: None,
             compress_prompt: None,
             toolkits: None,
+            out_channel: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 5, "agent 配了用 agent");
@@ -1391,10 +1432,32 @@ mod tests {
             memory_count: None,
             compress_prompt: None,
             toolkits: None,
+            out_channel: None,
         };
         let eff = merge_context_config(Some(&agent), Some(&role));
         assert_eq!(eff.channel_batch_interval_secs, 7, "role 覆盖生效");
         assert_eq!(eff.memory_time_secs, DEFAULT_MEMORY_TIME_SECS, "agent 全缺省回落全局");
         assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT);
+    }
+
+    #[test]
+    fn context_config_out_channel_serde_roundtrip() {
+        // out_channel 作为 ContextConfig 字段序列化/反序列化（agent+role 级回复通道）
+        let ctx = ContextConfig {
+            channel_batch_interval_secs: None,
+            memory_time_secs: None,
+            memory_count: None,
+            compress_prompt: None,
+            toolkits: None,
+            out_channel: Some(Arc::new(OutChannel {
+                channel_id: Arc::new("web-main".into()),
+                user: ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
+                group_id: Arc::new("g1".into()),
+            })),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        let back: ContextConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.out_channel.as_ref().unwrap().channel_id.as_str(), "web-main");
+        assert_eq!(back.out_channel.as_ref().unwrap().user.user_id, "u1");
     }
 }
