@@ -73,6 +73,8 @@ pub struct EffectiveContextConfig {
     pub compress_prompt: String,
     pub toolkits: HashSet<String>,
     /// (agent, role) 有效 out_channel（role 覆盖 or agent 默认回落；None = 无回复通道）
+    /// Task 2/3 接线后移除 allow(dead_code)（incoming_message/run_agentic_loop 读取后消解）
+    #[allow(dead_code)]
     pub out_channel: Option<Arc<OutChannel>>,
 }
 
@@ -562,6 +564,8 @@ impl ConfigManager {
 
     /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
     /// 非空写 role 覆盖；None 清除；write_nexus_config 单次原子，无需串行队列；agent 条目懒建）
+    /// Task 2/3 接线后移除 allow(dead_code)（命令与 send 清理调用后消解）
+    #[allow(dead_code)]
     pub async fn set_out_channel(&self, agent_id: &str, role_name: &str, out: Option<Arc<OutChannel>>) -> Result<()> {
         self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.agent_contexts);
