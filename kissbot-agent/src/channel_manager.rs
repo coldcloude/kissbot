@@ -125,14 +125,7 @@ impl ChannelManager {
         self.get_or_create(channel_id).bind_client(client);
     }
 
-    /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
-    pub fn consume_pending(&self, channel_id: &str, msg_id: &str) -> bool {
-        match self.channels.get(channel_id) {
-            Some(c) => c.consume_pending(msg_id),
-            None => false,
-        }
-    }
-
+    /// 连接单个 channel（Nexus 调度：启动遍历 enabled 逐个调用；将来运行时新建 channel 也由 Nexus 经此调度）
     /// 设置 channel 运行态模式（/mode 切换，不回写，重启回 Role）
     pub fn set_mode(&self, channel_id: &str, mode: Arc<Mode>) {
         self.get_or_create(channel_id).set_mode(mode);
@@ -276,8 +269,13 @@ impl ChannelManager {
 impl Terminal for ChannelManager {
     /// 收到上行消息：先做回显过滤（通道层），再转发 Coordinator 业务处理
     async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
-        // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务
-        if self.consume_pending(channel_id, event.incoming_message.msg_id.as_str()) {
+        // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务（consume_pending 内联：
+        //    channels.get 定位 channel 后直接调 Channel::consume_pending，无 channel 恒 false）
+        let echo = match self.channels.get(channel_id) {
+            Some(c) => c.consume_pending(event.incoming_message.msg_id.as_str()),
+            None => false,
+        };
+        if echo {
             return;
         }
         // 2. 转发业务处理（单例；run() 中 connect_channel 之后必然已注册）
