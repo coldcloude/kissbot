@@ -402,32 +402,34 @@ impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     /// 完整处理链：会话定位/上行记忆 → 系统事件过滤 → 管理命令 → 普通消息合批进 agentic loop
     pub async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
-        // 1. 管理命令：命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
-        let content_text = extract_text(&event.incoming_message.content);
-        if content_text.trim().starts_with('/') {
-            // 2. 判断是否管理员（admins HashSet O(1) contains；per-channel 避免跨 channel 提权）；非管理员忽略不回复
-            let messenger_id = event.incoming_message.messenger_id.as_str();
-            let user_id = event.incoming_message.user_id.as_str();
-            let is_admin = ConfigManager::get().channel(channel_id).await
-                .map(|c| c.admins.contains(&ChannelUser {
-                    messenger_id: messenger_id.to_string(),
-                    user_id: user_id.to_string(),
-                }))
-                .unwrap_or(false);
-            if is_admin {
-                // 3. 命令解析+执行（内联在 CommandRouter::execute）；回复始终发回来源 channel（不走 out_channel）
-                match CommandRouter::execute(&content_text, channel_id).await {
-                    Ok(reply) => self.send_admin_reply(channel_id, event, reply).await,
-                    Err(Error::InvalidCommand(msg)) => {
-                        self.send_admin_reply(channel_id, event, format!("⚠️ {}", msg)).await;
-                    }
-                    Err(e) => {
-                        self.send_admin_reply(channel_id, event, format!("❌ 命令执行失败: {}", e)).await;
+        // 1. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
+        //    命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
+        if let Content::Text(text) = &event.incoming_message.content {
+            if text.starts_with('/') {
+                // 2. 判断是否管理员（admins HashSet O(1) contains；per-channel 避免跨 channel 提权）；非管理员忽略不回复
+                let messenger_id = event.incoming_message.messenger_id.as_str();
+                let user_id = event.incoming_message.user_id.as_str();
+                let is_admin = ConfigManager::get().channel(channel_id).await
+                    .map(|c| c.admins.contains(&ChannelUser {
+                        messenger_id: messenger_id.to_string(),
+                        user_id: user_id.to_string(),
+                    }))
+                    .unwrap_or(false);
+                if is_admin {
+                    // 3. 命令解析+执行（内联在 CommandRouter::execute）；回复始终发回来源 channel（不走 out_channel）
+                    match CommandRouter::execute(text.as_str(), channel_id).await {
+                        Ok(reply) => self.send_admin_reply(channel_id, event, reply).await,
+                        Err(Error::InvalidCommand(msg)) => {
+                            self.send_admin_reply(channel_id, event, format!("⚠️ {}", msg)).await;
+                        }
+                        Err(e) => {
+                            self.send_admin_reply(channel_id, event, format!("❌ 命令执行失败: {}", e)).await;
+                        }
                     }
                 }
+                // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
+                return;
             }
-            // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
-            return;
         }
 
         // 2. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
@@ -638,7 +640,8 @@ impl Nexus {
     }
 }
 
-/// 从 Content 枚举中提取文本（session_manager.try_flush 复用，pub(crate)）
+/// 从 Content 枚举中提取文本（incoming_message 命令判断已改 Content::Text 直判后暂无消费方，保留供普通消息路径后续使用）
+#[allow(dead_code)]
 pub(crate) fn extract_text(content: &Content) -> String {
     match content {
         Content::Text(t) => t.as_str().to_string(),
