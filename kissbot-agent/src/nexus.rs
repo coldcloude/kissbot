@@ -400,7 +400,8 @@ impl Nexus {
 
 impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
-    pub(crate) async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+    /// 完整处理链：会话定位/上行记忆 → 系统事件过滤 → 管理命令 → 普通消息合批进 agentic loop
+    pub async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
         let Some(key) = self.channel_manager.session_key(channel_id).await else { return; };
 
@@ -423,29 +424,16 @@ impl Nexus {
             time: event.incoming_message.time.clone(),
         }).await;
 
-        // 3. 处理消息（channel_id 为 agent 内部连接标识，来自连接 id；会话三元组透传，避免重复计算）
-        self.handle_incoming(channel_id, key, event).await;
-    }
-}
-
-impl Nexus {
-    async fn handle_incoming(
-        &self,
-        channel_id: &str,
-        key: SessionKey,
-        event: Arc<IncomingMessageEvent>,
-    ) {
+        // 3. 系统事件（群组变更/用户移除）不进 agentic loop
         let messenger_id = event.incoming_message.messenger_id.to_string();
         let user_id = event.incoming_message.user_id.to_string();
         let content_text = extract_text(&event.incoming_message.content);
-
-        // 1. 系统事件（群组变更/用户移除）不进 agentic loop
         match &event.incoming_message.content {
             Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
             _ => {}
         }
 
-        // 2. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
+        // 4. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(channel_id, &messenger_id, &user_id).await {
                 self.handle_admin_command(channel_id, event, &content_text).await;
@@ -454,19 +442,15 @@ impl Nexus {
             return;
         }
 
-        // 3. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
+        // 5. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
         let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
             return;
         };
         let session = self.ensure_session(&key).await;
-        self.enqueue_batch(session, event).await;
-    }
-
-    /// 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
-    /// 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
-    /// BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧经 session.enqueue_batch 入队
-    /// （batch_producer 已收窄为 Session 私有字段，外部不直接访问），无 Channel 中转
-    async fn enqueue_batch(&self, session: Arc<Session>, event: Arc<IncomingMessageEvent>) {
+        // 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
+        // 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
+        // BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧经 session.enqueue_batch 入队
+        // （batch_producer 已收窄为 Session 私有字段，外部不直接访问），无 Channel 中转
         let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         session.enqueue_batch(event, cfg.channel_batch_interval_secs).await;
     }
