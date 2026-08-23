@@ -174,13 +174,13 @@ impl Nexus {
         }
     }
 
-    /// 校验 role 存在（/role 切换前调用）：经 channel_id 取当前 agent_id（role 变更保持 agent 不变，
+    /// 校验 role 存在（/role 切换前调用）：经 channel 配置取当前 agent_id（role 变更保持 agent 不变，
     /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
     pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
-        let Some(key) = self.channel_manager.session_key(channel_id).await else {
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
-        self.verify_role_exists(&key.agent_id, role_name).await
+        self.verify_role_exists(ch.agent_id.as_str(), role_name).await
     }
 
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
@@ -406,7 +406,7 @@ impl Nexus {
         //    命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
         if let Content::Text(text) = &event.incoming_message.content {
             if text.starts_with('/') {
-                // 2. 判断是否管理员（admins HashSet O(1) contains；per-channel 避免跨 channel 提权）；非管理员忽略不回复
+                // 2. 判断是否管理员；非管理员忽略不回复
                 let messenger_id = event.incoming_message.messenger_id.as_str();
                 let user_id = event.incoming_message.user_id.as_str();
                 let is_admin = ConfigManager::get().channel(channel_id).await
