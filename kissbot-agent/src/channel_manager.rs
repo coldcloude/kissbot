@@ -17,7 +17,7 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::{ConfigManager, OutChannelConfig};
 use crate::nexus::Nexus;
-use crate::types::{Error, Mode, OutChannelParams, Result, SessionKey};
+use crate::types::{Error, Mode, OutChannelParams, Result};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
 const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
@@ -144,18 +144,6 @@ impl ChannelManager {
             Some(c) => c.mode(),
             None => Arc::new(Mode::Role),
         }
-    }
-
-    /// 取 channel 当前会话三元组（config 的 agent_id/role_name + 运行态 mode）；channel 不存在返回 None
-    /// 会话定位统一入口（Nexus session_key_for / channel_session_key 合成）：调用方一律传 channel_id
-    pub async fn session_key(&self, channel_id: &str) -> Option<SessionKey> {
-        let ch = ConfigManager::get().channel(channel_id).await?;
-        Some(SessionKey {
-            agent_id: ch.agent_id.to_string(),
-            role_name: ch.role_name.to_string(),
-            // 运行态 mode（未绑定/缺失回退角色模式）
-            mode: self.mode(channel_id).as_ref().clone(),
-        })
     }
 
     /// 绑定 channel 用户（/bind：bind_users 追加，HashSet 天然去重幂等）

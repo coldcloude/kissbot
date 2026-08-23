@@ -39,7 +39,6 @@ struct ApplyChannelSessionKey {
     done: oneshot::Sender<Result<()>>
 }
 
-
 /// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ConfigChange 同消费者串行，写-写无竞态）
 struct ChannelTask {
     cmd: ChannelCommand,
@@ -183,8 +182,21 @@ impl Nexus {
         self.verify_role_exists(ch.agent_id.as_str(), role_name).await
     }
 
+    /// 按 channel 定位会话三元组（config agent_id/role_name + 运行态 mode；channel 不存在返回 None）
+    /// 会话定位统一入口（原 ChannelManager::session_key 上移）：Nexus 组合 config 与 channel_manager 运行态
+    pub async fn session_key(&self, channel_id: &str) -> Option<SessionKey> {
+        let ch = ConfigManager::get().channel(channel_id).await?;
+        Some(SessionKey {
+            agent_id: ch.agent_id.to_string(),
+            role_name: ch.role_name.to_string(),
+            // 运行态 mode（未绑定/缺失回退角色模式）
+            mode: self.channel_manager.mode(channel_id).as_ref().clone(),
+        })
+    }
+
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
-    async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
+    /// key 传所有权（get_or_create 内部 move，不再深拷贝）
+    async fn ensure_session(&self, key: SessionKey) -> Arc<Session> {
         // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
         let model = self.valid_default.load_full();
         self.session_manager.get_or_create(key, model).await
@@ -204,7 +216,7 @@ impl Nexus {
         let channels = ConfigManager::get().channels().await;
         let mut keys = HashSet::new();
         for (_, ch) in &channels {
-            if let Some(key) = self.channel_manager.session_key(ch.channel_id.as_str()).await {
+            if let Some(key) = self.session_key(ch.channel_id.as_str()).await {
                 keys.insert(key);
             }
         }
@@ -320,8 +332,8 @@ impl Nexus {
         // 1. 清理无任何 channel 绑定的会话
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        if let Some(key) = self.channel_manager.session_key(channel_id).await {
-            self.ensure_session(&key).await;
+        if let Some(key) = self.session_key(channel_id).await {
+            self.ensure_session(key).await;
         }
         Ok(())
     }
@@ -362,12 +374,12 @@ impl Nexus {
 
     /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
-        let Some(key) = self.channel_manager.session_key(channel_id).await else {
+        let Some(key) = self.session_key(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(&pm).await?;
-        let session = self.ensure_session(&key).await;
+        let session = self.ensure_session(key).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
@@ -377,8 +389,8 @@ impl Nexus {
         info!("Nexus 启动，等待外部输入...");
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
-            if let Some(key) = self.channel_manager.session_key(ch.channel_id.as_str()).await {
-                self.ensure_session(&key).await;
+            if let Some(key) = self.session_key(ch.channel_id.as_str()).await {
+                self.ensure_session(key).await;
             }
         }
         // 连接全部 enabled 的 channel（连接/重连/回显/发送归 ChannelManager 通道适配层；
@@ -433,7 +445,7 @@ impl Nexus {
         }
 
         // 2. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
-        let Some(key) = self.channel_manager.session_key(channel_id).await else { return; };
+        let Some(key) = self.session_key(channel_id).await else { return; };
 
         // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
         let role_name = memory_role(&key.role_name, &key.mode);
@@ -464,7 +476,7 @@ impl Nexus {
         let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
             return;
         };
-        let session = self.ensure_session(&key).await;
+        let session = self.ensure_session(key).await;
         // 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
         // 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
         // BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧经 session.enqueue_batch 入队
@@ -600,10 +612,14 @@ impl Nexus {
 
     /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
     pub async fn send_outgoing(&self, out_channel: &OutChannel, content: Arc<String>) {
-        let Some(key) = self.channel_manager.session_key(out_channel.channel_id.as_str()).await else {
+        let Some(ch) = ConfigManager::get().channel(out_channel.channel_id.as_str()).await else {
             warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
             return;
         };
+        // 分别取 config 绑定身份（agent_id/role_name）与 channel_manager 运行态 mode，不合成 session_key
+        let mode = self.channel_manager.mode(out_channel.channel_id.as_str());
+        let agent_id = ch.agent_id.clone();
+        let role_name = memory_role(ch.role_name.as_str(), mode.as_ref());
 
         let msg = OutgoingMessage {
             messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
@@ -616,8 +632,6 @@ impl Nexus {
         match self.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
-                let role_name = memory_role(&key.role_name, &key.mode);
-                let agent_id = Arc::new(key.agent_id.clone());
                 self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id,
                     role_name: Arc::new(role_name),

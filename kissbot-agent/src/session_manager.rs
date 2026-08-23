@@ -609,10 +609,10 @@ impl SessionManager {
 
     pub async fn get_or_create(
         &self,
-        key: &SessionKey,
+        key: SessionKey,
         model: Arc<Option<ProviderModel>>,
     ) -> Arc<Session> {
-        if let Some(s) = self.sessions.get(key) {
+        if let Some(s) = self.sessions.get(&key) {
             return s.clone();
         }
         match self.sessions.entry(key.clone()) {
@@ -632,7 +632,7 @@ impl SessionManager {
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
     async fn create_session(
-        key: &SessionKey,
+        key: SessionKey,
         model: Arc<Option<ProviderModel>>,
         data_dir: &str,
     ) -> Arc<Session> {
@@ -650,13 +650,15 @@ impl SessionManager {
             deadline: deadline.clone(),
         };
         // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
+        // context 先建（SessionContext::new 借用 key 生成文件名编码），再 move key 字段进 Session（零深拷贝）
+        let context = tokio::sync::Mutex::new(SessionContext::new(data_dir, &key));
         // model 经 ArcSwap::from(Arc) 直接转移（零深拷贝，替代旧 from_pointee 值克隆）
         let session = Arc::new(Session {
-            agent_id: Arc::new(key.agent_id.clone()),
-            role_name: Arc::new(key.role_name.clone()),
-            mode: Arc::new(key.mode.clone()),
+            agent_id: Arc::new(key.agent_id),
+            role_name: Arc::new(key.role_name),
+            mode: Arc::new(key.mode),
             model: ArcSwap::from(model),
-            context: tokio::sync::Mutex::new(SessionContext::new(data_dir, key)),
+            context,
             batch_producer: producer,
             notify: notify.clone(),
             last_total_tokens: AtomicU64::new(0),
@@ -844,12 +846,12 @@ mod tests {
         let mgr = mgr();
         let model = ProviderModel { provider: "deepseek".into(), model: "deepseek-4-flash".into() };
         let k = key("a1", "r1");
-        let s1 = mgr.get_or_create(&k, Arc::new(Some(model.clone()))).await;
-        let s2 = mgr.get_or_create(&k, Arc::new(Some(model.clone()))).await;
+        let s1 = mgr.get_or_create(k.clone(), Arc::new(Some(model.clone()))).await;
+        let s2 = mgr.get_or_create(k, Arc::new(Some(model.clone()))).await;
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同 mode 是不同会话
         let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        let _s3 = mgr.get_or_create(&k_event, Arc::new(Some(model))).await;
+        let _s3 = mgr.get_or_create(k_event, Arc::new(Some(model))).await;
     }
 
     #[tokio::test]
@@ -857,7 +859,7 @@ mod tests {
         ensure_test_globals().await;
         let mgr = mgr();
         let key = SessionKey { agent_id: "a".into(), role_name: "r".into(), mode: Mode::Role };
-        let s = mgr.get_or_create(&key, Arc::new(None)).await;
+        let s = mgr.get_or_create(key, Arc::new(None)).await;
         assert!(s.model.load().is_none());
     }
 
