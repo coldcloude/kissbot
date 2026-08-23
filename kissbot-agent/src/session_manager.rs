@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crate::config_manager::{ConfigManager, ProviderModel};
 use crate::nexus::Nexus;
 use crate::message::pack_batch;
-use crate::types::{Error, Message, Mode, Result, SessionKey, role_event};
+use crate::types::{Error, Message, Mode, Result, SessionKey, role_mode};
 
 /// Agentic Loop 工具调用轮次上限（防死循环）
 const MAX_TOOL_ROUNDS: usize = 10;
@@ -253,7 +253,7 @@ pub struct Session {
     pub agent_id: Arc<String>,      // 运行态：从 key 复制
     pub role_name: Arc<String>,     // 运行态：从 key 复制
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
-    /// role+mode 编码（role_event(role_name, mode) 建立时算一次；记忆/回复身份用，避免每次重算）
+    /// role+mode 编码（role_mode(role_name, mode) 建立时算一次；记忆/回复身份用，避免每次重算）
     pub role_mode: Arc<String>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
@@ -656,14 +656,14 @@ impl SessionManager {
         // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
         // context 先建（SessionContext::new 借用 key 生成文件名编码），再 move key 字段进 Session（零深拷贝）
         let context = tokio::sync::Mutex::new(SessionContext::new(data_dir, &key));
-        // role+mode 编码建立时算一次（记忆/回复身份复用，避免每次 role_event 重算）
-        let role_mode = Arc::new(role_event(&key.role_name, &key.mode));
+        // role+mode 编码建立时算一次（记忆/回复身份复用，避免每次 role_mode 重算）
+        let role_event = Arc::new(role_mode(&key.role_name, &key.mode));
         // model 经 ArcSwap::from(Arc) 直接转移（零深拷贝，替代旧 from_pointee 值克隆）
         let session = Arc::new(Session {
             agent_id: Arc::new(key.agent_id),
             role_name: Arc::new(key.role_name),
             mode: Arc::new(key.mode),
-            role_mode,
+            role_mode: role_event,
             model: ArcSwap::from(model),
             context,
             batch_producer: producer,
@@ -760,7 +760,7 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
-            role_mode: Arc::new(role_event(&key.role_name, &key.mode)),
+            role_mode: Arc::new(role_mode(&key.role_name, &key.mode)),
             model: ArcSwap::from_pointee(None),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
@@ -891,7 +891,7 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
-            role_mode: Arc::new(role_event(&key.role_name, &key.mode)),
+            role_mode: Arc::new(role_mode(&key.role_name, &key.mode)),
             model: ArcSwap::from_pointee(model),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
