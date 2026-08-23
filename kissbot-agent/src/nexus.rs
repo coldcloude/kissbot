@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use crate::channel_manager::ChannelManager;
 use crate::types::{
     ChannelCommand, Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result,
-    SessionKey, ToolCall, memory_role,
+    SessionKey, ToolCall, role_event,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
@@ -406,19 +406,20 @@ impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     /// 完整处理链：会话定位/上行记忆 → 系统事件过滤 → 管理命令 → 普通消息合批进 agentic loop
     pub async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
+        // 0. 先取 channel 配置（命令分支 admin 判断与普通分支会话定位/记忆复用，避免重复查询）
+        let Some(ch) = ConfigManager::get().channel(channel_id).await else { return; };
+
         // 1. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
         //    命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
         if let Content::Text(text) = &event.incoming_message.content {
             if text.starts_with('/') {
-                // 2. 判断是否管理员；非管理员忽略不回复
+                // 2. 判断是否管理员（admins HashSet O(1) contains，ch 已保存）；非管理员忽略不回复
                 let messenger_id = event.incoming_message.messenger_id.as_str();
                 let user_id = event.incoming_message.user_id.as_str();
-                let is_admin = ConfigManager::get().channel(channel_id).await
-                    .map(|c| c.admins.contains(&ChannelUser {
-                        messenger_id: messenger_id.to_string(),
-                        user_id: user_id.to_string(),
-                    }))
-                    .unwrap_or(false);
+                let is_admin = ch.admins.contains(&ChannelUser {
+                    messenger_id: messenger_id.to_string(),
+                    user_id: user_id.to_string(),
+                });
                 if is_admin {
                     // 3. 命令解析+执行（内联在 CommandRouter::execute）；回复始终发回来源 channel（不走 out_channel）
                     match CommandRouter::execute(text.as_str(), channel_id).await {
@@ -436,12 +437,18 @@ impl Nexus {
             }
         }
 
-        // 2. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
-        let Some(key) = self.session_key(channel_id).await else { return; };
+        // 2. 会话定位（config agent_id/role_name + 运行态 mode；channel 已存在，不重复查询）
+        let mode = self.channel_manager.mode(channel_id);
+        let key = SessionKey {
+            agent_id: ch.agent_id.to_string(),
+            role_name: ch.role_name.to_string(),
+            mode: mode.as_ref().clone(),
+        };
 
-        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
-        let role_name = memory_role(&key.role_name, &key.mode);
-        let agent_id = Arc::new(key.agent_id.clone());
+        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 直接从 config clone Arc，
+        //    不 clone string；role 编码由 role_event 按 config role + 运行态 mode 算）
+        let agent_id = ch.agent_id.clone();
+        let role_name = role_event(ch.role_name.as_str(), mode.as_ref());
         self.memory_store_client.push_channel_record(ChannelRequest {
             agent_id,
             role_name: Arc::new(role_name),
@@ -559,9 +566,10 @@ impl Nexus {
         }
     }
 
-    /// Agentic Loop 产出回复：发到 out_channel（agent/role 为产出会话的 (agent, role) 定位）
+    /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_mode 记忆编码）
     /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
-    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, out_channel: &OutChannel, content: Arc<String>) {
+    /// role_mode 由会话建立时算好传入（记忆编码）；role_name 用于清理定位（roles key 是原始 role，编码不可逆）
+    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_mode: &str, out_channel: &OutChannel, content: Arc<String>) {
         // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
         let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
             .map(|c| c.bind_users.contains(&out_channel.user))
@@ -571,10 +579,7 @@ impl Nexus {
             let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
             return;
         }
-        // 2. 分别取 config 绑定身份（agent_id/role_name）与 channel_manager 运行态 mode，不合成 session_key
-        let mode = self.channel_manager.mode(out_channel.channel_id.as_str());
-        let role_key = memory_role(role_name, mode.as_ref());
-
+        // 2. 发送（role_mode 由会话建立时算好传入，无需再查 channel_manager 运行态 mode）
         let msg = OutgoingMessage {
             messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
             user_id: Arc::new(out_channel.user.user_id.clone()),
@@ -588,7 +593,7 @@ impl Nexus {
                 // 下行成功后：推记忆（is_self=1）
                 self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id: Arc::new(agent_id.to_string()),
-                    role_name: Arc::new(role_key),
+                    role_name: Arc::new(role_mode.to_string()),
                     messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
                     user_id: Arc::new(out_channel.user.user_id.clone()),
                     self_user_id: Arc::new(out_channel.user.user_id.clone()),

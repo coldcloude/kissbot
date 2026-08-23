@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crate::config_manager::{ConfigManager, ProviderModel};
 use crate::nexus::Nexus;
 use crate::message::pack_batch;
-use crate::types::{Error, Message, Mode, Result, SessionKey, memory_role};
+use crate::types::{Error, Message, Mode, Result, SessionKey, role_event};
 
 /// Agentic Loop 工具调用轮次上限（防死循环）
 const MAX_TOOL_ROUNDS: usize = 10;
@@ -253,6 +253,8 @@ pub struct Session {
     pub agent_id: Arc<String>,      // 运行态：从 key 复制
     pub role_name: Arc<String>,     // 运行态：从 key 复制
     pub mode: Arc<Mode>,            // 运行态：从 key 复制
+    /// role+mode 编码（role_event(role_name, mode) 建立时算一次；记忆/回复身份用，避免每次重算）
+    pub role_mode: Arc<String>,
     /// 会话级模型（创建时取 default_model，/model 调整）；None = 无模型（普通消息静默忽略）
     pub model: ArcSwap<Option<ProviderModel>>,
     /// 会话上下文（内存消息 + 本地缓存 + 历史归档；coordinator 不直接访问，统一经 Session 方法/内部逻辑）
@@ -370,7 +372,7 @@ impl Session {
                     self.last_total_tokens.store(model_resp.total_tokens, Ordering::Relaxed);
                     let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
                     let agent_id = self.agent_id.clone();
-                    let role_name = Arc::new(memory_role(self.role_name.as_str(), &self.mode));
+                    let role_name = self.role_mode.clone();
                     let src_content = if model_resp.thinking.is_empty() { model_resp.content.clone() } else { Arc::new(format!("<think>{}</think>{}", model_resp.thinking.as_str(), model_resp.content.as_str())) };
                     let src_reasoning_content = if model_resp.reasoning_content.is_empty() { None } else { Some(model_resp.reasoning_content.clone()) };
                     if !model_resp.tool_calls.is_empty() && rounds <= MAX_TOOL_ROUNDS {
@@ -439,7 +441,7 @@ impl Session {
                     if !model_resp.reasoning_content.is_empty() || !model_resp.thinking.is_empty() {
                         coordinator.write_memory_think(ThinkRequest {
                             agent_id: self.agent_id.clone(),
-                            role_name: Arc::new(memory_role(self.role_name.as_str(), &self.mode)),
+                            role_name: self.role_mode.clone(),
                             reasoning_content: model_resp.reasoning_content.clone(),
                             thinking: model_resp.thinking.clone(),
                             key: Arc::new(uuid::Uuid::new_v4().to_string()),
@@ -448,7 +450,7 @@ impl Session {
                     }
 
                     // 8. 发送回复到该会话的 out_channel
-                    coordinator.send_outgoing(self.agent_id.as_str(), self.role_name.as_str(), &out_channel, model_resp.content).await;
+                    coordinator.send_outgoing(self.agent_id.as_str(), self.role_name.as_str(), self.role_mode.as_str(), &out_channel, model_resp.content).await;
                     break;  //到回复文本时结束
                 }
                 Err(e) => {
@@ -654,11 +656,14 @@ impl SessionManager {
         // 3. 用 producer 构造 session（字面量，无 new 函数；Session 全字段在同文件内可见）
         // context 先建（SessionContext::new 借用 key 生成文件名编码），再 move key 字段进 Session（零深拷贝）
         let context = tokio::sync::Mutex::new(SessionContext::new(data_dir, &key));
+        // role+mode 编码建立时算一次（记忆/回复身份复用，避免每次 role_event 重算）
+        let role_mode = Arc::new(role_event(&key.role_name, &key.mode));
         // model 经 ArcSwap::from(Arc) 直接转移（零深拷贝，替代旧 from_pointee 值克隆）
         let session = Arc::new(Session {
             agent_id: Arc::new(key.agent_id),
             role_name: Arc::new(key.role_name),
             mode: Arc::new(key.mode),
+            role_mode,
             model: ArcSwap::from(model),
             context,
             batch_producer: producer,
@@ -755,6 +760,7 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
+            role_mode: Arc::new(role_event(&key.role_name, &key.mode)),
             model: ArcSwap::from_pointee(None),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer.clone(),
@@ -885,6 +891,7 @@ mod tests {
             agent_id: Arc::new(key.agent_id.clone()),
             role_name: Arc::new(key.role_name.clone()),
             mode: Arc::new(key.mode.clone()),
+            role_mode: Arc::new(role_event(&key.role_name, &key.mode)),
             model: ArcSwap::from_pointee(model),
             context: tokio::sync::Mutex::new(SessionContext::new(dir.path().to_str().unwrap(), &key)),
             batch_producer: producer,
