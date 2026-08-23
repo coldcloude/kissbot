@@ -566,10 +566,10 @@ impl Nexus {
         }
     }
 
-    /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_mode 记忆编码）
+    /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
     /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
-    /// role_mode 由会话建立时算好传入（记忆编码）；role_name 用于清理定位（roles key 是原始 role，编码不可逆）
-    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_mode: &str, out_channel: &OutChannel, content: Arc<String>) {
+    /// role_event 由会话建立时算好传入（记忆编码）；role_name 用于清理定位（roles key 是原始 role，编码不可逆）
+    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_event: &str, out_channel: &OutChannel, content: Arc<String>) {
         // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
         let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
             .map(|c| c.bind_users.contains(&out_channel.user))
@@ -579,7 +579,7 @@ impl Nexus {
             let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
             return;
         }
-        // 2. 发送（role_mode 由会话建立时算好传入，无需再查 channel_manager 运行态 mode）
+        // 2. 发送（role_event 由会话建立时算好传入，无需再查 channel_manager 运行态 mode）
         let msg = OutgoingMessage {
             messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
             user_id: Arc::new(out_channel.user.user_id.clone()),
@@ -593,7 +593,7 @@ impl Nexus {
                 // 下行成功后：推记忆（is_self=1）
                 self.memory_store_client.push_channel_record(ChannelRequest {
                     agent_id: Arc::new(agent_id.to_string()),
-                    role_name: Arc::new(role_mode.to_string()),
+                    role_name: Arc::new(role_event.to_string()),
                     messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
                     user_id: Arc::new(out_channel.user.user_id.clone()),
                     self_user_id: Arc::new(out_channel.user.user_id.clone()),
