@@ -630,13 +630,6 @@ impl ConfigManager {
             })
             .collect()
     }
-    /// 读取指定 channel 的管理员列表（per-channel admin 检查用）
-    pub async fn channel_admins(&self, channel_id: &str) -> Vec<ChannelUser> {
-        let repo = self.nexus_repo.read().await;
-        repo.channels.get(channel_id)
-            .map(|s| s.load().admins.iter().cloned().collect())
-            .unwrap_or_default()
-    }
     /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {

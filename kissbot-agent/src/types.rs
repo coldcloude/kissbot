@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use kissbot_api::channel::ChannelUser;
 
-use crate::config_manager::ProviderModel;
-
 // ========== 错误类型 ==========
 
 #[derive(Debug, thiserror::Error)]
@@ -113,27 +111,7 @@ pub fn memory_role(role_name: &str, mode: &Mode) -> String {
     }
 }
 
-// ========== 管理命令类型 ==========
-
-#[derive(Debug)]
-pub enum AdminCommand {
-    Bind { messenger_id: String, user_id: String },
-    // unbind 按 (messenger_id, user_id) 双字段移除 ChannelUser；若移除的是 outgoing 引用身份则清空 outgoing
-    Unbind { messenger_id: String, user_id: String },
-    /// 设 out_channel（覆盖 + 同 agent/role 唯一）
-    BindOutgoing(OutChannelParams),
-    /// 清空 out_channel（回到只存不回复模式）
-    UnbindOutgoing,
-    Admin { messenger_id: String, user_id: String },
-    Unadmin { messenger_id: String, user_id: String },
-    SetRole(Option<String>),
-    ModeEvent(Option<String>),
-    ModeRole,
-    Reenter(String),
-    Model(ProviderModel, bool),   // /model <provider> <model> [true|false]；true 时写入 NexusRepo 默认模型
-    /// 设置 channel 绑定的 agent 与 role（缺省用保留值：agent_id="0"、role_name=""）
-    SetAgent { agent_id: Option<String>, role: Option<String> },
-}
+// ========== 管理命令参数 ==========
 
 /// /bind-outgoing 命令参数（转 OutChannelConfig 持久化）
 #[derive(Debug, Clone)]
