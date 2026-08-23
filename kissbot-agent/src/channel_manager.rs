@@ -50,14 +50,17 @@ impl Channel {
         self.client.store(Some(client));
     }
 
-    /// 取 channel client（未连接/未绑定为 None）
-    fn client(&self) -> Option<Arc<ChannelClient>> {
-        self.client.load_full()
-    }
-
-    fn add_pending(&self, msg_id: String) {
+    /// 发送消息（通道适配层：取 client + 发送 + 记录 pending msg_id 供回显判定；client/add_pending 内联）
+    pub async fn send(&self, msg: OutgoingMessage) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel_client::Error> {
+        let Some(client) = self.client.load_full() else {
+            warn!("send: 未找到 channel client");
+            return Err(kissbot_channel_client::Error::NotConnected);
+        };
+        let response = client.send_message(msg).await?;
+        // 记录已发出未回显的 msg_id（入站回显命中时 consume_pending 消费丢弃）
         self.evict(CHANNEL_CONTEXT_TTL);
-        self.pending_outgoing.insert(msg_id, Instant::now());
+        self.pending_outgoing.insert(response.msg_id.as_str().to_string(), Instant::now());
+        Ok(response)
     }
 
     /// 命中则移除并返回 true（回显消费）；未命中再清理过期条目（懒清理）
@@ -120,16 +123,6 @@ impl ChannelManager {
     /// 绑定 channel client（connect_channel 时绑定；每次重连循环启动更新）
     pub fn bind_client(&self, channel_id: &str, client: Arc<ChannelClient>) {
         self.get_or_create(channel_id).bind_client(client);
-    }
-
-    /// 取 channel client（未连接/未绑定为 None）
-    pub fn client(&self, channel_id: &str) -> Option<Arc<ChannelClient>> {
-        self.channels.get(channel_id).and_then(|c| c.client())
-    }
-
-    /// 记录已发出的 outgoing msg_id 到该 channel 的 pending 集合（回显判定用）
-    pub fn add_pending(&self, channel_id: &str, msg_id: String) {
-        self.get_or_create(channel_id).add_pending(msg_id);
     }
 
     /// 按 msg_id 判定是否为自身发出的回显；命中则消费（移除）并返回 true
@@ -275,16 +268,15 @@ impl ChannelManager {
         });
     }
 
-    /// 发送消息到 channel（通道适配层封装：取 client + 发送 + 记录 pending msg_id 供回显判定）
+    /// 发送消息到 channel（取 Channel 后经 Channel::send；client/add_pending 已内联进 Channel::send）
     pub async fn send(&self, channel_id: &str, msg: OutgoingMessage) -> std::result::Result<Arc<OutgoingMessageResponse>, kissbot_channel_client::Error> {
-        let Some(client) = self.client(channel_id) else {
-            warn!("send: 未找到 channel client: {}", channel_id);
-            return Err(kissbot_channel_client::Error::NotConnected);
-        };
-        let response = client.send_message(msg).await?;
-        // 记录已发出未回显的 msg_id（入站回显命中时 consume_pending 消费丢弃）
-        self.add_pending(channel_id, response.msg_id.as_str().to_string());
-        Ok(response)
+        match self.channels.get(channel_id) {
+            Some(ch) => ch.send(msg).await,
+            None => {
+                warn!("send: 未找到 channel client: {}", channel_id);
+                Err(kissbot_channel_client::Error::NotConnected)
+            }
+        }
     }
 }
 
@@ -337,8 +329,9 @@ mod tests {
     #[test]
     fn channel_msg_id_consume() {
         let ctx = Channel::new();
+        // 直接写 pending 集合（add_pending 已内联进 Channel::send，此处构造等价状态）
+        ctx.pending_outgoing.insert("msg1".to_string(), Instant::now());
         // 加入后命中且消费移除
-        ctx.add_pending("msg1".to_string());
         assert!(ctx.consume_pending("msg1"));
         // 已消费，再次查询为 false
         assert!(!ctx.consume_pending("msg1"));
@@ -349,12 +342,12 @@ mod tests {
     #[test]
     fn channel_ttl_evict() {
         let ctx = Channel::new();
-        // TTL=0：插入即过期（走真实 add_pending 路径），下次操作即被淘汰
-        ctx.add_pending("expired".to_string());
+        // TTL=0：插入即过期（直接写 pending 集合，等价 add_pending 内联体），下次操作即被淘汰
+        ctx.pending_outgoing.insert("expired".to_string(), Instant::now());
         ctx.evict(Duration::from_secs(0));
         assert!(!ctx.consume_pending("expired"), "TTL=0 插入即过期，应被淘汰");
         // 正常 TTL：未过期条目保留
-        ctx.add_pending("fresh".to_string());
+        ctx.pending_outgoing.insert("fresh".to_string(), Instant::now());
         ctx.evict(Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS));
         assert!(ctx.consume_pending("fresh"));
     }
