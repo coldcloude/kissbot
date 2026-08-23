@@ -11,7 +11,7 @@
     }
   },
   "agent_contexts": {
-    "": {
+    "0": {
       "default_context_config": {
         "out_channel": { "channel_id": "web-main", "user": { "messenger_id": "web", "user_id": "u1" }, "group_id": "g1" }
       },

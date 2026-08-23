@@ -21,6 +21,7 @@ let backend: ChildProcess;
 let agent: ChildProcess;
 let cli: SpawnedCli;   // u2（管理员）经 channel-web 与 nexus 通信；agent 以 bind_user u1 身份回复
 let agentId: string;   // ego 里预建 agent a1 的 agent_id（手工指定，创建时传入）
+let b1Id: string;   // ego 里预建 agent b1 的 agent_id（无默认 out_channel，场景 5/6 用）
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -106,7 +107,7 @@ function readOutChannel(agentId: string, roleName: string): any {
 }
 
 // 查询 memory-store channel 记录（单文件全量），返回记录数组（含 is_self/user_id/content 字段）
-async function queryChannelRecords(request: APIRequestContext, roleName: string): Promise<any[]> {
+async function queryChannelRecords(request: APIRequestContext, agentId: string, roleName: string): Promise<any[]> {
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
@@ -120,10 +121,10 @@ async function queryChannelRecords(request: APIRequestContext, roleName: string)
 }
 
 // 等待指定内容的用户消息 channel 记录落盘（is_self=0；agent 收到消息即写入，与是否回复无关）
-async function waitUserMessageRecord(request: APIRequestContext, roleName: string, content: string): Promise<void> {
+async function waitUserMessageRecord(request: APIRequestContext, agentId: string, roleName: string, content: string): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < 10000) {
-    const recs = await queryChannelRecords(request, roleName);
+    const recs = await queryChannelRecords(request, agentId, roleName);
     if (recs.some((r) => r.is_self === 0 && r.content?.data === content)) return;
     await sleep(300);
   }
@@ -217,6 +218,7 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
       data: { agent_id: 'b1', description: 'ego 测试 agent（无默认 out_channel）' },
     })).json();
     expect(createB1.success).toBe(true);
+    b1Id = createB1.data;
     for (const roleName of ['out1', 'out2']) {
       const r = await (await request.post(`${EGO_BASE}/role/create`, {
         headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
@@ -323,7 +325,7 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     const baseline = cli.getOutput();
     const offlineMsg = '路由关闭测试-只存不回复';
     cli.stdin(`/send ${offlineMsg}`);
-    await waitUserMessageRecord(request, 'out1', offlineMsg);
+    await waitUserMessageRecord(request, b1Id, 'out1', offlineMsg);
     await assertNoAgentReply(baseline);
 
     // 5. 恢复 out_channel（/bind-outgoing web u1 g1）
@@ -371,9 +373,14 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     const baseline = cli.getOutput();
     const offlineMsg = 'unbind后消息-无回复';
     cli.stdin(`/send ${offlineMsg}`);
-    await waitUserMessageRecord(request, 'out2', offlineMsg);
+    await waitUserMessageRecord(request, b1Id, 'out2', offlineMsg);
     await assertNoAgentReply(baseline);
-    // send 校验失败已清理 (b1, out2) 的 out_channel
+    // send 校验失败已清理 (b1, out2) 的 out_channel（轮询等待清理落盘，避开 LLM 延迟窗口）
+    const cleanupStart = Date.now();
+    while (Date.now() - cleanupStart < 10000) {
+      if (readOutChannel('b1', 'out2') === null) break;
+      await sleep(300);
+    }
     expect(readOutChannel('b1', 'out2')).toBeNull();
   });
 });
