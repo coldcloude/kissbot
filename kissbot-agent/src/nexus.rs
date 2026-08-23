@@ -14,7 +14,7 @@ use crate::types::{
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
 use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
-use crate::command_router::CommandRouter;
+use crate::command_router::{CommandOutcome, CommandRouter};
 use crate::model_client::ModelClient;
 use crate::message::pack_memory_messages;
 use crate::memory_ego_client::MemoryEgoClient;
@@ -404,30 +404,16 @@ impl Nexus {
     pub async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
         // 1. 先判断是否为管理命令：命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
         let content_text = extract_text(&event.incoming_message.content);
-        if CommandRouter::is_command(&content_text) {
-            // 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
-            if CommandRouter::check_admin(channel_id, event.incoming_message.messenger_id.as_str(), event.incoming_message.user_id.as_str()).await {
-                match CommandRouter::parse(&content_text) {
-                    Ok(cmd) => {
-                        match CommandRouter::execute(cmd, channel_id).await {
-                            Ok(reply) => {
-                                // 回复：系统命令始终发回来源 channel（不走 out_channel）
-                                self.send_admin_reply(channel_id, event, reply).await;
-                            }
-                            Err(e) => {
-                                self.send_admin_reply(channel_id, event,
-                                    format!("❌ 命令执行失败: {}", e)).await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        self.send_admin_reply(channel_id, event,
-                            format!("⚠️ {}", e)).await;
-                    }
-                }
+        match CommandRouter::handle(&content_text, channel_id, event.incoming_message.messenger_id.as_str(), event.incoming_message.user_id.as_str()).await {
+            // 非命令：继续普通消息流程（会话定位/上行记忆/agentic loop）
+            CommandOutcome::NotCommand => {}
+            // 命令已处理（含非管理员忽略）：不回复也不进入 agentic loop
+            CommandOutcome::Handled => return,
+            // 命令回复：系统命令始终发回来源 channel（不走 out_channel）
+            CommandOutcome::Reply(reply) => {
+                self.send_admin_reply(channel_id, event, reply).await;
+                return;
             }
-            // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
-            return;
         }
 
         // 2. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）

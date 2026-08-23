@@ -7,24 +7,49 @@ use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
 
-impl CommandRouter {
-    /// 检查消息是否为管理命令（以 "/" 开头）
-    pub fn is_command(content: &str) -> bool {
-        content.starts_with('/')
-    }
+/// 管理命令处理结果（CommandRouter::handle 统一入口返回）
+pub enum CommandOutcome {
+    /// 非管理命令（调用方继续普通消息流程）
+    NotCommand,
+    /// 命令已处理，无需回复（非管理员发送的管理命令忽略；不进入 agentic loop）
+    Handled,
+    /// 命令回复文本（成功/失败文案；由调用方发回来源 channel）
+    Reply(String),
+}
 
-    /// 检查发送者是否为该来源 channel 的管理权限用户（per-channel，避免跨 channel 提权）
-    pub async fn check_admin(
+impl CommandRouter {
+    /// 管理命令统一入口（合成 is_command/check_admin/parse/execute）：
+    /// 非命令 → NotCommand（调用方继续普通消息流程）；非管理员命令 → Handled（忽略，不进入 agentic loop）；
+    /// 命令 → 解析执行，Reply 返回回复文本（成功/失败文案由命令层生成）
+    pub async fn handle(
+        content: &str,
         channel_id: &str,
         messenger_id: &str,
         user_id: &str,
-    ) -> bool {
+    ) -> CommandOutcome {
+        // 非管理命令（不以 "/" 开头）：返回 NotCommand，调用方继续普通消息流程
+        if !content.starts_with('/') {
+            return CommandOutcome::NotCommand;
+        }
+        // 校验发送者是否为该来源 channel 的管理权限用户（per-channel，避免跨 channel 提权）
         let admins = ConfigManager::get().channel_admins(channel_id).await;
-        admins.iter().any(|a| a.messenger_id == messenger_id && a.user_id == user_id)
+        if !admins.iter().any(|a| a.messenger_id == messenger_id && a.user_id == user_id) {
+            // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
+            return CommandOutcome::Handled;
+        }
+        match Self::parse(content) {
+            Ok(cmd) => {
+                match Self::execute(cmd, channel_id).await {
+                    Ok(reply) => CommandOutcome::Reply(reply),
+                    Err(e) => CommandOutcome::Reply(format!("❌ 命令执行失败: {}", e)),
+                }
+            }
+            Err(e) => CommandOutcome::Reply(format!("⚠️ {}", e)),
+        }
     }
 
     /// 解析管理命令
-    pub fn parse(content: &str) -> Result<AdminCommand> {
+    fn parse(content: &str) -> Result<AdminCommand> {
         let trimmed = content.trim();
         if !trimmed.starts_with('/') {
             return Err(Error::InvalidCommand("命令必须以 / 开头".to_string()));
@@ -166,7 +191,7 @@ impl CommandRouter {
     /// bind/unbind/bind-outgoing/admin/unadmin 走 ConfigManager 回写（bind 类经 nexus.channel_command 队列串行）；
     /// agent/role/mode/reenter 走 change_channel_key 队列；model 改会话模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
-    pub async fn execute(
+    async fn execute(
         command: AdminCommand,
         channel_id: &str,
     ) -> Result<String> {
