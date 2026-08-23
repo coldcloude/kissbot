@@ -7,8 +7,15 @@
       "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
       "agent_name": "",
       "role_name": "",
-      "outgoing": { "messenger_id": "web", "user_id": "u1", "group_id": "g1" },
       "enabled": true
+    }
+  },
+  "agent_contexts": {
+    "": {
+      "default_context_config": {
+        "out_channel": { "channel_id": "web1", "user": { "messenger_id": "web", "user_id": "u1" }, "group_id": "g1" }
+      },
+      "roles": {}
     }
   },
   "providers": {

@@ -211,6 +211,19 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
       data: { agent_id: agentId, role_name: 'out2', description: '输出角色2' },
     })).json();
     expect(out2Resp.success).toBe(true);
+    // 预建无默认 out_channel 的 agent b1（场景 5/6 验证"只存不回复"需回落 None；b1 不配模板默认）
+    const createB1 = await (await request.post(`${EGO_BASE}/agent/create`, {
+      headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+      data: { agent_id: 'b1', description: 'ego 测试 agent（无默认 out_channel）' },
+    })).json();
+    expect(createB1.success).toBe(true);
+    for (const roleName of ['out1', 'out2']) {
+      const r = await (await request.post(`${EGO_BASE}/role/create`, {
+        headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+        data: { agent_id: createB1.data, role_name: roleName, description: '输出角色' },
+      })).json();
+      expect(r.success).toBe(true);
+    }
     // 解析确认：agent 存在
     const getResp = await (await request.post(`${EGO_BASE}/agent/get`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
@@ -280,52 +293,58 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
   });
 
   // 场景 5：out_channel 路由——unbind-outgoing 只存不回复，恢复后 agent 又回复
-  // 模板 nexus.json agent_contexts 已带 a1 默认 out_channel（web/u1/g1），普通消息经 out_channel 回复；关掉后不进 Agentic Loop 只存 ChannelRecord
+  // 用无默认 out_channel 的 b1：/bind-outgoing 建立 (b1, out1) 回复通道；unbind 清除后回落 b1 默认（None）= 只存不回复
   test('场景5-out_channel: unbind-outgoing 只存不回复，恢复后回复', async ({ request }) => {
-    // 切回角色模式并设 agent a1 / role out1（模板 a1 默认 out_channel web/u1/g1 经 out1 回落生效）
+    // 切回角色模式并设 agent b1 / role out1（b1 无模板默认 out_channel）
     let base = cli.getOutput();
     cli.stdin('/send /mode role');
     await waitNewOutput(base, /✅ 已切换为角色模式/);
     base = cli.getOutput();
-    cli.stdin('/send /agent a1 out1');
-    await waitNewOutput(base, /✅ 已设置 agent: a1 \/ role: out1/);
+    cli.stdin('/send /agent b1 out1');
+    await waitNewOutput(base, /✅ 已设置 agent: b1 \/ role: out1/);
 
-    // 1. 模板 a1 默认 out_channel web/u1/g1：普通消息经 out_channel 回复
+    // 1. /bind-outgoing 建立 (b1, out1) 回复通道（校验 u1 已绑定通过）
+    base = cli.getOutput();
+    cli.stdin('/send /bind-outgoing web u1 g1');
+    await waitNewOutput(base, /✅ 已设发送通道: web \/ u1 -> g1/);
+    expect(readOutChannel('b1', 'out1')).toEqual({ channel_id: 'web-main', user: { messenger_id: 'web', user_id: 'u1' }, group_id: 'g1' });
+
+    // 2. 普通消息经 out_channel 回复
     await sendAndWaitReply('你好，请确认你收到了这条消息');
 
-    // 2. 管理员关 out_channel（/unbind-outgoing）
+    // 3. 管理员关 out_channel（/unbind-outgoing）：清 (b1, out1) → 回落 b1 默认（None）
     base = cli.getOutput();
     cli.stdin('/send /unbind-outgoing');
     await waitNewOutput(base, /✅ 已取消发送通道（只存不回复）/);
-    // 落盘验证：(a1, out1) 有效 out_channel 已清空（out1 role 未覆盖回落 agent 默认，agent 默认也被清）
-    expect(readOutChannel('a1', 'out1')).toBeNull();
+    // 落盘验证：b1 无默认，(b1, out1) 有效 out_channel 已清空
+    expect(readOutChannel('b1', 'out1')).toBeNull();
 
-    // 3. 再发普通消息：无回复（不进 Agentic Loop），但 channel 记录仍写入（is_self=0）
+    // 4. 再发普通消息：无回复（不进 Agentic Loop），但 channel 记录仍写入（is_self=0）
     const baseline = cli.getOutput();
     const offlineMsg = '路由关闭测试-只存不回复';
     cli.stdin(`/send ${offlineMsg}`);
     await waitUserMessageRecord(request, 'out1', offlineMsg);
     await assertNoAgentReply(baseline);
 
-    // 4. 恢复 out_channel（/bind-outgoing web u1 g1）
+    // 5. 恢复 out_channel（/bind-outgoing web u1 g1）
     base = cli.getOutput();
     cli.stdin('/send /bind-outgoing web u1 g1');
     await waitNewOutput(base, /✅ 已设发送通道: web \/ u1 -> g1/);
-    expect(readOutChannel('a1', 'out1')).toEqual({ channel_id: 'web-main', user: { messenger_id: 'web', user_id: 'u1' }, group_id: 'g1' });
+    expect(readOutChannel('b1', 'out1')).toEqual({ channel_id: 'web-main', user: { messenger_id: 'web', user_id: 'u1' }, group_id: 'g1' });
 
-    // 5. 再发普通消息：agent 又回复
+    // 6. 再发普通消息：agent 又回复
     await sendAndWaitReply('恢复发送通道后，请再次确认你收到了消息');
   });
 
   // 场景 6：out_channel 路由——/bind 追加 + /bind-outgoing 指向新绑 user + /unbind 后 send 校验未绑定才清理
   test('场景6-out_channel: bind 追加 u3 + bind-outgoing 指向 u3 + unbind 后 send 校验未绑定才清理', async ({ request }) => {
-    // 切回角色模式并设 agent a1 / role out2
+    // 切回角色模式并设 agent b1 / role out2（b1 无模板默认 out_channel）
     let base = cli.getOutput();
     cli.stdin('/send /mode role');
     await waitNewOutput(base, /✅ 已切换为角色模式/);
     base = cli.getOutput();
-    cli.stdin('/send /agent a1 out2');
-    await waitNewOutput(base, /✅ 已设置 agent: a1 \/ role: out2/);
+    cli.stdin('/send /agent b1 out2');
+    await waitNewOutput(base, /✅ 已设置 agent: b1 \/ role: out2/);
 
     // 1. /bind 追加绑定 u3（去重追加语义由命令层保证，此处验证追加成功并落盘）
     base = cli.getOutput();
@@ -338,23 +357,23 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
     base = cli.getOutput();
     cli.stdin('/send /bind-outgoing web u3 g1');
     await waitNewOutput(base, /✅ 已设发送通道: web \/ u3 -> g1/);
-    // 落盘：(a1, out2) role 覆盖写入 out_channel
-    expect(readOutChannel('a1', 'out2')).toEqual({ channel_id: 'web-main', user: { messenger_id: 'web', user_id: 'u3' }, group_id: 'g1' });
+    // 落盘：(b1, out2) role 覆盖写入 out_channel
+    expect(readOutChannel('b1', 'out2')).toEqual({ channel_id: 'web-main', user: { messenger_id: 'web', user_id: 'u3' }, group_id: 'g1' });
 
     // 3. /unbind 移除 u3：out_channel 在 (agent, role) context，与 channel 绑定解耦——unbind 不改配置
     base = cli.getOutput();
     cli.stdin('/send /unbind messenger web u3');
     await waitNewOutput(base, /✅ 已移除 channel 用户: web \/ u3/);
-    expect(readOutChannel('a1', 'out2')).not.toBeNull();
+    expect(readOutChannel('b1', 'out2')).not.toBeNull();
 
-    // 4. u2 发普通消息：run_agentic_loop 读 (a1, out2) out_channel（仍指向 u3）→ send 前校验 u3 已不在
+    // 4. u2 发普通消息：run_agentic_loop 读 (b1, out2) out_channel（仍指向 u3）→ send 前校验 u3 已不在
     //    bind_users → 清理该 (agent, role) out 配置并跳过发送：无回复（只存不回复），channel 记录仍写入
     const baseline = cli.getOutput();
     const offlineMsg = 'unbind后消息-无回复';
     cli.stdin(`/send ${offlineMsg}`);
     await waitUserMessageRecord(request, 'out2', offlineMsg);
     await assertNoAgentReply(baseline);
-    // send 校验失败已清理 (a1, out2) 的 out_channel
-    expect(readOutChannel('a1', 'out2')).toBeNull();
+    // send 校验失败已清理 (b1, out2) 的 out_channel
+    expect(readOutChannel('b1', 'out2')).toBeNull();
   });
 });

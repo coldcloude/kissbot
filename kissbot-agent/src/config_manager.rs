@@ -73,8 +73,6 @@ pub struct EffectiveContextConfig {
     pub compress_prompt: String,
     pub toolkits: HashSet<String>,
     /// (agent, role) 有效 out_channel（role 覆盖 or agent 默认回落；None = 无回复通道）
-    /// Task 2/3 接线后移除 allow(dead_code)（incoming_message/run_agentic_loop 读取后消解）
-    #[allow(dead_code)]
     pub out_channel: Option<Arc<OutChannel>>,
 }
 

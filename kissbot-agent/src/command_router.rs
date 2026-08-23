@@ -10,7 +10,7 @@ pub struct CommandRouter;
 impl CommandRouter {
     /// 执行管理命令（nexus 已校验管理员后调用）：内联解析命令参数 + 直接执行，返回回复文本
     /// 错误经 Result 返回：InvalidCommand（解析/格式错误）由调用方拼 "⚠️ {}"，其余拼 "❌ 命令执行失败: {}"
-    /// bind/unbind/bind-outgoing/admin/unadmin 走 ConfigManager 回写（bind 类经 nexus.channel_command 队列串行）；
+    /// bind/unbind 走 ConfigManager 回写（经 nexus.channel_command 队列串行）；bind-outgoing/unbind-outgoing 纯配置写；
     /// agent/role/mode/reenter 走 change_channel_key 队列；model 改会话模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
     pub async fn execute(content: &str, channel_id: &str) -> Result<String> {
