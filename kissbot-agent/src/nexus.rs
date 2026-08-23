@@ -436,7 +436,24 @@ impl Nexus {
         // 4. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
             if CommandRouter::check_admin(channel_id, &messenger_id, &user_id).await {
-                self.handle_admin_command(channel_id, event, &content_text).await;
+                match CommandRouter::parse(&content_text) {
+                    Ok(cmd) => {
+                        match CommandRouter::execute(cmd, channel_id).await {
+                            Ok(reply) => {
+                                // 回复：系统命令始终发回来源 channel（不走 out_channel）
+                                self.send_admin_reply(channel_id, event, reply).await;
+                            }
+                            Err(e) => {
+                                self.send_admin_reply(channel_id, event,
+                                    format!("❌ 命令执行失败: {}", e)).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.send_admin_reply(channel_id, event,
+                            format!("⚠️ {}", e)).await;
+                    }
+                }
             }
             // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
             return;
@@ -453,32 +470,6 @@ impl Nexus {
         // （batch_producer 已收窄为 Session 私有字段，外部不直接访问），无 Channel 中转
         let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
         session.enqueue_batch(event, cfg.channel_batch_interval_secs).await;
-    }
-
-    async fn handle_admin_command(
-        &self,
-        channel_id: &str,
-        event: Arc<IncomingMessageEvent>,
-        content: &str,
-    ) {
-        match CommandRouter::parse(content) {
-            Ok(cmd) => {
-                match CommandRouter::execute(cmd, channel_id).await {
-                    Ok(reply) => {
-                        // 回复：系统命令始终发回来源 channel（不走 out_channel）
-                        self.send_admin_reply(channel_id, event, reply).await;
-                    }
-                    Err(e) => {
-                        self.send_admin_reply(channel_id, event,
-                            format!("❌ 命令执行失败: {}", e)).await;
-                    }
-                }
-            }
-            Err(e) => {
-                self.send_admin_reply(channel_id, event,
-                    format!("⚠️ {}", e)).await;
-            }
-        }
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
