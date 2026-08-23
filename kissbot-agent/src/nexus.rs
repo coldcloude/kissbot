@@ -402,40 +402,11 @@ impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
     /// 完整处理链：会话定位/上行记忆 → 系统事件过滤 → 管理命令 → 普通消息合批进 agentic loop
     pub async fn incoming_message(&self, channel_id: &str, event: Arc<IncomingMessageEvent>) {
-        // 1. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
-        let Some(key) = self.channel_manager.session_key(channel_id).await else { return; };
-
-        // 2. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
-        let role_name = memory_role(&key.role_name, &key.mode);
-        let agent_id = Arc::new(key.agent_id.clone());
-        self.memory_store_client.push_channel_record(ChannelRequest {
-            agent_id,
-            role_name: Arc::new(role_name),
-            messenger_id: event.incoming_message.messenger_id.clone(),
-            user_id: event.incoming_message.user_id.clone(),
-            // 接收方身份 = event.recipient_user_id（agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
-            self_user_id: event.recipient_user_id.clone(),
-            group_id: event.incoming_message.group_id.clone(),
-            is_self: 0,
-            messenger_name: event.incoming_message.messenger_name.clone(),
-            user_name: event.incoming_message.user_name.clone(),
-            group_name: event.incoming_message.group_name.clone(),
-            content: event.incoming_message.content.clone(),
-            time: event.incoming_message.time.clone(),
-        }).await;
-
-        // 3. 系统事件（群组变更/用户移除）不进 agentic loop
-        let messenger_id = event.incoming_message.messenger_id.to_string();
-        let user_id = event.incoming_message.user_id.to_string();
+        // 1. 先判断是否为管理命令：命令与命令回复不找 session_key、不入记忆（管理命令独立处理）
         let content_text = extract_text(&event.incoming_message.content);
-        match &event.incoming_message.content {
-            Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
-            _ => {}
-        }
-
-        // 4. 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
         if CommandRouter::is_command(&content_text) {
-            if CommandRouter::check_admin(channel_id, &messenger_id, &user_id).await {
+            // 管理命令（无论有无 out_channel 都处理；回复发回来源 channel）
+            if CommandRouter::check_admin(channel_id, event.incoming_message.messenger_id.as_str(), event.incoming_message.user_id.as_str()).await {
                 match CommandRouter::parse(&content_text) {
                     Ok(cmd) => {
                         match CommandRouter::execute(cmd, channel_id).await {
@@ -459,6 +430,34 @@ impl Nexus {
             return;
         }
 
+        // 2. 来源 channel 必须在配置中（会话三元组计算即校验，channel 不存在返回 None）
+        let Some(key) = self.channel_manager.session_key(channel_id).await else { return; };
+
+        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 取会话 key，事件模式编码）
+        let role_name = memory_role(&key.role_name, &key.mode);
+        let agent_id = Arc::new(key.agent_id.clone());
+        self.memory_store_client.push_channel_record(ChannelRequest {
+            agent_id,
+            role_name: Arc::new(role_name),
+            messenger_id: event.incoming_message.messenger_id.clone(),
+            user_id: event.incoming_message.user_id.clone(),
+            // 接收方身份 = event.recipient_user_id（agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
+            self_user_id: event.recipient_user_id.clone(),
+            group_id: event.incoming_message.group_id.clone(),
+            is_self: 0,
+            messenger_name: event.incoming_message.messenger_name.clone(),
+            user_name: event.incoming_message.user_name.clone(),
+            group_name: event.incoming_message.group_name.clone(),
+            content: event.incoming_message.content.clone(),
+            time: event.incoming_message.time.clone(),
+        }).await;
+
+        // 4. 系统事件（群组变更/用户移除）不进 agentic loop
+        match &event.incoming_message.content {
+            Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
+            _ => {}
+        }
+
         // 5. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
         let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
             return;
@@ -473,13 +472,9 @@ impl Nexus {
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
+    /// 命令与命令回复不入记忆（管理命令不产生会话上下文）：不找 session_key、不推 ChannelRecord
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
     async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: String) {
-        let Some(key) = self.channel_manager.session_key(channel_id).await else {
-            warn!("send_admin_reply: 未找到 channel 配置: {}", channel_id);
-            return;
-        };
-
         let msg = OutgoingMessage {
             messenger_id: event.incoming_message.messenger_id.clone(),
             user_id: event.recipient_user_id.clone(),
@@ -488,29 +483,8 @@ impl Nexus {
         };
 
         // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
-        match self.channel_manager.send(channel_id, msg).await {
-            Ok(response) => {
-                // 下行成功后：推记忆（is_self=1）
-                let role_name = memory_role(&key.role_name, &key.mode);
-                let agent_id = Arc::new(key.agent_id.clone());
-                self.memory_store_client.push_channel_record(ChannelRequest {
-                    agent_id,
-                    role_name: Arc::new(role_name),
-                    messenger_id: event.incoming_message.messenger_id.clone(),
-                    user_id: event.recipient_user_id.clone(),
-                    self_user_id: event.recipient_user_id.clone(),
-                    group_id: event.incoming_message.group_id.clone(),
-                    is_self: 1,
-                    messenger_name: response.messenger_name.clone(),
-                    user_name: response.user_name.clone(),
-                    group_name: response.group_name.clone(),
-                    content: response.content.clone(),
-                    time: response.time.clone(),
-                }).await;
-            }
-            Err(e) => {
-                warn!("send_admin_reply 失败: {:?}", e);
-            }
+        if let Err(e) = self.channel_manager.send(channel_id, msg).await {
+            warn!("send_admin_reply 失败: {:?}", e);
         }
     }
 
