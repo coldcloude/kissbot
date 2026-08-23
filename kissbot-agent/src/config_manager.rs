@@ -137,12 +137,12 @@ pub struct EffectiveModelConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    pub max_tokens: u32,
     /// token 占用上限（必填：usage.total_tokens 超过其 80% 触发会话重置）
     pub max_tokens_usage: u32,
-    pub temperature: Option<f32>,
+    pub max_tokens: u32,
     pub timeout_secs: u64,
     pub retry_count: u32,
+    pub temperature: Option<f32>,
     pub thinking: Option<String>,
     pub reasoning_effort: Option<String>,
 }
@@ -152,11 +152,10 @@ pub struct EffectiveModelConfig {
 /// 注：model 标识由 models map key 承载（旧 ModelConfig.model 冗余字段已移除，全仓无读取方）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
+    /// token 占用上限（必填：usage.total_tokens 超过其 80% 触发会话重置）
+    pub max_tokens_usage: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// token 占用上限（必填非 Option：provider 默认与 model 覆盖均须声明，缺失解析失败——
-    /// 破坏性变更；usage.total_tokens 超过其 80% 触发会话重置）
-    pub max_tokens_usage: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,12 +182,11 @@ pub fn merge_model_config(
         base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
         model: model_name.to_string(),   // 用切换指令的模型名（未配置也有效）
-        max_tokens: model.and_then(|m| m.max_tokens).or(d.max_tokens).unwrap_or(DEFAULT_MAX_TOKENS),
-        // max_tokens_usage 必填非 Option：model 覆盖有值直接用，无该 model 键时用 provider 默认（无全局回落）
         max_tokens_usage: model.map(|m| m.max_tokens_usage).unwrap_or(d.max_tokens_usage),
-        temperature: model.and_then(|m| m.temperature).or(d.temperature),
+        max_tokens: model.and_then(|m| m.max_tokens).or(d.max_tokens).unwrap_or(DEFAULT_MAX_TOKENS),
         timeout_secs: model.and_then(|m| m.timeout_secs).or(d.timeout_secs).unwrap_or(DEFAULT_TIMEOUT_SECS),
         retry_count: model.and_then(|m| m.retry_count).or(d.retry_count).unwrap_or(DEFAULT_RETRY_COUNT),
+        temperature: model.and_then(|m| m.temperature).or(d.temperature),
         thinking: model.and_then(|m| m.thinking.clone()).or(d.thinking.clone()),
         reasoning_effort: model.and_then(|m| m.reasoning_effort.clone()).or(d.reasoning_effort.clone()),
     }
