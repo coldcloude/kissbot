@@ -15,9 +15,9 @@ use kissbot_api::channel::{BindRequest, ChannelUser, IncomingMessageEvent, Outgo
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 
-use crate::config_manager::{ConfigManager, OutChannelConfig};
+use crate::config_manager::ConfigManager;
 use crate::nexus::Nexus;
-use crate::types::{Error, Mode, OutChannelParams, Result};
+use crate::types::{Mode, Result};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
 const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
@@ -147,52 +147,11 @@ impl ChannelManager {
     }
 
     /// 解绑 channel 用户（/unbind：移除 bind_users；若 outgoing 引用该身份则清空，避免悬空引用）
+    /// 解绑 channel 用户（/unbind：移除 bind_users）
     pub async fn unbind_user(&self, channel_id: &str, user: &ChannelUser) -> Result<()> {
         ConfigManager::get().update_channel(channel_id, |c| {
             Arc::make_mut(&mut c.bind_users).remove(user);
-            // 移除的是 outgoing 引用身份则清空 outgoing（避免悬空引用）
-            if let Some(out) = &c.outgoing {
-                if out.messenger_id.as_str() == user.messenger_id && out.user_id.as_str() == user.user_id {
-                    c.outgoing = None;
-                }
-            }
         }).await
-    }
-
-    /// 设 out_channel（/bind-outgoing）：校验 channel 存在 + ChannelUser 已绑（未绑拒绝），
-    /// 清空同 (agent_id, role_name) 其他 channel 的 outgoing（保证至多 1 个），再设来源 channel 的 outgoing；
-    /// 队列内单任务原子执行（校验与写入不交错）
-    pub async fn bind_outgoing(&self, channel_id: &str, params: &OutChannelParams) -> Result<()> {
-        let cm = ConfigManager::get();
-        // 1. 校验 channel 存在 + ChannelUser 已绑定（未绑拒绝）
-        let src = cm.channel(channel_id).await
-            .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
-        let cu = ChannelUser { messenger_id: params.messenger_id.clone(), user_id: params.user_id.clone() };
-        if !src.bind_users.contains(&cu) {
-            return Err(Error::InvalidCommand(format!(
-                "ChannelUser 未绑定: {} / {}", params.messenger_id, params.user_id)));
-        }
-        // 2. 清空同 (agent_id, role_name) 其他 channel 的 outgoing（保证至多 1 个）
-        for (cid, c) in cm.channels().await {
-            if cid != channel_id && c.agent_id == src.agent_id && c.role_name == src.role_name {
-                if c.outgoing.is_some() {
-                    cm.update_channel(&cid, |cc| cc.outgoing = None).await?;
-                }
-            }
-        }
-        // 3. 设来源 channel 的 outgoing
-        cm.update_channel(channel_id, |c| {
-            c.outgoing = Some(Arc::new(OutChannelConfig {
-                messenger_id: Arc::new(params.messenger_id.clone()),
-                user_id: Arc::new(params.user_id.clone()),
-                group_id: Arc::new(params.group_id.clone()),
-            }));
-        }).await
-    }
-
-    /// 清空 out_channel（/unbind-outgoing：回到只存不回复模式）
-    pub async fn clear_outgoing(&self, channel_id: &str) -> Result<()> {
-        ConfigManager::get().update_channel(channel_id, |c| c.outgoing = None).await
     }
 
     /// 连接单个 channel（Nexus 调度：启动遍历 enabled 逐个调用；将来运行时新建 channel 也由 Nexus 经此调度）

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::types::{ChannelCommand, Error, Mode, OutChannelParams, RESERVED_AGENT_ID, Result};
-use crate::config_manager::{ConfigManager, ProviderModel};
+use crate::types::{ChannelCommand, Error, Mode, RESERVED_AGENT_ID, Result};
+use crate::config_manager::{ConfigManager, OutChannel, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
 
@@ -128,29 +128,49 @@ impl CommandRouter {
                 Ok(format!("✅ 将重进事件: {}", parts[1]))
             }
             "bind-outgoing" => {
-                // /bind-outgoing <messenger_id> <user_id> <group_id>
+                // /bind-outgoing <messenger_id> <user_id> <group_id>：设 (agent, role) 的 out_channel
+                // （纯配置写 set_out_channel；先校验身份已绑定来源 channel）
                 if parts.len() < 4 {
                     return Err(Error::InvalidCommand(
                         "格式: /bind-outgoing <messenger_id> <user_id> <group_id>".to_string()
                     ));
                 }
-                let params = OutChannelParams {
-                    messenger_id: parts[1].to_string(),
-                    user_id: parts[2].to_string(),
-                    group_id: parts[3].to_string(),
+                let messenger_id = parts[1].to_string();
+                let user_id = parts[2].to_string();
+                let group_id = parts[3].to_string();
+                let reply = format!("✅ 已设发送通道: {} / {} -> {}", messenger_id, user_id, group_id);
+                let cm = ConfigManager::get();
+                let Some(ch) = cm.channel(channel_id).await else {
+                    return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
                 };
-                // 校验 + 清同 agent/role 其他 channel + 设来源全部移入队列内 ChannelManager.bind_outgoing 原子执行（回复文本队列内生成）
-                nexus.channel_command(ChannelCommand::BindOutgoing { channel_id: channel_id.to_string(), params }).await
+                // 校验 ChannelUser 已绑定（未绑拒绝）
+                let cu = ChannelUser { messenger_id: messenger_id.clone(), user_id: user_id.clone() };
+                if !ch.bind_users.contains(&cu) {
+                    return Err(Error::InvalidCommand(format!(
+                        "ChannelUser 未绑定: {} / {}", messenger_id, user_id)));
+                }
+                // 设 (agent, role) 的 out_channel（channel_id = 来源 channel）
+                cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(),
+                    Some(Arc::new(OutChannel {
+                        channel_id: Arc::new(channel_id.to_string()),
+                        user: cu,
+                        group_id: Arc::new(group_id),
+                    }))).await?;
+                Ok(reply)
             }
             "unbind-outgoing" => {
-                // /unbind-outgoing：清空 out_channel（回到只存不回复模式）
+                // /unbind-outgoing：清空 (agent, role) 的 out_channel（回到只存不回复模式）
                 if parts.len() > 1 {
                     return Err(Error::InvalidCommand(
                         "格式: /unbind-outgoing（无参数）".to_string()
                     ));
                 }
-                // 清空经队列内 ChannelManager.clear_outgoing 执行（回到只存不回复模式；回复文本队列内生成）
-                nexus.channel_command(ChannelCommand::ClearOutgoing { channel_id: channel_id.to_string() }).await
+                let cm = ConfigManager::get();
+                let Some(ch) = cm.channel(channel_id).await else {
+                    return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+                };
+                cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(), None).await?;
+                Ok("✅ 已取消发送通道（只存不回复）".to_string())
             }
             "model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）

@@ -349,14 +349,6 @@ impl Nexus {
                 self.channel_manager.unbind_user(&channel_id, &user).await?;
                 Ok(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id))
             },
-            ChannelCommand::BindOutgoing { channel_id, params } => {
-                self.channel_manager.bind_outgoing(&channel_id, &params).await?;
-                Ok(format!("✅ 已设发送通道: {} / {} -> {}", params.messenger_id, params.user_id, params.group_id))
-            },
-            ChannelCommand::ClearOutgoing { channel_id } => {
-                self.channel_manager.clear_outgoing(&channel_id).await?;
-                Ok("✅ 已取消发送通道（只存不回复）".to_string())
-            },
         }
     }
 
