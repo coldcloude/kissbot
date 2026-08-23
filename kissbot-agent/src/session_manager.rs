@@ -283,7 +283,9 @@ impl Session {
 
         let coordinator = Nexus::get();
 
-        let Some(out_channel) = coordinator.resolve_out_channel_for_session(self.clone()).await else {
+        // out_channel 从 (agent, role) context 配置实时读（None = 只存不回复）
+        let cfg = ConfigManager::get().context_config(self.agent_id.as_str(), self.role_name.as_str()).await;
+        let Some(out_channel) = cfg.out_channel else {
             warn!("accept_batch: 会话无 out_channel，跳过");
             return;
         };
@@ -446,7 +448,7 @@ impl Session {
                     }
 
                     // 8. 发送回复到该会话的 out_channel
-                    coordinator.send_outgoing(&out_channel, model_resp.content).await;
+                    coordinator.send_outgoing(self.agent_id.as_str(), self.role_name.as_str(), &out_channel, model_resp.content).await;
                     break;  //到回复文本时结束
                 }
                 Err(e) => {

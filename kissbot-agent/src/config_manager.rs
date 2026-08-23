@@ -247,8 +247,6 @@ pub struct ChannelConfig {
     pub admins: Arc<HashSet<ChannelUser>>,
     /// 多绑定身份（bind 追加去重，unbind 带 ChannelUser 移除；HashSet 天然去重 + O(1) contains）
     pub bind_users: Arc<HashSet<ChannelUser>>,
-    /// out_channel 配置（Option，至多 1 个；存于被绑定的 channel 下）
-    pub outgoing: Option<Arc<OutChannelConfig>>,
     /// 绑定的 agent_id（UUID；缺省/空 = 保留 agent = "0"，建会话用默认系统提示词，不调 memory-ego）
     #[serde(default = "default_agent_id", deserialize_with = "deserialize_agent_id")]
     pub agent_id: Arc<String>,
@@ -256,14 +254,6 @@ pub struct ChannelConfig {
     pub role_name: Arc<String>,
     /// 是否启用（连接由 enabled 控制）
     pub enabled: bool,
-}
-
-/// out_channel 配置（持久化到 nexus.json；与 /bind-outgoing 三参数对应）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutChannelConfig {
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
-    pub group_id: Arc<String>,
 }
 
 /// out_channel 配置（(agent, role) 级回复通道，持久化到 nexus.json；channel_id 为发送目标）
@@ -521,7 +511,7 @@ impl ConfigManager {
         }).await
     }
 
-    /// 修改 channel 配置并落盘（绑定/agent/role/outgoing 等运行时回写统一入口）
+    /// 修改 channel 配置并落盘（绑定/agent/role 等运行时回写统一入口）
     /// channel 不存在返回 ConfigNotFound
     pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<()>
     where
@@ -775,7 +765,6 @@ mod tests {
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }])),
-            outgoing: None,
             agent_id: Arc::new("0".into()),
             role_name: Arc::new("".into()),
             enabled: true,
@@ -783,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_config_bind_users_and_outgoing_roundtrip() {
+    fn channel_config_bind_users_roundtrip() {
         let ch = ChannelConfig {
             channel_id: Arc::new("c1".into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
@@ -792,11 +781,6 @@ mod tests {
                 ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
                 ChannelUser { messenger_id: "web".into(), user_id: "u2".into() },
             ])),
-            outgoing: Some(Arc::new(OutChannelConfig {
-                messenger_id: Arc::new("web".into()),
-                user_id: Arc::new("u1".into()),
-                group_id: Arc::new("g1".into()),
-            })),
             agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
             enabled: true,
@@ -806,11 +790,9 @@ mod tests {
         let json_bind_users = json["bind_users"].as_array().unwrap();
         assert!(json_bind_users.iter().any(|u| u["user_id"] == "u1"), "bind_users 应序列化 u1");
         assert!(json_bind_users.iter().any(|u| u["user_id"] == "u2"), "bind_users 应序列化 u2");
-        assert_eq!(json["outgoing"]["group_id"], "g1");
         assert!(json.get("is_send_channel").is_none(), "is_send_channel 已删除");
         let back: ChannelConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back.bind_users.len(), 2);
-        assert_eq!(back.outgoing.as_ref().unwrap().group_id.as_str(), "g1");
     }
 
     #[test]

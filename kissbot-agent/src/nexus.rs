@@ -465,9 +465,10 @@ impl Nexus {
         }
 
         // 5. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
-        let Some(_out_channel) = self.resolve_out_channel(channel_id).await else {
+        let cfg = ConfigManager::get().context_config(key.agent_id.as_str(), key.role_name.as_str()).await;
+        if cfg.out_channel.is_none() {
             return;
-        };
+        }
         let session = self.ensure_session(key).await;
         // 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
         // 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
@@ -492,50 +493,6 @@ impl Nexus {
         if let Err(e) = self.channel_manager.send(channel_id, msg).await {
             warn!("send_admin_reply 失败: {:?}", e);
         }
-    }
-
-    /// 取来源 channel 所属 (agent,role) 的 out_channel（跨 channel 找有 outgoing 配置的，至多 1 个）
-    /// out_channel 跟 channel 不跟 mode：该 channel 所有 mode 的 session 共用
-    async fn resolve_out_channel(&self, channel_id: &str) -> Option<OutChannel> {
-        let ch = ConfigManager::get().channel(channel_id).await?;
-        let channels = ConfigManager::get().channels().await;
-        for (_, c) in &channels {
-            if c.agent_id == ch.agent_id && c.role_name == ch.role_name {
-                if let Some(out) = &c.outgoing {
-                    return Some(OutChannel {
-                        channel_id: c.channel_id.clone(),
-                        user: ChannelUser {
-                            messenger_id: out.messenger_id.to_string(),
-                            user_id: out.user_id.to_string(),
-                        },
-                        group_id: out.group_id.clone(),
-                    });
-                }
-            }
-        }
-        None
-    }
-
-    /// 按会话 (agent, role) 找 out_channel（resolve_out_channel 的会话版，合批 trigger flush 用）
-    pub(crate) async fn resolve_out_channel_for_session(&self, session: Arc<Session>) -> Option<OutChannel> {
-        let channels = ConfigManager::get().channels().await;
-        for (_, c) in &channels {
-            if c.agent_id.as_str() == session.agent_id.as_str()
-                && c.role_name.as_str() == session.role_name.as_str()
-            {
-                if let Some(out) = &c.outgoing {
-                    return Some(OutChannel {
-                        channel_id: c.channel_id.clone(),
-                        user: ChannelUser {
-                            messenger_id: out.messenger_id.to_string(),
-                            user_id: out.user_id.to_string(),
-                        },
-                        group_id: out.group_id.clone(),
-                    });
-                }
-            }
-        }
-        None
     }
 
     pub async fn call_provider_model(&self, pm: &ProviderModel, messages: &Vec<Message>, tools: &Vec<ToolConfig>) -> Result<ModelResponse> {
@@ -602,16 +559,21 @@ impl Nexus {
         }
     }
 
-    /// Agentic Loop 产出回复：发到 out_channel（channel_id + ChannelUser + group_id）
-    pub async fn send_outgoing(&self, out_channel: &OutChannel, content: Arc<String>) {
-        let Some(ch) = ConfigManager::get().channel(out_channel.channel_id.as_str()).await else {
-            warn!("send_outgoing: 未找到 channel 配置: {}", out_channel.channel_id);
+    /// Agentic Loop 产出回复：发到 out_channel（agent/role 为产出会话的 (agent, role) 定位）
+    /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
+    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, out_channel: &OutChannel, content: Arc<String>) {
+        // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
+        let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
+            .map(|c| c.bind_users.contains(&out_channel.user))
+            .unwrap_or(false);
+        if !bound {
+            warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
+            let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
             return;
-        };
-        // 分别取 config 绑定身份（agent_id/role_name）与 channel_manager 运行态 mode，不合成 session_key
+        }
+        // 2. 分别取 config 绑定身份（agent_id/role_name）与 channel_manager 运行态 mode，不合成 session_key
         let mode = self.channel_manager.mode(out_channel.channel_id.as_str());
-        let agent_id = ch.agent_id.clone();
-        let role_name = memory_role(ch.role_name.as_str(), mode.as_ref());
+        let role_key = memory_role(role_name, mode.as_ref());
 
         let msg = OutgoingMessage {
             messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
@@ -625,8 +587,8 @@ impl Nexus {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
                 self.memory_store_client.push_channel_record(ChannelRequest {
-                    agent_id,
-                    role_name: Arc::new(role_name),
+                    agent_id: Arc::new(agent_id.to_string()),
+                    role_name: Arc::new(role_key),
                     messenger_id: Arc::new(out_channel.user.messenger_id.clone()),
                     user_id: Arc::new(out_channel.user.user_id.clone()),
                     self_user_id: Arc::new(out_channel.user.user_id.clone()),
