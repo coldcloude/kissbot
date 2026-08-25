@@ -10,7 +10,7 @@ use crate::types::{Result, Error, RESERVED_AGENT_ID};
 
 // ========== 配置数据结构 ==========
 
-// ========== Context 配置（agent→role 三层继承，原 context_config.rs 迁入） ==========
+// ========== Context 配置（agent→role 三层继承） ==========
 
 // ---- 全局默认值 ----
 
@@ -330,7 +330,7 @@ pub struct AgentConfig {
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
     pub ws_reconnect_interval_secs: u64,
-    // 注：default_system_prompt 已移入 NexusRepo（nexus.json），config.json 不再承载
+    // 注：default_system_prompt 由 NexusRepo（nexus.json）承载，config.json 不承载
 }
 
 impl AgentConfig {
@@ -622,7 +622,7 @@ impl ConfigManager {
     }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
-    /// 聚合所有 channel 的 admins（per-channel 检查改为 channel_admins 后暂无消费，保留）
+    /// 聚合所有 channel 的 admins（当前无消费方）
     #[allow(dead_code)]
     pub async fn admin_users(&self) -> Vec<ChannelUser> {
         let repo = self.nexus_repo.read().await;
@@ -809,8 +809,8 @@ mod tests {
 
     #[test]
     fn channel_config_old_shape_no_longer_parses() {
-        // 旧格式（default_bind_user / enabled_by_default / is_send_channel）不再兼容：
-        // bind_users 为必填数组，旧单值字段无 serde alias（不兼容旧配置，配置文件直接改）
+        // 旧格式（default_bind_user / enabled_by_default / is_send_channel）不兼容：
+        // bind_users 为必填数组，无 serde alias（不兼容单值字段，需直接编辑配置文件）
         let old = r#"{
             "channel_id": "web-main",
             "ws_url": "ws://127.0.0.1:8201",
@@ -850,7 +850,7 @@ mod tests {
         };
         manager.add_channel(sample_channel("web-main")).await.unwrap();
 
-        // 修改 agent_id/role_name/bind_users（is_send_channel 已删除，绑定改为数组追加）
+        // 修改 agent_id/role_name/bind_users（绑定为数组追加）
         manager.update_channel("web-main", |c| {
             c.agent_id = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
@@ -1277,7 +1277,7 @@ mod tests {
         assert_eq!(tj["parameters"]["properties"]["path"]["type"], "string");
     }
 
-    // ---- context 配置合并（原 context_config.rs 测试迁入） ----
+    // ---- context 配置合并 ----
 
     #[test]
     fn merge_none_uses_globals() {

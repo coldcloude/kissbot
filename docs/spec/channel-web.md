@@ -35,13 +35,13 @@
 
 ### 实时推送：SSE
 - 前端到后端不使用 WebSocket（浏览器对自签名 WSS 证书限制严格）
-- 改用 SSE（Server-Sent Events），端点 `GET /api/events`
+- 实时推送使用 SSE（Server-Sent Events），端点 `GET /api/events`
 - 使用 `@microsoft/fetch-event-source` 库支持自定义 header
 - API key 通过 `X-Api-Key` header 传递
 
 ### REST API 设计
-- 群组管理 API 拆分：`rename`（改名称）和 `manage-members`（增减成员）
-- `api/info` 可以获取全部 group 和 user，不再单独设 list 接口
+- 群组管理 API：`rename`（改名称）和 `manage-members`（增减成员）
+- `api/info` 可以获取全部 group 和 user（无独立 list 接口）
 
 ## 四、消息与附件
 

@@ -183,7 +183,7 @@ impl Nexus {
     }
 
     /// 按 channel 定位会话三元组（config agent_id/role_name + 运行态 mode；channel 不存在返回 None）
-    /// 会话定位统一入口（原 ChannelManager::session_key 上移）：Nexus 组合 config 与 channel_manager 运行态
+    /// 会话定位统一入口：Nexus 组合 config 与 channel_manager 运行态
     pub async fn session_key(&self, channel_id: &str) -> Option<SessionKey> {
         let ch = ConfigManager::get().channel(channel_id).await?;
         Some(SessionKey {
@@ -195,7 +195,7 @@ impl Nexus {
     }
 
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
-    /// key 传所有权（get_or_create 内部 move，不再深拷贝）
+    /// key 传所有权（get_or_create 内部 move，非深拷贝）
     async fn ensure_session(&self, key: SessionKey) -> Arc<Session> {
         // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
         let model = self.valid_default.load_full();
@@ -613,7 +613,7 @@ impl Nexus {
     }
 }
 
-/// 从 Content 枚举中提取文本（incoming_message 命令判断已改 Content::Text 直判后暂无消费方，保留供普通消息路径后续使用）
+/// 从 Content 枚举中提取文本（普通消息路径使用，当前无消费方）
 #[allow(dead_code)]
 pub(crate) fn extract_text(content: &Content) -> String {
     match content {

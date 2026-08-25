@@ -22,7 +22,7 @@ pub trait AttachmentRegistry: Send + Sync {
 
 /// 处理 OutgoingMessage 中的附件类型消息。
 ///
-/// 递归遍历 content，将所有 AttachmentInfo 替换为 AttachmentInfoResponse（嵌入 key 和 transfer_id）。
+/// 递归遍历 content，将 AttachmentInfo 转换为 AttachmentInfoResponse（嵌入 key 和 transfer_id）。
 /// 注册过程由 AttachmentRegistry 完成。
 /// 返回处理后的 Content，调用方直接使用。
 pub async fn process_attachment_message(
@@ -38,7 +38,7 @@ pub async fn process_attachment_message(
     ).await
 }
 
-/// 递归处理 Content，将 AttachmentInfo 替换为 AttachmentInfoResponse。
+/// 递归处理 Content，将 AttachmentInfo 转换为 AttachmentInfoResponse。
 async fn process_content(
     content: &Content,
     messenger_id: &str,

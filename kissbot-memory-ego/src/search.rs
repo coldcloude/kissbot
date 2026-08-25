@@ -264,7 +264,7 @@ impl SearchManager {
                     descr_obsolute = false;
                 }
             }
-            //name变更（role_name_index 已删除，仅维护 role_name_completion）
+            //name变更（仅维护 role_name_completion）
             if name_obsolute {
                 //有旧值，先移除
                 if let Some(old_name) = old_name_or_none {
@@ -289,7 +289,7 @@ impl SearchManager {
             self.role_search_metadata.insert(role_key, new_search_metadata);
         }
         else {
-            //移除旧名称补全索引（role_name_index 已删除）
+            //移除旧名称补全索引
             if let Some(old_name) = old_name_or_none {
                 let old_name_document = to_document(old_name);
                 self.role_name_completion.remove(&role_key, &old_name_document);
@@ -470,7 +470,7 @@ mod tests {
         manager.force_sync_role("role-desc-chg-agt", "admin").await;
         let results = manager.search_role_by_description("新描述", None).await;
         assert_eq!(results.len(), 1, "expected 1 after desc change, got {:?}", results);
-        // 旧描述不再命中
+        // 旧描述不命中
         let results = manager.search_role_by_description("旧描述", None).await;
         assert_eq!(results.len(), 0, "expected 0 for old desc, got {:?}", results);
     }
@@ -491,7 +491,7 @@ mod tests {
         manager.force_sync_role("role-fn-chg-agt", "admin").await;
         let results = manager.search_role_by_description("新全名", None).await;
         assert_eq!(results.len(), 1, "expected 1 after full_name change, got {:?}", results);
-        // 旧全名不再命中
+        // 旧全名不命中
         let results = manager.search_role_by_description("旧全名", None).await;
         assert_eq!(results.len(), 0, "expected 0 for old full_name, got {:?}", results);
     }

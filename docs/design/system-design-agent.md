@@ -36,9 +36,9 @@ graph TB
 详见 [kissbot-agent-nexus 内部设计](components-design/kissbot-agent-nexus.md)
 
 ### Station（Tool 执行主机）
-- 每 agent 一个**全局单例**（`Station::get()` / `Station::new()`），启动时从 station.json 构建
+- 每 agent 一个**全局单例**，启动时从配置构建
 - **嵌套结构**：本地 **Toolkit 集合**（工具实现表 + MCP 占位）+ 直接**子 Station 集合**（仅连接信息，HTTP 通信）；Toolkit 中无子 Station，孙子由子进程递归
-- 工具元数据经 `tools(filter)` **递归平铺**（本地 toolkit 白名单过滤 + 直接子 HTTP 实时拉取并更新 tool_routes 路由缓存），工具名整树全局唯一（本地硬约束，跨进程冲突缓存合并时保留先到者）
+- 工具元数据**递归平铺**（本地 toolkit 白名单过滤 + 直接子 HTTP 实时拉取并更新路由缓存），工具名整树全局唯一（本地硬约束，跨进程冲突缓存合并时保留先到者）
 - 内置 filesystem toolkit（read 工具，配置显式声明 toolkit 名才注册）
 - 接收来自 nexus 的 tool call 并执行
 - 不直接与 LLM 通信
@@ -56,9 +56,9 @@ graph TB
 
 ### 配置管理器
 配置按三分结构管理：
-- **AgentConfig（静态）**：从 KISSBOT_CONFIG 的 `agent` 段加载，启动后不变，含 `data_dir`、`mgmt_host`、`mgmt_port`、`ws_reconnect_interval_secs`（default_system_prompt / init_model 已移入 NexusRepo，init_model 与 default_model 语义重复已删）
-- **NexusRepo / StationRepo（可改、落盘）**：持久化到 `<data_dir>/nexus.json` 与 `<data_dir>/station.json`，修改经 COW 写回；NexusRepo 存 channels / providers / memory_structs / context 与默认值（default_model、default_system_prompt），StationRepo 存 toolkits / sub_stations（station.json，见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)）
-- **运行状态（不落盘）**：作为 Nexus 字段，标量用 `ArcSwap`、集合用 `DashMap`，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
+- **AgentConfig（静态）**：从公共配置的 `agent` 段加载，启动后不变，含 `data_dir`、`mgmt_host`、`mgmt_port`、`ws_reconnect_interval_secs`（default_system_prompt / init_model 由 NexusRepo 承载；模型默认值统一为 default_model）
+- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化；NexusRepo 存 channels / providers / memory_structs / context 与默认值（default_model、default_system_prompt），StationRepo 存 toolkits / sub_stations（见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)）
+- **运行状态（不落盘）**：作为 Nexus 字段，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
 
 ## 组合模式
 

@@ -441,7 +441,7 @@ async fn handle_thumbnail(
     }
 }
 
-/// GET /api/events — SSE 长连接（全局广播，不再按 group 注册）
+/// GET /api/events — SSE 长连接（全局广播，不按 group 注册）
 async fn handle_sse_events(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

@@ -41,16 +41,16 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 ### 6. 安全组件
 多种安全模块统一放在安全组件中，当前模块如下：
 - **认证模块**：为所有模块提供统一的认证能力。
-- **配置模块**：定义 `SecurityConfig`（api_key、admin_api_key），从公共配置中读取安全相关的配置项。
+- **配置模块**：定义安全配置（通用 API 密钥、管理端 API 密钥），从公共配置中读取安全相关的配置项。
 
 ### 7. 公共配置组件
-集中管理所有组件的配置信息。各组件不再各自定义配置文件和加载方式，改为从一份公共 JSON 配置文件中提取各自需要的部分。
+集中管理所有组件的配置信息。各组件从一份公共 JSON 配置文件中提取各自需要的部分。
 
-**公共配置组件**：加载 JSON 配置文件（通过 `KISSBOT_CONFIG` 环境变量指定路径，默认 `./config.json`），提供层级化的配置访问接口 `get_section(path)`。组件间通过点号路径解耦。
+**公共配置组件**：加载 JSON 配置文件（路径可由环境变量指定，未设置时使用默认路径），提供层级化的配置访问接口（按点号路径导航）。组件间通过点号路径解耦。
 
-**网络地址配置**：定义各组件访问其他服务的 URL（memory_store_url、memory_ego_url），由 `ApiConfig` 封装（详见 [system-design-api](system-design-api.md)），各组件统一从该配置中读取外部服务地址。
+**网络地址配置**：定义各组件访问其他服务的 URL（memory-store、memory-ego 地址），统一从该配置中读取外部服务地址（详见 [system-design-api](system-design-api.md)）。
 
-**安全配置**：所有 API key 统一归入 `security` 配置段，由 `kissbot-security` 的 `SecurityConfig` 封装。各组件通过 `SecurityConfig::get()` 获取认证所需的 key。
+**安全配置**：所有 API key 统一归入 `security` 配置段，由 kissbot-security 提供统一访问接口。各组件通过安全配置模块获取认证所需的 key。
 
 ### 8. 管理界面
 提供 Web 界面的管理工具集，包括：

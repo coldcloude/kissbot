@@ -71,7 +71,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 2. 配置管理器
 - 从配置文件加载所有配置
-- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode）、管理权限用户列表、memory 组件地址（station 连接信息在 station.json 的 sub_stations，见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)）
+- 管理 LLM API 配置、通道绑定列表（每项含 channel 身份与 agent_name、role_name、mode）、管理权限用户列表、memory 组件地址（station 连接信息见 [kissbot-agent-station 技术规格](../../spec/kissbot-agent-station.md)）
 - 支持运行时通过管理命令修改配置，修改后自动保存并通知监听器
 
 ### 3. LLM 客户端
@@ -85,8 +85,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 每会话持有 SessionContext（内存消息序列 + system 消息），并同步写入本地缓存（`<data_dir>/context/` 下按 session_key 编码的 JSONL，追加不截断）；重置/压缩前的缓存快照归档到 `<data_dir>/context-history/`（本轮只写不读）
 - 在会话创建/重置时按模式构建初始上下文：event 模式从缓存全量恢复（空则为仅 system），role 模式从记忆打包一条 user 消息
 - 运行时按会话增量追加用户消息、助手回复与工具调用/结果消息，每步同步写入缓存
-- 每个 channel 维护运行时 ChannelContext，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
-- channel 合批：合批状态分为生产侧与消费侧——生产侧（BatchProducer，会话持有）含数据发送端与触发发送端（channel 在绑定会话时取得同源 clone）、合批截止时间（deadline，ArcSwapOption 无锁）与退出通知；收到普通消息后推入数据队列（元素为 IncomingMessageEvent）并更新 deadline 与发送触发时间（Trigger::At，绝对时刻）；消费侧（BatchConsumer，数据/触发接收端与定时队列）由 trigger 任务独占，随会话创建 move 进任务、任务内直接访问（零锁）；trigger 任务 select! 并行等待触发到达 / 定时到期 / 会话销毁通知，到期后按 deadline 判断（非强制）或直接（强制）从数据队列一次性读出全部，打包为一条 user 消息（仅保留 name 与 content）进入 agentic loop；上下文重置末尾发送强制触发（Trigger::Forced），重置期间到达的消息即刻并入新上下文；触发器队列与定时队列随会话生命周期，会话销毁时通知任务退出（任务经会话上的升级槽升级会话与协调器引用）
+- 每个 channel 维护运行时上下文，记录「已发未收到回显的 outgoing msg_id 集合」（TTL 懒清理），用于识别自身发送的消息
+- channel 合批：同一会话连续到达的普通消息先进入合批队列，等待合批截止时间后一次性打包为一条 user 消息（仅保留 name 与 content）进入 agentic loop；支持强制触发（上下文重置时，重置期间到达的消息即刻并入新上下文）；合批状态随会话生命周期，会话销毁时通知退出
 - 会话上下文 token 占用超限（最近一次 usage.total_tokens 超过 effective.max_tokens_usage 的 80%）时，下次消息开头按模式触发重置（event 压缩、role 归档重建）并清零记录
 
 ### 5. 记忆读取器
@@ -118,13 +118,13 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 事件模式会话自动生成新事件标识，支持按事件标识重新进入指定事件
 
 ### 9. Station 运行态
-- 全局 Station 单例（每 agent 一个，`Station::get()`/`new()`）从 station.json 构建：本地 Toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station 集合（仅连接信息）
+- 全局 Station 单例（每 agent 一个）从配置构建：本地 Toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station 集合（仅连接信息）
 - 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem toolkit 名才注册
 - 工具名整树全局唯一（本地硬约束：本地 toolkit 间不得重名，构建时报错；跨进程冲突在 merge_sub_tools 合并时保留先到者（本地与先插入子优先），后到同名工具剔除并记 warn 日志）
 
 ### 10. Station 工具执行
 - 工具定义（name/description/parameters JSON Schema）存于 ToolkitConfig.tools（工具名 → 配置），由 nexus 按会话 context 配置的启用 toolkit 白名单聚合（`tools(filter)` 平铺递归）后随 LLM 请求发送
-- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：本地未命中查 tool_routes 路由缓存（工具名 → 直接子 station_id）调对应子（本轮骨架，返回未实现错误；不遍历全部子）
+- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：本地未命中查路由缓存（工具名 → 直接子 station_id）调对应子（本轮骨架，返回未实现错误；不遍历全部子）
 
 ### 11. 通信客户端
 - 作为客户端连接消息通道的服务端
@@ -135,8 +135,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 12. 工具调用分派器
 - 解析 LLM 返回中的 tool call（工具名 + 参数）
-- 工具定义按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随 LLM 请求发送
-- 工具调用经 `Station::call_tool` 按工具名执行（本地实现表 → tool_routes 路由缓存 → 对应子 HTTP），结果作为 tool 消息追加回上下文
+- 工具定义按会话 context 配置的启用 toolkit 白名单聚合（平铺递归），随 LLM 请求发送
+- 工具调用按工具名执行（本地实现表 → 路由缓存 → 对应子 HTTP），结果作为 tool 消息追加回上下文
 - 支持多轮嵌套：LLM 返回 tool_calls 时执行后继续调用，直至返回无 tool_calls 的回复（上限防死循环）
 
 ### 13. 管理 API 服务器
@@ -170,7 +170,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 追加到该会话的上下文，每步同步写入本地缓存
   → LLM 客户端调用 LLM API（传入该会话的完整上下文 + 会话 toolkit 白名单聚合的工具定义）
   → LLM 返回 tool_calls
-    → 逐个执行工具调用（全局 Station：本地 Toolkit 进程内执行 / tool_routes 路由缓存 → 对应子 HTTP 骨架），结果作为 tool 消息追加回上下文
+    → 逐个执行工具调用（全局 Station：本地 Toolkit 进程内执行 / 路由缓存 → 对应子 HTTP 骨架），结果作为 tool 消息追加回上下文
     → 再次调用 LLM，循环直至返回无 tool_calls 的回复（上限防死循环）
   → LLM 返回最终回复
     → 记忆写入器推送思考内容到写入队列
@@ -192,7 +192,7 @@ kissbot-agent 启动
   → 初始化记忆读取器
   → 初始化上下文构建器（含本地缓存与历史归档目录）
   → 初始化 LLM 客户端
-  → 构建全局 Station 单例（读 station.json：本地 Toolkit + 直接子 Station 连接信息）
+  → 构建全局 Station 单例（本地 Toolkit + 直接子 Station 连接信息）
   → 初始化通信模块（连接所有配置的通道，获取通道信息并发送绑定请求）
   → 对每个会话按模式构建初始上下文：event 从本地缓存全量恢复（空则为仅 system）；role 从 memory-store 读取最近消息打包为一条 user 消息
   → 记忆读取器从 memory-struct 读取顶层记忆索引（memory-struct 未实现时跳过）
@@ -247,9 +247,9 @@ kissbot-agent 启动
 
 ### 自身发送消息识别
 
-- agent 自己发出的消息（下行）经通道再次返回（回显）时，其 msg_id 与发送时 OutgoingMessageResponse 返回的 msg_id 一致
-- nexus 在发出 OutgoingMessage 拿到 response 后，把 response.msg_id 记入对应 channel 的 ChannelContext 未回显集合（TTL 懒清理，默认 60s）
-- 收到 IncomingMessage 时按 msg_id 查该集合：命中则移除并丢弃（发送时已写入记忆，无需重复处理）；未命中则视为普通上行消息写入记忆（is_self=0）
+- agent 自己发出的消息（下行）经通道再次返回（回显）时，其 msg_id 与发送时响应返回的 msg_id 一致
+- nexus 在发出消息拿到响应后，把返回的 msg_id 记入对应 channel 的未回显集合（TTL 懒清理，默认 60s）
+- 收到消息时按 msg_id 查该集合：命中则移除并丢弃（发送时已写入记忆，无需重复处理）；未命中则视为普通上行消息写入记忆（is_self=0）
 
 ### 自动上下文重置
 
@@ -276,10 +276,10 @@ kissbot-agent 启动
 ### 工具调用分派
 
 - LLM 返回 tool call 时解析工具名称和参数
-- 工具定义（name/description/parameters）按会话 context 配置的启用 toolkit 白名单聚合（`Station::tools(filter)` 平铺递归），随每次 LLM 请求发送
-- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树全局唯一）在进程内执行，未命中查 tool_routes 路由缓存（工具名 → 直接子 station_id）调对应子（骨架期返回未实现错误）；路由未命中返回错误结果
+- 工具定义（name/description/parameters）按会话 context 配置的启用 toolkit 白名单聚合（平铺递归），随每次 LLM 请求发送
+- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树全局唯一）在进程内执行，未命中查路由缓存（工具名 → 直接子 station_id）调对应子（骨架期返回未实现错误）；路由未命中返回错误结果
 - 工具结果作为 tool 消息（tool_call_id/name/content）追加回上下文，再次触发 LLM tool call 时支持多轮嵌套处理（上限防死循环）
-- 每个工具调用生成 UUID key，写 channel 占位记录（Content::ToolCall(key) / Content::ToolResult(key)），ToolCallRequest 与 ToolResultRequest 详情记录用同一 key 关联（think 同款机制），经 channel 时间线可见工具调用锚点
+- 每个工具调用生成 UUID key，写 channel 占位记录（工具调用/工具结果两种内容类型），相关详情记录用同一 key 关联，经 channel 时间线可见工具调用锚点
 
 ### LLM 调用重试
 

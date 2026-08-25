@@ -12,8 +12,8 @@ API 定义模块，定义各模块间通信的标准数据结构和统一的 API
 ## 内部模块
 
 ### 1. 网络地址配置模块（config）
-- 定义 `ApiConfig`，包含 `memory_store_url` 和 `memory_ego_url` 两个网络地址字段
-- 从公共配置的 `api` 段读取，提供 `ApiConfig::get()` 全局访问
+- 定义 API 网络地址配置：memory-store、memory-ego 的访问地址
+- 从公共配置的 `api` 段读取，提供全局访问
 - 各组件通过此模块统一获取其他服务的访问地址
 
 ### 2. kinds 模块

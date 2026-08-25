@@ -321,7 +321,7 @@ impl Station {
             };
         }
         // 远程路由：查缓存表（工具名 → 直接子 station_id），命中 → 该子 HTTP 调用
-        // 不再遍历全部子、不再远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
+        // 不遍历全部子、不远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
         let routed = self.tool_routes.get(name).map(|r| r.value().clone());
         if let Some(station_id) = routed {
             if let Some(sub) = self.sub_stations.get(&station_id).map(|s| s.value().clone()) {

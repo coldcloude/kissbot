@@ -68,7 +68,7 @@
 
 ### 3. 角色设定管理器
 - 管理角色设定文件的读写
-- 提供角色设定的创建、查询、更新、复制（role_name 创建后不可变，删除/重命名已移除）
+- 提供角色设定的创建、查询、更新、复制（role_name 创建后不可变，无删除/重命名）
 - 管理角色与个体的关系、角色间关系
 - 使用两级映射实现细粒度并发控制
 
@@ -77,13 +77,13 @@
 - 脏标记机制延迟更新搜索索引
 - 启动时自动加载所有 agent 和角色的数据到搜索索引
 - 支持按 agent 过滤的角色搜索
-- **Agent 搜索**：`name_completion`（agent_id 前缀补全）与 `name_descr_index`（[agent_id, description] 子串）保留；name_index（individual_name 全匹配）已删除
-- **Role 搜索**：`role_name_completion`（role_name 前缀）保留；`role_name_descr_index` 索引 `[role_name, full_name, description]`（full_name 为展示文本），按 role_name 搜索统一走该全文索引；role_name_index 已删除
+- **Agent 搜索**：`name_completion`（agent_id 前缀补全）与 `name_descr_index`（[agent_id, description] 子串）；无 individual_name 全匹配索引
+- **Role 搜索**：`role_name_completion`（role_name 前缀）与 `role_name_descr_index`（索引 `[role_name, full_name, description]`，full_name 为展示文本），按 role_name 搜索统一走该全文索引
 
 ### 5. API 服务器
-- Agent 元数据管理接口：创建（手工指定 agent_id）、查询、更新描述、复制（指定 new_agent_id）、按描述搜索、名称补全、批量获取（update-name / search-name 已删除）
+- Agent 元数据管理接口：创建（手工指定 agent_id）、查询、更新描述、复制（指定 new_agent_id）、按描述搜索、名称补全、批量获取
 - 个体识别信息管理接口：查询全部/单个个体、批量替换个体/标识/关系、重命名个体
-- 角色设定管理接口：列表、查询、创建、复制、更新描述/更新 full_name、搜索、名称补全（remove / rename 已删除）；角色间关系增删改查
+- 角色设定管理接口：列表、查询、创建、复制、更新描述/更新 full_name、搜索、名称补全；角色间关系增删改查
 - 代号校验：`agent_id`/`role_name` 写入入口强制 `^[A-Za-z0-9_]+$`（非空）
 
 ## Agent 自我认知数据模型

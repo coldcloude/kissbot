@@ -80,9 +80,8 @@ impl SessionContext {
     }
 
     /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
-    /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
-    /// 与当前一致 → 仅清空待定；不一致 → 归档并清空旧上下文（用原系统消息）→
-    /// 替换为新系统消息 → 从内存写回缓存（System + 消息行）
+    /// 与当前一致 → 仅清空待定；不一致 → 归档并清空当前上下文 →
+    /// 应用新系统消息 → 从内存写回缓存（System + 消息行）
     pub async fn apply_pending_system(&mut self) -> Result<()> {
         let Some(pending) = self.pending_system.take() else { return Ok(()); };
         if self.system_message.as_deref() == Some(pending.as_str()) {
@@ -292,7 +291,7 @@ impl Session {
             return;
         };
 
-        // 0. 发送前应用待定系统消息变更（对比当前；不一致 → 旧上下文（含原系统消息）归档历史 → 替换 → 重建缓存）
+        // 0. 发送前应用待定系统消息变更（对比当前；不一致 → 当前上下文（含现有系统消息）归档历史 → 应用新系统消息 → 重建缓存）
         let _ = self.context.lock().await.apply_pending_system().await;
 
         // 1. 检查上下文 token 占用超限（阈值来自会话模型的 effective.max_tokens_usage；延迟检查：
@@ -328,7 +327,7 @@ impl Session {
                         warn!("上下文压缩总结为空，保留原上下文");
                         return;
                     };
-                    // 3. 压缩完成后：归档当前上下文（含原系统消息）→ 清空缓存 → 重建压缩后上下文
+                    // 3. 压缩完成后：归档当前上下文（含现有系统消息）→ 清空缓存 → 重建压缩后上下文
                     // （归档与清空连在一起，中间不隔压缩；压缩前 apply_pending_system 已处理系统切换）
                     let new_messages = vec![
                         Message::User { content: Arc::new(cfg.compress_prompt.clone()) },
@@ -478,7 +477,7 @@ pub struct BatchProducer {
     pub trigger_tx: mpsc::UnboundedSender<Instant>,
     /// 编码基准：固定 Instant（所有 clone 共享）；u64 毫秒 = 相对此基准（参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
     anchor: Arc<Instant>,
-    /// 截止时间（u64 毫秒，相对 anchor；0 = 无待 flush（原 None）哨兵）——Arc<AtomicU64> 无锁共享
+    /// 截止时间（u64 毫秒，相对 anchor；0 = 无待 flush 哨兵）——Arc<AtomicU64> 无锁共享
     pub deadline: Arc<AtomicU64>,
 }
 
@@ -514,7 +513,7 @@ pub struct BatchConsumer {
     notify: Arc<Notify>,
     /// 编码基准（与 producer 共享同一 Arc<Instant>；try_flush 判定用，参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
     anchor: Arc<Instant>,
-    /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush（原 None）哨兵）
+    /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush 哨兵）
     deadline: Arc<AtomicU64>,
 }
 
@@ -522,7 +521,7 @@ pub struct BatchConsumer {
 /// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_events）→ 经 session 弱引用升级进 agentic loop
 /// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
 impl BatchConsumer {
-    /// 触发任务主循环（原 spawn_trigger 的 spawn 内部分，改 consumer 成员函数；get_or_create 经 tokio::spawn 启动）
+    /// 触发任务主循环（consumer 成员函数；get_or_create 经 tokio::spawn 启动）
     /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问；
     /// 退出靠 notify + trigger channel 关闭兜底）——不阻止 session drop
     async fn run(mut self) {
@@ -631,7 +630,7 @@ impl SessionManager {
     }
 
     /// 创建会话（get_or_create 的创建分支抽出）：依赖序组装（内联 new_producer/BatchConsumer::new）+
-    /// 新建会话初始化（上下文恢复/重建 + 系统消息，原 Coordinator::ensure_session 的 created 分支搬入）+
+    /// 新建会话初始化（上下文恢复/重建 + 系统消息）+
     /// spawn 触发任务（内联 spawn_trigger：tokio::spawn(consumer.run())）；返回新建会话
     /// （channel 均从 session.batch_producer 取 clone；任务持 consumer，consumer 持 session 弱引用与 notify，
     ///  anchor/deadline/notify 均为独立 Arc——producer 与 consumer 共享同一份）
@@ -680,7 +679,7 @@ impl SessionManager {
             anchor,
             deadline,
         };
-        // 5. 新建会话初始化（原 Coordinator::ensure_session 的 created 分支；spawn 前执行，任务启动时上下文已就绪）：
+        // 5. 新建会话初始化（spawn 前执行，任务启动时上下文已就绪）：
         //    Event 从缓存恢复（全量回读；文件不存在为空，不清理）；Role 查询记忆重建（归档+清空在 archive_... 内部）
         match session.mode.as_ref() {
             Mode::Event(_) => {

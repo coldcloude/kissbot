@@ -3,7 +3,7 @@
 ## 概述
 公共配置组件，集中管理所有组件的配置信息。作为库模块，各组件通过依赖引入并读取配置。采用单一 JSON 配置文件，按组件层级组织，只读加载。
 
-**配置来源**：环境变量 `KISSBOT_CONFIG` 指定 JSON 文件路径，未设置时默认读取 `./config.json`。
+**配置来源**：配置文件路径可由环境变量指定，未设置时使用默认路径。
 
 ## 核心功能
 
@@ -32,36 +32,36 @@
 ## 内部模块
 
 ### 1. 公共配置入口（kissbot-config）
-- 读取 JSON 文件，持有 `serde_json::Value`
-- 提供 `get_section::<T>(path: &str) -> T` 方法，按点号路径从 Value 中导航并反序列化
-- 使用 `OnceLock` 全局单例，仅加载一次
+- 读取 JSON 文件并持有解析后的配置值
+- 提供按点号路径导航到指定层级并反序列化的接口
+- 全局单例，仅加载一次
 
 ### 2. 网络地址配置（kissbot-api::config）
-- 定义 `ApiConfig`：memory_store_url、memory_ego_url
-- 封装 `get_section("api")`，提供静态 `get()` 方法
-- 各组件通过 `kissbot_api::ApiConfig::get()` 获取
+- 定义 API 网络地址配置：memory-store、memory-ego 的地址
+- 从公共配置的 `api` 段读取，提供全局静态访问
+- 各组件通过此模块获取
 
 ### 3. 安全配置（kissbot-security::config）
-- 定义 `SecurityConfig`：api_key、admin_api_key
-- 封装 `get_section("security")`，提供静态 `get()` 方法
-- 各组件通过 `kissbot_security::SecurityConfig::get()` 获取
-- 使用 `Arc<String>` 类型，方便跨异步任务传递
+- 定义安全配置：通用 API 密钥、管理端 API 密钥
+- 从公共配置的 `security` 段读取，提供全局静态访问
+- 各组件通过此模块获取
+- 字符串值，便于跨异步任务传递
 
 ## 功能流程
 
 ### Epic 1 配置加载流程
-服务进程启动 → 首次调用 `Config::get()` → 读取环境变量 `KISSBOT_CONFIG` 或使用默认路径 → 读取 JSON 文件 → 解析为 `serde_json::Value` → 存入 `OnceLock` 全局单例 → 各组件通过 `get_section` 按需提取。
+服务进程启动 → 首次访问全局配置 → 读取环境变量指定路径或默认路径 → 读取 JSON 文件 → 解析 → 存入全局单例 → 各组件按需提取配置段。
 
 ### Epic 2 API 地址配置流程
-服务进程启动 → 各组件调用 `ApiConfig::get()` → 触发 `Config::get()` 加载公共配置 → 从 JSON 的 `api` 段提取 `memory_store_url` 和 `memory_ego_url` → 存入 `OnceLock` → 组件通过 `api_config.memory_store_url` 获取。
+服务进程启动 → 各组件访问 API 网络地址配置 → 触发公共配置加载 → 从 JSON 的 `api` 段提取 memory-store 与 memory-ego 地址 → 存入全局单例 → 组件读取使用。
 
 ### Epic 3 安全配置流程
-服务进程启动 → 各组件调用 `SecurityConfig::get()` → 触发 `Config::get()` 加载公共配置 → 从 JSON 的 `security` 段提取 `api_key` 和 `admin_api_key` → 存入 `OnceLock` → 认证中间件和服务通过 `security_config.api_key` 获取验证密钥。
+服务进程启动 → 各组件访问安全配置 → 触发公共配置加载 → 从 JSON 的 `security` 段提取通用与管理端密钥 → 存入全局单例 → 认证中间件和服务读取使用。
 
 ## 关键设计
 
 ### 配置来源与只读加载
-- 配置来源：环境变量 `KISSBOT_CONFIG` 指定 JSON 文件路径，未设置时默认读取 `./config.json`
+- 配置来源：配置文件路径可由环境变量指定，未设置时使用默认路径
 - 配置按组件层级组织，只读加载，全局单例仅加载一次
 
 ### 启动阶段快速失败

@@ -16,10 +16,7 @@ Keep It Simple Stupid BOT - kissbot
   - **design** 设计文档
     - **system-design.md** 系统设计文档（组件、流程、通信）
     - **components-design** 组件设计文档（每个组件一个文件）
-  - **spec** 技术细节约定，每类细节单独一个文件
-  - **plan** 任务计划
-    - **system-plan.md** 组件和流程的实现顺序规划
-    - **components-plan** 组件内功能实现顺序（每个组件一个文件）
+  - **spec** 技术细节约定，每类细节单独一个文件。技术细节不是代码细节——spec 可包含 API 路径、JSON 结构等约定，与 design 文档"禁止包含代码细节"的规范不冲突
   - **roadmap** 计划中要添加或修改的功能。手工修改，不要编辑这个文件
 - **kissbot-\*** 每个代表kissbot项目一个组件，按照docs下的组件设计和规划文档实现组件的功能
 - **kai-rs** 本地Rust基础库

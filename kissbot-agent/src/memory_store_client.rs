@@ -205,7 +205,7 @@ impl MemoryStoreClient {
     /// role 模式记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
     /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
     /// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序返回
-    /// （原 MemoryReader.read_recent_for_context 迁入；HTTP 经共享 config.send_store_query 发）
+    /// （HTTP 经共享 config.send_store_query 发送）
     /// 参数：memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
     pub async fn read_recent_for_context(
         &self,
@@ -278,7 +278,7 @@ type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
 fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MessageContent>) {
     for (_, records) in groups {
         for (_, rec) in records {
-            let time = rec.time.as_str().to_string();  // 键用（MessageContent 值不再保留 time）
+            let time = rec.time.as_str().to_string();  // 键用（MessageContent 值不保留 time）
             let sn = rec.sn;
             let key = (time, sn);
             // 同 (time, sn) 已存在（两查询并集在 ln 处重叠）→ 提前跳过，免去 user_name clone 与文本提取
@@ -662,7 +662,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_keeps_non_text_as_empty_content() {
-        // 非文本记录不再在解析阶段跳过：以空 content Vec 保留在结果中（pack 时跳过）；Multi 取其中 Text 子项拼接
+        // 非文本记录在解析阶段不跳过：以空 content Vec 保留在结果中（pack 时跳过）；Multi 取其中 Text 子项拼接
         let t = time_ago(60);
         // 非 Text 变体（ToolCall 等）content 为空 Vec；Multi 取其中 Text 子项拼接
         // 注意：旧测试数据用的 "Image" 不是真实 Content 变体，typed 反序列化会失败
@@ -719,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_recent_map_len_counts_non_text_records() {
-        // 语义锁定：map.len() 含非文本记录（解析不再跳过）→ 即取到的数量。
+        // 语义锁定：map.len() 含非文本记录（解析不跳过）→ 即取到的数量。
         // 12 条记录 m0..m11（时间 now-1200+i*60），其中 m5 为非文本（ToolCall，content 为空 Vec）；
         // count=10 → Query1 解析后 map=10（= count，不早退）→ Query2 补 m0,m1 → 12 条（m5 以空 content 保留）
         let records: Vec<serde_json::Value> = (0..12)

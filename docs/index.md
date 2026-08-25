@@ -43,19 +43,4 @@ docs/
 │   ├── kissbot-agent-modules.md     # Agent 组件模块调用关系
 │   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │   └── kissbot-agent-station.md     # Agent Station 技术约定（嵌套结构/递归平铺/子 Station HTTP 骨架）
-│
-└── plan/                       # 任务计划
-    ├── system-plan.md       # 组件和流程的实现顺序规划
-    └── components-plan/    # 组件内功能实现顺序（每个组件一个文件）
-        ├── kissbot-memory.md           # 记忆基础模块
-        ├── kissbot-memory-store.md     # 记忆存储模块
-        ├── kissbot-memory-ego.md       # 自我认知模块
-        ├── kissbot-api.md              # API 定义模块
-        ├── kissbot-channel.md          # 消息通道框架
-        ├── kissbot-agent-nexus.md      # Agent Nexus 模块实现计划
-        ├── kissbot-agent-station.md    # Agent Station 模块实现计划
-        ├── kissbot-memory-struct.md    # 记忆结构框架
-        ├── kissbot-channel-web.md      # Web 通道
-        ├── kissbot-agent-config.md     # 智能体配置 UI
-        └── kissbot-memory-manage.md    # 记忆管理 UI
 ```
