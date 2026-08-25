@@ -32,6 +32,9 @@ pub struct Channel {
     /// 本 channel 的 ChannelClient（connect_channel 时绑定；消息/回复路径从本字段取 client，
     /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
     client: ArcSwapOption<ChannelClient>,
+    /// 断线通知（connect_channel 时绑定；closed() 回调经本字段 notify_one 通知重连循环，
+    /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
+    disconnect_notify: ArcSwapOption<tokio::sync::Notify>,
 }
 
 impl Channel {
@@ -40,6 +43,7 @@ impl Channel {
             pending_outgoing: DashMap::new(),
             mode: ArcSwap::from_pointee(Mode::Role),
             client: ArcSwapOption::new(None),
+            disconnect_notify: ArcSwapOption::new(None),
         }
     }
 
@@ -93,15 +97,12 @@ impl Channel {
 /// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 pub struct ChannelManager {
     channels: DashMap<String, Arc<Channel>>,
-    /// 断线通知：channel_id → Notify，closed() 回调通知重连循环
-    disconnect_notify: DashMap<String, Arc<tokio::sync::Notify>>,
 }
 
 impl ChannelManager {
     pub fn new() -> Self {
         Self {
             channels: DashMap::new(),
-            disconnect_notify: DashMap::new(),
         }
     }
 
@@ -159,9 +160,9 @@ impl ChannelManager {
 
         let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
 
-        // 断线通知
+        // 断线通知：Notify 归入该 channel（懒建后 bind；closed() 回调经 Channel 取；ArcSwapOption 内联）
         let notify = Arc::new(tokio::sync::Notify::new());
-        self.disconnect_notify.insert(channel_id.clone(), notify.clone());
+        self.get_or_create(&channel_id).disconnect_notify.store(Some(notify.clone()));
         // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client；bind_client 内联）
         self.get_or_create(&channel_id).client.store(Some(client.clone()));
 
@@ -248,9 +249,11 @@ impl Terminal for ChannelManager {
 
     async fn closed(&self, id: &str) {
         info!("channel 连接关闭: {}，准备重连", id);
-        // 通知重连循环
-        if let Some(notify) = self.disconnect_notify.get(id) {
-            notify.notify_one();
+        // 通知重连循环（disconnect_notify 内联：经 channels.get 取 Channel 的 ArcSwapOption）
+        if let Some(ch) = self.channels.get(id) {
+            if let Some(notify) = ch.disconnect_notify.load_full() {
+                notify.notify_one();
+            }
         }
     }
 }
