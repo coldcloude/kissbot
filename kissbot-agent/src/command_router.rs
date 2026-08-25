@@ -14,17 +14,13 @@ impl CommandRouter {
     /// agent/role/mode/reenter 走 change_channel_key 队列；model 改会话模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
     pub async fn execute(content: &str, channel_id: &str) -> Result<String> {
-        let trimmed = content.trim();
-        if !trimmed.starts_with('/') {
-            return Err(Error::InvalidCommand("命令必须以 / 开头".to_string()));
-        }
-        let parts: Vec<&str> = trimmed[1..].split_whitespace().collect();
+        let parts: Vec<&str> = content.trim().split_whitespace().collect();
         if parts.is_empty() {
             return Err(Error::InvalidCommand("空命令".to_string()));
         }
         let nexus = Nexus::get();
         match parts[0] {
-            "bind" => {
+            "/bind" => {
                 if parts.len() < 4 || parts[1] != "messenger" {
                     return Err(Error::InvalidCommand(
                         "格式: /bind messenger <messenger_id> <user_id>".to_string()
@@ -34,7 +30,7 @@ impl CommandRouter {
                 // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
                 nexus.channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
-            "unbind" => {
+            "/unbind" => {
                 if parts.len() < 4 || parts[1] != "messenger" {
                     return Err(Error::InvalidCommand(
                         "格式: /unbind messenger <messenger_id> <user_id>".to_string()
@@ -44,7 +40,7 @@ impl CommandRouter {
                 // 统一走串行队列应用（防写-写竞态；移除 bind_users，outgoing 引用该身份则一并清空；回复文本队列内生成）
                 nexus.channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
-            "admin" => {
+            "/admin" => {
                 if parts.len() < 3 {
                     return Err(Error::InvalidCommand(
                         "格式: /admin <messenger_id> <user_id>".to_string()
@@ -59,7 +55,7 @@ impl CommandRouter {
                 }).await?;
                 Ok(reply)
             }
-            "unadmin" => {
+            "/unadmin" => {
                 if parts.len() < 3 {
                     return Err(Error::InvalidCommand(
                         "格式: /unadmin <messenger_id> <user_id>".to_string()
@@ -71,7 +67,7 @@ impl CommandRouter {
                 ConfigManager::get().remove_admin(channel_id, &messenger_id, &user_id).await?;
                 Ok(reply)
             }
-            "agent" => {
+            "/agent" => {
                 // /agent [agent_id] [role]：缺省 agent_id 用保留 agent（"0"），缺省 role 用保留 role（空）
                 let agent_id = parts.get(1).map(|s| s.to_string());
                 let role = parts.get(2).map(|s| s.to_string());
@@ -86,7 +82,7 @@ impl CommandRouter {
                 nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
-            "role" => {
+            "/role" => {
                 // /role [name]：缺省用保留 role（空）
                 let role = parts.get(1).map(|s| s.to_string());
                 let new_role = Arc::new(role.unwrap_or_else(|| RESERVED_ROLE_NAME.to_string()));
@@ -96,7 +92,7 @@ impl CommandRouter {
                 nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
-            "mode" => {
+            "/mode" => {
                 if parts.len() < 2 {
                     return Err(Error::InvalidCommand(
                         "格式: /mode event [event-id] 或 /mode role".to_string()
@@ -117,7 +113,7 @@ impl CommandRouter {
                     _ => Err(Error::InvalidCommand(format!("未知模式: {}", parts[1]))),
                 }
             }
-            "reenter" => {
+            "/reenter" => {
                 if parts.len() < 2 {
                     return Err(Error::InvalidCommand(
                         "格式: /reenter <event-id>".to_string()
@@ -127,7 +123,7 @@ impl CommandRouter {
                 nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Event(parts[1].to_string())))).await?;
                 Ok(format!("✅ 将重进事件: {}", parts[1]))
             }
-            "bind-outgoing" => {
+            "/bind-outgoing" => {
                 // /bind-outgoing <messenger_id> <user_id> <group_id>：设 (agent, role) 的 out_channel
                 // （纯配置写 set_out_channel；先校验身份已绑定来源 channel）
                 if parts.len() < 4 {
@@ -158,7 +154,7 @@ impl CommandRouter {
                     }))).await?;
                 Ok(reply)
             }
-            "unbind-outgoing" => {
+            "/unbind-outgoing" => {
                 // /unbind-outgoing：清空 (agent, role) 的 out_channel（回到只存不回复模式）
                 if parts.len() > 1 {
                     return Err(Error::InvalidCommand(
@@ -172,7 +168,7 @@ impl CommandRouter {
                 cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(), None).await?;
                 Ok("✅ 已取消发送通道（只存不回复）".to_string())
             }
-            "model" => {
+            "/model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
                 if parts.len() < 3 || parts.len() > 4 {
                     return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string()));

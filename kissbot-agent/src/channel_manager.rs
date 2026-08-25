@@ -168,12 +168,9 @@ impl ChannelManager {
         // ChannelClient 归入该 channel（bind_client 内联）
         channel.client.store(Some(client.clone()));
 
-        let client_clone = client.clone();
-        let api_key = api_key.clone();
-
         tokio::spawn(async move {
             loop {
-                match client_clone.clone().connect(&ws_url, &api_key).await {
+                match client.clone().connect(&ws_url, &api_key).await {
                     Ok(()) => {
                         info!("已连接 channel: {}", channel_id);
                         // 绑定身份实时读取（/bind 回写后重连即生效；bind_users 逐个绑定；BindRequest.messenger_id 用绑定身份的 messenger 标识，如 "web"）
@@ -181,7 +178,7 @@ impl ChannelManager {
                             .map(|c| c.bind_users.clone());
                         if let Some(bus) = bind_users {
                             for bu in bus.iter() {
-                                let _ = client_clone.bind(BindRequest {
+                                let _ = client.bind(BindRequest {
                                     messenger_id: Arc::new(bu.messenger_id.clone()),
                                     user_id: Arc::new(bu.user_id.clone()),
                                 }).await;
