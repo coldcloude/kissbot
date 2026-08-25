@@ -160,11 +160,13 @@ impl ChannelManager {
 
         let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
 
-        // 断线通知：Notify 归入该 channel（懒建后 bind；closed() 回调经 Channel 取；ArcSwapOption 内联）
+        // Channel 懒建一次保存（client/disconnect_notify 归入该 channel；消息/回复路径从 manager 取 client）
+        let channel = self.get_or_create(&channel_id);
+        // 断线通知：Notify 归入该 channel（closed() 回调经 Channel 取；ArcSwapOption 内联）
         let notify = Arc::new(tokio::sync::Notify::new());
-        self.get_or_create(&channel_id).disconnect_notify.store(Some(notify.clone()));
-        // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client；bind_client 内联）
-        self.get_or_create(&channel_id).client.store(Some(client.clone()));
+        channel.disconnect_notify.store(Some(notify.clone()));
+        // ChannelClient 归入该 channel（bind_client 内联）
+        channel.client.store(Some(client.clone()));
 
         let client_clone = client.clone();
         let api_key = api_key.clone();
