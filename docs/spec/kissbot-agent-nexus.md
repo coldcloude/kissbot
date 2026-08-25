@@ -76,7 +76,7 @@
 | role | `/role` | 取消角色（无角色） |
 | role | `/role <role_name>` | 切换角色 |
 | mode | `/mode event` | 生成新 event-id 进入事件模式 |
-| mode | `/mode event <event-id>` | 重进指定事件会话（原 /reenter 合并） |
+| mode | `/mode event <event-id>` | 重进指定事件会话 |
 | mode | `/mode role` | 回到角色模式 |
 
 ### 命令处理状态码
