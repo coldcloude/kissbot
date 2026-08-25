@@ -20,9 +20,7 @@ use crate::nexus::Nexus;
 use crate::types::{Mode, Result};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
-const CHANNEL_CONTEXT_TTL_SECS: u64 = 60;
-/// 上述 TTL 的 Duration 形式（evict 入参）
-const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS);
+const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(60);
 
 /// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合；
 /// client 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
@@ -43,11 +41,6 @@ impl Channel {
             mode: ArcSwap::from_pointee(Mode::Role),
             client: ArcSwapOption::new(None),
         }
-    }
-
-    /// 绑定 channel client（connect_channel 时绑定；每次重连循环启动更新）
-    fn bind_client(&self, client: Arc<ChannelClient>) {
-        self.client.store(Some(client));
     }
 
     /// 发送消息（通道适配层：取 client + 发送 + 记录 pending msg_id 供回显判定；client/add_pending 内联）
@@ -120,11 +113,6 @@ impl ChannelManager {
             .clone()
     }
 
-    /// 绑定 channel client（connect_channel 时绑定；每次重连循环启动更新）
-    pub fn bind_client(&self, channel_id: &str, client: Arc<ChannelClient>) {
-        self.get_or_create(channel_id).bind_client(client);
-    }
-
     /// 连接单个 channel（Nexus 调度：启动遍历 enabled 逐个调用；将来运行时新建 channel 也由 Nexus 经此调度）
     /// 设置 channel 运行态模式（/mode 切换，不回写，重启回 Role）
     pub fn set_mode(&self, channel_id: &str, mode: Arc<Mode>) {
@@ -174,8 +162,8 @@ impl ChannelManager {
         // 断线通知
         let notify = Arc::new(tokio::sync::Notify::new());
         self.disconnect_notify.insert(channel_id.clone(), notify.clone());
-        // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client）
-        self.bind_client(&channel_id, client.clone());
+        // ChannelClient 归入该 channel（懒建后 bind；消息/回复路径从 manager 取 client；bind_client 内联）
+        self.get_or_create(&channel_id).client.store(Some(client.clone()));
 
         let client_clone = client.clone();
         let api_key = api_key.clone();
@@ -293,7 +281,7 @@ mod tests {
         assert!(!ctx.consume_pending("expired"), "TTL=0 插入即过期，应被淘汰");
         // 正常 TTL：未过期条目保留
         ctx.pending_outgoing.insert("fresh".to_string(), Instant::now());
-        ctx.evict(Duration::from_secs(CHANNEL_CONTEXT_TTL_SECS));
+        ctx.evict(CHANNEL_CONTEXT_TTL);
         assert!(ctx.consume_pending("fresh"));
     }
 
