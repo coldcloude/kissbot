@@ -42,6 +42,9 @@ pub enum Error {
     #[error("Station connection error: {0}")]
     StationConnectionError(String),
 
+    #[error("Station cycle detected: {0}")]
+    StationCycle(String),
+
     #[error("Invalid command: {0}")]
     InvalidCommand(String),
 
@@ -109,6 +112,35 @@ pub fn role_mode(role_name: &str, mode: &Mode) -> String {
         Mode::Event(event_id) => format!("{}-{}", role_name, event_id),
         Mode::Role => role_name.to_string(),
     }
+}
+
+// ========== Station HTTP 协议 DTO ==========
+
+/// 子 Station 工具元数据查询请求（filter：toolkit 白名单；ancestors：根到当前父节点的 station_id 链）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationListToolsRequest {
+    #[serde(default)]
+    pub filter: Option<Vec<String>>,
+    #[serde(default)]
+    pub ancestors: Vec<String>,
+}
+
+/// 子 Station MCP 元数据查询请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationListMcpsRequest {
+    #[serde(default)]
+    pub filter: Option<Vec<String>>,
+    #[serde(default)]
+    pub ancestors: Vec<String>,
+}
+
+/// 子 Station 工具调用请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationCallToolRequest {
+    pub tool_name: String,
+    pub parameters: serde_json::Value,
+    #[serde(default)]
+    pub ancestors: Vec<String>,
 }
 
 // ========== 管理命令参数 ==========

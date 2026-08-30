@@ -86,7 +86,7 @@ Agent 组件内部包含两大模块：
 **Station 模块**：负责工具执行
 - 全局 Station 单例：本地 toolkit 集合 + 直接子 Station 集合（工具名整树全局唯一）
 - Toolkit：工具实现表（跨 toolkit 全局唯一）+ MCP 占位
-- 子 Station：仅连接信息 + StationClient HTTP 骨架（本轮未实现）
+- 子 Station：仅连接信息 + StationClient HTTP 客户端；station 自身也作为 HTTP 服务端被其他 station 调用
 - 内置注册表：filesystem → read 工具
 - 工具执行器：接收并执行 tool call（本地实现表 → tool_routes 路由缓存 → 对应子 HTTP）
 Nexus 通过内部调用与全局 Station 单例通信（tools_for_session / execute_tool_call），子 Station 通过 HTTP 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。

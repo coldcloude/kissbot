@@ -549,7 +549,7 @@ impl Nexus {
         if cfg.toolkits.is_empty() {
             return Vec::new();
         }
-        match Station::get().tools(Some(&cfg.toolkits)).await {
+        match Station::get().tools(Some(&cfg.toolkits), &[]).await {
             Ok(tools) => tools,
             Err(e) => {
                 warn!("工具查询失败: {}", e);
@@ -560,7 +560,7 @@ impl Nexus {
 
     /// 执行单个 tool call：全局 Station 本地实现表 → 直接子递归；找不到/调用失败返回错误 JSON
     pub async fn execute_tool_call(&self, call: Arc<ToolCall>) -> serde_json::Value {
-        match Station::get().call_tool(call.name.as_str(), (*call.arguments).clone()).await {
+        match Station::get().call_tool(call.name.as_str(), (*call.arguments).clone(), &[]).await {
             Ok(v) => v,
             Err(e) => serde_json::json!({ "error": e.to_string() }),
         }

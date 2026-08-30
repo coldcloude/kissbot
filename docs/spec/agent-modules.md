@@ -18,8 +18,9 @@
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
 | model_client | ModelClient | LLM 调用（多轮重试、工具调用）与模型列表校验 | 被 nexus 调用；依赖 config（provider/model） |
 | provider | Provider / OpenAiProvider / AnthropicProvider | 模型提供方（provider type → body 构造）解析 | 被 model_client 调用 |
-| station | Station / Toolkit / SubStation / Tool / BuiltinToolkit | 全局 Station 单例：本地 toolkit 集合（工具实现表 + MCP 占位 + 内置注册表）+ 直接子 Station（仅连接信息，HTTP 递归）；tools(filter) 平铺查询 / call_tool | 被 nexus 调用 |
-| station_client | StationClient | 子 Station HTTP 客户端骨架（list_tools / list_mcps / call_tool，未实现） | 被 station（子 Station 递归）调用 |
+| station | Station / Toolkit / SubStation / Tool / BuiltinToolkit | 全局 Station 单例：本地 toolkit 集合（工具实现表 + MCP 占位 + 内置注册表）+ 直接子 Station（仅连接信息，HTTP 递归）；tools(filter, ancestors) 平铺查询 / call_tool | 被 nexus 调用 |
+| station_client | StationClient | 子 Station HTTP 客户端（list_tools / list_mcps / call_tool） | 被 station（子 Station 递归）调用 |
+| station_http | StationHttpServer | station 对外 HTTP 服务（/station/tools、/station/mcps、/station/call-tool），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus 调用 |
 | http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
 | types | Mode / Message / SessionKey / ToolCall / ChannelCommand / ModelResponse … | 共享数据类型 | 被几乎所有模块引用 |
@@ -51,11 +52,13 @@ graph TB
         ST["station<br/>Station / Toolkit / SubStation / Tool"]
         EGO["ego_md"]
         HS["http_server<br/>HttpServer"]
+        SHS["station_http<br/>StationHttpServer"]
     end
 
     MAIN --> CFG
     MAIN --> CO
     MAIN --> HS
+    MAIN --> SHS
     HS --> CFG
     CO --> CFG
     CO --> CHM
@@ -222,10 +225,11 @@ sequenceDiagram
 | agent → memory-ego | kissbot-memory-ego | HTTP | MemoryEgoClient 查询（agent / individual / role）；system_prompt_for_agent / verify_agent_exists 经它发请求 |
 | agent → LLM | 模型提供方 API | HTTP | ModelClient 调用（支持重试、工具调用、reasoning 回传） |
 | agent ← 管理界面 | HttpServer | HTTP | 当前仅 config CRUD（操作 ConfigManager）；管理命令走 channel 消息（/ 开头） |
+| agent ← station（sub） | StationHttpServer | HTTP | 供其他 station 作为 sub 调用（/station/tools、/station/mcps、/station/call-tool），认证 security.api_key |
 
 ## 八、未接线 / 预留
 
-- **station_client（子 Station HTTP 协议）**：子 Station 只能 HTTP 通信，StationClient 为骨架实现（list_tools / list_mcps / call_tool）：list_tools / list_mcps 返回空集合（非报错无 warn 噪声）、call_tool 返回未实现；`Station::call_tool` 经 tool_routes 路由缓存路由到对应子（不遍历全部子），Err 分支保留给 HTTP 实现后的网络错误（记日志跳过，不阻塞整体）；HTTP 协议实现在 [kissbot-agent-station 技术规格](kissbot-agent-station.md) 中定义。
+- **station_client（子 Station HTTP 协议）**：已实现真实 HTTP 客户端（list_tools / list_mcps / call_tool），子 Station 通过 HTTP 递归；`Station::call_tool` 经 tool_routes 路由缓存路由到对应子（不遍历全部子）。
 - **MCP 真实实现**：McpConfig 仅占位结构，`Station::mcps` 无生产消费方。
 - **Terminal（ChannelManager）的 join_group / leave_group / user_removed / download_chunk**：回调为 no-op / 未使用，业务逻辑预留。
 - **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。

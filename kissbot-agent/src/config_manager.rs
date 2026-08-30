@@ -272,16 +272,28 @@ pub struct MemoryStructConfig {
 /// station 可改配置，持久化到 <data_dir>/station.json
 /// 全局 Station 每 agent 一个：本地 toolkit 集合 + 直接子 Station 集合
 /// （子只能 HTTP 通信，父只存连接信息；toolkit 名全局唯一命名空间，含子 Station 不能重名）
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationRepo {
+    /// 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环）
+    pub station_id: Arc<String>,
     /// 本地 toolkit 集合（key = toolkit 名）
-    /// serde(default)：旧 station.json 空对象 {} 反序列化为空 map（兼容旧配置）
+    /// serde(default)：旧 station.json 缺省 toolkits 时反序列化为空 map
     #[serde(default)]
     pub toolkits: Arc<ArcSwapHashMap<String, ToolkitConfig>>,
     /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
-    /// serde(default)：旧 station.json 空对象 {} 反序列化为空 map（兼容旧配置）
+    /// serde(default)：旧 station.json 缺省 sub_stations 时反序列化为空 map
     #[serde(default)]
     pub sub_stations: Arc<ArcSwapHashMap<String, SubStationConfig>>,
+}
+
+impl Default for StationRepo {
+    fn default() -> Self {
+        Self {
+            station_id: Arc::new(String::new()),
+            toolkits: Arc::new(ArcSwapHashMap::new()),
+            sub_stations: Arc::new(ArcSwapHashMap::new()),
+        }
+    }
 }
 
 /// Toolkit 配置（StationRepo.toolkits 的 value；key = toolkit 名）
@@ -323,12 +335,25 @@ pub struct ToolConfig {
     pub parameters: Arc<serde_json::Value>,
 }
 
+fn default_station_host() -> Arc<String> {
+    Arc::new("127.0.0.1".into())
+}
+
+fn default_station_port() -> u16 {
+    9100
+}
+
 /// 静态配置：来自 KISSBOT_CONFIG 的 agent 段，启动后不变
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub data_dir: Arc<String>,
     pub mgmt_host: Arc<String>,
     pub mgmt_port: u16,
+    /// station 对外 HTTP 服务监听地址（独立于管理 API；被其他 station 作为 sub 调用时使用）
+    #[serde(default = "default_station_host")]
+    pub station_host: Arc<String>,
+    #[serde(default = "default_station_port")]
+    pub station_port: u16,
     pub ws_reconnect_interval_secs: u64,
     // 注：default_system_prompt 由 NexusRepo（nexus.json）承载，config.json 不承载
 }
@@ -460,6 +485,14 @@ impl ConfigManager {
 
     pub fn mgmt_port(&self) -> u16 {
         self.agent_config.mgmt_port
+    }
+
+    pub fn station_host(&self) -> &str {
+        self.agent_config.station_host.as_str()
+    }
+
+    pub fn station_port(&self) -> u16 {
+        self.agent_config.station_port
     }
 
     pub fn data_dir(&self) -> &str {
@@ -671,6 +704,8 @@ mod tests {
             data_dir: Arc::new(data_dir.into()),
             mgmt_host: Arc::new("127.0.0.1".into()),
             mgmt_port: 9090,
+            station_host: Arc::new("127.0.0.1".into()),
+            station_port: 9100,
             ws_reconnect_interval_secs: 5,
         }
     }
@@ -1229,8 +1264,9 @@ mod tests {
 
     #[test]
     fn station_repo_new_shape_serde_roundtrip() {
-        // StationRepo 新形状：toolkits + sub_stations；McpConfig 占位序列化
+        // StationRepo 新形状：station_id + toolkits + sub_stations；McpConfig 占位序列化
         let mut repo = StationRepo::default();
+        repo.station_id = Arc::new("station-self".into());
         {
             let map = Arc::make_mut(&mut repo.toolkits);
             map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(ToolkitConfig {
@@ -1254,17 +1290,17 @@ mod tests {
             })));
         }
         let json = serde_json::to_string(&repo).unwrap();
-        assert!(json.contains("\"toolkits\"") && json.contains("\"sub_stations\""), "新形状字段");
+        assert!(json.contains("\"station_id\"") && json.contains("\"toolkits\"") && json.contains("\"sub_stations\""), "新形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.station_id.as_str(), "station-self");
         assert!(back.toolkits.contains_key("filesystem"));
         let tcfg = back.toolkits.get("filesystem").unwrap().load_full();
         assert_eq!(tcfg.mcps.get("mcp1").unwrap().load_full().name.as_str(), "mcp1");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
 
-        // 兼容旧配置：空对象 {} 反序列化为空 map（station.json 缺省形状）
-        let empty: StationRepo = serde_json::from_str("{}").unwrap();
-        assert!(empty.toolkits.is_empty() && empty.sub_stations.is_empty());
+        // station_id 为必填：空对象 {} 应解析失败
+        assert!(serde_json::from_str::<StationRepo>("{}").is_err(), "station_id 必填");
 
         // ToolConfig 序列化（原 station_config_tools_roundtrip 保留部分）
         let tc = ToolConfig {

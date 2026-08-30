@@ -34,6 +34,8 @@
     "data_dir": "agent-data",
     "mgmt_host": "127.0.0.1",
     "mgmt_port": 9090,
+    "station_host": "127.0.0.1",
+    "station_port": 9100,
     "ws_reconnect_interval_secs": 5
   }
 }

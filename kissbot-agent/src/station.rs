@@ -147,6 +147,8 @@ pub struct SubStation {
 static SINGLETON: OnceLock<Station> = OnceLock::new();
 
 pub struct Station {
+    /// 本站点 station_id（来自 station.json；祖先链防环用）
+    station_id: String,
     toolkits: DashMap<String, Arc<Toolkit>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
@@ -164,7 +166,8 @@ impl Station {
     /// 从 ConfigManager 读 station.json 构建全局 Station 并注册单例
     pub async fn new() -> Result<()> {
         let repo = ConfigManager::get().station_repo_snapshot().await;
-        let station = Self::from_repo(&repo)?;
+        let api_key = kissbot_security::SecurityConfig::get().api_key.to_string();
+        let station = Self::from_repo(&repo, &api_key)?;
         let _ = SINGLETON.set(station);
         Ok(())
     }
@@ -172,7 +175,7 @@ impl Station {
     /// 按配置构建 Station（纯构造，不注册单例；Task 4 起为生产入口 new() 的构建步骤，单测直接消费）：
     /// 内置注册表填充声明 toolkit 的实现；配置声明的 tools/mcps 补充元数据；
     /// 工具名整树全局唯一（本地硬约束，冲突启动失败）
-    pub fn from_repo(repo: &StationRepo) -> Result<Station> {
+    pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
         let registry = builtin_registry();
         let toolkits = DashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -210,11 +213,16 @@ impl Station {
             let scfg = scfg.load_full();
             let sub = SubStation {
                 config: Arc::new((*scfg).clone()),
-                client: StationClient::new(scfg.timeout_secs),
+                client: StationClient::new(scfg.base_url.as_str(), scfg.timeout_secs, api_key),
             };
             sub_stations.insert(id.clone(), Arc::new(sub));
         }
-        Ok(Station { toolkits, sub_stations, tool_routes: DashMap::new() })
+        Ok(Station {
+            station_id: repo.station_id.to_string(),
+            toolkits,
+            sub_stations,
+            tool_routes: DashMap::new(),
+        })
     }
 
     /// 工具名唯一性校验：本地 toolkit 间不得重名（工具名整树全局唯一，本地先硬约束）
@@ -246,8 +254,11 @@ impl Station {
     }
 
     /// 工具元数据平铺查询：本地 toolkit 白名单过滤 + 直接子实时拉取（更新路由缓存）
-    /// filter = None 返回全部；Some(空集) 返回空
-    pub async fn tools(&self, filter: Option<&HashSet<String>>) -> Result<Vec<ToolConfig>> {
+    /// filter = None 返回全部；Some(空集) 返回空；ancestors 为根到当前父节点的 station_id 链
+    pub async fn tools(&self, filter: Option<&HashSet<String>>, ancestors: &[String]) -> Result<Vec<ToolConfig>> {
+        if ancestors.contains(&self.station_id) {
+            return Err(Error::StationCycle(format!("station_id={}", self.station_id)));
+        }
         let mut out = Vec::new();
         // 本地工具名集合（冲突校验用：本地优先，子工具与本地重名剔除）
         let local_names: HashSet<String> = self.toolkits.iter()
@@ -261,11 +272,13 @@ impl Station {
             }
             out.extend(toolkit.configured_tools());
         }
-        // 直接子：实时拉取（带同一 filter）→ 更新路由缓存 → 合并元数据（剔除冲突项）
+        // 直接子：实时拉取（带同一 filter + 祖先链）→ 更新路由缓存 → 合并元数据（剔除冲突项）
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
+        let mut child_ancestors = ancestors.to_vec();
+        child_ancestors.push(self.station_id.clone());
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
         for sub in subs {
-            match sub.client.list_tools(filter).await {
+            match sub.client.list_tools(filter, &child_ancestors).await {
                 Ok(tools) => {
                     let inserted = self.merge_sub_tools(sub.config.station_id.as_str(), &tools, &local_names);
                     out.extend(tools.into_iter().filter(|t| inserted.contains(t.name.as_str())));
@@ -276,9 +289,12 @@ impl Station {
         Ok(out)
     }
 
-    /// MCP 元数据平铺查询（占位接口：本地返回配置；直接子骨架期返回空集合，Err 分支保留给未来 HTTP/网络错误）
+    /// MCP 元数据平铺查询（占位接口：本地返回配置；直接子 HTTP 实时拉取；ancestors 防环）
     #[allow(dead_code)] // MCP 本轮占位，无生产消费方
-    pub async fn mcps(&self, filter: Option<&HashSet<String>>) -> Result<Vec<McpConfig>> {
+    pub async fn mcps(&self, filter: Option<&HashSet<String>>, ancestors: &[String]) -> Result<Vec<McpConfig>> {
+        if ancestors.contains(&self.station_id) {
+            return Err(Error::StationCycle(format!("station_id={}", self.station_id)));
+        }
         let mut out = Vec::new();
         for entry in self.toolkits.iter() {
             let toolkit = entry.value();
@@ -287,12 +303,13 @@ impl Station {
             }
             out.extend(toolkit.configured_mcps());
         }
-        // 直接子：实时拉取（带同一 filter；骨架期返回空集合，非报错无 warn 噪声；MCP 不建缓存表）
-        // Err 分支保留（HTTP 实现后网络错误 → 记日志跳过，不阻塞整体）
+        // 直接子：实时拉取（带同一 filter + 祖先链；MCP 不建缓存表）
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
+        let mut child_ancestors = ancestors.to_vec();
+        child_ancestors.push(self.station_id.clone());
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
         for sub in subs {
-            match sub.client.list_mcps(filter).await {
+            match sub.client.list_mcps(filter, &child_ancestors).await {
                 Ok(mcps) => out.extend(mcps),
                 Err(e) => warn!("子 Station {} 查询 MCP 失败: {}", sub.config.station_id.as_str(), e),
             }
@@ -302,7 +319,11 @@ impl Station {
 
     /// 执行工具：本地实现表（跨 toolkit，工具名全局唯一）命中执行；
     /// 未命中 → 查远程工具路由表（工具名 → 直接子 station_id）路由到对应子；路由未命中 → 工具不存在
-    pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value> {
+    /// ancestors 为根到当前父节点的 station_id 链，用于远程调用防环
+    pub async fn call_tool(&self, name: &str, params: Value, ancestors: &[String]) -> Result<Value> {
+        if ancestors.contains(&self.station_id) {
+            return Err(Error::StationCycle(format!("station_id={}", self.station_id)));
+        }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
         let local: Option<Option<Arc<dyn Tool>>> = {
             let mut found = None;
@@ -322,10 +343,12 @@ impl Station {
         }
         // 远程路由：查缓存表（工具名 → 直接子 station_id），命中 → 该子 HTTP 调用
         // 不遍历全部子、不远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
+        let mut child_ancestors = ancestors.to_vec();
+        child_ancestors.push(self.station_id.clone());
         let routed = self.tool_routes.get(name).map(|r| r.value().clone());
         if let Some(station_id) = routed {
             if let Some(sub) = self.sub_stations.get(&station_id).map(|s| s.value().clone()) {
-                return match sub.client.call_tool(name, params).await {
+                return match sub.client.call_tool(name, params, &child_ancestors).await {
                     Ok(v) => Ok(v),
                     Err(e) => Err(e),
                 };
@@ -382,6 +405,7 @@ mod tests {
 
     fn repo_with_filesystem() -> StationRepo {
         let mut repo = StationRepo::default();
+        repo.station_id = Arc::new("station-self".into());
         let map = Arc::make_mut(&mut repo.toolkits);
         map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(filesystem_toolkit())));
         repo
@@ -389,6 +413,7 @@ mod tests {
 
     fn repo_with_mcp() -> StationRepo {
         let mut repo = StationRepo::default();
+        repo.station_id = Arc::new("station-self".into());
         let map = Arc::make_mut(&mut repo.toolkits);
         let mut t = filesystem_toolkit();
         {
@@ -404,6 +429,7 @@ mod tests {
 
     fn repo_with_sub() -> StationRepo {
         let mut repo = StationRepo::default();
+        repo.station_id = Arc::new("station-self".into());
         let map = Arc::make_mut(&mut repo.sub_stations);
         map.insert("station-a".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
             station_id: Arc::new("station-a".into()),
@@ -416,8 +442,8 @@ mod tests {
     #[tokio::test]
     async fn tools_none_returns_all_local() {
         // 内置 filesystem toolkit 声明后，read 工具元数据由内置注册表填充
-        let station = Station::from_repo(&repo_with_filesystem()).unwrap();
-        let tools = station.tools(None).await.unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let tools = station.tools(None, &[]).await.unwrap();
         assert_eq!(tools.len(), 1, "内置注册表应填充 read");
         assert_eq!(tools[0].name.as_str(), "read");
     }
@@ -425,26 +451,26 @@ mod tests {
     #[tokio::test]
     async fn tools_filter_whitelist_semantics() {
         // None=全部；Some(命中)=白名单；Some(未命中)/Some(空集)=空
-        let station = Station::from_repo(&repo_with_filesystem()).unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
         let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
         let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
         let empty = HashSet::new();
-        assert_eq!(station.tools(Some(&hit)).await.unwrap().len(), 1);
-        assert!(station.tools(Some(&miss)).await.unwrap().is_empty());
-        assert!(station.tools(Some(&empty)).await.unwrap().is_empty());
+        assert_eq!(station.tools(Some(&hit), &[]).await.unwrap().len(), 1);
+        assert!(station.tools(Some(&miss), &[]).await.unwrap().is_empty());
+        assert!(station.tools(Some(&empty), &[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn tools_with_sub_returns_empty_skeleton() {
         // 子 Station 骨架查询返回空集合（非报错）→ 无 warn 噪声，路由表不更新，结果只有本地
-        let station = Station::from_repo(&repo_with_sub()).unwrap();
-        assert!(station.tools(None).await.unwrap().is_empty(), "无本地工具，子骨架返回空");
-        assert!(station.tool_routes.is_empty(), "骨架期路由表恒空");
+        let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
+        assert!(station.tools(None, &[]).await.unwrap().is_empty(), "无本地工具，子连接错误被跳过");
+        assert!(station.tool_routes.is_empty(), "无子工具时路由表恒空");
     }
 
     #[test]
     fn merge_sub_tools_inserts_and_keeps_first_wins() {
-        let station = Station::from_repo(&repo_with_filesystem()).unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
         let local_names: HashSet<String> = station.toolkits.iter()
             .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
             .collect();
@@ -481,8 +507,8 @@ mod tests {
 
     #[tokio::test]
     async fn mcps_placeholder_local_only() {
-        let station = Station::from_repo(&repo_with_mcp()).unwrap();
-        let mcps = station.mcps(None).await.unwrap();
+        let station = Station::from_repo(&repo_with_mcp(), "test-key").unwrap();
+        let mcps = station.mcps(None, &[]).await.unwrap();
         assert_eq!(mcps.len(), 1);
         assert_eq!(mcps[0].name.as_str(), "mcp1");
     }
@@ -508,7 +534,7 @@ mod tests {
             })));
         }
         // Station 不含 Debug（含 Arc<dyn Tool>），用 match 取错而非 unwrap_err
-        let err = match Station::from_repo(&repo) {
+        let err = match Station::from_repo(&repo, "test-key") {
             Err(e) => e,
             Ok(_) => panic!("应冲突"),
         };
@@ -536,7 +562,7 @@ mod tests {
             })));
         }
         // Station 不含 Debug（含 Arc<dyn Tool>），用 match 取错而非 unwrap_err
-        let err = match Station::from_repo(&repo) {
+        let err = match Station::from_repo(&repo, "test-key") {
             Err(e) => e,
             Ok(_) => panic!("应冲突"),
         };
@@ -545,21 +571,21 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_routes_via_cache_table() {
-        let station = Station::from_repo(&repo_with_sub()).unwrap();
+        let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
         // 注入路由（模拟 tools() 拉取后缓存）：工具 x 属于 station-a
         station.tool_routes.insert("x".to_string(), "station-a".to_string());
-        // 命中路由 → 调子 Station（骨架返回未实现 Err）→ 返回该错误（非"工具不存在"）
-        let err = station.call_tool("x", serde_json::json!({})).await.unwrap_err();
-        assert!(err.to_string().contains("未实现"), "路由命中应调子而非工具不存在: {}", err);
+        // 命中路由 → 调子 Station（连接失败返回 Err）→ 返回该错误（非"工具不存在"）
+        let err = station.call_tool("x", serde_json::json!({}), &[]).await.unwrap_err();
+        assert!(err.to_string().contains("未实现") || err.to_string().contains("connection") || err.to_string().contains("error"), "路由命中应调子而非工具不存在: {}", err);
         // 未命中路由（本地也无）→ 工具不存在
-        let miss = station.call_tool("nope", serde_json::json!({})).await;
+        let miss = station.call_tool("nope", serde_json::json!({}), &[]).await;
         assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
     }
 
     #[tokio::test]
     async fn call_tool_local_miss_returns_not_found() {
-        let station = Station::from_repo(&repo_with_filesystem()).unwrap();
-        let miss = station.call_tool("nope", serde_json::json!({})).await;
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let miss = station.call_tool("nope", serde_json::json!({}), &[]).await;
         assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
     }
 }

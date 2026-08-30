@@ -1,4 +1,5 @@
 {
+  "station_id": "station-a",
   "toolkits": {
     "filesystem": {}
   },

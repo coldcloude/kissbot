@@ -14,6 +14,7 @@ mod message;
 mod session_manager;
 mod station;
 mod station_client;
+mod station_http;
 mod types;
 
 #[tokio::main]
@@ -43,7 +44,15 @@ async fn main() {
         }
     });
 
-    // 5. 运行主循环（内部：绑定 agent/会话 + 连接全部 channel + 保持进程）
+    // 5. 启动 station HTTP 服务器（后台，独立 station_host:station_port；供其他 station 作为 sub 调用）
+    tokio::spawn(async move {
+        let server = station_http::StationHttpServer::new();
+        if let Err(e) = server.start().await {
+            tracing::error!("station HTTP 服务器退出: {:?}", e);
+        }
+    });
+
+    // 6. 运行主循环（内部：绑定 agent/会话 + 连接全部 channel + 保持进程）
     info!("进入主循环");
     nexus::Nexus::get().run().await;
 }
