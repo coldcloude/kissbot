@@ -1,6 +1,6 @@
 ﻿use async_trait::async_trait;
 use dashmap::DashMap;
-use futures::future;
+use futures_util::future;
 use kai_file::index::{FilePathGenerator};
 use std::collections::HashMap;
 use std::fmt::Debug;

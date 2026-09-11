@@ -1,9 +1,12 @@
+use std::collections::hash_map::Entry;
 use std::ops::DerefMut;
+use std::sync::Arc;
 use std::{collections::HashMap, ops::Deref};
 use std::hash::Hash;
 
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
@@ -99,6 +102,50 @@ where
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.base
+    }
+}
+
+impl<K, T> ArcSwapHashMap<K, T>
+where
+    K: Eq + Hash + Clone + 'static,
+{
+    pub fn replace(&mut self, key: &K, value: Arc<T>) {
+        if let Some(arc_swap) = self.base.get(key) {
+            arc_swap.store(value);
+        } else {
+            match self.base.entry(key.clone()) {
+                Entry::Occupied(entry) => {
+                    entry.get().store(value);
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(ArcSwap::new(value));
+                }
+            }
+        }
+    }
+}
+
+pub struct AsyncCacheFactory<V> {
+    map: RwLock<HashMap<String,Arc<V>>>,
+}
+
+impl<V> AsyncCacheFactory<V> {
+    pub async fn get_or_create<F>(&self, name: &str, creator: F) -> Arc<V>
+    where
+        F: FnOnce() -> V
+    {
+        // 先尝试读
+        {
+            let map = self.map.read().await;
+            if let Some(provider) = map.get(name) {
+                return provider.clone();
+            }
+        }
+
+        let mut map = self.map.write().await;
+        map.entry(name.to_string()).or_insert_with(|| {
+            Arc::new(creator())
+        }).clone()
     }
 }
 

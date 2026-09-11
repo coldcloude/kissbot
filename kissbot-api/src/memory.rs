@@ -2,6 +2,7 @@ use std::{cmp::Ordering, sync::Arc};
 
 use kai_file::index::Record;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::Content;
 
@@ -51,7 +52,7 @@ pub struct ToolCallRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub tool_name: Arc<String>,
-    pub tool_params: Arc<serde_json::Value>,
+    pub tool_params: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
 }
@@ -66,7 +67,7 @@ pub struct ToolCallRequests {
 pub struct ToolResultRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
-    pub tool_result: Arc<serde_json::Value>,
+    pub tool_result: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
 }
@@ -127,7 +128,7 @@ pub struct ThinkRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool_name: Arc<String>,
-    pub tool_params: Arc<serde_json::Value>,
+    pub tool_params: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
@@ -135,7 +136,7 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecord {
-    pub tool_result: Arc<serde_json::Value>,
+    pub tool_result: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
@@ -194,6 +195,7 @@ pub struct RecordKey {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
     use super::*;
 
     #[test]
@@ -328,8 +330,7 @@ mod tests {
         let obj = ToolCallRequest {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("r1".to_string()),
-            tool_name: Arc::new("get_weather".to_string()),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            tool_name: Arc::new("get_weather".to_string()),            tool_params: Arc::new(json!({"city": "Beijing"})),
             key: Arc::new("k1".to_string()),
             time: Arc::new("t1".to_string()),
         };
@@ -352,7 +353,7 @@ mod tests {
         let obj = ToolResultRequest {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("r1".to_string()),
-            tool_result: Arc::new(serde_json::json!({"temp": 25})),
+            tool_result: Arc::new(json!({"temp": 25})),
             key: Arc::new("k1".to_string()),
             time: Arc::new("t1".to_string()),
         };

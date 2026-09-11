@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
-use futures::future;
+use futures_util::future;
 use kai_index::document::to_document;
 use kai_index::prefix_completion::{SimplePrefixCompletion, CompletionResult, PrefixCompletion};
 use kai_index::{Document, SubstringIndex};

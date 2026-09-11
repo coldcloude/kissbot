@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use futures::future;
+use futures_util::future;
 use kissbot_memory::DirectoryManager;
 use std::sync::Arc;
 

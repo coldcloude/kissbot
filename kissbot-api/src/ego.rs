@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::ArcSwapHashMap;
 use crate::channel::ChannelUser;
 
+/// 保留 agent 的 memory-store/ego agent_id（"0"）
+pub const RESERVED_AGENT_ID: &str = "0";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
     pub agent_id: String,
