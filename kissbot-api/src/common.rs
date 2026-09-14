@@ -130,6 +130,12 @@ pub struct AsyncCacheFactory<V> {
 }
 
 impl<V> AsyncCacheFactory<V> {
+    pub fn new() -> Self {
+        Self {
+            map: RwLock::new(HashMap::new()),
+        }
+    }
+
     pub async fn get_or_create<F>(&self, name: &str, creator: F) -> Arc<V>
     where
         F: FnOnce() -> V

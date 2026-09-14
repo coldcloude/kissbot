@@ -294,15 +294,15 @@ use tokio;
         let indexer = MemoryIndexer::new();
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "B");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "B");
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"reasoning_content":"C","thinking":"","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_think_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "B");
-        assert_eq!(results[0].1[1].1.reasoning_content.as_str(), "C");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "B");
+        assert_eq!(results[0].1[1].1.reasoning_content.as_deref().unwrap().as_str(), "C");
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
@@ -317,7 +317,7 @@ use tokio;
         indexer.mark_think_all_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_str(), "E");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "E");
     }
 
     #[tokio::test]

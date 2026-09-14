@@ -35,8 +35,10 @@ pub struct ChannelRequests {
 pub struct ThinkRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
-    pub reasoning_content: Arc<String>,   // 原 content 拆分：API 字段解析的内容
-    pub thinking: Arc<String>,            // 原 content 拆分：<think> 标签解析的内容（去标签）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<Arc<String>>,   // API 字段解析的内容
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Arc<String>>,            // <think> 标签解析的内容（去标签）
     pub key: Arc<String>,
     pub time: Arc<String>,
 }
@@ -52,6 +54,7 @@ pub struct ToolCallRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub tool_name: Arc<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_params: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
@@ -67,7 +70,10 @@ pub struct ToolCallRequests {
 pub struct ToolResultRequest {
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_result: Arc<Value>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub tool_error: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
 }
@@ -118,8 +124,10 @@ pub struct ChannelRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRecord {
-    pub reasoning_content: Arc<String>,
-    pub thinking: Arc<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Arc<String>>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
@@ -128,6 +136,7 @@ pub struct ThinkRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool_name: Arc<String>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_params: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
@@ -136,7 +145,10 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecord {
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_result: Arc<Value>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub tool_error: Arc<Value>,
     pub key: Arc<String>,
     pub time: Arc<String>,
     pub sn: u64,
@@ -265,30 +277,31 @@ mod tests {
         let obj = ThinkRequest {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("r1".to_string()),
-            reasoning_content: Arc::new("推理".to_string()),
-            thinking: Arc::new("思考".to_string()),
+            reasoning_content: Some(Arc::new("推理".to_string())),
+            thinking: Some(Arc::new("思考".to_string())),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let back: ThinkRequest = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(*back.reasoning_content, "推理");
-        assert_eq!(*back.thinking, "思考");
+        assert_eq!(*back.reasoning_content.unwrap(), "推理");
+        assert_eq!(*back.thinking.unwrap(), "思考");
         assert!(json.get("content").is_none(), "content 字段已拆分");
     }
 
     #[test]
     fn test_serde_think_record_dual_fields() {
         let obj = ThinkRecord {
-            reasoning_content: Arc::new("推理".to_string()),
-            thinking: Arc::new("".to_string()),
+            reasoning_content: Some(Arc::new("推理".to_string())),
+            thinking: Some(Arc::new("思考".to_string())),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let back: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*back.reasoning_content, "推理");
+        assert_eq!(*back.reasoning_content.unwrap(), "推理");
+        assert_eq!(*back.thinking.unwrap(), "思考");
         assert_eq!(back.sn, 1);
     }
 
@@ -297,15 +310,15 @@ mod tests {
         let obj = ThinkRequest {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("admin".to_string()),
-            reasoning_content: Arc::new("thinking...".to_string()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            thinking: None,
             key: Arc::new("key1".to_string()),
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ThinkRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.reasoning_content, "thinking...");
-        assert_eq!(*deserialized.thinking, "");
+        assert_eq!(*deserialized.reasoning_content.unwrap(), "thinking...");
+        assert_eq!(deserialized.thinking, None);
     }
 
     #[test]
@@ -313,8 +326,8 @@ mod tests {
         let req = ThinkRequest {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("r1".to_string()),
-            reasoning_content: Arc::new("thinking...".to_string()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            thinking: None,
             key: Arc::new("k1".to_string()),
             time: Arc::new("t1".to_string()),
         };
@@ -354,6 +367,7 @@ mod tests {
             agent_id: Arc::new("a1".to_string()),
             role_name: Arc::new("r1".to_string()),
             tool_result: Arc::new(json!({"temp": 25})),
+            tool_error: Arc::new(Value::Null),
             key: Arc::new("k1".to_string()),
             time: Arc::new("t1".to_string()),
         };
@@ -406,8 +420,8 @@ mod tests {
         assert_eq!(channel.sn(), 10);
 
         let think = ThinkRecord {
-            reasoning_content: Arc::new("think".to_string()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("think".to_string())),
+            thinking: None,
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:01".to_string()),
             sn: 1,
@@ -488,15 +502,15 @@ mod tests {
     #[test]
     fn test_serde_think_record() {
         let obj = ThinkRecord {
-            reasoning_content: Arc::new("think content".to_string()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("think content".to_string())),
+            thinking: None,
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.reasoning_content, "think content");
+        assert_eq!(*deserialized.reasoning_content.unwrap(), "think content");
         assert_eq!(*deserialized.key, "k1");
     }
 
@@ -519,6 +533,7 @@ mod tests {
     fn test_serde_tool_result_record() {
         let obj = ToolResultRecord {
             tool_result: Arc::new(serde_json::json!({"temp": 25})),
+            tool_error: Arc::new(serde_json::Value::Null),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
             sn: 1,

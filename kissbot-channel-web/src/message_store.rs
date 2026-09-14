@@ -3,7 +3,7 @@ use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
-use axum::async_trait;
+use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 use flume::Sender;

@@ -191,6 +191,7 @@ impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResul
         };
         let record = ToolResultRecord {
             tool_result: request.tool_result,
+            tool_error: request.tool_error,
             key: request.key.clone(),
             time: request.time.clone(),
             sn: 0,
@@ -338,8 +339,8 @@ use super::*;
         let request = ThinkRequest {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
-            reasoning_content: Arc::new("thinking...".to_string()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            thinking: None,
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
@@ -347,7 +348,7 @@ use super::*;
         let (key, record) = parser.parse_request(request);
         assert_eq!(*key.agent_id, "agent1");
         assert_eq!(*key.date, "2026-06-24");
-        assert_eq!(*record.reasoning_content, "thinking...");
+        assert_eq!(*record.reasoning_content.unwrap(), "thinking...");
         assert_eq!(*record.key, "k1");
         assert_eq!(record.sn, 0);
     }
@@ -375,7 +376,8 @@ use super::*;
         let request = ToolResultRequest {
             agent_id: Arc::new("agent1".to_string()),
             role_name: Arc::new("default".to_string()),
-            tool_result: serde_json::json!({"temp": 25}).into(),
+            tool_result: Arc::new(serde_json::json!({"temp": 25}).into()),
+            tool_error: Arc::new(serde_json::Value::Null),
             key: Arc::new("k1".to_string()),
             time: Arc::new("2026-06-24 10:00:00".to_string()),
         };
