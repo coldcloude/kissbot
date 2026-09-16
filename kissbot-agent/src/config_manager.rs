@@ -23,9 +23,10 @@ pub struct ConfigManager {
 }
 
 #[async_trait]
-trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
+trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
     async fn session_config(&self, session_key: &SessionKey) -> Arc<E>;
     async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>;
+    async fn set_session_config(&self, session_key: &SessionKey, config: &C) -> Result<()>;
 }
 
 macro_rules! impl_session_config_field {
@@ -47,13 +48,7 @@ macro_rules! impl_session_config_field {
                 // 需要新建 session 配置，需要写权限
                 let mut repo = self.nexus_repo.write().await;
                 // 新建 session 配置
-                let merge_config = if let Some(agent_role_config) = repo.agents.get(session_key.agent_id.as_str()) {
-                    agent_role_config.as_ref().merge::<$ct>(session_key.role_name.as_str())
-                } else {
-                    <$ct>::default()
-                };
-                let config = merge_config.get_effective_config().await;
-                let config = Arc::new(config);
+                let config = Arc::new(repo.create_session_config::<$ct, $et>(session_key));
                 // 保存 session config
                 let sessions = Arc::make_mut(&mut repo.sessions);
                 let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
@@ -84,6 +79,39 @@ macro_rules! impl_session_config_field {
                         Arc::new(agent_role_config)
                     };
                     agents.insert(agent_id.to_string(), agent_role_config);
+                    Ok(())
+                }).await
+            }
+
+            /// 设置 session 配置
+            async fn set_session_config(&self, session_key: &SessionKey, config: &$ct) -> Result<()> {
+                self.write_nexus_config(|repo| {
+                    let new_eff_config = repo.create_session_config::<$ct, $et>(session_key);
+                    let sessions = Arc::make_mut(&mut repo.sessions);
+                    let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
+                        let config_map_mut = Arc::make_mut(&mut config_map);
+                        let eff_config = if let Some(mut eff_config) = config_map_mut.take::<$et>() {
+                            let eff_config_mut = Arc::make_mut(&mut eff_config);
+                            eff_config_mut.merge(config);
+                            eff_config
+                        } else {
+                            // 新建 session 配置
+                            let mut eff_config = new_eff_config;
+                            eff_config.merge(config);
+                            Arc::new(eff_config)
+                        };
+                        config_map_mut.insert::<$et>(eff_config);
+                        config_map
+                    } else {
+                        // 新建 session 配置
+                        let mut eff_config = new_eff_config;
+                        eff_config.merge(config);
+                        // 新建 session map
+                        let mut config_map = SessionConfigMap::default();
+                        config_map.insert::<$et>(Arc::new(eff_config));
+                        Arc::new(config_map)
+                    };
+                    sessions.insert(session_key.clone(), config_map);
                     Ok(())
                 }).await
             }
@@ -303,6 +331,7 @@ impl ConfigManager {
     pub async fn session_config<C,E>(&self, session_key: &SessionKey) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
         Self: SessionConfigField<C,E>,
     {
         <Self as SessionConfigField<C,E>>::session_config(self, session_key).await
@@ -311,9 +340,19 @@ impl ConfigManager {
     pub async fn set_agent_role_config<C,E>(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
         Self: SessionConfigField<C,E>,
     {
         <Self as SessionConfigField<C,E>>::set_agent_role_config(self, agent_id, role_name, config).await
+    }
+
+    pub async fn set_session_config<C,E>(&self, session_key: &SessionKey, config: &C) -> Result<()>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
+        Self: SessionConfigField<C,E>,
+    {
+        <Self as SessionConfigField<C,E>>::set_session_config(self, session_key, config).await
     }
 
     /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，

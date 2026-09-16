@@ -15,7 +15,7 @@ use std::{collections::HashMap, sync::Arc};
 use kissbot_api::ArcSwapHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::types::SessionKey;
+use crate::{configs::{MergeEffectiveConfig, MergeSelf}, types::SessionKey};
 
 // ========== 配置数据结构 ==========
 
@@ -46,5 +46,41 @@ impl Default for NexusRepo {
             }),
             default_system_prompt: Arc::new(String::new()),
         }
+    }
+}
+
+trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
+    fn create_session_config(&self, session_key: &SessionKey) -> E;
+}
+
+macro_rules! impl_session_config_field {
+    ($ct:ty, $et:ty) => {
+        impl SessionConfigField<$ct, $et> for NexusRepo {
+            fn create_session_config(&self, session_key: &SessionKey) -> $et {
+                let merge_config = if let Some(agent_role_config) = self.agents.get(session_key.agent_id.as_str()) {
+                    agent_role_config.as_ref().merge::<$ct>(session_key.role_name.as_str())
+                } else {
+                    <$ct>::default()
+                };
+                merge_config.get_effective_config()
+            }
+        }
+    }
+}
+
+impl_session_config_field!(LLMConfig, EffectiveLLMConfig);
+impl_session_config_field!(CompressConfig, EffectiveCompressConfig);
+impl_session_config_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
+impl_session_config_field!(ChannelBatchConfig, ChannelBatchConfig);
+impl_session_config_field!(OutChannelConfig, OutChannelConfig);
+impl_session_config_field!(ToolkitSetConfig, ToolkitSetConfig);
+
+impl NexusRepo {
+    pub fn create_session_config<C, E>(&self, session_key: &SessionKey) -> E
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        Self: SessionConfigField<C, E>,
+    {
+        <Self as SessionConfigField<C, E>>::create_session_config(self, session_key)
     }
 }

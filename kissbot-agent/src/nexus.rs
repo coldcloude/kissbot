@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ProviderModel, ToolConfig, ToolkitSetConfig};
+use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ProviderModel, ToolConfig, ToolkitSetConfig};
 use crate::provider::ProviderManager;
 use crate::types::{
     ChannelCommand, Error, Message, Mode, ModelResponse, Result, SessionKey, ToolCall, role_mode,
@@ -371,8 +371,9 @@ impl Nexus {
         };
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(&pm).await?;
-        let session = self.ensure_session(&key).await;
-        session.model.store(Arc::new(Some(pm)));
+        let mut config = LLMConfig::default();
+        config.provider_model = Some(Arc::new(pm));
+        ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config);
         Ok(())
     }
 

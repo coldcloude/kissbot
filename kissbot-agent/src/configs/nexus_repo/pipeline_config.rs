@@ -1,10 +1,9 @@
 use std::{collections::HashSet, sync::Arc};
 
-use async_trait::async_trait;
 use kissbot_api::ChannelUser;
 use serde::{Deserialize, Serialize};
 
-use crate::{config_manager::ConfigManager, configs::{MergeBy, MergeSelf, MergeEffectiveConfig, ProviderModel}};
+use crate::configs::{MergeBy, MergeSelf, MergeEffectiveConfig, ProviderModel};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LLMConfig {
@@ -95,10 +94,12 @@ pub struct EffectiveLLMConfig {
 }
 
 impl EffectiveLLMConfig {
-    pub async fn new() -> Self {
-        let provider_model = ConfigManager::get().default_model().await;
+    pub fn new() -> Self {
         Self {
-            provider_model,
+            provider_model: Arc::new(ProviderModel {
+                provider: Arc::new(String::new()),
+                model: Arc::new(String::new()),
+            }),
             max_tokens: None,
             temperature: None,
             thinking: None,
@@ -127,10 +128,9 @@ impl MergeBy<LLMConfig> for EffectiveLLMConfig {
      }
 }
 
-#[async_trait]
 impl MergeEffectiveConfig<EffectiveLLMConfig> for LLMConfig {
-    async fn get_effective_config(&self) -> EffectiveLLMConfig {
-        let mut result = EffectiveLLMConfig::new().await;
+    fn get_effective_config(&self) -> EffectiveLLMConfig {
+        let mut result = EffectiveLLMConfig::new();
         result.merge(self);
         result
     }
@@ -189,9 +189,8 @@ impl MergeBy<CompressConfig> for EffectiveCompressConfig {
     }
 }
 
-#[async_trait]
 impl MergeEffectiveConfig<EffectiveCompressConfig> for CompressConfig {
-    async fn get_effective_config(&self) -> EffectiveCompressConfig {
+    fn get_effective_config(&self) -> EffectiveCompressConfig {
         let mut result = EffectiveCompressConfig::new();
         result.merge(self);
         result
@@ -254,9 +253,8 @@ impl MergeBy<MemoryRecoverConfig> for EffectiveMemoryRecoverConfig {
     }
 }
 
-#[async_trait]
 impl MergeEffectiveConfig<EffectiveMemoryRecoverConfig> for MemoryRecoverConfig {
-    async fn get_effective_config(&self) -> EffectiveMemoryRecoverConfig {
+    fn get_effective_config(&self) -> EffectiveMemoryRecoverConfig {
         let mut result = EffectiveMemoryRecoverConfig::new();
         result.merge(self);
         result
@@ -291,9 +289,8 @@ impl ChannelBatchConfig {
     }
 }
 
-#[async_trait]
 impl MergeEffectiveConfig<ChannelBatchConfig> for ChannelBatchConfig {
-    async fn get_effective_config(&self) -> ChannelBatchConfig {
+    fn get_effective_config(&self) -> ChannelBatchConfig {
         let mut result = ChannelBatchConfig::new();
         result.merge(self);
         result
@@ -323,9 +320,8 @@ impl MergeBy<OutChannelConfig> for OutChannelConfig {
 
 impl MergeSelf for OutChannelConfig {}
 
-#[async_trait]
 impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
-    async fn get_effective_config(&self) -> OutChannelConfig {
+    fn get_effective_config(&self) -> OutChannelConfig {
         OutChannelConfig {
             out_channel: self.out_channel.clone(),
         }
@@ -351,9 +347,8 @@ impl MergeBy<ToolkitSetConfig> for ToolkitSetConfig {
 
 impl MergeSelf for ToolkitSetConfig {}
 
-#[async_trait]
 impl MergeEffectiveConfig<ToolkitSetConfig> for ToolkitSetConfig {
-    async fn get_effective_config(&self) -> ToolkitSetConfig {
+    fn get_effective_config(&self) -> ToolkitSetConfig {
         ToolkitSetConfig {
             toolkit_set: self.toolkit_set.clone(),
         }

@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
 pub trait MergeSelf: Default + MergeBy<Self> {}
 
-#[async_trait]
 pub trait MergeEffectiveConfig<E> {
-    async fn get_effective_config(&self) -> E;
+    fn get_effective_config(&self) -> E;
 }
 
 pub trait MergeBy<C>: Serialize + DeserializeOwned {
