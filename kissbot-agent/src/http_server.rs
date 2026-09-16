@@ -11,7 +11,8 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::config_manager::{ChannelConfig, ConfigManager, ProviderConfig, ProviderModel};
+use crate::config_manager::{ConfigManager};
+use crate::configs::{ChannelConfig, ProviderModelConfig, ProviderModel};
 use kissbot_api::ChannelUser;
 use crate::types::Result;
 
@@ -103,8 +104,9 @@ async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     ok(snap)
 }
 
-async fn add_provider(State(state): State<AppState>, Json(cfg): Json<ProviderConfig>) -> impl IntoResponse {
-    match state.config.add_provider(cfg).await {
+async fn add_provider(State(state): State<AppState>, Json(cfg): Json<ProviderModelConfig>) -> impl IntoResponse {
+    // TODO add name to request
+    match state.config.add_provider("", cfg).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
@@ -117,7 +119,7 @@ async fn remove_provider(State(state): State<AppState>, Json(req): Json<NameRequ
     }
 }
 
-async fn set_default(State(state): State<AppState>, Json(pm): Json<ProviderModel>) -> impl IntoResponse {
+async fn set_default(State(state): State<AppState>, Json(pm): Json<Arc<ProviderModel>>) -> impl IntoResponse {
     match state.config.set_default_model(pm).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
@@ -158,6 +160,8 @@ async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdmin
 
 #[cfg(test)]
 mod tests {
+    use crate::configs::{ModelConfig, ProviderConfig};
+
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -166,22 +170,19 @@ mod tests {
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
-    fn test_provider(name: &str) -> crate::config_manager::ProviderConfig {
-        crate::config_manager::ProviderConfig {
-            name: Arc::new(name.into()),
-            provider_type: "openai".into(),
-            base_url: "https://api.example.com".into(),
-            api_key: "sk-test".into(),
-            default_model_config: crate::config_manager::ModelConfig {
-                max_tokens: Some(4096),
+    fn test_provider(name: &str) -> ProviderModelConfig {
+        ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: Arc::new("openai".into()),
+                base_url: Arc::new("https://api.example.com".into()),
+                api_key: Arc::new("sk-test".into()),
+            }),
+            default_model_config: ModelConfig {
                 max_tokens_usage: 128000,
                 timeout_secs: Some(60),
                 retry_count: Some(3),
-                temperature: Some(0.7),
-                thinking: None,
-                reasoning_effort: None,
             },
-            models: Arc::new(ArcSwapHashMap::new()),
+            model_configs: Arc::new(ArcSwapHashMap::new()),
         }
     }
 
@@ -255,7 +256,7 @@ mod tests {
             Some(serde_json::json!({ "provider": "deepseek", "model": "deepseek-4-flash" }))).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(ConfigManager::get().default_model().await.model, "deepseek-4-flash");
+        assert_eq!(ConfigManager::get().default_model().await.model.as_str(), "deepseek-4-flash");
 
         // POST /config/providers/remove
         let (status, body) = send(app.clone(), "POST", "/config/providers/remove", "admin-key-123",

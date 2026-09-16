@@ -209,8 +209,8 @@ impl MemoryStoreClient {
     /// 参数：memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
     pub async fn read_recent_for_context(
         &self,
-        agent_id: Arc<String>,
-        role_name: Arc<String>,
+        agent_id: &str,
+        role_name: &str,
         memory_time_secs: u64,
         memory_count: usize,
     ) -> Result<Vec<MessageContent>> {
@@ -221,6 +221,9 @@ impl MemoryStoreClient {
             .ok_or_else(|| Error::MemoryTimeWindow("计算记忆时间窗起点失败".to_string()))?;
 
         let count = memory_count;
+
+        let agent_id = Arc::new(agent_id.to_string());
+        let role_name = Arc::new(role_name.to_string());
 
         // ===== Query1：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
         let body = RecentQuery {
@@ -361,13 +364,13 @@ mod tests {
         let reqs = think_requests(vec![ThinkRequest {
             agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
-            reasoning_content: Arc::new("推理".into()),
-            thinking: Arc::new(String::new()),
+            reasoning_content: Some(Arc::new("推理".into())),
+            thinking: None,
             key: Arc::new("k1".into()),
             time: Arc::new("2026-08-04 10:00:00".into()),
         }]);
         assert_eq!(reqs.force, 1, "force 统一为 1");
-        assert_eq!(reqs.requests[0].reasoning_content.as_str(), "推理");
+        assert_eq!(reqs.requests[0].reasoning_content.as_deref().unwrap().as_str(), "推理");
     }
 
     #[test]
@@ -407,6 +410,7 @@ mod tests {
             agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
             tool_result: Arc::new(serde_json::json!({ "ok": true })),
+            tool_error: Arc::new(serde_json::Value::Null),
             key: Arc::new(String::new()),
             time: Arc::new("2026-08-03 10:00:00".into()),
         }]);
@@ -574,7 +578,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-7200 早于 ln=now-600 → M = cutoff
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
         assert_eq!(out[29].content, vec![Arc::new("m29".to_string())]);
@@ -589,7 +593,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // 窗口起点 now-60s 晚于全部记录 → M = ln
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 60, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 60, 10).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
         assert_eq!(out[0].content, vec![Arc::new("m5".to_string())], "起点 = 第 6 条（最后 10 条最旧一条）");
     }
@@ -598,7 +602,7 @@ mod tests {
     async fn read_recent_empty_and_less_than_n() {
         // 空数据 → 空结果
         let url = start_mock_store(channel_data(vec![])).await;
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert!(out.is_empty(), "空数据返回空");
 
         // 不足 N 条取全部
@@ -607,7 +611,7 @@ mod tests {
             record_json(&time_ago(120), "u", "b"),
         ];
         let url = start_mock_store(channel_data(records)).await;
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert_eq!(out.len(), 2, "不足 N 条取全部");
 
         // count = 0：不参与并集，直接返回空（防 start_idx = len 空切片 panic）
@@ -615,7 +619,7 @@ mod tests {
             record_json(&time_ago(60), "u", "a"),
             record_json(&time_ago(120), "u", "b"),
         ])).await;
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 0).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 0).await.unwrap();
         assert!(out.is_empty(), "count=0 返回空");
     }
 
@@ -633,7 +637,7 @@ mod tests {
         for i in 7..15 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-250 介于 t0 与 t1 之间 → M = cutoff
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 250, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 250, 10).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
         assert!(out.iter().any(|m| m.content == vec![Arc::new("m4".to_string())]), "start_idx 之前的同时间记录被并集取回");
@@ -654,7 +658,7 @@ mod tests {
         for i in 5..13 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-150 晚于 ln(t1=now-200) → M = ln → [ln, ln]
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 150, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 150, 10).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
         assert!(out.iter().any(|m| m.content == vec![Arc::new("m2".to_string())]), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
@@ -674,7 +678,7 @@ mod tests {
             [2, channel_record_json(&t, "u3", json!({ "msg_type": "ToolCall", "data": "key2" }), false, 2)],
         ]]]);
         let url = start_mock_store(data).await;
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "非文本记录保留在结果中（空 content）");
         assert_eq!(out[0].content, vec![Arc::new("你好".to_string())]);
         assert_eq!(out[1].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())], "Multi 内容取 Text 子项拼接");
@@ -696,7 +700,7 @@ mod tests {
         ]]]);
         let url = start_mock_store(data).await;
         // 不足 N 条（4 → count=10）：直接返回 msgs，重复记录也不得泄漏
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
         assert_eq!(out.iter().filter(|m| m.content == vec![Arc::new("hello".to_string())]).count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
     }
@@ -711,7 +715,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 1800, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
         assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
@@ -734,7 +738,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 1800, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "map.len()=10=count 不早退，Query2 补 m0,m1 → 12 条（含空 content 的 m5）");
         assert!(out.iter().any(|m| m.content.is_empty()), "非文本 m5 以空 content 保留在结果中");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
@@ -757,7 +761,7 @@ mod tests {
             ] }), false, 0)],
         ]]]);
         let url = start_mock_store(data).await;
-        let out = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string()), Arc::new("c".to_string()), Arc::new("d".to_string())], "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
     }
@@ -774,13 +778,13 @@ mod tests {
             record_json_self(&time_ago(200), "u3", "m2", false),
         ];
         let url = start_mock_store(channel_data(records)).await;
-        let msgs = client_at(&url).read_recent_for_context(Arc::new("agent".to_string()), Arc::new("role".to_string()), 7200, 100).await.unwrap();
+        let msgs = client_at(&url).read_recent_for_context("agent", "role", 7200, 100).await.unwrap();
         let out = pack_memory_messages(&msgs);
         // 期望：[User("u1: m0\nu2: m1"), Assistant("a2"), User("u3: m2"), Assistant("")]
         assert_eq!(out.len(), 4);
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: m0\nu2: m1"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "a2"));
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str().unwrap() == "a2"));
         assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
-        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_empty()));
+        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_null()));
     }
 }

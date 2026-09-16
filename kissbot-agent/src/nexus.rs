@@ -2,20 +2,22 @@ use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::ArcSwapOption;
+use chrono::Local;
+use kissbot_api::RESERVED_AGENT_ID;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
+use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ProviderModel, ToolConfig, ToolkitSetConfig};
+use crate::provider::ProviderManager;
 use crate::types::{
-    ChannelCommand, Error, Message, Mode, ModelResponse, RESERVED_AGENT_ID, Result,
-    SessionKey, ToolCall, role_mode,
+    ChannelCommand, Error, Message, Mode, ModelResponse, Result, SessionKey, ToolCall, role_mode,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
-use crate::config_manager::{ConfigManager, ProviderModel, OutChannel, ToolConfig};
+use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
-use crate::model_client::ModelClient;
 use crate::message::pack_memory_messages;
 use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
@@ -54,9 +56,9 @@ pub struct Nexus {
     /// ego 服务 REST 客户端（共享连接池；system_prompt_for_agent / verify_agent_exists 经它发请求）
     memory_ego_client: Arc<MemoryEgoClient>,
     session_manager: Arc<SessionManager>,
-    model_client: Arc<ModelClient>,
+    provider_manager: Arc<ProviderManager>,
     /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
-    valid_default: ArcSwap<Option<ProviderModel>>,
+    valid_default: ArcSwapOption<ProviderModel>,
     /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -77,7 +79,7 @@ impl Nexus {
         let memory_ego_client = Arc::new(MemoryEgoClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
-        let model_client = ModelClient::new();
+        let provider_manager = Arc::new(ProviderManager::new());
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
         // channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
@@ -87,9 +89,9 @@ impl Nexus {
             memory_store_client,
             memory_ego_client,
             session_manager,
-            model_client: Arc::new(model_client),
+            provider_manager,
             channel_manager: Arc::new(ChannelManager::new()),
-            valid_default: ArcSwap::from_pointee(None),
+            valid_default: ArcSwapOption::empty(),
             apply_channel_session_key_tx,
             channel_task_tx,
         };
@@ -98,7 +100,7 @@ impl Nexus {
         let default_model = config.default_model().await;
         match coordinator.verify_model(&default_model).await {
             Ok(()) => {
-                coordinator.valid_default.store(Arc::new(Some(default_model)));
+                coordinator.valid_default.store(Some(default_model));
             },
             Err(e) => {
                 warn!("校验 default_model {}/{} 失败: {}", default_model.provider, default_model.model, e);
@@ -196,18 +198,16 @@ impl Nexus {
 
     /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
     /// key 传所有权（get_or_create 内部 move，非深拷贝）
-    async fn ensure_session(&self, key: SessionKey) -> Arc<Session> {
-        // load_full() 直接返回 Arc<Option<ProviderModel>>（O(1)），零深拷贝传给 get_or_create
-        let model = self.valid_default.load_full();
-        self.session_manager.get_or_create(key, model).await
+    pub async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
+        self.session_manager.get_or_create(key).await
     }
 
     /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
     /// 取记忆用会话状态保存的 agent_id（来自会话 key）
-    pub async fn build_context_from_memory_store(&self, agent_id: Arc<String>, role_name: Arc<String>) -> Vec<Message> {
-        let cfg = ConfigManager::get().context_config(agent_id.as_str(), role_name.as_str()).await;
+    pub async fn build_context_from_memory_store(&self, session_key: &SessionKey) -> Vec<Message> {
+        let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig,EffectiveMemoryRecoverConfig>(session_key).await;
         self.memory_store_client
-            .read_recent_for_context(agent_id, role_name, cfg.memory_time_secs, cfg.memory_count).await
+            .read_recent_for_context(session_key.agent_id.as_str(), session_key.role_name.as_str(), cfg.memory_time_secs, cfg.memory_count).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
     }
 
@@ -333,7 +333,7 @@ impl Nexus {
         self.prune_sessions().await;
         // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
         if let Some(key) = self.session_key(channel_id).await {
-            self.ensure_session(key).await;
+            self.ensure_session(&key).await;
         }
         Ok(())
     }
@@ -355,23 +355,23 @@ impl Nexus {
     /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
     /// Err 表示校验失败（API 调用失败 / 模型不在列表），调用方决定如何处理。
     async fn verify_model(&self, pm: &ProviderModel) -> Result<()> {
-        let models = self.model_client.list_models(pm).await
+        let models = self.provider_manager.list_models(pm.provider.as_str()).await
             .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
-        if !models.iter().any(|m| m == &pm.model) {
+        if !models.iter().any(|m| m.as_str() == pm.model.as_str()) {
             return Err(Error::ModelProviderNotSupported(format!(
                 "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
         }
         Ok(())
     }
 
-    /// 设置来源 channel 所属会话的模型（运行态，不回写；每次切换都从 API 拉模型列表校验）
+    /// 设置来源 channel 所属会话的模型（每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
         let Some(key) = self.session_key(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(&pm).await?;
-        let session = self.ensure_session(key).await;
+        let session = self.ensure_session(&key).await;
         session.model.store(Arc::new(Some(pm)));
         Ok(())
     }
@@ -382,7 +382,7 @@ impl Nexus {
         // 按 channel 绑定三元组初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
             if let Some(key) = self.session_key(ch.channel_id.as_str()).await {
-                self.ensure_session(key).await;
+                self.ensure_session(&key).await;
             }
         }
         // 连接全部 enabled 的 channel（连接/重连/回显/发送归 ChannelManager 通道适配层；
@@ -502,67 +502,105 @@ impl Nexus {
         }
     }
 
-    pub async fn call_provider_model(&self, pm: &ProviderModel, messages: &Vec<Message>, tools: &Vec<ToolConfig>) -> Result<ModelResponse> {
-        self.model_client.call(pm, messages, tools).await
+    pub async fn call_provider_model(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
+        self.provider_manager.call(llm_cfg, messages, tools).await
     }
 
-    pub async fn write_memory_think(&self, request: ThinkRequest, out_channel: &OutChannel) {
-        let placeholder = placeholder_request(
-            request.agent_id.clone(),
-            request.role_name.clone(),
-            Content::Think(request.key.clone()),
-            request.time.clone(),
-            out_channel
-        );
-        self.memory_store_client.push_channel_record(placeholder).await;
+    pub async fn run_pipeline(&self, session_key: Arc<SessionKey>, message: Message) {
+
+    }
+
+    pub async fn send_memory_think(&self, session_key: &SessionKey, key: Arc<String>, reasoning_content: Option<Arc<String>>, thinking: Option<Arc<String>>) {
+        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        let agent_id = Arc::new(session_key.agent_id.clone());
+        let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
+        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
+            let placeholder = placeholder_request(
+                agent_id.clone(),
+                role_event.clone(),
+                Content::Think(key.clone()),
+                now.clone(),
+                out_channel.as_ref(),
+            );
+            self.memory_store_client.push_channel_record(placeholder).await;
+        }
+        let request = ThinkRequest {
+            agent_id,
+            role_name: role_event,
+            reasoning_content,
+            thinking,
+            key,
+            time: now,
+        };
         self.memory_store_client.push_think(request).await;
     }
 
-    pub async fn write_memory_tool_call(&self, request: ToolCallRequest, out_channel: &OutChannel) {
-        let placeholder = placeholder_request(
-            request.agent_id.clone(),
-            request.role_name.clone(),
-            Content::ToolCall(request.key.clone()),
-            request.time.clone(),
-            out_channel
-        );
-        self.memory_store_client.push_channel_record(placeholder).await;
+    pub async fn send_memory_tool_call(&self, session_key: &SessionKey, key: Arc<String>, tool_call: &ToolCall) {
+        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        let agent_id = Arc::new(session_key.agent_id.clone());
+        let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
+        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
+            let placeholder = placeholder_request(
+                agent_id.clone(),
+                role_event.clone(),
+                Content::ToolCall(key.clone()),
+                now.clone(),
+                out_channel.as_ref(),
+            );
+            self.memory_store_client.push_channel_record(placeholder).await;
+        }
+        let request = ToolCallRequest {
+            agent_id,
+            role_name: role_event,
+            tool_name: tool_call.name.clone(),
+            tool_params: Arc::new(tool_call.data.arguments.clone()),
+            key,
+            time: now.clone(),
+        };
         self.memory_store_client.push_tool_call(request).await;
     }
 
-    pub async fn write_memory_tool_result(&self, request: ToolResultRequest, out_channel: &OutChannel) {
-        let placeholder = placeholder_request(
-            request.agent_id.clone(),
-            request.role_name.clone(),
-            Content::ToolResult(request.key.clone()),
-            request.time.clone(),
-            out_channel
-        );
-        self.memory_store_client.push_channel_record(placeholder).await;
+    pub async fn send_memory_tool_result(&self, session_key: &SessionKey, key: Arc<String>, tool_call: &ToolCall) {
+        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        let agent_id = Arc::new(session_key.agent_id.clone());
+        let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
+        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
+            let placeholder = placeholder_request(
+                agent_id.clone(),
+                role_event.clone(),
+                Content::ToolResult(key.clone()),
+                now.clone(),
+                out_channel.as_ref(),
+            );
+            self.memory_store_client.push_channel_record(placeholder).await;
+        }
+        let request = ToolResultRequest {
+            agent_id,
+            role_name: role_event,
+            tool_result: Arc::new(tool_call.data.result.clone()),
+            tool_error: Arc::new(tool_call.data.error.clone()),
+            key,
+            time: now.clone(),
+        };
         self.memory_store_client.push_tool_result(request).await;
     }
 
     /// 会话可用工具：context 配置的启用 toolkits 白名单 → Station 平铺查询（本地 + 直接子递归）
     /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
-    pub async fn tools_for_session(&self, session: Arc<Session>) -> Vec<ToolConfig> {
-        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
-        if cfg.toolkits.is_empty() {
+    pub async fn tools_for_session(&self, session_key: &SessionKey) -> Vec<Arc<ToolConfig>> {
+        let cfg = ConfigManager::get().session_config::<ToolkitSetConfig,ToolkitSetConfig>(session_key).await;
+        if cfg.toolkit_set.is_empty() {
             return Vec::new();
         }
-        match Station::get().tools(Some(&cfg.toolkits), &[]).await {
+        match Station::get().tools(Some(&cfg.toolkit_set), &[]).await {
             Ok(tools) => tools,
             Err(e) => {
                 warn!("工具查询失败: {}", e);
                 Vec::new()
             }
-        }
-    }
-
-    /// 执行单个 tool call：全局 Station 本地实现表 → 直接子递归；找不到/调用失败返回错误 JSON
-    pub async fn execute_tool_call(&self, call: Arc<ToolCall>) -> serde_json::Value {
-        match Station::get().call_tool(call.name.as_str(), (*call.arguments).clone(), &[]).await {
-            Ok(v) => v,
-            Err(e) => serde_json::json!({ "error": e.to_string() }),
         }
     }
 
@@ -674,8 +712,8 @@ mod tests {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
             session_manager: SessionManager::new(data_dir.to_str().unwrap()),
-            model_client: Arc::new(ModelClient::new()),
-            valid_default: ArcSwap::from_pointee(None),
+            provider_manager: Arc::new(ProviderManager::new()),
+            valid_default: ArcSwapOption::empty(),
             channel_manager: Arc::new(ChannelManager::new()),
             apply_channel_session_key_tx: command_tx,
             channel_task_tx,

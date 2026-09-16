@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use crate::types::{ChannelCommand, Error, Mode, RESERVED_AGENT_ID, Result};
-use crate::config_manager::{ConfigManager, OutChannel, ProviderModel};
-use kissbot_api::ChannelUser;
+use crate::configs::{OutChannel, ProviderModel};
+use crate::types::{ChannelCommand, Error, Mode, Result};
+use crate::config_manager::ConfigManager;
+use kissbot_api::{ChannelUser, RESERVED_AGENT_ID};
 use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
 
 pub struct CommandRouter;
@@ -139,7 +140,7 @@ impl CommandRouter {
                 cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(),
                     Some(Arc::new(OutChannel {
                         channel_id: Arc::new(channel_id.to_string()),
-                        user: cu,
+                        user: Arc::new(cu),
                         group_id: Arc::new(group_id),
                     }))).await?;
                 Ok(reply)
@@ -171,11 +172,11 @@ impl CommandRouter {
                         _ => return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string())),
                     },
                 };
-                let pm = ProviderModel { provider: parts[1].to_string(), model: parts[2].to_string() };
+                let pm = ProviderModel { provider: Arc::new(parts[1].to_string()), model: Arc::new(parts[2].to_string()) };
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
                 nexus.set_session_model(channel_id, pm.clone()).await?;
                 if set_default {
-                    ConfigManager::get().set_default_model(pm.clone()).await?;
+                    ConfigManager::get().set_default_model(Arc::new(pm.clone())).await?;
                 }
                 let mut reply = format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model);
                 if set_default {

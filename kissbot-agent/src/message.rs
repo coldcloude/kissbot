@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use kissbot_api::channel::IncomingMessageEvent;
 use kissbot_api::message::Content;
+use serde_json::Value;
 
 use crate::types::Message;
 
@@ -75,7 +76,7 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
         if m.is_self != is_asst {
             // 段类型切换：flush 上一段（连续同 is_self 已合并）
             if is_asst {
-                out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
+                out.push(Message::Assistant { content: Value::String(asst_buf.join("\n")), reasoning_content: Value::Null, tool_calls: Value::Null });
             } else {
                 out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
             }
@@ -94,11 +95,11 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
     // flush 最后一段（仅当已开始对话）
     if started {
         if is_asst {
-            out.push(Message::Assistant { content: Arc::new(asst_buf.join("\n")), reasoning_content: None, tool_calls: None });
+            out.push(Message::Assistant { content: Value::String(asst_buf.join("\n")), reasoning_content: Value::Null, tool_calls: Value::Null });
         } else {
             out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
             // 以 User 结尾：补一条空 Assistant（模型对话需以待回答的 Assistant 结尾）
-            out.push(Message::Assistant { content: Arc::new(String::new()), reasoning_content: None, tool_calls: None });
+            out.push(Message::Assistant { content: Value::String(String::new()), reasoning_content: Value::Null, tool_calls: Value::Null });
         }
     }
     out
@@ -145,9 +146,9 @@ mod tests {
         // 期望：[User("u1: m0\nm1"), Assistant("line1\nline2"), User("u3: m2"), Assistant("")]
         assert_eq!(out.len(), 4);
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: m0\nm1"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "line1\nline2"));
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str().unwrap() == "line1\nline2"));
         assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
-        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_empty()));
+        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_null()));
     }
 
     #[test]
@@ -172,7 +173,7 @@ mod tests {
         // 期望：[User("u1: hi\nu2: there"), Assistant("ok")]
         assert_eq!(out.len(), 2);
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: hi\nu2: there"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == "ok"));
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str().unwrap() == "ok"));
     }
 
     #[test]
@@ -180,7 +181,7 @@ mod tests {
         let out = pack_memory_messages(&[msg("u", "hi", false)]);
         assert_eq!(out.len(), 2);
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u: hi"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.is_empty()));
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.is_null()));
     }
 
     #[test]

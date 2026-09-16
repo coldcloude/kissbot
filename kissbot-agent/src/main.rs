@@ -2,11 +2,11 @@ use tracing::info;
 
 mod channel_manager;
 mod command_router;
+mod configs;
 mod config_manager;
 mod nexus;
 mod ego_md;
 mod http_server;
-mod model_client;
 mod provider;
 mod memory_ego_client;
 mod memory_store_client;
@@ -16,6 +16,8 @@ mod station;
 mod station_client;
 mod station_http;
 mod types;
+mod pipeline;
+mod processors;
 
 #[tokio::main]
 async fn main() {
