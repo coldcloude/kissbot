@@ -8,11 +8,11 @@ use axum::routing::post;
 use axum::{Json, Router};
 use kissbot_api::ApiResponse;
 use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
-use serde_json::Value;
 use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config_manager::ConfigManager;
+use crate::configs::{McpConfig, ToolConfig};
 use crate::station::Station;
 use crate::types::{
     Error, Result, StationCallToolRequest, StationListMcpsRequest, StationListToolsRequest,
@@ -85,10 +85,10 @@ async fn list_tools(
     let filter = filter_set(&req.filter);
     match state.station.tools(filter.as_ref(), &req.ancestors).await {
         Ok(tools) => (StatusCode::OK, Json(ApiResponse::success(tools))),
-        Err(Error::StationCycle(_)) => cycle_response::<Vec<crate::config_manager::ToolConfig>>(),
+        Err(Error::StationCycle(_)) => cycle_response::<Vec<Arc<ToolConfig>>>(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<crate::config_manager::ToolConfig>>::error(e.to_string())),
+            Json(ApiResponse::<Vec<Arc<ToolConfig>>>::error(e.to_string())),
         ),
     }
 }
@@ -100,10 +100,10 @@ async fn list_mcps(
     let filter = filter_set(&req.filter);
     match state.station.mcps(filter.as_ref(), &req.ancestors).await {
         Ok(mcps) => (StatusCode::OK, Json(ApiResponse::success(mcps))),
-        Err(Error::StationCycle(_)) => cycle_response::<Vec<crate::config_manager::McpConfig>>(),
+        Err(Error::StationCycle(_)) => cycle_response::<Vec<Arc<McpConfig>>>(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<crate::config_manager::McpConfig>>::error(
+            Json(ApiResponse::<Vec<Arc<McpConfig>>>::error(
                 e.to_string(),
             )),
         ),
@@ -114,25 +114,8 @@ async fn call_tool(
     State(state): State<AppState>,
     Json(req): Json<StationCallToolRequest>,
 ) -> impl IntoResponse {
-    match state
-        .station
-        .call_tool(&req.tool_name, req.parameters, &req.ancestors)
-        .await
-    {
-        Ok(result) => (StatusCode::OK, Json(ApiResponse::success(result))),
-        // 自环不是工具调用失败，按协议返回非 200
-        Err(Error::StationCycle(_)) => cycle_response::<Value>(),
-        // 远端连接/协议错误不是工具调用失败，按非 200 返回
-        Err(Error::StationConnectionError(e)) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ApiResponse::<Value>::error(e)),
-        ),
-        // 工具调用失败统一 HTTP 200 + error
-        Err(e) => (
-            StatusCode::OK,
-            Json(ApiResponse::<Value>::error(e.to_string())),
-        ),
-    }
+    let result = state.station.call_tool(req.tool_call, &req.ancestors).await;
+    (StatusCode::OK, Json(ApiResponse::success(result)))
 }
 
 #[cfg(test)]
@@ -141,9 +124,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use tower::ServiceExt;
+    use serde_json::Value;
+use tower::ServiceExt;
 
-    use crate::config_manager::{StationRepo, ToolkitConfig};
+    use crate::configs::{StationRepo, ToolkitConfig};
     use arc_swap::ArcSwap;
 
     fn test_station_repo(station_id: &str) -> StationRepo {
