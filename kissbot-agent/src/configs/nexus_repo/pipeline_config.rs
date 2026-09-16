@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use kissbot_api::ChannelUser;
 use serde::{Deserialize, Serialize};
 
-use crate::{config_manager::ConfigManager, configs::{MergeConfig, MergeEffectiveConfig, ProviderModel}};
+use crate::{config_manager::ConfigManager, configs::{MergeBy, MergeSelf, MergeEffectiveConfig, ProviderModel}};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LLMConfig {
@@ -12,15 +12,19 @@ pub struct LLMConfig {
     pub provider_model: Option<Arc<ProviderModel>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_max_tokens: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_temperature: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_thinking: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_reasoning_effort: bool,
 }
 
@@ -59,7 +63,7 @@ impl LLMConfig {
     }
 }
 
-impl MergeConfig for LLMConfig {
+impl MergeBy<LLMConfig> for LLMConfig {
     fn merge(&mut self, other: &LLMConfig) {
         if let Some(model) = other.provider_model.as_ref() {
             self.provider_model = Some(model.clone());
@@ -79,6 +83,8 @@ impl MergeConfig for LLMConfig {
     }
 }
 
+impl MergeSelf for LLMConfig {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveLLMConfig {
     pub provider_model: Arc<ProviderModel>,
@@ -88,21 +94,45 @@ pub struct EffectiveLLMConfig {
     pub reasoning_effort: Option<Arc<String>>,
 }
 
+impl EffectiveLLMConfig {
+    pub async fn new() -> Self {
+        let provider_model = ConfigManager::get().default_model().await;
+        Self {
+            provider_model,
+            max_tokens: None,
+            temperature: None,
+            thinking: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
+impl MergeBy<LLMConfig> for EffectiveLLMConfig {
+    fn merge(&mut self, other: &LLMConfig) {
+        if let Some(model) = other.provider_model.as_ref() {
+            self.provider_model = model.clone();
+        }
+        if other.has_max_tokens {
+            self.max_tokens = other.max_tokens;
+        }
+        if other.has_temperature {
+            self.temperature = other.temperature;
+        }
+        if other.has_thinking {
+            self.thinking = other.thinking.clone();
+        }
+        if other.has_reasoning_effort {
+            self.reasoning_effort = other.reasoning_effort.clone();
+        }
+     }
+}
+
 #[async_trait]
 impl MergeEffectiveConfig<EffectiveLLMConfig> for LLMConfig {
     async fn get_effective_config(&self) -> EffectiveLLMConfig {
-        let provider_model = if let Some(provider_model) = self.provider_model.as_ref() {
-            provider_model.clone()
-        } else {
-            ConfigManager::get().default_model().await
-        };
-        EffectiveLLMConfig {
-            provider_model,
-            max_tokens: if self.has_max_tokens { self.max_tokens } else { None },
-            temperature: if self.has_temperature { self.temperature } else { None },
-            thinking: if self.has_thinking { self.thinking.clone() } else { None },
-            reasoning_effort: if self.has_reasoning_effort { self.reasoning_effort.clone() } else { None },
-        }
+        let mut result = EffectiveLLMConfig::new().await;
+        result.merge(self);
+        result
     }
 }
 
@@ -114,16 +144,18 @@ pub struct CompressConfig {
     pub compress_threshold: Option<f64>,
 }
 
-impl MergeConfig for CompressConfig {
-    fn merge(&mut self, other: &Self) {
+impl MergeBy<CompressConfig> for CompressConfig {
+    fn merge(&mut self, other: &CompressConfig) {
         if let Some(compress_prompt) = other.compress_prompt.as_ref() {
             self.compress_prompt = Some(compress_prompt.clone());
         }
-        if let Some(compress_threshold) = other.compress_threshold.as_ref() {
-            self.compress_threshold = Some(compress_threshold.clone());
+        if let Some(compress_threshold) = other.compress_threshold {
+            self.compress_threshold = Some(compress_threshold);
         }
     }
 }
+
+impl MergeSelf for CompressConfig {}
 
 /// 压缩默认模板
 pub const DEFAULT_COMPRESS_PROMPT: &str = "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。";
@@ -137,18 +169,32 @@ pub struct EffectiveCompressConfig {
     pub compress_threshold: f64,
 }
 
+impl EffectiveCompressConfig {
+    pub fn new() -> Self {
+        Self {
+            compress_prompt: Arc::new(DEFAULT_COMPRESS_PROMPT.to_string()),
+            compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
+        }
+    }
+}
+
+impl MergeBy<CompressConfig> for EffectiveCompressConfig {
+    fn merge(&mut self, other: &CompressConfig) {
+        if let Some(compress_prompt) = other.compress_prompt.as_ref() {
+            self.compress_prompt = compress_prompt.clone();
+        }
+        if let Some(compress_threshold) = other.compress_threshold {
+            self.compress_threshold = compress_threshold;
+        }
+    }
+}
+
 #[async_trait]
 impl MergeEffectiveConfig<EffectiveCompressConfig> for CompressConfig {
     async fn get_effective_config(&self) -> EffectiveCompressConfig {
-        let compress_prompt = if let Some(compress_prompt) = self.compress_prompt.as_ref() {
-            compress_prompt.clone()
-        } else {
-            Arc::new(DEFAULT_COMPRESS_PROMPT.to_string())
-        };
-        EffectiveCompressConfig {
-            compress_prompt,
-            compress_threshold: self.compress_threshold.unwrap_or(DEFAULT_COMPRESS_THRESHOLD),
-        }
+        let mut result = EffectiveCompressConfig::new();
+        result.merge(self);
+        result
     }
 }
 
@@ -162,7 +208,7 @@ pub struct MemoryRecoverConfig {
     pub memory_count: Option<usize>,
 }
 
-impl MergeConfig for MemoryRecoverConfig {
+impl MergeBy<MemoryRecoverConfig> for MemoryRecoverConfig {
     fn merge(&mut self, other: &Self) {
         if let Some(memory_time_secs) = other.memory_time_secs {
             self.memory_time_secs = Some(memory_time_secs);
@@ -172,6 +218,8 @@ impl MergeConfig for MemoryRecoverConfig {
         }
     }
 }
+
+impl MergeSelf for MemoryRecoverConfig{}
 
 // ---- 全局默认值 ----
 
@@ -186,13 +234,32 @@ pub struct EffectiveMemoryRecoverConfig {
     pub memory_count: usize,
 }
 
+impl EffectiveMemoryRecoverConfig {
+    pub fn new() -> Self {
+        Self {
+            memory_time_secs: DEFAULT_MEMORY_TIME_SECS,
+            memory_count: DEFAULT_MEMORY_COUNT,
+        }
+    }
+}
+
+impl MergeBy<MemoryRecoverConfig> for EffectiveMemoryRecoverConfig {
+    fn merge(&mut self, other: &MemoryRecoverConfig) {
+        if let Some(memory_time_secs) = other.memory_time_secs {
+            self.memory_time_secs = memory_time_secs;
+        }
+        if let Some(memory_count) = other.memory_count {
+            self.memory_count = memory_count;
+        }
+    }
+}
+
 #[async_trait]
 impl MergeEffectiveConfig<EffectiveMemoryRecoverConfig> for MemoryRecoverConfig {
     async fn get_effective_config(&self) -> EffectiveMemoryRecoverConfig {
-        EffectiveMemoryRecoverConfig {
-            memory_time_secs: self.memory_time_secs.unwrap_or(DEFAULT_MEMORY_TIME_SECS),
-            memory_count: self.memory_count.unwrap_or(DEFAULT_MEMORY_COUNT),
-        }
+        let mut result = EffectiveMemoryRecoverConfig::new();
+        result.merge(self);
+        result
     }
 }
 
@@ -203,25 +270,33 @@ pub struct ChannelBatchConfig {
     pub channel_batch_interval_secs: u64,
 }
 
-impl MergeConfig for ChannelBatchConfig {
+impl MergeBy<ChannelBatchConfig> for ChannelBatchConfig {
     fn merge(&mut self, other: &Self) {
-        self.channel_batch_interval_secs = other.channel_batch_interval_secs;
+        if other.channel_batch_interval_secs != 0 {
+            self.channel_batch_interval_secs = other.channel_batch_interval_secs;
+        }
     }
 }
+
+impl MergeSelf for ChannelBatchConfig {}
 
 /// channel 合批最小间隔默认值（秒）
 pub const DEFAULT_CHANNEL_BATCH_INTERVAL_SECS: u64 = 3;
 
+impl ChannelBatchConfig {
+    pub fn new() -> Self {
+        Self {
+            channel_batch_interval_secs: DEFAULT_CHANNEL_BATCH_INTERVAL_SECS,
+        }
+    }
+}
+
 #[async_trait]
 impl MergeEffectiveConfig<ChannelBatchConfig> for ChannelBatchConfig {
     async fn get_effective_config(&self) -> ChannelBatchConfig {
-        let mut channel_batch_interval_secs = self.channel_batch_interval_secs;
-        if channel_batch_interval_secs == 0 {
-            channel_batch_interval_secs = DEFAULT_CHANNEL_BATCH_INTERVAL_SECS;
-        }
-        ChannelBatchConfig {
-            channel_batch_interval_secs,
-        }
+        let mut result = ChannelBatchConfig::new();
+        result.merge(self);
+        result
     }
 }
 
@@ -240,11 +315,13 @@ pub struct OutChannelConfig {
     pub out_channel: Option<Arc<OutChannel>>,
 }
 
-impl MergeConfig for OutChannelConfig {
+impl MergeBy<OutChannelConfig> for OutChannelConfig {
     fn merge(&mut self, other: &Self) {
         self.out_channel = other.out_channel.clone();
     }
 }
+
+impl MergeSelf for OutChannelConfig {}
 
 #[async_trait]
 impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
@@ -263,7 +340,7 @@ pub struct ToolkitSetConfig {
     pub toolkit_set: Arc<HashSet<String>>,
 }
 
-impl MergeConfig for ToolkitSetConfig {
+impl MergeBy<ToolkitSetConfig> for ToolkitSetConfig {
     fn merge(&mut self, other: &Self) {
         let toolkit_set = Arc::make_mut(&mut self.toolkit_set);
         for toolkit in other.toolkit_set.iter() {
@@ -271,6 +348,8 @@ impl MergeConfig for ToolkitSetConfig {
         }
     }
 }
+
+impl MergeSelf for ToolkitSetConfig {}
 
 #[async_trait]
 impl MergeEffectiveConfig<ToolkitSetConfig> for ToolkitSetConfig {

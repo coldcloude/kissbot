@@ -3,13 +3,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
-pub trait MergeConfig: Default + Serialize + DeserializeOwned {
-    fn merge(&mut self, other: &Self);
-}
+pub trait MergeSelf: Default + MergeBy<Self> {}
 
 #[async_trait]
 pub trait MergeEffectiveConfig<E> {
     async fn get_effective_config(&self) -> E;
+}
+
+pub trait MergeBy<C>: Serialize + DeserializeOwned {
+    fn merge(&mut self, other: &C);
 }
 
 pub trait ArcField<T> {

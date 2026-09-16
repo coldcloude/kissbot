@@ -6,7 +6,7 @@ use std::sync::Arc;
 use kissbot_api::ArcSwapHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::configs::MergeConfig;
+use crate::configs::{MergeBy, MergeSelf};
 
 /// 模型默认请求超时（秒）
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -48,8 +48,8 @@ pub struct ModelConfig {
     pub retry_count: Option<u32>,
 }
 
-impl MergeConfig for ModelConfig {
-    fn merge(&mut self, other: &Self) {
+impl MergeBy<ModelConfig> for ModelConfig {
+    fn merge(&mut self, other: &ModelConfig) {
         self.max_tokens_usage = other.max_tokens_usage;
         if let Some(timeout_secs) = other.timeout_secs {
             self.timeout_secs = Some(timeout_secs);
@@ -60,29 +60,51 @@ impl MergeConfig for ModelConfig {
     }
 }
 
+impl MergeSelf for ModelConfig {}
+
 // 合并后的有效配置（provider 默认 + model 覆盖），运行时合成、不持久化
-#[derive(Debug, Clone)]
-pub struct EffectiveProviderModelConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveModelConfig {
     pub provider_config: Arc<ProviderConfig>,
     pub max_tokens_usage: u32,
     pub timeout_secs: u64,
     pub retry_count: u32,
 }
 
+impl EffectiveModelConfig {
+    pub fn new(provider_config : Arc<ProviderConfig>) -> Self {
+        Self {
+            provider_config,
+            max_tokens_usage: 0,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+            retry_count: DEFAULT_RETRY_COUNT,
+        }
+    }
+}
+
+impl MergeBy<ModelConfig> for EffectiveModelConfig {
+    fn merge(&mut self, other: &ModelConfig) {
+        self.max_tokens_usage = other.max_tokens_usage;
+        if let Some(timeout_secs) = other.timeout_secs {
+            self.timeout_secs = timeout_secs;
+        }
+        if let Some(retry_count) = other.retry_count {
+            self.retry_count = retry_count;
+        }
+    }
+}
+
 /// 合成 provider 默认 + model 覆盖的有效参数（与 merge_context_config 同模式：
 /// 全局默认 ← provider 默认 ← model 覆盖，model 未配字段继承 provider，二者都未配回落全局常量；
 /// temperature/thinking/reasoning_effort 无全局默认，None 传播（不发送））
 impl ProviderModelConfig {
-    pub fn get_effective_config(&self, model_name: &str) -> EffectiveProviderModelConfig {
+    pub fn get_effective_config(&self, model_name: &str) -> EffectiveModelConfig {
         let mut config = self.default_model_config.clone();
         if let Some(model_config) = self.model_configs.get(model_name) {
             config.merge(model_config.load().as_ref());
         }
-        EffectiveProviderModelConfig {
-            provider_config: self.provider_config.clone(),
-            max_tokens_usage: config.max_tokens_usage,
-            timeout_secs: config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
-            retry_count: config.retry_count.unwrap_or(DEFAULT_RETRY_COUNT),
-        }
+        let mut effective_config = EffectiveModelConfig::new(self.provider_config.clone());
+        effective_config.merge(&config);
+        effective_config
     }
 }

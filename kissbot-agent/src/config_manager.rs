@@ -23,7 +23,7 @@ pub struct ConfigManager {
 }
 
 #[async_trait]
-trait SessionConfigField<C: MergeConfig + MergeEffectiveConfig<E>, E> {
+trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
     async fn session_config(&self, session_key: &SessionKey) -> Arc<E>;
     async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>;
 }
@@ -281,7 +281,7 @@ impl ConfigManager {
     // ---------- providers ----------
     /// 合成 provider 默认 + model 覆盖的有效参数（每次调用现场合成，配置永远最新）
     /// model 未在 provider.models 配置时用 provider 默认值合成（极端 models={} 也可用）
-    pub async fn provider_model_config(&self, pm: &ProviderModel) -> Option<EffectiveProviderModelConfig> {
+    pub async fn provider_model_config(&self, pm: &ProviderModel) -> Option<EffectiveModelConfig> {
         let repo = self.nexus_repo.read().await;
         let provider = repo.providers.get(pm.provider.as_str())?;
         Some(provider.load().get_effective_config(pm.model.as_str()))
@@ -302,7 +302,7 @@ impl ConfigManager {
 
     pub async fn session_config<C,E>(&self, session_key: &SessionKey) -> Arc<E>
     where
-        C: MergeConfig + MergeEffectiveConfig<E>,
+        C: MergeSelf + MergeEffectiveConfig<E>,
         Self: SessionConfigField<C,E>,
     {
         <Self as SessionConfigField<C,E>>::session_config(self, session_key).await
@@ -310,7 +310,7 @@ impl ConfigManager {
 
     pub async fn set_agent_role_config<C,E>(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>
     where
-        C: MergeConfig + MergeEffectiveConfig<E>,
+        C: MergeSelf + MergeEffectiveConfig<E>,
         Self: SessionConfigField<C,E>,
     {
         <Self as SessionConfigField<C,E>>::set_agent_role_config(self, agent_id, role_name, config).await

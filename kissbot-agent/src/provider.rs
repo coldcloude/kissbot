@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::sleep;
 
-use crate::{config_manager::ConfigManager, configs::{EffectiveLLMConfig, EffectiveProviderModelConfig, ProviderConfig, ToolConfig}, types::{Error, Message, ModelResponse, Result, ToolCall, ToolData}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveLLMConfig, EffectiveModelConfig, ProviderConfig, ToolConfig}, types::{Error, Message, ModelResponse, Result, ToolCall, ToolData}};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
 #[async_trait]
@@ -26,7 +26,7 @@ pub trait Provider: Send + Sync {
 async fn call_with_retry<R>(
     provider: Arc<impl Provider<Request = R>>,
     llm_cfg: &EffectiveLLMConfig,
-    pm_cfg: &EffectiveProviderModelConfig,
+    pm_cfg: &EffectiveModelConfig,
     messages: Vec<Message>,
     tools: &Vec<Arc<ToolConfig>>,
 ) -> Result<ModelResponse> {

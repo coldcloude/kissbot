@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::configs::{nexus_repo::pipeline_config::*, common::{MergeConfig, OptionArcField}};
+use crate::configs::{nexus_repo::pipeline_config::*, common::{MergeSelf, MergeBy, OptionArcField}};
 use crate::{impl_option_arc_field, impl_option_arc_field_map};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ impl_option_arc_field!(ToolkitSetConfig => toolkit_set, AgentRoleConfigMap);
 
 impl_option_arc_field_map!(AgentRoleConfigMap);
 
-trait AgentRoleConfigMapField<C: MergeConfig> {
+trait AgentRoleConfigMapField<C: MergeSelf> {
     fn set(&mut self, config: Arc<C>);
 }
 
@@ -56,7 +56,7 @@ impl_agent_role_config_map_field!(OutChannelConfig);
 impl_agent_role_config_map_field!(ToolkitSetConfig);
 
 impl AgentRoleConfigMap {
-    pub fn set<C: MergeConfig>(&mut self, config: Arc<C>)
+    pub fn set<C: MergeSelf>(&mut self, config: Arc<C>)
     where
         Self: AgentRoleConfigMapField<C>,
     {
@@ -73,7 +73,7 @@ pub struct AgentRoleConfig {
 }
 
 
-trait AgentRoleConfigField<C: MergeConfig> {
+trait AgentRoleConfigField<C: MergeSelf> {
     fn merge(&self, role_name: &str) -> C;
     fn set(&mut self, role_name: &str, config: Arc<C>);
 }
@@ -126,13 +126,13 @@ impl_agent_role_config_field!(OutChannelConfig);
 impl_agent_role_config_field!(ToolkitSetConfig);
 
 impl AgentRoleConfig {
-    pub fn merge<C: MergeConfig>(&self, role_name: &str) -> C
+    pub fn merge<C: MergeSelf>(&self, role_name: &str) -> C
     where
         Self: AgentRoleConfigField<C>,
     {
         <Self as AgentRoleConfigField<C>>::merge(self, role_name)
     }
-    pub fn set<C: MergeConfig>(&mut self, role_name: &str, config: Arc<C>)
+    pub fn set<C: MergeSelf>(&mut self, role_name: &str, config: Arc<C>)
     where
         Self: AgentRoleConfigField<C>,
     {
