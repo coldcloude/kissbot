@@ -48,7 +48,7 @@ macro_rules! impl_session_config_field {
                 // 需要新建 session 配置，需要写权限
                 let mut repo = self.nexus_repo.write().await;
                 // 新建 session 配置
-                let config = Arc::new(repo.create_session_config::<$ct, $et>(session_key));
+                let config = Arc::new(SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key));
                 // 保存 session config
                 let sessions = Arc::make_mut(&mut repo.sessions);
                 let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
@@ -86,7 +86,6 @@ macro_rules! impl_session_config_field {
             /// 设置 session 配置
             async fn set_session_config(&self, session_key: &SessionKey, config: &$ct) -> Result<()> {
                 self.write_nexus_config(|repo| {
-                    let new_eff_config = repo.create_session_config::<$ct, $et>(session_key);
                     let sessions = Arc::make_mut(&mut repo.sessions);
                     let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
                         let config_map_mut = Arc::make_mut(&mut config_map);
@@ -96,7 +95,7 @@ macro_rules! impl_session_config_field {
                             eff_config
                         } else {
                             // 新建 session 配置
-                            let mut eff_config = new_eff_config;
+                            let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key);
                             eff_config.merge(config);
                             Arc::new(eff_config)
                         };
@@ -104,7 +103,7 @@ macro_rules! impl_session_config_field {
                         config_map
                     } else {
                         // 新建 session 配置
-                        let mut eff_config = new_eff_config;
+                        let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key);
                         eff_config.merge(config);
                         // 新建 session map
                         let mut config_map = SessionConfigMap::default();
@@ -125,6 +124,7 @@ impl_session_config_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
 impl_session_config_field!(ChannelBatchConfig, ChannelBatchConfig);
 impl_session_config_field!(OutChannelConfig, OutChannelConfig);
 impl_session_config_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_session_config_field!(PipelineConfig, PipelineConfig);
 
 impl ConfigManager {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）

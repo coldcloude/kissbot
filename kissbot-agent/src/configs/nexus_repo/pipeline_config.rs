@@ -322,9 +322,7 @@ impl MergeSelf for OutChannelConfig {}
 
 impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
     fn get_effective_config(&self) -> OutChannelConfig {
-        OutChannelConfig {
-            out_channel: self.out_channel.clone(),
-        }
+        self.clone()
     }
 }
 
@@ -349,8 +347,55 @@ impl MergeSelf for ToolkitSetConfig {}
 
 impl MergeEffectiveConfig<ToolkitSetConfig> for ToolkitSetConfig {
     fn get_effective_config(&self) -> ToolkitSetConfig {
-        ToolkitSetConfig {
-            toolkit_set: self.toolkit_set.clone(),
+        self.clone()
+    }
+}
+
+// ============ pipeline =================
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_processor: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompter: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_sender: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_caller: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_processor: Option<Arc<String>>,
+}
+
+impl MergeBy<PipelineConfig> for PipelineConfig {
+    fn merge(&mut self, other: &Self) {
+        if let Some(preset) = other.preset.as_ref() {
+            self.preset = Some(preset.clone());
         }
+        if let Some(input_processor) = other.input_processor.as_ref() {
+            self.input_processor = Some(input_processor.clone());
+        }
+        if let Some(system_prompter) = other.system_prompter.as_ref() {
+            self.system_prompter = Some(system_prompter.clone());
+        }
+        if let Some(message_sender) = other.message_sender.as_ref() {
+            self.message_sender = Some(message_sender.clone());
+        }
+        if let Some(tool_caller) = other.tool_caller.as_ref() {
+            self.tool_caller = Some(tool_caller.clone());
+        }
+        if let Some(output_processor) = other.output_processor.as_ref() {
+            self.output_processor = Some(output_processor.clone());
+        }
+    }
+}
+
+impl MergeSelf for PipelineConfig {}
+
+impl MergeEffectiveConfig<PipelineConfig> for PipelineConfig {
+    fn get_effective_config(&self) -> PipelineConfig {
+        self.clone()
     }
 }

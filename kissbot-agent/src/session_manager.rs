@@ -254,6 +254,11 @@ impl Session {
         let mut ctx = self.context.lock().await;
         ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
     }
+
+    pub async fn set_system_message(&self, content: String) {
+        let mut ctx = self.context.lock().await;
+        ctx.set_system_message(content);
+    }
 }
 
 /// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_name, mode) 去重维护会话集合

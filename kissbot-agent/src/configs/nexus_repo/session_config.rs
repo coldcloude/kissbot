@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::configs::{nexus_repo::pipeline_config::*, common::{MergeSelf, MergeBy, OptionArcField}};
+use crate::{configs::{MergeEffectiveConfig, common::{MergeBy, MergeSelf, OptionArcField}, nexus_repo::pipeline_config::*}, types::SessionKey};
 use crate::{impl_option_arc_field, impl_option_arc_field_map};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -16,6 +16,7 @@ struct AgentRoleConfigMap {
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
     toolkit_set: Option<Arc<ToolkitSetConfig>>,
+    pipeline: Option<Arc<PipelineConfig>>,
 }
 
 impl_option_arc_field!(LLMConfig => llm, AgentRoleConfigMap);
@@ -24,6 +25,7 @@ impl_option_arc_field!(MemoryRecoverConfig => memory_recover, AgentRoleConfigMap
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, AgentRoleConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, AgentRoleConfigMap);
 impl_option_arc_field!(ToolkitSetConfig => toolkit_set, AgentRoleConfigMap);
+impl_option_arc_field!(PipelineConfig => pipeline, AgentRoleConfigMap);
 
 impl_option_arc_field_map!(AgentRoleConfigMap);
 
@@ -54,6 +56,7 @@ impl_agent_role_config_map_field!(MemoryRecoverConfig);
 impl_agent_role_config_map_field!(ChannelBatchConfig);
 impl_agent_role_config_map_field!(OutChannelConfig);
 impl_agent_role_config_map_field!(ToolkitSetConfig);
+impl_agent_role_config_map_field!(PipelineConfig);
 
 impl AgentRoleConfigMap {
     pub fn set<C: MergeSelf>(&mut self, config: Arc<C>)
@@ -74,14 +77,14 @@ pub struct AgentRoleConfig {
 
 
 trait AgentRoleConfigField<C: MergeSelf> {
-    fn merge(&self, role_name: &str) -> C;
+    fn build(&self, role_name: &str) -> C;
     fn set(&mut self, role_name: &str, config: Arc<C>);
 }
 
 macro_rules! impl_agent_role_config_field {
     ($ty:ty) => {
         impl AgentRoleConfigField<$ty> for AgentRoleConfig {
-            fn merge(&self, role_name: &str) -> $ty {
+            fn build(&self, role_name: &str) -> $ty {
                 let mut config = <$ty>::default();
                 if let Some(agent_config) = self.config_map.get_deref::<$ty>() {
                     config.merge(&agent_config);
@@ -124,13 +127,14 @@ impl_agent_role_config_field!(MemoryRecoverConfig);
 impl_agent_role_config_field!(ChannelBatchConfig);
 impl_agent_role_config_field!(OutChannelConfig);
 impl_agent_role_config_field!(ToolkitSetConfig);
+impl_agent_role_config_field!(PipelineConfig);
 
 impl AgentRoleConfig {
-    pub fn merge<C: MergeSelf>(&self, role_name: &str) -> C
+    pub fn build<C: MergeSelf>(&self, role_name: &str) -> C
     where
         Self: AgentRoleConfigField<C>,
     {
-        <Self as AgentRoleConfigField<C>>::merge(self, role_name)
+        <Self as AgentRoleConfigField<C>>::build(self, role_name)
     }
     pub fn set<C: MergeSelf>(&mut self, role_name: &str, config: Arc<C>)
     where
@@ -148,6 +152,7 @@ pub struct SessionConfigMap {
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
     toolkit_set: Option<Arc<ToolkitSetConfig>>,
+    pipeline: Option<Arc<PipelineConfig>>,
 }
 
 impl_option_arc_field!(EffectiveLLMConfig => llm, SessionConfigMap);
@@ -156,6 +161,7 @@ impl_option_arc_field!(EffectiveMemoryRecoverConfig => memory_recover, SessionCo
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMap);
 impl_option_arc_field!(ToolkitSetConfig => toolkit_set, SessionConfigMap);
+impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
 
@@ -181,6 +187,7 @@ impl_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig
 impl_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
 impl_session_config_map_field!(OutChannelConfig, OutChannelConfig);
 impl_session_config_map_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_session_config_map_field!(PipelineConfig, PipelineConfig);
 
 impl SessionConfigMap {
     pub fn set<C, E: MergeBy<C>>(&mut self, config: &C)
@@ -188,5 +195,42 @@ impl SessionConfigMap {
         Self: SessionConfigMapField<C, E>,
     {
         <Self as SessionConfigMapField<C, E>>::set(self, config)
+    }
+}
+
+trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
+    fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
+}
+
+macro_rules! impl_agent_role_session_config_map_field {
+    ($ct:ty, $et:ty) => {
+        impl AgentRoleSessionConfigMapField<$ct, $et> for SessionConfigMap {
+            fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> $et {
+                let merge_config = if let Some(agent_role_config) = agents.get(session_key.agent_id.as_str()) {
+                    agent_role_config.build::<$ct>(session_key.role_name.as_str())
+                } else {
+                    <$ct>::default()
+                };
+                merge_config.get_effective_config()
+            }
+        }
+    }
+}
+
+impl_agent_role_session_config_map_field!(LLMConfig, EffectiveLLMConfig);
+impl_agent_role_session_config_map_field!(CompressConfig, EffectiveCompressConfig);
+impl_agent_role_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
+impl_agent_role_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
+impl_agent_role_session_config_map_field!(OutChannelConfig, OutChannelConfig);
+impl_agent_role_session_config_map_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_agent_role_session_config_map_field!(PipelineConfig, PipelineConfig);
+
+impl SessionConfigMap {
+    pub fn create<C, E>(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        Self: AgentRoleSessionConfigMapField<C, E>,
+    {
+        <Self as AgentRoleSessionConfigMapField<C, E>>::create(agents, session_key)
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crate::{config_manager::ConfigManager, configs::{CompressConfig, EffectiveCompressConfig, EffectiveLLMConfig, LLMConfig, ToolConfig}, nexus::Nexus, pipeline::AgentMessageSender, types::{Error, Message, ModelResponse, Result, SessionKey}};
 
 pub struct RawMessagerSender {
-    session_key: SessionKey,
+    session_key: Arc<SessionKey>,
 }
 
 #[async_trait]

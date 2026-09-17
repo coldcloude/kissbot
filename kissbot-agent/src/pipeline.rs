@@ -17,6 +17,11 @@ pub trait AgentMessageSender {
 }
 
 #[async_trait]
+pub trait AgentSystemPrompter {
+    async fn reset_system_prompt(&self);
+}
+
+#[async_trait]
 pub trait AgentInputProcessor {
     async fn accept(&self, event: Arc<IncomingMessageEvent>);
 }
@@ -24,6 +29,12 @@ pub trait AgentInputProcessor {
 #[async_trait]
 pub trait AgentOutputProcessor {
     async fn accept(&self, turn: usize, response: Result<ModelResponse>) -> (bool, Vec<Message>);
+}
+
+pub struct AgentTrgger {
+    session_key: Arc<SessionKey>,
+    input_processor: Arc<dyn AgentInputProcessor>,
+    system_prompter: Arc<dyn AgentSystemPrompter>,
 }
 
 pub struct AgentPipeline {
