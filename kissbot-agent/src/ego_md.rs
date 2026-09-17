@@ -11,14 +11,15 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
 }
 
 /// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
-pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: &HashSet<ChannelUser>) -> String {
+pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<ChannelUser>>) -> String {
     let mut content = String::from("# Individual Recognition\n\n");
     for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
         let individual = individual_arcswap.load();
 
         let mut identifiers = String::new();
         for id in individual.identifiers.iter() {
-            if ids.contains(id) {
+            let matched = if let Some(ids) = ids { ids.contains(id) } else { true };
+            if matched {
                 identifiers.push_str(&format!("- {} {}\n", id.messenger_id, id.user_id));
             }
         }
@@ -46,14 +47,15 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
 }
 
 /// 由 RolePlay 生成系统提示词 markdown（角色设定，按 individual_names 过滤展示的其他角色）
-pub fn build_role_play_md(role: &RolePlay, individual_names: &HashSet<String>) -> String {
+pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<String>>) -> String {
     let mut content = String::from("# Role Play\n\n");
     content.push_str(&format!("- **Self Role**: {}\n\n", role.role.role_name));
     content.push_str(&format!("- **Self Description**: {}\n", role.role.description));
 
     for (other_role_name, other_role_arcswap) in role.other_roles.iter() {
         let other_role = other_role_arcswap.load();
-        if individual_names.contains(other_role.individual_name.as_str()) {
+        let matched = if let Some(ns) = individual_names { ns.contains(other_role.individual_name.as_str()) } else { true };
+        if matched {
             content.push_str(&format!("## Known role: {}\n\n", other_role_name));
             content.push_str(&format!("- **Belong to**: {}\n", other_role.individual_name));
             content.push_str(&format!("- **Description**: {}\n", other_role.description));

@@ -50,7 +50,13 @@ impl MemoryEgoSystemPrompter {
 #[async_trait]
 impl AgentSystemPrompter for MemoryEgoSystemPrompter {
     async fn reset_system_prompt(&self) {
-        let session = Nexus::get().ensure_session(self.session_key.as_ref()).await;
-        session.set_system_message("TODO".to_string());
+        let nexus = Nexus::get();
+        let prompt = if let Some(prompt) = nexus.system_prompt_for_agent(self.session_key.agent_id.as_str(), self.session_key.role_name.as_str()).await {
+            prompt
+        } else {
+            DEFAULT_SYSTEM_PROMPT.to_string()
+        };
+        let session = nexus.ensure_session(self.session_key.as_ref()).await;
+        session.set_system_message(prompt);
     }
 }

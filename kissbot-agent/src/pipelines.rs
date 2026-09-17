@@ -5,6 +5,7 @@ pub mod tool_caller;
 pub mod system_prompter;
 
 pub use input_processor::*;
+use kissbot_api::RESERVED_AGENT_ID;
 pub use output_processor::*;
 pub use message_sender::*;
 pub use tool_caller::*;
@@ -153,7 +154,7 @@ pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<Arc<Ag
             },
             PP_PRESET_EVENT => {
                 input_processor_cfg = Some(PP_IN_BATCH);
-                system_prompter_cfg = Some(PP_SYS_DEFAULT);
+                system_prompter_cfg = Some(PP_SYS_MEMORY_EGO);
             },
             _ => {},
         };

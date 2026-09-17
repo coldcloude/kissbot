@@ -227,24 +227,12 @@ impl Nexus {
     /// 保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
     /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
     /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
-    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Result<String> {
+    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Option<String> {
         if agent_id == RESERVED_AGENT_ID {
-            return Ok(ConfigManager::get().default_system_prompt().await);
+            return None;
         }
-        let mut system_parts = vec![];
 
-        // agent 自身活跃标识集合：来自各 channel 绑定身份（messenger_id, user_id；群组不限定）
-        let mut ids = std::collections::HashSet::new();
-        for (_, ch) in ConfigManager::get().channels().await {
-            for bu in ch.bind_users.iter() {
-                ids.insert(kissbot_api::ChannelUser {
-                    messenger_id: bu.messenger_id.clone(),
-                    user_id: bu.user_id.clone(),
-                });
-            }
-        }
-        // 匹配的个体名，用于角色设定的 other_roles 过滤
-        let mut individual_names = std::collections::HashSet::new();
+        let mut system_parts = vec![];
 
         // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
         if let Ok(Some(metadata)) = self.memory_ego_client.get_agent(agent_id).await {
@@ -252,26 +240,20 @@ impl Nexus {
         }
         // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
         if let Ok(Some(individuals)) = self.memory_ego_client.get_individuals(agent_id).await {
-            for (name, entry) in individuals.individual_map.iter() {
-                let individual = entry.load();
-                if individual.identifiers.iter().any(|id| ids.contains(id)) {
-                    individual_names.insert(name.clone());
-                }
-            }
-            system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, &ids));
+            system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, None));
         }
         // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
         if !role_name.is_empty() {
             if let Ok(Some(role)) = self.memory_ego_client.get_role(agent_id, role_name).await {
-                system_parts.push(crate::ego_md::build_role_play_md(&role, &individual_names));
+                system_parts.push(crate::ego_md::build_role_play_md(&role, None));
             }
         }
 
         if system_parts.is_empty() {
-            system_parts.push("你是 kissbot 智能助手".to_string());
+            return None;
         }
 
-        Ok(system_parts.join("\n"))
+        Some(system_parts.join("\n"))
     }
 
     // ==================== 运行状态修改（管理命令入口） ====================
