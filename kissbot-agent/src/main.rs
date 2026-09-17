@@ -17,7 +17,7 @@ mod station_client;
 mod station_http;
 mod types;
 mod pipeline;
-mod processors;
+mod pipelines;
 
 #[tokio::main]
 async fn main() {
