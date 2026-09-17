@@ -23,7 +23,7 @@ pub struct ConfigManager {
 }
 
 #[async_trait]
-trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
+pub trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
     async fn session_config(&self, session_key: &SessionKey) -> Arc<E>;
     async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>;
     async fn set_session_config(&self, session_key: &SessionKey, config: &C) -> Result<()>;

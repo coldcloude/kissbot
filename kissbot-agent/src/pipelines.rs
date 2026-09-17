@@ -4,7 +4,9 @@ pub mod message_sender;
 pub mod tool_caller;
 pub mod system_prompter;
 
+use arc_swap::ArcSwap;
 pub use input_processor::*;
+use kissbot_api::{ArcSwapHashMap, IncomingMessageEvent};
 pub use output_processor::*;
 pub use message_sender::*;
 pub use tool_caller::*;
@@ -12,7 +14,7 @@ pub use system_prompter::*;
 
 use std::sync::Arc;
 
-use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrgger}, types::{Mode, SessionKey}};
+use crate::{config_manager::ConfigManager, configs::{PipelineConfig, ToolConfig}, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrgger}, types::{Error, Message, Mode, Result, SessionKey}};
 
 pub const PP_IN_BATCH: &str = "batch_input_processor";
 pub const PP_OUT_CHANNEL: &str = "channel_output_processor";
@@ -26,54 +28,44 @@ pub const PP_SYS_MEMORY_EGO: &str = "memory_ego_system_prompter";
 pub const PP_PRESET_ROLE: &str = "preset_role";
 pub const PP_PRESET_EVENT: &str = "preset_event";
 
-struct ProcessorSet<'l> {
-    input_processor: &'l str,
-    system_prompter: &'l str,
-    message_sender: &'l str,
-    tool_caller: &'l str,
-    output_processor: &'l str,
-}
-
-pub struct AgentPipelineFactory;
-
-pub async fn create_input_processor(session_key: Arc<SessionKey>, name: &str) -> Option<Arc<dyn AgentInputProcessor>> {
+pub async fn create_input_processor(session_key: Arc<SessionKey>, name: &str) -> Option<Box<dyn AgentInputProcessor>> {
     match name {
-        PP_IN_BATCH => Some(Arc::new(BatchAgentInputProcessor::new(session_key).await)),
+        PP_IN_BATCH => Some(Box::new(BatchAgentInputProcessor::new(session_key).await)),
         _ => None,
     }
 }
 
-pub fn create_system_prompter(session_key: Arc<SessionKey>, name: &str) -> Option<Arc<dyn AgentSystemPrompter>> {
+pub fn create_system_prompter(session_key: Arc<SessionKey>, name: &str) -> Option<Box<dyn AgentSystemPrompter>> {
     match name {
-        PP_SYS_DEFAULT => Some(Arc::new(DefaultSystemPrompter::new(session_key))),
-        PP_SYS_MEMORY_EGO => Some(Arc::new(MemoryEgoSystemPrompter::new(session_key))),
+        PP_SYS_DEFAULT => Some(Box::new(DefaultSystemPrompter::new(session_key))),
+        PP_SYS_MEMORY_EGO => Some(Box::new(MemoryEgoSystemPrompter::new(session_key))),
         _ => None,
     }
 }
 
-pub fn create_message_sender(session_key: Arc<SessionKey>, name: &str) -> Option<Arc<dyn AgentMessageSender>> {
+pub fn create_message_sender(session_key: Arc<SessionKey>, name: &str) -> Option<Box<dyn AgentMessageSender>> {
     match name {
-        PP_MSG_RAW => Some(Arc::new(RawMessagerSender { session_key })),
-        PP_MSG_COMPRESS => Some(Arc::new(TokenLimitMessageSender::new_compress(session_key))),
-        PP_MSG_MEMORY_RECOVER => Some(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key))),
+        PP_MSG_RAW => Some(Box::new(RawMessagerSender { session_key })),
+        PP_MSG_COMPRESS => Some(Box::new(TokenLimitMessageSender::new_compress(session_key))),
+        PP_MSG_MEMORY_RECOVER => Some(Box::new(TokenLimitMessageSender::new_memory_recover(session_key))),
         _ => None,
     }
 }
-pub fn create_tool_caller(name: &str) -> Option<Arc<dyn AgentToolCaller>> {
+pub fn create_tool_caller(name: &str) -> Option<Box<dyn AgentToolCaller>> {
     match name {
-        PP_TOOL_STATION => Some(Arc::new(StationToolCaller)),
-        _ => None,
-    }
-}
-
-pub fn create_output_processor(session_key: Arc<SessionKey>, name: &str) -> Option<Arc<dyn AgentOutputProcessor>> {
-    match name {
-        PP_OUT_CHANNEL => Some(Arc::new(ChannelOutputProcessor::new(session_key))),
+        PP_TOOL_STATION => Some(Box::new(StationToolCaller)),
         _ => None,
     }
 }
 
-pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Option<Arc<AgentPipeline>> {
+pub fn create_output_processor(session_key: Arc<SessionKey>, name: &str) -> Option<Box<dyn AgentOutputProcessor>> {
+    match name {
+        PP_OUT_CHANNEL => Some(Box::new(ChannelOutputProcessor::new(session_key))),
+        _ => None,
+    }
+}
+
+pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Option<AgentPipeline> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut message_sender_cfg: Option<&str> = None;
     let mut tool_caller_cfg: Option<&str> = None;
@@ -110,9 +102,9 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Option<Arc<A
     if let Some(cfg) = config.output_processor.as_ref() {
         output_processor_cfg = Some(cfg.as_str());
     }
-    let mut message_sender: Option<Arc<dyn AgentMessageSender>> = None;
-    let mut tool_caller: Option<Arc<dyn AgentToolCaller>> = None;
-    let mut output_processor: Option<Arc<dyn AgentOutputProcessor>> = None;
+    let mut message_sender: Option<Box<dyn AgentMessageSender>> = None;
+    let mut tool_caller: Option<Box<dyn AgentToolCaller>> = None;
+    let mut output_processor: Option<Box<dyn AgentOutputProcessor>> = None;
     if let Some(name) = message_sender_cfg {
         message_sender = create_message_sender(session_key.clone(), name);
     }
@@ -125,15 +117,15 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Option<Arc<A
     let Some(message_sender) = message_sender else { return None; };
     let Some(tool_caller) = tool_caller else { return None; };
     let Some(output_processor) = output_processor else { return None; };
-    Some(Arc::new(AgentPipeline {
+    Some(AgentPipeline {
         session_key,
-        message_sender,
-        tool_caller,
-        output_processor,
-    }))
+        message_sender: ArcSwap::from_pointee(message_sender),
+        tool_caller: ArcSwap::from_pointee(tool_caller),
+        output_processor: ArcSwap::from_pointee(output_processor),
+    })
 }
 
-pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<Arc<AgentTrgger>> {
+pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<AgentTrgger> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut input_processor_cfg: Option<&str> = None;
     let mut system_prompter_cfg: Option<&str> = None;
@@ -164,8 +156,8 @@ pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<Arc<Ag
     if let Some(cfg) = config.system_prompter.as_ref() {
         system_prompter_cfg = Some(cfg.as_str());
     }
-    let mut input_processor: Option<Arc<dyn AgentInputProcessor>> = None;
-    let mut system_prompter: Option<Arc<dyn AgentSystemPrompter>> = None;
+    let mut input_processor: Option<Box<dyn AgentInputProcessor>> = None;
+    let mut system_prompter: Option<Box<dyn AgentSystemPrompter>> = None;
     if let Some(name) = input_processor_cfg {
         input_processor = create_input_processor(session_key.clone(), name).await;
     }
@@ -175,9 +167,74 @@ pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<Arc<Ag
     }
     let Some(input_processor) = input_processor else { return None; };
     let Some(system_prompter) = system_prompter else { return None; };
-    Some(Arc::new(AgentTrgger {
+    Some(AgentTrgger {
         session_key,
-        input_processor,
-        system_prompter,
-    }))
+        input_processor: ArcSwap::from_pointee(input_processor),
+        system_prompter: ArcSwap::from_pointee(system_prompter),
+    })
+}
+
+pub struct PipelineManager {
+    trigger_map: ArcSwap<ArcSwapHashMap<SessionKey, AgentTrgger>>,
+    pipeline_map: ArcSwap<ArcSwapHashMap<SessionKey, AgentPipeline>>,
+}
+
+impl PipelineManager {
+    pub fn new() -> Self {
+        Self {
+            trigger_map: ArcSwap::from_pointee(ArcSwapHashMap::new()),
+            pipeline_map: ArcSwap::from_pointee(ArcSwapHashMap::new()),
+        }
+    }
+
+    pub async fn sync_pipeline(&self, session_key: Arc<SessionKey>) -> Result<()> {
+        let Some(trigger) = create_agent_trigger(session_key.clone()).await else {
+            return Err(Error::PipelineNotFound(session_key.as_ref().clone()));
+        };
+        let Some(pipeline) = create_agent_pipeline(session_key.clone()).await else {
+            return Err(Error::PipelineNotFound(session_key.as_ref().clone()));
+        };
+        let trigger = Arc::new(trigger);
+        if self.trigger_map.load().replace_exist(session_key.as_ref(), trigger.clone()).is_err() {
+            let mut trigger_map = self.trigger_map.load_full();
+            let trigger_map_mut = Arc::make_mut(&mut trigger_map);
+            trigger_map_mut.replace(session_key.as_ref(), trigger);
+            self.trigger_map.store(trigger_map);
+        }
+        let pipeline = Arc::new(pipeline);
+        if self.pipeline_map.load().replace_exist(session_key.as_ref(), pipeline.clone()).is_err() {
+            let mut pipeline_map = self.pipeline_map.load_full();
+            let pipeline_map_mut = Arc::make_mut(&mut pipeline_map);
+            pipeline_map_mut.replace(session_key.as_ref(), pipeline);
+            self.pipeline_map.store(pipeline_map);
+        }
+        Ok(())
+    }
+
+    pub async fn incoming_message(&self, session_key: &SessionKey, event: Arc<IncomingMessageEvent>) -> Result<()> {
+        if let Some(trigger) = self.trigger_map.load().get(session_key) {
+            trigger.load().input_processor.load().accept(event).await;
+            Ok(())
+        } else {
+            Err(Error::PipelineNotFound(session_key.clone()))
+        }
+    }
+
+    pub async fn reset_system_prompt(&self, session_key: &SessionKey) -> Result<()> {
+        if let Some(trigger) = self.trigger_map.load().get(session_key) {
+            trigger.load().system_prompter.load().reset_system_prompt().await;
+            Ok(())
+        } else {
+            Err(Error::PipelineNotFound(session_key.clone()))
+        }
+    }
+
+    pub async fn run_pipeline(&self, session_key: &SessionKey, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
+        if let Some(pipeline) = self.pipeline_map.load().get(session_key) {
+            pipeline.load().run(message, tools).await;
+            Ok(())
+        } else {
+            Err(Error::PipelineNotFound(session_key.clone()))
+        }
+    }
 }

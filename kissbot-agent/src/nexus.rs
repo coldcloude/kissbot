@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
 use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ToolConfig, ToolkitSetConfig};
+use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
     ChannelCommand, Error, Message, Mode, ModelResponse, Result, SessionKey, ToolCall, role_mode,
@@ -55,6 +56,7 @@ pub struct Nexus {
     memory_ego_client: Arc<MemoryEgoClient>,
     session_manager: Arc<SessionManager>,
     provider_manager: Arc<ProviderManager>,
+    pipeline_manager: Arc<PipelineManager>,
     /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -76,6 +78,7 @@ impl Nexus {
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
         let provider_manager = Arc::new(ProviderManager::new());
+        let pipeline_manager = Arc::new(PipelineManager::new());
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
         // channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
@@ -86,6 +89,7 @@ impl Nexus {
             memory_ego_client,
             session_manager,
             provider_manager,
+            pipeline_manager,
             channel_manager: Arc::new(ChannelManager::new()),
             apply_channel_session_key_tx,
             channel_task_tx,
@@ -338,8 +342,15 @@ impl Nexus {
         let mut config = LLMConfig::default();
         config.provider = Some(Arc::new(provider.to_string()));
         config.model = Some(Arc::new(model.to_string()));
-        ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config);
-        Ok(())
+        ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config).await
+    }
+
+    pub async fn sync_session_pipeline(&self, session_key: Arc<SessionKey>) -> Result<()> {
+        self.pipeline_manager.sync_pipeline(session_key).await
+    }
+
+    pub async fn reset_system_prompt(&self, session_key: &SessionKey) -> Result<()> {
+        self.pipeline_manager.reset_system_prompt(session_key).await
     }
 
     /// 启动主循环（保持进程运行）：初始化会话 + 连接全部 channel
@@ -437,18 +448,9 @@ impl Nexus {
             _ => {}
         }
 
-        // 5. 普通消息：无 out_channel 不进 Agentic Loop（ChannelRecord 已存，结束）
-        let cfg = ConfigManager::get().context_config(key.agent_id.as_str(), key.role_name.as_str()).await;
-        if cfg.out_channel.is_none() {
-            return;
-        }
-        let session = self.ensure_session(key).await;
-        // 合批：数据直取会话生产侧入队（Arc<IncomingMessageEvent>）→ 更新截止时间（防抖）→ 发送触发时间（At）。
-        // 无 sleep、无逐消息任务——触发由 session 的 trigger 任务经 DelayQueue 定时处理。
-        // BatchProducer 已从 Channel 删除：enqueue 时 ensure_session 已返回会话，生产侧经 session.enqueue_batch 入队
-        // （batch_producer 已收窄为 Session 私有字段，外部不直接访问），无 Channel 中转
-        let cfg = ConfigManager::get().context_config(session.agent_id.as_str(), session.role_name.as_str()).await;
-        session.enqueue_batch(event, cfg.channel_batch_interval_secs).await;
+        // 5. 普通消息：运行pipeline
+        let _ = self.ensure_session(&key);
+        let _ = self.pipeline_manager.incoming_message(&key, event);
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
@@ -472,8 +474,9 @@ impl Nexus {
         self.provider_manager.call(llm_cfg, messages, tools).await
     }
 
-    pub async fn run_pipeline(&self, session_key: Arc<SessionKey>, message: Message) {
-
+    pub async fn run_pipeline(&self, session_key: &SessionKey, message: Message) -> Result<()> {
+        let tools = self.tools_for_session(session_key).await;
+        self.pipeline_manager.run_pipeline(session_key, message, &tools).await
     }
 
     pub async fn send_memory_think(&self, session_key: &SessionKey, key: Arc<String>, reasoning_content: Option<Arc<String>>, thinking: Option<Arc<String>>) {
@@ -679,6 +682,7 @@ mod tests {
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
             session_manager: SessionManager::new(data_dir.to_str().unwrap()),
             provider_manager: Arc::new(ProviderManager::new()),
+            pipeline_manager: Arc::new(PipelineManager::new()),
             channel_manager: Arc::new(ChannelManager::new()),
             apply_channel_session_key_tx: command_tx,
             channel_task_tx,

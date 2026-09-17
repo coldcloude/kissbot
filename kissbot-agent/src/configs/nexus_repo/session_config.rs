@@ -76,7 +76,7 @@ pub struct AgentRoleConfig {
 }
 
 
-trait AgentRoleConfigField<C: MergeSelf> {
+pub trait AgentRoleConfigField<C: MergeSelf> {
     fn build(&self, role_name: &str) -> C;
     fn set(&mut self, role_name: &str, config: Arc<C>);
 }
@@ -165,7 +165,7 @@ impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
 
-trait SessionConfigMapField<C, E: MergeBy<C>> {
+pub trait SessionConfigMapField<C, E: MergeBy<C>> {
     fn set(&mut self, config: &C);
 }
 
@@ -198,7 +198,7 @@ impl SessionConfigMap {
     }
 }
 
-trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
+pub trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
     fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
 }
 

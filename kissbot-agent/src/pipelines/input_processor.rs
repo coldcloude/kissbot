@@ -115,7 +115,7 @@ impl BatchConsumer {
                             // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
                             let content = pack_batch(&items);
                             // 在对应session启动流水线
-                            Nexus::get().run_pipeline(self.session_key.clone(), content).await
+                            let _ = Nexus::get().run_pipeline(self.session_key.as_ref(), content).await;
                         },
                         None => break, // 仅防御（队列非空时 poll_next 不返回 None）
                     }

@@ -1,5 +1,7 @@
 // ========== 错误类型 ==========
 
+use crate::types::SessionKey;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Config not found: {0}")]
@@ -76,6 +78,9 @@ pub enum Error {
     #[allow(dead_code)]
     #[error("Internal error: {0}")]
     InternalError(String),
+
+    #[error("Pipeline not found for session {0:?}")]
+    PipelineNotFound(SessionKey)
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

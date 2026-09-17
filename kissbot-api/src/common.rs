@@ -109,17 +109,22 @@ impl<K, T> ArcSwapHashMap<K, T>
 where
     K: Eq + Hash + Clone + 'static,
 {
-    pub fn replace(&mut self, key: &K, value: Arc<T>) {
+    pub fn replace_exist(&self, key: &K, value: Arc<T>) -> Result<(),()> {
         if let Some(arc_swap) = self.base.get(key) {
             arc_swap.store(value);
+            Ok(())
         } else {
-            match self.base.entry(key.clone()) {
-                Entry::Occupied(entry) => {
-                    entry.get().store(value);
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(ArcSwap::new(value));
-                }
+            Err(())
+        }
+    }
+
+    pub fn replace(&mut self, key: &K, value: Arc<T>) {
+        match self.base.entry(key.clone()) {
+            Entry::Occupied(entry) => {
+                entry.get().store(value);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(ArcSwap::new(value));
             }
         }
     }

@@ -31,7 +31,7 @@ impl DefaultSystemPrompter {
 impl AgentSystemPrompter for DefaultSystemPrompter {
     async fn reset_system_prompt(&self) {
         let session = Nexus::get().ensure_session(self.session_key.as_ref()).await;
-        session.set_system_message(self.prompt.as_str().to_string());
+        session.set_system_message(self.prompt.as_str().to_string()).await;
     }
 }
 
@@ -57,6 +57,6 @@ impl AgentSystemPrompter for MemoryEgoSystemPrompter {
             DEFAULT_SYSTEM_PROMPT.to_string()
         };
         let session = nexus.ensure_session(self.session_key.as_ref()).await;
-        session.set_system_message(prompt);
+        session.set_system_message(prompt).await;
     }
 }

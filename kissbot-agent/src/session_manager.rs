@@ -6,7 +6,7 @@ use chrono::Local;
 use dashmap::DashMap;
 use tokio::io::AsyncWriteExt;
 
-use crate::types::{Error, Message, Mode, Result, SessionKey};
+use crate::{nexus::Nexus, types::{Error, Message, Mode, Result, SessionKey}};
 
 /// 会话上下文：内存消息 + 本地缓存 + 历史归档一体管理（持久化由 SessionContext 自身负责，coordinator 不感知）
 ///
@@ -241,18 +241,18 @@ pub struct Session {
 impl Session {
     pub async fn build_context(&self) -> Vec<Message> {
         let mut ctx = self.context.lock().await;
-        ctx.apply_pending_system().await;
+        let _ = ctx.apply_pending_system().await;
         ctx.build()
     }
 
     pub async fn context_append(&self, messages: Vec<Message>) {
         let mut ctx = self.context.lock().await;
-        ctx.append(messages);
+        let _ = ctx.append(messages);
     }
 
     pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>) {
         let mut ctx = self.context.lock().await;
-        ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
+        let _ = ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
     }
 
     pub async fn set_system_message(&self, content: String) {
@@ -316,25 +316,11 @@ impl SessionManager {
             context,
         });
         // 5. 新建会话初始化（spawn 前执行，任务启动时上下文已就绪）：
-        //    Event 从缓存恢复（全量回读；文件不存在为空，不清理）；Role 查询记忆重建（归档+清空在 archive_... 内部）
-        match key.mode {
-            Mode::Event(_) => {
-                let _ = session.context.lock().await.recover_from_cache().await;
-            }
-            Mode::Role => {
-                // TODO load memory
-                // let messages = Nexus::get()
-                //     .build_context_from_memory_store(session.agent_id.clone(), session.role_name.clone()).await;
-                // let _ = session.context.lock().await.archive_and_clear_cache_and_reset_messages(Some(messages)).await;
-            }
-        }
-        // TODO load system message
-        // 系统消息：保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（失败跳过设置）
-        // if let Ok(prompt) = Nexus::get()
-        //     .system_prompt_for_agent(session.agent_id.as_str(), &session.role_name).await
-        // {
-        //     session.context.lock().await.set_system_message(prompt);
-        // }
+        let _ = session.context.lock().await.recover_from_cache().await;
+        // 初始化 pipeline
+        let nexus = Nexus::get();
+        let _ = nexus.sync_session_pipeline(Arc::new(key.clone()));
+        let _ = nexus.reset_system_prompt(key);
         session
     }
 
