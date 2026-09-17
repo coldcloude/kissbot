@@ -27,9 +27,6 @@ pub struct NexusRepo {
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     pub agents: Arc<HashMap<String, Arc<AgentRoleConfig>>>,
     pub sessions: Arc<HashMap<SessionKey, Arc<SessionConfigMap>>>,
-    pub default_model: Arc<ProviderModel>,   // (provider, model) 打包
-    /// 保留 agent 的默认系统提示词（不调 memory-ego 时用），nexus.json 可持久化修改
-    pub default_system_prompt: Arc<String>,
 }
 
 impl Default for NexusRepo {
@@ -40,11 +37,6 @@ impl Default for NexusRepo {
             memory_structs: Arc::new(ArcSwapHashMap::new()),
             agents: Arc::new(HashMap::new()),
             sessions: Arc::new(HashMap::new()),
-            default_model: Arc::new(ProviderModel {
-                provider: Arc::new(String::new()),
-                model: Arc::new(String::new())
-            }),
-            default_system_prompt: Arc::new(String::new()),
         }
     }
 }

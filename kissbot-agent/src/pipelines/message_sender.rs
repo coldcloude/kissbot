@@ -37,9 +37,10 @@ impl AgentMessageSender for TokenLimitMessageSender {
         let cfg_mngr = ConfigManager::get();
         let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(&self.session_key).await;
         let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(&self.session_key).await;
-        let pm = llm_cfg.provider_model.as_ref();
-        let model_cfg = cfg_mngr.provider_model_config(pm).await
-        .ok_or_else(|| Error::ModelProviderNotFound(pm.provider.as_str().to_string(), pm.model.as_str().to_string()))?;
+        let provider = llm_cfg.provider.as_str();
+        let model = llm_cfg.model.as_str();
+        let model_cfg = cfg_mngr.provider_model_config(provider, model).await
+        .ok_or_else(|| Error::ModelProviderNotFound(provider.to_string(), model.to_string()))?;
         let nexus = Nexus::get();
         let session = nexus.ensure_session(&self.session_key).await;
 

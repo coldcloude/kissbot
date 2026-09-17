@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::configs::{OutChannel, ProviderModel};
+use crate::configs::{OutChannel};
 use crate::types::{ChannelCommand, Error, Mode, Result};
 use crate::config_manager::ConfigManager;
 use kissbot_api::{ChannelUser, RESERVED_AGENT_ID};
@@ -161,28 +161,12 @@ impl CommandRouter {
             }
             "/model" => {
                 // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
-                if parts.len() < 3 || parts.len() > 4 {
-                    return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string()));
+                if parts.len() != 2 {
+                    return Err(Error::InvalidCommand("格式: /model <provider> <model>".to_string()));
                 }
-                let set_default = match parts.get(3) {
-                    None => false,
-                    Some(v) => match *v {
-                        "true" => true,
-                        "false" => false,
-                        _ => return Err(Error::InvalidCommand("格式: /model <provider> <model> [true|false]".to_string())),
-                    },
-                };
-                let pm = ProviderModel { provider: Arc::new(parts[1].to_string()), model: Arc::new(parts[2].to_string()) };
                 // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
-                nexus.set_session_model(channel_id, pm.clone()).await?;
-                if set_default {
-                    ConfigManager::get().set_default_model(Arc::new(pm.clone())).await?;
-                }
-                let mut reply = format!("✅ 已切换模型为: {}/{}", pm.provider, pm.model);
-                if set_default {
-                    reply.push_str("（已设为默认）");
-                }
-                Ok(reply)
+                nexus.set_session_model(channel_id, parts[1], parts[2]).await?;
+                Ok(format!("✅ 已切换模型为: {}/{}", parts[1], parts[2]))
             }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]))),
         }

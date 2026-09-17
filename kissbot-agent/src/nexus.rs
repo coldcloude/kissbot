@@ -2,14 +2,13 @@ use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
 use chrono::Local;
 use kissbot_api::RESERVED_AGENT_ID;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ProviderModel, ToolConfig, ToolkitSetConfig};
+use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ToolConfig, ToolkitSetConfig};
 use crate::provider::ProviderManager;
 use crate::types::{
     ChannelCommand, Error, Message, Mode, ModelResponse, Result, SessionKey, ToolCall, role_mode,
@@ -53,12 +52,9 @@ static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 
 pub struct Nexus {
     memory_store_client: Arc<MemoryStoreClient>,
-    /// ego 服务 REST 客户端（共享连接池；system_prompt_for_agent / verify_agent_exists 经它发请求）
     memory_ego_client: Arc<MemoryEgoClient>,
     session_manager: Arc<SessionManager>,
     provider_manager: Arc<ProviderManager>,
-    /// 启动校验后的 default_model（从 API 模型列表校验）；None = 无模型（普通消息静默忽略）
-    valid_default: ArcSwapOption<ProviderModel>,
     /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
     channel_manager: Arc<ChannelManager>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -91,23 +87,9 @@ impl Nexus {
             session_manager,
             provider_manager,
             channel_manager: Arc::new(ChannelManager::new()),
-            valid_default: ArcSwapOption::empty(),
             apply_channel_session_key_tx,
             channel_task_tx,
         };
-
-        // 启动校验 default_model：从 API 拉模型列表，不在列表则无模型（告警）
-        let default_model = config.default_model().await;
-        match coordinator.verify_model(&default_model).await {
-            Ok(()) => {
-                coordinator.valid_default.store(Some(default_model));
-            },
-            Err(e) => {
-                warn!("校验 default_model {}/{} 失败: {}", default_model.provider, default_model.model, e);
-            },
-        };
-
-        // 启动动作（绑定运行态 agent / 初始化会话 / 连接 channel）统一在 run() 中执行
 
         // 注册全局单例（此后 get() 可用；run() 中启动动作与连接回调均晚于此）
         let _ = SINGLETON.set(coordinator);
@@ -336,25 +318,26 @@ impl Nexus {
 
     /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
     /// Err 表示校验失败（API 调用失败 / 模型不在列表），调用方决定如何处理。
-    async fn verify_model(&self, pm: &ProviderModel) -> Result<()> {
-        let models = self.provider_manager.list_models(pm.provider.as_str()).await
+    async fn verify_model(&self, provider: &str, model: &str) -> Result<()> {
+        let models = self.provider_manager.list_models(provider).await
             .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
-        if !models.iter().any(|m| m.as_str() == pm.model.as_str()) {
+        if !models.iter().any(|m| m.as_str() == model) {
             return Err(Error::ModelProviderNotSupported(format!(
-                "模型 {} 不在 {} 的 API 模型列表", pm.model, pm.provider)));
+                "模型 {} 不在 {} 的 API 模型列表", model, provider)));
         }
         Ok(())
     }
 
     /// 设置来源 channel 所属会话的模型（每次切换都从 API 拉模型列表校验）
-    pub async fn set_session_model(&self, channel_id: &str, pm: ProviderModel) -> Result<()> {
+    pub async fn set_session_model(&self, channel_id: &str, provider: &str, model: &str) -> Result<()> {
         let Some(key) = self.session_key(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
         };
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
-        self.verify_model(&pm).await?;
+        self.verify_model(provider, model).await?;
         let mut config = LLMConfig::default();
-        config.provider_model = Some(Arc::new(pm));
+        config.provider = Some(Arc::new(provider.to_string()));
+        config.model = Some(Arc::new(model.to_string()));
         ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config);
         Ok(())
     }
@@ -696,7 +679,6 @@ mod tests {
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
             session_manager: SessionManager::new(data_dir.to_str().unwrap()),
             provider_manager: Arc::new(ProviderManager::new()),
-            valid_default: ArcSwapOption::empty(),
             channel_manager: Arc::new(ChannelManager::new()),
             apply_channel_session_key_tx: command_tx,
             channel_task_tx,

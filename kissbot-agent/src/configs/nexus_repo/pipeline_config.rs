@@ -3,12 +3,14 @@ use std::{collections::HashSet, sync::Arc};
 use kissbot_api::ChannelUser;
 use serde::{Deserialize, Serialize};
 
-use crate::configs::{MergeBy, MergeSelf, MergeEffectiveConfig, ProviderModel};
+use crate::configs::{MergeBy, MergeSelf, MergeEffectiveConfig};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LLMConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_model: Option<Arc<ProviderModel>>,
+    pub provider: Option<Arc<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<Arc<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -64,8 +66,11 @@ impl LLMConfig {
 
 impl MergeBy<LLMConfig> for LLMConfig {
     fn merge(&mut self, other: &LLMConfig) {
-        if let Some(model) = other.provider_model.as_ref() {
-            self.provider_model = Some(model.clone());
+        if let Some(provider) = other.provider.as_ref() {
+            self.provider = Some(provider.clone());
+        }
+        if let Some(model) = other.model.as_ref() {
+            self.model = Some(model.clone());
         }
         if other.has_max_tokens {
             self.set_max_tokens(other.max_tokens);
@@ -86,7 +91,8 @@ impl MergeSelf for LLMConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveLLMConfig {
-    pub provider_model: Arc<ProviderModel>,
+    pub provider: Arc<String>,
+    pub model: Arc<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub thinking: Option<Arc<String>>,
@@ -96,10 +102,8 @@ pub struct EffectiveLLMConfig {
 impl EffectiveLLMConfig {
     pub fn new() -> Self {
         Self {
-            provider_model: Arc::new(ProviderModel {
-                provider: Arc::new(String::new()),
-                model: Arc::new(String::new()),
-            }),
+            provider: Arc::new(String::new()),
+            model: Arc::new(String::new()),
             max_tokens: None,
             temperature: None,
             thinking: None,
@@ -110,8 +114,11 @@ impl EffectiveLLMConfig {
 
 impl MergeBy<LLMConfig> for EffectiveLLMConfig {
     fn merge(&mut self, other: &LLMConfig) {
-        if let Some(model) = other.provider_model.as_ref() {
-            self.provider_model = model.clone();
+        if let Some(provider) = other.provider.as_ref() {
+            self.provider = provider.clone();
+        }
+        if let Some(model) = other.model.as_ref() {
+            self.model = model.clone();
         }
         if other.has_max_tokens {
             self.max_tokens = other.max_tokens;

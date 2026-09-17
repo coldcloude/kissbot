@@ -246,10 +246,6 @@ impl ConfigManager {
         self.agent_config.data_dir.as_str()
     }
 
-    pub async fn default_system_prompt(&self) -> String {
-        self.nexus_repo.read().await.default_system_prompt.to_string()
-    }
-
     // ========== NexusRepo CRUD ==========
 
     // ---------- channels ----------
@@ -309,10 +305,10 @@ impl ConfigManager {
     // ---------- providers ----------
     /// 合成 provider 默认 + model 覆盖的有效参数（每次调用现场合成，配置永远最新）
     /// model 未在 provider.models 配置时用 provider 默认值合成（极端 models={} 也可用）
-    pub async fn provider_model_config(&self, pm: &ProviderModel) -> Option<EffectiveModelConfig> {
+    pub async fn provider_model_config(&self, provider: &str, model: &str) -> Option<EffectiveModelConfig> {
         let repo = self.nexus_repo.read().await;
-        let provider = repo.providers.get(pm.provider.as_str())?;
-        Some(provider.load().get_effective_config(pm.model.as_str()))
+        let provider = repo.providers.get(provider)?;
+        Some(provider.load().get_effective_config(model))
     }
 
     /// 按名取 provider 配置（Arc 快照），供 provider 构造（model_client.list_models 使用）
@@ -398,21 +394,6 @@ impl ConfigManager {
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
         repo.memory_structs.iter().map(|(_, v)| (*v.load_full()).clone()).collect()
-    }
-
-    // ---------- default 读写 ----------
-
-    /// 读默认模型
-    pub async fn default_model(&self) -> Arc<ProviderModel> {
-        self.nexus_repo.read().await.default_model.clone()
-    }
-
-    /// 设置默认模型（(provider, model) 打包），落盘
-    pub async fn set_default_model(&self, pm: Arc<ProviderModel>) -> Result<()> {
-        self.write_nexus_config(|repo| {
-            repo.default_model = pm.clone();
-            Ok(())
-        }).await
     }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====

@@ -79,23 +79,24 @@ impl ProviderManager {
     }
 
     pub async fn call(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
-        let pm = llm_cfg.provider_model.as_ref();
+        let provider = llm_cfg.provider.as_str();
+        let model = llm_cfg.model.as_str();
         let cm = ConfigManager::get();
-        if let Some(pm_cfg) = cm.provider_model_config(pm).await {
+        if let Some(pm_cfg) = cm.provider_model_config(provider, model).await {
             // 按 provider_type 构造 Provider 实现（"openai" | "anthropic"）
             match pm_cfg.provider_config.provider_type.as_str() {
                 "openai" => {
-                    let provider = self.get_openai_provider(pm.provider.as_str(), pm_cfg.provider_config.as_ref()).await;
+                    let provider = self.get_openai_provider(provider, pm_cfg.provider_config.as_ref()).await;
                     call_with_retry(provider, llm_cfg, &pm_cfg, messages, tools).await
                 },
                 "anthropic" => {
-                    let provider = self.get_anthropic_provider(pm.provider.as_str(), pm_cfg.provider_config.as_ref()).await;
+                    let provider = self.get_anthropic_provider(provider, pm_cfg.provider_config.as_ref()).await;
                     call_with_retry(provider, llm_cfg, &pm_cfg, messages, tools).await
                 },
                 other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other))),
             }
         } else {
-            Err(Error::ModelProviderNotFound(pm.provider.as_str().to_string(), pm.model.as_str().to_string()))
+            Err(Error::ModelProviderNotFound(provider.to_string(), model.to_string()))
         }
     }
 
@@ -203,7 +204,7 @@ impl Provider for OpenAiProvider {
         };
         // Messages 序列化即 OpenAI 格式
         OpenAiRequest {
-            model: llm_cfg.provider_model.model.clone(),
+            model: llm_cfg.model.clone(),
             messages,
             stream: false,
             tools: result_tools,
@@ -329,7 +330,7 @@ impl Provider for AnthropicProvider {
         }).collect();
 
         let mut body = json!({
-            "model": llm_cfg.provider_model.model,
+            "model": llm_cfg.model,
             "messages": msgs,
             "max_tokens": llm_cfg.max_tokens.unwrap_or(DEFFAULT_ANTTHROPIC_MAX_TOKENS),
         });

@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config_manager::{ConfigManager};
-use crate::configs::{ChannelConfig, ProviderModelConfig, ProviderModel};
+use crate::configs::{ChannelConfig, ProviderModelConfig};
 use kissbot_api::ChannelUser;
 use crate::types::Result;
 
@@ -22,6 +22,12 @@ pub struct HttpServer {
 }
 
 // ========== 请求 DTO ==========
+
+#[derive(Deserialize)]
+struct ProviderRequest {
+    name: String,
+    config: ProviderModelConfig,
+}
 
 #[derive(Deserialize)]
 struct NameRequest {
@@ -63,7 +69,6 @@ impl HttpServer {
             .route("/config", get(get_config))
             .route("/config/providers", post(add_provider))
             .route("/config/providers/remove", post(remove_provider))
-            .route("/config/default", post(set_default))
             .route("/config/channels", post(add_channel))
             .route("/config/channels/remove", post(remove_channel))
             .route("/config/admins", post(add_admin))
@@ -104,9 +109,8 @@ async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     ok(snap)
 }
 
-async fn add_provider(State(state): State<AppState>, Json(cfg): Json<ProviderModelConfig>) -> impl IntoResponse {
-    // TODO add name to request
-    match state.config.add_provider("", cfg).await {
+async fn add_provider(State(state): State<AppState>, Json(req): Json<ProviderRequest>) -> impl IntoResponse {
+    match state.config.add_provider(&req.name, req.config).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
@@ -114,13 +118,6 @@ async fn add_provider(State(state): State<AppState>, Json(cfg): Json<ProviderMod
 
 async fn remove_provider(State(state): State<AppState>, Json(req): Json<NameRequest>) -> impl IntoResponse {
     match state.config.remove_provider(&req.name).await {
-        Ok(()) => ok(json!({})),
-        Err(e) => fail(e),
-    }
-}
-
-async fn set_default(State(state): State<AppState>, Json(pm): Json<Arc<ProviderModel>>) -> impl IntoResponse {
-    match state.config.set_default_model(pm).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
@@ -170,7 +167,7 @@ mod tests {
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
-    fn test_provider(name: &str) -> ProviderModelConfig {
+    fn test_provider() -> ProviderModelConfig {
         ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
                 provider_type: Arc::new("openai".into()),
@@ -242,21 +239,14 @@ mod tests {
 
         // POST /config/providers 添加
         let (status, body) = send(app.clone(), "POST", "/config/providers", "admin-key-123",
-            Some(serde_json::to_value(test_provider("deepseek")).unwrap())).await;
+            Some(serde_json::json!({ "name": "deepseek", "config": test_provider()}))).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
         // 重名 → 失败
         let (status, body) = send(app.clone(), "POST", "/config/providers", "admin-key-123",
-            Some(serde_json::to_value(test_provider("deepseek")).unwrap())).await;
+            Some(serde_json::json!({ "name": "deepseek", "config": test_provider()}))).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], false);
-
-        // POST /config/default
-        let (status, body) = send(app.clone(), "POST", "/config/default", "admin-key-123",
-            Some(serde_json::json!({ "provider": "deepseek", "model": "deepseek-4-flash" }))).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["success"], true);
-        assert_eq!(ConfigManager::get().default_model().await.model.as_str(), "deepseek-4-flash");
 
         // POST /config/providers/remove
         let (status, body) = send(app.clone(), "POST", "/config/providers/remove", "admin-key-123",

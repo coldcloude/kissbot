@@ -15,13 +15,6 @@ pub const DEFAULT_RETRY_COUNT: u32 = 3;
 
 // ========== Provider 配置 ==========
 
-// (provider, model) 固定一起出现：函数调用、current 运行状态、default 配置共用
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderModel {
-    pub provider: Arc<String>,
-    pub model: Arc<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub provider_type: Arc<String>,      // "openai" | "anthropic"，决定 Provider 实现

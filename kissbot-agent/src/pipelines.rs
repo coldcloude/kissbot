@@ -5,7 +5,6 @@ pub mod tool_caller;
 pub mod system_prompter;
 
 pub use input_processor::*;
-use kissbot_api::RESERVED_AGENT_ID;
 pub use output_processor::*;
 pub use message_sender::*;
 pub use tool_caller::*;
