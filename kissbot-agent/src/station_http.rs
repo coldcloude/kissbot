@@ -133,7 +133,7 @@ mod tests {
 use tower::ServiceExt;
 
     use crate::configs::{StationRepo, ToolkitConfig};
-    use crate::station::{TERR_TOOL_CYCLE, TERR_TOOL_NOT_FOUND};
+    use crate::station::TERR_TOOL_NOT_FOUND;
     use arc_swap::ArcSwap;
 
     fn test_station_repo(station_id: &str) -> StationRepo {

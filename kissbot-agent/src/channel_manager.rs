@@ -112,8 +112,9 @@ impl Channel {
 /// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）与断线通知；
 /// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_channel/send）
 /// 内部 DashMap 无锁并发；Nexus 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
-/// 另持 channel 变更串行队列（写-写竞态防护；读无需外部加锁），排队执行体在 Nexus
-/// （apply_channel_key / apply_channel_command）
+/// 另持 channel 变更串行队列（写-写竞态防护；读无需外部加锁）：入队与执行都在本结构
+/// （change_channel_key / channel_command → apply_channel_key / apply_channel_command），
+/// 其中会话重定位部分经 Nexus（prune_sessions / session_key / ensure_session）
 pub struct ChannelManager {
     channels: DashMap<String, Arc<Channel>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -125,21 +126,28 @@ pub struct ChannelManager {
 impl ChannelManager {
     /// 构造并启动变更消费者（内含 tokio::spawn，需在 runtime 内调用）；
     /// 两队列经 select! 合并到同一消费者，所有 channel 配置写全局串行
-    pub fn new() -> Self {
+    /// （消费者持一份 Arc<Self> 以便执行 apply_*；单例进程内长期存活，不构成引用环）
+    pub fn new() -> Arc<Self> {
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
         let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
         // channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelSessionKey 同一消费者 select! 等待）
         let (channel_task_tx, mut channel_task_rx) = mpsc::unbounded_channel::<ChannelTask>();
 
+        let this = Arc::new(Self {
+            channels: DashMap::new(),
+            apply_channel_session_key_tx,
+            channel_task_tx,
+        });
+
         // 启动变更消费者：agent/role/event 变更 + channel 配置变更串行处理（避免写-写竞态；读不受影响）
-        // 消费者只在队列收到任务时才访问 Nexus 单例（那时 Nexus::new 已完成单例注册）
+        let consumer = this.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     change = apply_channel_session_key_rx.recv() => {
                         match change {
                             Some(ApplyChannelSessionKey { channel_id, agent_id, role_name, mode, done }) => {
-                                let rst = Nexus::get().apply_channel_key(&channel_id, agent_id, role_name, mode).await;
+                                let rst = consumer.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
                                 let _ = done.send(rst);
                             }
                             // 任一队列关闭则消费者退出（tx 由 Nexus 单例持有的本结构保存，不会关闭，break 仅防御）
@@ -149,7 +157,7 @@ impl ChannelManager {
                     task = channel_task_rx.recv() => {
                         match task {
                             Some(ChannelTask { cmd, done }) => {
-                                let rst = Nexus::get().apply_channel_command(cmd).await;
+                                let rst = consumer.apply_channel_command(cmd).await;
                                 let _ = done.send(rst);
                             }
                             None => break,
@@ -159,11 +167,7 @@ impl ChannelManager {
             }
         });
 
-        Self {
-            channels: DashMap::new(),
-            apply_channel_session_key_tx,
-            channel_task_tx,
-        }
+        this
     }
 
     /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；排队串行执行，返回时已生效
@@ -191,6 +195,54 @@ impl ChannelManager {
         self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
             .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
         done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+    }
+
+    // ---- 变更执行体（队列消费者内串行调用，不对外） ----
+
+    /// 来源 channel 绑定信息变化后重定位会话：写 config + 运行态 mode + 清理无绑定会话 + 为新三元组创建会话
+    /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
+    /// None 字段 = 保持当前值：队列内结合当前状态合成新三元组（写-写串行，读-改-写无竞态）
+    async fn apply_channel_key(
+        &self,
+        channel_id: &str,
+        agent_id: Option<Arc<String>>,
+        role_name: Option<Arc<String>>,
+        mode: Option<Arc<Mode>>,
+    ) -> Result<()> {
+        ConfigManager::get().update_channel(channel_id, |c| {
+            if let Some(agent_id) = agent_id.as_ref() {
+                c.agent_id = agent_id.clone();
+            }
+            if let Some(role_name) = role_name.as_ref() {
+                c.role_name = role_name.clone();
+            }
+        }).await?;
+        if let Some(mode) = mode.as_ref() {
+            self.set_mode(channel_id, mode.clone());
+        }
+        // 会话/流水线重定位归 Nexus（会话与 pipeline 都挂在 Nexus 上）
+        let nexus = Nexus::get();
+        // 1. 清理无任何 channel 绑定的会话（pipeline/trigger 一并清理）
+        nexus.prune_sessions().await;
+        // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
+        if let Some(key) = nexus.session_key(channel_id).await {
+            nexus.ensure_session(&key).await;
+        }
+        Ok(())
+    }
+
+    /// channel 配置变更执行：/bind、/unbind 回写 bind_users，并生成回复文本
+    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
+        match cmd {
+            ChannelCommand::BindUser { channel_id, user } => {
+                self.bind_user(&channel_id, &user).await?;
+                Ok(format!("✅ 已绑定 channel 用户: {} / {}", user.messenger_id, user.user_id))
+            },
+            ChannelCommand::UnbindUser { channel_id, user } => {
+                self.unbind_user(&channel_id, &user).await?;
+                Ok(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id))
+            },
+        }
     }
 
     /// 取 channel 运行态，不存在则懒建（全部访问入口统一经此，缺省态一致）

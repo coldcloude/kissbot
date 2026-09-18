@@ -13,6 +13,7 @@ pub use message_sender::*;
 pub use tool_caller::*;
 pub use system_prompter::*;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::{config_manager::ConfigManager, configs::{PipelineConfig, ToolConfig}, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrgger}, types::{Error, Message, Mode, Result, SessionKey}};
@@ -202,6 +203,13 @@ impl PipelineManager {
         self.trigger_map.insert(session_key.as_ref().clone(), Arc::new(trigger));
         self.pipeline_map.insert(session_key.as_ref().clone(), Arc::new(pipeline));
         Ok(())
+    }
+
+    /// 只保留仍在绑定集合中的会话的 trigger/pipeline（与 SessionManager::retain 成对调用，
+    /// 会话被清理后其 trigger/pipeline 一并丢弃；trigger 丢弃会触发输入处理器的 Drop → 合批任务退出）
+    pub fn retain(&self, keys: &HashSet<SessionKey>) {
+        self.trigger_map.retain(|k, _| keys.contains(k));
+        self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 
     /// 取 trigger 快照（Arc 克隆后即释放 DashMap 分片读锁，不跨 await 持锁——被调方可能回写本表）

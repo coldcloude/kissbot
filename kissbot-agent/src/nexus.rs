@@ -11,7 +11,7 @@ use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
-    ChannelCommand, Error, Message, Mode, ModelResponse, Result, SessionKey, ToolCall, role_mode,
+    Error, Message, ModelResponse, Result, SessionKey, ToolCall, role_mode,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
@@ -68,7 +68,7 @@ impl Nexus {
             provider_manager,
             pipeline_manager,
             // channel 运行态与 channel 变更串行队列（队列消费者在 ChannelManager::new 内启动）
-            channel_manager: Arc::new(ChannelManager::new()),
+            channel_manager: ChannelManager::new(),
         };
 
         // 注册全局单例（此后 get() 可用；run() 中启动动作与连接回调均晚于此）
@@ -148,8 +148,9 @@ impl Nexus {
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
     }
 
-    /// 按当前全部 channel 的绑定集合清理无绑定会话
-    async fn prune_sessions(&self) {
+    /// 按当前全部 channel 的绑定集合清理无绑定会话（pipeline/trigger 一并清理）；
+    /// pub(crate)：channel 侧的 apply_channel_key 在会话重定位时调用
+    pub(crate) async fn prune_sessions(&self) {
         let channels = ConfigManager::get().channels().await;
         let mut keys = HashSet::new();
         for (_, ch) in &channels {
@@ -158,6 +159,8 @@ impl Nexus {
             }
         }
         self.session_manager.retain(&keys);
+        // pipeline/trigger 与会话同生命周期：不清理则被清会话的 trigger 与合批任务会一直留着
+        self.pipeline_manager.retain(&keys);
     }
 
     /// 根据 agent_id 获取系统提示词（新建会话时由 MemoryEgoSystemPrompter 调用）：
@@ -195,68 +198,9 @@ impl Nexus {
 
     // ==================== 运行状态修改（管理命令入口） ====================
 
-    /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
-    /// 交给 ChannelManager 排队串行执行（执行体为本文件的 apply_channel_key），返回时已生效
-    pub async fn change_channel_key(
-        &self,
-        channel_id: &str,
-        agent_id: Option<Arc<String>>,
-        role_name: Option<Arc<String>>,
-        mode: Option<Arc<Mode>>,
-    ) -> Result<()> {
-        self.channel_manager.change_channel_key(channel_id, agent_id, role_name, mode).await
-    }
-
-    /// channel 配置变更统一入口（/bind、/unbind）：
-    /// 交给 ChannelManager 排队串行执行（执行体为本文件的 apply_channel_command），返回时已生效
-    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<String> {
-        self.channel_manager.channel_command(cmd).await
-    }
-
-    // ---- 变更执行体（由 ChannelManager 的队列消费者串行调用，不对外） ----
-
-    /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
-    /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
-    /// None 字段 = 保持当前值：队列内结合 channel_manager 当前状态合成新三元组（写-写串行，读-改-写无竞态）
-    pub(crate) async fn apply_channel_key(
-        &self,
-        channel_id: &str,
-        agent_id: Option<Arc<String>>,
-        role_name: Option<Arc<String>>,
-        mode: Option<Arc<Mode>>,
-    ) -> Result<()> {
-        ConfigManager::get().update_channel(channel_id, |c| {
-            if let Some(agent_id) = agent_id.as_ref() {
-                c.agent_id = agent_id.clone();
-            }
-            if let Some(role_name) = role_name.as_ref() {
-                c.role_name = role_name.clone();
-            }
-        }).await?;
-        if let Some(mode) = mode.as_ref() {
-            self.channel_manager.set_mode(channel_id, mode.clone());
-        }
-        // 1. 清理无任何 channel 绑定的会话
-        self.prune_sessions().await;
-        // 2. 新三元组对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        if let Some(key) = self.session_key(channel_id).await {
-            self.ensure_session(&key).await;
-        }
-        Ok(())
-    }
-
-    /// channel 配置变更执行（队列内串行，不对外）：分发到 ChannelManager 方法
-    pub(crate) async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
-        match cmd {
-            ChannelCommand::BindUser { channel_id, user } => {
-                self.channel_manager.bind_user(&channel_id, &user).await?;
-                Ok(format!("✅ 已绑定 channel 用户: {} / {}", user.messenger_id, user.user_id))
-            },
-            ChannelCommand::UnbindUser { channel_id, user } => {
-                self.channel_manager.unbind_user(&channel_id, &user).await?;
-                Ok(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id))
-            },
-        }
+    /// channel 运行态与变更队列（channel 侧入口：change_channel_key / channel_command 都在 ChannelManager 上）
+    pub fn channel_manager(&self) -> &Arc<ChannelManager> {
+        &self.channel_manager
     }
 
     /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
@@ -599,6 +543,7 @@ mod tests {
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
     use crate::pipelines::{PP_IN_BATCH, PP_MSG_RAW, PP_OUT_CHANNEL, PP_SYS_DEFAULT, PP_TOOL_STATION};
+    use crate::types::{ChannelCommand, Mode};
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
     // 成员函数化后需构造实例取 &self；MemoryEgoClient/MemoryStoreClient 构造读 ApiConfig/SecurityConfig
@@ -619,7 +564,7 @@ mod tests {
             session_manager: SessionManager::new(data_dir.to_str().unwrap()),
             provider_manager: Arc::new(ProviderManager::new()),
             pipeline_manager: Arc::new(PipelineManager::new()),
-            channel_manager: Arc::new(ChannelManager::new()),
+            channel_manager: ChannelManager::new(),
         }
     }
 
@@ -737,8 +682,8 @@ mod tests {
 
     #[tokio::test]
     async fn channel_command_runs_through_channel_manager_queue() {
-        // 覆盖变更队列链路：Nexus::channel_command → ChannelManager 排队 → 队列消费者
-        // → Nexus::apply_channel_command → ChannelManager::bind_user/unbind_user 落库
+        // 覆盖变更队列链路：ChannelManager::channel_command 入队 → 队列消费者
+        // → ChannelManager::apply_channel_command → bind_user/unbind_user 落库
         ensure_test_globals().await;
         let cm = ConfigManager::get();
         let channel_id = "nexus-queue-test";
@@ -753,18 +698,52 @@ mod tests {
         }).await;
 
         let user = ChannelUser { messenger_id: "web".into(), user_id: "u-queue".into() };
-        let reply = Nexus::get().channel_command(ChannelCommand::BindUser {
+        let reply = Nexus::get().channel_manager().channel_command(ChannelCommand::BindUser {
             channel_id: channel_id.to_string(), user: user.clone(),
         }).await.expect("绑定命令应执行成功");
         assert!(reply.contains("已绑定"), "回复文案应说明已绑定: {}", reply);
         let ch = cm.channel(channel_id).await.expect("channel 应存在");
         assert!(ch.bind_users.contains(&user), "绑定应落库");
 
-        let reply = Nexus::get().channel_command(ChannelCommand::UnbindUser {
+        let reply = Nexus::get().channel_manager().channel_command(ChannelCommand::UnbindUser {
             channel_id: channel_id.to_string(), user: user.clone(),
         }).await.expect("解绑命令应执行成功");
         assert!(reply.contains("已移除"), "回复文案应说明已移除: {}", reply);
         let ch = cm.channel(channel_id).await.expect("channel 应存在");
         assert!(!ch.bind_users.contains(&user), "解绑应落库");
+    }
+
+    #[tokio::test]
+    async fn pipeline_retain_drops_unbound_sessions() {
+        // 会话被清理（prune_sessions）时其 trigger/pipeline 应一并丢弃；
+        // 用本地 PipelineManager 实例验证 retain 语义，避免动到全局单例的 pipeline 表
+        ensure_test_globals().await;
+        let agent_id = "prune-agent";
+        let k1 = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode: Mode::Role };
+        let k2 = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode: Mode::Event("e1".into()) };
+        // agent 级 pipeline：显式指定组件，使两个 key 都能注册
+        let mut pipeline = PipelineConfig::default();
+        pipeline.input_processor = Some(Arc::new(PP_IN_BATCH.into()));
+        pipeline.system_prompter = Some(Arc::new(PP_SYS_DEFAULT.into()));
+        pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
+        pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
+        pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
+        ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
+            agent_id, "", Arc::new(pipeline)).await.unwrap();
+
+        let pm = PipelineManager::new();
+        pm.sync_pipeline(Arc::new(k1.clone())).await.expect("k1 应能注册");
+        pm.sync_pipeline(Arc::new(k2.clone())).await.expect("k2 应能注册");
+        assert!(pm.reset_system_prompt(&k1).await.is_ok(), "注册后 trigger 应可命中");
+        assert!(pm.reset_system_prompt(&k2).await.is_ok(), "注册后 trigger 应可命中");
+
+        // 只保留 k1：k2 的 trigger 与 pipeline 都被丢弃
+        pm.retain(&HashSet::from([k1.clone()]));
+        assert!(pm.reset_system_prompt(&k1).await.is_ok(), "保留的 key 仍在");
+        let msg = Message::User { content: Arc::new("x".into()) };
+        assert!(matches!(pm.reset_system_prompt(&k2).await, Err(Error::PipelineNotFound(_))),
+            "被清理的 key 的 trigger 应移除");
+        assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_))),
+            "被清理的 key 的 pipeline 应移除");
     }
 }

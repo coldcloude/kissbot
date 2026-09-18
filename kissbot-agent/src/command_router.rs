@@ -11,8 +11,8 @@ pub struct CommandRouter;
 impl CommandRouter {
     /// 执行管理命令（nexus 已校验管理员后调用）：内联解析命令参数 + 直接执行，返回回复文本
     /// 错误经 Result 返回：InvalidCommand（解析/格式错误）由调用方拼 "⚠️ {}"，其余拼 "❌ 命令执行失败: {}"
-    /// bind/unbind 走 ConfigManager 回写（经 nexus.channel_command 队列串行）；bind-outgoing/unbind-outgoing 纯配置写；
-    /// agent/role/mode 走 change_channel_key 队列；model 改会话模型（运行态）。
+    /// bind/unbind 走 channel_manager.channel_command 队列串行（bind_users 回写）；bind-outgoing/unbind-outgoing 纯配置写；
+    /// agent/role/mode 走 channel_manager.change_channel_key 队列；model 改会话模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
     pub async fn execute(content: &str, channel_id: &str) -> Result<String> {
         let parts: Vec<&str> = content.trim().split_whitespace().collect();
@@ -29,7 +29,7 @@ impl CommandRouter {
                 }
                 let cu = ChannelUser { messenger_id: parts[2].to_string(), user_id: parts[3].to_string() };
                 // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
-                nexus.channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await
+                nexus.channel_manager().channel_command(ChannelCommand::BindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
             "/unbind" => {
                 if parts.len() < 4 || parts[1] != "messenger" {
@@ -39,7 +39,7 @@ impl CommandRouter {
                 }
                 let cu = ChannelUser { messenger_id: parts[2].to_string(), user_id: parts[3].to_string() };
                 // 统一走串行队列应用（防写-写竞态；移除 bind_users，outgoing 引用该身份则一并清空；回复文本队列内生成）
-                nexus.channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await
+                nexus.channel_manager().channel_command(ChannelCommand::UnbindUser { channel_id: channel_id.to_string(), user: cu }).await
             }
             "/admin" => {
                 if parts.len() < 3 {
@@ -80,7 +80,7 @@ impl CommandRouter {
                     nexus.verify_role_exists(new_agent_id.as_str(), new_role.as_str()).await?;
                 }
                 // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
-                nexus.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
+                nexus.channel_manager().change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))
             }
             "/role" => {
@@ -90,7 +90,7 @@ impl CommandRouter {
                 // 经 channel_id 校验 role 存在（内部取当前 agent_id；空串保留 role 直接通过；channel 不存在报错）
                 nexus.verify_role_exists_for_channel(channel_id, new_role.as_str()).await?;
                 // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
-                nexus.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
+                nexus.channel_manager().change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(format!("✅ 已设置 role: {}", new_role))
             }
             "/mode" => {
@@ -103,12 +103,12 @@ impl CommandRouter {
                     "event" => {
                         // 缺省 event-id 生成新事件 ID；agent/role 保持当前值
                         let id = Arc::new(parts.get(2).map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
-                        nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Event(id.as_str().to_string())))).await?;
+                        nexus.channel_manager().change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Event(id.as_str().to_string())))).await?;
                         Ok(format!("✅ 新事件 ID: {}", id))
                     }
                     "role" => {
                         // agent/role 保持当前值
-                        nexus.change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Role))).await?;
+                        nexus.channel_manager().change_channel_key(channel_id, None, None, Some(Arc::new(Mode::Role))).await?;
                         Ok("✅ 已切换为角色模式".to_string())
                     }
                     _ => Err(Error::InvalidCommand(format!("未知模式: {}", parts[1]))),
