@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use chrono::Local;
 use kissbot_api::RESERVED_AGENT_ID;
-use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
@@ -29,23 +28,8 @@ use kissbot_api::message::Content;
 pub const RESERVED_ROLE_NAME: &str = "";
 
 // 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
-// 最近一次模型响应的 usage.total_tokens 超过其 80% 时触发重置，见 run_agentic_loop 检查。
-
-/// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
-/// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位
-struct ApplyChannelSessionKey {
-    channel_id: String,
-    agent_id: Option<Arc<String>>,
-    role_name: Option<Arc<String>>,
-    mode: Option<Arc<Mode>>,
-    done: oneshot::Sender<Result<()>>
-}
-
-/// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ConfigChange 同消费者串行，写-写无竞态）
-struct ChannelTask {
-    cmd: ChannelCommand,
-    done: oneshot::Sender<Result<String>>,
-}
+// 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发重置，
+// 见 pipelines/message_sender.rs 的 TokenLimitMessageSender。
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 Nexus 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
@@ -57,12 +41,9 @@ pub struct Nexus {
     session_manager: Arc<SessionManager>,
     provider_manager: Arc<ProviderManager>,
     pipeline_manager: Arc<PipelineManager>,
-    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client）
+    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/mode/client；
+    /// 并持有 channel 变更串行队列，见 ChannelManager::change_channel_key / channel_command）
     channel_manager: Arc<ChannelManager>,
-    /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-    apply_channel_session_key_tx: mpsc::UnboundedSender<ApplyChannelSessionKey>,
-    /// channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
-    channel_task_tx: mpsc::UnboundedSender<ChannelTask>,
 }
 
 impl Nexus {
@@ -79,10 +60,6 @@ impl Nexus {
         let session_manager = SessionManager::new(&data_dir);
         let provider_manager = Arc::new(ProviderManager::new());
         let pipeline_manager = Arc::new(PipelineManager::new());
-        // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-        let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
-        // channel 配置变更串行队列（bind/unbind/bind-outgoing/clear-outgoing；与 ConfigChange 同一消费者 select! 等待）
-        let (channel_task_tx, mut channel_task_rx) = mpsc::unbounded_channel::<ChannelTask>();
 
         let coordinator = Self {
             memory_store_client,
@@ -90,44 +67,12 @@ impl Nexus {
             session_manager,
             provider_manager,
             pipeline_manager,
+            // channel 运行态与 channel 变更串行队列（队列消费者在 ChannelManager::new 内启动）
             channel_manager: Arc::new(ChannelManager::new()),
-            apply_channel_session_key_tx,
-            channel_task_tx,
         };
 
         // 注册全局单例（此后 get() 可用；run() 中启动动作与连接回调均晚于此）
         let _ = SINGLETON.set(coordinator);
-
-        // 启动变更消费者：agent/role/event 变更 + channel 配置变更串行处理（避免写-写竞态；读不受影响）
-        // 两队列经 select! 合并到同一消费者，所有 channel 配置写全局串行
-        // spawn 晚于 SINGLETON.set，任务内 get() 必然就绪
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    change = apply_channel_session_key_rx.recv() => {
-                        match change {
-                            Some(ApplyChannelSessionKey { channel_id, agent_id, role_name, mode, done }) => {
-                                let coordinator = Nexus::get();
-                                let rst = coordinator.apply_channel_key(&channel_id, agent_id, role_name, mode).await;
-                                let _ = done.send(rst);
-                            }
-                            // 任一队列关闭则消费者退出（进程内 tx 存于单例不会发生，break 仅防御）
-                            None => break,
-                        }
-                    }
-                    task = channel_task_rx.recv() => {
-                        match task {
-                            Some(ChannelTask { cmd, done }) => {
-                                let coordinator = Nexus::get();
-                                let rst = coordinator.apply_channel_command(cmd).await;
-                                let _ = done.send(rst);
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }
-        });
 
         info!("Nexus 初始化完成");
         Ok(())
@@ -251,8 +196,7 @@ impl Nexus {
     // ==================== 运行状态修改（管理命令入口） ====================
 
     /// agent/role/mode 变更统一入口：三个字段独立 Option，None = 保持当前值；
-    /// Nexus 结合 channel_manager 当前状态合成新三元组（写 config agent_id/role_name + 运行态 mode + 会话重定位），
-    /// 走串行队列，返回时已生效
+    /// 交给 ChannelManager 排队串行执行（执行体为本文件的 apply_channel_key），返回时已生效
     pub async fn change_channel_key(
         &self,
         channel_id: &str,
@@ -260,32 +204,21 @@ impl Nexus {
         role_name: Option<Arc<String>>,
         mode: Option<Arc<Mode>>,
     ) -> Result<()> {
-        let (done_tx, done_rx) = oneshot::channel();
-        self.apply_channel_session_key_tx.send(ApplyChannelSessionKey {
-            channel_id: channel_id.to_string(),
-            agent_id,
-            role_name,
-            mode,
-            done: done_tx,
-        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+        self.channel_manager.change_channel_key(channel_id, agent_id, role_name, mode).await
     }
 
     /// channel 配置变更统一入口（/bind、/unbind）：
-    /// 排队调 ChannelManager 方法执行，与 change_channel_key 同一消费者串行；返回时已生效
+    /// 交给 ChannelManager 排队串行执行（执行体为本文件的 apply_channel_command），返回时已生效
     pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<String> {
-        let (done_tx, done_rx) = oneshot::channel();
-        self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
-            .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+        self.channel_manager.channel_command(cmd).await
     }
 
-    // ---- 变更消费者（队列内串行执行，不对外） ----
+    // ---- 变更执行体（由 ChannelManager 的队列消费者串行调用，不对外） ----
 
-    /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话（apply_channel_key 专用）
+    /// 来源 channel 绑定信息变化后重定位会话：清理无绑定会话 + 为新三元组创建会话
     /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
     /// None 字段 = 保持当前值：队列内结合 channel_manager 当前状态合成新三元组（写-写串行，读-改-写无竞态）
-    async fn apply_channel_key(
+    pub(crate) async fn apply_channel_key(
         &self,
         channel_id: &str,
         agent_id: Option<Arc<String>>,
@@ -313,7 +246,7 @@ impl Nexus {
     }
 
     /// channel 配置变更执行（队列内串行，不对外）：分发到 ChannelManager 方法
-    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
+    pub(crate) async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
         match cmd {
             ChannelCommand::BindUser { channel_id, user } => {
                 self.channel_manager.bind_user(&channel_id, &user).await?;
@@ -680,8 +613,6 @@ mod tests {
         std::fs::write(&cfg_path, cfg_json).unwrap();
         // 2024 edition：设置环境变量需要 unsafe
         unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-        let (command_tx, _command_rx) = mpsc::unbounded_channel();
-        let (channel_task_tx, _channel_task_rx) = mpsc::unbounded_channel();
         Nexus {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
@@ -689,8 +620,6 @@ mod tests {
             provider_manager: Arc::new(ProviderManager::new()),
             pipeline_manager: Arc::new(PipelineManager::new()),
             channel_manager: Arc::new(ChannelManager::new()),
-            apply_channel_session_key_tx: command_tx,
-            channel_task_tx,
         }
     }
 
@@ -804,5 +733,38 @@ mod tests {
                 "消息应经 incoming_message → 合批 → pipeline 进入会话上下文，实际: {:?}", ctx);
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn channel_command_runs_through_channel_manager_queue() {
+        // 覆盖变更队列链路：Nexus::channel_command → ChannelManager 排队 → 队列消费者
+        // → Nexus::apply_channel_command → ChannelManager::bind_user/unbind_user 落库
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let channel_id = "nexus-queue-test";
+        let _ = cm.add_channel(ChannelConfig {
+            channel_id: Arc::new(channel_id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8398".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_users: Arc::new(HashSet::new()),
+            agent_id: Arc::new("a1".into()),
+            role_name: Arc::new("".into()),
+            enabled: true,
+        }).await;
+
+        let user = ChannelUser { messenger_id: "web".into(), user_id: "u-queue".into() };
+        let reply = Nexus::get().channel_command(ChannelCommand::BindUser {
+            channel_id: channel_id.to_string(), user: user.clone(),
+        }).await.expect("绑定命令应执行成功");
+        assert!(reply.contains("已绑定"), "回复文案应说明已绑定: {}", reply);
+        let ch = cm.channel(channel_id).await.expect("channel 应存在");
+        assert!(ch.bind_users.contains(&user), "绑定应落库");
+
+        let reply = Nexus::get().channel_command(ChannelCommand::UnbindUser {
+            channel_id: channel_id.to_string(), user: user.clone(),
+        }).await.expect("解绑命令应执行成功");
+        assert!(reply.contains("已移除"), "回复文案应说明已移除: {}", reply);
+        let ch = cm.channel(channel_id).await.expect("channel 应存在");
+        assert!(!ch.bind_users.contains(&user), "解绑应落库");
     }
 }

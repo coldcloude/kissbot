@@ -6,7 +6,8 @@ pub mod system_prompter;
 
 use arc_swap::ArcSwap;
 pub use input_processor::*;
-use kissbot_api::{ArcSwapHashMap, IncomingMessageEvent};
+use dashmap::DashMap;
+use kissbot_api::IncomingMessageEvent;
 pub use output_processor::*;
 pub use message_sender::*;
 pub use tool_caller::*;
@@ -174,16 +175,19 @@ pub async fn create_agent_trigger(session_key: Arc<SessionKey>) -> Option<AgentT
     })
 }
 
+/// 会话 pipeline 注册表：trigger（输入处理 + 系统提示词）与 pipeline（发送/工具/输出）按会话 key 各存一份
+/// 用 DashMap 而非 ArcSwap<HashMap>：并发 sync 同一 key 时按 key 原子替换，
+/// 不会出现「读-改-写整张 map」丢失其它 key 刚插入条目的问题
 pub struct PipelineManager {
-    trigger_map: ArcSwap<ArcSwapHashMap<SessionKey, AgentTrgger>>,
-    pipeline_map: ArcSwap<ArcSwapHashMap<SessionKey, AgentPipeline>>,
+    trigger_map: DashMap<SessionKey, Arc<AgentTrgger>>,
+    pipeline_map: DashMap<SessionKey, Arc<AgentPipeline>>,
 }
 
 impl PipelineManager {
     pub fn new() -> Self {
         Self {
-            trigger_map: ArcSwap::from_pointee(ArcSwapHashMap::new()),
-            pipeline_map: ArcSwap::from_pointee(ArcSwapHashMap::new()),
+            trigger_map: DashMap::new(),
+            pipeline_map: DashMap::new(),
         }
     }
 
@@ -194,26 +198,25 @@ impl PipelineManager {
         let Some(pipeline) = create_agent_pipeline(session_key.clone()).await else {
             return Err(Error::PipelineNotFound(session_key.as_ref().clone()));
         };
-        let trigger = Arc::new(trigger);
-        if self.trigger_map.load().replace_exist(session_key.as_ref(), trigger.clone()).is_err() {
-            let mut trigger_map = self.trigger_map.load_full();
-            let trigger_map_mut = Arc::make_mut(&mut trigger_map);
-            trigger_map_mut.replace(session_key.as_ref(), trigger);
-            self.trigger_map.store(trigger_map);
-        }
-        let pipeline = Arc::new(pipeline);
-        if self.pipeline_map.load().replace_exist(session_key.as_ref(), pipeline.clone()).is_err() {
-            let mut pipeline_map = self.pipeline_map.load_full();
-            let pipeline_map_mut = Arc::make_mut(&mut pipeline_map);
-            pipeline_map_mut.replace(session_key.as_ref(), pipeline);
-            self.pipeline_map.store(pipeline_map);
-        }
+        // 按 key 原子替换（同 key 并发 sync 时后者生效；不同 key 互不影响）
+        self.trigger_map.insert(session_key.as_ref().clone(), Arc::new(trigger));
+        self.pipeline_map.insert(session_key.as_ref().clone(), Arc::new(pipeline));
         Ok(())
     }
 
+    /// 取 trigger 快照（Arc 克隆后即释放 DashMap 分片读锁，不跨 await 持锁——被调方可能回写本表）
+    fn trigger_of(&self, session_key: &SessionKey) -> Option<Arc<AgentTrgger>> {
+        self.trigger_map.get(session_key).map(|t| t.value().clone())
+    }
+
+    /// 取 pipeline 快照（同上：不跨 await 持锁）
+    fn pipeline_of(&self, session_key: &SessionKey) -> Option<Arc<AgentPipeline>> {
+        self.pipeline_map.get(session_key).map(|p| p.value().clone())
+    }
+
     pub async fn incoming_message(&self, session_key: &SessionKey, event: Arc<IncomingMessageEvent>) -> Result<()> {
-        if let Some(trigger) = self.trigger_map.load().get(session_key) {
-            trigger.load().input_processor.load().accept(event).await;
+        if let Some(trigger) = self.trigger_of(session_key) {
+            trigger.input_processor.load().accept(event).await;
             Ok(())
         } else {
             Err(Error::PipelineNotFound(session_key.clone()))
@@ -221,8 +224,8 @@ impl PipelineManager {
     }
 
     pub async fn reset_system_prompt(&self, session_key: &SessionKey) -> Result<()> {
-        if let Some(trigger) = self.trigger_map.load().get(session_key) {
-            trigger.load().system_prompter.load().reset_system_prompt().await;
+        if let Some(trigger) = self.trigger_of(session_key) {
+            trigger.system_prompter.load().reset_system_prompt().await;
             Ok(())
         } else {
             Err(Error::PipelineNotFound(session_key.clone()))
@@ -230,8 +233,8 @@ impl PipelineManager {
     }
 
     pub async fn run_pipeline(&self, session_key: &SessionKey, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
-        if let Some(pipeline) = self.pipeline_map.load().get(session_key) {
-            pipeline.load().run(message, tools).await;
+        if let Some(pipeline) = self.pipeline_of(session_key) {
+            pipeline.run(message, tools).await;
             Ok(())
         } else {
             Err(Error::PipelineNotFound(session_key.clone()))
