@@ -224,7 +224,8 @@ impl Provider for OpenAiProvider {
         let raw_reasoning_content = message["reasoning_content"].take();
         let raw_tool_calls = message["tool_calls"].take();
         let finish_reason = if let Value::String(str) = choice["finish_reason"].take() { Some(Arc::new(str)) } else { None };
-        // <think> 标签总剥离；thinking 独立取标签内容，空串视为 None
+        // <think> 标签总剥离；thinking 独立取标签内容（无标签 → None；空标签 → Some("")）；
+        // reasoning_content 独立取 API 字段（字段缺失/非字符串 → None；空串 → Some("")）
         let (content, thinking) = if let Some(c_str) = raw_content.as_str() { strip_think_tag(c_str) } else { (None, None) };
         let reasoning_content = if let Some(rc_str) = raw_reasoning_content.as_str() { Some(Arc::new(rc_str.to_string())) } else { None };
         // tool_calls：OpenAI function call 数组（含 thinking 模式下多轮工具调用）
@@ -351,7 +352,7 @@ impl Provider for AnthropicProvider {
     }
 
     fn parse_response(&self, mut data: Value) -> ModelResponse {
-        // reasoning_content：thinking block 内容（空串视为 None）
+        // reasoning_content：thinking block 内容（无 block → None；空串 block → Some("")）
         let mut reasoning_content = None;
         let mut content = None;
         let raw_content = data["content"].take();
@@ -434,417 +435,651 @@ impl Provider for AnthropicProvider {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::configs::ProviderModel;
+#[cfg(test)]
+mod tests {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-// use super::*;
+    use crate::configs::{ModelConfig, ProviderModelConfig};
 
-//     fn sample_llm_cfg() -> EffectiveLLMConfig {
-//         EffectiveLLMConfig {
-//             model: Arc::new(ProviderModel {
-//                 provider: "deepseek".to_string(),
-//                 model: "deepseek-v4-flash".to_string(),
-//             }),
-//             max_tokens: Some(2048),
-//             temperature: Some(0.3),
-//             thinking: None,
-//             reasoning_effort: None,
-//         }
-//     }
+use super::*;
 
-//     fn sample_model_cfg() -> EffectiveModelConfig {
-//         EffectiveModelConfig {
-//             provider_type: "openai".into(),
-//             base_url: "https://api.deepseek.com".into(),
-//             api_key: "sk-test".into(),
-//             model: "deepseek-4-flash".into(),
-//             max_tokens_usage: 128000,
-//             timeout_secs: 30,
-//             retry_count: 2,
-//         }
-//     }
+    // ===== 构造助手 =====
 
-//     // Message 构造测试助手（字段为 Arc<String>，集中构造减少噪音）
-//     fn sys(content: &str) -> Message {
-//         Message::System { content: Arc::new(content.into()) }
-//     }
+    /// OpenAI 实现实例（client/base_url/api_key 仅占位：build_request/parse_response 不触网）
+    fn openai() -> OpenAiProvider {
+        OpenAiProvider {
+            client: Arc::new(Client::new()),
+            base_url: Arc::new("https://api.deepseek.com".into()),
+            api_key: Arc::new("sk-test".into()),
+        }
+    }
 
-//     fn usr(content: &str) -> Message {
-//         Message::User { content: Arc::new(content.into()) }
-//     }
+    /// Anthropic 实现实例（同 openai()，仅用于 build_request/parse_response）
+    fn anthropic() -> AnthropicProvider {
+        AnthropicProvider {
+            client: Arc::new(Client::new()),
+            base_url: Arc::new("https://api.anthropic.com".into()),
+            api_key: Arc::new("sk-test".into()),
+        }
+    }
 
-//     #[test]
-//     fn openai_body_includes_params_and_messages() {
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![sys("你是助手"), usr("你好")];
-//         let body = openai_request(&llm_cfg, msgs, vec![]);
-//         assert_eq!(body.model.as_str(), "deepseek-4-flash");
-//         assert_eq!(body.max_tokens.unwrap(), 2048);
-//         // temperature 为 f32，序列化为 f64 表示，用 f32 精确值比较
-//         assert_eq!(body.temperature.unwrap(), 0.3_f32);
-//         assert_eq!(body.stream, false);
-//         assert!(matches!(&body.messages[0], Message::System { content } if content.as_str() == "你是助手"));
-//         assert!(matches!(&body.messages[1], Message::User { content } if content.as_str() == "你好"));
-//     }
+    /// 有效 LLM 参数：provider/model 为拆出的独立字段（不再有 ProviderModel 组合）
+    fn sample_llm_cfg() -> EffectiveLLMConfig {
+        EffectiveLLMConfig {
+            provider: Arc::new("deepseek".into()),
+            model: Arc::new("deepseek-4-flash".into()),
+            max_tokens: Some(2048),
+            temperature: Some(0.3),
+            thinking: None,
+            reasoning_effort: None,
+        }
+    }
 
-//     #[test]
-//     fn openai_body_omits_optional_params_when_none() {
-//         let mut llm_cfg = sample_llm_cfg();
-//         llm_cfg.temperature = None;
-//         llm_cfg.thinking = None;
-//         llm_cfg.reasoning_effort = None;
-//         let msgs = vec![usr("你好")];
-//         let body = openai_request(&llm_cfg, msgs, vec![]);
-//         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
-//         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
-//         assert!(body.get("reasoning_effort").is_none(), "reasoning_effort 未配置不应传");
-//         assert_eq!(body["model"], "deepseek-4-flash");
-//         assert_eq!(body["stream"], false);
-//     }
+    // Message 构造测试助手（字段为 Arc<String>，集中构造减少噪音）
+    fn sys(content: &str) -> Message {
+        Message::System { content: Arc::new(content.into()) }
+    }
 
-//     #[test]
-//     fn openai_body_passes_thinking_and_reasoning_effort() {
-//         let mut llm_cfg = sample_llm_cfg();
-//         llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
-//         llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
-//         let msgs = vec![usr("你好")];
-//         let body = openai_request(&llm_cfg, msgs, vec![]);
-//         assert_eq!(body["thinking"]["type"], "enabled");
-//         assert_eq!(body["reasoning_effort"], "high");
-//         assert_eq!(body["temperature"], 0.3_f32 as f64);
-//     }
+    fn usr(content: &str) -> Message {
+        Message::User { content: Arc::new(content.into()) }
+    }
 
-//     #[test]
-//     fn openai_body_includes_tools_when_present() {
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![usr("查一下")];
-//         let tools = vec![ToolConfig {
-//             name: Arc::new("read".into()),
-//             description: Arc::new("读取文本文件".into()),
-//             parameters: json!({ "type": "object" }),
-//         }];
-//         let body = openai_request(&llm_cfg, msgs, tools);
-//         assert_eq!(body["tools"][0]["function"]["name"], "read");
-//         assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
-//     }
+    /// Assistant 消息：content/reasoning_content/tool_calls 均为 Value（Null 由 skip_serializing_if 省略），
+    /// 与 output_processor 用 raw_* 构造上下文消息的方式一致
+    fn assistant(content: Value, reasoning_content: Value, tool_calls: Value) -> Message {
+        Message::Assistant { content, reasoning_content, tool_calls }
+    }
 
-//     #[test]
-//     fn openai_body_omits_tools_when_empty() {
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![usr("你好")];
-//         let body = openai_request(&llm_cfg, &msgs, &[]);
-//         assert!(body.get("tools").is_none(), "无工具不应发送 tools 字段");
-//     }
+    /// Tool 消息（无 name 字段：工具名由 assistant.tool_calls 承载）
+    fn tool_msg(id: &str, content: &str) -> Message {
+        Message::Tool { tool_call_id: Arc::new(id.into()), content: Arc::new(content.into()) }
+    }
 
-//     #[test]
-//     fn openai_body_maps_tool_and_assistant_tool_calls() {
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![
-//             Message::Assistant {
-//                 content: Arc::new(String::new()),
-//                 reasoning_content: None,
-//                 tool_calls: Some(vec![Arc::new(ToolCall { id: Arc::new("c1".into()), name: Arc::new("read".into()), arguments: Arc::new(serde_json::json!({"path": "/a"})) })]),
-//             },
-//             Message::Tool { tool_call_id: Arc::new("c1".into()), name: Arc::new("read".into()), content: Arc::new("内容".into()) },
-//         ];
-//         let body = openai_request(&llm_cfg, &msgs, &[]);
-//         assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c1");
-//         assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read");
-//         assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["arguments"], r#"{"path":"/a"}"#, "arguments 序列化为 JSON 字符串");
-//         assert_eq!(body["messages"][1]["role"], "tool");
-//         assert_eq!(body["messages"][1]["tool_call_id"], "c1");
-//         // 输入 assistant 的 reasoning_content 为 None（上下文保留与否由 coordinator 策略决定），
-//         // 此处由 skip_serializing_if 省略；若 Some（工具调用场景须回传）则自动序列化携带
-//         assert!(body["messages"][0].get("reasoning_content").is_none());
-//     }
+    /// 工具定义（parameters 为 Arc<Value>）
+    fn read_tool() -> Arc<ToolConfig> {
+        Arc::new(ToolConfig {
+            name: Arc::new("read".into()),
+            description: Arc::new("读取文本文件".into()),
+            parameters: Arc::new(json!({ "type": "object" })),
+        })
+    }
 
-//     #[test]
-//     fn openai_body_serializes_reasoning_content_when_present() {
-//         // 格式能力：Message 序列化即 OpenAI 格式，reasoning_content 由格式自动序列化携带；
-//         // 上下文已保留 model_resp.reasoning_content（工具调用场景须回传，见 coordinator 步骤 4/6），wire 直接携带
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![
-//             Message::System { content: Arc::new("设定".into()) },
-//             Message::Assistant { content: Arc::new("回答".into()), reasoning_content: Some(Arc::new("思考".into())), tool_calls: None },
-//         ];
-//         let body = openai_request(&llm_cfg, &msgs, &[]);
-//         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
-//         assert_eq!(body["messages"][1]["reasoning_content"], "思考", "格式自动序列化 reasoning_content");
-//         assert_eq!(body["messages"][1]["role"], "assistant");
-//         assert_eq!(body["messages"][1]["content"], "回答");
-//     }
+    /// tool_calls 的 wire 形状：raw_tool_calls 原样透传（与 API 返回 JSON 一致，arguments 为 JSON 字符串）
+    fn wire_tool_calls() -> Value {
+        json!([{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"/a\"}" } }])
+    }
 
-//     #[test]
-//     fn parse_openai_response_extracts_content_and_finish_reason() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(data);
-//         assert_eq!(resp.content.as_str(), "答案");
-//         assert_eq!(resp.finish_reason.as_str(), "stop");
-//     }
+    /// Option<Arc<String>> → Option<&str>（断言助手）
+    fn text(value: &Option<Arc<String>>) -> Option<&str> {
+        value.as_deref().map(|s| s.as_str())
+    }
 
-//     #[test]
-//     fn parse_openai_response_extracts_tool_calls() {
-//         let data = serde_json::json!({
-//             "choices": [{
-//                 "message": { "content": null, "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"/a\"}" } }] },
-//                 "finish_reason": "tool_calls"
-//             }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.tool_calls.len(), 1);
-//         assert_eq!(resp.tool_calls[0].id.as_str(), "c1");
-//         assert_eq!(resp.tool_calls[0].name.as_str(), "read");
-//         assert_eq!(resp.tool_calls[0].arguments["path"], "/a", "arguments 解析为 JSON 对象");
-//         assert_eq!(resp.finish_reason.as_str(), "tool_calls");
-//     }
+    /// strip_think_tag 结果转 String（便于断言）
+    fn think(content: &str) -> (Option<String>, Option<String>) {
+        let (stripped, thinking) = strip_think_tag(content);
+        (
+            stripped.map(|s| s.as_str().to_string()),
+            thinking.map(|s| s.as_str().to_string()),
+        )
+    }
 
-//     #[test]
-//     fn parse_openai_response_no_tool_calls_by_default() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert!(resp.tool_calls.is_empty(), "无 tool_calls 字段时为空");
-//     }
+    #[test]
+    fn openai_build_request_includes_params_and_messages() {
+        let llm_cfg = sample_llm_cfg();
+        let msgs = vec![sys("你是助手"), usr("你好")];
+        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        assert_eq!(body.model.as_str(), "deepseek-4-flash");
+        assert_eq!(body.max_tokens, Some(2048));
+        // temperature 为 f32 字段，直接按 f32 精确值比较
+        assert_eq!(body.temperature, Some(0.3_f32));
+        assert!(!body.stream, "非流式请求");
+        assert!(body.tools.is_none(), "无工具不构造 tools");
+        assert!(body.thinking.is_none(), "未配置 thinking");
+        assert!(body.reasoning_effort.is_none(), "未配置 reasoning_effort");
+        assert!(matches!(&body.messages[0], Message::System { content } if content.as_str() == "你是助手"));
+        assert!(matches!(&body.messages[1], Message::User { content } if content.as_str() == "你好"));
+    }
 
-//     #[test]
-//     fn anthropic_body_separates_system_messages() {
-//         let llm_cfg = sample_llm_cfg();
-//         let msgs = vec![sys("设定"), usr("hi")];
-//         let body = anthropic_body(&llm_cfg, &msgs, &[]);
-//         assert_eq!(body["system"], "设定");
-//         assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
-//         assert_eq!(body["messages"][0]["role"], "user");
-//         assert_eq!(body["max_tokens"], 2048);
-//     }
+    #[test]
+    fn openai_build_request_omits_optional_params_when_none() {
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.max_tokens = None;
+        llm_cfg.temperature = None;
+        llm_cfg.thinking = None;
+        llm_cfg.reasoning_effort = None;
+        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let body = serde_json::to_value(&body).unwrap();
+        assert!(body.get("max_tokens").is_none(), "max_tokens 未配置不应传");
+        assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
+        assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
+        assert!(body.get("reasoning_effort").is_none(), "reasoning_effort 未配置不应传");
+        assert_eq!(body["model"], "deepseek-4-flash");
+        assert_eq!(body["stream"], false);
+    }
 
-//     #[test]
-//     fn anthropic_body_omits_optional_params_when_none() {
-//         let mut llm_cfg = sample_llm_cfg();
-//         llm_cfg.temperature = None;
-//         llm_cfg.thinking = None;
-//         llm_cfg.reasoning_effort = None;
-//         let msgs = vec![usr("hi")];
-//         let body = anthropic_body(&llm_cfg, &msgs, &[]);
-//         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
-//         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
-//         assert!(body.get("output_config").is_none(), "reasoning_effort 未配置不应传 output_config");
-//     }
+    #[test]
+    fn openai_build_request_maps_thinking_and_reasoning_effort() {
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
+        llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
+        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let body = serde_json::to_value(&body).unwrap();
+        // thinking 由字符串映射为协议枚举（内部标签 type）
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["temperature"].as_f64().unwrap() as f32, 0.3_f32);
+    }
 
-//     #[test]
-//     fn anthropic_body_passes_thinking_and_output_config() {
-//         let mut llm_cfg = sample_llm_cfg();
-//         llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
-//         llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
-//         let msgs = vec![usr("hi")];
-//         let body = anthropic_body(&llm_cfg, &msgs, &[]);
-//         assert_eq!(body["thinking"]["type"], "enabled");
-//         assert_eq!(body["output_config"]["effort"], "high");
-//         assert_eq!(body["temperature"], 0.3_f32 as f64);
-//     }
+    #[test]
+    fn openai_build_request_maps_disabled_thinking() {
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.thinking = Some(Arc::new("disabled".to_string()));
+        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let body = serde_json::to_value(&body).unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_extracts_text_and_stop_reason() {
-//         let data = serde_json::json!({
-//             "content": [{ "type": "text", "text": "答复" }],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.content.as_str(), "答复");
-//         assert_eq!(resp.finish_reason.as_str(), "end_turn");
-//     }
+    #[test]
+    fn openai_build_request_drops_unknown_thinking_value() {
+        // 非 enabled/disabled 的取值无法映射到协议枚举 → 不发送 thinking 字段（而非原样透传）
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.thinking = Some(Arc::new("bogus".to_string()));
+        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        assert!(body.thinking.is_none(), "未知取值不构造 thinking");
+        let body = serde_json::to_value(&body).unwrap();
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn openai_build_request_includes_tools_when_present() {
+        let llm_cfg = sample_llm_cfg();
+        let tools = vec![read_tool()];
+        let body = openai().build_request(&llm_cfg, vec![usr("查一下")], &tools);
+        let body = serde_json::to_value(&body).unwrap();
+        assert_eq!(body["tools"][0]["type"], "function", "工具以 function 类型包装");
+        assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(body["tools"][0]["function"]["description"], "读取文本文件");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn openai_build_request_omits_tools_when_empty() {
+        let llm_cfg = sample_llm_cfg();
+        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        assert!(body.tools.is_none(), "无工具不构造 tools");
+        let body = serde_json::to_value(&body).unwrap();
+        assert!(body.get("tools").is_none(), "无工具不应发送 tools 字段");
+    }
+
+    #[test]
+    fn openai_build_request_passes_through_tool_and_result_messages() {
+        // 上下文里的 assistant.tool_calls 是 raw_tool_calls（API 原始 JSON）原样透传，
+        // 所以 wire 形状即协议形状：arguments 保持 JSON 字符串
+        let llm_cfg = sample_llm_cfg();
+        let msgs = vec![
+            assistant(Value::Null, Value::Null, wire_tool_calls()),
+            tool_msg("c1", "内容"),
+        ];
+        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        let body = serde_json::to_value(&body).unwrap();
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["arguments"], r#"{"path":"/a"}"#, "arguments 保持 JSON 字符串");
+        // content/reasoning_content 为 Null（无值）由 skip_serializing_if 省略
+        assert!(body["messages"][0].get("content").is_none());
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "c1");
+        assert_eq!(body["messages"][1]["content"], "内容");
+        assert!(body["messages"][1].get("name").is_none(), "Message::Tool 已无 name 字段");
+    }
+
+    #[test]
+    fn openai_build_request_serializes_reasoning_content_when_present() {
+        // 格式能力：Message 序列化即 OpenAI 格式，reasoning_content 由格式自动序列化携带
+        // （工具调用场景须回传思考内容，故上下文保留 raw_reasoning_content）
+        let llm_cfg = sample_llm_cfg();
+        let msgs = vec![
+            sys("设定"),
+            assistant(Value::String("回答".into()), Value::String("思考".into()), Value::Null),
+        ];
+        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        let body = serde_json::to_value(&body).unwrap();
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"], "回答");
+        assert_eq!(body["messages"][1]["reasoning_content"], "思考", "格式自动序列化 reasoning_content");
+        assert!(body["messages"][1].get("tool_calls").is_none(), "无 tool_calls 省略");
+    }
+
+    #[test]
+    fn openai_parse_response_extracts_content_and_finish_reason() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答案"));
+        assert_eq!(text(&resp.finish_reason), Some("stop"));
+        assert_eq!(text(&resp.reasoning_content), None, "无 reasoning_content 字段");
+        assert_eq!(text(&resp.thinking), None, "无 <think> 标签");
+        assert!(resp.tool_calls.is_none(), "无 tool_calls 字段");
+        assert_eq!(resp.total_tokens, 0, "缺 usage 回退 0");
+    }
+
+    #[test]
+    fn openai_parse_response_extracts_tool_calls() {
+        let data = serde_json::json!({
+            "choices": [{
+                "message": { "content": null, "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"/a\"}" } }] },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let resp = openai().parse_response(data.clone());
+        let tool_calls = resp.tool_calls.as_ref().expect("应解析出 tool_calls");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id.as_str(), "c1");
+        assert_eq!(tool_calls[0].name.as_str(), "read");
+        // arguments 原样保留 API 返回的 JSON 字符串（不解析为对象）
+        assert_eq!(tool_calls[0].data.arguments.as_str(), Some(r#"{"path":"/a"}"#));
+        assert!(tool_calls[0].data.result.is_null() && tool_calls[0].data.error.is_null(), "执行前 result/error 为空");
+        assert_eq!(resp.raw_tool_calls, data["choices"][0]["message"]["tool_calls"], "raw_tool_calls 原样保留");
+        assert!(resp.content.is_none(), "content 为 null → None");
+        assert_eq!(text(&resp.finish_reason), Some("tool_calls"));
+    }
+
+    #[test]
+    fn openai_parse_response_no_tool_calls_by_default() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert!(resp.tool_calls.is_none(), "无 tool_calls 字段时为 None");
+        assert!(resp.raw_tool_calls.is_null(), "raw_tool_calls 为 Null");
+    }
+
+    #[test]
+    fn openai_parse_response_skips_tool_call_missing_id_or_name() {
+        // 容错：缺 id 或 function.name 的条目跳过（不整体失败）
+        let data = serde_json::json!({
+            "choices": [{
+                "message": { "content": "答案", "tool_calls": [
+                    { "function": { "name": "read", "arguments": "{}" } },
+                    { "id": "c2", "function": { "arguments": "{}" } },
+                    { "id": "c3", "function": { "name": "write", "arguments": "{}" } }
+                ] },
+                "finish_reason": "tool_calls"
+            }]
+        });
+        let resp = openai().parse_response(data);
+        let tool_calls = resp.tool_calls.as_ref().expect("应解析出 tool_calls");
+        assert_eq!(tool_calls.len(), 1, "仅完整条目保留");
+        assert_eq!(tool_calls[0].id.as_str(), "c3");
+    }
+
+    #[test]
+    fn anthropic_build_request_separates_system_messages() {
+        let llm_cfg = sample_llm_cfg();
+        let msgs = vec![sys("设定"), usr("hi")];
+        let body = anthropic().build_request(&llm_cfg, msgs, &vec![]);
+        assert_eq!(body["system"], "设定");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hi");
+        assert_eq!(body["max_tokens"], 2048);
+        assert_eq!(body["model"], "deepseek-4-flash");
+    }
+
+    #[test]
+    fn anthropic_build_request_joins_multiple_system_messages() {
+        let llm_cfg = sample_llm_cfg();
+        let body = anthropic().build_request(&llm_cfg, vec![sys("第一段"), sys("第二段"), usr("hi")], &vec![]);
+        assert_eq!(body["system"], "第一段\n第二段", "多段 system 以换行拼接");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn anthropic_build_request_defaults_max_tokens_when_unset() {
+        // Anthropic API 要求 max_tokens 必填：未配置时用默认常量
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.max_tokens = None;
+        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        assert_eq!(body["max_tokens"], DEFFAULT_ANTTHROPIC_MAX_TOKENS);
+    }
+
+    #[test]
+    fn anthropic_build_request_omits_optional_params_when_none() {
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.temperature = None;
+        llm_cfg.thinking = None;
+        llm_cfg.reasoning_effort = None;
+        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
+        assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
+        assert!(body.get("output_config").is_none(), "reasoning_effort 未配置不应传 output_config");
+    }
+
+    #[test]
+    fn anthropic_build_request_omits_system_when_absent() {
+        let llm_cfg = sample_llm_cfg();
+        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        assert!(body.get("system").is_none(), "无 system 消息不应发送 system 字段");
+    }
+
+    #[test]
+    fn anthropic_build_request_drops_tool_messages() {
+        // Anthropic 分支本轮不支持工具消息：system 归 system，Tool 消息丢弃
+        let llm_cfg = sample_llm_cfg();
+        let msgs = vec![
+            usr("hi"),
+            tool_msg("c1", "内容"),
+            assistant(Value::String("回答".into()), Value::Null, wire_tool_calls()),
+        ];
+        let body = anthropic().build_request(&llm_cfg, msgs, &vec![]);
+        assert_eq!(body["messages"].as_array().unwrap().len(), 2, "Tool 消息被丢弃");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][1]["role"], "assistant");
+        assert_eq!(body["messages"][1]["content"], "回答");
+    }
+
+    #[test]
+    fn anthropic_build_request_passes_thinking_and_output_config() {
+        let mut llm_cfg = sample_llm_cfg();
+        llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
+        llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
+        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        assert_eq!(body["thinking"]["type"], "enabled", "thinking 原样作为 type");
+        assert_eq!(body["output_config"]["effort"], "high", "reasoning_effort 映射为 output_config.effort");
+        assert_eq!(body["temperature"].as_f64().unwrap() as f32, 0.3_f32);
+    }
+
+    #[test]
+    fn anthropic_parse_response_extracts_text_and_stop_reason() {
+        let data = serde_json::json!({
+            "content": [{ "type": "text", "text": "答复" }],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答复"));
+        assert_eq!(text(&resp.finish_reason), Some("end_turn"));
+        assert!(resp.tool_calls.is_none(), "anthropic 分支暂不解析工具调用");
+        assert!(resp.reasoning_content.is_none());
+        assert!(resp.thinking.is_none());
+    }
 
 
-//     #[test]
-//     fn strip_think_tag_extracts_and_removes_leading_tag() {
-//         assert_eq!(strip_think_tag("<think>让我想想</think>答案".to_string()), ("答案".to_string(), "让我想想".to_string()));
-//     }
+    #[test]
+    fn strip_think_tag_extracts_and_removes_leading_tag() {
+        assert_eq!(think("<think>让我想想</think>答案"), (Some("答案".to_string()), Some("让我想想".to_string())));
+    }
 
-//     #[test]
-//     fn strip_think_tag_keeps_non_leading_tag() {
-//         let content = "答案<think>思考</think>".to_string();
-//         assert_eq!(strip_think_tag(content.clone()), (content, String::new()));
-//     }
+    #[test]
+    fn strip_think_tag_keeps_non_leading_tag() {
+        // 标签不在开头（含剥标签后剩下的内容）→ 原样返回，不提取思考
+        let content = "答案<think>思考</think>";
+        assert_eq!(think(content), (Some(content.to_string()), None));
+    }
 
-//     #[test]
-//     fn strip_think_tag_allows_leading_whitespace() {
-//         assert_eq!(strip_think_tag("\n<think>思考</think>答案".to_string()), ("答案".to_string(), "思考".to_string()));
-//     }
+    #[test]
+    fn strip_think_tag_allows_leading_whitespace() {
+        assert_eq!(think("\n<think>思考</think>答案"), (Some("答案".to_string()), Some("思考".to_string())));
+    }
 
-//     #[test]
-//     fn strip_think_tag_returns_unchanged_when_no_tag() {
-//         assert_eq!(strip_think_tag("普通文本".to_string()), ("普通文本".to_string(), "".to_string()));
-//         assert_eq!(strip_think_tag("".to_string()), ("".to_string(), "".to_string()));
-//     }
+    #[test]
+    fn strip_think_tag_returns_unchanged_when_no_tag() {
+        assert_eq!(think("普通文本"), (Some("普通文本".to_string()), None));
+        assert_eq!(think(""), (Some(String::new()), None), "空串有值但无思考");
+    }
 
-//     #[test]
-//     fn strip_think_tag_keeps_unclosed_tag() {
-//         let content = "<think>未闭合".to_string();
-//         assert_eq!(strip_think_tag(content.to_string()), (content.to_string(), String::new()));
-//     }
+    #[test]
+    fn strip_think_tag_keeps_unclosed_tag() {
+        // 缺 </think> 闭合标签 → 原样返回（不做半截解析）
+        assert_eq!(think("<think>未闭合"), (Some("<think>未闭合".to_string()), None));
+    }
 
-//     #[test]
-//     fn parse_openai_response_reasoning_and_thinking_independent() {
-//         // API 有 reasoning_content + content 有 <think> 标签 -> 两字段都 Some（独立共存）
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "<think>标签思考</think>答案", "reasoning_content": "API推理" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.content.as_str(), "答案", "<think> 标签应剥离");
-//         assert_eq!(resp.reasoning_content.as_str(), "API推理", "reasoning_content 独立取 API 字段");
-//         assert_eq!(resp.thinking.as_str(), "标签思考", "thinking 独立取标签内容");
-//     }
+    #[test]
+    fn strip_think_tag_extracts_empty_thinking() {
+        // 空标签：剥出空思考内容，剩余内容为空串
+        assert_eq!(think("<think></think>答案"), (Some("答案".to_string()), Some(String::new())));
+    }
 
-//     #[test]
-//     fn parse_openai_response_only_thinking_when_no_api_field() {
-//         // 无 API reasoning_content + <think> 标签 -> reasoning_content=None, thinking=Some
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.reasoning_content.as_str(), "");
-//         assert_eq!(resp.thinking.as_str(), "思考");
-//     }
+    #[test]
+    fn openai_parse_response_reasoning_and_thinking_independent() {
+        // API 有 reasoning_content + content 有 <think> 标签 → 两字段独立共存
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>标签思考</think>答案", "reasoning_content": "API推理" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答案"), "<think> 标签应剥离");
+        assert_eq!(text(&resp.reasoning_content), Some("API推理"), "reasoning_content 独立取 API 字段");
+        assert_eq!(text(&resp.thinking), Some("标签思考"), "thinking 独立取标签内容");
+    }
 
-//     #[test]
-//     fn parse_openai_response_extracts_reasoning_content() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案", "reasoning_content": "思考" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.content.as_str(), "答案");
-//         assert_eq!(resp.reasoning_content.as_str(), "思考");
-//         assert_eq!(resp.thinking.as_str(), "", "仅 API 字段无标签时 thinking 应为 None");
-//     }
+    #[test]
+    fn openai_parse_response_only_thinking_when_no_api_field() {
+        // 无 API reasoning_content + <think> 标签 → reasoning_content=None，thinking=标签内容
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert!(resp.reasoning_content.is_none(), "无 API 字段 → None");
+        assert_eq!(text(&resp.thinking), Some("思考"));
+    }
 
-//     #[test]
-//     fn parse_openai_response_falls_back_to_think_tag() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.content.as_str(), "答案", "<think> 标签应剥离");
-//         assert_eq!(resp.reasoning_content.as_str(), "", "标签内容不再合并到 reasoning_content");
-//         assert_eq!(resp.thinking.as_str(), "思考", "标签内容独立取 thinking");
-//     }
+    #[test]
+    fn openai_parse_response_extracts_reasoning_content() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案", "reasoning_content": "思考" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答案"));
+        assert_eq!(text(&resp.reasoning_content), Some("思考"));
+        assert!(resp.thinking.is_none(), "仅 API 字段无标签时 thinking 为 None");
+    }
 
-//     #[test]
-//     fn parse_openai_response_empty_api_reasoning_falls_back_to_think_tag() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "<think>思考</think>答案", "reasoning_content": "" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.content.as_str(), "答案", "<think> 标签应剥离");
-//         assert_eq!(resp.reasoning_content.as_str(), "", "空字符串 reasoning_content 应视为 None");
-//         assert_eq!(resp.thinking.as_str(), "思考", "标签内容独立取 thinking");
-//     }
+    #[test]
+    fn openai_parse_response_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答案"), "<think> 标签应剥离");
+        assert!(resp.reasoning_content.is_none(), "标签内容不合并到 reasoning_content");
+        assert_eq!(text(&resp.thinking), Some("思考"), "标签内容独立取 thinking");
+    }
 
-//     #[test]
-//     fn parse_response_no_thinking_when_both_empty() {
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.reasoning_content.as_str(), "");
-//         assert_eq!(resp.thinking.as_str(), "");
-//     }
+    #[test]
+    fn openai_parse_response_empty_api_reasoning_is_kept_as_empty_string() {
+        // 空串 reasoning_content 按「有该字段」处理：值为空串（非 None）
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案", "reasoning_content": "" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答案"), "<think> 标签应剥离");
+        assert_eq!(text(&resp.reasoning_content), Some(""), "空串 reasoning_content 取值为空串");
+        assert_eq!(text(&resp.thinking), Some("思考"), "标签内容独立取 thinking");
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_reasoning_and_thinking_independent() {
-//         let data = serde_json::json!({
-//             "content": [
-//                 { "type": "thinking", "thinking": "API推理" },
-//                 { "type": "text", "text": "<think>标签思考</think>答复" }
-//             ],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.content.as_str(), "答复");
-//         assert_eq!(resp.reasoning_content.as_str(), "API推理");
-//         assert_eq!(resp.thinking.as_str(), "标签思考");
-//     }
+    #[test]
+    fn openai_parse_response_no_thinking_when_both_empty() {
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert!(resp.reasoning_content.is_none());
+        assert!(resp.thinking.is_none());
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_extracts_thinking_block() {
-//         let data = serde_json::json!({
-//             "content": [
-//                 { "type": "thinking", "thinking": "思考过程" },
-//                 { "type": "text", "text": "答复" }
-//             ],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.content.as_str(), "答复");
-//         assert_eq!(resp.reasoning_content.as_str(), "思考过程");
-//         assert_eq!(resp.thinking.as_str(), "", "无标签时 thinking 应为 None");
-//     }
+    #[test]
+    fn openai_parse_response_keeps_raw_fields() {
+        // raw_* 保留 API 原始值（上下文按 raw_* 回填，保证回传格式与 API 一致）
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "<think>思考</think>答案", "reasoning_content": "API推理" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(resp.raw_content, serde_json::json!("<think>思考</think>答案"), "raw_content 未被剥标签");
+        assert_eq!(resp.raw_reasoning_content, serde_json::json!("API推理"));
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_falls_back_to_think_tag() {
-//         let data = serde_json::json!({
-//             "content": [{ "type": "text", "text": "<think>思考</think>答复" }],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.content.as_str(), "答复");
-//         assert_eq!(resp.reasoning_content.as_str(), "", "标签内容不再合并到 reasoning_content");
-//         assert_eq!(resp.thinking.as_str(), "思考", "标签内容独立取 thinking");
-//     }
+    #[test]
+    fn anthropic_parse_response_reasoning_and_thinking_independent() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "API推理" },
+                { "type": "text", "text": "<think>标签思考</think>答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答复"));
+        assert_eq!(text(&resp.reasoning_content), Some("API推理"));
+        assert_eq!(text(&resp.thinking), Some("标签思考"));
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_empty_thinking_block_falls_back_to_think_tag() {
-//         let data = serde_json::json!({
-//             "content": [
-//                 { "type": "thinking", "thinking": "" },
-//                 { "type": "text", "text": "<think>思考</think>答复" }
-//             ],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.content.as_str(), "答复", "<think> 标签应剥离");
-//         assert_eq!(resp.reasoning_content.as_str(), "", "空字符串 thinking 块应视为 None");
-//         assert_eq!(resp.thinking.as_str(), "思考", "标签内容独立取 thinking");
-//     }
+    #[test]
+    fn anthropic_parse_response_extracts_thinking_block() {
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "思考过程" },
+                { "type": "text", "text": "答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答复"));
+        assert_eq!(text(&resp.reasoning_content), Some("思考过程"), "thinking block → reasoning_content");
+        assert!(resp.thinking.is_none(), "无标签时 thinking 为 None");
+    }
 
-//     #[test]
-//     fn provider_for_unknown_type_returns_err() {
-//         let client = Arc::new(reqwest::Client::new());
-//         let err = provider_for(client, "typo", "u", "k").err().expect("未知 provider_type 应返回 Err");
-//         assert!(matches!(err, Error::ModelProviderNotSupported(_)), "未知类型应返回 ModelProviderNotSupported");
-//         assert!(err.to_string().contains("未知 provider_type: typo"), "错误信息应指明未知类型");
-//     }
+    #[test]
+    fn anthropic_parse_response_falls_back_to_think_tag() {
+        let data = serde_json::json!({
+            "content": [{ "type": "text", "text": "<think>思考</think>答复" }],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答复"));
+        assert!(resp.reasoning_content.is_none(), "无 thinking block → None");
+        assert_eq!(text(&resp.thinking), Some("思考"), "标签内容独立取 thinking");
+    }
 
-//     #[test]
-//     fn parse_openai_response_extracts_total_tokens() {
-//         // DeepSeek/Kimi 非流式响应：usage.total_tokens = prompt + completion
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }],
-//             "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.total_tokens, 15, "应取 usage.total_tokens");
-//     }
+    #[test]
+    fn anthropic_parse_response_empty_thinking_block_is_kept_as_empty_string() {
+        // 空串 thinking block 按「有该 block」处理：值为空串（非 None）
+        let data = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "" },
+                { "type": "text", "text": "<think>思考</think>答复" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("答复"), "<think> 标签应剥离");
+        assert_eq!(text(&resp.reasoning_content), Some(""), "空串 thinking block 取值为空串");
+        assert_eq!(text(&resp.thinking), Some("思考"), "标签内容独立取 thinking");
+    }
 
-//     #[test]
-//     fn parse_openai_response_missing_usage_defaults_zero() {
-//         // 无 usage 字段（容错）→ 0
-//         let data = serde_json::json!({
-//             "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
-//         });
-//         let resp = parse_openai_response(&data);
-//         assert_eq!(resp.total_tokens, 0, "缺 usage 回退 0");
-//     }
+    #[test]
+    fn anthropic_parse_response_uses_first_text_and_thinking_blocks() {
+        // 多 block：text 取第一个，thinking 取第一个；其余 block 忽略
+        let data = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "第一段" },
+                { "type": "thinking", "thinking": "推理一" },
+                { "type": "text", "text": "第二段" },
+                { "type": "thinking", "thinking": "推理二" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(text(&resp.content), Some("第一段"));
+        assert_eq!(text(&resp.reasoning_content), Some("推理一"));
+    }
 
-//     #[test]
-//     fn parse_anthropic_response_total_tokens_always_zero() {
-//         let data = serde_json::json!({
-//             "content": [{ "type": "text", "text": "答复" }],
-//             "stop_reason": "end_turn"
-//         });
-//         let resp = parse_anthropic_response(&data);
-//         assert_eq!(resp.total_tokens, 0, "anthropic 暂固定 0");
-//     }
-// }
+    #[test]
+    fn openai_parse_response_extracts_total_tokens() {
+        // DeepSeek/Kimi 非流式响应：usage.total_tokens = prompt + completion
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(resp.total_tokens, 15, "应取 usage.total_tokens");
+    }
+
+    #[test]
+    fn openai_parse_response_missing_usage_defaults_zero() {
+        // 无 usage 字段（容错）→ 0
+        let data = serde_json::json!({
+            "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }]
+        });
+        let resp = openai().parse_response(data);
+        assert_eq!(resp.total_tokens, 0, "缺 usage 回退 0");
+    }
+
+    #[test]
+    fn anthropic_parse_response_total_tokens_always_zero() {
+        let data = serde_json::json!({
+            "content": [{ "type": "text", "text": "答复" }],
+            "stop_reason": "end_turn"
+        });
+        let resp = anthropic().parse_response(data);
+        assert_eq!(resp.total_tokens, 0, "anthropic 暂固定 0");
+    }
+
+    // ===== ProviderManager 分派（未知 provider_type / 未知 provider 名） =====
+
+    /// 进程级装配（幂等）：ProviderManager.list_models 经 ConfigManager::get() 读 provider 配置，
+    /// 未初始化会 panic，故先注册单例（与 session_manager 测试同模式）。
+    /// data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
+    static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static TEST_INIT_DONE: AtomicBool = AtomicBool::new(false);
+    async fn ensure_config_manager() {
+        if !TEST_INIT_DONE.load(Ordering::Relaxed) {
+            let dir = TEST_GLOBAL_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+            let cfg_path = dir.path().join("config.json");
+            let cfg_json = format!(
+                r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9093,"ws_reconnect_interval_secs":5}}}}"#,
+                dir.path().join("data").to_str().unwrap()
+            );
+            std::fs::write(&cfg_path, cfg_json).unwrap();
+            // 2024 edition：设置环境变量需要 unsafe
+            unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
+            // 幂等：ConfigManager::new() 注册一次（第二实例丢弃）
+            let _ = ConfigManager::new().await;
+            TEST_INIT_DONE.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn list_models_rejects_unknown_provider_type() {
+        ensure_config_manager().await;
+        // provider_type 无法映射实现 → ModelProviderNotSupported（分派在 call/list_models 内联；
+        // 该分支在构造 Provider 前返回，不触网）
+        let _ = ConfigManager::get().add_provider("typo-provider", ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: Arc::new("typo".into()),
+                base_url: Arc::new("https://api.example.com".into()),
+                api_key: Arc::new("sk-test".into()),
+            }),
+            default_model_config: ModelConfig {
+                max_tokens_usage: 128000,
+                timeout_secs: None,
+                retry_count: None,
+            },
+            model_configs: Arc::new(kissbot_api::ArcSwapHashMap::new()),
+        }).await;
+        let manager = ProviderManager::new();
+        let err = manager.list_models("typo-provider").await.err().expect("未知 provider_type 应返回 Err");
+        assert!(matches!(err, Error::ModelProviderNotSupported(_)), "未知类型应返回 ModelProviderNotSupported");
+        assert!(err.to_string().contains("未知 provider_type: typo"), "错误信息应指明未知类型：{}", err);
+    }
+
+    #[tokio::test]
+    async fn list_models_rejects_unknown_provider_name() {
+        ensure_config_manager().await;
+        let err = ProviderManager::new().list_models("no-such-provider").await.err().expect("provider 不存在应返回 Err");
+        assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider 应返回 ModelProviderNotFound");
+    }
+}

@@ -235,7 +235,9 @@ mod tests {
         let (status, body) = send(app.clone(), "GET", "/config", "admin-key-123", None).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["providers"].is_object());
-        assert!(body["data"]["default_model"].is_object());
+        assert!(body["data"]["channels"].is_object());
+        // sessions 以 [[key, value], ...] 数组对承载（SessionKey 是结构体，不能作 JSON map 键）
+        assert!(body["data"]["sessions"].is_array(), "sessions 应为数组对");
 
         // POST /config/providers 添加
         let (status, body) = send(app.clone(), "POST", "/config/providers", "admin-key-123",
@@ -272,6 +274,6 @@ mod tests {
         // 落盘验证（ConfigManager data_dir = <tempdir>/data）
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(ConfigManager::get().data_dir()).join("nexus.json")).unwrap()).unwrap();
         assert!(saved["providers"].is_object());
-        assert_eq!(saved["default_model"]["model"], "deepseek-4-flash");
+        assert_eq!(saved["channels"]["web-main"]["admins"][0]["user_id"], "u2", "add_admin 应落盘");
     }
 }

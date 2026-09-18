@@ -20,7 +20,7 @@ pub struct SessionKey {
 }
 
 /// 记忆读写边界的 role 编码：事件模式拼 {role}-{event}（对 memory-store 透明），角色模式原样
-/// role_name/mode 从 Session 运行态字段读（SessionKey 只做去重）；会话建立时算一次存 Session.role_event
+/// 调用方按需从 SessionKey 的 role_name/mode 现场计算（SessionKey 只做会话去重）
 pub fn role_mode(role_name: &str, mode: &Mode) -> String {
     match mode {
         Mode::Event(event_id) => format!("{}-{}", role_name, event_id),

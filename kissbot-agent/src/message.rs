@@ -105,9 +105,9 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
     out
 }
 
-/// 将一批 IncomingMessageEvent 打包为一条 User Message（替换 session_manager BatchConsumer 的内联拼接）：
+/// 将一批 IncomingMessageEvent 打包为一条 User Message（合批 flush 时调用）：
 /// 每 event 经 extract_content 构造（is_self=0），空 content（非文本）跳过，逐行 user_line 拼接（\n 连接）；
-/// 全部跳过时返回空 content 的 User（try_flush 已在 items 为空时提前返回，此处输入必非空）
+/// 全部跳过时返回空 content 的 User（调用方已在 items 为空时跳过 flush，此处输入必非空）
 pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
     let mut lines: Vec<String> = Vec::new();
     for e in events {
@@ -148,7 +148,8 @@ mod tests {
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: m0\nm1"));
         assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str().unwrap() == "line1\nline2"));
         assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
-        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_null()));
+        // 结尾补的空 Assistant：content 为空串（不是 Null——须在 wire 上显式给出 content 字段）
+        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.as_str() == Some("")));
     }
 
     #[test]
@@ -181,7 +182,8 @@ mod tests {
         let out = pack_memory_messages(&[msg("u", "hi", false)]);
         assert_eq!(out.len(), 2);
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u: hi"));
-        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.is_null()));
+        // 结尾补的空 Assistant：content 为空串（不是 Null——须在 wire 上显式给出 content 字段）
+        assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str() == Some("")));
     }
 
     #[test]

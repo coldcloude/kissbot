@@ -48,7 +48,7 @@ struct ChannelTask {
 }
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
-/// 所有使用 coordinator 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
+/// 所有使用 Nexus 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
 static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 
 pub struct Nexus {
@@ -182,13 +182,19 @@ impl Nexus {
         })
     }
 
-    /// 定位会话（不存在则创建；创建时上下文恢复/重建 + 系统消息在 get_or_create 内部完成）；返回会话（无"是否新建"标记）
+    /// 定位会话（不存在则创建并完成初始化：上下文恢复在 get_or_create 内，pipeline 同步与系统提示词在其之后）；返回会话
     /// key 传所有权（get_or_create 内部 move，非深拷贝）
     pub async fn ensure_session(&self, key: &SessionKey) -> Arc<Session> {
-        self.session_manager.get_or_create(key).await
+        let (session, new) = self.session_manager.get_or_create(key).await;
+        if new {
+            // 初始化 pipeline
+            let _ = self.pipeline_manager.sync_pipeline(Arc::new(key.clone())).await;
+            let _ = self.pipeline_manager.reset_system_prompt(key).await;
+        }
+        session
     }
 
-    /// role 模式上下文构建（新建/溢出重置共用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
+    /// role 模式上下文构建（记忆回溯 reducer 调用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
     /// 取记忆用会话状态保存的 agent_id（来自会话 key）
     pub async fn build_context_from_memory_store(&self, session_key: &SessionKey) -> Vec<Message> {
         let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig,EffectiveMemoryRecoverConfig>(session_key).await;
@@ -209,8 +215,8 @@ impl Nexus {
         self.session_manager.retain(&keys);
     }
 
-    /// 根据 agent_id 获取系统提示词（新建会话系统消息，create_session 内调用）：
-    /// 保留 agent（agent_id="0"）用 NexusRepo 默认系统提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
+    /// 根据 agent_id 获取系统提示词（新建会话时由 MemoryEgoSystemPrompter 调用）：
+    /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
     /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
     /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
     pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Option<String> {
@@ -345,14 +351,6 @@ impl Nexus {
         ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config).await
     }
 
-    pub async fn sync_session_pipeline(&self, session_key: Arc<SessionKey>) -> Result<()> {
-        self.pipeline_manager.sync_pipeline(session_key).await
-    }
-
-    pub async fn reset_system_prompt(&self, session_key: &SessionKey) -> Result<()> {
-        self.pipeline_manager.reset_system_prompt(session_key).await
-    }
-
     /// 启动主循环（保持进程运行）：初始化会话 + 连接全部 channel
     pub async fn run(&self) {
         info!("Nexus 启动，等待外部输入...");
@@ -449,8 +447,8 @@ impl Nexus {
         }
 
         // 5. 普通消息：运行pipeline
-        let _ = self.ensure_session(&key);
-        let _ = self.pipeline_manager.incoming_message(&key, event);
+        let _ = self.ensure_session(&key).await;
+        let _ = self.pipeline_manager.incoming_message(&key, event).await;
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
@@ -662,6 +660,13 @@ fn placeholder_request(
 mod tests {
     use super::*;
 
+    use std::time::Instant;
+
+    use kissbot_api::channel::IncomingMessage;
+
+    use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
+    use crate::pipelines::{PP_IN_BATCH, PP_MSG_RAW, PP_OUT_CHANNEL, PP_SYS_DEFAULT, PP_TOOL_STATION};
+
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
     // 成员函数化后需构造实例取 &self；MemoryEgoClient/MemoryStoreClient 构造读 ApiConfig/SecurityConfig
     // 进程级单例（kissbot_config::Config::get 读 KISSBOT_CONFIG env），按 http_server 测试先例写临时配置
@@ -705,5 +710,99 @@ mod tests {
         // 显式空串（保留 role）直接 Ok，提前返回不触 ego HTTP；
         // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
         assert!(nexus.verify_role_exists("a1", "").await.is_ok());
+    }
+
+    // ===== 消息入口链路（incoming_message → 合批 → pipeline → 会话上下文） =====
+    // 覆盖一整条链：ensure_session（含新建会话的 pipeline 同步与系统提示词初始化）/ pipeline 分发 /
+    // 合批 flush / context_append
+
+    /// 进程级装配（幂等，与 session_manager 测试同模式）：ConfigManager/Station/Nexus 单例各注册一次。
+    /// data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
+    static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static TEST_INIT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    async fn ensure_test_globals() {
+        if !TEST_INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+            let dir = TEST_GLOBAL_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+            let cfg_path = dir.path().join("config.json");
+            let cfg_json = format!(
+                r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9092,"ws_reconnect_interval_secs":5}}}}"#,
+                dir.path().join("data").to_str().unwrap()
+            );
+            std::fs::write(&cfg_path, cfg_json).unwrap();
+            // 2024 edition：设置环境变量需要 unsafe
+            unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
+            // 幂等：每个单例只注册一次（重复 new 的实例被丢弃，set 失败被忽略）
+            let _ = ConfigManager::new().await;
+            let _ = Station::new().await;
+            let _ = Nexus::new().await;
+            TEST_INIT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn incoming_message_grows_session_context_through_pipeline() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let agent_id = "a1";
+        let channel_id = "nexus-chain-test";
+        let key = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode: Mode::Role };
+
+        // 1. agent 级（role 空串）pipeline：显式指定全部组件（不依赖 preset 映射），必须在会话首次合成
+        //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
+        //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
+        let mut pipeline = PipelineConfig::default();
+        pipeline.input_processor = Some(Arc::new(PP_IN_BATCH.into()));
+        pipeline.system_prompter = Some(Arc::new(PP_SYS_DEFAULT.into()));
+        pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
+        pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
+        pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
+        cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(agent_id, "", Arc::new(pipeline)).await.unwrap();
+        // 合批间隔缩到 1 秒，让 flush 尽快发生
+        cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            agent_id, "", Arc::new(ChannelBatchConfig { channel_batch_interval_secs: 1 })).await.unwrap();
+
+        // 2. channel 绑定 (a1, "")；channel_id 用本用例专用名，避免与其他测试互相干扰
+        let _ = cm.add_channel(ChannelConfig {
+            channel_id: Arc::new(channel_id.into()),
+            ws_url: Arc::new("ws://127.0.0.1:8399".into()),
+            admins: Arc::new(HashSet::new()),
+            bind_users: Arc::new(HashSet::new()),
+            agent_id: Arc::new(agent_id.into()),
+            role_name: Arc::new("".into()),
+            enabled: true,
+        }).await;
+
+        // 3. 消息入口（非命令消息，直接进 pipeline）：ensure_session 新建会话时会同步 pipeline
+        //    并初始化系统提示词，随后消息分发到合批输入处理器
+        Nexus::get().incoming_message(channel_id, Arc::new(IncomingMessageEvent {
+            recipient_user_id: Arc::new("self".into()),
+            incoming_message: Arc::new(IncomingMessage {
+                msg_id: Arc::new("m1".into()),
+                messenger_id: Arc::new("web".into()),
+                user_id: Arc::new("u1".into()),
+                group_id: Arc::new("g1".into()),
+                messenger_name: Arc::new("".into()),
+                user_name: Arc::new("u1".into()),
+                group_name: Arc::new("".into()),
+                content: Content::Text(Arc::new("链路测试消息".into())),
+                time: Arc::new("2026-08-07 10:00:00".into()),
+            }),
+        })).await;
+
+        // 4. 等合批 flush + pipeline 运行：会话上下文应含系统消息（首条，由系统提示词初始化设置）
+        //    与本条用户消息
+        let session = Nexus::get().ensure_session(&key).await;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let ctx = session.build_context().await;
+            let has_system = matches!(ctx.first(), Some(Message::System { .. }));
+            let has_user = ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str().contains("链路测试消息")));
+            if has_system && has_user {
+                break;
+            }
+            assert!(Instant::now() < deadline,
+                "消息应经 incoming_message → 合批 → pipeline 进入会话上下文，实际: {:?}", ctx);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }

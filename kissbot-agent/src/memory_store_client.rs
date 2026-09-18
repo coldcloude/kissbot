@@ -187,7 +187,7 @@ impl MemoryStoreClient {
     }
 
     /// 推送 think 记录（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
-    /// 调用方：coordinator 步骤 4（思考记忆推送）
+    /// 调用方：AgentPipeline::run_once（思考记忆推送）
     pub async fn push_think(&self, record: ThinkRequest) {
         self.think_appender.append(THINK_KEY.to_string(), vec![record]).await;
     }
@@ -785,6 +785,7 @@ mod tests {
         assert!(matches!(&out[0], Message::User { content } if content.as_str() == "u1: m0\nu2: m1"));
         assert!(matches!(&out[1], Message::Assistant { content, .. } if content.as_str().unwrap() == "a2"));
         assert!(matches!(&out[2], Message::User { content } if content.as_str() == "u3: m2"));
-        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.is_null()));
+        // 结尾补的空 Assistant：content 为空串（不是 Null——须在 wire 上显式给出 content 字段）
+        assert!(matches!(&out[3], Message::Assistant { content, .. } if content.as_str() == Some("")));
     }
 }

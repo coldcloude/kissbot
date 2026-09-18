@@ -4,7 +4,7 @@
 Keep It Simple Stupid BOT - kissbot
 
 ## 开发原则
-- 不要删除代码中的注释！
+- 不要删除代码中的仍符合实际代码注释，但已过时的注释应该删除
 
 ## 开发框架
 - 后台rust+cargo

@@ -1,6 +1,6 @@
 //! channel 运行态管理：Channel（单 channel 运行态）+ ChannelManager（全部 channel 的集合管理）
 //! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态 mode + 运行时绑定的 client；
-//! ChannelManager 持有全部 Channel（DashMap 无锁并发），coordinator 经 ChannelManager 访问各 channel 运行态。
+//! ChannelManager 持有全部 Channel（DashMap 无锁并发），Nexus 经 ChannelManager 访问各 channel 运行态。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,7 +94,7 @@ impl Channel {
 
 /// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）与断线通知；
 /// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_channel/send）
-/// 内部 DashMap 无锁并发；coordinator 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
+/// 内部 DashMap 无锁并发；Nexus 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 pub struct ChannelManager {
     channels: DashMap<String, Arc<Channel>>,
 }
@@ -153,7 +153,7 @@ impl ChannelManager {
         let reconnect_secs = ConfigManager::get().ws_reconnect_interval_secs();
         let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
         // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
-        // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 coordinator 的 Arc<ChannelManager> 保活
+        // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 Nexus 的 Arc<ChannelManager> 保活
         let terminal: Arc<dyn Terminal> = self.clone();
         let channel_id = ch.channel_id.to_string();
         let ws_url = ch.ws_url.to_string();

@@ -128,6 +128,7 @@ mod tests {
 use tower::ServiceExt;
 
     use crate::configs::{StationRepo, ToolkitConfig};
+    use crate::station::{TERR_TOOL_CYCLE, TERR_TOOL_NOT_FOUND};
     use arc_swap::ArcSwap;
 
     fn test_station_repo(station_id: &str) -> StationRepo {
@@ -236,39 +237,45 @@ use tower::ServiceExt;
         assert!(body["error"].as_str().unwrap().contains("cycle"));
     }
 
+    /// /station/call-tool 请求体（tool_call 全量 + ancestors）
+    fn call_tool_body(name: &str, ancestors: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "tool_call": { "id": "0", "name": name, "data": { "arguments": {}, "result": null, "error": null } },
+            "ancestors": ancestors,
+        })
+    }
+
     #[tokio::test]
-    async fn station_call_tool_failure_is_200_cycle_non_200() {
+    async fn station_call_tool_failure_is_200_with_tool_error_in_body() {
         let repo = test_station_repo("station-a");
         let station = leak_station(&repo);
         let app = StationHttpServer::router_with_station(station, "secret");
 
-        // 本地只注册了 filesystem/read；调用不存在的工具属于工具调用失败 → 200 + success=false
+        // 本地只注册了 filesystem/read；调用不存在的工具 → 200，失败编码在返回的 ToolCall.data.error 里
         let (status, body) = send(
             app.clone(),
             "POST",
             "/station/call-tool",
             "secret",
-            Some(serde_json::json!({
-                "tool_name": "missing", "parameters": {}, "ancestors": []
-            })),
+            Some(call_tool_body("missing", &[])),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["success"], false);
-        assert!(body["error"].as_str().unwrap().contains("工具不存在"));
+        assert_eq!(body["success"], true, "工具调用失败不是 HTTP 失败：错误随 ToolCall 返回");
+        assert_eq!(body["data"]["data"]["error"]["code"], TERR_TOOL_NOT_FOUND);
+        assert!(body["data"]["data"]["error"]["message"].as_str().unwrap().contains("工具不存在"));
 
-        // 自环 → 非 200
+        // 自环（ancestors 含自身）→ 同样 200，错误码为 CYCLE
+        // （与 /station/tools 不同：那里 cycle 由 Station::tools 返回 Err，故映射为 400）
         let (status, body) = send(
             app,
             "POST",
             "/station/call-tool",
             "secret",
-            Some(serde_json::json!({
-                "tool_name": "read", "parameters": {}, "ancestors": ["station-a"]
-            })),
+            Some(call_tool_body("read", &["station-a"])),
         )
         .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["success"], false);
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"]["data"]["error"]["code"], TERR_TOOL_CYCLE);
     }
 }

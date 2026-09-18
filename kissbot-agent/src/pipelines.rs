@@ -30,7 +30,7 @@ pub const PP_PRESET_EVENT: &str = "preset_event";
 
 pub async fn create_input_processor(session_key: Arc<SessionKey>, name: &str) -> Option<Box<dyn AgentInputProcessor>> {
     match name {
-        PP_IN_BATCH => Some(Box::new(BatchAgentInputProcessor::new(session_key).await)),
+        PP_IN_BATCH => Some(Box::new(BatchAgentInputProcessor::new(session_key))),
         _ => None,
     }
 }

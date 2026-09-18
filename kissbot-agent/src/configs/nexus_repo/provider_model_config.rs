@@ -18,11 +18,11 @@ pub const DEFAULT_RETRY_COUNT: u32 = 3;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub provider_type: Arc<String>,      // "openai" | "anthropic"，决定 Provider 实现
-    pub base_url: Arc<String>,           // URL 前缀，如 https://api.deepseek.com（原 endpoint）
+    pub base_url: Arc<String>,           // URL 前缀，如 https://api.deepseek.com
     pub api_key: Arc<String>,            // provider 级密钥
 }
 
-// ProviderConfig 定义在本文件，供 provider / model_client 与本文件的 NexusRepo.providers 共用
+// ProviderConfig 定义在本文件，供 provider 与本文件的 NexusRepo.providers 共用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderModelConfig {
     pub provider_config: Arc<ProviderConfig>,
@@ -31,7 +31,7 @@ pub struct ProviderModelConfig {
 }
 
 /// 可继承模型参数（Option 覆盖字段；未配字段回落上一级：model → provider 默认 → 全局常量）
-/// 复用作 provider 默认值容器（ProviderConfig.default_model_config）与 model 覆盖（models map 值）
+/// 复用作 provider 默认值容器（ProviderModelConfig.default_model_config）与 model 覆盖（model_configs map 值）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub max_tokens_usage: u32,
@@ -87,9 +87,8 @@ impl MergeBy<ModelConfig> for EffectiveModelConfig {
     }
 }
 
-/// 合成 provider 默认 + model 覆盖的有效参数（与 merge_context_config 同模式：
-/// 全局默认 ← provider 默认 ← model 覆盖，model 未配字段继承 provider，二者都未配回落全局常量；
-/// temperature/thinking/reasoning_effort 无全局默认，None 传播（不发送））
+/// 合成 provider 默认 + model 覆盖的有效参数：
+/// 全局默认 ← provider 默认 ← model 覆盖，model 未配字段继承 provider，二者都未配回落全局常量
 impl ProviderModelConfig {
     pub fn get_effective_config(&self, model_name: &str) -> EffectiveModelConfig {
         let mut config = self.default_model_config.clone();

@@ -46,15 +46,15 @@ impl BatchProducer {
 }
 
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
-/// 持 session 弱引用（flush 升级用；弱引用不强持会话——会话销毁由 session_manager/channel 决定）
-/// 持 notify（任务 select 等待会话销毁通知；与 Session.notify 同一 Arc，见 get_or_create 组装）
-/// 持 anchor/deadline（与 producer 共享同一 Arc：enqueue 侧 set_deadline 写、任务侧 try_flush 读/清，见 get_or_create 组装）
+/// 持 notify（任务 select 等待会话销毁通知；与 BatchAgentInputProcessor.notify 同一 Arc）
+/// 持 anchor/deadline（与 producer 共享同一份：enqueue 侧 send 写 deadline，任务侧 run 读/清）
+/// 持 session_key（flush 时据此启动对应会话的 pipeline）
 pub struct BatchConsumer {
     rx: mpsc::UnboundedReceiver<Arc<IncomingMessageEvent>>,
     trigger_rx: mpsc::UnboundedReceiver<Instant>,
     delay: DelayQueue<Instant>,
     notify: Arc<Notify>,
-    /// 编码基准（与 producer 共享同一 Arc<Instant>；try_flush 判定用，参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
+    /// 编码基准（与 producer 共享的 Instant；deadline 判定用，参照 kai-ws WsHeartbeatHandler 的 anchor 方法）
     anchor: Instant,
     /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush 哨兵）
     deadline: Arc<AtomicU64>,
@@ -63,12 +63,11 @@ pub struct BatchConsumer {
 }
 
 /// 触发 flush（BatchConsumer 成员函数）：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→
-/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_events）→ 经 session 弱引用升级进 agentic loop
-/// 升级失败（session 已销毁）：数据仍被 drain 清走，仅丢弃打包内容（会话已不存在，无消费者）
+/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_batch）→ 经 Nexus::run_pipeline 进 agentic loop
 impl BatchConsumer {
-    /// 触发任务主循环（consumer 成员函数；get_or_create 经 tokio::spawn 启动）
+    /// 触发任务主循环（consumer 成员函数；BatchAgentInputProcessor::new 经 tokio::spawn 启动）
     /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问；
-    /// 退出靠 notify + trigger channel 关闭兜底）——不阻止 session drop
+    /// 退出靠 notify + trigger channel 关闭兜底）
     async fn run(mut self) {
         loop {
             tokio::select! {
@@ -95,7 +94,7 @@ impl BatchConsumer {
                             let deadline = self.deadline.load(Ordering::Relaxed);
                             let now_millis = Instant::now().duration_since(self.anchor).as_millis() as u64;
                             if deadline == 0 || now_millis < deadline {
-                                return;   // 未设deadline或未超 deadline：空转（等下一个到期触发）
+                                continue;   // 未设deadline或未超 deadline：空转（等下一个到期触发）
                             }
                             // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
                             // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
@@ -110,7 +109,7 @@ impl BatchConsumer {
                                 }
                             }
                             if items.is_empty() {
-                                return;
+                                continue;   // 无待 flush 数据（已被上一次 flush drain 走）：空转
                             }
                             // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
                             let content = pack_batch(&items);
@@ -128,14 +127,14 @@ impl BatchConsumer {
 pub struct BatchAgentInputProcessor {
     /// 绑定的session
     session_key: Arc<SessionKey>,
-    /// 合批生产侧（依赖序构造时经 create_session 传入；channel 均从本字段取 clone 绑定）
+    /// 合批生产侧（new 时构造；accept 从本字段取用）
     producer: BatchProducer,
     /// 会话销毁通知（Drop 时 notify_one → trigger 任务退出；与 consumer.notify 同一 Arc）
     notify: Arc<Notify>,
 }
 
 impl BatchAgentInputProcessor {
-    pub async fn new(session_key: Arc<SessionKey>) -> Self {
+    pub fn new(session_key: Arc<SessionKey>) -> Self {
         // 1. notify + anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
         let notify = Arc::new(Notify::new());
         let anchor = Instant::now();
@@ -159,7 +158,7 @@ impl BatchAgentInputProcessor {
             deadline,
             session_key: session_key.clone(),
         };
-        // 4. consumer 去 spawn（内联 spawn_trigger）
+        // 4. consumer 去 spawn（触发任务随 spawn move 进任务）
         tokio::spawn(consumer.run());
         // 5. 构造 processor 实例
         Self {
@@ -182,5 +181,145 @@ impl Drop for BatchAgentInputProcessor {
     fn drop(&mut self) {
         // 会话销毁：通知 trigger 任务退出（notify_one permit 语义：任务错过唤醒后下一轮 notified 立即完成）
         self.notify.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use kissbot_api::channel::IncomingMessage;
+    use kissbot_api::message::Content;
+
+    use crate::types::Mode;
+
+    fn ev(name: &str, text: &str) -> Arc<IncomingMessageEvent> {
+        Arc::new(IncomingMessageEvent {
+            recipient_user_id: Arc::new("self".into()),
+            incoming_message: Arc::new(IncomingMessage {
+                msg_id: Arc::new("m".into()),
+                messenger_id: Arc::new("web".into()),
+                user_id: Arc::new("u".into()),
+                group_id: Arc::new("g".into()),
+                messenger_name: Arc::new("".into()),
+                user_name: Arc::new(name.into()),
+                group_name: Arc::new("".into()),
+                content: Content::Text(Arc::new(text.into())),
+                time: Arc::new("2026-08-07 10:00:00".into()),
+            }),
+        })
+    }
+
+    fn test_key() -> Arc<SessionKey> {
+        Arc::new(SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role })
+    }
+
+    /// 测试 producer/consumer 对（未 spawn；与 BatchAgentInputProcessor::new 的依赖序构造同构：
+    /// anchor/deadline/notify 为共享 Arc，2 条 mpsc 分别承载事件与触发时间）
+    fn test_pair() -> (BatchProducer, BatchConsumer) {
+        let notify = Arc::new(Notify::new());
+        let anchor = Instant::now();
+        let deadline = Arc::new(AtomicU64::new(0));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
+        let producer = BatchProducer {
+            tx,
+            trigger_tx,
+            anchor,
+            deadline: deadline.clone(),
+        };
+        let consumer = BatchConsumer {
+            rx,
+            trigger_rx,
+            delay: DelayQueue::new(),
+            notify,
+            anchor,
+            deadline,
+            session_key: test_key(),
+        };
+        (producer, consumer)
+    }
+
+    #[test]
+    fn send_pushes_event_and_sets_deadline() {
+        let (producer, mut consumer) = test_pair();
+        producer.send(ev("u1", "a"), 3);
+        let deadline = producer.deadline.load(Ordering::Relaxed);
+        assert!(deadline > 1000, "deadline 应约为 interval（3 秒，相对 anchor 的毫秒），实际 {}", deadline);
+        assert!(deadline <= 3100, "deadline 不应超出 interval 太多，实际 {}", deadline);
+        assert!(consumer.rx.try_recv().is_ok(), "事件已入队");
+        // trigger 同时入队（消费侧据此插入 DelayQueue）
+        assert!(consumer.trigger_rx.try_recv().is_ok(), "触发时间已入队");
+    }
+
+    #[test]
+    fn send_raises_deadline_but_never_lowers_it() {
+        // CAS-max 只抬不降：并发后推（更晚截止）不被较早写入覆盖
+        let (producer, _consumer) = test_pair();
+        producer.send(ev("u1", "a"), 5);
+        let first = producer.deadline.load(Ordering::Relaxed);
+        producer.send(ev("u2", "b"), 10);
+        let second = producer.deadline.load(Ordering::Relaxed);
+        assert!(second > first, "更晚的截止应抬高 deadline：{} -> {}", first, second);
+        producer.send(ev("u3", "c"), 1);
+        assert_eq!(producer.deadline.load(Ordering::Relaxed), second, "较早的截止不应降低 deadline");
+    }
+
+    #[tokio::test]
+    async fn run_exits_on_notify() {
+        let (producer, consumer) = test_pair();
+        let notify = consumer.notify.clone();
+        // 与 BatchAgentInputProcessor::new 的 spawn 同构：tokio::spawn(consumer.run())
+        let handle = tokio::spawn(consumer.run());
+        // 确保任务已启动并持有 trigger_rx
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        notify.notify_one();
+        // 任务退出后 trigger_rx 已 drop → channel 关闭 → send 返回 Err
+        // （触发时间取远期，避免触发的 DelayQueue 到期干扰判定）
+        let far = Instant::now() + Duration::from_secs(60);
+        let timeout = Instant::now() + Duration::from_millis(500);
+        loop {
+            if producer.trigger_tx.send(far).is_err() {
+                break;
+            }
+            assert!(Instant::now() < timeout, "任务应在 notify 后退出");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn run_survives_early_trigger_before_deadline() {
+        // 同一批内两条消息：后一条把 deadline 推后，前一条的 trigger 先到期（now < deadline）。
+        // 该次触发只应空转（等下一个到期触发），任务不得退出——否则后续消息永远不再 flush。
+        let (producer, consumer) = test_pair();
+        let notify = consumer.notify.clone();
+        let handle = tokio::spawn(consumer.run());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        producer.send(ev("u1", "a"), 2);    // deadline ≈ 2s
+        producer.send(ev("u2", "b"), 10);   // deadline ≈ 10s（CAS-max 抬高）
+        // 等前一条 trigger 到期（约 2s）之后：任务应仍在运行
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(producer.trigger_tx.send(Instant::now() + Duration::from_secs(60)).is_ok(),
+            "未到 deadline 的 trigger 不应让消费任务退出");
+        notify.notify_one();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn drop_notifies_consumer_task() {
+        // 会话销毁：processor drop → notify_one → 触发任务退出（trigger channel 关闭）
+        let processor = BatchAgentInputProcessor::new(test_key());
+        let trigger_tx = processor.producer.trigger_tx.clone();
+        drop(processor);
+        let far = Instant::now() + Duration::from_secs(60);
+        let timeout = Instant::now() + Duration::from_millis(500);
+        loop {
+            if trigger_tx.send(far).is_err() {
+                break;
+            }
+            assert!(Instant::now() < timeout, "任务应在 processor drop 后退出");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

@@ -632,9 +632,11 @@ use super::*;
         let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
         // 注入路由（模拟 tools() 拉取后缓存）：工具 x 属于 station-a
         station.tool_routes.insert("x".to_string(), "station-a".to_string());
-        // 命中路由 → 调子 Station（连接失败返回 Err）→ 返回该错误（非"工具不存在"）
+        // 命中路由 → 调子 Station（子站不可达）：失败由 StationClient 统一映射为 EXTERNAL_ERROR
+        // （关键是「不是工具不存在」——路由确实生效了）
         let err = station.call_tool(no_arg_tool_call("x"), &[]).await.data.error;
-        assert!(err.to_string().contains("未实现") || err.to_string().contains("connection") || err.to_string().contains("error"), "路由命中应调子而非工具不存在: {}", err);
+        assert_eq!(err["code"], TERR_TOOL_EXTERNAL_ERROR, "路由命中应调子而非工具不存在: {}", err);
+        assert!(err["message"].as_str().unwrap().contains("调用sub station工具失败"), "子站调用失败文案: {}", err);
         // 未命中路由（本地也无）→ 工具不存在
         let miss = station.call_tool(no_arg_tool_call("nope"), &[]).await.data.error;
         assert!(miss.to_string().contains("工具不存在"));

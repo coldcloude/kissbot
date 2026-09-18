@@ -120,6 +120,8 @@ use super::*;
 
     #[tokio::test]
     async fn client_parses_call_tool_failure_as_error() {
+        // 服务端 success=false（工具调用失败）→ post 返回 Err → call_tool 统一映射为 EXTERNAL_ERROR
+        // 注：服务端返回的原始错误文案（此处的 "boom"）目前被丢弃，只保留统一文案
         let (base, _guard) = spawn_test_server().await;
         let client = StationClient::new(&base, 5, "test-key");
         let err = client.call_tool(ToolCall {
@@ -131,7 +133,8 @@ use super::*;
                 error: Value::Null,
             }
         }, &[]).await.data.error;
-        assert!(err.to_string().contains("boom"), "应透传服务端错误: {}", err);
+        assert_eq!(err["code"], TERR_TOOL_EXTERNAL_ERROR, "工具调用失败应映射为 EXTERNAL_ERROR: {}", err);
+        assert!(err["message"].as_str().unwrap().contains("调用sub station工具失败"), "统一失败文案: {}", err);
     }
 
     // 返回 (base_url, guard)；guard 停止服务器
