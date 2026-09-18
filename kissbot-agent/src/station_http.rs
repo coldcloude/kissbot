@@ -13,9 +13,9 @@ use tracing::info;
 
 use crate::config_manager::ConfigManager;
 use crate::configs::{McpConfig, ToolConfig};
-use crate::station::Station;
+use crate::station::{Station, TERR_TOOL_CYCLE};
 use crate::types::{
-    Error, Result, StationCallToolRequest, StationListMcpsRequest, StationListToolsRequest,
+    Error, Result, StationCallToolRequest, StationListMcpsRequest, StationListToolsRequest, ToolCall,
 };
 
 /// station 对外 HTTP 服务：供其他 station 作为 sub 调用
@@ -115,6 +115,11 @@ async fn call_tool(
     Json(req): Json<StationCallToolRequest>,
 ) -> impl IntoResponse {
     let result = state.station.call_tool(req.tool_call, &req.ancestors).await;
+    // 环检测与 /station/tools 一致：cycle 属于请求参数问题 → 400（其余工具调用失败仍 200，
+    // 错误码随 ToolCall.data.error 返回）
+    if result.data.error.get("code").and_then(|c| c.as_u64()) == Some(TERR_TOOL_CYCLE as u64) {
+        return cycle_response::<ToolCall>();
+    }
     (StatusCode::OK, Json(ApiResponse::success(result)))
 }
 
@@ -246,7 +251,7 @@ use tower::ServiceExt;
     }
 
     #[tokio::test]
-    async fn station_call_tool_failure_is_200_with_tool_error_in_body() {
+    async fn station_call_tool_failure_is_200_cycle_non_200() {
         let repo = test_station_repo("station-a");
         let station = leak_station(&repo);
         let app = StationHttpServer::router_with_station(station, "secret");
@@ -265,8 +270,7 @@ use tower::ServiceExt;
         assert_eq!(body["data"]["data"]["error"]["code"], TERR_TOOL_NOT_FOUND);
         assert!(body["data"]["data"]["error"]["message"].as_str().unwrap().contains("工具不存在"));
 
-        // 自环（ancestors 含自身）→ 同样 200，错误码为 CYCLE
-        // （与 /station/tools 不同：那里 cycle 由 Station::tools 返回 Err，故映射为 400）
+        // 自环（ancestors 含自身）→ 与 /station/tools 一致：400 + success=false
         let (status, body) = send(
             app,
             "POST",
@@ -275,7 +279,8 @@ use tower::ServiceExt;
             Some(call_tool_body("read", &["station-a"])),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["data"]["error"]["code"], TERR_TOOL_CYCLE);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["success"], false);
+        assert!(body["error"].as_str().unwrap().contains("cycle"));
     }
 }
