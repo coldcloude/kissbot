@@ -615,23 +615,35 @@ use super::*;
         assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
     }
 
-    // #[tokio::test]
-    // async fn call_tool_routes_via_cache_table() {
-    //     let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
-    //     // 注入路由（模拟 tools() 拉取后缓存）：工具 x 属于 station-a
-    //     station.tool_routes.insert("x".to_string(), "station-a".to_string());
-    //     // 命中路由 → 调子 Station（连接失败返回 Err）→ 返回该错误（非"工具不存在"）
-    //     let err = station.call_tool("x", serde_json::json!({}), &[]).await.unwrap_err();
-    //     assert!(err.to_string().contains("未实现") || err.to_string().contains("connection") || err.to_string().contains("error"), "路由命中应调子而非工具不存在: {}", err);
-    //     // 未命中路由（本地也无）→ 工具不存在
-    //     let miss = station.call_tool("nope", serde_json::json!({}), &[]).await;
-    //     assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
-    // }
+    fn no_arg_tool_call(name: &str) -> ToolCall {
+        ToolCall {
+            id: Arc::new("0".to_string()),
+            name: Arc::new(name.to_string()),
+            data: ToolData {
+                arguments: Value::Null,
+                result: Value::Null,
+                error: Value::Null,
+            }
+        }
+    }
 
-    // #[tokio::test]
-    // async fn call_tool_local_miss_returns_not_found() {
-    //     let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-    //     let miss = station.call_tool("nope", serde_json::json!({}), &[]).await;
-    //     assert!(miss.is_err() && miss.unwrap_err().to_string().contains("工具不存在"));
-    // }
+    #[tokio::test]
+    async fn call_tool_routes_via_cache_table() {
+        let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
+        // 注入路由（模拟 tools() 拉取后缓存）：工具 x 属于 station-a
+        station.tool_routes.insert("x".to_string(), "station-a".to_string());
+        // 命中路由 → 调子 Station（连接失败返回 Err）→ 返回该错误（非"工具不存在"）
+        let err = station.call_tool(no_arg_tool_call("x"), &[]).await.data.error;
+        assert!(err.to_string().contains("未实现") || err.to_string().contains("connection") || err.to_string().contains("error"), "路由命中应调子而非工具不存在: {}", err);
+        // 未命中路由（本地也无）→ 工具不存在
+        let miss = station.call_tool(no_arg_tool_call("nope"), &[]).await.data.error;
+        assert!(miss.to_string().contains("工具不存在"));
+    }
+
+    #[tokio::test]
+    async fn call_tool_local_miss_returns_not_found() {
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let miss = station.call_tool(no_arg_tool_call("nope"), &[]).await.data.error;
+        assert!(miss.to_string().contains("工具不存在"));
+    }
 }

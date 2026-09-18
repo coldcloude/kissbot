@@ -96,71 +96,81 @@ impl StationClient {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use axum::routing::post;
-//     use axum::{Json, Router};
-//     use kissbot_api::ApiResponse;
-//     use serde_json::json;
-//     use std::sync::Arc;
-//     use tokio::net::TcpListener as TokioTcpListener;
+#[cfg(test)]
+mod tests {
+    use crate::types::{StationCallToolRequest, ToolData};
 
-//     #[tokio::test]
-//     async fn client_parses_list_tools_success() {
-//         let (base, _guard) = spawn_test_server().await;
-//         let client = StationClient::new(&base, 5, "test-key");
-//         let filter: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
-//         let tools = client.list_tools(Some(&filter), &["station-a".to_string()]).await.unwrap();
-//         assert_eq!(tools.len(), 1);
-//         assert_eq!(tools[0].name.as_str(), "read");
-//     }
+use super::*;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use kissbot_api::ApiResponse;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::net::TcpListener as TokioTcpListener;
 
-//     #[tokio::test]
-//     async fn client_parses_call_tool_failure_as_error() {
-//         let (base, _guard) = spawn_test_server().await;
-//         let client = StationClient::new(&base, 5, "test-key");
-//         let err = client.call_tool("fail", json!({}), &[]).await.unwrap_err();
-//         assert!(err.to_string().contains("boom"), "应透传服务端错误: {}", err);
-//     }
+    #[tokio::test]
+    async fn client_parses_list_tools_success() {
+        let (base, _guard) = spawn_test_server().await;
+        let client = StationClient::new(&base, 5, "test-key");
+        let filter: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
+        let tools = client.list_tools(Some(&filter), &["station-a".to_string()]).await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_str(), "read");
+    }
 
-//     // 返回 (base_url, guard)；guard 停止服务器
-//     async fn spawn_test_server() -> (String, Arc<tokio::sync::OnceCell<()>>) {
-//         // 用 TcpListener 绑定 127.0.0.1:0 获取空闲端口
-//         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-//         let addr = listener.local_addr().unwrap();
-//         drop(listener);
-//         let app = Router::new()
-//             .route("/station/tools", post(handle_tools))
-//             .route("/station/mcps", post(handle_mcps))
-//             .route("/station/call-tool", post(handle_call));
-//         let tcp = TokioTcpListener::bind(addr).await.unwrap();
-//         let guard = Arc::new(tokio::sync::OnceCell::new());
-//         let g = guard.clone();
-//         tokio::spawn(async move {
-//             let _ = axum::serve(tcp, app).await;
-//             let _ = g.set(());
-//         });
-//         (format!("http://{}", addr), guard)
-//     }
+    #[tokio::test]
+    async fn client_parses_call_tool_failure_as_error() {
+        let (base, _guard) = spawn_test_server().await;
+        let client = StationClient::new(&base, 5, "test-key");
+        let err = client.call_tool(ToolCall {
+            id: Arc::new("0".to_string()),
+            name: Arc::new("fail".to_string()),
+            data: ToolData {
+                arguments: Value::Null,
+                result: Value::Null,
+                error: Value::Null,
+            }
+        }, &[]).await.data.error;
+        assert!(err.to_string().contains("boom"), "应透传服务端错误: {}", err);
+    }
 
-//     async fn handle_tools() -> Json<ApiResponse<Vec<ToolConfig>>> {
-//         Json(ApiResponse::success(vec![ToolConfig {
-//             name: Arc::new("read".into()),
-//             description: Arc::new("读取文件".into()),
-//             parameters: Arc::new(json!({})),
-//         }]))
-//     }
+    // 返回 (base_url, guard)；guard 停止服务器
+    async fn spawn_test_server() -> (String, Arc<tokio::sync::OnceCell<()>>) {
+        // 用 TcpListener 绑定 127.0.0.1:0 获取空闲端口
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let app = Router::new()
+            .route("/station/tools", post(handle_tools))
+            .route("/station/mcps", post(handle_mcps))
+            .route("/station/call-tool", post(handle_call));
+        let tcp = TokioTcpListener::bind(addr).await.unwrap();
+        let guard = Arc::new(tokio::sync::OnceCell::new());
+        let g = guard.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(tcp, app).await;
+            let _ = g.set(());
+        });
+        (format!("http://{}", addr), guard)
+    }
 
-//     async fn handle_mcps() -> Json<ApiResponse<Vec<McpConfig>>> {
-//         Json(ApiResponse::success(vec![]))
-//     }
+    async fn handle_tools() -> Json<ApiResponse<Vec<ToolConfig>>> {
+        Json(ApiResponse::success(vec![ToolConfig {
+            name: Arc::new("read".into()),
+            description: Arc::new("读取文件".into()),
+            parameters: Arc::new(json!({})),
+        }]))
+    }
 
-//     async fn handle_call(Json(req): Json<StationCallToolRequest>) -> Json<ApiResponse<Value>> {
-//         if req.tool_name == "fail" {
-//             Json(ApiResponse::error("boom".to_string()))
-//         } else {
-//             Json(ApiResponse::success(json!({"ok": true})))
-//         }
-//     }
-// }
+    async fn handle_mcps() -> Json<ApiResponse<Vec<McpConfig>>> {
+        Json(ApiResponse::success(vec![]))
+    }
+
+    async fn handle_call(Json(req): Json<StationCallToolRequest>) -> Json<ApiResponse<Value>> {
+        if req.tool_call.name.as_str() == "fail" {
+            Json(ApiResponse::error("boom".to_string()))
+        } else {
+            Json(ApiResponse::success(json!({"ok": true})))
+        }
+    }
+}
