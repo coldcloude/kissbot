@@ -365,9 +365,9 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<Arc<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_processor: Option<Arc<String>>,
+    pub input_processor: Option<Vec<Arc<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompter: Option<Arc<String>>,
+    pub system_prompter: Option<Vec<Arc<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_sender: Option<Arc<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

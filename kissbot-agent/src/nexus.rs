@@ -625,8 +625,8 @@ mod tests {
         //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
         //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(Arc::new(PP_IN_BATCH.into()));
-        pipeline.system_prompter = Some(Arc::new(PP_SYS_DEFAULT.into()));
+        pipeline.input_processor = Some(vec![Arc::new(PP_IN_BATCH.into())]);
+        pipeline.system_prompter = Some(vec![Arc::new(PP_SYS_DEFAULT.into())]);
         pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
         pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
         pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
@@ -723,8 +723,8 @@ mod tests {
         let k2 = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode: Mode::Event("e1".into()) };
         // agent 级 pipeline：显式指定组件，使两个 key 都能注册
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(Arc::new(PP_IN_BATCH.into()));
-        pipeline.system_prompter = Some(Arc::new(PP_SYS_DEFAULT.into()));
+        pipeline.input_processor = Some(vec![Arc::new(PP_IN_BATCH.into())]);
+        pipeline.system_prompter = Some(vec![Arc::new(PP_SYS_DEFAULT.into())]);
         pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
         pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
         pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
@@ -741,9 +741,9 @@ mod tests {
         pm.retain(&HashSet::from([k1.clone()]));
         assert!(pm.reset_system_prompt(&k1).await.is_ok(), "保留的 key 仍在");
         let msg = Message::User { content: Arc::new("x".into()) };
-        assert!(matches!(pm.reset_system_prompt(&k2).await, Err(Error::PipelineNotFound(_))),
+        assert!(matches!(pm.reset_system_prompt(&k2).await, Err(Error::PipelineNotFound(_,_,_))),
             "被清理的 key 的 trigger 应移除");
-        assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_))),
+        assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_,_,_))),
             "被清理的 key 的 pipeline 应移除");
     }
 }

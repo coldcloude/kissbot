@@ -6,7 +6,7 @@ use kissbot_api::IncomingMessageEvent;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::time::DelayQueue;
 
-use crate::{config_manager::ConfigManager, configs::ChannelBatchConfig, message::pack_batch, nexus::Nexus, pipeline::AgentInputProcessor, types::SessionKey};
+use crate::{config_manager::ConfigManager, configs::ChannelBatchConfig, message::pack_batch, nexus::Nexus, pipeline::{AgentInputProcessor, AgentTrigger}, types::SessionKey};
 
 // ===== 新合批（mpsc×2 + DelayQueue，spec 2026-08-07-channel-batching-mpsc-design）=====
 
@@ -168,6 +168,8 @@ impl BatchAgentInputProcessor {
         }
     }
 }
+
+impl AgentTrigger for BatchAgentInputProcessor {}
 
 #[async_trait]
 impl AgentInputProcessor for BatchAgentInputProcessor {

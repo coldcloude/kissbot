@@ -79,8 +79,8 @@ pub enum Error {
     #[error("Internal error: {0}")]
     InternalError(String),
 
-    #[error("Pipeline not found for session {0:?}")]
-    PipelineNotFound(SessionKey)
+    #[error("Pipeline {0}: {1} not found for session {2:?}")]
+    PipelineNotFound(String, String, SessionKey)
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

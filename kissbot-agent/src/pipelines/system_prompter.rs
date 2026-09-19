@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{nexus::Nexus, pipeline::AgentSystemPrompter, types::SessionKey};
+use crate::{nexus::Nexus, pipeline::{AgentSystemPrompter, AgentTrigger}, types::SessionKey};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "你是一个通用智能体。使用可用工具完成用户任务";
 
@@ -27,6 +27,8 @@ impl DefaultSystemPrompter {
     }
 }
 
+impl AgentTrigger for DefaultSystemPrompter {}
+
 #[async_trait]
 impl AgentSystemPrompter for DefaultSystemPrompter {
     async fn reset_system_prompt(&self) {
@@ -46,6 +48,8 @@ impl MemoryEgoSystemPrompter {
         }
     }
 }
+
+impl AgentTrigger for MemoryEgoSystemPrompter {}
 
 #[async_trait]
 impl AgentSystemPrompter for MemoryEgoSystemPrompter {

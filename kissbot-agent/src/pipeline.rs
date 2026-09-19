@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
@@ -17,13 +16,15 @@ pub trait AgentMessageSender: Send + Sync {
     async fn send_messages(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse>;
 }
 
+pub trait AgentTrigger: Send + Sync {}
+
 #[async_trait]
-pub trait AgentSystemPrompter: Send + Sync {
+pub trait AgentSystemPrompter: AgentTrigger {
     async fn reset_system_prompt(&self);
 }
 
 #[async_trait]
-pub trait AgentInputProcessor: Send + Sync {
+pub trait AgentInputProcessor: AgentTrigger {
     async fn accept(&self, event: Arc<IncomingMessageEvent>);
 }
 
@@ -32,17 +33,11 @@ pub trait AgentOutputProcessor: Send + Sync {
     async fn accept(&self, turn: usize, response: Result<ModelResponse>) -> (bool, Vec<Message>);
 }
 
-pub struct AgentTrgger {
-    pub session_key: Arc<SessionKey>,
-    pub input_processor: ArcSwap<Box<dyn AgentInputProcessor>>,
-    pub system_prompter: ArcSwap<Box<dyn AgentSystemPrompter>>,
-}
-
 pub struct AgentPipeline {
     pub session_key: Arc<SessionKey>,
-    pub message_sender: ArcSwap<Box<dyn AgentMessageSender>>,
-    pub tool_caller: ArcSwap<Box<dyn AgentToolCaller>>,
-    pub output_processor: ArcSwap<Box<dyn AgentOutputProcessor>>,
+    pub message_sender: Arc<dyn AgentMessageSender>,
+    pub tool_caller: Arc<dyn AgentToolCaller>,
+    pub output_processor: Arc<dyn AgentOutputProcessor>,
 }
 
 impl AgentPipeline {
@@ -53,14 +48,14 @@ impl AgentPipeline {
         // 2. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
         coordinator.send_memory_tool_call(self.session_key.as_ref(), tool_key.clone(), &tool_call).await;
         // 3. 执行工具
-        let result = self.tool_caller.load().call_tool(tool_call).await;
+        let result = self.tool_caller.call_tool(tool_call).await;
         // 4. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
         coordinator.send_memory_tool_result(self.session_key.as_ref(), tool_key, &result).await;
         result
     }
 
     async fn run_once(&self, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> (bool, Vec<Message>) {
-        let response = self.message_sender.load().send_messages(messages, tools).await;
+        let response = self.message_sender.send_messages(messages, tools).await;
         match response {
             Ok(mut res) => {
                 // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
@@ -79,10 +74,10 @@ impl AgentPipeline {
                     let tool_results = future::join_all(futs).await;
                     res.tool_calls.replace(tool_results);
                 }
-                self.output_processor.load().accept(round, Ok(res)).await
+                self.output_processor.accept(round, Ok(res)).await
             }
             Err(e) => {
-                self.output_processor.load().accept(round, Err(e), ).await
+                self.output_processor.accept(round, Err(e)).await
             }
         }
     }
