@@ -183,10 +183,10 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session
         };
         match preset {
             PP_PRESET_ROLE => {
-                names.push(PP_IN_BATCH.to_string());
+                names.push(PP_SYS_MEMORY_EGO.to_string());
             },
             PP_PRESET_EVENT => {
-                names.push(PP_IN_BATCH.to_string());
+                names.push(PP_SYS_MEMORY_EGO.to_string());
             },
             _ => {},
         };

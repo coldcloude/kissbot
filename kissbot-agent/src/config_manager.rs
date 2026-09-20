@@ -444,6 +444,11 @@ mod tests {
     use kissbot_api::ArcSwapHashMap;
     use tempfile::tempdir;
 
+    use crate::pipelines::{
+        PP_IN_BATCH, PP_MSG_COMPRESS, PP_MSG_MEMORY_RECOVER, PP_MSG_RAW, PP_OUT_CHANNEL, PP_SYS_DEFAULT,
+        PP_SYS_MEMORY_EGO, PP_TOOL_STATION,
+    };
+
     fn agent_config(data_dir: &str) -> AgentConfig {
         AgentConfig {
             data_dir: Arc::new(data_dir.into()),
@@ -699,6 +704,58 @@ mod tests {
         assert!(repo.memory_structs.is_empty());
         assert!(repo.agents.is_empty(), "agents 初始为空 map");
         assert!(repo.sessions.is_empty(), "sessions 初始为空 map");
+    }
+
+    /// 仓库内随代码发布的配置模板/测试数据必须能被当前 schema 加载：
+    /// 字段改名、新增必填项、组件名改动时先在这里失败，避免模板再次落后于代码
+    #[test]
+    fn shipped_config_templates_match_current_schema() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let read = |rel: &str| {
+            let path = format!("{}/../{}", manifest, rel);
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {}", path, e))
+        };
+
+        // station 模板：station_id 必填，toolkits / sub_stations 可缺省
+        for rel in ["script/template/station.json", "test/workspace-template/agent-data/station.json"] {
+            let repo: StationRepo = serde_json::from_str(&read(rel))
+                .unwrap_or_else(|e| panic!("{} 不符合当前 StationRepo schema: {}", rel, e));
+            assert!(!repo.station_id.is_empty(), "{} 应声明 station_id", rel);
+        }
+
+        // nexus 模板：解析成功 + 关键配置齐备 + 组件名必须是工厂认识的常量
+        for rel in ["script/template/nexus.json", "test/workspace-template/agent-data/nexus.json"] {
+            let repo: NexusRepo = serde_json::from_str(&read(rel))
+                .unwrap_or_else(|e| panic!("{} 不符合当前 NexusRepo schema: {}", rel, e));
+            assert!(!repo.channels.is_empty(), "{} 应含示例 channel", rel);
+            assert!(!repo.providers.is_empty(), "{} 应含示例 provider", rel);
+            for (agent_id, agent) in repo.agents.iter() {
+                let llm: LLMConfig = agent.build("");
+                assert!(llm.provider.is_some() && llm.model.is_some(),
+                    "{} 的 agent {} 未配 provider/model", rel, agent_id);
+                let pipeline: PipelineConfig = agent.build("");
+                let sender = pipeline.message_sender.as_deref().unwrap_or("");
+                let caller = pipeline.tool_caller.as_deref().unwrap_or("");
+                let output = pipeline.output_processor.as_deref().unwrap_or("");
+                assert!([PP_MSG_RAW, PP_MSG_COMPRESS, PP_MSG_MEMORY_RECOVER].contains(&sender),
+                    "{} 的 agent {} message_sender 名无效: {}", rel, agent_id, sender);
+                assert_eq!(caller, PP_TOOL_STATION, "{} 的 agent {} tool_caller 名无效", rel, agent_id);
+                assert_eq!(output, PP_OUT_CHANNEL, "{} 的 agent {} output_processor 名无效", rel, agent_id);
+                for name in pipeline.input_processor.iter().flatten() {
+                    assert_eq!(name.as_str(), PP_IN_BATCH,
+                        "{} 的 agent {} input_processor 名无效: {}", rel, agent_id, name);
+                }
+                for name in pipeline.system_prompter.iter().flatten() {
+                    assert!([PP_SYS_DEFAULT, PP_SYS_MEMORY_EGO].contains(&name.as_str()),
+                        "{} 的 agent {} system_prompter 名无效: {}", rel, agent_id, name);
+                }
+                // 要能回复与用工具：out_channel 与 toolkit_set 齐备
+                assert!(agent.build::<OutChannelConfig>("").out_channel.is_some(),
+                    "{} 的 agent {} 未配 out_channel", rel, agent_id);
+                assert!(agent.build::<ToolkitSetConfig>("").toolkit_set.contains("filesystem"),
+                    "{} 的 agent {} 未启用 filesystem toolkit", rel, agent_id);
+            }
+        }
     }
 
     // ---------- Provider 配置 ----------

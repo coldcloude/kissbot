@@ -5,38 +5,59 @@
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "admin" }],
       "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
-      "agent_name": "",
+      "agent_id": "0",
       "role_name": "",
       "enabled": true
     }
   },
-  "agent_contexts": {
+  "providers": {
+    "deepseek": {
+      "provider_config": {
+        "provider_type": "openai",
+        "base_url": "https://api.deepseek.com",
+        "api_key": ""
+      },
+      "default_model_config": {
+        "max_tokens_usage": 128000,
+        "timeout_secs": 60,
+        "retry_count": 3
+      },
+      "model_configs": {}
+    }
+  },
+  "memory_structs": {},
+  "agents": {
     "0": {
-      "default_context_config": {
-        "out_channel": { "channel_id": "web1", "user": { "messenger_id": "web", "user_id": "u1" }, "group_id": "g1" }
+      "config_map": {
+        "llm": {
+          "provider": "deepseek",
+          "model": "deepseek-v4-flash",
+          "max_tokens": 4096,
+          "has_max_tokens": true,
+          "thinking": "enabled",
+          "has_thinking": true,
+          "reasoning_effort": "low",
+          "has_reasoning_effort": true
+        },
+        "channel_batch": { "channel_batch_interval_secs": 3 },
+        "out_channel": {
+          "out_channel": {
+            "channel_id": "web1",
+            "user": { "messenger_id": "web", "user_id": "u1" },
+            "group_id": "g1"
+          }
+        },
+        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "pipeline": {
+          "input_processor": ["batch_input_processor"],
+          "system_prompter": ["memory_ego_system_prompter"],
+          "message_sender": "memory_recover_message_sender",
+          "tool_caller": "station_tool_caller",
+          "output_processor": "channel_output_processor"
+        }
       },
       "roles": {}
     }
   },
-  "providers": {
-    "deepseek": {
-      "name": "deepseek",
-      "provider_type": "openai",
-      "base_url": "https://api.deepseek.com",
-      "api_key": "",
-      "default_model_config": {
-        "max_tokens": 4096,
-        "max_tokens_usage": 128000,
-        "timeout_secs": 60,
-        "retry_count": 3,
-        "thinking": "enabled",
-        "reasoning_effort": "low"
-      },
-      "models": {}
-    }
-  },
-  "memory_structs": {},
-  "default_model": { "provider": "deepseek", "model": "deepseek-v4-flash" },
-  "default_system_prompt": "你是 kissbot 智能助手",
-  "context": {}
+  "sessions": []
 }

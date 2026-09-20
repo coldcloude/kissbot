@@ -542,7 +542,9 @@ mod tests {
     use kissbot_api::channel::IncomingMessage;
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
-    use crate::pipelines::{PP_IN_BATCH, PP_MSG_RAW, PP_OUT_CHANNEL, PP_SYS_DEFAULT, PP_TOOL_STATION};
+    use crate::pipelines::{
+        PP_IN_BATCH, PP_MSG_RAW, PP_OUT_CHANNEL, PP_PRESET_EVENT, PP_PRESET_ROLE, PP_SYS_DEFAULT, PP_TOOL_STATION,
+    };
     use crate::types::{ChannelCommand, Mode};
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
@@ -757,7 +759,7 @@ mod tests {
     #[tokio::test]
     async fn model_command_validates_arguments() {
         ensure_test_globals().await;
-        // 参数不足 → 格式错误（修复前 "/model <provider>" 会数组越界 panic）
+        // 参数段固定为 provider + model：段数不符返回格式错误（不访问不存在的参数段）
         for content in ["/model", "/model deepseek"] {
             let err = CommandRouter::execute(content, "no-such-channel").await.unwrap_err();
             assert!(matches!(err, Error::InvalidCommand(_)), "{} 应返回格式错误: {:?}", content, err);
@@ -765,5 +767,31 @@ mod tests {
         // 参数齐备 → 进入模型切换流程（channel 不存在 → ConfigNotFound；provider 校验在取会话之后，不触网）
         let err = CommandRouter::execute("/model deepseek deepseek-chat", "no-such-channel").await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)), "参数齐备应进入切换流程: {:?}", err);
+    }
+
+    #[tokio::test]
+    async fn preset_assembles_pipeline_components() {
+        // 只写 preset 名（不显式列组件）时，预设负责补齐输入处理器 / 系统提示词器 / 发送器 / 工具调用 / 输出处理
+        ensure_test_globals().await;
+        let agent_id = "preset-agent";
+        let dir = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(dir.path().to_str().unwrap());
+        let pm = PipelineManager::new();
+        let msg = || Message::User { content: Arc::new("x".into()) };
+
+        for (preset, mode) in [(PP_PRESET_ROLE, Mode::Role), (PP_PRESET_EVENT, Mode::Event("e1".into()))] {
+            let mut pipeline = PipelineConfig::default();
+            pipeline.preset = Some(preset.to_string());
+            ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
+                agent_id, "", Arc::new(pipeline)).await.unwrap();
+
+            let key = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode };
+            let (session, _) = sm.get_or_create(&key).await;
+            pm.sync_pipeline(Arc::new(key.clone()), session).await
+                .unwrap_or_else(|e| panic!("preset {} 应能装配 pipeline: {:?}", preset, e));
+            assert!(pm.reset_system_prompt(&key).await.is_ok(), "preset {} 应提供系统提示词器", preset);
+            // 发送器走 provider 解析失败返回 Err（provider 未配置），输出处理器收尾后正常结束
+            assert!(pm.run_pipeline(&key, msg(), &vec![]).await.is_ok(), "preset {} 应提供发送/工具/输出 pipeline", preset);
+        }
     }
 }
