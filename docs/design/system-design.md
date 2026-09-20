@@ -8,11 +8,11 @@
 ### 1. Agent
 智能体组件，由 Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）两个内部模块组成，模块职责与内部结构详见 [system-design-agent](system-design-agent.md)。
 
-Agent 程序可在启动时选择开启的部分（仅 nexus / 仅 station / 同时开启），同一系统内可运行多个 agent 实例，各实例可开启不同的部分、对接不同的 LLM 模型或服务于不同的场景。
+Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station HTTP 服务，可被远程 station 作为 sub 调用）；同一系统内可运行多个 agent 实例，各实例可对接不同的 LLM 模型或服务于不同的场景。
 
 Agent 除了根据外界信息给出回应外，还可以主动获取信息并据此行动。可以为 agent 设计自主行动的目标，agent 据此执行信息收集、信息反馈、自动工具调用等。
 
-> 注：记忆查询属于 nexus 内置工具，不经由 station 执行。
+> 注：上下文超长时的记忆回溯由 Nexus 的消息发送器完成，不经由 station 执行；LLM 主动发起的记忆搜索工具（memory-struct）待实现组件落地后接入。
 
 ### 2. 消息通道（Channel）
 连接外部系统的桥梁。定义统一的 Messenger 接口（通讯应用接入标准，包含消息收发等功能），提供通道管理器作为核心协调层。具体的通讯应用接入由通道实现组件完成。
@@ -65,8 +65,8 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 | 消息通道 | nexus | 上行消息/用户消息（→）、群组变化通知（→）、附件数据（→）、心跳（↔） | 外部消息到达时；群组变化时；nexus 请求附件时 |
 | nexus | station | tool call 请求（→）、tool result 响应（←） | agentic loop 内需要时 |
 | nexus | memory-store | 推送记忆记录（→） | 每条消息产生时（含收发的通道消息） |
-| nexus | memory-struct-* | 记忆查询请求（→）、查询结果（←） | agentic loop 内 LLM 调用记忆搜索工具时 |
-| nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | nexus 启动时；上下文重置时 |
+| nexus | memory-struct-* | 记忆查询请求（→）、查询结果（←） | 预留：LLM 调用记忆搜索工具时（记忆结构组件与工具均未实现） |
+| nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | 新建会话设置系统提示词时；/agent、/role 校验时 |
 | memory-store | memory-struct-* | 新数据通知（→） | 新数据到达时 |
 | memory-store / memory-struct-* | 文件系统 | 共享读写记忆文件（↔） | 持续 |
 | 通道前端（浏览器） | 通道后端 | 消息收发、群组管理、附件操作（↔） | 用户操作时 |
@@ -89,18 +89,18 @@ suffix 由调用方按记忆模式拼接，本组件不做解析。支持两种�
 
 ### nexus 与记忆系统的交互
 nexus 与记忆系统的交互区分两种模式：
-  - agentic loop 外：直接调用 API 读取自我认知设定、推送记忆到存储组件
-  - agentic loop 内：由 LLM 通过 nexus 内置 tool 从记忆结构组件查询记忆（不记入记忆）
+  - agentic loop 外：直接调用 API 读取自我认知设定、推送记忆到存储组件、上下文超长时从存储组件回溯打包
+  - agentic loop 内：预留——由 LLM 通过记忆搜索 tool 从记忆结构组件查询记忆（不记入记忆）
 
 ### 会话与绑定
-一个 nexus 可同时管理多个会话。nexus 为每个绑定的 channel 配置 agent_name（绑定代号，空串为保留 agent）、role_name、mode，并将所有绑定项的信息去重，每个 agent_name+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读取范围与模式状态，消息按来源 channel 对应的绑定配置路由到对应会话；记忆读写用 agent_name 解析出的 agent_id（UUID）定位。每个会话从其绑定的多个 channel 中选定一个作为回复 channel，回复消息通过该 channel 发送。
+一个 nexus 可同时管理多个会话。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name、mode 将所有绑定项的信息去重，每个 agent_id+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读写范围、pipeline 配置与模式状态，消息按来源 channel 对应的绑定配置路由到对应会话；记忆读写直接用 agent_id 定位（配置即 agent_id）。会话的回复目标由 (agent, role) 级回复通道配置（/bind-outgoing、/unbind-outgoing）决定，未配置则只存不回复。
 
 ### Agent 的自我认知机制
 每个 agent 具有双重自我认知设定：
 - **客观设定**：每个 agent 一份，包括身份标识（个体名称、描述）、个体识别信息（个体名称、和agent的关系、和其他个体的关系、关联的消息通道身份）、禁止事项和自主运行目标
 - **角色设定**：每个 agent 可有多份，以角色名称为标识，包括角色描述、禁止事项、自主运行目标、和其他角色的关系、其他角色关联的个体信息
 
-nexus 在启动时或上下文重置时读取自我认知信息，构建到系统消息中，使 agent 知道自己是谁、面对什么个体、扮演什么角色。
+nexus 在新建会话时读取自我认知信息，构建到系统消息中（保留 agent、读取失败或未配置时回退默认提示词），使 agent 知道自己是谁、面对什么个体、扮演什么角色。
 
 ### 通道实现组件的消息存储
 - 当通道实现仅作为对接层时，不存储历史消息，所有历史消息由记忆存储组件保存

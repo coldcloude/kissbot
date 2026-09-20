@@ -279,7 +279,6 @@ impl SessionManager {
 
     /// 定位会话，不存在则创建（返回 (会话, 是否新建)）；
     /// 仅完成上下文恢复（recover_from_cache）；pipeline 同步与系统提示词初始化由调用方在拿到会话后执行
-    /// （见 Nexus::ensure_session——那两步会反查本函数取会话，不能在持有 DashMap 分片锁时执行）
     pub async fn get_or_create(&self, key: &SessionKey) -> (Arc<Session>, bool) {
         if let Some(s) = self.sessions.get(&key) {
             return (s.clone(), false);
@@ -338,8 +337,6 @@ use crate::{config_manager::ConfigManager, station::Station};
     }
 
     /// 测试进程级装配（幂等）：ConfigManager/Station/Nexus 单例各注册一次。
-    /// Nexus::ensure_session 在新建会话时会同步 pipeline 并初始化系统提示词（经这几个单例），
-    /// get_or_create 相关测试前需先装配；data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
     static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static TEST_INIT_DONE: AtomicBool = AtomicBool::new(false);
     async fn ensure_test_globals() {

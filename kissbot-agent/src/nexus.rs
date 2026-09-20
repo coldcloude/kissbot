@@ -133,7 +133,7 @@ impl Nexus {
         let (session, new) = self.session_manager.get_or_create(key).await;
         if new {
             // 初始化 pipeline
-            let _ = self.pipeline_manager.sync_pipeline(Arc::new(key.clone())).await;
+            let _ = self.pipeline_manager.sync_pipeline(Arc::new(key.clone()), session.clone()).await;
             let _ = self.pipeline_manager.reset_system_prompt(key).await;
         }
         session
@@ -625,11 +625,11 @@ mod tests {
         //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
         //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![Arc::new(PP_IN_BATCH.into())]);
-        pipeline.system_prompter = Some(vec![Arc::new(PP_SYS_DEFAULT.into())]);
-        pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
-        pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
-        pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
+        pipeline.input_processor = Some(vec![PP_IN_BATCH.to_string()]);
+        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.to_string()]);
+        pipeline.message_sender = Some(PP_MSG_RAW.to_string());
+        pipeline.tool_caller = Some(PP_TOOL_STATION.to_string());
+        pipeline.output_processor = Some(PP_OUT_CHANNEL.to_string());
         cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(agent_id, "", Arc::new(pipeline)).await.unwrap();
         // 合批间隔缩到 1 秒，让 flush 尽快发生
         cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
@@ -723,17 +723,24 @@ mod tests {
         let k2 = SessionKey { agent_id: agent_id.into(), role_name: "".into(), mode: Mode::Event("e1".into()) };
         // agent 级 pipeline：显式指定组件，使两个 key 都能注册
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![Arc::new(PP_IN_BATCH.into())]);
-        pipeline.system_prompter = Some(vec![Arc::new(PP_SYS_DEFAULT.into())]);
-        pipeline.message_sender = Some(Arc::new(PP_MSG_RAW.into()));
-        pipeline.tool_caller = Some(Arc::new(PP_TOOL_STATION.into()));
-        pipeline.output_processor = Some(Arc::new(PP_OUT_CHANNEL.into()));
+        pipeline.input_processor = Some(vec![PP_IN_BATCH.to_string()]);
+        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.to_string()]);
+        pipeline.message_sender = Some(PP_MSG_RAW.to_string());
+        pipeline.tool_caller = Some(PP_TOOL_STATION.to_string());
+        pipeline.output_processor = Some(PP_OUT_CHANNEL.to_string());
         ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
             agent_id, "", Arc::new(pipeline)).await.unwrap();
 
+        // 会话实例由本地 SessionManager 创建：pipeline 直接持有会话（不再经 ensure_session 反查），
+        // 用本地管线表与会话表避免影响全局单例
+        let dir = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(dir.path().to_str().unwrap());
+        let (s1, _) = sm.get_or_create(&k1).await;
+        let (s2, _) = sm.get_or_create(&k2).await;
+
         let pm = PipelineManager::new();
-        pm.sync_pipeline(Arc::new(k1.clone())).await.expect("k1 应能注册");
-        pm.sync_pipeline(Arc::new(k2.clone())).await.expect("k2 应能注册");
+        pm.sync_pipeline(Arc::new(k1.clone()), s1).await.expect("k1 应能注册");
+        pm.sync_pipeline(Arc::new(k2.clone()), s2).await.expect("k2 应能注册");
         assert!(pm.reset_system_prompt(&k1).await.is_ok(), "注册后 trigger 应可命中");
         assert!(pm.reset_system_prompt(&k2).await.is_ok(), "注册后 trigger 应可命中");
 

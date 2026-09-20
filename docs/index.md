@@ -19,6 +19,8 @@ docs/
 │       ├── kissbot-memory-struct.md   # 记忆结构框架（含 abstract）
 │       ├── kissbot-agent-config.md    # 智能体配置 UI
 │       ├── kissbot-memory-manage.md   # 记忆管理 UI
+│       ├── kissbot-config.md          # 公共配置组件
+│       ├── kissbot-security.md        # 安全组件（认证 + 安全配置）
 │       └── ui-ux-design/              # UI/UX 设计
 │           └── kissbot-channel-web/
 │               ├── layout.html         # Web 聊天页面原型
@@ -36,6 +38,7 @@ docs/
 │   ├── channel-web-message.md       # channel-web 消息流转
 │   ├── channel-web-attachment.md    # channel-web 附件存储
 │   ├── channel-web-message-storage.md  # channel-web 消息本地存储
+│   ├── channel-web-ui.md            # channel-web 前端界面约定
 │   ├── memory-directory.md          # 记忆存储文件结构
 │   ├── memory-store.md              # memory-store 记录写入
 │   ├── memory-index.md              # 记忆索引机制
@@ -43,4 +46,8 @@ docs/
 │   ├── agent-modules.md             # Agent 组件模块调用关系
 │   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │   └── kissbot-agent-station.md     # Agent Station 技术约定（嵌套结构/递归平铺/子 Station HTTP 骨架）
+│
+└── roadmap/                    # 计划中要添加或修改的功能（手工维护，不要编辑）
+    ├── new.md                  # 待规划/新增项
+    └── pending.md              # 进行中/待完成项
 ```

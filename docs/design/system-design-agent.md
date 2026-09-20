@@ -3,10 +3,7 @@
 ## 概述
 Agent 是智能体组件，内部由两个模块组成——Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）。Nexus 负责"思考"——与 LLM 通信处理输入输出，对接记忆系统；Station 负责"行动"——执行具体工具操作。nexus 通过内部调用与同进程 station 通信，通过 HTTPS 与远程 station 通信。
 
-Agent 程序可在启动时选择开启的部分：
-- **仅开启 nexus**：纯 LLM 交互，无工具执行
-- **仅开启 station**：纯工具执行，无 LLM 交互
-- **同时开启 nexus 和 station**：本地智能体
+Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station HTTP 服务，可被远程 station 作为 sub 调用）；仅 nexus / 仅 station 的裁剪形态为后续能力。
 
 
 ```mermaid
@@ -28,8 +25,8 @@ graph TB
 ## 内部模块
 
 ### Nexus（LLM 通信枢纽）
-- 每个 nexus 实例连接一个 LLM API
-- 负责从记忆系统读取上下文，构建 LLM 输入
+- 每个 nexus 实例连接多个 provider（按 provider 配置分派 OpenAI 兼容 / Anthropic 实现）
+- 负责会话定位与会话上下文构建，串接 pipeline 体系（输入处理 / 消息发送 / 工具调用 / 输出处理 / 系统提示词）
 - 处理 LLM 输出，将 tool call 分派到 station
 - 支持两种记忆模式（角色记忆/事件记忆）
 
@@ -56,9 +53,9 @@ graph TB
 
 ### 配置管理器
 配置按三分结构管理：
-- **AgentConfig（静态）**：从公共配置的 `agent` 段加载，启动后不变，含 `data_dir`、`mgmt_host`、`mgmt_port`、`ws_reconnect_interval_secs`（default_system_prompt / init_model 由 NexusRepo 承载；模型默认值统一为 default_model）
-- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化；NexusRepo 存 channels / providers / memory_structs / context 与默认值（default_model、default_system_prompt），StationRepo 存 toolkits / sub_stations（见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)）
-- **运行状态（不落盘）**：作为 Nexus 字段，启动时从 NexusRepo 默认值初始化，运行期由管理命令修改，不回写
+- **公共配置（静态）**：各组件共享的 `config.json`（kissbot-config 只读单例）。agent 相关段为 `agent`（`data_dir`、`mgmt_host`、`mgmt_port`、`station_host`、`station_port`、`ws_reconnect_interval_secs`）与 `api`（memory-store / memory-ego 地址）；密钥在 `security` 段
+- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化。NexusRepo 存 channels / providers+models / memory_structs / (agent, role) 配置 / session 配置（见 [kissbot-agent-nexus 技术规格](../spec/kissbot-agent-nexus.md)），StationRepo 存 toolkits / sub_stations（见 [kissbot-agent-station 技术规格](../spec/kissbot-agent-station.md)）
+- **运行态（不落盘）**：会话上下文、pipeline 装配、channel 运行态（mode / client / 未回显 msg_id）等，由 Nexus 与其组件在内存中持有
 
 ## 组合模式
 
@@ -74,14 +71,13 @@ Agent 启用不同的内部模块和记忆模式，形成多种工作方式：
 
 Agent 组件内部包含两大模块：
 
-**Nexus 模块**：负责 LLM 通信和记忆对接
-- LLM 客户端：封装 LLM API 调用
-- 上下文构建器：构建发送给 LLM 的完整上下文
-- Tool 调用分派器：区分内置工具和外置工具，将外置工具分派到 Station
-- 记忆读取器/写入器：对接记忆系统，处理角色记忆和事件记忆
-- Station 委托：经全局 Station 单例执行 tools_for_session / execute_tool_call（toolkit 白名单平铺查询 + 工具调用）
-- 外部输入处理器：对接消息通道
-- 内置工具集（含记忆查询 tool）
+**Nexus 模块**：负责 LLM 通信、会话编排和记忆对接
+- LLM 客户端（provider 体系）：按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，封装调用与响应归一化
+- pipeline 体系：按会话装配输入处理器、消息发送器、工具调用器、输出处理器与系统提示词器，AgentPipeline 即 agentic loop 本体
+- 会话与上下文：按 (agent_id, role_name, mode) 管理上下文（内存 + 本地缓存 + 历史归档）
+- Tool 调用分派：把外置工具分派到 Station（工具白名单平铺查询 + 工具调用）
+- 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯
+- 外部输入处理器：对接消息通道（经通道适配层），管理命令路由
 
 **Station 模块**：负责工具执行
 - 全局 Station 单例：本地 toolkit 集合 + 直接子 Station 集合（工具名整树全局唯一）
@@ -89,4 +85,4 @@ Agent 组件内部包含两大模块：
 - 子 Station：仅连接信息 + StationClient HTTP 客户端；station 自身也作为 HTTP 服务端被其他 station 调用
 - 内置注册表：filesystem → read 工具
 - 工具执行器：接收并执行 tool call（本地实现表 → tool_routes 路由缓存 → 对应子 HTTP）
-Nexus 通过内部调用与全局 Station 单例通信（tools_for_session / execute_tool_call），子 Station 通过 HTTP 通信。Agent 启动时根据配置选择启用 nexus 模块、station 模块或全部启用。
+Nexus 通过内部调用与全局 Station 单例通信（工具白名单查询 tools_for_session / 工具调用 Station::call_tool），子 Station 通过 HTTP 通信。Agent 启动时装配 Nexus 与 Station。

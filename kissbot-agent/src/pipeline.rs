@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
 
-use crate::{configs::ToolConfig, nexus::Nexus, types::{Message, ModelResponse, Result, SessionKey, ToolCall}};
+use crate::{configs::ToolConfig, nexus::Nexus, session_manager::Session, types::{Message, ModelResponse, Result, SessionKey, ToolCall}};
 
 #[async_trait]
 pub trait AgentToolCaller: Send + Sync {
@@ -35,6 +35,7 @@ pub trait AgentOutputProcessor: Send + Sync {
 
 pub struct AgentPipeline {
     pub session_key: Arc<SessionKey>,
+    pub session: Arc<Session>,
     pub message_sender: Arc<dyn AgentMessageSender>,
     pub tool_caller: Arc<dyn AgentToolCaller>,
     pub output_processor: Arc<dyn AgentOutputProcessor>,
@@ -83,7 +84,6 @@ impl AgentPipeline {
     }
 
     pub async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) {
-        let session = Nexus::get().ensure_session(self.session_key.as_ref()).await;
         let mut round = 1 as usize;
         let (mut next, mut messages) = self.run_once(round, vec![message], tools).await;
         loop {
@@ -92,7 +92,7 @@ impl AgentPipeline {
                 (next, messages) = self.run_once(round, messages, tools).await;
             } else {
                 if !messages.is_empty() {
-                    session.context_append(messages).await;
+                    self.session.context_append(messages).await;
                 }
                 break;
             }

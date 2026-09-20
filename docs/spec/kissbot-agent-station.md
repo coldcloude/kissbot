@@ -1,6 +1,6 @@
 # kissbot-agent-station 技术规格
 
-Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、toolkit 全局唯一命名空间、递归平铺语义、工具名整树唯一、远程工具路由缓存、子 Station HTTP 协议、ContextConfig.toolkits 白名单与 Session 对应关系。
+Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、toolkit 全局唯一命名空间、递归平铺语义、工具名整树唯一、远程工具路由缓存、子 Station HTTP 协议、toolkit 白名单与 Session 对应关系。
 
 ## 配置格式
 
@@ -122,10 +122,9 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 
 所有接口统一使用 `ApiResponse<T>`：
 
-- 成功时 `data` 直接是结果，不再包一层；
 - `list_tools` / `list_mcps` 业务错误返回非 200；
-- `call_tool` 的工具调用失败返回 HTTP 200 + `success=false`；
-- 自环检测返回 400；
+- `call_tool` 的工具执行失败（工具不存在 / 未实现 / 执行报错）仍返回 HTTP 200 + `success=true`，错误码与文案随返回的 ToolCall（`data.error`）带回；
+- 自环（自身 station_id 已在 ancestors 中）返回 400 + `success=false`；
 - 认证失败返回 401。
 
 ### list_tools
@@ -172,32 +171,45 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 
 `POST /station/call-tool`
 
-调用子 Station 上的工具。
+调用子 Station 上的工具：请求携带完整 ToolCall（`data.arguments` 为调用参数）与祖先链。
 
 ```jsonc
 // 请求
 {
-  "tool_name": "read",
-  "parameters": { "path": "/tmp/a.txt" },
+  "tool_call": {
+    "id": "c1",
+    "name": "read",
+    "data": { "arguments": { "path": "/tmp/a.txt" }, "result": null, "error": null }
+  },
   "ancestors": ["root", "parent"]
 }
-// 成功响应 200
+// 成功响应 200：data 为执行后的 ToolCall（result 或 error 二者之一被填充）
 {
   "success": true,
-  "data": "文件内容...",
+  "data": {
+    "id": "c1",
+    "name": "read",
+    "data": {
+      "arguments": { "path": "/tmp/a.txt" },
+      "result": "文件内容...",
+      "error": null
+    }
+  },
   "error": null
 }
-// 工具执行失败：HTTP 200 + success=false
+// 工具执行失败：仍为 HTTP 200 + success=true，data.data.error = { "code": …, "message": "工具不存在: xxx" }
 ```
 
-任意接口若发现自己的 `station_id` 已在 `ancestors` 中，返回 400 + `ApiResponse::error("station cycle detected")`。
+错误码（`data.error.code`）：`TERR_TOOL_NOT_FOUND`、`TERR_TOOL_NOT_IMPLEMENTED`、`TERR_TOOL_WRONG_ARGUMENTS`、`TERR_TOOL_CYCLE`、`TERR_TOOL_INTERNAL_ERROR`、`TERR_TOOL_EXTERNAL_ERROR`（子 Station 调用失败，文案含底层原因）。
 
-## ContextConfig.toolkits 白名单与 Session 对应关系
+任意接口若发现自己的 `station_id` 已在 `ancestors` 中，返回 400 + `ApiResponse::error("station cycle detected")`；`call_tool` 的自环（`data.error.code == TERR_TOOL_CYCLE`）同样映射为 400。
 
-- **ContextConfig.toolkits**：`Option<Arc<HashSet<String>>>`，会话启用的 toolkit 名白名单，替代原 stations 字段；`None`/空集 = 无工具
-- 三层继承合并（全局默认 ← agent 默认 ← role 覆盖）后的 `EffectiveContextConfig.toolkits: HashSet<String>` 即为会话工具白名单
-- `Nexus::tools_for_session(session)`：读 session 的 (agent_id, role_name) 合并 context 配置 → `toolkits` 为空直接返回空 → `Station::get().tools(Some(&cfg.toolkits), &[])` 平铺查询
-- `Nexus::execute_tool_call(call)`：`Station::get().call_tool(name, args, &[])`，错误返回 `{ "error": "..." }` JSON
+## toolkit 白名单与 Session 对应关系
+
+- **会话工具白名单（ToolkitSetConfig.toolkit_set）**：`Arc<HashSet<String>>`，会话启用的 toolkit 名集合；默认空集 = 无工具
+- 三层继承合并（默认 ← agent 级 ← role 级）后的 `toolkit_set` 即为会话工具白名单（与其它会话配置一样按 agent → role → session 逐层合成）
+- `Nexus::tools_for_session(session_key)`：读会话的 toolkit 白名单 → 为空直接返回空 → `Station::get().tools(Some(&toolkit_set), &[])` 平铺查询，结果随 LLM 请求的 tools 字段发送
+- 工具执行：`AgentPipeline::call_tool`（记忆写入 + 调用）→ `StationToolCaller` → `Station::call_tool(tool_call, &[])`，工具失败结果写入 `ToolCall.data.error`（JSON：code + message），作为工具消息回填上下文
 - 工具名整树唯一与 toolkit 白名单共同保证：任一工具在整棵 Station 树唯一，白名单按 toolkit 名粗粒度放行
 
 ## 启动顺序

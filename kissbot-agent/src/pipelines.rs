@@ -17,7 +17,7 @@ pub use system_prompter::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::{config_manager::ConfigManager, configs::{PipelineConfig, ToolConfig}, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Message, Mode, Result, SessionKey}};
+use crate::{config_manager::ConfigManager, configs::{PipelineConfig, ToolConfig}, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, session_manager::Session, types::{Error, Message, Mode, Result, SessionKey}};
 
 pub const PP_IN_BATCH: &str = "batch_input_processor";
 pub const PP_OUT_CHANNEL: &str = "channel_output_processor";
@@ -38,19 +38,19 @@ pub fn create_input_processor(session_key: Arc<SessionKey>, name: &str) -> Resul
     }
 }
 
-pub fn create_system_prompter(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentSystemPrompter>> {
+pub fn create_system_prompter(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentSystemPrompter>> {
     match name {
-        PP_SYS_DEFAULT => Ok(Arc::new(DefaultSystemPrompter::new(session_key))),
-        PP_SYS_MEMORY_EGO => Ok(Arc::new(MemoryEgoSystemPrompter::new(session_key))),
+        PP_SYS_DEFAULT => Ok(Arc::new(DefaultSystemPrompter::new(session))),
+        PP_SYS_MEMORY_EGO => Ok(Arc::new(MemoryEgoSystemPrompter::new(session_key, session))),
         _ => Err(Error::PipelineNotFound("system_prompter".to_string(), name.to_string(), session_key.as_ref().clone())),
     }
 }
 
-pub fn create_message_sender(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentMessageSender>> {
+pub fn create_message_sender(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentMessageSender>> {
     match name {
-        PP_MSG_RAW => Ok(Arc::new(RawMessagerSender { session_key })),
-        PP_MSG_COMPRESS => Ok(Arc::new(TokenLimitMessageSender::new_compress(session_key))),
-        PP_MSG_MEMORY_RECOVER => Ok(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key))),
+        PP_MSG_RAW => Ok(Arc::new(RawMessagerSender { session_key, session })),
+        PP_MSG_COMPRESS => Ok(Arc::new(TokenLimitMessageSender::new_compress(session_key, session))),
+        PP_MSG_MEMORY_RECOVER => Ok(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key, session))),
         _ => Err(Error::PipelineNotFound("message sender".to_string(), name.to_string(), session_key.as_ref().clone())),
     }
 }
@@ -69,13 +69,13 @@ pub fn create_output_processor(session_key: Arc<SessionKey>, name: &str) -> Resu
 }
 
 pub struct SessionPipeline {
-    input_processors: Vec<Arc<dyn AgentInputProcessor>>,
-    system_prompters: Vec<Arc<dyn AgentSystemPrompter>>,
-    triggers: Vec<Arc<dyn AgentTrigger>>,
-    pipeline: AgentPipeline,
+    pub input_processors: DashMap<String, Arc<dyn AgentInputProcessor>>,
+    pub system_prompters: DashMap<String, Arc<dyn AgentSystemPrompter>>,
+    pub triggers: DashMap<String, Arc<dyn AgentTrigger>>,
+    pub pipeline: RwLock<AgentPipeline>,
 }
 
-pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Result<AgentPipeline> {
+pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<AgentPipeline> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut message_sender_cfg: Option<&str> = None;
     let mut tool_caller_cfg: Option<&str> = None;
@@ -113,7 +113,7 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Result<Agent
         output_processor_cfg = Some(cfg.as_str());
     }
     let message_sender: Arc<dyn AgentMessageSender> = if let Some(name) = message_sender_cfg {
-        create_message_sender(session_key.clone(), name)?
+        create_message_sender(session_key.clone(), session.clone(), name)?
     } else {
         return Err(Error::PipelineNotFound("message sender".to_string(), "NULL".to_string(), session_key.as_ref().clone()))
     };
@@ -129,13 +129,14 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>) -> Result<Agent
     };
     Ok(AgentPipeline {
         session_key,
+        session,
         message_sender: message_sender,
         tool_caller: tool_caller,
         output_processor: output_processor,
     })
 }
 
-pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Result<Vec<Arc<dyn AgentInputProcessor>>> {
+pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Result<DashMap<String, Arc<dyn AgentInputProcessor>>> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
@@ -149,10 +150,10 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Resu
         };
         match preset {
             PP_PRESET_ROLE => {
-                names.push(Arc::new(PP_IN_BATCH.to_string()));
+                names.push(PP_IN_BATCH.to_string());
             },
             PP_PRESET_EVENT => {
-                names.push(Arc::new(PP_IN_BATCH.to_string()));
+                names.push(PP_IN_BATCH.to_string());
             },
             _ => {},
         };
@@ -160,15 +161,15 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Resu
     if let Some(cfg) = config.input_processor.as_ref() {
         names = cfg.clone();
     }
-    let mut input_processors = Vec::with_capacity(names.len());
-    for name in names {
+    let input_processors = DashMap::new();
+    for name in names.drain(..) {
         let input_processor = create_input_processor(session_key.clone(), name.as_str())?;
-        input_processors.push(input_processor);
+        input_processors.insert(name, input_processor);
     }
     Ok(input_processors)
 }
 
-pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>) -> Result<Vec<Arc<dyn AgentSystemPrompter>>> {
+pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<String, Arc<dyn AgentSystemPrompter>>> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
@@ -182,10 +183,10 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>) -> Resu
         };
         match preset {
             PP_PRESET_ROLE => {
-                names.push(Arc::new(PP_IN_BATCH.to_string()));
+                names.push(PP_IN_BATCH.to_string());
             },
             PP_PRESET_EVENT => {
-                names.push(Arc::new(PP_IN_BATCH.to_string()));
+                names.push(PP_IN_BATCH.to_string());
             },
             _ => {},
         };
@@ -193,10 +194,10 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>) -> Resu
     if let Some(cfg) = config.system_prompter.as_ref() {
         names = cfg.clone();
     }
-    let mut system_prompters = Vec::with_capacity(names.len());
-    for name in names {
-        let system_prompter = create_system_prompter(session_key.clone(), name.as_str())?;
-        system_prompters.push(system_prompter);
+    let system_prompters = DashMap::new();
+    for name in names.drain(..) {
+        let system_prompter = create_system_prompter(session_key.clone(), session.clone(), name.as_str())?;
+        system_prompters.insert(name, system_prompter);
     }
     Ok(system_prompters)
 }
@@ -205,7 +206,7 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>) -> Resu
 /// 用 DashMap 而非 ArcSwap<HashMap>：并发 sync 同一 key 时按 key 原子替换，
 /// 不会出现「读-改-写整张 map」丢失其它 key 刚插入条目的问题
 pub struct PipelineManager {
-    pipeline_map: DashMap<SessionKey, Arc<RwLock<SessionPipeline>>>,
+    pipeline_map: DashMap<SessionKey, Arc<SessionPipeline>>,
 }
 
 impl PipelineManager {
@@ -215,17 +216,17 @@ impl PipelineManager {
         }
     }
 
-    pub async fn sync_pipeline(&self, session_key: Arc<SessionKey>) -> Result<()> {
+    pub async fn sync_pipeline(&self, session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<()> {
         let input_processors = create_agent_input_processors(session_key.clone()).await?;
-        let system_prompters = create_agent_system_prompters(session_key.clone()).await?;
-        let pipeline = create_agent_pipeline(session_key.clone()).await?;
+        let system_prompters = create_agent_system_prompters(session_key.clone(), session.clone()).await?;
+        let pipeline = create_agent_pipeline(session_key.clone(), session.clone()).await?;
         let session_pipeline = SessionPipeline {
             input_processors,
             system_prompters,
-            triggers: Vec::new(),
-            pipeline,
+            triggers: DashMap::new(),
+            pipeline: RwLock::new(pipeline),
         };
-        self.pipeline_map.insert(session_key.as_ref().clone(), Arc::new(RwLock::new(session_pipeline)));
+        self.pipeline_map.insert(session_key.as_ref().clone(), Arc::new(session_pipeline));
         Ok(())
     }
 
@@ -236,48 +237,51 @@ impl PipelineManager {
     }
 
     pub async fn incoming_message(&self, session_key: &SessionKey, event: Arc<IncomingMessageEvent>) -> Result<()> {
-        if let Some(pipeline) = self.pipeline_map.get(session_key) {
-            let input_processors = {
-                let gaurd = pipeline.read().await;
-                gaurd.input_processors.clone()
-            };
-            let mut futs = Vec::new();
-            for input_processor in input_processors.iter() {
-                let f = input_processor.accept(event.clone());
-                futs.push(f);
+        let input_processors = if let Some(pipeline) = self.pipeline_map.get(session_key) {
+            let mut rs = Vec::new();
+            for r in pipeline.input_processors.iter() {
+                rs.push(r.clone());
             }
-            future::join_all(futs).await;
-            Ok(())
+            rs
         } else {
-            Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+        };
+        let mut futs = Vec::new();
+        for input_processor in input_processors.iter() {
+            let f = input_processor.accept(event.clone());
+            futs.push(f);
         }
+        future::join_all(futs).await;
+        Ok(())
     }
 
     pub async fn reset_system_prompt(&self, session_key: &SessionKey) -> Result<()> {
-        if let Some(pipeline) = self.pipeline_map.get(session_key) {
-            let system_prompters = {
-                let gaurd = pipeline.read().await;
-                gaurd.system_prompters.clone()
-            };
-            let mut futs = Vec::new();
-            for system_prompter in system_prompters.iter() {
-                let f = system_prompter.reset_system_prompt();
-                futs.push(f);
+        let system_prompters = if let Some(pipeline) = self.pipeline_map.get(session_key) {
+            let mut rs = Vec::new();
+            for r in pipeline.system_prompters.iter() {
+                rs.push(r.clone());
             }
-            future::join_all(futs).await;
-            Ok(())
+            rs
         } else {
-            Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+        };
+        let mut futs = Vec::new();
+        for system_prompter in system_prompters.iter() {
+            let f = system_prompter.reset_system_prompt();
+            futs.push(f);
         }
+        future::join_all(futs).await;
+        Ok(())
     }
 
     pub async fn run_pipeline(&self, session_key: &SessionKey, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
-        if let Some(pipeline) = self.pipeline_map.get(session_key) {
-            let gaurd = pipeline.read().await;
-            gaurd.pipeline.run(message, tools).await;
-            Ok(())
+        let pipeline = if let Some(pipeline) = self.pipeline_map.get(session_key) {
+            pipeline.clone()
         } else {
-            Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
-        }
+            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+        };
+        let guard = pipeline.pipeline.read().await;
+        guard.run(message, tools).await;
+        Ok(())
     }
 }

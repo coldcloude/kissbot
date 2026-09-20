@@ -363,17 +363,17 @@ impl MergeEffectiveConfig<ToolkitSetConfig> for ToolkitSetConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<Arc<String>>,
+    pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_processor: Option<Vec<Arc<String>>>,
+    pub input_processor: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompter: Option<Vec<Arc<String>>>,
+    pub system_prompter: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_sender: Option<Arc<String>>,
+    pub message_sender: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_caller: Option<Arc<String>>,
+    pub tool_caller: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_processor: Option<Arc<String>>,
+    pub output_processor: Option<String>,
 }
 
 impl MergeBy<PipelineConfig> for PipelineConfig {

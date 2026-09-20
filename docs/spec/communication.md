@@ -2,23 +2,23 @@
 
 ## HTTP
 
-适用于 nexus、station、消息通道、记忆系统、管理界面之间的请求-响应通信。
+适用于 kissbot-agent（Nexus 与内嵌 Station、管理 API、station HTTP 服务）、消息通道、记忆系统、管理界面之间的请求-响应通信。
 
 | 通信方向 | 说明 |
 |----------|------|
-| nexus ↔ station | 请求-响应 |
-| nexus → memory-store | 请求-响应 |
-| nexus → memory-struct-* | 请求-响应 |
-| nexus ↔ memory-ego | 请求-响应 |
+| kissbot-agent ↔ station（子 Station） | 请求-响应（本地同进程为内部调用，远程子 Station 走 HTTP） |
+| kissbot-agent → memory-store | 请求-响应（推记录 + 读记忆） |
+| kissbot-agent → memory-struct-* | 预留（记忆搜索工具未实现） |
+| kissbot-agent ↔ memory-ego | 请求-响应（自我认知信息读取与校验） |
 | channel → memory-store | 请求-响应 |
-| 管理界面 ↔ 各后端 | 请求-响应 |
+| 管理界面 ↔ kissbot-agent / 各后端 | 请求-响应 |
 | 通道前端 ↔ 通道后端 | 请求-响应 |
 
 ## WS
 
 | 通信方向 | 说明 |
 |----------|------|
-| nexus ↔ 消息通道 | nexus 作为客户端连接 channel，唯一连接，心跳维持。认证方式与 HTTP 同一套 |
+| kissbot-agent ↔ 消息通道 | agent 作为客户端连接 channel（经 kissbot-channel-client），支持多通道同时连接，心跳维持。认证方式与 HTTP 同一套 |
 | memory-store ↔ memory-struct-* | memory-struct 作为客户端连接 memory-store，新数据广播通知 |
 
 ## SSE
