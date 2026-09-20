@@ -461,7 +461,7 @@ impl McpHandler for Station {
     }
 
     async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
-        let filter: Option<HashSet<String>> = params.group.map(|v| v.into_iter().collect());
+        let filter: Option<HashSet<String>> = params.meta.groups.map(|v| v.into_iter().collect());
         let tools = self.list_tools(filter.as_ref(), &params.meta.ancestors).await?;
         Ok(ToolsListResult::new(tools))
     }
@@ -697,8 +697,7 @@ mod tests {
         // 显式走 McpHandler 实现（Station 另有同名固有方法）
         let listing = McpHandler::list_tools(&station, ToolsListParams {
             cursor: None,
-            group: Some(vec!["filesystem".to_string()]),
-            meta: meta.clone(),
+            meta: meta.clone().with_groups(&["filesystem".to_string()]),
         })
         .await
         .unwrap();
@@ -743,11 +742,11 @@ mod tests {
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
             *self.observed.lock().await =
-                Some((params.group.clone(), params.meta.ancestors.clone()));
+                Some((params.meta.groups.clone(), params.meta.ancestors.clone()));
             let mut tool = Tool::new("mock-tool", "第三方工具", json!({ "type": "object" }));
             // 回带 group 的模拟：把请求白名单的第一项作为该工具的 group
             if self.echo_group {
-                if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+                if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
                     tool = tool.with_group(group.clone());
                 }
             }

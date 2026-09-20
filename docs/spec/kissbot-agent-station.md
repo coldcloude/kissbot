@@ -133,7 +133,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 | 方法 | 请求要点 | 响应要点 |
 |------|----------|----------|
 | server/discover | 仅 `_meta` | `supportedVersions`（`["2026-07-28"]`）、`capabilities.tools`、`instructions`、`_meta.serverInfo`（name = `kissbot-station`） |
-| tools/list | `group`（kissbot 扩展白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义，各工具 `_meta["kissbot/group"]` 携带所属 group） |
+| tools/list | `_meta["kissbot/groups"]`（组白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义，各工具 `_meta["kissbot/group"]` 携带所属 group） |
 | tools/call | `name`、`arguments`、`_meta["kissbot/ancestors"]` | `content` / `structuredContent` / `isError`；自环返回 JSON-RPC 错误 `1001` |
 
 - 工具级失败（不存在 / 未实现 / 参数错误 / 执行报错 / 子调用失败）返回 HTTP 200 + `isError=true`，固定错误结构落在 `structuredContent`，文案同时进 `content`

@@ -135,7 +135,7 @@ mod tests {
 
         let body = json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/list",
-            "params": { "group": ["filesystem"], "_meta": meta() }
+            "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION, "io.modelcontextprotocol/clientCapabilities": {}, "kissbot/groups": ["filesystem"] } }
         });
         let (status, value) = send(app.clone(), "/mcp", "secret", "tools/list", None, body).await;
         assert_eq!(status, StatusCode::OK);

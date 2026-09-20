@@ -27,7 +27,7 @@ let lastGroup: unknown;
 /**
  * 启动一个「通用 MCP 服务端」（非 kissbot）：
  * - server/discover 只声明 tools 能力，不声明 kissbot 扩展
- * - tools/list 忽略 group 参数，始终返回同名工具
+ * - tools/list 忽略 kissbot/groups 白名单，始终返回同名工具
  * - tools/call 返回结构化结果
  */
 async function startPlainMcpServer(): Promise<{ server: Server; url: string }> {
@@ -56,7 +56,7 @@ async function startPlainMcpServer(): Promise<{ server: Server; url: string }> {
           });
           break;
         case 'tools/list':
-          lastGroup = rpc.params?.group;
+          lastGroup = rpc.params?._meta?.['kissbot/groups'];
           reply({
             resultType: 'complete',
             tools: [{ name: 'plain-tool', description: '第三方工具', inputSchema: { type: 'object' } }],
@@ -135,13 +135,13 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
   test('默认 group 命中白名单时保留，未命中时本地过滤掉', async ({ request }) => {
     const hit = await mcpCall(request, ENDPOINT, {
       method: 'tools/list',
-      params: { group: ['plain-remote'] },
+      groups: ['plain-remote'],
     });
     expect((await hit.json()).result.tools.map((t: any) => t.name)).toContain('plain-tool');
 
     const miss = await mcpCall(request, ENDPOINT, {
       method: 'tools/list',
-      params: { group: ['other'] },
+      groups: ['other'],
     });
     expect((await miss.json()).result.tools).toEqual([]);
   });

@@ -45,7 +45,7 @@ test.describe.serial('station MCP 协议测试', () => {
   test('TC-03: tools/list 按 group 过滤，group 随工具携带', async ({ request }) => {
     const resp = await mcpCall(request, MCP_ENDPOINT, {
       method: 'tools/list',
-      params: { group: ['filesystem'] },
+      groups: ['filesystem'],
     });
     expect(resp.status()).toBe(200);
     const body = await resp.json();
@@ -64,7 +64,7 @@ test.describe.serial('station MCP 协议测试', () => {
   });
 
   test('TC-05: tools/list group 白名单为空 → 空结果', async ({ request }) => {
-    const resp = await mcpCall(request, MCP_ENDPOINT, { method: 'tools/list', params: { group: [] } });
+    const resp = await mcpCall(request, MCP_ENDPOINT, { method: 'tools/list', groups: [] });
     const body = await resp.json();
     expect(body.result.tools).toEqual([]);
   });

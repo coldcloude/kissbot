@@ -69,11 +69,11 @@ impl McpClient {
         group: Option<&[String]>,
         ancestors: &[String],
     ) -> Result<ToolsListResult, McpClientError> {
-        let params = ToolsListParams {
-            cursor: None,
-            group: group.map(|g| g.to_vec()),
-            meta: RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
+        let meta = match group {
+            Some(groups) => RequestMeta::new(self.client_info.clone()).with_groups(groups).with_ancestors(ancestors),
+            None => RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
         };
+        let params = ToolsListParams { cursor: None, meta };
         let params = serde_json::to_value(params)?;
         self.send(METHOD_TOOLS_LIST, None, params).await
     }
@@ -155,7 +155,7 @@ mod tests {
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+            if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
                 tool = tool.with_group(group.clone());
             }
             // 把收到的祖先链回填进工具元数据，验证请求 `_meta` 往返

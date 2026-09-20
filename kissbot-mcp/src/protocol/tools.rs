@@ -70,14 +70,11 @@ impl Tool {
     }
 }
 
-/// `tools/list` 请求参数
+/// `tools/list` 请求参数（组白名单见请求 `_meta` 的 `kissbot/groups`）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<Arc<String>>,
-    /// kissbot 扩展：组白名单（缺省 = 全部，空数组 = 空，非空 = 命中白名单）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<Vec<String>>,
     #[serde(rename = "_meta")]
     pub meta: RequestMeta,
 }
@@ -413,20 +410,43 @@ mod tests {
     }
 
     #[test]
-    fn list_params_parse_group_and_meta() {
+    fn list_params_parse_groups_from_request_meta() {
+        // 组白名单是 kissbot 扩展，放在请求 `_meta` 的 kissbot/groups；params 顶层只保留 cursor
         let params: ToolsListParams = serde_json::from_value(json!({
-            "group": ["filesystem"],
             "cursor": "c1",
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientCapabilities": {},
+                "kissbot/groups": ["filesystem"],
                 "kissbot/ancestors": ["a"]
             }
         }))
         .unwrap();
-        assert_eq!(params.group.as_ref().unwrap(), &vec!["filesystem".to_string()]);
+        assert_eq!(
+            params.meta.groups.as_ref().unwrap(),
+            &vec!["filesystem".to_string()]
+        );
         assert_eq!(params.cursor.as_ref().unwrap().as_str(), "c1");
         assert_eq!(params.meta.ancestors, vec!["a".to_string()]);
+
+        // 不带白名单 = 全部（None）；空数组 = 空结果（保留 Some(空)）
+        let none: ToolsListParams = serde_json::from_value(json!({
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }))
+        .unwrap();
+        assert!(none.meta.groups.is_none());
+        let empty: ToolsListParams = serde_json::from_value(json!({
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "kissbot/groups": []
+            }
+        }))
+        .unwrap();
+        assert_eq!(empty.meta.groups, Some(vec![]));
     }
 
     #[test]

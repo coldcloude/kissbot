@@ -98,13 +98,13 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
   test('A 的 group 白名单会下传给子站 B', async ({ request }) => {
     const hit = await mcpCall(request, ENDPOINT_A, {
       method: 'tools/list',
-      params: { group: ['filesystem'] },
+      groups: ['filesystem'],
     });
     expect((await hit.json()).result.tools.some((t: any) => t.name === 'read')).toBe(true);
 
     const miss = await mcpCall(request, ENDPOINT_A, {
       method: 'tools/list',
-      params: { group: ['other'] },
+      groups: ['other'],
     });
     expect((await miss.json()).result.tools).toEqual([]);
   });

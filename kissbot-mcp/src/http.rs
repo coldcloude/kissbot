@@ -284,7 +284,7 @@ mod tests {
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+            if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
                 tool = tool.with_group(group.clone());
             }
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
@@ -337,7 +337,12 @@ mod tests {
         let (status, body) = send(
             app,
             std_headers("tools/list"),
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "group": ["fs"], "_meta": meta() } }),
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                     "params": { "_meta": {
+                         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                         "io.modelcontextprotocol/clientCapabilities": {},
+                         "kissbot/groups": ["fs"]
+                     } } }),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

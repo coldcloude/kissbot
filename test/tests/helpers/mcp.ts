@@ -14,6 +14,8 @@ export interface McpCallOptions {
   name?: string;
   /** station 级联祖先链（写入 `_meta["kissbot/ancestors"]`） */
   ancestors?: string[];
+  /** tools/list 组白名单（写入 `_meta["kissbot/groups"]`；空数组 = 空结果） */
+  groups?: string[];
   /** 覆盖 api key；空字符串表示不携带 X-Api-Key */
   key?: string;
   id?: number;
@@ -54,6 +56,7 @@ export function mcpBody(opts: McpCallOptions): Record<string, unknown> {
         'io.modelcontextprotocol/clientInfo': { name: 'playwright', version: '1.0.0' },
         'io.modelcontextprotocol/clientCapabilities': {},
         ...(opts.ancestors && opts.ancestors.length > 0 ? { 'kissbot/ancestors': opts.ancestors } : {}),
+        ...(opts.groups !== undefined ? { 'kissbot/groups': opts.groups } : {}),
       },
     },
   };

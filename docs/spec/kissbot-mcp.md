@@ -47,6 +47,7 @@
 | `io.modelcontextprotocol/protocolVersion` | 是 | string | 本请求使用的协议版本 |
 | `io.modelcontextprotocol/clientInfo` | 否 | object | 客户端身份（`name` / `version`） |
 | `io.modelcontextprotocol/clientCapabilities` | 是 | object | 客户端能力（可为空对象） |
+| `kissbot/groups` | 否 | string[] | `tools/list` 的组白名单（缺省 = 全部；空数组 = 空结果；非空 = 只返回命中组的工具） |
 | `kissbot/ancestors` | 否 | string[] | station 级联祖先链（根 → 当前父节点的 station_id 列表；空列表不序列化） |
 
 ### 响应 `_meta`
@@ -75,7 +76,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `group` | bool | 支持 `tools/list` 的 `group` 过滤，且工具定义携带 `_meta["kissbot/group"]` |
+| `group` | bool | 支持 `_meta["kissbot/groups"]` 白名单过滤，且工具定义携带 `_meta["kissbot/group"]` |
 | `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
 
 `DiscoverResult` 提供 `supports_group()` / `supports_ancestors()` / `supports_kissbot()` 读取该声明；
@@ -105,8 +106,9 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `cursor` | string? | 分页游标（本实现不产出 `nextCursor`） |
-| `group` | string[]? | kissbot 扩展：组白名单。缺省 = 全部；空数组 = 空结果；非空 = 只返回命中组的工具 |
-| `_meta` | object | 请求元数据 |
+| `_meta` | object | 请求元数据；kissbot 组白名单写在 `_meta["kissbot/groups"]`（见「请求 `_meta`」） |
+
+`params` 顶层保持规范形状（仅 `cursor` 与 `_meta`），kissbot 扩展一律走 `_meta`。
 
 响应 `result`：
 
@@ -134,7 +136,7 @@
 ```jsonc
 {
   "jsonrpc": "2.0", "id": 1,
-  "params": { "group": ["filesystem"], "_meta": { } },
+  "params": { "_meta": { "kissbot/groups": ["filesystem"] } },
   "result": {
     "resultType": "complete",
     "tools": [
@@ -291,7 +293,7 @@
 - `McpClient::new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>)`：`endpoint` 为 MCP 端点完整 URL；`api_key` 非空时以 `X-Api-Key` 头发送
 - `with_client_info(implementation)`：覆盖自报身份（默认 `name = "kissbot-mcp-client"`，`version` 取包版本）
 - `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_group()` / `supports_ancestors()` / `supports_kissbot()` 用于判定对端 kissbot 扩展能力
-- `list_tools(group: Option<&[String]>, ancestors: &[String]) -> ToolsListResult`
+- `list_tools(groups: Option<&[String]>, ancestors: &[String]) -> ToolsListResult`：白名单写入请求 `_meta["kissbot/groups"]`
 - `call_tool(name: &str, arguments: Value, ancestors: &[String]) -> CallToolResult`
 - 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、非空时的 `kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增
 - 错误类型 `McpClientError`：

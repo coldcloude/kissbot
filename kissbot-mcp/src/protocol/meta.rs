@@ -16,8 +16,10 @@ pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
 pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 /// 服务端身份
 pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
-/// kissbot 扩展：本次返回工具所属的组名集合
+/// kissbot 扩展：工具自身所属的组名（`Tool._meta`）
 pub const META_GROUP: &str = "kissbot/group";
+/// kissbot 扩展：`tools/list` 请求的组白名单（请求 `_meta`）
+pub const META_GROUPS: &str = "kissbot/groups";
 /// kissbot 扩展：station 级联祖先链（根 → 当前父节点）
 pub const META_ANCESTORS: &str = "kissbot/ancestors";
 
@@ -51,6 +53,13 @@ pub struct RequestMeta {
     pub client_info: Option<Implementation>,
     #[serde(rename = "io.modelcontextprotocol/clientCapabilities")]
     pub client_capabilities: Value,
+    /// kissbot 扩展：`tools/list` 的组白名单（缺省 = 全部，空数组 = 空结果，非空 = 命中白名单）
+    #[serde(
+        rename = "kissbot/groups",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub groups: Option<Vec<String>>,
     #[serde(
         rename = "kissbot/ancestors",
         default,
@@ -66,8 +75,15 @@ impl RequestMeta {
             protocol_version: Arc::new(super::PROTOCOL_VERSION.to_string()),
             client_info: Some(client_info),
             client_capabilities: serde_json::json!({}),
+            groups: None,
             ancestors: Vec::new(),
         }
+    }
+
+    /// 设置 `tools/list` 的组白名单
+    pub fn with_groups(mut self, groups: &[String]) -> Self {
+        self.groups = Some(groups.to_vec());
+        self
     }
 
     /// 设置级联祖先链
