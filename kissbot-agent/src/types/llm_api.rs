@@ -19,6 +19,25 @@ pub struct ToolCall {
     pub data: ToolData,
 }
 
+/// LLM 请求中的工具定义（OpenAI `tools[].function` 形状）。
+/// 由 Station 经 MCP `tools/list` 返回的工具定义转换而来，仅用于 Nexus 与 Provider 侧。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfig {
+    pub name: Arc<String>,
+    pub description: Arc<String>,
+    pub parameters: Arc<Value>,
+}
+
+impl From<&kissbot_mcp::Tool> for ToolConfig {
+    fn from(tool: &kissbot_mcp::Tool) -> Self {
+        Self {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.input_schema.clone(),
+        }
+    }
+}
+
 // ========== 模型相关 ==========
 
 #[derive(Debug)]

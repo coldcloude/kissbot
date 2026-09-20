@@ -123,7 +123,7 @@ impl_session_config_field!(CompressConfig, EffectiveCompressConfig);
 impl_session_config_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
 impl_session_config_field!(ChannelBatchConfig, ChannelBatchConfig);
 impl_session_config_field!(OutChannelConfig, OutChannelConfig);
-impl_session_config_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_session_config_field!(GroupSetConfig, GroupSetConfig);
 impl_session_config_field!(PipelineConfig, PipelineConfig);
 
 impl ConfigManager {
@@ -727,7 +727,7 @@ mod tests {
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {}", path, e))
         };
 
-        // station 模板：station_id 必填，toolkits / sub_stations 可缺省
+        // station 模板：station_id 必填，groups / sub_stations 可缺省
         for rel in ["script/template/station.json", "test/workspace-template/agent-data/station.json"] {
             let repo: StationRepo = serde_json::from_str(&read(rel))
                 .unwrap_or_else(|e| panic!("{} 不符合当前 StationRepo schema: {}", rel, e));
@@ -762,8 +762,8 @@ mod tests {
                         "{} 的 agent {} system_prompter 名无效: {}", rel, agent_id, name);
                 }
                 // 工具集齐备；out_channel 可缺省（缺省 = 只存不回复，out_channel 路由测试用无默认值 agent）
-                assert!(agent.build::<ToolkitSetConfig>("").toolkit_set.contains("filesystem"),
-                    "{} 的 agent {} 未启用 filesystem toolkit", rel, agent_id);
+                assert!(agent.build::<GroupSetConfig>("").group_set.contains("filesystem"),
+                    "{} 的 agent {} 未启用 filesystem group", rel, agent_id);
                 has_out_channel |= agent.build::<OutChannelConfig>("").out_channel.is_some();
             }
             assert!(has_out_channel, "{} 至少应有一个 agent 配 out_channel", rel);
@@ -995,19 +995,19 @@ mod tests {
 
     #[test]
     fn station_repo_new_shape_serde_roundtrip() {
-        // StationRepo 新形状：station_id + toolkits + sub_stations；McpConfig 占位序列化
+        // StationRepo 形状：station_id + groups（key = group 名，value = 工具元数据）+ sub_stations
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new("station-self".into());
         {
-            let map = Arc::make_mut(&mut repo.toolkits);
-            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(ToolkitConfig {
-                tools: Arc::new(ArcSwapHashMap::new()),
-                mcps: Arc::new({
+            let map = Arc::make_mut(&mut repo.groups);
+            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig {
+                tools: Arc::new({
                     let mut m = ArcSwapHashMap::new();
-                    m.insert("mcp1".to_string(), ArcSwap::new(Arc::new(McpConfig {
-                        name: Arc::new("mcp1".into()),
-                        description: Arc::new("占位".into()),
-                    })));
+                    m.insert("read".to_string(), ArcSwap::new(Arc::new(kissbot_mcp::Tool::new(
+                        "read",
+                        "读取文本文件",
+                        serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+                    ))));
                     m
                 }),
             })));
@@ -1018,22 +1018,32 @@ mod tests {
                 station_id: Arc::new("station-a".into()),
                 base_url: Arc::new("http://127.0.0.1:9001".into()),
                 timeout_secs: 30,
+                default_group: Arc::new("remote-a".into()),
             })));
         }
         let json = serde_json::to_string(&repo).unwrap();
-        assert!(json.contains("\"station_id\"") && json.contains("\"toolkits\"") && json.contains("\"sub_stations\""), "新形状字段");
+        assert!(json.contains("\"station_id\"") && json.contains("\"groups\"") && json.contains("\"sub_stations\""), "形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
-        assert!(back.toolkits.contains_key("filesystem"));
-        let tcfg = back.toolkits.get("filesystem").unwrap().load_full();
-        assert_eq!(tcfg.mcps.get("mcp1").unwrap().load_full().name.as_str(), "mcp1");
+        assert!(back.groups.contains_key("filesystem"));
+        let gcfg = back.groups.get("filesystem").unwrap().load_full();
+        let tool = gcfg.tools.get("read").unwrap().load_full();
+        assert_eq!(tool.name.as_str(), "read");
+        assert_eq!(tool.input_schema["properties"]["path"]["type"], "string", "工具输入 schema 原样回读");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
+        assert_eq!(sub.effective_group(), "remote-a", "默认 group 回读");
+        // 默认 group 可缺省：缺省时回落 station_id
+        let minimal: SubStationConfig = serde_json::from_str(
+            r#"{"station_id":"s1","base_url":"http://127.0.0.1:9002","timeout_secs":5}"#,
+        )
+        .unwrap();
+        assert_eq!(minimal.effective_group(), "s1");
 
         // station_id 为必填：空对象 {} 应解析失败
         assert!(serde_json::from_str::<StationRepo>("{}").is_err(), "station_id 必填");
 
-        // ToolConfig 序列化（工具元数据契约）
+        // ToolConfig 序列化（LLM 侧工具定义契约：OpenAI tools[].function 形状）
         let tc = ToolConfig {
             name: Arc::new("read".into()),
             description: Arc::new("读取文本文件".into()),
@@ -1116,18 +1126,18 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_set_config_merges_as_union() {
-        // ToolkitSetConfig::merge 为并集（agent 与 role 的 toolkit 累加，区别于 LLMConfig 的覆盖语义）
+    fn group_set_config_merges_as_union() {
+        // GroupSetConfig::merge 为并集（agent 与 role 的 group 累加，区别于 LLMConfig 的覆盖语义）
         let mut agent = AgentRoleConfig::default();
-        let mut agent_tk = ToolkitSetConfig::default();
-        agent_tk.toolkit_set = Arc::new(HashSet::from(["filesystem".to_string()]));
-        agent.set::<ToolkitSetConfig>("", Arc::new(agent_tk));
-        let mut role_tk = ToolkitSetConfig::default();
-        role_tk.toolkit_set = Arc::new(HashSet::from(["web".to_string()]));
-        agent.set::<ToolkitSetConfig>("r1", Arc::new(role_tk));
+        let mut agent_tk = GroupSetConfig::default();
+        agent_tk.group_set = Arc::new(HashSet::from(["filesystem".to_string()]));
+        agent.set::<GroupSetConfig>("", Arc::new(agent_tk));
+        let mut role_tk = GroupSetConfig::default();
+        role_tk.group_set = Arc::new(HashSet::from(["web".to_string()]));
+        agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
 
-        let tk: ToolkitSetConfig = agent.build("r1");
-        assert!(tk.toolkit_set.contains("filesystem") && tk.toolkit_set.contains("web"), "agent + role 并集");
+        let tk: GroupSetConfig = agent.build("r1");
+        assert!(tk.group_set.contains("filesystem") && tk.group_set.contains("web"), "agent + role 并集");
     }
 
     #[test]
@@ -1136,17 +1146,17 @@ mod tests {
         let mut agent_llm = llm_config("deepseek", "deepseek-chat");
         agent_llm.set_max_tokens(Some(2048));
         agent.set::<LLMConfig>("", Arc::new(agent_llm));
-        let mut role_tk = ToolkitSetConfig::default();
-        role_tk.toolkit_set = Arc::new(HashSet::from(["filesystem".to_string()]));
-        agent.set::<ToolkitSetConfig>("r1", Arc::new(role_tk));
+        let mut role_tk = GroupSetConfig::default();
+        role_tk.group_set = Arc::new(HashSet::from(["filesystem".to_string()]));
+        agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
 
         let json = serde_json::to_string(&agent).unwrap();
         let back: AgentRoleConfig = serde_json::from_str(&json).unwrap();
         let llm: LLMConfig = back.build("");
         assert_eq!(llm.provider.as_deref().map(|s| s.as_str()), Some("deepseek"));
         assert_eq!(llm.max_tokens, Some(2048), "has_max_tokens 应随取值一起持久化");
-        let tk: ToolkitSetConfig = back.build("r1");
-        assert!(tk.toolkit_set.contains("filesystem"), "role 级配置应持久化");
+        let tk: GroupSetConfig = back.build("r1");
+        assert!(tk.group_set.contains("filesystem"), "role 级配置应持久化");
     }
 
     #[tokio::test]

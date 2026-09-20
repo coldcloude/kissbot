@@ -47,7 +47,7 @@
             "group_id": "g1"
           }
         },
-        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "group_set": { "group_set": ["filesystem"] },
         "pipeline": {
           "input_processor": ["batch_input_processor"],
           "system_prompter": ["memory_ego_system_prompter"],
@@ -78,7 +78,7 @@
             "group_id": "g1"
           }
         },
-        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "group_set": { "group_set": ["filesystem"] },
         "pipeline": {
           "input_processor": ["batch_input_processor"],
           "system_prompter": ["memory_ego_system_prompter"],
@@ -102,7 +102,7 @@
           "has_reasoning_effort": true
         },
         "channel_batch": { "channel_batch_interval_secs": 3 },
-        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "group_set": { "group_set": ["filesystem"] },
         "pipeline": {
           "input_processor": ["batch_input_processor"],
           "system_prompter": ["memory_ego_system_prompter"],

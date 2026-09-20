@@ -2,11 +2,11 @@
 
 ## HTTP
 
-适用于 kissbot-agent（Nexus 与内嵌 Station、管理 API、station HTTP 服务）、消息通道、记忆系统、管理界面之间的请求-响应通信。
+适用于 kissbot-agent（Nexus 与内嵌 Station、管理 API、station MCP 服务端）、消息通道、记忆系统、管理界面之间的请求-响应通信。
 
 | 通信方向 | 说明 |
 |----------|------|
-| kissbot-agent ↔ station（子 Station） | 请求-响应（本地同进程为内部调用，远程子 Station 走 HTTP） |
+| kissbot-agent ↔ station（子 Station） | 请求-响应（本地同进程为内部调用，远程子 Station 走 MCP：Streamable HTTP 单端点） |
 | kissbot-agent → memory-store | 请求-响应（推记录 + 读记忆） |
 | kissbot-agent → memory-struct-* | 预留（记忆搜索工具未实现） |
 | kissbot-agent ↔ memory-ego | 请求-响应（自我认知信息读取与校验） |

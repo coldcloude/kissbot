@@ -24,6 +24,7 @@ kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }
 kissbot-channel-client = { path = "../kissbot-channel-client" }
 kissbot-config = { path = "../kissbot-config" }
+kissbot-mcp = { path = "../kissbot-mcp" }
 arc-swap = { version = "1.9", features = ["serde"] }
 axum = { version = "0.7", features = ["json"] }
 

@@ -1,6 +1,6 @@
 # kissbot-agent-station 技术规格
 
-Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、toolkit 全局唯一命名空间、递归平铺语义、工具名整树唯一、远程工具路由缓存、子 Station HTTP 协议、toolkit 白名单与 Session 对应关系。
+Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、group 全局唯一命名空间、递归平铺语义、工具名整树唯一、工具路由、MCP 端点协议、group 白名单与会话对应关系。MCP 协议与 HTTP 传输细节见 [kissbot-mcp 技术规格](kissbot-mcp.md)。
 
 ## 配置格式
 
@@ -11,21 +11,15 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 ```json
 {
   "station_id": "station-self",
-  "toolkits": {
-    "filesystem": {
-      "tools": {},
-      "mcps": {}
-    },
-    "my-toolkit": {
+  "groups": {
+    "filesystem": { "tools": {} },
+    "my-group": {
       "tools": {
         "my-tool": {
           "name": "my-tool",
           "description": "自定义工具描述",
-          "parameters": { "type": "object", "properties": {} }
+          "inputSchema": { "type": "object", "properties": {} }
         }
-      },
-      "mcps": {
-        "mcp1": { "name": "mcp1", "description": "占位" }
       }
     }
   },
@@ -33,7 +27,14 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
     "station-a": {
       "station_id": "station-a",
       "base_url": "http://127.0.0.1:9001",
-      "timeout_secs": 30
+      "timeout_secs": 30,
+      "default_group": "station-a-tools"
+    },
+    "plain-mcp": {
+      "station_id": "plain-mcp",
+      "base_url": "http://127.0.0.1:9002",
+      "timeout_secs": 30,
+      "default_group": "plain-tools"
     }
   }
 }
@@ -42,175 +43,139 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | station_id | string | 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环） |
-| toolkits | map<toolkit 名, ToolkitConfig> | 本地 toolkit 集合；key = toolkit 名 |
+| groups | map<group 名, GroupConfig> | 本级 group 集合；key = group 名 |
 | sub_stations | map<station_id, SubStationConfig> | 直接子 Station 集合；key = station_id |
 
-`station_id` 为必填；`toolkits` 与 `sub_stations` 带 `#[serde(default)]`，旧配置缺省时反序列化为空 map。
+`station_id` 为必填；`groups` 与 `sub_stations` 带 `#[serde(default)]`，旧配置缺省时反序列化为空 map。
 
-### ToolkitConfig
+### GroupConfig
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| tools | map<工具名, ToolConfig> | 工具元数据（key = 工具名）；Toolkit 中无子 Station |
-| mcps | map<mcp 名, McpConfig> | MCP 元数据（key = mcp 名；本轮占位，无实现） |
+| tools | map<工具名, Tool> | 工具元数据（key = 工具名；值为 MCP 工具定义） |
 
-### ToolConfig
+### Tool（MCP 工具定义）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | name | string | 工具名（与 map key 一致） |
+| title | string? | 展示名（可选） |
 | description | string | 工具描述 |
-| parameters | object | 参数 JSON Schema（OpenAI tools[].function.parameters） |
-
-### McpConfig
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| name | string | MCP 名（与 map key 一致） |
-| description | string | MCP 描述（占位） |
-
-本轮仅建结构，不实现调用。
+| inputSchema | object | 参数 JSON Schema |
+| outputSchema | object? | 输出 JSON Schema（可选） |
+| annotations | object? | 工具行为注解（可选） |
 
 ### SubStationConfig
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| station_id | string | 子 Station 唯一标识（与 map key 一致） |
-| base_url | string | 子 Station HTTP 地址 |
-| timeout_secs | u64 | 请求超时（秒），用于 StationClient::new(timeout_secs) |
+| station_id | string | 子 Station 唯一标识（与 map key 一致）；祖先链与默认 group 回落都用它 |
+| base_url | string | 子 Station 基地址（MCP 端点为 `base_url` + `/mcp`） |
+| timeout_secs | u64 | 请求超时（秒），用于 MCP 客户端构造 |
+| default_group | string? | 子 Station 的默认 group；缺省（空串）时 `effective_group()` 回落为 station_id |
 
-只存直接子连接信息；子 Station 内部结构（toolkits / 孙子）由子进程自己管理，父通过 HTTP 查询。
+只存直接子连接信息；子 Station 内部结构（groups / 孙子）由子进程自己管理，父通过 MCP 查询。
+子 Station 可以是 kissbot Station，也可以是任意第三方 MCP 服务端；两者由 kissbot 扩展能力声明区分（见「第三方 MCP 服务端」）。
 
-## toolkit 全局唯一命名空间
+## group 全局唯一命名空间
 
-- **toolkit 名**在整棵 Station 树（本地 toolkit + 所有子 Station 递归）上构成全局唯一命名空间，子 Station 的 toolkit 不能与父或兄弟重名
-- 本地约束：`Station::from_repo` 构建时以本地 toolkit 名填充；跨进程部分由部署保证（见"工具名整树唯一"）
-- 内置注册表占用 `filesystem` 命名空间：配置显式声明 `toolkits["filesystem"]` 才注册内置 read 工具实现；未声明则不注册
+- **group 名**在整棵 Station 树（本级 group + 所有子 Station 递归）上构成全局唯一命名空间，子 Station 的 group 不能与父或兄弟重名
+- 本级约束：`Station::from_repo` 构建时以本级 group 名填充；跨进程部分由部署保证（见「工具名整树唯一」）
+- 内置注册表占用 `filesystem` 命名空间：配置显式声明 `groups["filesystem"]` 才注册内置 read 工具实现；未声明则不注册
 
 ## 递归平铺语义
 
-`Station::tools(filter, ancestors)` / `Station::mcps(filter, ancestors)`：`filter: Option<&HashSet<String>>`（toolkit 名白名单）；`ancestors` 为根到当前父节点的 station_id 链。
+`Station::list_tools(filter, ancestors)`：`filter: Option<&HashSet<String>>`（group 名白名单）；`ancestors` 为根到当前父节点的 station_id 链。
 
 | filter | 语义 |
 |--------|------|
 | None | 返回全部 |
 | Some(空集) | 返回空 |
-| Some(白名单) | 只返回命中白名单的 toolkit 的元数据 |
+| Some(白名单) | 只返回命中白名单的 group 的工具 |
 
-- 本地：遍历本地 toolkit，白名单外的跳过，命中的收集 `configured_tools()`/`configured_mcps()`
-- 直接子（tools）：经 `StationClient.list_tools(filter, ancestors + 本站 station_id)` 实时拉取；成功时更新 tool_routes 路由缓存（快照语义：先清该子旧记录再逐个插入，跨进程冲突保留先到者 + warn），查询失败 → warn 跳过、旧缓存保留
-- 直接子（mcps）：经 `StationClient.list_mcps(filter, ancestors + 本站 station_id)` 实时拉取；不建缓存表（MCP 与 Tool 嵌套关系，实现 MCP 时再设计）
-- 自环检测：任一层发现自己的 `station_id` 已在 `ancestors` 中，返回 `StationCycle` 错误
-- 聚合为空 → 请求不携带 tools 字段（兼容无工具场景）
+- 本级：遍历本级 group，白名单外的跳过，命中且非空的收集工具定义与 group 名
+- 直接子：经 `McpClient` 实时拉取并按对端能力处理（见「第三方 MCP 服务端」）；成功时合并工具定义并更新工具路由（见「工具路由」），失败 → warn 跳过、保留该子上一次查询的路由记录
+- 祖先链：所有子请求都附带 `ancestors + 本站 station_id`（纯提示信息，规范要求忽略未知 `_meta` 键）
+- 自环检测：任一层发现自己的 `station_id` 已在 `ancestors` 中，返回 JSON-RPC 错误 `STATION_CYCLE`（`1001`）
+- 结果返回 `ToolsListing { tools, groups }`：`tools` 为工具定义平铺结果，`groups` 为本次结果所属的 group 名集合（本级命中 group 与子 Station 回带的 group 去重合并）
+- 聚合为空 → 返回空工具列表；LLM 请求不携带 tools 字段（兼容无工具场景）
+- 顺序确定性：结果按工具名排序、group 名排序去重（同一集合多次请求返回相同顺序，便于客户端缓存与提示词缓存）
+
+## 第三方 MCP 服务端
+
+子 Station 可以是任意第三方 MCP 服务端，不要求它理解 kissbot 的 `group` 与 `ancestors` 扩展。对端是否支持由 `server/discover` 一次性判定并缓存：
+
+- 探测：`SubStation` 首次需要判定时调 `server/discover`，读取 `capabilities.kissbot`；成功即缓存（含「未声明」的否定结果，第三方通用服务端只探一次），失败不缓存、下次重试
+- 支持（`capabilities.kissbot.group` 为 true）：请求下传 group 白名单，结果 group 以对端回带的 `kissbot/group` 为准
+- 不支持：不下传 group（对方会忽略），其工具整体归入 `SubStationConfig.effective_group()`（`default_group`，缺省回落 station_id）；本级白名单不含该默认 group 时，该子工具整体被本地过滤掉
+- 响应未回带 `kissbot/group`（或为空）：同样归入 `effective_group()`
+- 祖先链对所有子都附带：对不支持者只是被忽略的未知 `_meta` 键；对同样实现 kissbot 扩展但未声明的同级服务端，附带可保留防环能力
 
 ## 工具名整树唯一
 
-- 工具名在整棵 Station 树（本地所有 toolkit + 所有子 Station 递归）上全局唯一
-- **本地硬约束**：`Station::from_repo` 构建时对每个 toolkit 的工具做去重校验，重名（含与内置实现同名）启动失败返回"工具名冲突"
-- **跨进程冲突处理**：`tools()` 拉取子 Station 合并进 tool_routes 缓存时发现工具名已存在（与本地或先到子重名）→ warn 日志，保留先到者，后到者剔除（不进缓存表、不进返回列表）
+- 工具名在整棵 Station 树（本级所有 group + 所有子 Station 递归）上全局唯一
+- **本级硬约束**：`Station::from_repo` 构建时对每个 group 的工具做去重校验，重名（含与内置实现同名，以及同一 group 内配置声明与内置实现同名）启动失败返回「工具名冲突」
+- **跨进程冲突处理**：`list_tools` 合并子 Station 工具时发现工具名已存在（与本级或先到子重名）→ warn 日志，保留先到者，后到者剔除（不进路由表、不进返回列表）
 
-## 远程工具路由缓存（tool_routes）
+## 工具路由（tool_routes）
 
-- **缓存位置**：`Station.tool_routes: DashMap<String, String>`（工具名 → 直接子 station_id）；仅用于 `call_tool` 路由，不用于元数据查询；本地工具不走缓存表（`call_tool` 先查本地实现表）
-- **更新时机**：`tools()` 拉取子 Station 成功时更新（快照语义——先清该子旧路由记录，再逐个插入；该子拉取失败保留旧缓存）
-- **冲突处理**：合并时工具名已存在（与本地或先到子重名）→ warn 日志，保留先到者，后到者不进缓存表、不进返回列表
-- **MCP 不建缓存表**：MCP 与 Tool 为嵌套关系，缓存设计留待实现 MCP 时再设计；`mcps()` 实时拉取平铺返回
+- **路由表位置**：`Station.tool_routes: DashMap<String, String>`（工具名 → 直接子 station_id）；仅用于 `call_tool` 路由，不用于元数据查询；本级工具不进路由表（`call_tool` 先查本级实现表）
+- **更新时机**：`list_tools` 拉取子 Station 成功时更新（快照语义——先清该子上一次查询的路由记录，再逐个插入；该子拉取失败时保留上一次查询的记录）
+- **冲突处理**：合并时工具名已存在（与本级或先到子重名）→ warn 日志，保留先到者，后到者不进路由表、不进返回列表
+- **路由查询**：`call_tool` 本级未命中时按工具名查路由表，命中即调该子；不遍历全部子、不远程获取列表；路由未命中返回「工具不存在」
 
-## 子 Station HTTP 协议
+## MCP 端点
 
-子 Station 只能通过 HTTP 与父 Station 通信，不可本地调用。station 自身服务端监听公共配置 `agent.station_host` / `agent.station_port`，认证使用 `security.api_key`（`X-Api-Key` header）。
+station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `agent.station_port` 的 `/mcp` 端点；协议（方法、消息结构、请求头、状态码）见 [kissbot-mcp 技术规格](kissbot-mcp.md)。认证使用 `security.api_key`（`X-Api-Key` 头，由 kissbot-security 的 AuthLayer 叠加）。
 
-所有接口统一使用 `ApiResponse<T>`：
+对外方法：
 
-- `list_tools` / `list_mcps` 业务错误返回非 200；
-- `call_tool` 的工具执行失败（工具不存在 / 未实现 / 执行报错）仍返回 HTTP 200 + `success=true`，错误码与文案随返回的 ToolCall（`data.error`）带回；
-- 自环（自身 station_id 已在 ancestors 中）返回 400 + `success=false`；
-- 认证失败返回 401。
+| 方法 | 请求要点 | 响应要点 |
+|------|----------|----------|
+| server/discover | 仅 `_meta` | `supportedVersions`（`["2026-07-28"]`）、`capabilities.tools`、`instructions`、`_meta.serverInfo`（name = `kissbot-station`） |
+| tools/list | `group`（kissbot 扩展白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义）、`_meta["kissbot/group"]` |
+| tools/call | `name`、`arguments`、`_meta["kissbot/ancestors"]` | `content` / `structuredContent` / `isError`；自环返回 JSON-RPC 错误 `1001` |
 
-### list_tools
+- 工具级失败（不存在 / 未实现 / 参数错误 / 执行报错 / 子调用失败）返回 HTTP 200 + `isError=true`，固定错误结构落在 `structuredContent`，文案同时进 `content`
+- 协议级失败（自环）返回 JSON-RPC 错误 `1001`，HTTP 200
+- 认证失败 401；传输 / 请求头 / `_meta` 校验失败 400；未知方法 404
 
-`POST /station/tools`
+### 固定错误结构（`structuredContent`）
 
-查询子 Station 平铺后的工具元数据（可选 toolkit 白名单过滤）。
+`isError=true` 时 `structuredContent` 为固定结构 `{ code, message, source }`；kissbot 实现固定 `source = kissbot`。
+`structuredContent` 仅用于 Station 内部处理（如按 `code` 识别循环引用；station 之间逐跳转发以支持这种判定），不进入 Nexus，也不作为工具结果回传 LLM。
+解析失败、结构不符或 `source` 非 kissbot 时，消费方按原样透传，不按错误码解释。
 
-```jsonc
-// 请求
-{
-  "filter": ["toolkit-a"],   // 可选；None = 全部，空数组 = 空
-  "ancestors": ["root", "parent"]  // 根到当前父节点；缺省为空数组
-}
-// 成功响应 200
-{
-  "success": true,
-  "data": [ { "name": "read", "description": "...", "parameters": { } } ],
-  "error": null
-}
-```
+### 工具错误码（`structuredContent.code`）
 
-### list_mcps
+| 码 | 常量 | 说明 |
+|----|------|------|
+| 0x0000_0001 | TERR_TOOL_NOT_FOUND | 工具不存在 |
+| 0x0000_0002 | TERR_TOOL_NOT_IMPLEMENTED | 工具仅注册元数据、无本级实现 |
+| 0x0000_0003 | TERR_TOOL_WRONG_ARGUMENTS | 参数错误 |
+| 0x0000_0004 | TERR_TOOL_CYCLE | 级联自环（子站以工具级错误上报时本级识别并上抛） |
+| 0x0001_0000 | TERR_TOOL_INTERNAL_ERROR | 本级工具执行失败 |
+| 0x0002_0000 | TERR_TOOL_EXTERNAL_ERROR | 子 Station 调用失败（文案含底层原因） |
 
-`POST /station/mcps`
+本级自环以协议级 JSON-RPC 错误 `STATION_CYCLE`（`1001`）返回；子站若以工具级错误码 `TERR_TOOL_CYCLE` 上报自环，本级识别后同样以 `STATION_CYCLE` 上抛。
 
-查询子 Station 平铺后的 MCP 元数据（可选 toolkit 白名单过滤）。
+## 内置注册表
 
-```jsonc
-// 请求
-{
-  "filter": ["toolkit-a"],
-  "ancestors": ["root", "parent"]
-}
-// 成功响应 200
-{
-  "success": true,
-  "data": [ { "name": "mcp1", "description": "..." } ],
-  "error": null
-}
-```
+| group | 工具 | 说明 |
+|-------|------|------|
+| filesystem | read | 读取文本文件；路径经绝对路径规范化后校验位于进程工作目录内（防路径穿透）；返回内容限长 64KB |
 
-### call_tool
+配置显式声明 `groups["filesystem"]` 才注册；内置工具元数据与实现由内置注册表提供，配置中 `tools` 无需（也不应）声明同名工具——声明同名会在注册步骤触发「工具名冲突」。
 
-`POST /station/call-tool`
+## group 白名单与会话对应关系
 
-调用子 Station 上的工具：请求携带完整 ToolCall（`data.arguments` 为调用参数）与祖先链。
-
-```jsonc
-// 请求
-{
-  "tool_call": {
-    "id": "c1",
-    "name": "read",
-    "data": { "arguments": { "path": "/tmp/a.txt" }, "result": null, "error": null }
-  },
-  "ancestors": ["root", "parent"]
-}
-// 成功响应 200：data 为执行后的 ToolCall（result 或 error 二者之一被填充）
-{
-  "success": true,
-  "data": {
-    "id": "c1",
-    "name": "read",
-    "data": {
-      "arguments": { "path": "/tmp/a.txt" },
-      "result": "文件内容...",
-      "error": null
-    }
-  },
-  "error": null
-}
-// 工具执行失败：仍为 HTTP 200 + success=true，data.data.error = { "code": …, "message": "工具不存在: xxx" }
-```
-
-错误码（`data.error.code`）：`TERR_TOOL_NOT_FOUND`、`TERR_TOOL_NOT_IMPLEMENTED`、`TERR_TOOL_WRONG_ARGUMENTS`、`TERR_TOOL_CYCLE`、`TERR_TOOL_INTERNAL_ERROR`、`TERR_TOOL_EXTERNAL_ERROR`（子 Station 调用失败，文案含底层原因）。
-
-任意接口若发现自己的 `station_id` 已在 `ancestors` 中，返回 400 + `ApiResponse::error("station cycle detected")`；`call_tool` 的自环（`data.error.code == TERR_TOOL_CYCLE`）同样映射为 400。
-
-## toolkit 白名单与 Session 对应关系
-
-- **会话工具白名单（ToolkitSetConfig.toolkit_set）**：`Arc<HashSet<String>>`，会话启用的 toolkit 名集合；默认空集 = 无工具
-- 三层继承合并（默认 ← agent 级 ← role 级）后的 `toolkit_set` 即为会话工具白名单（与其它会话配置一样按 agent → role → session 逐层合成）
-- `Nexus::tools_for_session(session_key)`：读会话的 toolkit 白名单 → 为空直接返回空 → `Station::get().tools(Some(&toolkit_set), &[])` 平铺查询，结果随 LLM 请求的 tools 字段发送
-- 工具执行：`AgentPipeline::call_tool`（记忆写入 + 调用）→ `StationToolCaller` → `Station::call_tool(tool_call, &[])`，工具失败结果写入 `ToolCall.data.error`（JSON：code + message），作为工具消息回填上下文
-- 工具名整树唯一与 toolkit 白名单共同保证：任一工具在整棵 Station 树唯一，白名单按 toolkit 名粗粒度放行
+- **会话 group 白名单（GroupSetConfig.group_set）**：`Arc<HashSet<String>>`，会话启用的 group 名集合；默认空集 = 无工具
+- 三层继承合并（默认 ← agent 级 ← role 级）后的 `group_set` 即为会话 group 白名单（与其它会话配置一样按 agent → role → session 逐层合成）
+- `Nexus::tools_for_session(session_key)`：读会话的 group 白名单 → 为空直接返回空 → `Station::list_tools(Some(&group_set), &[])` 平铺查询；结果由 `From<&kissbot_mcp::Tool> for ToolConfig` 转为 LLM 侧工具定义（`parameters` 取 `inputSchema`），随 LLM 请求的 tools 字段发送
+- 工具执行：`AgentPipeline::call_tool`（记忆写入 + 调用）→ `StationToolCaller` 适配层 → `Station::call_tool(name, arguments, &[])`；`CallToolResult` 还原为 `ToolData`——只承载 MCP `content` 字段转成的 `Value`（内容块数组，完整保留 text / image / audio / resource_link / resource 各类型）：成功进 `result`，失败进 `error`（`result` 留空）；`structuredContent` 不进入 Nexus
+- 工具结果进入 LLM 上下文前由输出处理器渲染：成功取 `result`、失败取 `error`，文本块取原文、字符串原样、其余块给紧凑占位（二进制内容不进入上下文）
+- `ToolCall` / `ToolData` 属于 Nexus 交互层，Station 内部不使用；Station 内部只以 MCP 工具类型与工具名 + 参数交互
+- 工具名整树唯一与 group 白名单共同保证：任一工具在整棵 Station 树唯一，白名单按 group 名粗粒度放行
 
 ## 启动顺序
 
@@ -218,7 +183,7 @@ ConfigManager → Station → Nexus：
 
 ```
 ConfigManager::new()   // 加载 KISSBOT_CONFIG agent 段，引导 nexus.json/station.json，注册单例
-Station::new()         // 读 station.json 构建全局 Station，注册单例
+Station::new()         // 读 station.json 构建全局 Station 单例，注册单例
 Nexus::new()           // 装配运行时组件，注册单例；run() 中执行连接与启动动作
-StationHttpServer::start()  // 后台启动 station 对外 HTTP 服务（agent.station_host:agent.station_port）
+StationHttpServer::start()  // 后台启动 station MCP 服务端（agent.station_host:agent.station_port 的 /mcp 端点）
 ```

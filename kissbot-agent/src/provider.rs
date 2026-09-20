@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::sleep;
 
-use crate::{config_manager::ConfigManager, configs::{EffectiveLLMConfig, EffectiveModelConfig, ProviderConfig, ToolConfig}, types::{Error, Message, ModelResponse, Result, ToolCall, ToolData}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveLLMConfig, EffectiveModelConfig, ProviderConfig}, types::{Error, Message, ModelResponse, Result, ToolCall, ToolConfig, ToolData}};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
 #[async_trait]

@@ -1,57 +1,39 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::post;
-use axum::{Json, Router};
-use kissbot_api::ApiResponse;
+use axum::Router;
+use kissbot_mcp::{Implementation, McpHttpConfig, McpServer};
 use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config_manager::ConfigManager;
-use crate::configs::{McpConfig, ToolConfig};
-use crate::station::{Station, TERR_TOOL_CYCLE};
-use crate::types::{
-    Error, Result, StationCallToolRequest, StationListMcpsRequest, StationListToolsRequest, ToolCall,
-};
+use crate::station::Station;
+use crate::types::{Error, Result};
 
-/// station 对外 HTTP 服务：供其他 station 作为 sub 调用
+/// station 对外 MCP 服务：单端点 `POST /mcp`，供其他 station 作为 sub 调用
 pub struct StationHttpServer {
-    api_key: String,
-}
-
-#[derive(Clone)]
-struct AppState {
-    station: &'static Station,
+    api_key: Arc<String>,
 }
 
 impl StationHttpServer {
     pub fn new() -> Self {
         let api_key = kissbot_security::SecurityConfig::get().api_key.to_string();
-        Self { api_key }
+        Self { api_key: Arc::new(api_key) }
     }
 
     /// 构建 Router（生产：使用全局 Station 单例）
     pub fn create_router(&self) -> Router {
-        Self::router_with_station(Station::get(), &self.api_key)
+        Self::router_with_station(Station::shared(), self.api_key.as_str())
     }
 
     /// 测试/注入用：使用指定 Station 与 api_key 构建 Router
-    pub fn router_with_station(station: &'static Station, api_key: &str) -> Router {
-        Router::new()
-            .route("/station/tools", post(list_tools))
-            .route("/station/mcps", post(list_mcps))
-            .route("/station/call-tool", post(call_tool))
-            .with_state(AppState { station })
-            .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(
-                Arc::new(api_key.to_string()),
-            ))))
+    pub fn router_with_station(station: Arc<Station>, api_key: &str) -> Router {
+        let server = McpServer::new(station, server_info());
+        kissbot_mcp::router(server, McpHttpConfig::default())
+            .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(Arc::new(api_key.to_string())))))
     }
 
-    /// 启动 station HTTP 服务（阻塞，在协程中运行）
+    /// 启动 station MCP 服务（阻塞，在协程中运行）
     pub async fn start(&self) -> Result<()> {
         let host = ConfigManager::get().station_host().to_string();
         let port = ConfigManager::get().station_port();
@@ -59,7 +41,7 @@ impl StationHttpServer {
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| Error::IoError(e.to_string()))?;
-        info!("station HTTP 服务器启动: {}", addr);
+        info!("station MCP 服务器启动: {} {}（端点 /mcp）", addr, kissbot_mcp::PROTOCOL_VERSION);
         axum::serve(listener, self.create_router())
             .await
             .map_err(|e| Error::IoError(e.to_string()))?;
@@ -67,60 +49,8 @@ impl StationHttpServer {
     }
 }
 
-fn filter_set(filter: &Option<Vec<String>>) -> Option<HashSet<String>> {
-    filter.as_ref().map(|v| v.iter().cloned().collect())
-}
-
-fn cycle_response<T>() -> (StatusCode, Json<ApiResponse<T>>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ApiResponse::error("station cycle detected".to_string())),
-    )
-}
-
-async fn list_tools(
-    State(state): State<AppState>,
-    Json(req): Json<StationListToolsRequest>,
-) -> impl IntoResponse {
-    let filter = filter_set(&req.filter);
-    match state.station.tools(filter.as_ref(), &req.ancestors).await {
-        Ok(tools) => (StatusCode::OK, Json(ApiResponse::success(tools))),
-        Err(Error::StationCycle(_)) => cycle_response::<Vec<Arc<ToolConfig>>>(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<Arc<ToolConfig>>>::error(e.to_string())),
-        ),
-    }
-}
-
-async fn list_mcps(
-    State(state): State<AppState>,
-    Json(req): Json<StationListMcpsRequest>,
-) -> impl IntoResponse {
-    let filter = filter_set(&req.filter);
-    match state.station.mcps(filter.as_ref(), &req.ancestors).await {
-        Ok(mcps) => (StatusCode::OK, Json(ApiResponse::success(mcps))),
-        Err(Error::StationCycle(_)) => cycle_response::<Vec<Arc<McpConfig>>>(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::<Vec<Arc<McpConfig>>>::error(
-                e.to_string(),
-            )),
-        ),
-    }
-}
-
-async fn call_tool(
-    State(state): State<AppState>,
-    Json(req): Json<StationCallToolRequest>,
-) -> impl IntoResponse {
-    let result = state.station.call_tool(req.tool_call, &req.ancestors).await;
-    // 环检测与 /station/tools 一致：cycle 属于请求参数问题 → 400（其余工具调用失败仍 200，
-    // 错误码随 ToolCall.data.error 返回）
-    if result.data.error.get("code").and_then(|c| c.as_u64()) == Some(TERR_TOOL_CYCLE as u64) {
-        return cycle_response::<ToolCall>();
-    }
-    (StatusCode::OK, Json(ApiResponse::success(result)))
+fn server_info() -> Implementation {
+    Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]
@@ -129,158 +59,153 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use serde_json::Value;
-use tower::ServiceExt;
+    use kissbot_mcp::PROTOCOL_VERSION;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
 
-    use crate::configs::{StationRepo, ToolkitConfig};
+    use crate::configs::{StationRepo, GroupConfig};
     use crate::station::TERR_TOOL_NOT_FOUND;
     use arc_swap::ArcSwap;
 
     fn test_station_repo(station_id: &str) -> StationRepo {
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new(station_id.into());
-        let map = Arc::make_mut(&mut repo.toolkits);
-        map.insert(
-            "filesystem".to_string(),
-            ArcSwap::new(Arc::new(ToolkitConfig::default())),
-        );
+        let map = Arc::make_mut(&mut repo.groups);
+        map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig::default())));
         repo
     }
 
-    fn leak_station(repo: &StationRepo) -> &'static Station {
-        Box::leak(Box::new(Station::from_repo(repo, "test-key").unwrap()))
+    fn test_station(repo: &StationRepo) -> Arc<Station> {
+        Arc::new(Station::from_repo(repo, "test-key").unwrap())
+    }
+
+    fn meta() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
     }
 
     async fn send(
         app: Router,
-        method: &str,
         uri: &str,
         key: &str,
-        body: Option<Value>,
+        method: &str,
+        name: Option<&str>,
+        body: Value,
     ) -> (StatusCode, Value) {
-        let mut builder = Request::builder().method(method).uri(uri);
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("MCP-Protocol-Version", PROTOCOL_VERSION)
+            .header("Mcp-Method", method);
+        if let Some(name) = name {
+            builder = builder.header("Mcp-Name", name);
+        }
         if !key.is_empty() {
             builder = builder.header("X-Api-Key", key);
         }
-        let req = if let Some(b) = body {
-            builder
-                .header("content-type", "application/json")
-                .body(Body::from(b.to_string()))
-                .unwrap()
-        } else {
-            builder.body(Body::empty()).unwrap()
-        };
-        let resp = app.clone().oneshot(req).await.unwrap();
+        let req = builder.body(Body::from(body.to_string())).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
     #[tokio::test]
-    async fn station_api_auth_required() {
+    async fn station_mcp_auth_required() {
         let repo = test_station_repo("station-a");
-        let station = leak_station(&repo);
+        let station = test_station(&repo);
         let app = StationHttpServer::router_with_station(station, "secret");
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": meta() } });
 
-        let (status, body) = send(
-            app.clone(),
-            "POST",
-            "/station/tools",
-            "",
-            Some(serde_json::json!({ "ancestors": [] })),
-        )
-        .await;
+        let (status, _) = send(app.clone(), "/mcp", "", "tools/list", None, body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        assert_eq!(body["success"], false);
 
-        let (status, _) = send(
-            app,
-            "POST",
-            "/station/tools",
-            "wrong",
-            Some(serde_json::json!({ "ancestors": [] })),
-        )
-        .await;
+        let (status, _) = send(app, "/mcp", "wrong", "tools/list", None, body).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn station_list_tools_success_and_cycle() {
+    async fn station_tools_list_success_and_missing_headers() {
         let repo = test_station_repo("station-a");
-        let station = leak_station(&repo);
+        let station = test_station(&repo);
         let app = StationHttpServer::router_with_station(station, "secret");
 
-        let (status, body) = send(
-            app.clone(),
-            "POST",
-            "/station/tools",
-            "secret",
-            Some(serde_json::json!({
-                "filter": ["filesystem"], "ancestors": []
-            })),
-        )
-        .await;
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": { "group": ["filesystem"], "_meta": meta() }
+        });
+        let (status, value) = send(app.clone(), "/mcp", "secret", "tools/list", None, body).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["success"], true);
-        assert_eq!(body["data"][0]["name"], "read");
+        assert_eq!(value["result"]["tools"][0]["name"], "read");
+        assert_eq!(value["result"]["_meta"]["kissbot/group"][0], "filesystem");
 
-        let (status, body) = send(
-            app,
-            "POST",
-            "/station/tools",
-            "secret",
-            Some(serde_json::json!({
-                "ancestors": ["parent", "station-a"]
-            })),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["success"], false);
-        assert!(body["error"].as_str().unwrap().contains("cycle"));
+        // 缺少 MCP-Protocol-Version 头 → 400（认证通过后由 MCP 传输层拒绝）
+        let req = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("Mcp-Method", "tools/list")
+            .header("X-Api-Key", "secret")
+            .body(Body::from(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": meta() }
+            }).to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// /station/call-tool 请求体（tool_call 全量 + ancestors）
-    fn call_tool_body(name: &str, ancestors: &[&str]) -> serde_json::Value {
-        serde_json::json!({
-            "tool_call": { "id": "0", "name": name, "data": { "arguments": {}, "result": null, "error": null } },
-            "ancestors": ancestors,
+    /// /mcp 请求体（tools/call 全量参数 + 可选祖先链）
+    fn call_tool_body(name: &str, ancestors: &[&str]) -> Value {
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "kissbot/ancestors": ancestors,
+                }
+            }
         })
     }
 
     #[tokio::test]
-    async fn station_call_tool_failure_is_200_cycle_non_200() {
+    async fn station_call_tool_failure_is_result_error_cycle_is_rpc_error() {
         let repo = test_station_repo("station-a");
-        let station = leak_station(&repo);
+        let station = test_station(&repo);
         let app = StationHttpServer::router_with_station(station, "secret");
 
-        // 本地只注册了 filesystem/read；调用不存在的工具 → 200，失败编码在返回的 ToolCall.data.error 里
+        // 调用不存在的工具 → 200，失败编码在 CallToolResult 里
         let (status, body) = send(
-            app.clone(),
-            "POST",
-            "/station/call-tool",
-            "secret",
-            Some(call_tool_body("missing", &[])),
-        )
-        .await;
+            app.clone(), "/mcp", "secret", "tools/call", Some("missing"), call_tool_body("missing", &[]),
+        ).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["success"], true, "工具调用失败不是 HTTP 失败：错误随 ToolCall 返回");
-        assert_eq!(body["data"]["data"]["error"]["code"], TERR_TOOL_NOT_FOUND);
-        assert!(body["data"]["data"]["error"]["message"].as_str().unwrap().contains("工具不存在"));
+        assert_eq!(body["result"]["isError"], true, "工具调用失败不是 HTTP 失败：错误随结果返回");
+        assert_eq!(body["result"]["structuredContent"]["code"], TERR_TOOL_NOT_FOUND);
+        assert!(body["result"]["content"][0]["text"].as_str().unwrap().contains("工具不存在"));
 
-        // 自环（ancestors 含自身）→ 与 /station/tools 一致：400 + success=false
+        // 自环（ancestors 含自身）→ JSON-RPC 错误 STATION_CYCLE
         let (status, body) = send(
-            app,
-            "POST",
-            "/station/call-tool",
-            "secret",
-            Some(call_tool_body("read", &["station-a"])),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["success"], false);
-        assert!(body["error"].as_str().unwrap().contains("cycle"));
+            app, "/mcp", "secret", "tools/call", Some("read"), call_tool_body("read", &["station-a"]),
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["error"]["code"], kissbot_mcp::STATION_CYCLE);
+        assert!(body.get("result").is_none());
+    }
+
+    #[tokio::test]
+    async fn station_discover_reports_tools_capability() {
+        let repo = test_station_repo("station-a");
+        let station = test_station(&repo);
+        let app = StationHttpServer::router_with_station(station, "secret");
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": { "_meta": meta() } });
+        let (status, value) = send(app, "/mcp", "secret", "server/discover", None, body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["result"]["supportedVersions"][0], PROTOCOL_VERSION);
+        assert_eq!(value["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "kissbot-station");
     }
 }

@@ -13,7 +13,6 @@ mod memory_store_client;
 mod message;
 mod session_manager;
 mod station;
-mod station_client;
 mod station_http;
 mod types;
 mod pipeline;
@@ -30,7 +29,7 @@ async fn main() {
     config_manager::ConfigManager::new().await
         .expect("初始化配置失败");
 
-    // 2. 构建全局 Station 单例（读 station.json：本地 toolkit + 直接子 Station）
+    // 2. 构建全局 Station 单例（读 station.json：本级 group + 直接子 Station）
     station::Station::new().await
         .expect("初始化 Station 失败");
 
@@ -46,7 +45,7 @@ async fn main() {
         }
     });
 
-    // 5. 启动 station HTTP 服务器（后台，独立 station_host:station_port；供其他 station 作为 sub 调用）
+    // 5. 启动 station MCP 服务（后台，独立 station_host:station_port 的 /mcp 端点；供其他 station 作为 sub 调用）
     tokio::spawn(async move {
         let server = station_http::StationHttpServer::new();
         if let Err(e) = server.start().await {

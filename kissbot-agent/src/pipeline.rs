@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
 
-use crate::{configs::ToolConfig, nexus::Nexus, session_manager::Session, types::{Message, ModelResponse, Result, SessionKey, ToolCall}};
+use crate::{nexus::Nexus, session_manager::Session, types::{Message, ModelResponse, Result, SessionKey, ToolCall, ToolConfig}};
 
 #[async_trait]
 pub trait AgentToolCaller: Send + Sync {

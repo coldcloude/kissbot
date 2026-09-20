@@ -15,7 +15,7 @@ struct AgentRoleConfigMap {
     memory_recover: Option<Arc<MemoryRecoverConfig>>,
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
-    toolkit_set: Option<Arc<ToolkitSetConfig>>,
+    group_set: Option<Arc<GroupSetConfig>>,
     pipeline: Option<Arc<PipelineConfig>>,
 }
 
@@ -24,7 +24,7 @@ impl_option_arc_field!(CompressConfig => compress, AgentRoleConfigMap);
 impl_option_arc_field!(MemoryRecoverConfig => memory_recover, AgentRoleConfigMap);
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, AgentRoleConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, AgentRoleConfigMap);
-impl_option_arc_field!(ToolkitSetConfig => toolkit_set, AgentRoleConfigMap);
+impl_option_arc_field!(GroupSetConfig => group_set, AgentRoleConfigMap);
 impl_option_arc_field!(PipelineConfig => pipeline, AgentRoleConfigMap);
 
 impl_option_arc_field_map!(AgentRoleConfigMap);
@@ -55,7 +55,7 @@ impl_agent_role_config_map_field!(CompressConfig);
 impl_agent_role_config_map_field!(MemoryRecoverConfig);
 impl_agent_role_config_map_field!(ChannelBatchConfig);
 impl_agent_role_config_map_field!(OutChannelConfig);
-impl_agent_role_config_map_field!(ToolkitSetConfig);
+impl_agent_role_config_map_field!(GroupSetConfig);
 impl_agent_role_config_map_field!(PipelineConfig);
 
 impl AgentRoleConfigMap {
@@ -126,7 +126,7 @@ impl_agent_role_config_field!(CompressConfig);
 impl_agent_role_config_field!(MemoryRecoverConfig);
 impl_agent_role_config_field!(ChannelBatchConfig);
 impl_agent_role_config_field!(OutChannelConfig);
-impl_agent_role_config_field!(ToolkitSetConfig);
+impl_agent_role_config_field!(GroupSetConfig);
 impl_agent_role_config_field!(PipelineConfig);
 
 impl AgentRoleConfig {
@@ -151,7 +151,7 @@ pub struct SessionConfigMap {
     memory_recover: Option<Arc<EffectiveMemoryRecoverConfig>>,
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
-    toolkit_set: Option<Arc<ToolkitSetConfig>>,
+    group_set: Option<Arc<GroupSetConfig>>,
     pipeline: Option<Arc<PipelineConfig>>,
 }
 
@@ -160,7 +160,7 @@ impl_option_arc_field!(EffectiveCompressConfig => compress, SessionConfigMap);
 impl_option_arc_field!(EffectiveMemoryRecoverConfig => memory_recover, SessionConfigMap);
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMap);
-impl_option_arc_field!(ToolkitSetConfig => toolkit_set, SessionConfigMap);
+impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMap);
 impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
@@ -186,7 +186,7 @@ impl_session_config_map_field!(CompressConfig, EffectiveCompressConfig);
 impl_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
 impl_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
 impl_session_config_map_field!(OutChannelConfig, OutChannelConfig);
-impl_session_config_map_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_session_config_map_field!(GroupSetConfig, GroupSetConfig);
 impl_session_config_map_field!(PipelineConfig, PipelineConfig);
 
 impl SessionConfigMap {
@@ -222,7 +222,7 @@ impl_agent_role_session_config_map_field!(CompressConfig, EffectiveCompressConfi
 impl_agent_role_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
 impl_agent_role_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
 impl_agent_role_session_config_map_field!(OutChannelConfig, OutChannelConfig);
-impl_agent_role_session_config_map_field!(ToolkitSetConfig, ToolkitSetConfig);
+impl_agent_role_session_config_map_field!(GroupSetConfig, GroupSetConfig);
 impl_agent_role_session_config_map_field!(PipelineConfig, PipelineConfig);
 
 impl SessionConfigMap {

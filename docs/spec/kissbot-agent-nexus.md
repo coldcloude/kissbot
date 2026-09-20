@@ -11,7 +11,7 @@ kissbot-agent 使用三份配置：
 |------|------|--------|
 | 公共配置（`KISSBOT_CONFIG`，默认 `./config.json`） | 各组件共享：`security` / `api` / `agent` / `memory` / 通道等段 | kissbot-config（只读，进程级单例） |
 | `<data_dir>/nexus.json` | agent 可改配置：channels / providers / memory_structs / agents / sessions | ConfigManager（读写，落盘） |
-| `<data_dir>/station.json` | station 可改配置：station_id / toolkits / sub_stations | ConfigManager（读写，落盘） |
+| `<data_dir>/station.json` | station 可改配置：station_id / groups / sub_stations | ConfigManager（读写，落盘） |
 
 `data_dir` 来自公共配置 `agent` 段。
 
@@ -20,7 +20,7 @@ kissbot-agent 使用三份配置：
 ```jsonc
 {
   "security": {
-    "api_key": "user-key-456",        // 组件间互调（含 channel / station HTTP）的 API key
+    "api_key": "user-key-456",        // 组件间互调（含 channel / station MCP）的 API key
     "admin_api_key": "admin-key-123"  // 管理 API 的 key
   },
   "api": {
@@ -32,7 +32,7 @@ kissbot-agent 使用三份配置：
     "mgmt_host": "127.0.0.1",
     "mgmt_port": 9090,                        // 管理 API 监听
     "station_host": "127.0.0.1",
-    "station_port": 9100,                     // station 对外 HTTP 监听（被其他 station 作为 sub 调用）
+    "station_port": 9100,                     // station MCP 端点监听（被其他 station 作为 sub 调用）
     "ws_reconnect_interval_secs": 5           // channel 断线重连间隔
   }
 }
@@ -80,7 +80,7 @@ kissbot-agent 使用三份配置：
         "out_channel": { "out_channel": { "channel_id": "web1",
                                           "user": { "messenger_id": "web", "user_id": "u1" },
                                           "group_id": "g1" } },
-        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "group_set": { "group_set": ["filesystem"] },
         "pipeline": { "preset": "preset_role",
                       "input_processor": ["batch_input_processor"],
                       "system_prompter": ["memory_ego_system_prompter"],
@@ -112,7 +112,7 @@ kissbot-agent 使用三份配置：
 |------|--------|----------|
 | 模型参数 | 全局常量 ← provider 默认（`default_model_config`）← model 覆盖（`model_configs`） | `EffectiveModelConfig`（max_tokens_usage / timeout_secs / retry_count） |
 | LLM 参数 | LLMConfig 默认 ← agent 级 ← role 级 ← session 覆盖 | `EffectiveLLMConfig`（provider / model / max_tokens / temperature / thinking / reasoning_effort） |
-| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / channel_batch / out_channel / toolkit_set / pipeline） | 各自 Effective 形态 |
+| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / channel_batch / out_channel / group_set / pipeline） | 各自 Effective 形态 |
 | 模型参数兜底 | 模型未在 `model_configs` 配置时直接用 provider 默认值合成 | — |
 
 查询入口：`ConfigManager::session_config::<C, E>(session_key)`（带缓存，首次按 agent+role 合成并写入 sessions）、`ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置（需 `set_session_config` 覆盖）。
@@ -268,7 +268,11 @@ enum Message {
     Tool { tool_call_id: Arc<String>, content: Arc<String> },                    // 无 name 字段
 }
 
-// 工具调用：arguments 执行前、result / error 执行后（三者均为 JSON）
+// 工具调用：Nexus 交互层结构（LLM 侧 tool call 与工具结果回填）；
+// Station 内部使用 MCP 工具类型，由 pipeline 的工具调用器在边界转换
+// arguments 执行前、result / error 执行后（三者均为 JSON）；
+// 只承载 MCP content 字段转成的 Value（内容块数组）：成功进 result、失败进 error（result 留空）；
+// structuredContent 仅用于 Station 内部处理，不进入本结构
 struct ToolData { arguments: Value, result: Value, error: Value }
 struct ToolCall { id: Arc<String>, name: Arc<String>, data: ToolData }
 
@@ -300,7 +304,6 @@ enum Error {
     WsConnectionError(String),       // 预留
     WsBindError(String),             // 预留
     StationConnectionError(String),  // 预留
-    StationCycle(String),
     InvalidCommand(String),
     PermissionDenied,                // 预留
     ModeConflict(String),            // 预留

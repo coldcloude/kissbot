@@ -52,7 +52,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息
 
 ### Epic 6：工具调用分派
-- **目标**：解析 LLM 返回中的 tool call，按工具名路由到全局 Station 执行（本地 Toolkit 进程内执行 / 直接子 Station HTTP 递归）
+- **目标**：解析 LLM 返回中的 tool call，按工具名路由到全局 Station 执行（本级原生工具进程内执行 / 直接子 Station 经 MCP 递归）
 - **依赖**：Epic 2（LLM 交互）、Station 组件
 - **用户故事**：
   - 作为一个用户，我要向智能体提出需要执行工具的任务，以触发智能体执行工具调用
@@ -65,12 +65,12 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 核心调度层：管理 nexus 的启动流程、会话集合与全局单例装配
 - 按消息来源 channel 的绑定配置定位会话，将输入路由到管理命令处理或该会话的 pipeline
 - 装配会话 pipeline 时注入会话实例（会话由 Nexus 创建），运行期 pipeline 直接读写会话上下文
-- 提供能力接口供 pipeline 回调：Provider 调用、Station 工具白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
+- 提供能力接口供 pipeline 回调：Provider 调用、Station 工具分组白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
 - 会话绑定（agent_id / role_name / mode）变更走串行队列，避免写-写竞态
 
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
-- 管理 provider+model 参数、(agent, role) 级会话配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具白名单、pipeline）与 session 级覆盖
+- 管理 provider+model 参数、(agent, role) 级会话配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级覆盖
 - 运行期按 agent → role → session 逐层合成有效配置（带缓存），支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）
@@ -87,7 +87,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **AgentPipeline**：agentic loop 本体，装配时注入会话实例，按轮次执行「发送 → 输出处理」，直至无需继续或达到轮次上限；结束轮次后把本轮新消息写回会话上下文
 - **输入处理器（AgentInputProcessor）**：会话消息入口。默认实现为合批处理器——连续到达的消息先入队并刷新合批截止时间，到期后打包为一条 user 消息并请求启动该会话的 pipeline
 - **消息发送器（AgentMessageSender）**：直接读写会话上下文并调用 LLM，返回归一化响应。默认实现三种：raw（直接发送）、compress（超阈值时 LLM 总结压缩上下文）、memory_recover（超阈值时从 memory-store 回溯打包重建上下文）；阈值判定所需的上次 token 占用由发送器自身维护
-- **工具调用器（AgentToolCaller）**：执行单个 tool call 并回填结果，默认实现分派到全局 Station
+- **工具调用器（AgentToolCaller）**：执行单个 tool call 并回填结果，默认实现经适配层分派到全局 Station（把 Nexus 侧工具调用结构转换为 Station 的工具接口，再把结果还原回 Nexus 侧结构）
 - **输出处理器（AgentOutputProcessor）**：构造本轮要回写上下文的消息（助手消息 + 工具结果消息）、判断是否继续下一轮、在有正文时经回复通道发送
 - **系统提示词器（AgentSystemPrompter）**：持有会话，直接设置该系统消息；默认实现为固定提示词，另一实现从 memory-ego 读取自我认知信息（保留 agent 或读取失败时回退默认提示词）
 - **trigger 标记（AgentTrigger）**：会话内可能与 pipeline 联动、且可保留多个实例的执行体统一标记（输入处理器与系统提示词器均实现它）；对应的 trigger 集合用于承载「无手动触发」的执行体（如定时 / 事件驱动），当前为空，尚无生产实现
@@ -109,18 +109,18 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 维护各 channel 的运行态 mode（默认角色模式，不回写配置）；事件模式会话按事件标识隔离上下文与记忆
 
 ### 9. Station 运行态
-- 全局 Station 单例（每 agent 一个）从配置构建：本地 Toolkit 集合（工具实现表 + MCP 占位）+ 直接子 Station 集合（仅连接信息）
-- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem toolkit 名才注册
-- 工具名整树全局唯一（本地硬约束：本地 toolkit 间不得重名，构建时报错；跨进程冲突在 merge_sub_tools 合并时保留先到者，后到同名工具剔除并记 warn 日志）
+- 全局 Station 单例（每 agent 一个）从配置构建：本级 group 集合（工具元数据 + 可选的原生实现 + 内置注册表）+ 直接子 Station 集合（仅连接信息，MCP 客户端）
+- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem group 名才注册
+- 工具名整树全局唯一（本级硬约束：本级 group 间不得重名，构建时报错；跨进程冲突在聚合子 Station 工具时保留先到者，后到同名工具剔除并记 warn 日志）
 
 ### 10. Station 工具执行
-- 工具定义（name/description/parameters JSON Schema）存于 ToolkitConfig.tools，由 nexus 按会话的工具白名单聚合（`tools(filter)` 平铺递归）后随 LLM 请求发送
-- 本地工具：按工具名在本地 Toolkit 工具表查找并执行（工具名全局唯一，未注册报错）；子 Station 工具：本地未命中查路由缓存（工具名 → 直接子 station_id）调对应子（不遍历全部子）
+- 工具定义由 nexus 按会话的工具分组白名单聚合（平铺递归），并在边界处转换为 LLM 侧工具定义，随 LLM 请求发送
+- 本级工具：按工具名在本级 group 的工具表查找并执行（工具名全局唯一，仅有元数据时返回未实现）；子 Station 工具：本级未命中时按工具名路由到归属的直接子 Station，经 MCP 调用（不遍历全部子）
 
 ### 11. 边界组件（非 Nexus 内部模块）
 - **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 转发业务）、每 channel 运行态（pending msg_id、mode、client、断线通知）、连接/重连/发送，并持有 channel 变更串行队列（其执行体之一即会话重定位，回调 Nexus）
 - **管理 API（http_server）**：管理界面用的配置 CRUD，直接操作配置管理器
-- **station HTTP 服务（station_http）**：对外提供工具/ MCP 查询与工具调用，供其他 station 作为 sub 使用
+- **station MCP 服务端（station_http）**：把全局 Station 作为 MCP 处理器对外提供 server/discover、tools/list、tools/call，供其他 station 作为 sub 使用
 
 ## 功能流程
 
@@ -145,7 +145,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 循环（上限防死循环）：
       1. 发送器：上下文超阈值时先压缩或记忆回溯 → 追加新消息 → 调用 LLM
       2. 输出处理器：
-           ├─ 有 tool_calls → 逐个执行（全局 Station）→ 结果作为工具消息追加 → 继续下一轮
+           ├─ 有 tool_calls → 逐个执行（全局 Station 经适配层）→ 结果作为工具消息追加 → 继续下一轮
            └─ 有正文 → 追加助手消息 → 经回复通道发送（并写入记忆）
   → 轮次结束：把本轮新增消息追加进会话上下文
 ```
@@ -157,7 +157,7 @@ kissbot-agent 启动
   → 配置管理器：加载公共配置的 agent 段，引导 nexus.json / station.json
   → Station：读 station.json 构建全局单例（内置注册表 + 配置声明 + 唯一性校验 + 子 Station 连接信息）
   → Nexus：装配运行时组件并注册单例；同时启动 channel 变更队列消费者
-  → 后台启动管理 API 服务与 station HTTP 服务
+  → 后台启动管理 API 服务与 station MCP 服务端
   → 主循环：对每个 channel 绑定确保会话存在（新建会话时同步 pipeline、设置系统提示词）
   → 主循环：连接全部 enabled channel（创建客户端 + 重连循环 + 绑定身份）
   → 保持进程，等待通道回调驱动
@@ -238,8 +238,8 @@ kissbot-agent 启动
 ### 工具调用分派
 
 - LLM 返回 tool call 时解析工具名与参数
-- 工具定义按会话的工具白名单聚合（平铺递归），随每次 LLM 请求发送
-- 工具调用按工具名在全局 Station 中路由：本地 Toolkit 实现表（工具名整树唯一）在进程内执行，未命中查路由缓存（工具名 → 直接子 station_id）调对应子；路由未命中返回错误结果
+- 工具定义按会话的工具分组白名单聚合（平铺递归），转换为 LLM 侧工具定义后随每次 LLM 请求发送
+- 工具调用按工具名在全局 Station 中路由：本级原生实现（工具名整树唯一）在进程内执行，未命中查工具路由（工具名 → 直接子 station_id）经 MCP 调对应子；路由未命中返回错误结果
 - 工具结果作为工具消息追加回上下文，支持多轮嵌套（上限防死循环）
 - 每个工具调用生成 UUID key，相关记忆记录用同一 key 关联，经通道时间线可见工具调用锚点
 

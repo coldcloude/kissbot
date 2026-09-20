@@ -1,6 +1,6 @@
 {
   "station_id": "station-a",
-  "toolkits": {
+  "groups": {
     "filesystem": {}
   },
   "sub_stations": {}

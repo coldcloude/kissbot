@@ -8,7 +8,7 @@
 ### 1. Agent
 智能体组件，由 Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）两个内部模块组成，模块职责与内部结构详见 [system-design-agent](system-design-agent.md)。
 
-Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station HTTP 服务，可被远程 station 作为 sub 调用）；同一系统内可运行多个 agent 实例，各实例可对接不同的 LLM 模型或服务于不同的场景。
+Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station MCP 服务端，可被远程 station 作为 sub 调用）；同一系统内可运行多个 agent 实例，各实例可对接不同的 LLM 模型或服务于不同的场景。
 
 Agent 除了根据外界信息给出回应外，还可以主动获取信息并据此行动。可以为 agent 设计自主行动的目标，agent 据此执行信息收集、信息反馈、自动工具调用等。
 
@@ -64,6 +64,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 | nexus | 消息通道 | 绑定请求（→）、下行消息/回复/思考（→）、附件下载请求（→）、心跳（↔） | nexus 启动时绑定；有消息回复时；需要附件时 |
 | 消息通道 | nexus | 上行消息/用户消息（→）、群组变化通知（→）、附件数据（→）、心跳（↔） | 外部消息到达时；群组变化时；nexus 请求附件时 |
 | nexus | station | tool call 请求（→）、tool result 响应（←） | agentic loop 内需要时 |
+| station | 子 station | MCP 请求-响应：工具列表查询、工具调用（↔） | 级联查询工具与远程工具调用时 |
 | nexus | memory-store | 推送记忆记录（→） | 每条消息产生时（含收发的通道消息） |
 | nexus | memory-struct-* | 记忆查询请求（→）、查询结果（←） | 预留：LLM 调用记忆搜索工具时（记忆结构组件与工具均未实现） |
 | nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | 新建会话设置系统提示词时；/agent、/role 校验时 |

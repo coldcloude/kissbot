@@ -2,13 +2,11 @@ pub mod error;
 pub mod llm_api;
 pub mod session_api;
 pub mod channel_api;
-pub mod station_api;
 
 pub use error::*;
 pub use llm_api::*;
 pub use session_api::*;
 pub use channel_api::*;
-pub use station_api::*;
 
 #[cfg(test)]
 mod tests {

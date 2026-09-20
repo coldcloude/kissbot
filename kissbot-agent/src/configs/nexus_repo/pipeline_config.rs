@@ -333,27 +333,27 @@ impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
     }
 }
 
-// ============= toolkit ====================
+// ============= group ====================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolkitSetConfig {
-    /// 启用的 toolkit 名集合
-    pub toolkit_set: Arc<HashSet<String>>,
+pub struct GroupSetConfig {
+    /// 会话启用的 group 名集合
+    pub group_set: Arc<HashSet<String>>,
 }
 
-impl MergeBy<ToolkitSetConfig> for ToolkitSetConfig {
+impl MergeBy<GroupSetConfig> for GroupSetConfig {
     fn merge(&mut self, other: &Self) {
-        let toolkit_set = Arc::make_mut(&mut self.toolkit_set);
-        for toolkit in other.toolkit_set.iter() {
-            toolkit_set.insert(toolkit.clone());
+        let group_set = Arc::make_mut(&mut self.group_set);
+        for group in other.group_set.iter() {
+            group_set.insert(group.clone());
         }
     }
 }
 
-impl MergeSelf for ToolkitSetConfig {}
+impl MergeSelf for GroupSetConfig {}
 
-impl MergeEffectiveConfig<ToolkitSetConfig> for ToolkitSetConfig {
-    fn get_effective_config(&self) -> ToolkitSetConfig {
+impl MergeEffectiveConfig<GroupSetConfig> for GroupSetConfig {
+    fn get_effective_config(&self) -> GroupSetConfig {
         self.clone()
     }
 }

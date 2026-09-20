@@ -41,9 +41,6 @@ pub enum Error {
     #[error("Station connection error: {0}")]
     StationConnectionError(String),
 
-    #[error("Station cycle detected: {0}")]
-    StationCycle(String),
-
     #[error("Invalid command: {0}")]
     InvalidCommand(String),
 

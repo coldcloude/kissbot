@@ -7,11 +7,11 @@ use kissbot_api::RESERVED_AGENT_ID;
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, ToolConfig, ToolkitSetConfig};
+use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, GroupSetConfig};
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
-    Error, Message, ModelResponse, Result, SessionKey, ToolCall, role_mode,
+    Error, Message, ModelResponse, Result, SessionKey, ToolCall, ToolConfig, role_mode,
 };
 use crate::session_manager::{Session, SessionManager};
 use crate::station::Station;
@@ -432,15 +432,19 @@ impl Nexus {
         self.memory_store_client.push_tool_result(request).await;
     }
 
-    /// 会话可用工具：context 配置的启用 toolkits 白名单 → Station 平铺查询（本地 + 直接子递归）
-    /// tools 聚合为空则请求不携带 tools 字段（兼容无工具场景）
+    /// 会话可用工具：会话配置的启用 group 白名单 → Station 经 MCP tools/list 平铺查询（本级 + 直接子递归）
+    /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
     pub async fn tools_for_session(&self, session_key: &SessionKey) -> Vec<Arc<ToolConfig>> {
-        let cfg = ConfigManager::get().session_config::<ToolkitSetConfig,ToolkitSetConfig>(session_key).await;
-        if cfg.toolkit_set.is_empty() {
+        let cfg = ConfigManager::get().session_config::<GroupSetConfig,GroupSetConfig>(session_key).await;
+        if cfg.group_set.is_empty() {
             return Vec::new();
         }
-        match Station::get().tools(Some(&cfg.toolkit_set), &[]).await {
-            Ok(tools) => tools,
+        match Station::get().list_tools(Some(&cfg.group_set), &[]).await {
+            Ok(listing) => listing
+                .tools
+                .iter()
+                .map(|t| Arc::new(ToolConfig::from(t.as_ref())))
+                .collect(),
             Err(e) => {
                 warn!("工具查询失败: {}", e);
                 Vec::new()

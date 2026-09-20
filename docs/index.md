@@ -11,6 +11,7 @@ docs/
 │   └── components-design/      # 组件设计文档（每个组件一个文件）
 │       ├── kissbot-agent-nexus.md     # Agent Nexus 模块 — LLM 通信枢纽
 │       ├── kissbot-agent-station.md   # Agent Station 模块 — Tool 执行主机
+│       ├── kissbot-mcp.md             # MCP 基础库 — 极简 MCP 实现
 │       ├── kissbot-channel.md         # 消息通道框架
 │       ├── kissbot-channel-web.md     # Web 通道（含 web-ui）
 │       ├── kissbot-memory.md          # 记忆基础模块
@@ -45,7 +46,8 @@ docs/
 │   ├── memory-ego.md                # 自我认知模块文件存储
 │   ├── agent-modules.md             # Agent 组件模块调用关系
 │   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
-│   └── kissbot-agent-station.md     # Agent Station 技术约定（嵌套结构/递归平铺/子 Station HTTP 骨架）
+│   ├── kissbot-agent-station.md     # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）
+│   └── kissbot-mcp.md               # MCP 基础库技术约定（消息结构/HTTP 端点/kissbot 扩展）
 │
 └── roadmap/                    # 计划中要添加或修改的功能（手工维护，不要编辑）
     ├── new.md                  # 待规划/新增项
