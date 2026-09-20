@@ -160,11 +160,10 @@ impl CommandRouter {
                 Ok("✅ 已取消发送通道（只存不回复）".to_string())
             }
             "/model" => {
-                // /model <provider> <model> [true|false]：第 4 段省略时默认 false（true 则写入 NexusRepo 默认模型）
-                if parts.len() != 2 {
+                // /model <provider> <model>：切换当前会话模型（先拉模型列表校验，失败保持原模型）
+                if parts.len() != 3 {
                     return Err(Error::InvalidCommand("格式: /model <provider> <model>".to_string()));
                 }
-                // 先切换会话模型（含 API 校验，失败保持原模型）；设为默认则写入 NexusRepo
                 nexus.set_session_model(channel_id, parts[1], parts[2]).await?;
                 Ok(format!("✅ 已切换模型为: {}/{}", parts[1], parts[2]))
             }

@@ -12,8 +12,8 @@
 | nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、会话定位与构建、通道连接调度、回复发送、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、mode、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
 | session_manager | SessionManager / Session / SessionContext | 会话三元组去重创建（返回 `(Session, 是否新建)`）；会话上下文一体管理（SessionContext：内存消息 + 本地缓存 + 历史归档，三者格式一致） | 被 nexus 调用 |
-| pipeline | AgentPipeline / AgentTrigger / Agent{Input,Message,Tool,Output}… 等 trait | 定义 agentic loop 的执行体抽象：输入处理器、消息发送器、工具调用器、输出处理器、系统提示词器，以及无手动触发的 trigger 标记 trait | 被 pipelines 实现/组合；AgentPipeline::run 是 agentic loop 本体 |
-| pipelines | PipelineManager / SessionPipeline / BatchAgentInputProcessor / TokenLimitMessageSender / ChannelOutputProcessor / DefaultSystemPrompter … | pipeline 体系实现与注册表：按会话 key 装配（输入处理器 + 系统提示词器 + 发送/工具/输出 pipeline）、工厂与 preset 映射、保留/清理；合批输入（mpsc + DelayQueue）在 flush 时回调 `Nexus::run_pipeline` | 被 nexus 调用；实现体回调 Nexus 单例（会话、记忆、Provider、Station、回复发送） |
+| pipeline | AgentPipeline / AgentTrigger / Agent{Input,Message,Tool,Output}… 等 trait | 定义 agentic loop 的执行体抽象：输入处理器、消息发送器、工具调用器、输出处理器、系统提示词器，以及无手动触发的 trigger 标记 trait；AgentPipeline 装配时注入会话并直接读写其上下文 | 被 pipelines 实现/组合；AgentPipeline::run 是 agentic loop 本体 |
+| pipelines | PipelineManager / SessionPipeline / BatchAgentInputProcessor / TokenLimitMessageSender / ChannelOutputProcessor / DefaultSystemPrompter … | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话；输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，运行中的 pipeline 另有独立锁）、工厂与 preset 映射、保留/清理；合批输入（mpsc + DelayQueue）在 flush 时回调 `Nexus::run_pipeline` | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
@@ -173,8 +173,7 @@ sequenceDiagram
     participant MSC as MemoryStoreClient
     participant CHM as ChannelManager
 
-    Note over PL: 合批 flush → Nexus::run_pipeline → AgentPipeline::run(message, tools)
-    PL->>CO: ensure_session（取会话；tools 由 Nexus::tools_for_session 预取）
+    Note over PL: 合批 flush → Nexus::run_pipeline（tools 由 Nexus::tools_for_session 预取）<br/>→ AgentPipeline::run(message, tools)；会话在装配时已注入，运行期不经 Nexus 反查
     loop 多轮（≤ MAX_TOOL_ROUNDS = 10）
         PL->>MSN: send_messages(messages, tools)
         alt TokenLimitMessageSender（compress / memory_recover）
@@ -219,7 +218,7 @@ sequenceDiagram
     CO->>SM: ensure_session → get_or_create(key) → (session, 是否新建)
     alt 新建会话
         SM->>SC: recover_from_cache()（正序全量回读；缓存 System 首行 → 当前系统消息）
-        CO->>PLS: sync_pipeline(key)（按 preset / 显式配置装配 pipeline、输入处理器、系统提示词器）
+        CO->>PLS: sync_pipeline(key, session)（按 preset / 显式配置装配，注入会话；输入处理器/系统提示词器/trigger 按名索引）
         CO->>SP: reset_system_prompt()
         alt memory_ego prompter
             SP->>MEC: system_prompt_for_agent（agent 元数据 + 个体识别 + 角色设定 → ego_md 转 markdown）

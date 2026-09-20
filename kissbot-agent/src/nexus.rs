@@ -753,4 +753,17 @@ mod tests {
         assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_,_,_))),
             "被清理的 key 的 pipeline 应移除");
     }
+
+    #[tokio::test]
+    async fn model_command_validates_arguments() {
+        ensure_test_globals().await;
+        // 参数不足 → 格式错误（修复前 "/model <provider>" 会数组越界 panic）
+        for content in ["/model", "/model deepseek"] {
+            let err = CommandRouter::execute(content, "no-such-channel").await.unwrap_err();
+            assert!(matches!(err, Error::InvalidCommand(_)), "{} 应返回格式错误: {:?}", content, err);
+        }
+        // 参数齐备 → 进入模型切换流程（channel 不存在 → ConfigNotFound；provider 校验在取会话之后，不触网）
+        let err = CommandRouter::execute("/model deepseek deepseek-chat", "no-such-channel").await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)), "参数齐备应进入切换流程: {:?}", err);
+    }
 }

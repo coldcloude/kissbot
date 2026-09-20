@@ -64,7 +64,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 1. 协调器（Nexus）
 - 核心调度层：管理 nexus 的启动流程、会话集合与全局单例装配
 - 按消息来源 channel 的绑定配置定位会话，将输入路由到管理命令处理或该会话的 pipeline
-- 提供能力接口供 pipeline 回调：会话定位与构建、上下文的记忆回溯、Provider 调用、Station 工具白名单与调用、记忆写入、回复发送
+- 装配会话 pipeline 时注入会话实例（会话由 Nexus 创建），运行期 pipeline 直接读写会话上下文
+- 提供能力接口供 pipeline 回调：Provider 调用、Station 工具白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
 - 会话绑定（agent_id / role_name / mode）变更走串行队列，避免写-写竞态
 
 ### 2. 配置管理器
@@ -83,14 +84,14 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 缓存与归档格式一致（每行一条消息，System 首行如有），恢复时正序全量回读并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
 
 ### 5. pipeline 体系（会话执行流程）
-- **AgentPipeline**：agentic loop 本体，按轮次执行「发送 → 输出处理」，直至无需继续或达到轮次上限
-- **输入处理器（AgentInputProcessor）**：会话消息入口。默认实现为合批处理器——连续到达的消息先入队并刷新合批截止时间，到期后打包为一条 user 消息并启动该会话的 pipeline
-- **消息发送器（AgentMessageSender）**：拼接上下文并调用 LLM，返回归一化响应。默认实现三种：raw（直接发送）、compress（超阈值时 LLM 总结压缩上下文）、memory_recover（超阈值时从 memory-store 回溯打包重建上下文）
+- **AgentPipeline**：agentic loop 本体，装配时注入会话实例，按轮次执行「发送 → 输出处理」，直至无需继续或达到轮次上限；结束轮次后把本轮新消息写回会话上下文
+- **输入处理器（AgentInputProcessor）**：会话消息入口。默认实现为合批处理器——连续到达的消息先入队并刷新合批截止时间，到期后打包为一条 user 消息并请求启动该会话的 pipeline
+- **消息发送器（AgentMessageSender）**：直接读写会话上下文并调用 LLM，返回归一化响应。默认实现三种：raw（直接发送）、compress（超阈值时 LLM 总结压缩上下文）、memory_recover（超阈值时从 memory-store 回溯打包重建上下文）；阈值判定所需的上次 token 占用由发送器自身维护
 - **工具调用器（AgentToolCaller）**：执行单个 tool call 并回填结果，默认实现分派到全局 Station
 - **输出处理器（AgentOutputProcessor）**：构造本轮要回写上下文的消息（助手消息 + 工具结果消息）、判断是否继续下一轮、在有正文时经回复通道发送
-- **系统提示词器（AgentSystemPrompter）**：会话新建时设置系统消息，默认实现为固定提示词，另一实现从 memory-ego 读取自我认知信息（保留 agent 或读取失败时回退默认提示词）
-- **trigger 标记（AgentTrigger）**：会话内可能与 pipeline 联动、且可保留多个实例的执行体统一标记（输入处理器与系统提示词器均实现它）；`SessionPipeline.triggers` 用于承载「无手动触发」的执行体（如定时 / 事件驱动），当前装配为空，尚无生产实现
-- **PipelineManager**：按会话 key 装配并持有上述组件（pipeline / 输入处理器集合 / 系统提示词器集合 / trigger 集合），提供同步、消息投递、系统提示词重置与随会话清理
+- **系统提示词器（AgentSystemPrompter）**：持有会话，直接设置该系统消息；默认实现为固定提示词，另一实现从 memory-ego 读取自我认知信息（保留 agent 或读取失败时回退默认提示词）
+- **trigger 标记（AgentTrigger）**：会话内可能与 pipeline 联动、且可保留多个实例的执行体统一标记（输入处理器与系统提示词器均实现它）；对应的 trigger 集合用于承载「无手动触发」的执行体（如定时 / 事件驱动），当前为空，尚无生产实现
+- **PipelineManager**：按会话 key 持有 SessionPipeline（输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，正在运行的 pipeline 由独立锁保护），提供装配（同步）、消息投递、系统提示词重置与随会话清理
 
 ### 6. 记忆读写
 - 上行消息、下行回复、思考内容、tool call / tool result 统一经 memory-store 客户端写入；写入失败仅记录日志、不重试
@@ -140,7 +141,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ```
 普通消息 → 合批输入（同一会话连续消息等待合批间隔后打包为一条 user 消息）
-  → AgentPipeline：按会话配置装配（发送器 / 工具调用器 / 输出处理器）
+  → AgentPipeline：装配时注入会话（发送器 / 工具调用器 / 输出处理器，运行期直接读写该会话上下文）
   → 循环（上限防死循环）：
       1. 发送器：上下文超阈值时先压缩或记忆回溯 → 追加新消息 → 调用 LLM
       2. 输出处理器：

@@ -73,7 +73,7 @@ Agent 组件内部包含两大模块：
 
 **Nexus 模块**：负责 LLM 通信、会话编排和记忆对接
 - LLM 客户端（provider 体系）：按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，封装调用与响应归一化
-- pipeline 体系：按会话装配输入处理器、消息发送器、工具调用器、输出处理器与系统提示词器，AgentPipeline 即 agentic loop 本体
+- pipeline 体系：按会话装配输入处理器、消息发送器、工具调用器、输出处理器与系统提示词器（装配时注入会话，运行期直接读写该会话上下文），AgentPipeline 即 agentic loop 本体
 - 会话与上下文：按 (agent_id, role_name, mode) 管理上下文（内存 + 本地缓存 + 历史归档）
 - Tool 调用分派：把外置工具分派到 Station（工具白名单平铺查询 + 工具调用）
 - 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯
