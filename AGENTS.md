@@ -36,11 +36,6 @@ Keep It Simple Stupid BOT - kissbot
 - 提交comment应包含提交的所有改动对应的内容，而不是仅有最近一次改动。
 - 使用中文写comment。
 
-## 工具约定
-
-- 读写文件必须使用Read、Write、Edit等工具，遇到报错解决不了时停下来询问
-- 禁止使用sed或python等命令、脚本修改文件
-
 ## 文本格式约定
 
 - 所有文本文件用UTF-8编码，\n作为换行符
