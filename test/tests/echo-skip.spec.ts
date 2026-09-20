@@ -55,11 +55,11 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
     stopMemoryStore(store);
   });
 
-  test('TC-1: 无参 /agent 挂到保留 agent（agent_name=""、agent_id="0"），/model 启用 deepseek', async () => {
+  test('TC-1: 无参 /agent 挂到保留 agent（agent_id="0"），/model 启用 deepseek', async () => {
     cli.stdin('/send /agent');
     await cli.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
-    cli.stdin('/send /model deepseek deepseek-v4-flash');
-    await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-v4-flash/, 20000);
+    cli.stdin('/send /model deepseek deepseek-flash');
+    await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-flash/, 20000);
   });
 
   test('TC-2: 消息回复经回显后 memory 中仅一条 is_self=1 记录（回显被跳过）', async ({ request }) => {

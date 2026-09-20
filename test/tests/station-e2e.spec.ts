@@ -95,13 +95,13 @@ test.describe.serial('station 远程调用端到端测试（A 调用子站 B）'
     const resp = await (await request.post(`http://127.0.0.1:${STATION_A}/station/call-tool`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
       data: {
-        tool_name: 'read',
-        parameters: { path: 'config.json' },
+        tool_call: { id: '1', name: 'read', data: { arguments: { path: 'config.json' }, result: null, error: null } },
         ancestors: [],
       },
     })).json();
     expect(resp.success).toBe(true);
-    expect(typeof resp.data).toBe('string');
-    expect(resp.data).toContain('"agent"');
+    expect(resp.data.name).toBe('read');
+    // read 的结果为文件内容（纯文本字符串）
+    expect(resp.data.data.result).toContain('"agent"');
   });
 });

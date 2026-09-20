@@ -7,7 +7,7 @@ use kissbot_api::RESERVED_AGENT_ID;
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, OutChannelConfig, ToolConfig, ToolkitSetConfig};
+use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, ToolConfig, ToolkitSetConfig};
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
@@ -358,7 +358,7 @@ impl Nexus {
         let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = Arc::new(session_key.agent_id.clone());
         let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
-        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_name.as_str()).await;
         if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
             let placeholder = placeholder_request(
                 agent_id.clone(),
@@ -384,7 +384,7 @@ impl Nexus {
         let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = Arc::new(session_key.agent_id.clone());
         let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
-        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_name.as_str()).await;
         if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
             let placeholder = placeholder_request(
                 agent_id.clone(),
@@ -410,7 +410,7 @@ impl Nexus {
         let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = Arc::new(session_key.agent_id.clone());
         let role_event = Arc::new(role_mode(session_key.role_name.as_str(), &session_key.mode));
-        let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(session_key).await;
+        let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_name.as_str()).await;
         if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
             let placeholder = placeholder_request(
                 agent_id.clone(),

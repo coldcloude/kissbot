@@ -67,23 +67,24 @@ test.describe.serial('station HTTP API 测试', () => {
 
   test('TC-04: /station/call-tool 成功调用本地 read', async ({ request }) => {
     const resp = await (await apiPost(request, '/station/call-tool', {
-      tool_name: 'read',
-      parameters: { path: 'config.json' },
+      tool_call: { id: '1', name: 'read', data: { arguments: { path: 'config.json' }, result: null, error: null } },
       ancestors: [],
     })).json();
     expect(resp.success).toBe(true);
-    expect(typeof resp.data).toBe('string');
-    expect(resp.data).toContain('"agent"');
+    expect(resp.data.name).toBe('read');
+    // read 的结果为文件内容（纯文本字符串）
+    expect(resp.data.data.result).toContain('"agent"');
   });
 
-  test('TC-05: /station/call-tool 工具调用失败返回 HTTP 200 + success=false', async ({ request }) => {
+  test('TC-05: /station/call-tool 工具不存在返回 HTTP 200，错误编码在 ToolCall 内', async ({ request }) => {
     const resp = await (await apiPost(request, '/station/call-tool', {
-      tool_name: 'missing-tool',
-      parameters: {},
+      tool_call: { id: '2', name: 'missing-tool', data: { arguments: {}, result: null, error: null } },
       ancestors: [],
     })).json();
-    expect(resp.success).toBe(false);
-    expect(resp.error).toBeTruthy();
+    // 工具调用失败不是 HTTP 失败：success=true，错误随 ToolCall.data.error 返回（TERR_TOOL_NOT_FOUND = 0x0001）
+    expect(resp.success).toBe(true);
+    expect(resp.data.data.error.code).toBe(1);
+    expect(resp.data.data.error.message).toContain('工具不存在');
   });
 
   test('TC-06: /station/tools 检测到自己在祖先链中 → 非 200', async ({ request }) => {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{config_manager::ConfigManager, configs::OutChannelConfig, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Message, ModelResponse, Result, SessionKey, role_mode}};
+use crate::{config_manager::ConfigManager, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Message, ModelResponse, Result, SessionKey, role_mode}};
 use async_trait::async_trait;
 
 /// Agentic Loop 工具调用轮次上限（防死循环）
@@ -42,7 +42,7 @@ impl AgentOutputProcessor for ChannelOutputProcessor {
                 }
             }
             if let Some(content) = resp.content.as_ref() {
-                let oc_cfg = ConfigManager::get().session_config::<OutChannelConfig,OutChannelConfig>(self.session_key.as_ref()).await;
+                let oc_cfg = ConfigManager::get().out_channel_config(self.session_key.agent_id.as_str(), self.session_key.role_name.as_str()).await;
                 if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
                     let agent_id = self.session_key.agent_id.as_str();
                     let role_name = self.session_key.role_name.as_str();

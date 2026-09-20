@@ -41,7 +41,7 @@
         "retry_count": 3
       },
       "model_configs": {
-        "deepseek-chat": { "max_tokens_usage": 131072, "timeout_secs": 30 }
+        "deepseek-flash": { "max_tokens_usage": 131072, "timeout_secs": 30 }
       }
     }
   },
@@ -51,7 +51,7 @@
       "config_map": {
         "llm": {
           "provider": "deepseek",
-          "model": "deepseek-chat",
+          "model": "deepseek-flash",
           "max_tokens": 4096,
           "has_max_tokens": true,
           "temperature": 0.7,

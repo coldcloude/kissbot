@@ -43,49 +43,57 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
   test('TC-01: GET /config 读初始快照', async ({ request }) => {
     const resp = await apiGet(request, '/config');
     expect(resp.success).toBe(true);
-    expect(resp.data.providers.deepseek).toBeTruthy();
-    expect(resp.data.default_model).toEqual({ provider: 'deepseek', model: 'deepseek-v4-flash' });
+    expect(resp.data.providers.deepseek.provider_config.provider_type).toBe('openai');
+    expect(resp.data.agents['0'].config_map.llm).toEqual(
+      expect.objectContaining({ provider: 'deepseek', model: 'deepseek-flash' }));
+    expect(resp.data.channels['web-main'].agent_id).toBe('0');
   });
 
   test('TC-02: POST /config/providers 添加并落盘', async ({ request }) => {
     const resp = await apiPost(request, '/config/providers', {
-      name: 'anthropic', provider_type: 'anthropic',
-      base_url: 'https://api.anthropic.com', api_key: '',
-      // 新嵌套格式：default_model_config 承载 provider 默认（未配字段回落全局默认）
-      default_model_config: {
-        max_tokens: 8192, max_tokens_usage: 200000, temperature: 0.7,
-        timeout_secs: 60, retry_count: 3,
+      name: 'anthropic',
+      config: {
+        provider_config: {
+          provider_type: 'anthropic',
+          base_url: 'https://api.anthropic.com',
+          api_key: '',
+        },
+        // provider 默认模型参数（max_tokens_usage 必填，未配字段回落全局默认）
+        default_model_config: { max_tokens_usage: 200000, timeout_secs: 60, retry_count: 3 },
+        // model_configs 的 key 为模型标识（max_tokens_usage 必填）
+        model_configs: { 'claude-sonnet-4': { max_tokens_usage: 200000, timeout_secs: 30 } },
       },
-      // models map key 为模型标识（ModelConfig 无 model 字段；max_tokens_usage 必填，model 覆盖亦须声明）
-      models: { 'claude-sonnet-4': { max_tokens: 4096, max_tokens_usage: 200000 } },
     });
     expect(resp.success).toBe(true);
     // GET 验证
     const info = await apiGet(request, '/config');
-    expect(info.data.providers.anthropic).toBeTruthy();
-    expect(info.data.providers.anthropic.default_model_config.max_tokens).toBe(8192);
+    expect(info.data.providers.anthropic.provider_config.base_url).toBe('https://api.anthropic.com');
+    expect(info.data.providers.anthropic.default_model_config.max_tokens_usage).toBe(200000);
     // nexus.json 落盘验证
     const saved = JSON.parse(readFileSync(NEXUS_FILE, 'utf8'));
-    expect(saved.providers.anthropic).toBeTruthy();
-    expect(saved.providers.anthropic.default_model_config.max_tokens_usage).toBe(200000);
+    expect(saved.providers.anthropic.provider_config.provider_type).toBe('anthropic');
+    expect(saved.providers.anthropic.model_configs['claude-sonnet-4'].timeout_secs).toBe(30);
   });
 
-  test('TC-03: POST /config/default 修改默认模型', async ({ request }) => {
-    const resp = await apiPost(request, '/config/default', {
-      provider: 'anthropic', model: 'claude-sonnet-4',
+  test('TC-03: POST /config/channels/remove 删除并落盘', async ({ request }) => {
+    const add = await apiPost(request, '/config/channels', {
+      channel_id: 'web-3', ws_url: 'ws://127.0.0.1:8201',
+      admins: [], bind_users: [], agent_id: '0', role_name: '', enabled: false,
     });
-    expect(resp.success).toBe(true);
+    expect(add.success).toBe(true);
+    const del = await apiPost(request, '/config/channels/remove', { channel_id: 'web-3' });
+    expect(del.success).toBe(true);
     const info = await apiGet(request, '/config');
-    expect(info.data.default_model).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' });
+    expect(info.data.channels['web-3']).toBeUndefined();
     const saved = JSON.parse(readFileSync(NEXUS_FILE, 'utf8'));
-    expect(saved.default_model.model).toBe('claude-sonnet-4');
+    expect(saved.channels['web-3']).toBeUndefined();
   });
 
   test('TC-04: POST /config/channels 与 /config/admins', async ({ request }) => {
     const ch = await apiPost(request, '/config/channels', {
       channel_id: 'web-2', ws_url: 'ws://127.0.0.1:8201',
       admins: [], bind_users: [{ messenger_id: 'web', user_id: 'u1' }],
-      agent_name: '', role_name: '', enabled: false,
+      agent_id: '0', role_name: '', enabled: false,
     });
     expect(ch.success).toBe(true);
     const adm = await apiPost(request, '/config/admins', {

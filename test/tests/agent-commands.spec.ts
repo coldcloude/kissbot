@@ -26,7 +26,7 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
 
   test.beforeAll(async () => {
     resetWorkspace();
-    // 让 agent 可解析 agent_name -> agent_id（/agent 切换前先解析；模板默认 memory_ego_url 为空）
+    // 注入 ego 地址：/agent 切换前会经 ego 校验 agent 是否存在（模板默认 memory_ego_url 为空）
     const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
     cfg.api.memory_ego_url = EGO_BASE;
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
@@ -89,25 +89,25 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
   });
 
-  test('TC-07: /send-channel 已删除（is_send_channel 删除，out_channel 改由 /bind-outgoing 设置）', async () => {
-    // /send-channel 命令已删除：返回未知命令错误，不再回写配置
+  test('TC-07: /send-channel 不受理（out_channel 由 /bind-outgoing 设置）', async () => {
+    // /send-channel 不是已注册命令：返回未知命令错误，不回写配置
     cliAdmin.stdin('/send /send-channel on');
-    await cliAdmin.waitForOutput(/⚠️ Invalid command: 未知命令: send-channel/, 10000);
+    await cliAdmin.waitForOutput(/⚠️ 未知命令: \/send-channel/, 10000);
   });
 
   test('TC-08: /unbind 缺 user_id 报格式错误；带 user_id 正常移除（unbind 不动 out_channel）', async () => {
-    // 缺 user_id：格式错误（Task 3 起 /unbind 必须带 <user_id>，原"暂不支持"行为已删除）
+    // 缺 user_id：格式错误（/unbind 必须带 <user_id>）
     cliAdmin.stdin('/send /unbind messenger web');
-    await cliAdmin.waitForOutput(/⚠️ Invalid command: 格式: \/unbind messenger <messenger_id> <user_id>/, 10000);
+    await cliAdmin.waitForOutput(/⚠️ 格式: \/unbind messenger <messenger_id> <user_id>/, 10000);
     // 带 user_id：正常移除（web/u1 是模板绑定用户；out_channel 在 (agent, role) context，unbind 不改动）
     cliAdmin.stdin('/send /unbind messenger web u1');
     await cliAdmin.waitForOutput(/✅ 已移除 channel 用户: web \/ u1/, 10000);
   });
 
-  test('TC-09: 无参 /agent 挂载保留 agent（空 agent_name；无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
+  test('TC-09: 无参 /agent 挂载保留 agent（agent_id=0；无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
     cliAdmin.stdin('/send /agent');
     await cliAdmin.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
-    // 注意：无参 /agent 挂载保留 agent（空 agent_name → agent_id="0"；agent_name="0" 已是普通代号），测试环境无 api_key → 无模型态
+    // 注意：无参 /agent 挂载保留 agent（agent_id="0"），测试环境无 api_key → 无模型态
     // 无模型态下普通消息被静默忽略：不进入 agentic loop，也不产生任何 agent 回复
     // 注意：channel 会把发送消息回显给群组成员（<< [u2:g1] ...hello），因此不能断言发送文本本身
     // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（若进入 loop，api_key 为空必然报错）
@@ -126,9 +126,9 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     await cliAdmin.waitForOutput(/✅ 已移除管理权限: web \/ u3/, 10000);
   });
 
-  // TC-11: /model 新语法——非法第 4 段报格式错误（纯本地解析，不触发 API 调用）
-  test('TC-11: /model 非法默认参数报格式错误', async () => {
-    cliAdmin.stdin('/send /model deepseek deepseek-v4-flash maybe');
-    await cliAdmin.waitForOutput(/格式: \/model <provider> <model> \[true\|false\]/, 10000);
+  // TC-11: /model 参数个数不符报格式错误（纯本地解析，不触发 API 调用）
+  test('TC-11: /model 参数个数不符报格式错误', async () => {
+    cliAdmin.stdin('/send /model deepseek deepseek-flash maybe');
+    await cliAdmin.waitForOutput(/⚠️ 格式: \/model <provider> <model>/, 10000);
   });
 });

@@ -31,7 +31,7 @@
       "config_map": {
         "llm": {
           "provider": "deepseek",
-          "model": "deepseek-v4-flash",
+          "model": "deepseek-flash",
           "max_tokens": 4096,
           "has_max_tokens": true,
           "thinking": "enabled",
@@ -62,7 +62,7 @@
       "config_map": {
         "llm": {
           "provider": "deepseek",
-          "model": "deepseek-v4-flash",
+          "model": "deepseek-flash",
           "max_tokens": 4096,
           "has_max_tokens": true,
           "thinking": "enabled",
@@ -78,6 +78,30 @@
             "group_id": "g1"
           }
         },
+        "toolkit_set": { "toolkit_set": ["filesystem"] },
+        "pipeline": {
+          "input_processor": ["batch_input_processor"],
+          "system_prompter": ["memory_ego_system_prompter"],
+          "message_sender": "memory_recover_message_sender",
+          "tool_caller": "station_tool_caller",
+          "output_processor": "channel_output_processor"
+        }
+      },
+      "roles": {}
+    },
+    "b1": {
+      "config_map": {
+        "llm": {
+          "provider": "deepseek",
+          "model": "deepseek-flash",
+          "max_tokens": 4096,
+          "has_max_tokens": true,
+          "thinking": "enabled",
+          "has_thinking": true,
+          "reasoning_effort": "low",
+          "has_reasoning_effort": true
+        },
+        "channel_batch": { "channel_batch_interval_secs": 3 },
         "toolkit_set": { "toolkit_set": ["filesystem"] },
         "pipeline": {
           "input_processor": ["batch_input_processor"],

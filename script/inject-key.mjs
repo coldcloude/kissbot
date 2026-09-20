@@ -1,5 +1,5 @@
 // 注入 api key 到 nexus.json：
-// 从 key 文件（{"provider名":"key"}）按 provider 名注入 nexus.providers[].api_key，就地写回。
+// 从 key 文件（{"provider名":"key"}）按 provider 名注入 nexus.providers[].provider_config.api_key，就地写回。
 // 可被 test import（injectApiKeys），也可 CLI 调用：node inject-key.mjs <key文件> <nexus.json路径>
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -11,15 +11,15 @@ export async function injectApiKeys(keyFile, nexusPath) {
   if (existsSync(keyFile)) {
     const keys = JSON.parse(await readFile(keyFile, 'utf8'));
     for (const [name, key] of Object.entries(keys)) {
-      if (providers[name]) {
-        providers[name].api_key = key;
+      if (providers[name]?.provider_config) {
+        providers[name].provider_config.api_key = key;
         console.log(`  ✓ ${name}: api_key 已注入`);
       } else {
         console.warn(`  ⚠ ${name}: nexus.json 中没有名为 ${name} 的 provider，跳过`);
       }
     }
     for (const [name, provider] of Object.entries(providers)) {
-      if (!provider.api_key) {
+      if (!provider.provider_config?.api_key) {
         console.warn(`  ⚠ provider ${name} 未配置 api_key（key 文件中无对应条目）`);
       }
     }

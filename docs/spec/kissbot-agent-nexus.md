@@ -62,7 +62,7 @@ kissbot-agent 使用三份配置：
       },
       "default_model_config": { "max_tokens_usage": 128000, "timeout_secs": 60, "retry_count": 3 },
       "model_configs": {
-        "deepseek-chat": { "max_tokens_usage": 131072, "timeout_secs": 30 }
+        "deepseek-flash": { "max_tokens_usage": 131072, "timeout_secs": 30 }
       }
     }
   },
@@ -70,7 +70,7 @@ kissbot-agent 使用三份配置：
   "agents": {
     "0": {                       // key = agent_id（"0" = 保留 agent）
       "config_map": {            // agent 级默认
-        "llm": { "provider": "deepseek", "model": "deepseek-chat", "max_tokens": 4096, "has_max_tokens": true,
+        "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": 4096, "has_max_tokens": true,
                  "temperature": 0.7, "has_temperature": true,
                  "thinking": "enabled", "has_thinking": true,
                  "reasoning_effort": "low", "has_reasoning_effort": true },
@@ -88,12 +88,12 @@ kissbot-agent 使用三份配置：
                       "tool_caller": "station_tool_caller",
                       "output_processor": "channel_output_processor" }
       },
-      "roles": { "dev": { "llm": { "model": "deepseek-reasoner" } } }
+      "roles": { "dev": { "llm": { "model": "deepseek-v4-pro" } } }
     }
   },
   "sessions": [
     [ { "agent_id": "0", "role_name": "", "mode": "Role" },
-      { "llm": { "provider": "deepseek", "model": "deepseek-chat", "max_tokens": null,
+      { "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": null,
                  "temperature": null, "thinking": null, "reasoning_effort": null } } ]
   ]
 }
@@ -116,6 +116,8 @@ kissbot-agent 使用三份配置：
 | 模型参数兜底 | 模型未在 `model_configs` 配置时直接用 provider 默认值合成 | — |
 
 查询入口：`ConfigManager::session_config::<C, E>(session_key)`（带缓存，首次按 agent+role 合成并写入 sessions）、`ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置（需 `set_session_config` 覆盖）。
+
+例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的会话立即生效。
 
 ## 会话上下文本地缓存与归档（session_manager）
 
@@ -229,7 +231,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 ```jsonc
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-flash",
   "messages": [ { "role": "system", "content": "…" }, { "role": "user", "content": "…" } ],
   "max_tokens": 4096,          // 未配置时 anthropic 回退 65535
   "temperature": 0.7,

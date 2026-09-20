@@ -101,12 +101,13 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
 // 读取 nexus.json 的 (agent, role) 有效 out_channel 配置（role 覆盖 or agent 默认回落；命令回写先于回复，断言时已持久化）
 function readOutChannel(agentId: string, roleName: string): any {
   const nexus = JSON.parse(readFileSync(join(WORKSPACE, 'agent-data', 'nexus.json'), 'utf8'));
-  const agent = nexus.agent_contexts?.[agentId];
+  const agent = nexus.agents?.[agentId];
   const role = agent?.roles?.[roleName];
-  return role?.out_channel ?? agent?.default_context_config?.out_channel ?? null;
+  return role?.out_channel?.out_channel ?? agent?.config_map?.out_channel?.out_channel ?? null;
 }
 
-// 查询 memory-store channel 记录（单文件全量），返回记录数组（含 is_self/user_id/content 字段）
+// 查询 memory-store channel 记录（单文件全量），返回记录数组（含 is_self/user_id/content 字段）；
+// 查询失败（如该 agent+role 的文件尚未落盘）抛错，由调用方决定重试
 async function queryChannelRecords(request: APIRequestContext, agentId: string, roleName: string): Promise<any[]> {
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
@@ -115,20 +116,27 @@ async function queryChannelRecords(request: APIRequestContext, agentId: string, 
       start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
     },
   })).json();
-  expect(resp.success).toBe(true);
+  if (!resp.success) {
+    throw new Error(`查询 channel 记录失败（agent=${agentId} role=${roleName}）: ${JSON.stringify(resp)}`);
+  }
   return (resp.data ?? []).flatMap((entry: [any, any]) =>
     (entry[1] as [number, any][]).map((e) => e[1]));
 }
 
-// 等待指定内容的用户消息 channel 记录落盘（is_self=0；agent 收到消息即写入，与是否回复无关）
+// 等待指定内容的用户消息 channel 记录落盘（is_self=0；agent 收到消息即写入，与是否回复无关）；
+// 首次查询可能早于 appender 批量落盘（文件尚未建立 → store 返回 IO 错误），按轮询内的瞬时失败处理
 async function waitUserMessageRecord(request: APIRequestContext, agentId: string, roleName: string, content: string): Promise<void> {
   const start = Date.now();
+  let lastError = '';
   while (Date.now() - start < 10000) {
-    const recs = await queryChannelRecords(request, agentId, roleName);
+    const recs = await queryChannelRecords(request, agentId, roleName).catch((e: Error) => {
+      lastError = e.message;
+      return [] as any[];
+    });
     if (recs.some((r) => r.is_self === 0 && r.content?.data === content)) return;
     await sleep(300);
   }
-  throw new Error(`超时未见用户消息 channel 记录: ${content}`);
+  throw new Error(`超时未见用户消息 channel 记录: ${content}${lastError ? `（最后一次查询失败: ${lastError}）` : ''}`);
 }
 
 // 断言基线后不再出现 agent 回复回显（<< [u1:g1] / [u3:g1] = out_channel 产出）；
@@ -145,7 +153,7 @@ async function assertNoAgentReply(baseline: string, timeout = 8000): Promise<voi
 }
 
 // 查询 memory-store think 记录并断言思考记忆已生成（reasoning_content 或 thinking 任一非空 + key 非空）
-// 本测试在模板 default_thinking=enabled 下运行，deepseek-v4-flash 思考模式开启时必有 reasoning_content
+// 本测试在模板 thinking=enabled 下运行，deepseek-flash 思考模式开启时必有 reasoning_content
 async function assertThinkRecords(request: APIRequestContext, roleName: string): Promise<void> {
   // 等待记忆落盘（memory-store appender 100ms 批量 + 余量）
   await sleep(1500);
@@ -174,6 +182,8 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
 }
 
 test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 + out_channel 路由（4 种正常场景 + 2 种路由场景）', () => {
+  // 单个场景含多次真实 LLM 往返与"不应出现回复"的等待窗口，默认 30s 不够
+  test.describe.configure({ timeout: 60000 });
 
   test.beforeAll(async ({ request }) => {
     resetWorkspace();
@@ -212,7 +222,7 @@ test.describe.serial('nexus-ego-chat-store：ego 读取 + channel 记忆写入 +
       data: { agent_id: agentId, role_name: 'out2', description: '输出角色2' },
     })).json();
     expect(out2Resp.success).toBe(true);
-    // 预建无默认 out_channel 的 agent b1（场景 5/6 验证"只存不回复"需回落 None；b1 不配模板默认）
+    // 预建无默认 out_channel 的 agent b1（场景 5/6 验证"只存不回复"需回落 None；b1 在 nexus.json 中不配 out_channel）
     const createB1 = await (await request.post(`${EGO_BASE}/agent/create`, {
       headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
       data: { agent_id: 'b1', description: 'ego 测试 agent（无默认 out_channel）' },

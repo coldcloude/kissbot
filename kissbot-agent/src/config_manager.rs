@@ -361,6 +361,17 @@ impl ConfigManager {
         self.set_agent_role_config::<OutChannelConfig,OutChannelConfig>(agent_id, role_name, Arc::new(config)).await
     }
 
+    /// 取 (agent, role) 级 out_channel 配置：每次按 agent+role 实时合成（不读 session 快照），
+    /// 使 /bind-outgoing、/unbind-outgoing 对已存在的会话立即生效
+    pub async fn out_channel_config(&self, agent_id: &str, role_name: &str) -> Arc<OutChannelConfig> {
+        let repo = self.nexus_repo.read().await;
+        let config = match repo.agents.get(agent_id) {
+            Some(agent) => agent.build::<OutChannelConfig>(role_name),
+            None => OutChannelConfig::default(),
+        };
+        Arc::new(config)
+    }
+
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
     pub async fn add_provider(&self, name: &str, cfg: ProviderModelConfig) -> Result<()> {
@@ -729,6 +740,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{} 不符合当前 NexusRepo schema: {}", rel, e));
             assert!(!repo.channels.is_empty(), "{} 应含示例 channel", rel);
             assert!(!repo.providers.is_empty(), "{} 应含示例 provider", rel);
+            let mut has_out_channel = false;
             for (agent_id, agent) in repo.agents.iter() {
                 let llm: LLMConfig = agent.build("");
                 assert!(llm.provider.is_some() && llm.model.is_some(),
@@ -749,12 +761,12 @@ mod tests {
                     assert!([PP_SYS_DEFAULT, PP_SYS_MEMORY_EGO].contains(&name.as_str()),
                         "{} 的 agent {} system_prompter 名无效: {}", rel, agent_id, name);
                 }
-                // 要能回复与用工具：out_channel 与 toolkit_set 齐备
-                assert!(agent.build::<OutChannelConfig>("").out_channel.is_some(),
-                    "{} 的 agent {} 未配 out_channel", rel, agent_id);
+                // 工具集齐备；out_channel 可缺省（缺省 = 只存不回复，out_channel 路由测试用无默认值 agent）
                 assert!(agent.build::<ToolkitSetConfig>("").toolkit_set.contains("filesystem"),
                     "{} 的 agent {} 未启用 filesystem toolkit", rel, agent_id);
+                has_out_channel |= agent.build::<OutChannelConfig>("").out_channel.is_some();
             }
+            assert!(has_out_channel, "{} 至少应有一个 agent 配 out_channel", rel);
         }
     }
 
@@ -1256,8 +1268,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_out_channel_roundtrips_via_session_config() {
-        // out_channel 是 (agent, role) 级 OutChannelConfig 字段
+    async fn set_out_channel_takes_effect_immediately() {
+        // out_channel 是 (agent, role) 级 OutChannelConfig 字段：运行态读取实时合成，改完立即生效
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let out = Arc::new(OutChannel {
@@ -1265,15 +1277,18 @@ mod tests {
             user: Arc::new(ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }),
             group_id: Arc::new("g1".into()),
         });
-        manager.set_out_channel("a1", "", Some(out)).await.unwrap();
-        let cfg = manager.session_config::<OutChannelConfig, OutChannelConfig>(&session_key("a1", "r1")).await;
-        let got = cfg.out_channel.as_ref().expect("agent 级 out_channel 应被继承");
+        // role 级设置：role out1 命中，同 agent 的其他 role 不受影响
+        manager.set_out_channel("a1", "out1", Some(out)).await.unwrap();
+        let got = manager.out_channel_config("a1", "out1").await;
+        let got = got.out_channel.as_ref().expect("role 级 out_channel 应生效");
         assert_eq!(got.channel_id.as_str(), "web-main");
         assert_eq!(got.user.user_id.as_str(), "u1");
+        assert!(manager.out_channel_config("a1", "r1").await.out_channel.is_none(), "未设置的 role 应为空");
+        // 未配置的 agent 为空
+        assert!(manager.out_channel_config("nobody", "").await.out_channel.is_none());
 
-        // None 清除（换一个 session key：已合成的 session 配置是缓存快照）
-        manager.set_out_channel("a1", "", None).await.unwrap();
-        let cfg = manager.session_config::<OutChannelConfig, OutChannelConfig>(&session_key("a1", "r2")).await;
-        assert!(cfg.out_channel.is_none(), "清除后不再继承");
+        // 清除同一条 (agent, role)：无需换 session key，下一次读取即为空
+        manager.set_out_channel("a1", "out1", None).await.unwrap();
+        assert!(manager.out_channel_config("a1", "out1").await.out_channel.is_none(), "清除后立即为空");
     }
 }

@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import net from 'net';
-// 注入 api key：复用 Task 7 的 inject-key.mjs（script/ 下，export injectApiKeys）
+// 注入 api key：复用 script/inject-key.mjs（export injectApiKeys）
 // 注意：tsc 对 .mjs 静态 import 报 TS7016（无声明文件），因此用动态 import（运行时仍为 ESM 静态可解析路径）
 
 const __filename = fileURLToPath(import.meta.url);

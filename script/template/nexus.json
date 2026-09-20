@@ -31,7 +31,7 @@
       "config_map": {
         "llm": {
           "provider": "deepseek",
-          "model": "deepseek-v4-flash",
+          "model": "deepseek-flash",
           "max_tokens": 4096,
           "has_max_tokens": true,
           "thinking": "enabled",
