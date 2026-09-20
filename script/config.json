@@ -4,7 +4,7 @@
     "api_key": "user-key-456"
   },
   "memory": {
-    "root_dir": "memory-data",
+    "root_dir": "../workspace/memory-data",
     "store": {
       "listen_addr": "127.0.0.1",
       "listen_port": 8082

@@ -14,8 +14,8 @@ kill $(ps aux | grep "kissbot-memory-ego" | grep -v grep | awk '{print $2}') 2>/
 # 清理 memory 数据目录
 echo ""
 echo "[1/3] 清理 memory-data..."
-rm -rf "$SCRIPT_DIR/memory-data"
-mkdir -p "$SCRIPT_DIR/memory-data"
+rm -rf "$PROJECT_DIR/workspace/memory-data"
+mkdir -p "$PROJECT_DIR/workspace/memory-data"
 
 # 启动 memory-store
 echo "[2/3] 启动 memory-store (http://127.0.0.1:8082)..."
