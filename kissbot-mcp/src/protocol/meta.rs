@@ -104,6 +104,13 @@ pub struct ResponseMeta {
     pub server_info: Option<Implementation>,
 }
 
+impl ResponseMeta {
+    /// 没有任何响应元数据（用于序列化时省略 `_meta`）
+    pub fn is_empty(&self) -> bool {
+        self.server_info.is_none()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +149,17 @@ mod tests {
         let v = serde_json::to_value(&meta).unwrap();
         assert!(v.get(META_ANCESTORS).is_none(), "空祖先链不序列化");
         assert_eq!(v[META_PROTOCOL_VERSION], "2026-07-28");
+    }
+
+    #[test]
+    fn response_meta_is_empty_without_server_info() {
+        let empty = ResponseMeta::default();
+        assert!(empty.is_empty());
+        assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
+        let filled = ResponseMeta {
+            server_info: Some(Implementation::new("s", "1")),
+        };
+        assert!(!filled.is_empty());
     }
 
     #[test]

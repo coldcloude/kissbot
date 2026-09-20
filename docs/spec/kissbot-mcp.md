@@ -40,7 +40,11 @@
 
 ## `_meta`
 
+`_meta` 的必填性随位置不同：**请求 `params._meta` 必填**（规范 `RequestParams._meta` 无 `?`），缺省即 `-32602`；**结果 `result._meta` 可选**；**工具 `Tool._meta` 可选**。对应到实现：请求参数结构的 `meta` 字段既不是 `Option` 也不带 `#[serde(default)]`，缺 `_meta` 直接反序列化失败；结果与工具侧用 `Option` / `#[serde(default)]`。
+
 ### 请求 `_meta`（`params._meta`）
+
+下表「必填」列指该键在 `_meta` 内部的必填性；`protocolVersion` 与 `clientCapabilities` 必填，缺任一同样 `-32602`。
 
 | 键 | 必填 | 类型 | 说明 |
 |----|------|------|------|
@@ -51,6 +55,8 @@
 | `kissbot/ancestors` | 否 | string[] | station 级联祖先链（根 → 当前父节点的 station_id 列表；空列表不序列化） |
 
 ### 响应 `_meta`
+
+响应 `_meta` 可选，且没有必填键（`serverInfo` 亦为可选，由 `McpServer` 统一填充）。
 
 | 键 | 类型 | 说明 |
 |----|------|------|

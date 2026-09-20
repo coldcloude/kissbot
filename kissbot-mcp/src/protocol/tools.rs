@@ -91,7 +91,7 @@ pub struct ToolsListResult {
         skip_serializing_if = "Option::is_none"
     )]
     pub next_cursor: Option<Arc<String>>,
-    #[serde(rename = "_meta", default)]
+    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
     pub meta: ResponseMeta,
 }
 
@@ -316,7 +316,7 @@ pub struct CallToolResult {
     pub structured_content: Value,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
-    #[serde(rename = "_meta", default)]
+    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
     pub meta: ResponseMeta,
 }
 
@@ -567,6 +567,28 @@ mod tests {
         let r: CallToolResult =
             serde_json::from_value(json!({ "resultType": "complete", "content": [block] })).unwrap();
         assert_eq!(serde_json::to_value(&r).unwrap()["content"][0], block);
+    }
+
+    #[test]
+    fn result_meta_omitted_when_empty() {
+        // 响应 `_meta` 可选：为空时不序列化（不再输出 `"_meta": {}`）
+        let call = CallToolResult::text("ok");
+        assert!(serde_json::to_value(&call).unwrap().get("_meta").is_none());
+        let list = ToolsListResult::new(vec![]);
+        assert!(serde_json::to_value(&list).unwrap().get("_meta").is_none());
+
+        // 有内容时正常输出
+        let with_info = CallToolResult {
+            meta: ResponseMeta {
+                server_info: Some(crate::protocol::Implementation::new("s", "1")),
+            },
+            ..CallToolResult::text("ok")
+        };
+        assert_eq!(
+            serde_json::to_value(&with_info).unwrap()["_meta"]
+                ["io.modelcontextprotocol/serverInfo"]["name"],
+            "s"
+        );
     }
 
     #[test]

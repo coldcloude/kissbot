@@ -60,7 +60,7 @@ pub struct DiscoverResult {
     pub capabilities: ServerCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<Arc<String>>,
-    #[serde(rename = "_meta", default)]
+    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
     pub meta: ResponseMeta,
 }
 
