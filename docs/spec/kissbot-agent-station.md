@@ -1,6 +1,6 @@
 # kissbot-agent-station 技术规格
 
-Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、group 全局唯一命名空间、递归平铺语义、工具名整树唯一、工具路由、MCP 端点协议、group 白名单与会话对应关系。MCP 协议与 HTTP 传输细节见 [kissbot-mcp 技术规格](kissbot-mcp.md)。
+Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、group 全局唯一命名空间、递归平铺语义、工具名 group 内唯一与重名收敛、工具路由、MCP 端点协议、group 白名单与会话对应关系。MCP 协议与 HTTP 传输细节见 [kissbot-mcp 技术规格](kissbot-mcp.md)。
 
 ## 配置格式
 
@@ -11,9 +11,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 ```json
 {
   "station_id": "station-self",
-  "groups": {
-    "filesystem": {}
-  },
+  "groups": ["filesystem"],
   "sub_stations": {
     "station-a": {
       "station_id": "station-a",
@@ -34,14 +32,10 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | station_id | string | 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环） |
-| groups | map<group 名, GroupConfig> | 本级 group 集合；key = group 名 |
+| groups | string[] | 本级加载哪些 group；只声明 group 名，工具元数据与实现由内置注册表按 group 名填充 |
 | sub_stations | map<station_id, SubStationConfig> | 直接子 Station 集合；key = station_id |
 
-`station_id` 为必填；`groups` 与 `sub_stations` 带 `#[serde(default)]`，旧配置缺省时反序列化为空 map。
-
-### GroupConfig
-
-当前无字段：配置只声明本站点启用哪些 group，group 的工具元数据与实现由内置注册表按 group 名填充（注册的工具必须带原生实现）。
+`station_id` 为必填；`groups` 与 `sub_stations` 带 `#[serde(default)]`，旧配置缺省时反序列化为空集合。
 
 ### 对外工具定义
 
@@ -62,7 +56,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 ## group 全局唯一命名空间
 
 - **group 名**在整棵 Station 树（本级 group + 所有子 Station 递归）上构成全局唯一命名空间，子 Station 的 group 不能与父或兄弟重名
-- 本级约束：`Station::from_repo` 构建时以本级 group 名填充；跨进程部分由部署保证（见「工具名整树唯一」）
+- 本级约束：`Station::from_repo` 构建时以本级声明的 group 名填充；跨进程部分由部署保证（见「工具名 group 内唯一与重名收敛」）
 - 内置注册表占用 `filesystem` 命名空间：配置显式声明 `groups["filesystem"]` 才注册内置 read 工具实现；未声明则不注册
 
 ## 递归平铺语义
@@ -93,11 +87,12 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 - 工具定义未携带 `kissbot/group`：归入 `effective_group()`
 - 祖先链对所有子都附带：对不支持者只是被忽略的未知 `_meta` 键；对同样实现 kissbot 扩展但未声明的同级服务端，附带可保留防环能力
 
-## 工具名整树唯一
+## 工具名 group 内唯一与重名收敛
 
-- 工具名在整棵 Station 树（本级所有 group + 所有子 Station 递归）上全局唯一
-- **本级硬约束**：`Station::from_repo` 构建时对全部 group 的工具做去重校验，重名启动失败返回「工具名冲突」（内置注册表自身保证不重名，该校验是守卫）
-- **跨进程冲突处理**：`list_tools` 合并子 Station 工具时发现工具名已存在（与本级或先到子重名）→ warn 日志，保留先到者，后到者剔除（不进路由表、不进返回列表）
+- **group 内唯一**：同一 group 内工具名不得重复，由 `Group` 构造保证（重复注册返回「工具名冲突」）
+- **重名收敛**：不同 group、以及本级与子 Station 之间允许出现同名工具；对外仍必须给出唯一名字（MCP `tools/call` 只带工具名），因此按 group 名排序保留先到者：
+  - 本级跨 group 重名：构建时保留 group 名靠前者，后者忽略并 warn
+  - 本级与子 Station、子与子重名：`list_tools` 合并时保留先到者，后到者剔除（不进路由表、不进返回列表）并 warn
 
 ## 工具路由（tool_routes）
 
@@ -156,7 +151,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 - 工具执行：`AgentPipeline::call_tool`（记忆写入 + 调用）→ `StationToolCaller` 适配层 → `Station::call_tool(name, arguments, &[])`；`CallToolResult` 还原为 `ToolData`——只承载 MCP `content` 字段转成的 `Value`（内容块数组，完整保留 text / image / audio / resource_link / resource 各类型）：成功进 `result`，失败进 `error`（`result` 留空）；`structuredContent` 不进入 Nexus
 - 工具结果进入 LLM 上下文前由输出处理器渲染：成功取 `result`、失败取 `error`，文本块取原文、字符串原样、其余块给紧凑占位（二进制内容不进入上下文）
 - `ToolCall` / `ToolData` 属于 Nexus 交互层，Station 内部不使用；Station 内部只以 MCP 工具类型与工具名 + 参数交互
-- 工具名整树唯一与 group 白名单共同保证：任一工具在整棵 Station 树唯一，白名单按 group 名粗粒度放行
+- group 白名单按 group 名粗粒度放行；对外工具名的唯一性由「重名收敛」保证（见上）
 
 ## 启动顺序
 

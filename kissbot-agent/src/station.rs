@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -8,14 +7,17 @@ use kissbot_mcp::{
     CallToolResult, DiscoverResult, Implementation, KissbotCapability, McpClient, McpClientError,
     McpError, McpHandler, Tool, ToolsCallParams, ToolsListParams, ToolsListResult,
 };
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::OnceCell;
 use tracing::warn;
 
 use crate::config_manager::ConfigManager;
 use crate::configs::{StationRepo, SubStationConfig};
 use crate::types::{Error, Result};
+
+mod builtin;
+
+use builtin::builtin_group;
 
 // ========== 工具错误码（工具级失败随 CallToolResult 回带） ==========
 
@@ -30,7 +32,7 @@ pub const TERR_TOOL_EXTERNAL_ERROR: u32 = 0x0002_0000;
 
 /// 构造工具错误 JSON（Nexus 侧 ToolData.error 的形状）
 pub fn tool_error(code: u32, message: String) -> Value {
-    json!({
+    serde_json::json!({
         "code": code,
         "message": message
     })
@@ -42,130 +44,6 @@ pub trait NativeTool: Send + Sync {
     async fn call(&self, arguments: Value) -> CallToolResult;
 }
 
-// ========== 内置示例工具：Read（读文本文件，路径校验防穿透） ==========
-
-pub struct ReadTool {
-    cwd: PathBuf,
-}
-
-/// Read 工具返回内容的最大字节数（截断防大文件）
-const READ_MAX_BYTES: usize = 64 * 1024;
-
-impl ReadTool {
-    pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
-    }
-
-    /// 路径校验：相对路径基于 cwd 解析 → canonicalize（消解 .. 与符号链接）→
-    /// 校验规范绝对路径等于 cwd 或在 cwd 子目录内（在规范化后的绝对路径上判断，防穿透）
-    pub fn resolve_safe_path(&self, raw: &str) -> Result<PathBuf> {
-        let path = Path::new(raw);
-        let absolute = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cwd.join(path)
-        };
-        // 目标不存在时 canonicalize 失败：先规范化父目录再拼接文件名
-        let canon = std::fs::canonicalize(&absolute).unwrap_or_else(|_| {
-            absolute.parent()
-                .and_then(|p| std::fs::canonicalize(p).ok())
-                .map(|p| p.join(absolute.file_name().unwrap_or_default()))
-                .unwrap_or(absolute.clone())
-        });
-        let canon_cwd = std::fs::canonicalize(&self.cwd)
-            .unwrap_or_else(|_| self.cwd.clone());
-        if !canon.starts_with(&canon_cwd) {
-            return Err(Error::InternalError(format!("路径越界: {}", raw)));
-        }
-        Ok(canon)
-    }
-}
-
-#[async_trait]
-impl NativeTool for ReadTool {
-    async fn call(&self, arguments: Value) -> CallToolResult {
-        let Some(raw) = arguments["path"].as_str() else {
-            return CallToolResult::error(TERR_TOOL_WRONG_ARGUMENTS, "缺少参数 path");
-        };
-        let safe = match self.resolve_safe_path(raw) {
-            Ok(safe) => safe,
-            Err(e) => {
-                return CallToolResult::error(TERR_TOOL_INTERNAL_ERROR, format!("路径解析失败: {}", e));
-            }
-        };
-        match tokio::fs::read(&safe).await {
-            Ok(content) => {
-                let text = String::from_utf8_lossy(&content[..content.len().min(READ_MAX_BYTES)]).to_string();
-                // 文本结果用文本块直接承载（不加 JSON 转义）
-                CallToolResult::text(text)
-            }
-            Err(e) => CallToolResult::error(
-                TERR_TOOL_INTERNAL_ERROR,
-                format!("读取文件失败 {}: {}", safe.display(), e),
-            ),
-        }
-    }
-}
-
-// ========== 内置注册表 ==========
-
-/// 内置工具的参数 JSON Schema（固定结构，不做手拼 JSON）
-#[derive(Debug, Serialize)]
-struct ObjectSchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    properties: BTreeMap<&'static str, PropertySchema>,
-    required: &'static [&'static str],
-}
-
-impl ObjectSchema {
-    fn value(&self) -> Value {
-        serde_json::to_value(self).expect("内置工具参数 schema 应可序列化")
-    }
-}
-
-/// 参数中单个属性的 JSON Schema
-#[derive(Debug, Serialize)]
-struct PropertySchema {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    description: &'static str,
-}
-
-/// `read` 工具的参数 schema
-fn read_tool_schema() -> ObjectSchema {
-    ObjectSchema {
-        kind: "object",
-        properties: BTreeMap::from([(
-            "path",
-            PropertySchema {
-                kind: "string",
-                description: "文件路径（相对或绝对，限工作目录内）",
-            },
-        )]),
-        required: &["path"],
-    }
-}
-
-/// 内置注册表：按 group 名给出该 group 的内置工具（元数据 + 原生实现）
-/// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
-fn builtin_group(name: &str) -> Option<Group> {
-    match name {
-        "filesystem" => Some(Group::with_builtin_tools(
-            name,
-            vec![(
-                Arc::new(Tool::new(
-                    "read",
-                    "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
-                    read_tool_schema().value(),
-                )),
-                Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
-            )],
-        )),
-        _ => None,
-    }
-}
-
 // ========== 运行态结构 ==========
 
 /// group 内单个工具条目：元数据 + 原生实现（注册的工具必须可执行）
@@ -174,7 +52,7 @@ struct GroupTool {
     imp: Arc<dyn NativeTool>,
 }
 
-/// group 运行态：一组工具（工具名在本级 Station 内全局唯一）
+/// group：一组工具（工具名在本 group 内唯一，不同 group 之间互不约束）
 pub struct Group {
     name: String,
     tools: DashMap<String, Arc<GroupTool>>,
@@ -185,21 +63,20 @@ impl Group {
         Self { name, tools: DashMap::new() }
     }
 
-    /// 用内置工具（元数据 + 原生实现）构造 group
-    fn with_builtin_tools(name: impl Into<String>, tools: Vec<(Arc<Tool>, Arc<dyn NativeTool>)>) -> Self {
-        let group = Self::new(name.into());
+    /// 用内置工具（元数据 + 原生实现）构造 group；同一 group 内工具名必须唯一。
+    /// 工具在注册时即写入所属 group（`_meta["kissbot/group"]`），分组随工具定义走
+    fn with_builtin_tools(name: impl Into<String>, tools: Vec<(Arc<Tool>, Arc<dyn NativeTool>)>) -> Result<Self> {
+        let name = name.into();
+        let group = Self::new(name.clone());
         for (config, imp) in tools {
-            group.tools.insert(
-                config.name.to_string(),
-                Arc::new(GroupTool { config, imp }),
-            );
+            let config = Arc::new((*config).clone().with_group(name.clone()));
+            let tool_name = config.name.to_string();
+            if group.tools.contains_key(&tool_name) {
+                return Err(Error::InternalError(format!("工具名冲突: {}（group 内唯一）", tool_name)));
+            }
+            group.tools.insert(tool_name, Arc::new(GroupTool { config, imp }));
         }
-        group
-    }
-
-    /// 该 group 的工具元数据列表
-    fn configured_tools(&self) -> Vec<Arc<Tool>> {
-        self.tools.iter().map(|e| e.value().config.clone()).collect()
+        Ok(group)
     }
 }
 
@@ -248,11 +125,13 @@ static SINGLETON: OnceLock<Arc<Station>> = OnceLock::new();
 pub struct Station {
     /// 本站点 station_id（来自 station.json；祖先链防环用）
     station_id: String,
-    groups: DashMap<String, Arc<Group>>,
+    /// 本级工具索引：工具名 → 条目。工具名在 group 内唯一；跨 group 重名按 group 名排序
+    /// 保留先到者并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
+    tools: DashMap<String, Arc<GroupTool>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
     /// list_tools 拉取子 Station 成功时更新（快照语义：先清该子旧记录再逐个插入）；
-    /// 工具名整树全局唯一：与本地/先到子重名时保留先到者（后到者剔除 + warn）
+    /// 与本级/先到子重名时保留先到者（后到者剔除 + warn）
     tool_routes: DashMap<String, String>,
 }
 
@@ -277,18 +156,13 @@ impl Station {
     }
 
     /// 按配置构建 Station（纯构造，不注册单例；单测直接消费）：
-    /// 按配置声明的 group 名由内置注册表填充工具与其原生实现；
-    /// 工具名整树全局唯一（本地硬约束，冲突启动失败）
+    /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对填充；
+    /// 工具名在 group 内唯一（由 Group 构造保证）
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
-        let groups = DashMap::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        for (name, _gcfg) in repo.groups.iter() {
-            // 内置注册表按 group 名填充工具（元数据 + 实现成对给出）
-            let group = Arc::new(builtin_group(name).unwrap_or_else(|| Group::new(name.clone())));
-            for entry in group.tools.iter() {
-                Self::check_unique(&mut seen, entry.key())?;
-            }
-            groups.insert(name.clone(), group);
+        let tools = DashMap::new();
+        for name in repo.groups.iter() {
+            let group = builtin_group(name)?.unwrap_or_else(|| Group::new(name.clone()));
+            Self::merge_local_group(&tools, &group);
         }
         // 子 Station：只存连接信息 + MCP 客户端（MCP 端点为 base_url + /mcp）
         let sub_stations = DashMap::new();
@@ -304,18 +178,26 @@ impl Station {
         }
         Ok(Station {
             station_id: repo.station_id.to_string(),
-            groups,
+            tools,
             sub_stations,
             tool_routes: DashMap::new(),
         })
     }
 
-    /// 工具名唯一性校验：本级 Station 内不得重名（工具名整树全局唯一，本地先硬约束）
-    fn check_unique(seen: &mut HashSet<String>, name: &str) -> Result<()> {
-        if !seen.insert(name.to_string()) {
-            return Err(Error::InternalError(format!("工具名冲突: {}（整树全局唯一）", name)));
+    /// 把单个 group 的工具并入本级索引：工具名在 group 内唯一（Group 构造保证）；
+    /// 跨 group 重名（当前不会发生，多个内置/自定义 group 时可能）按 group 名排序保留先到者并告警
+    fn merge_local_group(tools: &DashMap<String, Arc<GroupTool>>, group: &Group) {
+        for entry in group.tools.iter() {
+            let tool_name = entry.key().clone();
+            let winner = tools
+                .get(&tool_name)
+                .map(|existing| existing.value().config.group().unwrap_or_default().to_string());
+            if let Some(winner) = winner {
+                warn!("工具名冲突: {}（保留 group {}，忽略 group {}）", tool_name, winner, group.name);
+                continue;
+            }
+            tools.insert(tool_name, entry.value().clone());
         }
-        Ok(())
     }
 
     /// 合并单个子 Station 的工具进路由表（快照语义：先清该子旧记录，再逐个插入）
@@ -350,21 +232,14 @@ impl Station {
         }
         let mut tools = Vec::new();
         // 本级工具名集合（冲突校验用：本级优先，子工具与本级重名剔除）
-        let local_names: HashSet<String> = self.groups.iter()
-            .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
-            .collect();
-        for entry in self.groups.iter() {
-            let group = entry.value();
+        let local_names: HashSet<String> = self.tools.iter().map(|e| e.key().clone()).collect();
+        for entry in self.tools.iter() {
+            let tool = &entry.value().config;
+            let group = tool.group().unwrap_or_default();
             if let Some(f) = filter {
-                if !f.contains(group.name.as_str()) { continue; }
+                if !f.contains(group) { continue; }
             }
-            if group.tools.is_empty() { continue; }
-            tools.extend(
-                group
-                    .configured_tools()
-                    .into_iter()
-                    .map(|tool| Arc::new((*tool).clone().with_group(group.name.clone()))),
-            );
+            tools.push(tool.clone());
         }
         // 直接子：经 MCP 实时拉取 → 更新路由缓存 → 合并元数据（剔除冲突项）
         // - 对端声明支持 kissbot 分组扩展：按本级白名单在服务端过滤，工具 group 以对端携带为准
@@ -415,16 +290,7 @@ impl Station {
             return Err(McpError::station_cycle(&self.station_id));
         }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
-        let local: Option<Arc<dyn NativeTool>> = {
-            let mut found = None;
-            for entry in self.groups.iter() {
-                if let Some(t) = entry.value().tools.get(name) {
-                    found = Some(t.value().imp.clone());
-                    break;
-                }
-            }
-            found
-        };
+        let local = self.tools.get(name).map(|e| e.value().imp.clone());
         if let Some(tool) = local {
             return Ok(tool.call(arguments).await);
         }
@@ -490,68 +356,15 @@ impl McpHandler for Station {
 
 #[cfg(test)]
 mod tests {
-    use crate::configs::GroupConfig;
-
     use super::*;
     use arc_swap::ArcSwap;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
-
-    #[tokio::test]
-    async fn builtin_read_schema_is_typed_object() {
-        // 内置工具的参数 schema 由固定结构体给出（非手拼 JSON）
-        let schema = read_tool_schema().value();
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["properties"]["path"]["type"], "string");
-        assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));
-        assert_eq!(schema["required"], json!(["path"]));
-        // 注册到 station 的工具元数据用的是同一份 schema
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let tools = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(tools[0].input_schema.as_ref(), &schema);
-    }
-
-    #[test]
-    fn read_tool_rejects_escape_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = ReadTool::new(dir.path().to_path_buf());
-        // 子目录内绝对路径 OK
-        let sub = dir.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("a.txt"), "hi").unwrap();
-        assert!(tool.resolve_safe_path(sub.join("a.txt").to_str().unwrap()).is_ok());
-        // 相对路径基于 cwd 解析
-        assert!(tool.resolve_safe_path("sub/a.txt").is_ok());
-        // 越界：上级目录
-        assert!(tool.resolve_safe_path("../outside.txt").is_err(), ".. 穿透应拒绝");
-        // 越界：cwd 之外的绝对路径
-        let outside = tempfile::tempdir().unwrap();
-        assert!(tool.resolve_safe_path(outside.path().to_str().unwrap()).is_err(), "cwd 外应拒绝");
-        // 不存在的路径：父目录在 cwd 内仍应通过校验（读取时自然报不存在）
-        assert!(tool.resolve_safe_path("sub/missing.txt").is_ok());
-    }
-
-    #[tokio::test]
-    async fn read_tool_reads_text_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, "文件内容").unwrap();
-        let tool = ReadTool::new(dir.path().to_path_buf());
-        let result = tool.call(serde_json::json!({ "path": "a.txt" })).await;
-        // 文本结果由文本块直接承载（不加 JSON 转义），不设 structuredContent
-        assert_eq!(result.text_content().unwrap(), "文件内容");
-        assert!(result.structured_content.is_null());
-        assert!(!result.is_error);
-    }
-
-    fn filesystem_group() -> GroupConfig {
-        GroupConfig::default()
-    }
+    use serde_json::json;
 
     fn repo_with_filesystem() -> StationRepo {
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new("station-self".into());
-        let map = Arc::make_mut(&mut repo.groups);
-        map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(filesystem_group())));
+        repo.groups = vec!["filesystem".to_string()];
         repo
     }
 
@@ -602,9 +415,7 @@ mod tests {
     #[test]
     fn merge_sub_tools_inserts_and_keeps_first_wins() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let local_names: HashSet<String> = station.groups.iter()
-            .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
-            .collect();
+        let local_names: HashSet<String> = station.tools.iter().map(|e| e.key().clone()).collect();
         // 子 a 提供 x/y → 全插入
         let ta = vec![tool_config("x"), tool_config("y")];
         let ins_a = station.merge_sub_tools("station-a", ta, &local_names);
@@ -633,12 +444,30 @@ mod tests {
     }
 
     #[test]
-    fn local_tool_name_uniqueness_guard() {
-        // 本级工具名唯一性守卫：重名报「工具名冲突」
-        let mut seen = HashSet::new();
-        Station::check_unique(&mut seen, "read").unwrap();
-        let err = Station::check_unique(&mut seen, "read").unwrap_err();
+    fn group_rejects_duplicate_tool_names() {
+        // 工具名在 group 内唯一：同一 group 重复注册同名工具 → 报「工具名冲突」
+        let tools = vec![
+            (tool_config("read"), noop_tool()),
+            (tool_config("read"), noop_tool()),
+        ];
+        // Group 不含 Debug（含 Arc<dyn NativeTool>），用 match 取错而非 unwrap_err
+        let err = match Group::with_builtin_tools("filesystem", tools) {
+            Err(e) => e,
+            Ok(_) => panic!("同 group 内重名应冲突"),
+        };
         assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
+    }
+
+    /// 测试用空实现
+    fn noop_tool() -> Arc<dyn NativeTool> {
+        struct Noop;
+        #[async_trait]
+        impl NativeTool for Noop {
+            async fn call(&self, _arguments: Value) -> CallToolResult {
+                CallToolResult::text("noop")
+            }
+        }
+        Arc::new(Noop)
     }
 
     #[tokio::test]

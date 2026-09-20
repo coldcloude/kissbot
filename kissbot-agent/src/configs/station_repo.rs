@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 pub struct StationRepo {
     /// 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环）
     pub station_id: Arc<String>,
-    /// 本地 group 集合（key = group 名；每个 group 是一组工具）
-    /// serde(default)：旧 station.json 缺省 groups 时反序列化为空 map
+    /// 本级加载哪些 group（只声明 group 名；工具元数据与实现由内置注册表按 group 名填充）
+    /// serde(default)：旧 station.json 缺省 groups 时反序列化为空列表
     #[serde(default)]
-    pub groups: Arc<ArcSwapHashMap<String, GroupConfig>>,
+    pub groups: Vec<String>,
     /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
     /// serde(default)：旧 station.json 缺省 sub_stations 时反序列化为空 map
     #[serde(default)]
@@ -24,17 +24,11 @@ impl Default for StationRepo {
     fn default() -> Self {
         Self {
             station_id: Arc::new(String::new()),
-            groups: Arc::new(ArcSwapHashMap::new()),
+            groups: Vec::new(),
             sub_stations: Arc::new(ArcSwapHashMap::new()),
         }
     }
 }
-
-/// group 配置（StationRepo.groups 的 value；key = group 名）
-/// 当前无字段，仅声明本站点启用哪些 group（保留后续扩展位）；
-/// group 的工具元数据与实现由内置注册表按 group 名填充，配置不声明工具
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GroupConfig {}
 
 /// 子 Station 配置（StationRepo.sub_stations 的 value；key = station_id）
 /// 只存直接子连接信息；子 Station 内部结构由子进程自己管理，父通过 MCP 查询

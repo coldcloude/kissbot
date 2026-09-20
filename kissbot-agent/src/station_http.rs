@@ -63,15 +63,13 @@ mod tests {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use crate::configs::{StationRepo, GroupConfig};
+    use crate::configs::StationRepo;
     use crate::station::TERR_TOOL_NOT_FOUND;
-    use arc_swap::ArcSwap;
 
     fn test_station_repo(station_id: &str) -> StationRepo {
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new(station_id.into());
-        let map = Arc::make_mut(&mut repo.groups);
-        map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig::default())));
+        repo.groups = vec!["filesystem".to_string()];
         repo
     }
 

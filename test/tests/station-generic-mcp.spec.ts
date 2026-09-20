@@ -101,7 +101,7 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     // 本级无 group，只挂一个第三方 MCP 服务端，默认 group = plain-remote
     writeFileSync(join(dir, 'agent-data', 'station.json'), JSON.stringify({
       station_id: 'station-a',
-      groups: {},
+      groups: [],
       sub_stations: {
         plain: {
           station_id: 'plain',

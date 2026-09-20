@@ -998,10 +998,7 @@ mod tests {
         // StationRepo 形状：station_id + groups（key = group 名，value = 工具元数据）+ sub_stations
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new("station-self".into());
-        {
-            let map = Arc::make_mut(&mut repo.groups);
-            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig {})));
-        }
+        repo.groups = vec!["filesystem".to_string()];
         {
             let map = Arc::make_mut(&mut repo.sub_stations);
             map.insert("station-a".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
@@ -1015,7 +1012,7 @@ mod tests {
         assert!(json.contains("\"station_id\"") && json.contains("\"groups\"") && json.contains("\"sub_stations\""), "形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
-        assert!(back.groups.contains_key("filesystem"));
+        assert_eq!(back.groups, vec!["filesystem".to_string()], "group 列表回读");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
         assert_eq!(sub.effective_group(), "remote-a", "默认 group 回读");

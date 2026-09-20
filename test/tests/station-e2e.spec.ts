@@ -44,7 +44,7 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
     writeJson(join(dirA, 'config.json'), cfgA);
     writeJson(join(dirA, 'agent-data', 'station.json'), {
       station_id: 'station-a',
-      groups: {},
+      groups: [],
       sub_stations: {
         'station-b': {
           station_id: 'station-b',
@@ -62,7 +62,7 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
     writeJson(join(dirB, 'config.json'), cfgB);
     writeJson(join(dirB, 'agent-data', 'station.json'), {
       station_id: 'station-b',
-      groups: { filesystem: {} },
+      groups: ['filesystem'],
       sub_stations: {},
     });
 

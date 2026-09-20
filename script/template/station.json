@@ -1,7 +1,7 @@
 {
   "station_id": "station-a",
-  "groups": {
-    "filesystem": {}
-  },
+  "groups": [
+    "filesystem"
+  ],
   "sub_stations": {}
 }
