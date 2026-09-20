@@ -5,8 +5,6 @@ kai-rs
 dist
 .agents/settings.local.json
 AGENTS.local.md
-.superpowers
-.pi-subagents
 workspace
 test/workspace
 # 越界测试目录（workspace 之外的样例数据，由 test/global-setup.ts 生成）
