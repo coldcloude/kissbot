@@ -42,9 +42,8 @@ EGO_PID=$!
 echo "   PID: $EGO_PID"
 sleep 4
 
-# 验证 memory-ego（调用 /agent/list）
-curl -s --max-time 3 -X POST -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" http://127.0.0.1:3001/agent/list > /dev/null 2>&1
-if [ $? -eq 0 ]; then
+# 验证 memory-ego（GET /agent/list 须返回 200；curl 对 4xx/5xx 不置错误码，故判状态码）
+if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "X-Api-Key: user-key-456" http://127.0.0.1:3001/agent/list)" = "200" ]; then
     echo "   ✅ memory-ego 运行正常"
 else
     tail -5 /tmp/kissbot-memory-ego.log
