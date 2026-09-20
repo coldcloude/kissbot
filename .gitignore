@@ -9,5 +9,7 @@ AGENTS.local.md
 .pi-subagents
 workspace
 test/workspace
+# 越界测试目录（workspace 之外的样例数据，由 test/global-setup.ts 生成）
+test/out-of-cwd
 # agent api key 本地密钥文件（不入库）
 key.local.json
