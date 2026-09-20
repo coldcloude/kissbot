@@ -589,7 +589,7 @@ mod tests {
         let json_bind_users = json["bind_users"].as_array().unwrap();
         assert!(json_bind_users.iter().any(|u| u["user_id"] == "u1"), "bind_users 应序列化 u1");
         assert!(json_bind_users.iter().any(|u| u["user_id"] == "u2"), "bind_users 应序列化 u2");
-        assert!(json.get("is_send_channel").is_none(), "is_send_channel 已删除");
+        assert!(json.get("is_send_channel").is_none(), "ChannelConfig 无 is_send_channel 字段");
         let back: ChannelConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back.bind_users.len(), 2);
     }
@@ -601,7 +601,7 @@ mod tests {
         assert!(json.contains("\"bind_users\""), "应序列化 bind_users");
         assert!(json.contains("\"agent_id\""));
         assert!(json.contains("\"role_name\""));
-        assert!(!json.contains("\"is_send_channel\""), "is_send_channel 已删除");
+        assert!(!json.contains("\"is_send_channel\""), "ChannelConfig 无 is_send_channel 字段");
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.channel_id, "web-main");
@@ -678,8 +678,8 @@ mod tests {
 
     #[test]
     fn nexus_repo_serde_roundtrip() {
-        // NexusRepo 现形状：channels/providers/memory_structs/agents/sessions
-        // （default_model/default_system_prompt 已移除：模型由 provider 配置 + (agent, role) llm 配置表达）
+        // NexusRepo 的形状：channels/providers/memory_structs/agents/sessions
+        // （模型由 provider 配置 + (agent, role) llm 配置表达）
         let mut repo = NexusRepo::default();
         {
             let map = Arc::make_mut(&mut repo.providers);
@@ -688,8 +688,8 @@ mod tests {
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"providers\""), "应序列化 providers");
         assert!(json.contains("\"sessions\""), "应序列化 sessions");
-        assert!(!json.contains("\"default_model\""), "default_model 已移除");
-        assert!(!json.contains("\"default_system_prompt\""), "default_system_prompt 已移除");
+        assert!(!json.contains("\"default_model\""), "NexusRepo 无 default_model 字段");
+        assert!(!json.contains("\"default_system_prompt\""), "NexusRepo 无 default_system_prompt 字段");
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
         let provider = back.providers.get("deepseek").expect("provider 应回读").load_full();
         assert_eq!(provider.provider_config.provider_type.as_str(), "openai");
@@ -1257,7 +1257,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_out_channel_roundtrips_via_session_config() {
-        // out_channel 由 ContextConfig 字段改为 (agent, role) 级 OutChannelConfig
+        // out_channel 是 (agent, role) 级 OutChannelConfig 字段
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let out = Arc::new(OutChannel {

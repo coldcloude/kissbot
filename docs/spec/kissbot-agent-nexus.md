@@ -117,6 +117,19 @@ kissbot-agent 使用三份配置：
 
 查询入口：`ConfigManager::session_config::<C, E>(session_key)`（带缓存，首次按 agent+role 合成并写入 sessions）、`ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置（需 `set_session_config` 覆盖）。
 
+## 会话上下文本地缓存与归档（session_manager）
+
+| 项 | 约定 |
+|----|------|
+| 缓存文件 | `<data_dir>/context/<session_key 编码>.jsonl`，每行一条 Message（JSON），追加写、不截断 |
+| session_key 编码 | 角色模式 `{agent_id}-{role_name}`；事件模式 `{agent_id}-{role_name}-{event}` |
+| 行序 | 首行为当前系统消息（如有），其后为消息行 |
+| 恢复 | 正序全量回读；崩溃一致性清理——丢弃末尾悬挂的 assistant tool_calls 行与开头的孤立 Tool 行；文件不存在视为空上下文 |
+| 归档 | `<data_dir>/context-history/<session_key 编码>-<时间戳>.jsonl`（时间戳 `%Y-%m-%d-%H%M%S`），格式与缓存一致 |
+
+- 系统消息的 set 只写入待定值（多次 set 保留最近一次）；发送前对比应用：与当前一致仅清空待定，不一致则先归档并清空缓存再以新系统消息重建。
+- 归档与清空缓存文件配对执行；内存为空时不产生归档文件。
+
 ## 管理命令格式
 
 ### 通用规则

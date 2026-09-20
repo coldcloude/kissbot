@@ -733,8 +733,7 @@ mod tests {
         ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
             agent_id, "", Arc::new(pipeline)).await.unwrap();
 
-        // 会话实例由本地 SessionManager 创建：pipeline 直接持有会话（不再经 ensure_session 反查），
-        // 用本地管线表与会话表避免影响全局单例
+        // 会话实例由本地 SessionManager 创建、pipeline 直接持有，用本地管线表与会话表避免影响全局单例
         let dir = tempfile::tempdir().unwrap();
         let sm = SessionManager::new(dir.path().to_str().unwrap());
         let (s1, _) = sm.get_or_create(&k1).await;

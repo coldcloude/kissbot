@@ -369,7 +369,7 @@ use crate::{config_manager::ConfigManager, station::Station};
         ensure_test_globals().await;
         let mgr = mgr();
         let k = key("a1", "r1");
-        // 会话创建不再接收 model（模型/参数由 (agent, role) + session 配置在消息发送时解析）
+        // 会话创建只取 key：模型与参数由 (agent, role) + session 配置在消息发送时解析
         let (s1, _) = mgr.get_or_create(&k).await;
         let (s2, _) = mgr.get_or_create(&k).await;
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
@@ -644,9 +644,7 @@ use crate::{config_manager::ConfigManager, station::Station};
         assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"), "消息保留");
     }
 
-    // 注：原 should_reset（"上次响应的 usage.total_tokens 超过 max_tokens_usage × 阈值才重置上下文"）单测已移除：
-    // 该判定随上下文重置逻辑移入 pipeline —— pipelines/message_sender.rs 的
-    // TokenLimitMessageSender::send_messages 内联（阈值 = effective.max_tokens_usage × EffectiveCompressConfig
-    // .compress_threshold，max_tokens_usage=0 视为未启用）。判定现在嵌在发送流程中，需要
-    // ConfigManager/Nexus/provider 全局装配才能驱动，不再是可独立断言的纯函数。
+    // 上下文重置判定（上次响应的 usage.total_tokens 超过 max_tokens_usage × compress_threshold）内联在
+    // pipelines/message_sender.rs 的 TokenLimitMessageSender::send_messages：max_tokens_usage=0 视为未启用，
+    // 需 ConfigManager/Nexus/provider 全局装配才能驱动，由 pipeline 相关测试覆盖。
 }

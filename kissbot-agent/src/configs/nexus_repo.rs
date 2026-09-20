@@ -34,7 +34,6 @@ pub struct NexusRepo {
 
 /// sessions 字段的 (反)序列化：SessionKey 是结构体，不能作 JSON map 键（serde_json 要求字符串键，
 /// 结构体作键会报 "key must be a string"），因此改用数组对承载 key/value。
-/// 改形状无存量数据迁移负担：此前 sessions 非空时写盘必然失败，nexus.json 里只可能出现空的 sessions。
 mod sessions_serde {
     use super::*;
 

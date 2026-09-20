@@ -464,7 +464,7 @@ use super::*;
         }
     }
 
-    /// 有效 LLM 参数：provider/model 为拆出的独立字段（不再有 ProviderModel 组合）
+    /// 有效 LLM 参数：provider 与 model 为独立字段
     fn sample_llm_cfg() -> EffectiveLLMConfig {
         EffectiveLLMConfig {
             provider: Arc::new("deepseek".into()),
