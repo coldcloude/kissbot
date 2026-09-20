@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use kissbot_api::ArcSwapHashMap;
-use kissbot_mcp::Tool;
 use serde::{Deserialize, Serialize};
 
 /// station 可改配置，持久化到 <data_dir>/station.json
@@ -32,14 +31,10 @@ impl Default for StationRepo {
 }
 
 /// group 配置（StationRepo.groups 的 value；key = group 名）
-/// tools 为工具元数据（MCP Tool：名称/描述/输入 JSON Schema）；
-/// 内置 group（如 filesystem）由内置注册表填充元数据与实现，配置声明的 tools 作元数据补充
+/// 当前无字段，仅声明本站点启用哪些 group（保留后续扩展位）；
+/// group 的工具元数据与实现由内置注册表按 group 名填充，配置不声明工具
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GroupConfig {
-    /// 工具元数据（key = 工具名）
-    #[serde(default)]
-    pub tools: Arc<ArcSwapHashMap<String, Tool>>,
-}
+pub struct GroupConfig {}
 
 /// 子 Station 配置（StationRepo.sub_stations 的 value；key = station_id）
 /// 只存直接子连接信息；子 Station 内部结构由子进程自己管理，父通过 MCP 查询

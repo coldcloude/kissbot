@@ -1000,17 +1000,7 @@ mod tests {
         repo.station_id = Arc::new("station-self".into());
         {
             let map = Arc::make_mut(&mut repo.groups);
-            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig {
-                tools: Arc::new({
-                    let mut m = ArcSwapHashMap::new();
-                    m.insert("read".to_string(), ArcSwap::new(Arc::new(kissbot_mcp::Tool::new(
-                        "read",
-                        "读取文本文件",
-                        serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
-                    ))));
-                    m
-                }),
-            })));
+            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig {})));
         }
         {
             let map = Arc::make_mut(&mut repo.sub_stations);
@@ -1026,10 +1016,6 @@ mod tests {
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
         assert!(back.groups.contains_key("filesystem"));
-        let gcfg = back.groups.get("filesystem").unwrap().load_full();
-        let tool = gcfg.tools.get("read").unwrap().load_full();
-        assert_eq!(tool.name.as_str(), "read");
-        assert_eq!(tool.input_schema["properties"]["path"]["type"], "string", "工具输入 schema 原样回读");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
         assert_eq!(sub.effective_group(), "remote-a", "默认 group 回读");

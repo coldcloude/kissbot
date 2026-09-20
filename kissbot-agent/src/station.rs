@@ -20,7 +20,6 @@ use crate::types::{Error, Result};
 // ========== 工具错误码（工具级失败随 CallToolResult 回带） ==========
 
 pub const TERR_TOOL_NOT_FOUND: u32 = 0x0000_0001;
-pub const TERR_TOOL_NOT_IMPLEMENTED: u32 = 0x0000_0002;
 pub const TERR_TOOL_WRONG_ARGUMENTS: u32 = 0x0000_0003;
 /// 级联自环（kissbot 工具错误码；协议级同名错误码见 `kissbot_mcp::STATION_CYCLE`）
 pub const TERR_TOOL_CYCLE: u32 = 0x0000_0004;
@@ -169,10 +168,10 @@ fn builtin_group(name: &str) -> Option<Group> {
 
 // ========== 运行态结构 ==========
 
-/// group 内单个工具条目：元数据 + 原生实现（None = 仅元数据注册，调用返回未实现）
+/// group 内单个工具条目：元数据 + 原生实现（注册的工具必须可执行）
 struct GroupTool {
     config: Arc<Tool>,
-    imp: Option<Arc<dyn NativeTool>>,
+    imp: Arc<dyn NativeTool>,
 }
 
 /// group 运行态：一组工具（工具名在本级 Station 内全局唯一）
@@ -192,7 +191,7 @@ impl Group {
         for (config, imp) in tools {
             group.tools.insert(
                 config.name.to_string(),
-                Arc::new(GroupTool { config, imp: Some(imp) }),
+                Arc::new(GroupTool { config, imp }),
             );
         }
         group
@@ -278,25 +277,16 @@ impl Station {
     }
 
     /// 按配置构建 Station（纯构造，不注册单例；单测直接消费）：
-    /// 内置注册表填充声明 group 的原生实现；配置声明的 tools 补充元数据；
+    /// 按配置声明的 group 名由内置注册表填充工具与其原生实现；
     /// 工具名整树全局唯一（本地硬约束，冲突启动失败）
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
         let groups = DashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
-        for (name, gcfg) in repo.groups.iter() {
-            let gcfg = gcfg.load_full();
-            // 1. 内置注册表填充（声明该 group 名才注册内置工具与其实现）
+        for (name, _gcfg) in repo.groups.iter() {
+            // 内置注册表按 group 名填充工具（元数据 + 实现成对给出）
             let group = Arc::new(builtin_group(name).unwrap_or_else(|| Group::new(name.clone())));
             for entry in group.tools.iter() {
                 Self::check_unique(&mut seen, entry.key())?;
-            }
-            // 2. 配置声明的 tools（元数据补充；与内置重名 → 冲突）
-            for (tool_name, tcfg) in gcfg.tools.iter() {
-                if group.tools.contains_key(tool_name) {
-                    return Err(Error::InternalError(format!("工具名冲突: {}（group 内全局唯一）", tool_name)));
-                }
-                Self::check_unique(&mut seen, tool_name)?;
-                group.tools.insert(tool_name.clone(), Arc::new(GroupTool { config: tcfg.load_full(), imp: None }));
             }
             groups.insert(name.clone(), group);
         }
@@ -425,7 +415,7 @@ impl Station {
             return Err(McpError::station_cycle(&self.station_id));
         }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
-        let local: Option<Option<Arc<dyn NativeTool>>> = {
+        let local: Option<Arc<dyn NativeTool>> = {
             let mut found = None;
             for entry in self.groups.iter() {
                 if let Some(t) = entry.value().tools.get(name) {
@@ -435,11 +425,8 @@ impl Station {
             }
             found
         };
-        if let Some(imp) = local {
-            return Ok(match imp {
-                Some(tool) => tool.call(arguments).await,
-                None => CallToolResult::error(TERR_TOOL_NOT_IMPLEMENTED, format!("工具未实现: {}", name)),
-            });
+        if let Some(tool) = local {
+            return Ok(tool.call(arguments).await);
         }
         // 远程路由：查路由缓存表（工具名 → 直接子 station_id），命中 → 该子 MCP 调用
         // 不遍历全部子、不远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
@@ -507,7 +494,6 @@ mod tests {
 
     use super::*;
     use arc_swap::ArcSwap;
-    use kissbot_api::ArcSwapHashMap;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
 
     #[tokio::test]
@@ -647,47 +633,11 @@ mod tests {
     }
 
     #[test]
-    fn from_repo_rejects_duplicate_tool_names() {
-        // 两个 group 声明同名工具（一个内置 read、一个配置 read）→ 本地硬约束启动失败
-        let mut repo = StationRepo::default();
-        {
-            let map = Arc::make_mut(&mut repo.groups);
-            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(filesystem_group())));
-            map.insert("other".to_string(), ArcSwap::new(Arc::new(GroupConfig {
-                tools: Arc::new({
-                    let mut m = ArcSwapHashMap::new();
-                    m.insert("read".to_string(), ArcSwap::new(tool_config("read")));
-                    m
-                }),
-            })));
-        }
-        // Station 不含 Debug（含 Arc<dyn NativeTool>），用 match 取错而非 unwrap_err
-        let err = match Station::from_repo(&repo, "test-key") {
-            Err(e) => e,
-            Ok(_) => panic!("应冲突"),
-        };
-        assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
-    }
-
-    #[test]
-    fn from_repo_rejects_same_group_tool_conflict() {
-        // 同一 group 内配置声明的工具与内置注册表填充的工具重名 → 冲突
-        // （走 from_repo 步骤 2 的 group.tools.contains_key 分支，非跨 group 的 check_unique）
-        let mut repo = StationRepo::default();
-        {
-            let map = Arc::make_mut(&mut repo.groups);
-            map.insert("filesystem".to_string(), ArcSwap::new(Arc::new(GroupConfig {
-                tools: Arc::new({
-                    let mut m = ArcSwapHashMap::new();
-                    m.insert("read".to_string(), ArcSwap::new(tool_config("read")));
-                    m
-                }),
-            })));
-        }
-        let err = match Station::from_repo(&repo, "test-key") {
-            Err(e) => e,
-            Ok(_) => panic!("应冲突"),
-        };
+    fn local_tool_name_uniqueness_guard() {
+        // 本级工具名唯一性守卫：重名报「工具名冲突」
+        let mut seen = HashSet::new();
+        Station::check_unique(&mut seen, "read").unwrap();
+        let err = Station::check_unique(&mut seen, "read").unwrap_err();
         assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
     }
 

@@ -12,16 +12,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 {
   "station_id": "station-self",
   "groups": {
-    "filesystem": { "tools": {} },
-    "my-group": {
-      "tools": {
-        "my-tool": {
-          "name": "my-tool",
-          "description": "自定义工具描述",
-          "inputSchema": { "type": "object", "properties": {} }
-        }
-      }
-    }
+    "filesystem": {}
   },
   "sub_stations": {
     "station-a": {
@@ -50,20 +41,11 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 
 ### GroupConfig
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| tools | map<工具名, Tool> | 工具元数据（key = 工具名；值为 MCP 工具定义） |
+当前无字段：配置只声明本站点启用哪些 group，group 的工具元数据与实现由内置注册表按 group 名填充（注册的工具必须带原生实现）。
 
-### Tool（MCP 工具定义）
+### 对外工具定义
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| name | string | 工具名（与 map key 一致） |
-| title | string? | 展示名（可选） |
-| description | string | 工具描述 |
-| inputSchema | object | 参数 JSON Schema |
-| outputSchema | object? | 输出 JSON Schema（可选） |
-| annotations | object? | 工具行为注解（可选） |
+Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group"]` 携带所属 group；字段定义见 [kissbot-mcp 技术规格](kissbot-mcp.md) 的 `tools/list`。
 
 ### SubStationConfig
 
@@ -114,7 +96,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 ## 工具名整树唯一
 
 - 工具名在整棵 Station 树（本级所有 group + 所有子 Station 递归）上全局唯一
-- **本级硬约束**：`Station::from_repo` 构建时对每个 group 的工具做去重校验，重名（含与内置实现同名，以及同一 group 内配置声明与内置实现同名）启动失败返回「工具名冲突」
+- **本级硬约束**：`Station::from_repo` 构建时对全部 group 的工具做去重校验，重名启动失败返回「工具名冲突」（内置注册表自身保证不重名，该校验是守卫）
 - **跨进程冲突处理**：`list_tools` 合并子 Station 工具时发现工具名已存在（与本级或先到子重名）→ warn 日志，保留先到者，后到者剔除（不进路由表、不进返回列表）
 
 ## 工具路由（tool_routes）
@@ -136,7 +118,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 | tools/list | `_meta["kissbot/groups"]`（组白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义，各工具 `_meta["kissbot/group"]` 携带所属 group） |
 | tools/call | `name`、`arguments`、`_meta["kissbot/ancestors"]` | `content` / `structuredContent` / `isError`；自环返回 JSON-RPC 错误 `1001` |
 
-- 工具级失败（不存在 / 未实现 / 参数错误 / 执行报错 / 子调用失败）返回 HTTP 200 + `isError=true`，固定错误结构落在 `structuredContent`，文案同时进 `content`
+- 工具级失败（不存在 / 参数错误 / 执行报错 / 子调用失败）返回 HTTP 200 + `isError=true`，固定错误结构落在 `structuredContent`，文案同时进 `content`
 - 协议级失败（自环）返回 JSON-RPC 错误 `1001`，HTTP 200
 - 认证失败 401；传输 / 请求头 / `_meta` 校验失败 400；未知方法 404
 
@@ -151,7 +133,6 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 | 码 | 常量 | 说明 |
 |----|------|------|
 | 0x0000_0001 | TERR_TOOL_NOT_FOUND | 工具不存在 |
-| 0x0000_0002 | TERR_TOOL_NOT_IMPLEMENTED | 工具仅注册元数据、无本级实现 |
 | 0x0000_0003 | TERR_TOOL_WRONG_ARGUMENTS | 参数错误 |
 | 0x0000_0004 | TERR_TOOL_CYCLE | 级联自环（子站以工具级错误上报时本级识别并上抛） |
 | 0x0001_0000 | TERR_TOOL_INTERNAL_ERROR | 本级工具执行失败 |
@@ -165,7 +146,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 |-------|------|------|
 | filesystem | read | 读取文本文件；路径经绝对路径规范化后校验位于进程工作目录内（防路径穿透）；返回内容限长 64KB |
 
-配置显式声明 `groups["filesystem"]` 才注册；内置工具元数据与实现由内置注册表提供，配置中 `tools` 无需（也不应）声明同名工具——声明同名会在注册步骤触发「工具名冲突」。
+配置显式声明 `groups["filesystem"]` 才注册；工具的元数据（含参数 schema）与原生实现由内置注册表成对提供，配置不声明工具。
 
 ## group 白名单与会话对应关系
 
