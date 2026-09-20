@@ -3,8 +3,8 @@ node_modules
 kai-rs
 .vscode
 dist
-.claude/settings.local.json
-CLAUDE.local.md
+.agents/settings.local.json
+AGENTS.local.md
 .superpowers
 .pi-subagents
 workspace

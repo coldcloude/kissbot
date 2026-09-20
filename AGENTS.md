@@ -28,8 +28,8 @@ Keep It Simple Stupid BOT - kissbot
   - **workspace** 自动化测试中使用的配置和数据目录
 - **script** 手动测试用启动脚本和配置文件
 - **workspace** 手动测试用数据目录
-- **CLAUDE.md** 项目基本原则（Claude Code默认位置）
-- **.claude/rules** 项目规范（Claude Code默认位置）
+- **AGENTS.md** 项目基本原则（agent 规则默认位置）
+- **.agents/rules** 项目规范（agent 规则默认位置）
 
 ## git约定
 
