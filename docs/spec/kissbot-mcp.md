@@ -54,9 +54,8 @@
 | 键 | 类型 | 说明 |
 |----|------|------|
 | `io.modelcontextprotocol/serverInfo` | object | 服务端身份（`name` / `version`），由 `McpServer` 统一填充 |
-| `kissbot/group` | string[] | 本次返回工具所属的组名集合（仅 `tools/list`） |
 
-`io.modelcontextprotocol/*` 为 MCP 规范保留键；`kissbot/` 为 kissbot 扩展前缀（非规范保留前缀，键名符合规范的 `_meta` 命名规则）。
+`io.modelcontextprotocol/*` 为 MCP 规范保留键；`kissbot/` 为 kissbot 扩展前缀（非规范保留前缀，键名符合规范的 `_meta` 命名规则）。kissbot 分组不放在响应 `_meta`，而是随各工具定义携带（见 `tools/list` 的 `Tool._meta`）。
 
 ## server/discover
 
@@ -76,7 +75,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `group` | bool | 支持 `tools/list` 的 `group` 过滤与结果 `kissbot/group` 回带 |
+| `group` | bool | 支持 `tools/list` 的 `group` 过滤，且工具定义携带 `_meta["kissbot/group"]` |
 | `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
 
 `DiscoverResult` 提供 `supports_group()` / `supports_ancestors()` / `supports_kissbot()` 读取该声明；
@@ -116,7 +115,7 @@
 | `resultType` | string | 固定 `complete` |
 | `tools` | Tool[] | 工具定义列表 |
 | `nextCursor` | string? | 本实现不产出 |
-| `_meta` | object | 含 `serverInfo` 与 `kissbot/group` |
+| `_meta` | object | 含 `serverInfo`；分组随各工具定义的 `_meta` 携带 |
 
 `Tool`：
 
@@ -128,6 +127,9 @@
 | `inputSchema` | object | 参数 JSON Schema |
 | `outputSchema` | object? | 输出 JSON Schema（可选，缺省不序列化） |
 | `annotations` | object? | 工具行为注解（可选，缺省不序列化） |
+| `_meta` | object? | 工具元数据（可选，缺省不序列化）；kissbot 分组写在 `_meta["kissbot/group"]` |
+
+分组是工具的固有属性，随工具定义携带；请求参数 `group` 只是可选的服务端过滤手段，不改变归因口径。读取辅助：`Tool::group()`；写入辅助：`Tool::with_group()`。
 
 ```jsonc
 {
@@ -137,11 +139,11 @@
     "resultType": "complete",
     "tools": [
       { "name": "read", "description": "…",
-        "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] } }
+        "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] },
+        "_meta": { "kissbot/group": "filesystem" } }
     ],
     "_meta": {
-      "io.modelcontextprotocol/serverInfo": { "name": "kissbot-station", "version": "0.1.0" },
-      "kissbot/group": ["filesystem"]
+      "io.modelcontextprotocol/serverInfo": { "name": "kissbot-station", "version": "0.1.0" }
     }
   }
 }

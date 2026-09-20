@@ -140,7 +140,7 @@ mod tests {
         let (status, value) = send(app.clone(), "/mcp", "secret", "tools/list", None, body).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["result"]["tools"][0]["name"], "read");
-        assert_eq!(value["result"]["_meta"]["kissbot/group"][0], "filesystem");
+        assert_eq!(value["result"]["tools"][0]["_meta"]["kissbot/group"], "filesystem");
 
         // 缺少 MCP-Protocol-Version 头 → 400（认证通过后由 MCP 传输层拒绝）
         let req = Request::builder()

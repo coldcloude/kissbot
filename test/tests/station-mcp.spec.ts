@@ -42,7 +42,7 @@ test.describe.serial('station MCP 协议测试', () => {
     expect(body.result._meta['io.modelcontextprotocol/serverInfo'].name).toBe('kissbot-station');
   });
 
-  test('TC-03: tools/list 按 group 过滤并回带 kissbot/group', async ({ request }) => {
+  test('TC-03: tools/list 按 group 过滤，group 随工具携带', async ({ request }) => {
     const resp = await mcpCall(request, MCP_ENDPOINT, {
       method: 'tools/list',
       params: { group: ['filesystem'] },
@@ -54,7 +54,7 @@ test.describe.serial('station MCP 协议测试', () => {
     expect(body.result.tools.length).toBeGreaterThanOrEqual(1);
     expect(body.result.tools[0].name).toBe('read');
     expect(body.result.tools[0].inputSchema.type).toBe('object');
-    expect(body.result._meta['kissbot/group']).toContain('filesystem');
+    expect(body.result.tools[0]._meta['kissbot/group']).toBe('filesystem');
   });
 
   test('TC-04: tools/list 不带 group 返回全部工具', async ({ request }) => {

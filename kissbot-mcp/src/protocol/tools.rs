@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::meta::{RequestMeta, ResponseMeta};
 use super::ResultType;
 
-/// 工具定义（名称/描述/输入 JSON Schema）
+/// 工具定义（名称/描述/输入 JSON Schema/工具元数据）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: Arc<String>,
@@ -26,6 +26,9 @@ pub struct Tool {
     pub output_schema: Option<Arc<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Arc<Value>>,
+    /// 工具元数据（规范 `Tool._meta`）；kissbot 分组等扩展随工具携带
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Arc<Value>>,
 }
 
 impl Tool {
@@ -41,7 +44,29 @@ impl Tool {
             input_schema: Arc::new(input_schema),
             output_schema: None,
             annotations: None,
+            meta: None,
         }
+    }
+
+    /// 该工具所属的 kissbot 分组（读 `_meta["kissbot/group"]`）
+    pub fn group(&self) -> Option<&str> {
+        self.meta.as_ref()?.get(super::meta::META_GROUP)?.as_str()
+    }
+
+    /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        let mut object = self
+            .meta
+            .as_ref()
+            .and_then(|m| m.as_object())
+            .cloned()
+            .unwrap_or_default();
+        object.insert(
+            super::meta::META_GROUP.to_string(),
+            Value::String(group.into()),
+        );
+        self.meta = Some(Arc::new(Value::Object(object)));
+        self
     }
 }
 
@@ -74,15 +99,12 @@ pub struct ToolsListResult {
 }
 
 impl ToolsListResult {
-    pub fn new(tools: Vec<Arc<Tool>>, group: Option<Vec<String>>) -> Self {
+    pub fn new(tools: Vec<Arc<Tool>>) -> Self {
         Self {
             result_type: ResultType::Complete,
             tools,
             next_cursor: None,
-            meta: ResponseMeta {
-                server_info: None,
-                group,
-            },
+            meta: ResponseMeta::default(),
         }
     }
 }
@@ -364,6 +386,30 @@ mod tests {
         assert_eq!(v["inputSchema"]["type"], "object");
         assert!(v.get("outputSchema").is_none());
         assert!(v.get("title").is_none());
+        assert!(v.get("_meta").is_none(), "无元数据时不序列化 _meta");
+    }
+
+    #[test]
+    fn tool_group_travels_in_meta() {
+        // group 是工具的固有属性，随工具定义的 `_meta` 携带
+        let tool = Tool::new("read", "读取文件", json!({ "type": "object" })).with_group("filesystem");
+        assert_eq!(tool.group(), Some("filesystem"));
+        let v = serde_json::to_value(&tool).unwrap();
+        assert_eq!(v["_meta"][super::super::meta::META_GROUP], "filesystem");
+        let back: Tool = serde_json::from_value(v).unwrap();
+        assert_eq!(back.group(), Some("filesystem"));
+
+        // 设置 group 保留其余元数据
+        let with_other = Tool {
+            meta: Some(Arc::new(json!({ "other/key": 1 }))),
+            ..Tool::new("t", "d", json!({}))
+        }
+        .with_group("g1");
+        assert_eq!(with_other.meta.as_ref().unwrap()["other/key"], 1);
+        assert_eq!(with_other.group(), Some("g1"));
+
+        // 无元数据时没有分组
+        assert!(Tool::new("t", "d", json!({})).group().is_none());
     }
 
     #[test]

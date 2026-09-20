@@ -139,7 +139,6 @@ impl McpClient {
 mod tests {
     use super::*;
     use crate::http::{router, McpHttpConfig};
-    use crate::protocol::meta::ResponseMeta;
     use crate::protocol::{McpError, ResultType, Tool, ToolsListResult};
     use crate::server::{McpHandler, McpServer};
     use async_trait::async_trait;
@@ -155,17 +154,20 @@ mod tests {
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            let group = params.group.clone();
-            let ancestors = params.meta.ancestors.clone();
-            let mut result = ToolsListResult::new(
-                vec![Arc::new(Tool::new("read", "读", json!({ "type": "object" })))],
-                group,
-            );
-            result.meta = ResponseMeta {
-                server_info: None,
-                group: Some(ancestors),
-            };
-            Ok(result)
+            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
+            if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+                tool = tool.with_group(group.clone());
+            }
+            // 把收到的祖先链回填进工具元数据，验证请求 `_meta` 往返
+            let mut object = tool
+                .meta
+                .as_ref()
+                .and_then(|m| m.as_object())
+                .cloned()
+                .unwrap_or_default();
+            object.insert("test/ancestors".to_string(), json!(params.meta.ancestors));
+            tool.meta = Some(Arc::new(Value::Object(object)));
+            Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {
@@ -218,8 +220,10 @@ mod tests {
         let ancestors = vec!["root".to_string()];
         let result = client.list_tools(Some(&group), &ancestors).await.unwrap();
         assert_eq!(result.tools[0].name.as_str(), "read");
-        // 服务端把请求祖先链回填进 group 扩展位，验证 `_meta` 往返
-        assert_eq!(result.meta.group.unwrap(), ancestors);
+        assert_eq!(result.tools[0].group(), Some("filesystem"), "group 随工具携带");
+        // 服务端把请求祖先链回填进工具元数据，验证 `_meta` 往返
+        let meta = result.tools[0].meta.as_ref().unwrap();
+        assert_eq!(meta["test/ancestors"], json!(ancestors));
     }
 
     #[tokio::test]

@@ -77,7 +77,7 @@ impl RequestMeta {
     }
 }
 
-/// 响应 `_meta`：服务端身份 + kissbot 分组扩展
+/// 响应 `_meta`：服务端身份（分组扩展随工具定义携带，见 `Tool._meta`）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResponseMeta {
     #[serde(
@@ -86,12 +86,6 @@ pub struct ResponseMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub server_info: Option<Implementation>,
-    #[serde(
-        rename = "kissbot/group",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub group: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -135,13 +129,13 @@ mod tests {
     }
 
     #[test]
-    fn response_meta_serializes_group_extension() {
+    fn response_meta_carries_server_info_only() {
+        // 分组随工具定义携带（Tool._meta），不再放在响应 meta 上
         let meta = ResponseMeta {
             server_info: Some(Implementation::new("kissbot-station", "0.1.0")),
-            group: Some(vec!["filesystem".to_string()]),
         };
         let v = serde_json::to_value(&meta).unwrap();
-        assert_eq!(v[META_GROUP][0], "filesystem");
         assert_eq!(v[META_SERVER_INFO]["name"], "kissbot-station");
+        assert!(v.get(META_GROUP).is_none(), "响应 meta 不带 group");
     }
 }

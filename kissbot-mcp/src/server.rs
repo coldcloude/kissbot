@@ -162,10 +162,9 @@ mod tests {
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             assert!(params.group.is_none(), "EchoHandler 期望无 group");
-            Ok(ToolsListResult::new(
-                vec![Arc::new(Tool::new("echo", "回声", json!({ "type": "object" })))],
-                Some(vec!["g1".to_string()]),
-            ))
+            Ok(ToolsListResult::new(vec![Arc::new(
+                Tool::new("echo", "回声", json!({ "type": "object" })).with_group("g1"),
+            )]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {
@@ -202,7 +201,7 @@ mod tests {
         let resp = server.handle(req).await;
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["result"]["tools"][0]["name"], "echo");
-        assert_eq!(v["result"]["_meta"]["kissbot/group"][0], "g1");
+        assert_eq!(v["result"]["tools"][0]["_meta"]["kissbot/group"], "g1");
     }
 
     #[tokio::test]
@@ -268,7 +267,7 @@ mod tests {
             }
 
             async fn list_tools(&self, _: ToolsListParams) -> Result<ToolsListResult, McpError> {
-                Ok(ToolsListResult::new(vec![], None))
+                Ok(ToolsListResult::new(vec![]))
             }
 
             async fn call_tool(&self, _: ToolsCallParams) -> Result<CallToolResult, McpError> {

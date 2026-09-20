@@ -283,11 +283,11 @@ mod tests {
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            let groups = params.group.clone();
-            Ok(ToolsListResult::new(
-                vec![Arc::new(Tool::new("read", "读", json!({ "type": "object" })))],
-                groups,
-            ))
+            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
+            if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+                tool = tool.with_group(group.clone());
+            }
+            Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {
@@ -342,7 +342,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["result"]["tools"][0]["name"], "read");
-        assert_eq!(body["result"]["_meta"]["kissbot/group"][0], "fs");
+        assert_eq!(body["result"]["tools"][0]["_meta"]["kissbot/group"], "fs");
     }
 
     #[tokio::test]

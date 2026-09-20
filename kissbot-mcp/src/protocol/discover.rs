@@ -77,7 +77,6 @@ impl DiscoverResult {
             instructions: instructions.map(Arc::new),
             meta: ResponseMeta {
                 server_info: Some(server_info),
-                group: None,
             },
         }
     }

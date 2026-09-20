@@ -97,7 +97,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 - 直接子：经 `McpClient` 实时拉取并按对端能力处理（见「第三方 MCP 服务端」）；成功时合并工具定义并更新工具路由（见「工具路由」），失败 → warn 跳过、保留该子上一次查询的路由记录
 - 祖先链：所有子请求都附带 `ancestors + 本站 station_id`（纯提示信息，规范要求忽略未知 `_meta` 键）
 - 自环检测：任一层发现自己的 `station_id` 已在 `ancestors` 中，返回 JSON-RPC 错误 `STATION_CYCLE`（`1001`）
-- 结果返回 `ToolsListing { tools, groups }`：`tools` 为工具定义平铺结果，`groups` 为本次结果所属的 group 名集合（本级命中 group 与子 Station 回带的 group 去重合并）
+- 结果返回工具定义数组，每个工具都在 `_meta["kissbot/group"]` 携带所属 group：本级工具用其所属 group，子站工具优先用对端携带的 group、缺省回落该子站默认 group
 - 聚合为空 → 返回空工具列表；LLM 请求不携带 tools 字段（兼容无工具场景）
 - 顺序确定性：结果按工具名排序、group 名排序去重（同一集合多次请求返回相同顺序，便于客户端缓存与提示词缓存）
 
@@ -106,9 +106,9 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 子 Station 可以是任意第三方 MCP 服务端，不要求它理解 kissbot 的 `group` 与 `ancestors` 扩展。对端是否支持由 `server/discover` 一次性判定并缓存：
 
 - 探测：`SubStation` 首次需要判定时调 `server/discover`，读取 `capabilities.kissbot`；成功即缓存（含「未声明」的否定结果，第三方通用服务端只探一次），失败不缓存、下次重试
-- 支持（`capabilities.kissbot.group` 为 true）：请求下传 group 白名单，结果 group 以对端回带的 `kissbot/group` 为准
+- 支持（`capabilities.kissbot.group` 为 true）：请求下传 group 白名单，工具 group 以对端工具定义携带的 `kissbot/group` 为准
 - 不支持：不下传 group（对方会忽略），其工具整体归入 `SubStationConfig.effective_group()`（`default_group`，缺省回落 station_id）；本级白名单不含该默认 group 时，该子工具整体被本地过滤掉
-- 响应未回带 `kissbot/group`（或为空）：同样归入 `effective_group()`
+- 工具定义未携带 `kissbot/group`：归入 `effective_group()`
 - 祖先链对所有子都附带：对不支持者只是被忽略的未知 `_meta` 键；对同样实现 kissbot 扩展但未声明的同级服务端，附带可保留防环能力
 
 ## 工具名整树唯一
@@ -133,7 +133,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 | 方法 | 请求要点 | 响应要点 |
 |------|----------|----------|
 | server/discover | 仅 `_meta` | `supportedVersions`（`["2026-07-28"]`）、`capabilities.tools`、`instructions`、`_meta.serverInfo`（name = `kissbot-station`） |
-| tools/list | `group`（kissbot 扩展白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义）、`_meta["kissbot/group"]` |
+| tools/list | `group`（kissbot 扩展白名单）、`_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义，各工具 `_meta["kissbot/group"]` 携带所属 group） |
 | tools/call | `name`、`arguments`、`_meta["kissbot/ancestors"]` | `content` / `structuredContent` / `isError`；自环返回 JSON-RPC 错误 `1001` |
 
 - 工具级失败（不存在 / 未实现 / 参数错误 / 执行报错 / 子调用失败）返回 HTTP 200 + `isError=true`，固定错误结构落在 `structuredContent`，文案同时进 `content`

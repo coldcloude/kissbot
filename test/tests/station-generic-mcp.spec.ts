@@ -127,7 +127,7 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.tools.map((t: any) => t.name)).toContain('plain-tool');
-    expect(body.result._meta['kissbot/group']).toContain('plain-remote');
+    expect(body.result.tools[0]._meta['kissbot/group']).toBe('plain-remote');
     // 对端未声明 kissbot 扩展 → 请求不带 group（带了也会被忽略）
     expect(lastGroup).toBeUndefined();
   });

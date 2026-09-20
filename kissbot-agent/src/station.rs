@@ -205,13 +205,6 @@ impl SubStation {
     }
 }
 
-/// 工具平铺查询结果：工具列表 + 结果所属的 group 名集合
-#[derive(Debug)]
-pub struct ToolsListing {
-    pub tools: Vec<Arc<Tool>>,
-    pub groups: Vec<String>,
-}
-
 /// 全局 Station 单例（进程内唯一；每个 agent 一个，静态访问）
 static SINGLETON: OnceLock<Arc<Station>> = OnceLock::new();
 
@@ -327,12 +320,15 @@ impl Station {
 
     /// 工具元数据平铺查询：本级 group 白名单过滤 + 直接子经 MCP 实时拉取（更新路由缓存）
     /// filter = None 返回全部；Some(空集) 返回空；ancestors 为根到当前父节点的 station_id 链
-    pub async fn list_tools(&self, filter: Option<&HashSet<String>>, ancestors: &[String]) -> std::result::Result<ToolsListing, McpError> {
+    ///
+    /// group 是工具的固有属性，随工具定义（`_meta["kissbot/group"]`）携带，因此本方法对每个
+    /// 返回的工具都保证带上 group：本级工具用其所属 group；子站工具优先用对端回带的 group，
+    /// 缺省回落该子站的默认 group。
+    pub async fn list_tools(&self, filter: Option<&HashSet<String>>, ancestors: &[String]) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
         }
         let mut tools = Vec::new();
-        let mut groups: Vec<String> = Vec::new();
         // 本级工具名集合（冲突校验用：本级优先，子工具与本级重名剔除）
         let local_names: HashSet<String> = self.groups.iter()
             .flat_map(|e| e.value().tools.iter().map(|t| t.key().clone()).collect::<Vec<String>>())
@@ -343,13 +339,17 @@ impl Station {
                 if !f.contains(group.name.as_str()) { continue; }
             }
             if group.tools.is_empty() { continue; }
-            groups.push(group.name.clone());
-            tools.extend(group.configured_tools());
+            tools.extend(
+                group
+                    .configured_tools()
+                    .into_iter()
+                    .map(|tool| Arc::new((*tool).clone().with_group(group.name.clone()))),
+            );
         }
         // 直接子：经 MCP 实时拉取 → 更新路由缓存 → 合并元数据（剔除冲突项）
-        // - 对端声明支持 kissbot 分组扩展：按本级白名单在服务端过滤，结果 group 以对端回带为准
+        // - 对端声明支持 kissbot 分组扩展：按本级白名单在服务端过滤，工具 group 以对端携带为准
         // - 对端不支持（通用 MCP 服务端）：不传 group（传了也会被忽略），其工具整体归入默认 group，
-        //   再由本级按白名单本地过滤；响应不带 `kissbot/group` 时同样归入默认 group
+        //   再由本级按白名单本地过滤
         // - 祖先链对所有子都附带：纯提示信息，规范要求忽略未知 `_meta` 键，附带可为未声明能力的
         //   同级 kissbot 服务端保留防环能力
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
@@ -371,24 +371,20 @@ impl Station {
                     }
                     let inserted = self.merge_sub_tools(sub.config.station_id.as_str(), result.tools.clone(), &local_names);
                     if inserted.is_empty() { continue; }
-                    // 响应不带 group（或空）→ 默认归入默认 group
-                    let remote_groups: Vec<String> = match result.meta.group {
-                        Some(g) if !g.is_empty() => g,
-                        _ => vec![default_group.to_string()],
-                    };
-                    for g in remote_groups {
-                        if !groups.contains(&g) { groups.push(g); }
-                    }
-                    tools.extend(result.tools.into_iter().filter(|t| inserted.contains(t.name.as_str())));
+                    tools.extend(result.tools.into_iter()
+                        .filter(|t| inserted.contains(t.name.as_str()))
+                        // 对端未携带 group 时回落该子站默认 group
+                        .map(|tool| {
+                            let group = tool.group().map(str::to_string).unwrap_or_else(|| default_group.to_string());
+                            Arc::new((*tool).clone().with_group(group))
+                        }));
                 }
                 Err(e) => warn!("子 Station {} 查询工具失败: {}", sub.config.station_id.as_str(), e),
             }
         }
         // 确定性顺序（规范建议：同一工具集合的多次请求返回相同顺序，便于客户端缓存与提示词缓存）
         tools.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-        groups.sort();
-        groups.dedup();
-        Ok(ToolsListing { tools, groups })
+        Ok(tools)
     }
 
     /// 执行工具：本级原生实现命中执行；未命中 → 查远程路由表（工具名 → 直接子 station_id）
@@ -466,8 +462,8 @@ impl McpHandler for Station {
 
     async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
         let filter: Option<HashSet<String>> = params.group.map(|v| v.into_iter().collect());
-        let listing = self.list_tools(filter.as_ref(), &params.meta.ancestors).await?;
-        Ok(ToolsListResult::new(listing.tools, Some(listing.groups)))
+        let tools = self.list_tools(filter.as_ref(), &params.meta.ancestors).await?;
+        Ok(ToolsListResult::new(tools))
     }
 
     async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
@@ -546,10 +542,10 @@ mod tests {
     async fn list_tools_none_returns_all_local() {
         // 内置 filesystem group 声明后，read 工具元数据由内置注册表填充
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let listing = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(listing.tools.len(), 1, "内置注册表应填充 read");
-        assert_eq!(listing.tools[0].name.as_str(), "read");
-        assert_eq!(listing.groups, vec!["filesystem".to_string()], "结果所属 group 回带");
+        let tools = station.list_tools(None, &[]).await.unwrap();
+        assert_eq!(tools.len(), 1, "内置注册表应填充 read");
+        assert_eq!(tools[0].name.as_str(), "read");
+        assert_eq!(tools[0].group(), Some("filesystem"), "group 随工具携带");
     }
 
     #[tokio::test]
@@ -559,11 +555,9 @@ mod tests {
         let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
         let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
         let empty = HashSet::new();
-        assert_eq!(station.list_tools(Some(&hit), &[]).await.unwrap().tools.len(), 1);
-        assert!(station.list_tools(Some(&miss), &[]).await.unwrap().tools.is_empty());
-        let empty_listing = station.list_tools(Some(&empty), &[]).await.unwrap();
-        assert!(empty_listing.tools.is_empty());
-        assert!(empty_listing.groups.is_empty(), "空集过滤不返回任何 group");
+        assert_eq!(station.list_tools(Some(&hit), &[]).await.unwrap().len(), 1);
+        assert!(station.list_tools(Some(&miss), &[]).await.unwrap().is_empty());
+        assert!(station.list_tools(Some(&empty), &[]).await.unwrap().is_empty(), "空集过滤返回空");
     }
 
     #[tokio::test]
@@ -571,7 +565,7 @@ mod tests {
         // 子 Station 不可达：告警跳过，路由表不更新，结果只有本地（此处本地为空）
         let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
         let listing = station.list_tools(None, &[]).await.unwrap();
-        assert!(listing.tools.is_empty(), "无本地工具，子连接错误被跳过");
+        assert!(listing.is_empty(), "无本地工具，子连接错误被跳过");
         assert!(station.tool_routes.is_empty(), "无子工具时路由表恒空");
     }
 
@@ -709,7 +703,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(listing.tools[0].name.as_str(), "read");
-        assert_eq!(listing.meta.group.unwrap(), vec!["filesystem".to_string()]);
+        assert_eq!(listing.tools[0].group(), Some("filesystem"), "group 随工具携带");
 
         let called = McpHandler::call_tool(&station, ToolsCallParams {
             name: Arc::new("read".to_string()),
@@ -750,11 +744,14 @@ mod tests {
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
             *self.observed.lock().await =
                 Some((params.group.clone(), params.meta.ancestors.clone()));
-            let group = if self.echo_group { params.group.clone() } else { None };
-            Ok(ToolsListResult::new(
-                vec![Arc::new(Tool::new("mock-tool", "第三方工具", json!({ "type": "object" })))],
-                group,
-            ))
+            let mut tool = Tool::new("mock-tool", "第三方工具", json!({ "type": "object" }));
+            // 回带 group 的模拟：把请求白名单的第一项作为该工具的 group
+            if self.echo_group {
+                if let Some(group) = params.group.as_ref().and_then(|g| g.first()) {
+                    tool = tool.with_group(group.clone());
+                }
+            }
+            Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
@@ -821,16 +818,16 @@ mod tests {
 
         // 不下传 group：不支持分组过滤，传了也会被忽略
         let all = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(all.tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
-        assert_eq!(all.groups, vec!["remote-plain".to_string()], "响应不带 group → 归入默认 group");
+        assert_eq!(all.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
+        assert_eq!(all[0].group(), Some("remote-plain"), "对端不带 group → 归入默认 group");
         let (sent_group, sent_ancestors) = observed.lock().await.clone().unwrap();
         assert!(sent_group.is_none(), "对端不支持时不传 group");
         assert_eq!(sent_ancestors, vec!["station-self".to_string()], "祖先链始终附带（纯提示）");
 
         // 本级白名单含默认 group → 保留；不含 → 本地过滤掉
-        assert_eq!(station.list_tools(Some(&group_filter(&["remote-plain"])), &[]).await.unwrap().tools.len(), 1);
-        assert!(station.list_tools(Some(&group_filter(&["other"])), &[]).await.unwrap().tools.is_empty());
-        assert!(station.list_tools(Some(&group_filter(&[])), &[]).await.unwrap().tools.is_empty());
+        assert_eq!(station.list_tools(Some(&group_filter(&["remote-plain"])), &[]).await.unwrap().len(), 1);
+        assert!(station.list_tools(Some(&group_filter(&["other"])), &[]).await.unwrap().is_empty());
+        assert!(station.list_tools(Some(&group_filter(&[])), &[]).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -840,8 +837,8 @@ mod tests {
         let station = Station::from_repo(&repo_with_remote_sub(&base, "ignored-default"), "test-key").unwrap();
 
         let filtered = station.list_tools(Some(&group_filter(&["mock-group"])), &[]).await.unwrap();
-        assert_eq!(filtered.tools.len(), 1);
-        assert_eq!(filtered.groups, vec!["mock-group".to_string()], "以对端回带的 group 为准");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].group(), Some("mock-group"), "以对端携带的 group 为准");
         let (sent_group, _) = observed.lock().await.clone().unwrap();
         assert_eq!(sent_group, Some(vec!["mock-group".to_string()]), "支持时下传 group");
     }
@@ -852,8 +849,8 @@ mod tests {
         let (base, _observed) = spawn_mock_mcp(true, false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, "fallback-group"), "test-key").unwrap();
         let listing = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(listing.tools.len(), 1);
-        assert_eq!(listing.groups, vec!["fallback-group".to_string()]);
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].group(), Some("fallback-group"));
     }
 
     #[tokio::test]
@@ -861,7 +858,7 @@ mod tests {
         let (base, _observed) = spawn_mock_mcp(false, false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, ""), "test-key").unwrap();
         let listing = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(listing.groups, vec!["remote".to_string()], "未配置默认 group 时回落 station_id");
+        assert_eq!(listing[0].group(), Some("remote"), "未配置默认 group 时回落 station_id");
     }
 
     #[tokio::test]

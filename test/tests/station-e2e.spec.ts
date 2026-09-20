@@ -84,7 +84,7 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
-    expect(body.result._meta['kissbot/group']).toContain('filesystem');
+    expect(body.result.tools[0]._meta['kissbot/group']).toBe('filesystem');
   });
 
   test('A 能平铺到子站 B 的工具元数据（含 group 回带）', async ({ request }) => {
@@ -92,7 +92,7 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
-    expect(body.result._meta['kissbot/group']).toContain('filesystem');
+    expect(body.result.tools[0]._meta['kissbot/group']).toBe('filesystem');
   });
 
   test('A 的 group 白名单会下传给子站 B', async ({ request }) => {
