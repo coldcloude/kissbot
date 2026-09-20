@@ -18,7 +18,7 @@ bash "$SCRIPT_DIR/reset-workspace.sh"
 
 # 启动 channel-web 后端
 echo "[2/3] 启动 channel-web (http://127.0.0.1:8301)..."
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR/workspace"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-web/Cargo.toml" > /tmp/kissbot-channel-web.log 2>&1 &
 BACKEND_PID=$!
 echo "   PID: $BACKEND_PID"

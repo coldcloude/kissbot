@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动 kissbot-memory-ego 服务（debug 模式，cargo run）
+# 启动 kissbot-memory-ego 服务（debug 模式，cargo run，cwd=workspace）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -8,5 +8,5 @@ kill $(ps aux | grep "kissbot-memory-ego" | grep -v grep | awk '{print $2}') 2>/
 sleep 1
 
 echo "==> 启动 memory-ego (debug)..."
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR/workspace"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-memory-ego/Cargo.toml"

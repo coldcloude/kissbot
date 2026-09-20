@@ -1,5 +1,5 @@
 #!/bin/bash
-# 启动 kissbot-channel-web 后端服务（debug 模式，cargo run）
+# 启动 kissbot-channel-web 后端服务（debug 模式，cargo run，cwd=workspace）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -9,5 +9,5 @@ sleep 1
 
 echo "==> 启动 channel-web 后端 (debug)..."
 mkdir -p "$PROJECT_DIR/workspace"
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR/workspace"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-web/Cargo.toml"

@@ -3,7 +3,7 @@
 本目录提供 kissbot 各组件的手动启动脚本（`start-*.sh`、`reset-*.sh`），配置模板在 `template/`。
 
 - `reset-agent.sh`：按 `template/nexus.json`、`template/station.json` 生成 `../workspace/agent-data/` 下的运行配置
-- `reset-workspace.sh`：重置测试数据目录
+- `reset-workspace.sh`：重置工作区（由 `template/config.json` 生成 `../workspace/config.json`，并重建 `channel-data/`）
 - `start-memory-store.sh` / `start-memory-ego.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
 - `inject-key.mjs`：向模板注入 API key
 
@@ -68,7 +68,8 @@
 ### 2. 启动与验证步骤
 
 ```bash
-# 1) 生成运行配置并注入 key
+# 1) 生成 workspace 运行配置、生成 agent 运行配置并注入 key
+./reset-workspace.sh
 ./reset-agent.sh
 node inject-key.mjs
 
@@ -79,17 +80,17 @@ node inject-key.mjs
 ./start-agent.sh
 ```
 
-> 注意：`script/config.json` 的 `api.memory_store_url` / `memory_ego_url` 为空时 agent 会跳过记忆读写；需要记忆功能时在 `../workspace/config.json`（测试工作区）中配置 URL 并按其启动。
+> 注意：各启动脚本均以 `../workspace` 为 cwd 启动，读取 `../workspace/config.json`（由 `reset-workspace.sh` 从 `template/config.json` 生成，其中路径按 workspace 相对书写）。该文件中 `api.memory_store_url` / `memory_ego_url` 为空时 agent 会跳过记忆读写，需要记忆功能时在其中填 URL。
 
 验证点：
 
 1. **合批**：通过 web 通道连续发送多条消息 → agent 日志显示等待合批间隔（默认 3s）后打包为一条 user 消息进入 agentic loop；内容为 `user_name: 消息` 逐行
-2. **多轮工具调用**：发送需要读文件的请求（如「读取 test.txt 的内容」，`test.txt` 需位于 agent 启动目录或其子目录内）→ 日志显示 LLM 返回 tool_call（模型需支持工具调用）→ 本地执行 `read` → 工具结果作为 tool 消息继续调用 LLM → 第二轮返回最终回复
+2. **多轮工具调用**：发送需要读文件的请求（如「读取 test.txt 的内容」，`test.txt` 需位于 agent 启动目录 `../workspace/` 或其子目录内）→ 日志显示 LLM 返回 tool_call（模型需支持工具调用）→ 本地执行 `read` → 工具结果作为 tool 消息继续调用 LLM → 第二轮返回最终回复
 3. **上下文缓存**：`../workspace/agent-data/context/` 下生成按 session_key 编码的 `.jsonl`，随对话逐条追加（含 user/assistant/tool 消息）
 4. **历史归档与重置强制合并**：发送 `/reset`（或上下文超长触发）后，`../workspace/agent-data/context-history/` 出现 `<key编码>-<时间戳>.jsonl` 归档副本；event 模式超长时走压缩（system + user 压缩指令 + assistant 总结）；重置期间（上下文重建过程中）到达的新消息在重置完成后被强制合并进新上下文（不等待合批间隔）
 5. **记忆打包（role 模式）**：role 模式会话重启/重置后，上下文首条为记忆打包的 user 消息——内容为最近 N 条（默认 50）与时间窗（默认 1h）并集、时间正序的 `user_name: 消息` 逐行（同时间组不拆散；不足 N 条返回全部）
 6. **工具占位记录与 key 关联**：多轮工具调用后，channel 时间线出现 `ToolCall(key)`/`ToolResult(key)` 占位记录，且 `tool-call-records` / `tool-result-records` 文件中 ToolCallRequest 与 ToolResultRequest 的 key 相同
-7. **路径安全**：让模型尝试读取 cwd 之外的路径（如 `../config.json` 的越界写法），`read` 工具返回路径越界错误，不实际读取
+7. **路径安全**：让模型尝试读取 cwd（`../workspace/`）之外的路径（如 `../test/out-of-cwd/sample.txt`，该目录由 `test/global-setup.ts` 生成），`read` 工具返回路径越界错误，不实际读取
 
 ### 3. 清理
 

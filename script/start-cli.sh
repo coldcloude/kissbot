@@ -10,5 +10,5 @@ DOWNLOAD_DIR="${3:-$PROJECT_DIR/workspace/downloads}"
 mkdir -p "$DOWNLOAD_DIR"
 
 echo "==> 启动 CLI (user=$USER_ID, group=$GROUP_ID)..."
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR/workspace"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-channel-client-cli/Cargo.toml" -- web "$USER_ID" "$GROUP_ID" "$DOWNLOAD_DIR"

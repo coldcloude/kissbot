@@ -19,7 +19,7 @@ mkdir -p "$PROJECT_DIR/workspace/memory-data"
 
 # 启动 memory-store
 echo "[2/3] 启动 memory-store (http://127.0.0.1:8082)..."
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR/workspace"
 KISSBOT_CONFIG=config.json cargo run --manifest-path "$PROJECT_DIR/kissbot-memory-store/Cargo.toml" > /tmp/kissbot-memory-store.log 2>&1 &
 STORE_PID=$!
 echo "   PID: $STORE_PID"
