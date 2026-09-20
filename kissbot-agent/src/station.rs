@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -8,6 +8,7 @@ use kissbot_mcp::{
     CallToolResult, DiscoverResult, Implementation, KissbotCapability, McpClient, McpClientError,
     McpError, McpHandler, Tool, ToolsCallParams, ToolsListParams, ToolsListResult,
 };
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::OnceCell;
 use tracing::warn;
@@ -109,36 +110,61 @@ impl NativeTool for ReadTool {
 
 // ========== 内置注册表 ==========
 
-/// 内置 group 声明：工具元数据（MCP Tool）+ 原生实现
-/// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
-pub struct BuiltinGroup {
-    pub tools: Vec<Arc<Tool>>,
-    /// 原生实现（(工具名, 实现)，与 tools 同名对应）
-    pub impls: Vec<(&'static str, Arc<dyn NativeTool>)>,
+/// 内置工具的参数 JSON Schema（固定结构，不做手拼 JSON）
+#[derive(Debug, Serialize)]
+struct ObjectSchema {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    properties: BTreeMap<&'static str, PropertySchema>,
+    required: &'static [&'static str],
 }
 
-/// 内置注册表（本轮仅 filesystem group：Read 工具）
-fn builtin_registry() -> Vec<(&'static str, BuiltinGroup)> {
-    vec![(
-        "filesystem",
-        BuiltinGroup {
-            tools: vec![Arc::new(Tool::new(
-                "read",
-                "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "文件路径（相对或绝对，限工作目录内）" }
-                    },
-                    "required": ["path"]
-                }),
-            ))],
-            impls: vec![(
-                "read",
+impl ObjectSchema {
+    fn value(&self) -> Value {
+        serde_json::to_value(self).expect("内置工具参数 schema 应可序列化")
+    }
+}
+
+/// 参数中单个属性的 JSON Schema
+#[derive(Debug, Serialize)]
+struct PropertySchema {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    description: &'static str,
+}
+
+/// `read` 工具的参数 schema
+fn read_tool_schema() -> ObjectSchema {
+    ObjectSchema {
+        kind: "object",
+        properties: BTreeMap::from([(
+            "path",
+            PropertySchema {
+                kind: "string",
+                description: "文件路径（相对或绝对，限工作目录内）",
+            },
+        )]),
+        required: &["path"],
+    }
+}
+
+/// 内置注册表：按 group 名给出该 group 的内置工具（元数据 + 原生实现）
+/// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
+fn builtin_group(name: &str) -> Option<Group> {
+    match name {
+        "filesystem" => Some(Group::with_builtin_tools(
+            name,
+            vec![(
+                Arc::new(Tool::new(
+                    "read",
+                    "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
+                    read_tool_schema().value(),
+                )),
                 Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
             )],
-        },
-    )]
+        )),
+        _ => None,
+    }
 }
 
 // ========== 运行态结构 ==========
@@ -158,6 +184,18 @@ pub struct Group {
 impl Group {
     fn new(name: String) -> Self {
         Self { name, tools: DashMap::new() }
+    }
+
+    /// 用内置工具（元数据 + 原生实现）构造 group
+    fn with_builtin_tools(name: impl Into<String>, tools: Vec<(Arc<Tool>, Arc<dyn NativeTool>)>) -> Self {
+        let group = Self::new(name.into());
+        for (config, imp) in tools {
+            group.tools.insert(
+                config.name.to_string(),
+                Arc::new(GroupTool { config, imp: Some(imp) }),
+            );
+        }
+        group
     }
 
     /// 该 group 的工具元数据列表
@@ -243,22 +281,14 @@ impl Station {
     /// 内置注册表填充声明 group 的原生实现；配置声明的 tools 补充元数据；
     /// 工具名整树全局唯一（本地硬约束，冲突启动失败）
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
-        let registry = builtin_registry();
         let groups = DashMap::new();
         let mut seen: HashSet<String> = HashSet::new();
         for (name, gcfg) in repo.groups.iter() {
             let gcfg = gcfg.load_full();
-            let group = Arc::new(Group::new(name.clone()));
-            // 1. 内置注册表填充（声明该 group 名才注册内置实现）
-            if let Some((_, builtin)) = registry.iter().find(|(n, _)| *n == name.as_str()) {
-                for tool in &builtin.tools {
-                    let tool_name = tool.name.to_string();
-                    Self::check_unique(&mut seen, &tool_name)?;
-                    let imp = builtin.impls.iter()
-                        .find(|(tn, _)| *tn == tool_name)
-                        .map(|(_, t)| t.clone());
-                    group.tools.insert(tool_name, Arc::new(GroupTool { config: tool.clone(), imp }));
-                }
+            // 1. 内置注册表填充（声明该 group 名才注册内置工具与其实现）
+            let group = Arc::new(builtin_group(name).unwrap_or_else(|| Group::new(name.clone())));
+            for entry in group.tools.iter() {
+                Self::check_unique(&mut seen, entry.key())?;
             }
             // 2. 配置声明的 tools（元数据补充；与内置重名 → 冲突）
             for (tool_name, tcfg) in gcfg.tools.iter() {
@@ -479,6 +509,20 @@ mod tests {
     use arc_swap::ArcSwap;
     use kissbot_api::ArcSwapHashMap;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
+
+    #[tokio::test]
+    async fn builtin_read_schema_is_typed_object() {
+        // 内置工具的参数 schema 由固定结构体给出（非手拼 JSON）
+        let schema = read_tool_schema().value();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["path"]["type"], "string");
+        assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));
+        assert_eq!(schema["required"], json!(["path"]));
+        // 注册到 station 的工具元数据用的是同一份 schema
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let tools = station.list_tools(None, &[]).await.unwrap();
+        assert_eq!(tools[0].input_schema.as_ref(), &schema);
+    }
 
     #[test]
     fn read_tool_rejects_escape_paths() {
