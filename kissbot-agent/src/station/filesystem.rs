@@ -9,9 +9,7 @@ use kissbot_mcp::{CallToolResult, Tool};
 use serde_json::Value;
 
 use super::builtin::{ObjectSchema, PropertySchema};
-use crate::station::{
-    Group, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS,
-};
+use crate::station::{NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
 use crate::types::{Error, Result};
 
 pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
@@ -19,15 +17,12 @@ pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
 /// Read 工具返回内容的最大字节数（截断防大文件）
 const READ_MAX_BYTES: usize = 64 * 1024;
 
-/// 构造 filesystem group：read 工具（元数据 + 原生实现）
-pub fn group() -> Group {
-    Group::with_builtin_tools(
-        BUILTIN_GROUP_FILESYSTEM,
-        vec![(
-            read_tool(),
-            Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
-        )],
-    )
+/// filesystem group 的工具：元数据 + 原生实现（所属 group 在并入本级索引时写入）
+pub fn group_tools() -> Vec<(Tool, Arc<dyn NativeTool>)> {
+    vec![(
+        read_tool(),
+        Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
+    )]
 }
 
 /// read 工具定义：元数据 + 参数 schema
@@ -154,10 +149,10 @@ mod tests {
         assert_eq!(schema["properties"]["path"]["type"], "string");
         assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));
         assert_eq!(schema["required"], serde_json::json!(["path"]));
-        // group 里注册的工具元数据用的是同一份 schema，且带所属 group
-        let group = group();
-        let entry = group.tools.get("read").expect("filesystem group 应注册 read");
-        assert_eq!(entry.value().config.input_schema.as_ref(), &schema);
-        assert_eq!(entry.value().config.group(), Some("filesystem"));
+        // 注册表给出的工具元数据用的是同一份 schema（所属 group 在并入本级索引时写入）
+        let tools = group_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].0.name.as_str(), "read");
+        assert_eq!(tools[0].0.input_schema.as_ref(), &schema);
     }
 }

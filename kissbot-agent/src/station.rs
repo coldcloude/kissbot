@@ -53,40 +53,6 @@ struct GroupTool {
     imp: Arc<dyn NativeTool>,
 }
 
-/// group：一组工具（工具名在本 group 内唯一，不同 group 之间互不约束）
-pub struct Group {
-    name: String,
-    tools: DashMap<String, Arc<GroupTool>>,
-}
-
-impl Group {
-    fn new(name: String) -> Self {
-        Self { name, tools: DashMap::new() }
-    }
-
-    /// 用内置工具（元数据 + 原生实现）构造 group；同一 group 内工具名必须唯一。
-    /// 工具在注册时即写入所属 group（`_meta["kissbot/group"]`），分组随工具定义走
-    fn with_builtin_tools(name: impl Into<String>, mut tools: Vec<(Tool, Arc<dyn NativeTool>)>) -> Self {
-        let name = name.into();
-        let group_tools = DashMap::new();
-        for (mut config, imp) in tools.drain(..) {
-            config.set_group(name.clone());
-            let tool_name = config.name.as_str();
-            // 工具名冲突，静默失败，保持原有
-            if !group_tools.contains_key(tool_name) {
-                group_tools.insert(tool_name.to_string(), Arc::new(GroupTool {
-                    config: Arc::new(config),
-                    imp,
-                }));
-            }
-        }
-        Self {
-            name,
-            tools: group_tools,
-        }
-    }
-}
-
 /// 子 Station 运行态：只存连接信息 + MCP 客户端（孙子由子 Station 自己递归）
 pub struct SubStation {
     config: Arc<SubStationConfig>,
@@ -159,13 +125,13 @@ impl Station {
     }
 
     /// 按配置构建 Station（纯构造，不注册单例；单测直接消费）：
-    /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对填充；
-    /// 工具名在 group 内唯一（由 Group 构造保证）
+    /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对给出
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
         let tools = DashMap::new();
         for name in repo.groups.iter() {
-            let group = builtin_group(name).unwrap_or_else(|| Group::new(name.clone()));
-            Self::merge_local_group(&tools, &group);
+            // 未内置的 group 只有名字、没有工具，注册为空
+            let group_tools = builtin_group(name).unwrap_or_default();
+            Self::merge_local_group(&tools, name, group_tools);
         }
         // 子 Station：只存连接信息 + MCP 客户端（MCP 端点为 base_url + /mcp）
         let sub_stations = DashMap::new();
@@ -186,19 +152,27 @@ impl Station {
         })
     }
 
-    /// 把单个 group 的工具并入本级索引：工具名在 group 内唯一（Group 构造保证）；
-    /// 跨 group 重名（当前内置只有 filesystem，多个内置/自定义 group 时可能）保留先并入者并告警
-    fn merge_local_group(tools: &DashMap<String, Arc<GroupTool>>, group: &Group) {
-        for entry in group.tools.iter() {
-            let tool_name = entry.key().clone();
-            let winner = tools
-                .get(&tool_name)
-                .map(|existing| existing.value().config.group().unwrap_or_default().to_string());
-            if let Some(winner) = winner {
-                warn!("工具名冲突: {}（保留 group {}，忽略 group {}）", tool_name, winner, group.name);
+    /// 把某个 group 的工具并入本级索引：写入所属 group（`_meta["kissbot/group"]`），
+    /// 工具名重名保留先并入者——同 group 内重复注册静默丢弃，跨 group 重名额外告警
+    fn merge_local_group(
+        tools: &DashMap<String, Arc<GroupTool>>,
+        group: &str,
+        group_tools: Vec<(Tool, Arc<dyn NativeTool>)>,
+    ) {
+        for (mut config, imp) in group_tools {
+            config.set_group(group.to_string());
+            let tool_name = config.name.to_string();
+            if let Some(existing) = tools.get(&tool_name) {
+                let winner = existing.value().config.group().unwrap_or_default();
+                if winner != group {
+                    warn!("工具名冲突: {}（保留 group {}，忽略 group {}）", tool_name, winner, group);
+                }
                 continue;
             }
-            tools.insert(tool_name, entry.value().clone());
+            tools.insert(tool_name, Arc::new(GroupTool {
+                config: Arc::new(config),
+                imp,
+            }));
         }
     }
 

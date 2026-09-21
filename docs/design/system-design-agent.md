@@ -82,7 +82,6 @@ Agent 组件内部包含两大模块：
 
 **Station 模块**：负责工具执行
 - 全局 Station 单例：本级工具索引 + 直接子 Station 集合（工具名 group 内唯一，跨 group 重名收敛）
-- Group：一组工具（工具元数据 + 可选的本级原生实现）
 - NativeTool：本级原生工具接口，统一入参与出参
 - 子 Station：仅连接信息 + MCP 客户端；Station 自身也作为 MCP 服务端被其他 station 调用
 - 内置注册表：filesystem → read 工具

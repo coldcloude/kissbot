@@ -1,12 +1,14 @@
 //! 内置工具注册表：按 group 名给出内置工具（元数据 + 原生实现）
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use kissbot_mcp::Tool;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::Group;
-use crate::{station::filesystem::BUILTIN_GROUP_FILESYSTEM};
+use super::NativeTool;
+use crate::station::filesystem::BUILTIN_GROUP_FILESYSTEM;
 
 /// 内置工具的参数 JSON Schema（固定结构，不做手拼 JSON）
 #[derive(Debug, Serialize)]
@@ -33,9 +35,9 @@ pub struct PropertySchema {
 
 /// 内置注册表：按 group 名给出该 group 的内置工具（元数据 + 原生实现）
 /// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
-pub fn builtin_group(name: &str) -> Option<Group> {
+pub fn builtin_group(name: &str) -> Option<Vec<(Tool, Arc<dyn NativeTool>)>> {
     match name {
-        BUILTIN_GROUP_FILESYSTEM => Some(super::filesystem::group()),
+        BUILTIN_GROUP_FILESYSTEM => Some(super::filesystem::group_tools()),
         _ => None,
     }
 }

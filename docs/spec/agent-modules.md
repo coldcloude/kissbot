@@ -19,7 +19,7 @@
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
 | provider | ProviderManager / OpenAiProvider / AnthropicProvider | 按 provider 配置分派实现：构造请求、调用 API、归一化响应（含 thinking / reasoning_content / tool_calls / usage）；模型列表查询 | 被 nexus 调用（`call_provider_model` / `list_models`） |
-| station | Station / Group / GroupTool / SubStation / NativeTool / McpClient | 全局 Station 单例：本级 group 集合（工具元数据 + 原生实现，由内置注册表按 group 名填充）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
+| station | Station / GroupTool / SubStation / NativeTool / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
 | station_http | StationHttpServer / McpServer | station 对外 MCP 服务端（kissbot-mcp 的 McpServer + 单端点 `POST /mcp`，方法 server/discover / tools/list / tools/call），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus（system_prompt_for_agent）调用 |
 | http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
@@ -51,7 +51,7 @@ graph TB
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MEC["memory_ego_client<br/>MemoryEgoClient"]
         PRV["provider<br/>ProviderManager"]
-        ST["station<br/>Station / Group / SubStation<br/>NativeTool"]
+        ST["station<br/>Station / SubStation<br/>NativeTool"]
         EGO["ego_md"]
         HS["http_server<br/>HttpServer"]
         SHS["station_http<br/>StationHttpServer（MCP 服务端）"]
