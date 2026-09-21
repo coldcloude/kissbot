@@ -111,8 +111,7 @@ async fn handle<H: McpHandler>(
         );
     };
     let header_name = header_str(&headers, HEADER_NAME);
-    // 5. 取请求体字段：方法名与 `_meta` 的必填项
-    let meta = &value["params"]["_meta"];
+    // 5. 取请求体字段：方法名
     let Some(method) = value["method"].as_str() else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -120,6 +119,19 @@ async fn handle<H: McpHandler>(
             McpError::invalid_request("缺少 method 字段"),
         );
     };
+    // 6. 方法头与请求体一致
+    if header_method != method {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            id,
+            McpError::new(
+                HEADER_MISMATCH,
+                format!("Mcp-Method 头({}) 与请求 method({}) 不一致", header_method, method),
+            ),
+        );
+    }
+    // 7. 取请求体字段： `_meta` 的必填项
+    let meta = &value["params"]["_meta"];
     let Some(body_version) = meta[META_PROTOCOL_VERSION].as_str() else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -140,7 +152,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     }
-    // 6. 请求头与请求体必须一致，且协议版本在支持列表内
+    // 8. 请求头与请求体必须一致，且协议版本在支持列表内
     if header_version != body_version {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -169,18 +181,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     }
-    // 7. 方法头与请求体一致
-    if header_method != method {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            id,
-            McpError::new(
-                HEADER_MISMATCH,
-                format!("Mcp-Method 头({}) 与请求 method({}) 不一致", header_method, method),
-            ),
-        );
-    }
-    // 8. tools/call 的 Mcp-Name 头必填且与 params.name 一致
+    // 9. tools/call 的 Mcp-Name 头必填且与 params.name 一致
     if method == METHOD_TOOLS_CALL {
         let Some(name) = value["params"]["name"].as_str() else {
             return error_response(
@@ -210,7 +211,7 @@ async fn handle<H: McpHandler>(
             _ => {}
         }
     }
-    // 9. 解析为 JSON-RPC 请求并分发
+    // 10. 解析为 JSON-RPC 请求并分发
     let request: JsonRpcRequest = match serde_json::from_value(value) {
         Ok(r) => r,
         Err(e) => {
