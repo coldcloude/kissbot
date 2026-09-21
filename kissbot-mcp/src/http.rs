@@ -283,10 +283,8 @@ mod tests {
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
-                tool = tool.with_group(group.clone());
-            }
+            let _ = params;
+            let tool = Tool::new("read", "读", json!({ "type": "object" })).with_group("fs");
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 

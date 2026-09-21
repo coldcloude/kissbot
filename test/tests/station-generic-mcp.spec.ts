@@ -107,7 +107,6 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
           station_id: 'plain',
           base_url: plainUrl,
           timeout_secs: 5,
-          default_group: 'plain-remote',
         },
       },
     }, null, 2) + '\n');
@@ -122,28 +121,26 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  test('第三方工具默认归入默认 group，且不下传 group 参数', async ({ request }) => {
+  test('第三方工具归入子站默认 group，且不下传 group 扩展键', async ({ request }) => {
     const resp = await mcpCall(request, ENDPOINT, { method: 'tools/list' });
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.tools.map((t: any) => t.name)).toContain('plain-tool');
-    expect(body.result.tools[0]._meta['kissbot/group']).toBe('plain-remote');
-    // 对端未声明 kissbot 扩展 → 请求不带 group（带了也会被忽略）
+    // 对端工具未携带 group → 归入子站默认 group（由 station_id 派生）
+    expect(body.result.tools[0]._meta['kissbot/group']).toBe('[plain]');
+    // 对端未声明 kissbot 扩展 → 请求不带 kissbot/groups 扩展键
     expect(lastGroup).toBeUndefined();
   });
 
-  test('默认 group 命中白名单时保留，未命中时本地过滤掉', async ({ request }) => {
-    const hit = await mcpCall(request, ENDPOINT, {
+  test('未知的 _meta 扩展键被忽略，第三方工具照常返回', async ({ request }) => {
+    const resp = await mcpCall(request, ENDPOINT, {
       method: 'tools/list',
-      groups: ['plain-remote'],
+      params: { _meta: { 'kissbot/groups': ['other'] } },
     });
-    expect((await hit.json()).result.tools.map((t: any) => t.name)).toContain('plain-tool');
-
-    const miss = await mcpCall(request, ENDPOINT, {
-      method: 'tools/list',
-      groups: ['other'],
-    });
-    expect((await miss.json()).result.tools).toEqual([]);
+    const body = await resp.json();
+    expect(body.result.tools.map((t: any) => t.name)).toContain('plain-tool');
+    // 仍不下传该扩展键给不支持 kissbot 的对端
+    expect(lastGroup).toBeUndefined();
   });
 
   test('可经 MCP 调用第三方工具', async ({ request }) => {

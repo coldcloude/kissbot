@@ -42,11 +42,8 @@ test.describe.serial('station MCP 协议测试', () => {
     expect(body.result._meta['io.modelcontextprotocol/serverInfo'].name).toBe('kissbot-station');
   });
 
-  test('TC-03: tools/list 按 group 过滤，group 随工具携带', async ({ request }) => {
-    const resp = await mcpCall(request, MCP_ENDPOINT, {
-      method: 'tools/list',
-      groups: ['filesystem'],
-    });
+  test('TC-03: tools/list 返回工具定义，group 随工具携带', async ({ request }) => {
+    const resp = await mcpCall(request, MCP_ENDPOINT, { method: 'tools/list' });
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.resultType).toBe('complete');
@@ -63,10 +60,15 @@ test.describe.serial('station MCP 协议测试', () => {
     expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
   });
 
-  test('TC-05: tools/list group 白名单为空 → 空结果', async ({ request }) => {
-    const resp = await mcpCall(request, MCP_ENDPOINT, { method: 'tools/list', groups: [] });
+  test('TC-05: 未知的 _meta 扩展键被忽略，不影响 tools/list', async ({ request }) => {
+    // 规范要求容忍未知 `_meta` 键：带上旧版 kissbot/groups 也不报错、不过滤
+    const resp = await mcpCall(request, MCP_ENDPOINT, {
+      method: 'tools/list',
+      params: { _meta: { 'kissbot/groups': [] } },
+    });
+    expect(resp.status()).toBe(200);
     const body = await resp.json();
-    expect(body.result.tools).toEqual([]);
+    expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
   });
 
   test('TC-06: tools/call 成功调用本地 read', async ({ request }) => {

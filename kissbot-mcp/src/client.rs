@@ -139,9 +139,18 @@ mod tests {
     use crate::server::{McpHandler, McpServer};
     use async_trait::async_trait;
     use serde_json::json;
+    use std::sync::Mutex;
     use tokio::net::TcpListener;
 
-    struct TestHandler;
+    /// 服务端观测到的请求内容（验证请求侧字段确实发出）
+    #[derive(Default)]
+    struct Observed {
+        ancestors: Mutex<Option<Vec<String>>>,
+    }
+
+    struct TestHandler {
+        observed: Arc<Observed>,
+    }
 
     #[async_trait]
     impl McpHandler for TestHandler {
@@ -150,19 +159,9 @@ mod tests {
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
-                tool = tool.with_group(group.clone());
-            }
-            // 把收到的祖先链回填进工具元数据，验证请求 `_meta` 往返
-            let mut object = tool
-                .meta
-                .as_ref()
-                .and_then(|m| m.as_object())
-                .cloned()
-                .unwrap_or_default();
-            object.insert("test/ancestors".to_string(), json!(params.meta.ancestors));
-            tool.meta = Some(Arc::new(Value::Object(object)));
+            *self.observed.ancestors.lock().unwrap() =
+                params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
+            let tool = Tool::new("read", "读", json!({ "type": "object" })).with_group("filesystem");
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
@@ -182,10 +181,14 @@ mod tests {
         }
     }
 
-    /// 起一个真实 HTTP MCP 服务端，返回（端点 URL, 停止句柄）
-    async fn spawn_server() -> (String, tokio::task::JoinHandle<()>) {
+    /// 起一个真实 HTTP MCP 服务端，返回（端点 URL, 停止句柄, 观测记录）
+    async fn spawn_server() -> (String, tokio::task::JoinHandle<()>, Arc<Observed>) {
+        let observed = Arc::new(Observed::default());
         let app = router(
-            McpServer::new(Arc::new(TestHandler), Implementation::new("test-server", "0.1.0")),
+            McpServer::new(
+                Arc::new(TestHandler { observed: observed.clone() }),
+                Implementation::new("test-server", "0.1.0"),
+            ),
             McpHttpConfig::default(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -193,41 +196,39 @@ mod tests {
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (format!("http://{}/mcp", addr), handle)
+        (format!("http://{}/mcp", addr), handle, observed)
     }
 
     #[tokio::test]
     async fn client_discover_reads_server_info() {
-        let (endpoint, _h) = spawn_server().await;
+        let (endpoint, _h, _observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, Some("k"));
         let result = client.discover().await.unwrap();
         assert_eq!(result.result_type, ResultType::Complete);
         assert_eq!(
-            result.meta.server_info.as_ref().unwrap().name.as_str(),
+            result.meta.unwrap().server_info.unwrap().name.as_str(),
             "test-server"
         );
     }
 
     #[tokio::test]
-    async fn client_list_tools_sends_group_and_ancestors() {
-        let (endpoint, _h) = spawn_server().await;
+    async fn client_list_tools_sends_ancestors() {
+        let (endpoint, _h, observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, None);
-        let group = vec!["filesystem".to_string()];
         let ancestors = vec!["root".to_string()];
-        let result = client.list_tools(Some(&group), &ancestors).await.unwrap();
+        let result = client.list_tools(Arc::new(ancestors.clone())).await.unwrap();
         assert_eq!(result.tools[0].name.as_str(), "read");
         assert_eq!(result.tools[0].group(), Some("filesystem"), "group 随工具携带");
-        // 服务端把请求祖先链回填进工具元数据，验证 `_meta` 往返
-        let meta = result.tools[0].meta.as_ref().unwrap();
-        assert_eq!(meta["test/ancestors"], json!(ancestors));
+        // 请求 `_meta` 的祖先链确实发出
+        assert_eq!(observed.ancestors.lock().unwrap().clone(), Some(ancestors));
     }
 
     #[tokio::test]
     async fn client_call_tool_roundtrip() {
-        let (endpoint, _h) = spawn_server().await;
+        let (endpoint, _h, _observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, None);
         let result = client
-            .call_tool("read", json!({ "path": "a.txt" }), &[])
+            .call_tool("read", json!({ "path": "a.txt" }), Arc::new(Vec::new()))
             .await
             .unwrap();
         assert!(!result.is_error);
@@ -236,9 +237,12 @@ mod tests {
 
     #[tokio::test]
     async fn client_maps_remote_error() {
-        let (endpoint, _h) = spawn_server().await;
+        let (endpoint, _h, _observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, None);
-        let err = client.call_tool("boom", Value::Null, &[]).await.unwrap_err();
+        let err = client
+            .call_tool("boom", Value::Null, Arc::new(Vec::new()))
+            .await
+            .unwrap_err();
         match err {
             McpClientError::Remote { code, message } => {
                 assert_eq!(code, crate::protocol::STATION_CYCLE);

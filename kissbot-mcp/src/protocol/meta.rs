@@ -134,7 +134,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(ok.protocol_version.as_str(), "2026-07-28");
-        assert_eq!(ok.ancestors, vec!["root".to_string()]);
+        assert_eq!(ok.ancestors.unwrap().as_slice(), ["root".to_string()]);
 
         // 缺 protocolVersion：解析失败（上层映射为 -32602）
         assert!(
@@ -161,14 +161,14 @@ mod tests {
     }
 
     #[test]
-    fn response_meta_is_empty_without_server_info() {
+    fn response_meta_serializes_only_server_info() {
+        // 结果侧 `_meta` 以 Option 表达可选：默认（无身份）序列化为 {}
         let empty = ResponseMeta::default();
-        assert!(empty.is_empty());
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
         let filled = ResponseMeta {
             server_info: Some(Implementation::new("s", "1")),
         };
-        assert!(!filled.is_empty());
+        assert_eq!(serde_json::to_value(&filled).unwrap()[META_SERVER_INFO]["name"], "s");
     }
 
     #[test]

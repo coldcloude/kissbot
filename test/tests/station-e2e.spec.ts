@@ -50,7 +50,6 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
           station_id: 'station-b',
           base_url: `http://127.0.0.1:${STATION_B}`,
           timeout_secs: 5,
-          default_group: 'remote-b',
         },
       },
     });
@@ -95,18 +94,14 @@ test.describe.serial('station 级联端到端测试（A 经 MCP 调用子站 B�
     expect(body.result.tools[0]._meta['kissbot/group']).toBe('filesystem');
   });
 
-  test('A 的 group 白名单会下传给子站 B', async ({ request }) => {
-    const hit = await mcpCall(request, ENDPOINT_A, {
+  test('A 忽略未知的 _meta 扩展键，仍平铺子站 B 的工具', async ({ request }) => {
+    const resp = await mcpCall(request, ENDPOINT_A, {
       method: 'tools/list',
-      groups: ['filesystem'],
+      params: { _meta: { 'kissbot/groups': ['filesystem'] } },
     });
-    expect((await hit.json()).result.tools.some((t: any) => t.name === 'read')).toBe(true);
-
-    const miss = await mcpCall(request, ENDPOINT_A, {
-      method: 'tools/list',
-      groups: ['other'],
-    });
-    expect((await miss.json()).result.tools).toEqual([]);
+    expect(resp.status()).toBe(200);
+    const body = await resp.json();
+    expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
   });
 
   test('A 能经 MCP 远程调用子站 B 的 read 工具', async ({ request }) => {

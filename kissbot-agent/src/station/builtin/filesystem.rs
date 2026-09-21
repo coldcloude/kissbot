@@ -137,7 +137,7 @@ mod tests {
         let tool = ReadTool::new(dir.path().to_path_buf());
         let result = tool.call(serde_json::json!({ "path": "a.txt" })).await;
         // 文本结果由文本块直接承载（不加 JSON 转义），不设 structuredContent
-        assert_eq!(result.text_content().unwrap(), "文件内容");
+        assert_eq!(result.content.iter().find_map(|c| c.as_text()), Some("文件内容"));
         assert!(result.structured_content.is_null());
         assert!(!result.is_error);
     }

@@ -400,6 +400,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 首个文本块内容（成功结果读文本用）
+    fn first_text(result: &CallToolResult) -> Option<&str> {
+        result.content.iter().find_map(|c| c.as_text())
+    }
+
     #[test]
     fn tool_serializes_input_schema_camel_case() {
         let tool = Tool::new("read", "读取文件", json!({ "type": "object" }));
@@ -421,40 +426,33 @@ mod tests {
         let back: Tool = serde_json::from_value(v).unwrap();
         assert_eq!(back.group(), Some("filesystem"));
 
-        // 设置 group 保留其余元数据
-        let with_other = Tool {
-            meta: Some(Arc::new(json!({ "other/key": 1 }))),
-            ..Tool::new("t", "d", json!({}))
-        }
-        .with_group("g1");
-        assert_eq!(with_other.meta.as_ref().unwrap()["other/key"], 1);
-        assert_eq!(with_other.group(), Some("g1"));
-
-        // 无元数据时没有分组
-        assert!(Tool::new("t", "d", json!({})).group().is_none());
+        // set_group 就地设置；无元数据时没有分组
+        let mut plain = Tool::new("t", "d", json!({}));
+        assert!(plain.group().is_none());
+        plain.set_group("g1");
+        assert_eq!(plain.group(), Some("g1"));
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap()["_meta"][super::super::meta::META_GROUP],
+            "g1"
+        );
     }
 
     #[test]
-    fn list_params_parse_groups_from_request_meta() {
-        // 组白名单是 kissbot 扩展，放在请求 `_meta` 的 kissbot/groups；params 顶层只保留 cursor
+    fn list_params_parse_cursor_and_ancestors() {
+        // params 顶层保持规范形状（cursor + _meta）；级联祖先链在请求 `_meta`
         let params: ToolsListParams = serde_json::from_value(json!({
             "cursor": "c1",
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientCapabilities": {},
-                "kissbot/groups": ["filesystem"],
                 "kissbot/ancestors": ["a"]
             }
         }))
         .unwrap();
-        assert_eq!(
-            params.meta.groups.as_ref().unwrap(),
-            &vec!["filesystem".to_string()]
-        );
         assert_eq!(params.cursor.as_ref().unwrap().as_str(), "c1");
-        assert_eq!(params.meta.ancestors, vec!["a".to_string()]);
+        assert_eq!(params.meta.ancestors.unwrap().as_slice(), ["a".to_string()]);
 
-        // 不带白名单 = 全部（None）；空数组 = 空结果（保留 Some(空)）
+        // 不带祖先链：缺省为空（None）
         let none: ToolsListParams = serde_json::from_value(json!({
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
@@ -462,16 +460,10 @@ mod tests {
             }
         }))
         .unwrap();
-        assert!(none.meta.groups.is_none());
-        let empty: ToolsListParams = serde_json::from_value(json!({
-            "_meta": {
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                "io.modelcontextprotocol/clientCapabilities": {},
-                "kissbot/groups": []
-            }
-        }))
-        .unwrap();
-        assert_eq!(empty.meta.groups, Some(vec![]));
+        assert!(none.meta.ancestors.is_none());
+
+        // 请求 `_meta` 必填：缺失即解析失败
+        assert!(serde_json::from_value::<ToolsListParams>(json!({ "cursor": "c1" })).is_err());
     }
 
     #[test]
@@ -486,7 +478,7 @@ mod tests {
         };
         assert!(!r.is_error);
         assert_eq!(r.structured_content["path"], "a.txt");
-        assert_eq!(r.text_content().unwrap(), r#"{"path":"a.txt"}"#);
+        assert_eq!(first_text(&r).unwrap(), r#"{"path":"a.txt"}"#);
         let back = serde_json::to_value(&r).unwrap();
         assert_eq!(back["content"][0]["text"], r#"{"path":"a.txt"}"#);
         assert_eq!(back["structuredContent"]["path"], "a.txt");
@@ -495,7 +487,7 @@ mod tests {
     #[test]
     fn text_result_carries_no_structured_content() {
         let r = CallToolResult::text("文件内容");
-        assert_eq!(r.text_content().unwrap(), "文件内容");
+        assert_eq!(first_text(&r).unwrap(), "文件内容");
         assert!(r.structured_content.is_null());
         assert_eq!(serde_json::to_value(&r).unwrap()["content"], json!([{ "type": "text", "text": "文件内容" }]));
     }
@@ -544,15 +536,14 @@ mod tests {
                 structured
             );
             // 文案仍可取（回退文本块），但错误体本身原样保留
-            assert_eq!(r.error_message().as_deref(), Some("boom"));
+            assert_eq!(r.error_message(), Some("boom"));
             assert_eq!(serde_json::to_value(&r).unwrap()["structuredContent"], structured);
         }
     }
 
     #[test]
-    fn error_detail_ignores_non_error_results() {
+    fn kissbot_error_ignores_non_error_results() {
         let ok = CallToolResult::text("正常结果");
-        assert!(ok.error_detail().is_none());
         assert!(ok.kissbot_error().is_none());
         assert!(ok.error_message().is_none());
     }
@@ -571,7 +562,7 @@ mod tests {
         let r: CallToolResult =
             serde_json::from_value(json!({ "resultType": "complete", "content": content })).unwrap();
         assert_eq!(r.content.len(), 6);
-        assert_eq!(r.text_content().as_deref(), Some("说明"), "取首个文本块");
+        assert_eq!(first_text(&r), Some("说明"), "取首个文本块");
         assert_eq!(
             r.content.iter().map(|c| c.type_name()).collect::<Vec<_>>(),
             vec!["text", "image", "audio", "resource_link", "resource", "resource"]
@@ -603,12 +594,8 @@ mod tests {
         assert!(serde_json::to_value(&list).unwrap().get("_meta").is_none());
 
         // 有内容时正常输出
-        let with_info = CallToolResult {
-            meta: ResponseMeta {
-                server_info: Some(crate::protocol::Implementation::new("s", "1")),
-            },
-            ..CallToolResult::text("ok")
-        };
+        let with_info = CallToolResult::text("ok")
+            .with_server_info(crate::protocol::Implementation::new("s", "1"));
         assert_eq!(
             serde_json::to_value(&with_info).unwrap()["_meta"]
                 ["io.modelcontextprotocol/serverInfo"]["name"],

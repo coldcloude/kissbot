@@ -1005,7 +1005,7 @@ mod tests {
                 station_id: Arc::new("station-a".into()),
                 base_url: Arc::new("http://127.0.0.1:9001".into()),
                 timeout_secs: 30,
-                default_group: Arc::new("remote-a".into()),
+                prefix: Some(Arc::new("a/".into())),
             })));
         }
         let json = serde_json::to_string(&repo).unwrap();
@@ -1015,13 +1015,13 @@ mod tests {
         assert_eq!(back.groups, vec!["filesystem".to_string()], "group 列表回读");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
-        assert_eq!(sub.effective_group(), "remote-a", "默认 group 回读");
-        // 默认 group 可缺省：缺省时回落 station_id
+        assert_eq!(sub.prefix.as_deref().map(String::as_str), Some("a/"), "前缀回读");
+        // 前缀可缺省
         let minimal: SubStationConfig = serde_json::from_str(
             r#"{"station_id":"s1","base_url":"http://127.0.0.1:9002","timeout_secs":5}"#,
         )
         .unwrap();
-        assert_eq!(minimal.effective_group(), "s1");
+        assert!(minimal.prefix.is_none());
 
         // station_id 为必填：空对象 {} 应解析失败
         assert!(serde_json::from_str::<StationRepo>("{}").is_err(), "station_id 必填");

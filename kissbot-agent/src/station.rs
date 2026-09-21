@@ -408,71 +408,72 @@ mod tests {
             station_id: Arc::new("station-a".into()),
             base_url: Arc::new("http://127.0.0.1:9001".into()),
             timeout_secs: 5,
-            default_group: Arc::new(String::new()),
+            prefix: None,
         })));
         repo
     }
 
+    fn tool_config(name: &str) -> Arc<Tool> {
+        Arc::new(Tool::new(name, "d", json!({})))
+    }
+
+    /// 测试用空实现
+    fn noop_tool() -> Arc<dyn NativeTool> {
+        struct Noop;
+        #[async_trait]
+        impl NativeTool for Noop {
+            async fn call(&self, _arguments: Value) -> CallToolResult {
+                CallToolResult::text("noop")
+            }
+        }
+        Arc::new(Noop)
+    }
+
+    fn ancestors(list: &[&str]) -> Arc<Vec<String>> {
+        Arc::new(list.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn first_text(result: &CallToolResult) -> Option<&str> {
+        result.content.iter().find_map(|c| c.as_text())
+    }
+
+    /// 注入远程路由缓存（工具名 → 直接子 station_id）
+    fn set_routes(station: &Station, routes: &[(&str, &str)]) {
+        let mut map = HashMap::new();
+        for (name, station_id) in routes {
+            map.insert(name.to_string(), Arc::new(station_id.to_string()));
+        }
+        station.tool_routes.store(Arc::new(map));
+    }
+
     #[tokio::test]
-    async fn list_tools_none_returns_all_local() {
+    async fn list_tools_returns_all_local() {
         // 内置 filesystem group 声明后，read 工具元数据由内置注册表填充
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let tools = station.list_tools(None, &[]).await.unwrap();
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.len(), 1, "内置注册表应填充 read");
         assert_eq!(tools[0].name.as_str(), "read");
         assert_eq!(tools[0].group(), Some("filesystem"), "group 随工具携带");
     }
 
     #[tokio::test]
-    async fn list_tools_filter_whitelist_semantics() {
-        // None=全部；Some(命中)=白名单；Some(未命中)/Some(空集)=空
+    async fn list_tools_local_filters_by_tool_name() {
+        // 本地直连 nexus 的入口：按工具名集合过滤（None = 全部）
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
+        let hit: HashSet<String> = ["read".to_string()].into_iter().collect();
         let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
-        let empty = HashSet::new();
-        assert_eq!(station.list_tools(Some(&hit), &[]).await.unwrap().len(), 1);
-        assert!(station.list_tools(Some(&miss), &[]).await.unwrap().is_empty());
-        assert!(station.list_tools(Some(&empty), &[]).await.unwrap().is_empty(), "空集过滤返回空");
+        assert_eq!(station.list_tools_local(Some(&hit)).await.unwrap().len(), 1);
+        assert!(station.list_tools_local(Some(&miss)).await.unwrap().is_empty());
+        assert_eq!(station.list_tools_local(None).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn list_tools_with_sub_returns_empty_skeleton() {
-        // 子 Station 不可达：告警跳过，路由表不更新，结果只有本地（此处本地为空）
+    async fn list_tools_with_unreachable_sub_returns_empty() {
+        // 子 Station 不可达：告警跳过，路由表留空，结果只有本地（此处本地为空）
         let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
-        let listing = station.list_tools(None, &[]).await.unwrap();
+        let listing = station.list_tools(ancestors(&[])).await.unwrap();
         assert!(listing.is_empty(), "无本地工具，子连接错误被跳过");
-        assert!(station.tool_routes.is_empty(), "无子工具时路由表恒空");
-    }
-
-    #[test]
-    fn merge_sub_tools_inserts_and_keeps_first_wins() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let local_names: HashSet<String> = station.tools.iter().map(|e| e.key().clone()).collect();
-        // 子 a 提供 x/y → 全插入
-        let ta = vec![tool_config("x"), tool_config("y")];
-        let ins_a = station.merge_sub_tools("station-a", ta, &local_names);
-        assert_eq!(ins_a.len(), 2);
-        assert_eq!(station.tool_routes.get("x").unwrap().value().as_str(), "station-a");
-        // 子 b 提供 y（与 a 重名，先到者保留）与 z → y 剔除、z 插入
-        let tb = vec![tool_config("y"), tool_config("z")];
-        let ins_b = station.merge_sub_tools("station-b", tb, &local_names);
-        assert_eq!(ins_b.len(), 1, "y 冲突剔除，仅 z 插入");
-        assert!(ins_b.contains("z") && !ins_b.contains("y"));
-        assert_eq!(station.tool_routes.get("y").unwrap().value().as_str(), "station-a", "先到者保留");
-        assert_eq!(station.tool_routes.get("z").unwrap().value().as_str(), "station-b");
-        // 子 c 提供 read（与本地 filesystem 内置重名，本地优先）→ 剔除
-        let tc = vec![tool_config("read")];
-        let ins_c = station.merge_sub_tools("station-c", tc, &local_names);
-        assert!(ins_c.is_empty(), "与本地重名剔除");
-        assert!(!station.tool_routes.contains_key("read"), "本地工具不进路由表");
-        // 快照语义：子 a 重新拉取只含 x → 旧 y 记录被清
-        let ta2 = vec![tool_config("x")];
-        let _ = station.merge_sub_tools("station-a", ta2, &local_names);
-        assert!(!station.tool_routes.contains_key("y"), "快照：该子旧记录清除");
-    }
-
-    fn tool_config(name: &str) -> Arc<Tool> {
-        Arc::new(Tool::new(name, "d", json!({})))
+        assert!(station.tool_routes.load().is_empty(), "无子工具时路由表恒空");
     }
 
     #[test]
@@ -490,31 +491,19 @@ mod tests {
         assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
     }
 
-    /// 测试用空实现
-    fn noop_tool() -> Arc<dyn NativeTool> {
-        struct Noop;
-        #[async_trait]
-        impl NativeTool for Noop {
-            async fn call(&self, _arguments: Value) -> CallToolResult {
-                CallToolResult::text("noop")
-            }
-        }
-        Arc::new(Noop)
-    }
-
     #[tokio::test]
     async fn call_tool_routes_via_cache_table() {
         let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
         // 注入路由（模拟 list_tools 拉取后缓存）：工具 x 属于 station-a
-        station.tool_routes.insert("x".to_string(), "station-a".to_string());
+        set_routes(&station, &[("x", "station-a")]);
         // 命中路由 → 经 MCP 调子 Station（子站不可达）：工具级失败映射为 EXTERNAL_ERROR
         //（关键是「不是工具不存在」——路由确实生效了）
-        let result = station.call_tool("x", json!({}), &[]).await.unwrap();
+        let result = station.call_tool("x", json!({}), ancestors(&[])).await.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content["code"], TERR_TOOL_EXTERNAL_ERROR, "路由命中应调子而非工具不存在");
         assert!(result.error_message().unwrap().contains("调用 sub station 工具失败"), "子站调用失败文案");
         // 未命中路由（本地也无）→ 工具不存在
-        let miss = station.call_tool("nope", json!({}), &[]).await.unwrap();
+        let miss = station.call_tool("nope", json!({}), ancestors(&[])).await.unwrap();
         assert_eq!(miss.structured_content["code"], TERR_TOOL_NOT_FOUND);
         assert!(miss.error_message().unwrap().contains("工具不存在"));
     }
@@ -522,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn call_tool_local_miss_returns_not_found() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let miss = station.call_tool("nope", json!({}), &[]).await.unwrap();
+        let miss = station.call_tool_local("nope", json!({})).await.unwrap();
         assert_eq!(miss.structured_content["code"], TERR_TOOL_NOT_FOUND);
     }
 
@@ -530,18 +519,25 @@ mod tests {
     async fn call_tool_local_native_tool_executes() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
-        let result = station.call_tool("read", json!({ "path": "Cargo.toml" }), &[]).await.unwrap();
+        let result = station.call_tool_local("read", json!({ "path": "Cargo.toml" })).await.unwrap();
         assert!(!result.is_error, "本地 read 应成功: {:?}", result.error_message());
-        assert!(result.text_content().unwrap().contains("kissbot-agent"));
+        assert!(first_text(&result).unwrap().contains("kissbot-agent"));
     }
 
     #[tokio::test]
     async fn call_tool_cycle_is_protocol_error() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
         let err = station
-            .call_tool("read", json!({}), &["station-self".to_string()])
+            .call_tool("read", json!({}), ancestors(&["station-self"]))
             .await
             .unwrap_err();
+        assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
+    }
+
+    #[tokio::test]
+    async fn list_tools_cycle_is_protocol_error() {
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let err = station.list_tools(ancestors(&["station-self"])).await.unwrap_err();
         assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
     }
 
@@ -552,7 +548,7 @@ mod tests {
         // 显式走 McpHandler 实现（Station 另有同名固有方法）
         let listing = McpHandler::list_tools(&station, ToolsListParams {
             cursor: None,
-            meta: meta.clone().with_groups(&["filesystem".to_string()]),
+            meta: meta.clone(),
         })
         .await
         .unwrap();
@@ -569,20 +565,14 @@ mod tests {
         assert!(!called.is_error);
     }
 
-    #[tokio::test]
-    async fn list_tools_cycle_is_protocol_error() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let err = station.list_tools(None, &["station-self".to_string()]).await.unwrap_err();
-        assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
-    }
-
     // ========== 对接第三方 MCP 服务端（非 Station） ==========
 
-    /// tools/list 观测记录：(收到的 group 参数, 收到的祖先链)
-    type ListObservation = Arc<tokio::sync::Mutex<Option<(Option<Vec<String>>, Vec<String>)>>>;
+    /// tools/list 观测记录：服务端收到的祖先链
+    type ListObservation = Arc<tokio::sync::Mutex<Option<Vec<String>>>>;
 
-    /// 测试用 Mock MCP 服务端：可切换是否声明 kissbot 分组扩展、是否回带 group
+    /// 测试用 Mock MCP 服务端：可切换工具名、是否声明 kissbot 分组扩展、是否携带 group
     struct MockMcpHandler {
+        tool_name: String,
         kissbot_group: bool,
         echo_group: bool,
         observed: ListObservation,
@@ -596,14 +586,10 @@ mod tests {
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
-            *self.observed.lock().await =
-                Some((params.meta.groups.clone(), params.meta.ancestors.clone()));
-            let mut tool = Tool::new("mock-tool", "第三方工具", json!({ "type": "object" }));
-            // 回带 group 的模拟：把请求白名单的第一项作为该工具的 group
+            *self.observed.lock().await = params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
+            let mut tool = Tool::new(self.tool_name.clone(), "第三方工具", json!({ "type": "object" }));
             if self.echo_group {
-                if let Some(group) = params.meta.groups.as_ref().and_then(|g| g.first()) {
-                    tool = tool.with_group(group.clone());
-                }
+                tool = tool.with_group("mock-group");
             }
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
@@ -631,9 +617,10 @@ mod tests {
     }
 
     /// 起一个 Mock MCP 服务端，返回（基地址, 观测记录器）
-    async fn spawn_mock_mcp(kissbot_group: bool, echo_group: bool) -> (String, ListObservation) {
+    async fn spawn_mock_mcp_named(tool_name: &str, kissbot_group: bool, echo_group: bool) -> (String, ListObservation) {
         let observed: ListObservation = Arc::new(tokio::sync::Mutex::new(None));
         let handler = Arc::new(MockMcpHandler {
+            tool_name: tool_name.to_string(),
             kissbot_group,
             echo_group,
             observed: observed.clone(),
@@ -646,8 +633,12 @@ mod tests {
         (format!("http://{}", addr), observed)
     }
 
-    /// 构造只挂一个远程子 Station 的仓库
-    fn repo_with_remote_sub(base_url: &str, default_group: &str) -> StationRepo {
+    async fn spawn_mock_mcp(kissbot_group: bool, echo_group: bool) -> (String, ListObservation) {
+        spawn_mock_mcp_named("mock-tool", kissbot_group, echo_group).await
+    }
+
+    /// 构造只挂一个远程子 Station 的仓库（可选名字前缀）
+    fn repo_with_remote_sub(base_url: &str, prefix: Option<&str>) -> StationRepo {
         let mut repo = StationRepo::default();
         repo.station_id = Arc::new("station-self".into());
         let map = Arc::make_mut(&mut repo.sub_stations);
@@ -655,84 +646,81 @@ mod tests {
             station_id: Arc::new("remote".into()),
             base_url: Arc::new(base_url.into()),
             timeout_secs: 5,
-            default_group: Arc::new(default_group.into()),
+            prefix: prefix.map(|p| Arc::new(p.to_string())),
         })));
         repo
     }
 
-    fn group_filter(names: &[&str]) -> HashSet<String> {
-        names.iter().map(|s| s.to_string()).collect()
-    }
-
     #[tokio::test]
-    async fn generic_mcp_server_tools_fall_into_default_group_with_local_filter() {
-        // 通用 MCP 服务端（未声明 kissbot 扩展、不回带 group）
+    async fn remote_tool_without_group_falls_back_to_station_default_group() {
+        // 通用 MCP 服务端（未声明 kissbot 扩展、不携带 group）
         let (base, observed) = spawn_mock_mcp(false, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "remote-plain"), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
 
-        // 不下传 group：不支持分组过滤，传了也会被忽略
-        let all = station.list_tools(None, &[]).await.unwrap();
+        let all = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(all.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
-        assert_eq!(all[0].group(), Some("remote-plain"), "对端不带 group → 归入默认 group");
-        let (sent_group, sent_ancestors) = observed.lock().await.clone().unwrap();
-        assert!(sent_group.is_none(), "对端不支持时不传 group");
-        assert_eq!(sent_ancestors, vec!["station-self".to_string()], "祖先链始终附带（纯提示）");
-
-        // 本级白名单含默认 group → 保留；不含 → 本地过滤掉
-        assert_eq!(station.list_tools(Some(&group_filter(&["remote-plain"])), &[]).await.unwrap().len(), 1);
-        assert!(station.list_tools(Some(&group_filter(&["other"])), &[]).await.unwrap().is_empty());
-        assert!(station.list_tools(Some(&group_filter(&[])), &[]).await.unwrap().is_empty());
+        assert_eq!(all[0].group(), Some("[remote]"), "对端不带 group → 归入子站默认 group");
+        // 祖先链始终附带（纯提示），值为本级 station_id
+        assert_eq!(observed.lock().await.clone(), Some(vec!["station-self".to_string()]));
     }
 
     #[tokio::test]
-    async fn kissbot_mcp_server_group_is_passed_down_and_echo_is_trusted() {
-        // 声明 kissbot 扩展且回带 group 的服务端
-        let (base, observed) = spawn_mock_mcp(true, true).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "ignored-default"), "test-key").unwrap();
+    async fn remote_tool_group_from_kissbot_peer_is_trusted() {
+        // 声明 kissbot 扩展且携带 group 的服务端：以对端 group 为准
+        let (base, _observed) = spawn_mock_mcp(true, true).await;
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
 
-        let filtered = station.list_tools(Some(&group_filter(&["mock-group"])), &[]).await.unwrap();
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].group(), Some("mock-group"), "以对端携带的 group 为准");
-        let (sent_group, _) = observed.lock().await.clone().unwrap();
-        assert_eq!(sent_group, Some(vec!["mock-group".to_string()]), "支持时下传 group");
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].group(), Some("mock-group"), "以对端携带的 group 为准");
     }
 
     #[tokio::test]
-    async fn kissbot_mcp_server_without_group_echo_falls_back_to_default_group() {
-        // 声明支持但响应不带 group → 回落默认 group
+    async fn remote_tool_without_group_falls_back_when_peer_is_kissbot() {
+        // 声明支持但工具未携带 group → 回落子站默认 group
         let (base, _observed) = spawn_mock_mcp(true, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "fallback-group"), "test-key").unwrap();
-        let listing = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(listing.len(), 1);
-        assert_eq!(listing[0].group(), Some("fallback-group"));
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].group(), Some("[remote]"));
     }
 
     #[tokio::test]
-    async fn default_group_falls_back_to_station_id_when_unset() {
+    async fn remote_tool_name_gets_prefix_and_call_strips_it() {
+        // 前缀让远端工具名在本级唯一；调用时去掉前缀再转发给子站
         let (base, _observed) = spawn_mock_mcp(false, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, ""), "test-key").unwrap();
-        let listing = station.list_tools(None, &[]).await.unwrap();
-        assert_eq!(listing[0].group(), Some("remote"), "未配置默认 group 时回落 station_id");
-    }
+        let station = Station::from_repo(&repo_with_remote_sub(&base, Some("a/")), "test-key").unwrap();
 
-    #[tokio::test]
-    async fn generic_mcp_server_tool_can_be_called_after_routing() {
-        let (base, _observed) = spawn_mock_mcp(false, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "remote-plain"), "test-key").unwrap();
-        // 先拉取建立路由缓存
-        station.list_tools(None, &[]).await.unwrap();
-        let called = station.call_tool("mock-tool", json!({}), &[]).await.unwrap();
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
+        assert_eq!(tools[0].name.as_str(), "a/mock-tool");
+
+        let called = station.call_tool("a/mock-tool", json!({}), ancestors(&[])).await.unwrap();
         assert!(!called.is_error);
+        // 子站收到的是去掉前缀的本地名
         assert_eq!(called.structured_content["mock"], "mock-tool");
+    }
+
+    #[tokio::test]
+    async fn local_tool_takes_precedence_over_remote_same_name() {
+        // 远端工具与本级同名 → 本级优先，远端被剔除且不进路由表
+        let (base, _observed) = spawn_mock_mcp_named("read", false, false).await;
+        let mut repo = repo_with_remote_sub(&base, None);
+        repo.groups = vec!["filesystem".to_string()];
+        let station = Station::from_repo(&repo, "test-key").unwrap();
+
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
+        assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["read"]);
+        assert_eq!(tools[0].group(), Some("filesystem"), "保留的是本级工具");
+        assert!(station.tool_routes.load().is_empty(), "被剔除的远端工具不进路由表");
     }
 
     #[tokio::test]
     async fn sub_station_kissbot_cycle_error_surfaces_as_protocol_cycle() {
         // 子站以工具级 kissbot 错误（code=TERR_TOOL_CYCLE）报告循环 → 本级识别为协议级自环
         let (base, _observed) = spawn_mock_mcp(false, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "remote"), "test-key").unwrap();
-        station.tool_routes.insert("cycle-tool".to_string(), "remote".to_string());
-        let err = station.call_tool("cycle-tool", json!({}), &[]).await.unwrap_err();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        set_routes(&station, &[("cycle-tool", "remote")]);
+        let err = station.call_tool("cycle-tool", json!({}), ancestors(&[])).await.unwrap_err();
         assert_eq!(err.code, kissbot_mcp::STATION_CYCLE, "kissbot 循环错误码应被识别并上抛");
     }
 
@@ -740,9 +728,9 @@ mod tests {
     async fn sub_station_foreign_error_passes_through_unchanged() {
         // 非 kissbot 来源的错误体：本级不解释、不改写，原样回传
         let (base, _observed) = spawn_mock_mcp(false, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, "remote"), "test-key").unwrap();
-        station.tool_routes.insert("foreign-tool".to_string(), "remote".to_string());
-        let result = station.call_tool("foreign-tool", json!({}), &[]).await.unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        set_routes(&station, &[("foreign-tool", "remote")]);
+        let result = station.call_tool("foreign-tool", json!({}), ancestors(&[])).await.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content, json!({ "error": "boom" }), "第三方错误体原样透传");
         assert!(result.kissbot_error().is_none(), "非 kissbot 来源不按错误码解释");

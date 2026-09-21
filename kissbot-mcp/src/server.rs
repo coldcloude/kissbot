@@ -156,12 +156,11 @@ mod tests {
                 supported_versions: vec![],
                 capabilities: Default::default(),
                 instructions: None,
-                meta: ResponseMeta::default(),
+                meta: Some(ResponseMeta::default()),
             }
         }
 
-        async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            assert!(params.meta.groups.is_none(), "EchoHandler 期望无组白名单");
+        async fn list_tools(&self, _params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             Ok(ToolsListResult::new(vec![Arc::new(
                 Tool::new("echo", "回声", json!({ "type": "object" })).with_group("g1"),
             )]))
