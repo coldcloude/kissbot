@@ -80,11 +80,9 @@ impl HttpServer {
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
     pub async fn start(&self) -> Result<()> {
         let addr = format!("{}:{}", ConfigManager::get().mgmt_host(), ConfigManager::get().mgmt_port());
-        let listener = TcpListener::bind(&addr).await
-            .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
+        let listener = TcpListener::bind(&addr).await?;
         info!("管理 API 服务器启动: {}", addr);
-        axum::serve(listener, self.build_router()).await
-            .map_err(|e| crate::types::Error::IoError(e.to_string()))?;
+        axum::serve(listener, self.build_router()).await?;
         Ok(())
     }
 }

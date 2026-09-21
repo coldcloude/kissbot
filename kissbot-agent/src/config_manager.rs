@@ -137,8 +137,7 @@ impl ConfigManager {
     pub async fn new() -> Result<()> {
         let agent_config = AgentConfig::from_public_config();
         let data_dir = agent_config.data_dir.to_string();
-        tokio::fs::create_dir_all(&data_dir).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+        tokio::fs::create_dir_all(&data_dir).await?;
         // 派生子目录（仅创建，功能本轮不实现）
         for sub in ["sessions", "attachments", "station"] {
             let _ = tokio::fs::create_dir_all(format!("{}/{}", data_dir, sub)).await;
@@ -163,31 +162,27 @@ impl ConfigManager {
 
     async fn load_or_create_nexus(path: &str) -> Result<NexusRepo> {
         if std::path::Path::new(path).exists() {
-            let content = tokio::fs::read_to_string(path).await
-                .map_err(|e| Error::ConfigNotFound(format!("{}: {}", path, e)))?;
-            let repo: NexusRepo = serde_json::from_str(&content)
-                .map_err(|e| Error::ConfigParseError(e.to_string()))?;
+            let content = tokio::fs::read_to_string(path).await?;
+            let repo: NexusRepo = serde_json::from_str(&content)?;
             Ok(repo)
         } else {
             // 首次创建：默认空配置（channels/providers/(agent, role) 配置由 nexus.json 模板或管理 API 填写）
             let repo = NexusRepo::default();
             let json = serde_json::to_string_pretty(&repo)?;
-            tokio::fs::write(path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
+            tokio::fs::write(path, json).await?;
             Ok(repo)
         }
     }
 
     async fn load_or_create_station(path: &str) -> Result<StationRepo> {
         if std::path::Path::new(path).exists() {
-            let content = tokio::fs::read_to_string(path).await
-                .map_err(|e| Error::ConfigNotFound(format!("{}: {}", path, e)))?;
-            let repo: StationRepo = serde_json::from_str(&content)
-                .map_err(|e| Error::ConfigParseError(e.to_string()))?;
+            let content = tokio::fs::read_to_string(path).await?;
+            let repo: StationRepo = serde_json::from_str(&content)?;
             Ok(repo)
         } else {
             let repo = StationRepo::default();
             let json = serde_json::to_string_pretty(&repo)?;
-            tokio::fs::write(path, json).await.map_err(|e| Error::IoError(e.to_string()))?;
+            tokio::fs::write(path, json).await?;
             Ok(repo)
         }
     }
@@ -201,8 +196,7 @@ impl ConfigManager {
         let mut guard = self.nexus_repo.write().await;
         let rst = op(&mut *guard)?;
         let json = serde_json::to_string_pretty(&*guard)?;
-        tokio::fs::write(&self.nexus_path, json.as_bytes()).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+        tokio::fs::write(&self.nexus_path, json.as_bytes()).await?;
         Ok(rst)
     }
 
@@ -215,8 +209,7 @@ impl ConfigManager {
         let mut guard = self.station_repo.write().await;
         let rst = op(&mut *guard)?;
         let json = serde_json::to_string_pretty(&*guard)?;
-        tokio::fs::write(&self.station_path, json.as_bytes()).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+        tokio::fs::write(&self.station_path, json.as_bytes()).await?;
         Ok(rst)
     }
 

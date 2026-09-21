@@ -108,12 +108,9 @@ impl SessionContext {
             self.system_message = None;
             return Ok(());
         }
-        let mut reader = kai_file::LineReader::new(&path, None, None).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+        let mut reader = kai_file::LineReader::new(&path, None, None).await?;
         let mut msgs = Vec::new();
-        while let Some(line) = reader.next_line().await
-            .map_err(|e| Error::IoError(e.to_string()))?
-        {
+        while let Some(line) = reader.next_line().await? {
             let s = line.line.trim();
             if s.is_empty() { continue; }
             if let Ok(m) = serde_json::from_str::<Message>(s) {
@@ -151,14 +148,12 @@ impl SessionContext {
     pub async fn archive_and_clear_cache_and_reset_messages(&mut self, messages: Option<Vec<Message>>) -> Result<()> {
         // 1. 归档：当前内存（含当前系统消息）→ 历史
         if !self.messages.is_empty() {
-            tokio::fs::create_dir_all(&self.history_dir()).await
-                .map_err(|e| Error::IoError(e.to_string()))?;
+            tokio::fs::create_dir_all(&self.history_dir()).await?;
             let ts = Local::now().format("%Y-%m-%d-%H%M%S").to_string();
             // 历史文件名 = <key编码>-<时间戳>.jsonl（key 编码即缓存文件名段）
             let dest = self.history_dir().join(format!("{}-{}.jsonl", self.key_enc, ts));
             let mut file = tokio::fs::OpenOptions::new()
-                .create(true).write(true).truncate(true).open(&dest).await
-                .map_err(|e| Error::IoError(e.to_string()))?;
+                .create(true).write(true).truncate(true).open(&dest).await?;
             // 历史格式与缓存一致：System 首行（如有），其后为消息行
             let mut lines = Vec::with_capacity(self.messages.len() + 1);
             if let Some(system) = &self.system_message {
@@ -170,7 +165,7 @@ impl SessionContext {
         // 2. 清空缓存文件（文件不存在幂等）
         if let Err(e) = tokio::fs::remove_file(&self.cache_path()).await {
             if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(Error::IoError(e.to_string()));
+                return Err(Error::IoError(e));
             }
         }
         // 3. 重置消息（只有清空缓存文件后才允许重置消息）
@@ -199,20 +194,16 @@ impl SessionContext {
         let path = self.cache_path();
         let is_new = !path.exists();
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await
-                .map_err(|e| Error::IoError(e.to_string()))?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         let mut file = tokio::fs::OpenOptions::new()
-            .create(true).append(true).open(&path).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+            .create(true).append(true).open(&path).await?;
         if is_new {
             // 缓存格式：System 行在最前；新文件创建时落当前系统消息
             if let Some(system) = &self.system_message {
                 let line = serde_json::to_string(&Message::System { content: Arc::new(system.clone()) })?;
-                file.write_all(line.as_bytes()).await
-                    .map_err(|e| Error::IoError(e.to_string()))?;
-                file.write_all(b"\n").await
-                    .map_err(|e| Error::IoError(e.to_string()))?;
+                file.write_all(line.as_bytes()).await?;
+                file.write_all(b"\n").await?;
             }
         }
         Ok(file)
@@ -224,10 +215,8 @@ impl SessionContext {
 async fn write_cache_lines(file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
     for m in messages {
         let line = serde_json::to_string(m)?;
-        file.write_all(line.as_bytes()).await
-            .map_err(|e| Error::IoError(e.to_string()))?;
-        file.write_all(b"\n").await
-            .map_err(|e| Error::IoError(e.to_string()))?;
+        file.write_all(line.as_bytes()).await?;
+        file.write_all(b"\n").await?;
     }
     Ok(())
 }

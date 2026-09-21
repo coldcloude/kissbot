@@ -7,9 +7,6 @@ pub enum Error {
     #[error("Config not found: {0}")]
     ConfigNotFound(String),
 
-    #[error("Config parse error: {0}")]
-    ConfigParseError(String),
-
     #[error("Model API error: {0}")]
     ModelApiError(String),
 
@@ -25,43 +22,14 @@ pub enum Error {
     #[error("Memory time window error: {0}")]
     MemoryTimeWindow(String),
 
-    #[allow(dead_code)]
     #[error("Memory ego error: {0}")]
     MemoryEgoError(String),
-
-    #[allow(dead_code)]
-    #[error("WS connection error: {0}")]
-    WsConnectionError(String),
-
-    #[allow(dead_code)]
-    #[error("WS bind error: {0}")]
-    WsBindError(String),
-
-    #[allow(dead_code)]
-    #[error("Station connection error: {0}")]
-    StationConnectionError(String),
 
     #[error("Invalid command: {0}")]
     InvalidCommand(String),
 
-    #[allow(dead_code)]
-    #[error("Permission denied")]
-    PermissionDenied,
-
-    #[allow(dead_code)]
-    #[error("Mode conflict: {0}")]
-    ModeConflict(String),
-
-    #[allow(dead_code)]
-    #[error("Context overflow")]
-    ContextOverflow,
-
-    #[allow(dead_code)]
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
-
     #[error("IO error: {0}")]
-    IoError(String),
+    IoError(#[from] std::io::Error),
 
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] reqwest::Error),
@@ -69,13 +37,15 @@ pub enum Error {
     #[error("Serde JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
+    #[error("File error: {0}")]
+    FileError(#[from] kai_file::Error),
+
     #[error("WS error: {0}")]
     WsError(#[from] kai_ws::Error),
 
     #[error("MCP error: {0}")]
     McpError(#[from] kissbot_mcp::McpError),
 
-    #[allow(dead_code)]
     #[error("Internal error: {0}")]
     InternalError(String),
 
