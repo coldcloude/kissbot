@@ -105,7 +105,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 
 | 方法 | 请求要点 | 响应要点 |
 |------|----------|----------|
-| server/discover | 仅 `_meta` | `supportedVersions`（`["2026-07-28"]`）、`capabilities.tools`、`capabilities.kissbot`（`{ group: true, ancestors: true }`）、`instructions`、`_meta.serverInfo`（name = `kissbot-station`） |
+| server/discover | 仅 `_meta` | `supportedVersions`（`["2026-07-28"]`）、`capabilities.tools`、`capabilities.kissbot`（`{ ancestors: true }`，声明支持级联祖先链）、`instructions`、`_meta.serverInfo`（name = `kissbot-station`） |
 | tools/list | `_meta["kissbot/ancestors"]` | `tools`（MCP 工具定义，各工具 `_meta["kissbot/group"]` 携带所属 group） |
 | tools/call | `name`、`arguments`、`_meta["kissbot/ancestors"]` | `content` / `structuredContent` / `isError`；自环返回 JSON-RPC 错误 `1001` |
 

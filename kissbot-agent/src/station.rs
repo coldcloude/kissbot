@@ -698,6 +698,6 @@ mod tests {
     async fn station_discover_declares_kissbot_extensions() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
         let result = McpHandler::discover(&station).await;
-        assert!(result.supports_group() && result.supports_ancestors() && result.supports_kissbot());
+        assert!(result.supports_ancestors() && result.supports_kissbot());
     }
 }

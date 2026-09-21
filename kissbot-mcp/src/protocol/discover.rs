@@ -24,22 +24,19 @@ pub struct ToolsCapability {
     pub list_changed: bool,
 }
 
-/// kissbot 扩展能力声明：服务端在 `server/discover` 中声明它理解 kissbot 扩展键，
-/// 客户端据此判定对端是否理解分组归因与级联祖先链。
+/// kissbot 扩展能力声明：服务端在 `server/discover` 中声明它理解 kissbot 的级联扩展键，
+/// 客户端据此判定对端是否理解级联祖先链。分组归因（`Tool._meta["kissbot/group"]`）不需要声明。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KissbotCapability {
-    /// 工具定义携带 `_meta["kissbot/group"]` 分组归因
-    #[serde(default)]
-    pub group: bool,
     /// 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测
     #[serde(default)]
     pub ancestors: bool,
 }
 
 impl KissbotCapability {
-    /// 完整支持 kissbot 的分组与级联扩展
+    /// 支持 kissbot 的级联扩展
     pub fn full() -> Self {
-        Self { group: true, ancestors: true }
+        Self { ancestors: true }
     }
 }
 
@@ -91,15 +88,10 @@ impl DiscoverResult {
         }
     }
 
-    /// 声明完整支持 kissbot 的分组与级联扩展
+    /// 声明支持 kissbot 的级联扩展
     pub fn with_kissbot_extensions(mut self) -> Self {
         self.capabilities.kissbot = Some(KissbotCapability::full());
         self
-    }
-
-    /// 对端是否声明支持 `tools/list` 分组过滤
-    pub fn supports_group(&self) -> bool {
-        self.capabilities.kissbot.as_ref().is_some_and(|k| k.group)
     }
 
     /// 对端是否声明支持级联祖先链
@@ -125,10 +117,10 @@ mod tests {
         let result = DiscoverResult::tools_only(Implementation::new("s", "1"), None)
             .with_kissbot_extensions();
         let v = serde_json::to_value(&result).unwrap();
-        assert_eq!(v["capabilities"]["kissbot"]["group"], true);
         assert_eq!(v["capabilities"]["kissbot"]["ancestors"], true);
+        assert!(v["capabilities"]["kissbot"].get("group").is_none(), "分组归因不需要能力声明");
         assert_eq!(v["capabilities"]["tools"]["listChanged"], false);
-        assert!(result.supports_group() && result.supports_ancestors() && result.supports_kissbot());
+        assert!(result.supports_ancestors() && result.supports_kissbot());
     }
 
     #[test]
@@ -141,7 +133,6 @@ mod tests {
             "_meta": {}
         });
         let result: DiscoverResult = serde_json::from_value(raw).unwrap();
-        assert!(!result.supports_group());
         assert!(!result.supports_ancestors());
         assert!(!result.supports_kissbot());
     }

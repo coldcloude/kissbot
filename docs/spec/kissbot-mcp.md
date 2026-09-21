@@ -81,12 +81,11 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `group` | bool | 工具定义携带 `_meta["kissbot/group"]` 分组归因 |
 | `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
 
-`DiscoverResult` 提供 `supports_group()` / `supports_ancestors()` / `supports_kissbot()` 读取该声明；
-`DiscoverResult::with_kissbot_extensions()` 声明完整扩展，`KissbotCapability::full()` 为其值。
-声明只描述对端是否理解这些扩展键；本实现的分组归因不依赖它（工具带 `kissbot/group` 即归因于该组，未携带则回落调用方给的默认分组），第三方服务端因此无需声明也能接入。
+`DiscoverResult` 提供 `supports_ancestors()` / `supports_kissbot()` 读取该声明；
+`DiscoverResult::with_kissbot_extensions()` 声明该扩展，`KissbotCapability::full()` 为其值。
+声明只描述对端是否理解级联扩展键；分组归因不需要声明（工具定义带 `kissbot/group` 即归因于该组，未携带则回落调用方给的默认分组），第三方服务端因此无需声明也能接入。
 
 ```jsonc
 {
@@ -96,7 +95,7 @@
     "supportedVersions": ["2026-07-28"],
     "capabilities": {
       "tools": { "listChanged": false },
-      "kissbot": { "group": true, "ancestors": true }
+      "kissbot": { "ancestors": true }
     },
     "instructions": "…",
     "_meta": { "io.modelcontextprotocol/serverInfo": { "name": "…", "version": "…" } }
@@ -298,7 +297,7 @@
 
 - `McpClient::new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>)`：`endpoint` 为 MCP 端点完整 URL；`api_key` 非空时以 `X-Api-Key` 头发送
 - `with_client_info(implementation)`：覆盖自报身份（默认 `name = "kissbot-mcp-client"`，`version` 取包版本）
-- `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_group()` / `supports_ancestors()` / `supports_kissbot()` 用于判定对端声明的 kissbot 扩展能力
+- `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_ancestors()` / `supports_kissbot()` 用于判定对端声明的 kissbot 级联扩展能力
 - `list_tools(ancestors: Arc<Vec<String>>) -> ToolsListResult`：祖先链写入请求 `_meta["kissbot/ancestors"]`
 - `call_tool(name: &str, arguments: Value, ancestors: Arc<Vec<String>>) -> CallToolResult`
 - 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、`kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增

@@ -156,10 +156,9 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     expect(image.mimeType).toBe('image/png');
   });
 
-  test('本级 discover 仍声明 kissbot 扩展（对端可据此判定）', async ({ request }) => {
+  test('本级 discover 声明 kissbot 级联扩展（对端可据此判定）', async ({ request }) => {
     const resp = await mcpCall(request, ENDPOINT, { method: 'server/discover' });
     const body = await resp.json();
-    expect(body.result.capabilities.kissbot.group).toBe(true);
     expect(body.result.capabilities.kissbot.ancestors).toBe(true);
   });
 });
