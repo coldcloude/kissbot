@@ -8,6 +8,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::JSONRPC_VERSION;
+
 // ========== JSON-RPC 标准错误码 ==========
 
 pub const PARSE_ERROR: i64 = -32700;
@@ -78,16 +80,16 @@ pub struct JsonRpcRequest {
 impl JsonRpcRequest {
     pub fn new(id: impl Into<RequestId>, method: impl Into<String>, params: Value) -> Self {
         Self {
-            jsonrpc: Arc::new("2.0".to_string()),
+            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
             id: id.into(),
             method: Arc::new(method.into()),
             params,
         }
     }
 
-    /// 校验 JSON-RPC 版本（`2.0`）
+    /// 校验 JSON-RPC 版本（`JSONRPC_VERSION`）
     pub fn validate(&self) -> Result<(), McpError> {
-        if self.jsonrpc.as_str() != "2.0" {
+        if self.jsonrpc.as_str() != JSONRPC_VERSION {
             return Err(McpError::invalid_request(format!(
                 "不支持的 jsonrpc 版本: {}",
                 self.jsonrpc
@@ -140,7 +142,7 @@ impl JsonRpcResponse {
     /// 成功响应：result 必须携带 resultType（由上层结果类型保证）
     pub fn success(id: RequestId, result: Value) -> Self {
         Self {
-            jsonrpc: Arc::new("2.0".to_string()),
+            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
             id: Some(id),
             result: Some(result),
             error: None,
@@ -150,7 +152,7 @@ impl JsonRpcResponse {
     /// 错误响应；id 未知（如解析失败）时为 None
     pub fn error(id: Option<RequestId>, error: McpError) -> Self {
         Self {
-            jsonrpc: Arc::new("2.0".to_string()),
+            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
             id,
             result: None,
             error: Some(JsonRpcError {

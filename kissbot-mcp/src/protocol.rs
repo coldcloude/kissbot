@@ -15,6 +15,9 @@ pub use tools::*;
 /// 本实现所实现的 MCP 协议版本
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
+/// JSON-RPC 版本（消息固定携带该值）
+pub const JSONRPC_VERSION: &str = "2.0";
+
 /// `server/discover` 方法名
 pub const METHOD_DISCOVER: &str = "server/discover";
 /// `tools/list` 方法名
