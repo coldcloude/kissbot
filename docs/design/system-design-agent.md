@@ -87,4 +87,4 @@ Agent 组件内部包含两大模块：
 - 子 Station：仅连接信息 + MCP 客户端；Station 自身也作为 MCP 服务端被其他 station 调用
 - 内置注册表：filesystem → read 工具
 - 工具执行器：接收并执行工具调用（本级原生实现 → 工具路由 → 对应子 Station 的 MCP 调用）
-Nexus 通过内部调用与全局 Station 单例通信（工具分组白名单查询 tools_for_session / 工具调用 Station::call_tool），Station 之间通过 MCP 通信。Agent 启动时装配 Nexus 与 Station。
+Nexus 通过内部调用与全局 Station 单例通信（工具分组白名单查询 tools_for_session / 工具调用 Station::call_tool_local），Station 之间通过 MCP 通信。Agent 启动时装配 Nexus 与 Station。

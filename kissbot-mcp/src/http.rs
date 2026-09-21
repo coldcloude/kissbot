@@ -284,7 +284,8 @@ mod tests {
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             let _ = params;
-            let tool = Tool::new("read", "读", json!({ "type": "object" })).with_group("fs");
+            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
+            tool.set_group("fs");
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
@@ -338,8 +339,7 @@ mod tests {
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list",
                      "params": { "_meta": {
                          "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
-                         "io.modelcontextprotocol/clientCapabilities": {},
-                         "kissbot/groups": ["fs"]
+                         "io.modelcontextprotocol/clientCapabilities": {}
                      } } }),
         )
         .await;

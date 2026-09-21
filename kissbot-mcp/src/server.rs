@@ -21,7 +21,7 @@ pub trait McpHandler: Send + Sync + 'static {
     /// 服务端能力与身份（协议版本与服务端身份由 `McpServer` 统一填充）
     async fn discover(&self) -> DiscoverResult;
 
-    /// 工具列表（含 kissbot 分组过滤）
+    /// 工具列表（返回的工具定义可携带 kissbot 分组）
     async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError>;
 
     /// 工具调用
@@ -161,9 +161,9 @@ mod tests {
         }
 
         async fn list_tools(&self, _params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            Ok(ToolsListResult::new(vec![Arc::new(
-                Tool::new("echo", "回声", json!({ "type": "object" })).with_group("g1"),
-            )]))
+            let mut tool = Tool::new("echo", "回声", json!({ "type": "object" }));
+            tool.set_group("g1");
+            Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {

@@ -432,7 +432,7 @@ impl Nexus {
         self.memory_store_client.push_tool_result(request).await;
     }
 
-    /// 会话可用工具：会话配置的启用 group 白名单 → Station 经 MCP tools/list 平铺查询（本级 + 直接子递归）
+    /// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
     /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
     pub async fn tools_for_session(&self, session_key: &SessionKey) -> Vec<Arc<ToolConfig>> {
         let cfg = ConfigManager::get().session_config::<GroupSetConfig,GroupSetConfig>(session_key).await;

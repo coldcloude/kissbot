@@ -25,10 +25,10 @@ pub struct ToolsCapability {
 }
 
 /// kissbot 扩展能力声明：服务端在 `server/discover` 中声明它理解 kissbot 扩展键，
-/// 客户端据此决定是否使用分组过滤与级联祖先链。
+/// 客户端据此判定对端是否理解分组归因与级联祖先链。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KissbotCapability {
-    /// 支持 `tools/list` 的 `group` 过滤与结果 `kissbot/group` 回带
+    /// 工具定义携带 `_meta["kissbot/group"]` 分组归因
     #[serde(default)]
     pub group: bool,
     /// 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测

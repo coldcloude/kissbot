@@ -18,8 +18,6 @@ pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabi
 pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 /// kissbot 扩展：工具自身所属的组名（`Tool._meta`）
 pub const META_GROUP: &str = "kissbot/group";
-/// kissbot 扩展：`tools/list` 请求的组白名单（请求 `_meta`）
-pub const META_GROUPS: &str = "kissbot/groups";
 /// kissbot 扩展：station 级联祖先链（根 → 当前父节点）
 pub const META_ANCESTORS: &str = "kissbot/ancestors";
 

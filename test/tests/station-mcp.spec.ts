@@ -54,14 +54,14 @@ test.describe.serial('station MCP 协议测试', () => {
     expect(body.result.tools[0]._meta['kissbot/group']).toBe('filesystem');
   });
 
-  test('TC-04: tools/list 不带 group 返回全部工具', async ({ request }) => {
+  test('TC-04: tools/list 返回全部本级工具', async ({ request }) => {
     const resp = await mcpCall(request, MCP_ENDPOINT, { method: 'tools/list' });
     const body = await resp.json();
     expect(body.result.tools.some((t: any) => t.name === 'read')).toBe(true);
   });
 
   test('TC-05: 未知的 _meta 扩展键被忽略，不影响 tools/list', async ({ request }) => {
-    // 规范要求容忍未知 `_meta` 键：带上旧版 kissbot/groups 也不报错、不过滤
+    // 规范要求容忍未知 `_meta` 键：带上已移除的旧扩展键也不报错、不过滤
     const resp = await mcpCall(request, MCP_ENDPOINT, {
       method: 'tools/list',
       params: { _meta: { 'kissbot/groups': [] } },

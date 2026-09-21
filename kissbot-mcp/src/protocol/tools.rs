@@ -71,17 +71,9 @@ impl Tool {
         meta.group = Some(group.into());
         self.meta = Some(meta);
     }
-
-    /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
-    pub fn with_group(mut self, group: impl Into<String>) -> Self {
-        let mut meta = self.meta.take().unwrap_or_default();
-        meta.group = Some(group.into());
-        self.meta = Some(meta);
-        self
-    }
 }
 
-/// `tools/list` 请求参数（组白名单见请求 `_meta` 的 `kissbot/groups`）
+/// `tools/list` 请求参数（params 顶层保持规范形状：cursor + _meta）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -419,16 +411,18 @@ mod tests {
     #[test]
     fn tool_group_travels_in_meta() {
         // group 是工具的固有属性，随工具定义的 `_meta` 携带
-        let tool = Tool::new("read", "读取文件", json!({ "type": "object" })).with_group("filesystem");
+        let mut tool = Tool::new("read", "读取文件", json!({ "type": "object" }));
+        // 无元数据时没有分组
+        assert!(tool.group().is_none());
+        tool.set_group("filesystem");
         assert_eq!(tool.group(), Some("filesystem"));
         let v = serde_json::to_value(&tool).unwrap();
         assert_eq!(v["_meta"][super::super::meta::META_GROUP], "filesystem");
         let back: Tool = serde_json::from_value(v).unwrap();
         assert_eq!(back.group(), Some("filesystem"));
 
-        // set_group 就地设置；无元数据时没有分组
+        // 重复设置覆盖为新值
         let mut plain = Tool::new("t", "d", json!({}));
-        assert!(plain.group().is_none());
         plain.set_group("g1");
         assert_eq!(plain.group(), Some("g1"));
         assert_eq!(

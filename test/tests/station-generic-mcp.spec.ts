@@ -22,16 +22,14 @@ let dir: string;
 let agent: ChildProcess;
 let plain: Server;
 let plainUrl: string;
-let lastGroup: unknown;
 
 /**
  * 启动一个「通用 MCP 服务端」（非 kissbot）：
  * - server/discover 只声明 tools 能力，不声明 kissbot 扩展
- * - tools/list 忽略 kissbot/groups 白名单，始终返回同名工具
+ * - tools/list 返回固定工具，且工具定义不携带 group
  * - tools/call 返回结构化结果
  */
 async function startPlainMcpServer(): Promise<{ server: Server; url: string }> {
-  lastGroup = undefined;
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -56,7 +54,6 @@ async function startPlainMcpServer(): Promise<{ server: Server; url: string }> {
           });
           break;
         case 'tools/list':
-          lastGroup = rpc.params?._meta?.['kissbot/groups'];
           reply({
             resultType: 'complete',
             tools: [{ name: 'plain-tool', description: '第三方工具', inputSchema: { type: 'object' } }],
@@ -98,7 +95,7 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     cfg.agent.mgmt_port = MGMT;
     cfg.agent.station_port = STATION;
     writeFileSync(join(dir, 'config.json'), JSON.stringify(cfg, null, 2) + '\n');
-    // 本级无 group，只挂一个第三方 MCP 服务端，默认 group = plain-remote
+    // 本级无 group，只挂一个第三方 MCP 服务端，其工具默认 group 由 station_id 派生（[plain]）
     writeFileSync(join(dir, 'agent-data', 'station.json'), JSON.stringify({
       station_id: 'station-a',
       groups: [],
@@ -121,15 +118,13 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  test('第三方工具归入子站默认 group，且不下传 group 扩展键', async ({ request }) => {
+  test('第三方工具归入子站默认 group', async ({ request }) => {
     const resp = await mcpCall(request, ENDPOINT, { method: 'tools/list' });
     expect(resp.status()).toBe(200);
     const body = await resp.json();
     expect(body.result.tools.map((t: any) => t.name)).toContain('plain-tool');
     // 对端工具未携带 group → 归入子站默认 group（由 station_id 派生）
     expect(body.result.tools[0]._meta['kissbot/group']).toBe('[plain]');
-    // 对端未声明 kissbot 扩展 → 请求不带 kissbot/groups 扩展键
-    expect(lastGroup).toBeUndefined();
   });
 
   test('未知的 _meta 扩展键被忽略，第三方工具照常返回', async ({ request }) => {
@@ -139,8 +134,6 @@ test.describe.serial('station 对接第三方 MCP 服务端（非 Station）', (
     });
     const body = await resp.json();
     expect(body.result.tools.map((t: any) => t.name)).toContain('plain-tool');
-    // 仍不下传该扩展键给不支持 kissbot 的对端
-    expect(lastGroup).toBeUndefined();
   });
 
   test('可经 MCP 调用第三方工具', async ({ request }) => {

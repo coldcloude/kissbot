@@ -11,7 +11,7 @@
 | 方法 | 常量 | 说明 |
 |------|------|------|
 | `server/discover` | `METHOD_DISCOVER` | 查询服务端支持的协议版本、能力与身份 |
-| `tools/list` | `METHOD_TOOLS_LIST` | 查询工具定义（支持 kissbot 分组过滤） |
+| `tools/list` | `METHOD_TOOLS_LIST` | 查询工具定义（工具定义可携带 kissbot 分组） |
 | `tools/call` | `METHOD_TOOLS_CALL` | 调用工具 |
 
 `SUPPORTED_METHODS` 为上述三个方法名的数组（供文档与断言使用）。
@@ -51,8 +51,7 @@
 | `io.modelcontextprotocol/protocolVersion` | 是 | string | 本请求使用的协议版本 |
 | `io.modelcontextprotocol/clientInfo` | 否 | object | 客户端身份（`name` / `version`） |
 | `io.modelcontextprotocol/clientCapabilities` | 是 | object | 客户端能力（可为空对象） |
-| `kissbot/groups` | 否 | string[] | `tools/list` 的组白名单（缺省 = 全部；空数组 = 空结果；非空 = 只返回命中组的工具） |
-| `kissbot/ancestors` | 否 | string[] | station 级联祖先链（根 → 当前父节点的 station_id 列表；空列表不序列化） |
+| `kissbot/ancestors` | 否 | string[] | station 级联祖先链（根 → 当前父节点的 station_id 列表；未设置时省略该键） |
 
 ### 响应 `_meta`
 
@@ -82,12 +81,12 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `group` | bool | 支持 `_meta["kissbot/groups"]` 白名单过滤，且工具定义携带 `_meta["kissbot/group"]` |
+| `group` | bool | 工具定义携带 `_meta["kissbot/group"]` 分组归因 |
 | `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
 
 `DiscoverResult` 提供 `supports_group()` / `supports_ancestors()` / `supports_kissbot()` 读取该声明；
 `DiscoverResult::with_kissbot_extensions()` 声明完整扩展，`KissbotCapability::full()` 为其值。
-客户端据此在首次接触时一次性判定对端是否支持 kissbot 扩展，无需逐请求试探。
+声明只描述对端是否理解这些扩展键；本实现的分组归因不依赖它（工具带 `kissbot/group` 即归因于该组，未携带则回落调用方给的默认分组），第三方服务端因此无需声明也能接入。
 
 ```jsonc
 {
@@ -112,7 +111,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `cursor` | string? | 分页游标（本实现不产出 `nextCursor`） |
-| `_meta` | object | 请求元数据；kissbot 组白名单写在 `_meta["kissbot/groups"]`（见「请求 `_meta`」） |
+| `_meta` | object | 请求元数据（见「请求 `_meta`」） |
 
 `params` 顶层保持规范形状（仅 `cursor` 与 `_meta`），kissbot 扩展一律走 `_meta`。
 
@@ -137,12 +136,15 @@
 | `annotations` | object? | 工具行为注解（可选，缺省不序列化） |
 | `_meta` | object? | 工具元数据（可选，缺省不序列化）；kissbot 分组写在 `_meta["kissbot/group"]` |
 
-分组是工具的固有属性，随工具定义携带；请求参数 `group` 只是可选的服务端过滤手段，不改变归因口径。读取辅助：`Tool::group()`；写入辅助：`Tool::with_group()`。
+分组是工具的固有属性，随工具定义携带，服务端不在 `tools/list` 上做分组过滤。读取辅助：`Tool::group()`；写入辅助：`Tool::set_group()`（就地设置/覆盖 `_meta["kissbot/group"]`）。
 
 ```jsonc
 {
   "jsonrpc": "2.0", "id": 1,
-  "params": { "_meta": { "kissbot/groups": ["filesystem"] } },
+  "params": { "_meta": {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {}
+  } },
   "result": {
     "resultType": "complete",
     "tools": [
@@ -188,7 +190,7 @@
 | `resource` | `resource`（嵌入资源内容：文本 `text` 或二进制 `blob`，均带 `uri`、可选 `mimeType` / `_meta`）；可选 `annotations` / `_meta` |
 
 辅助类型：`Annotations`（`audience` / `priority` / `lastModified`）、`Role`、`Icon`（`src` / `mimeType` / `sizes` / `theme`）、`ResourceContents`（`Text` / `Blob`，按有无 `text` / `blob` 区分）。
-读取辅助：`Content::as_text()`、`Content::type_name()`、`CallToolResult::text_content()`。
+读取辅助：`Content::as_text()`、`Content::type_name()`。
 各变体类型全覆盖；不在规范内的 `type` 值会使反序列化失败。
 
 `content` 由结果生产方（工具实现）决定，MCP 服务只原样回传：不解释块类型、不把结构化数据合成文本、不改写数组。规范中「返回结构化内容时应同时给出序列化 JSON 的文本块」是**对工具**的兼容性建议（针对 `structuredContent`），由工具决定是否在 `content` 里附带这个镜像块，与服务端无关。
@@ -217,9 +219,7 @@
 - 解析失败、结构不符、或 `source` 非 kissbot → 原样透传，不按错误码解释；
 - `source` 为 kissbot → 可按 `code` 处理已知语义（如级联自环），未识别的错误码同样透传。
 
-读取辅助：`error_detail()` 解析固定错误结构（不校验来源）；`kissbot_error()` 仅在来源为 kissbot 时给出；`error_message()` 优先取错误结构文案，无则回退首个文本块。
-
-辅助读取：`text_content()` 取首个文本块。
+读取辅助：`kissbot_error()` 解析固定错误结构、且仅在来源为 kissbot 时给出；`error_message()` 优先取错误结构文案，无则回退首个文本块。
 
 ```jsonc
 // 文本结果（由 text() 构造）
@@ -298,10 +298,10 @@
 
 - `McpClient::new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>)`：`endpoint` 为 MCP 端点完整 URL；`api_key` 非空时以 `X-Api-Key` 头发送
 - `with_client_info(implementation)`：覆盖自报身份（默认 `name = "kissbot-mcp-client"`，`version` 取包版本）
-- `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_group()` / `supports_ancestors()` / `supports_kissbot()` 用于判定对端 kissbot 扩展能力
-- `list_tools(groups: Option<&[String]>, ancestors: &[String]) -> ToolsListResult`：白名单写入请求 `_meta["kissbot/groups"]`
-- `call_tool(name: &str, arguments: Value, ancestors: &[String]) -> CallToolResult`
-- 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、非空时的 `kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增
+- `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_group()` / `supports_ancestors()` / `supports_kissbot()` 用于判定对端声明的 kissbot 扩展能力
+- `list_tools(ancestors: Arc<Vec<String>>) -> ToolsListResult`：祖先链写入请求 `_meta["kissbot/ancestors"]`
+- `call_tool(name: &str, arguments: Value, ancestors: Arc<Vec<String>>) -> CallToolResult`
+- 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、`kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增
 - 错误类型 `McpClientError`：
 
 | 变体 | 说明 |

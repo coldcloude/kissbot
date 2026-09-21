@@ -161,7 +161,8 @@ mod tests {
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             *self.observed.ancestors.lock().unwrap() =
                 params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
-            let tool = Tool::new("read", "读", json!({ "type": "object" })).with_group("filesystem");
+            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
+            tool.set_group("filesystem");
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 

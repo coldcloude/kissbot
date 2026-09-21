@@ -5,11 +5,10 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_mcp::{
-    CallToolResult, DiscoverResult, Implementation, KissbotCapability, McpClient, McpClientError,
-    McpError, McpHandler, Tool, ToolsCallParams, ToolsListParams, ToolsListResult,
+    CallToolResult, DiscoverResult, Implementation, McpClient, McpClientError, McpError,
+    McpHandler, Tool, ToolsCallParams, ToolsListParams, ToolsListResult,
 };
 use serde_json::Value;
-use tokio::sync::OnceCell;
 use tracing::warn;
 
 use crate::config_manager::ConfigManager;
@@ -70,7 +69,9 @@ impl Group {
         let name = name.into();
         let group = Self::new(name.clone());
         for (config, imp) in tools {
-            let config = Arc::new((*config).clone().with_group(name.clone()));
+            let mut config = (*config).clone();
+            config.set_group(name.clone());
+            let config = Arc::new(config);
             let tool_name = config.name.to_string();
             if group.tools.contains_key(&tool_name) {
                 return Err(Error::InternalError(format!("工具名冲突: {}（group 内唯一）", tool_name)));
@@ -85,9 +86,6 @@ impl Group {
 pub struct SubStation {
     config: Arc<SubStationConfig>,
     client: McpClient,
-    /// 对端声明的 kissbot 扩展能力：首次交互时经 `server/discover` 探测一次并缓存
-    /// （`None` = 已探测但对方未声明扩展，即第三方通用 MCP 服务端）；探测失败不写入，下次重试
-    kissbot_caps: OnceCell<Option<KissbotCapability>>,
 }
 
 impl SubStation {
@@ -117,29 +115,6 @@ impl SubStation {
             name
         }
     }
-
-    /// 对端是否支持 kissbot 分组扩展（经 `server/discover` 探测并缓存）
-    async fn supports_group(&self) -> bool {
-        self.kissbot_capability()
-            .await
-            .is_some_and(|caps| caps.group)
-    }
-
-    /// 探测对端 kissbot 扩展能力：命中缓存直接返回；未命中调 `server/discover`，
-    /// 成功则缓存（含「未声明」的否定结果），失败不缓存（下次重试）
-    async fn kissbot_capability(&self) -> Option<KissbotCapability> {
-        let caps = self
-            .kissbot_caps
-            .get_or_try_init(|| async { self.client.discover().await.map(|r| r.capabilities.kissbot) })
-            .await;
-        match caps {
-            Ok(caps) => caps.clone(),
-            Err(e) => {
-                warn!("子 Station {} server/discover 失败: {}", self.config.station_id.as_str(), e);
-                None
-            }
-        }
-    }
 }
 
 /// 全局 Station 单例（进程内唯一；每个 agent 一个，静态访问）
@@ -148,8 +123,8 @@ static SINGLETON: OnceLock<Arc<Station>> = OnceLock::new();
 pub struct Station {
     /// 本站点 station_id（来自 station.json；祖先链防环用）
     station_id: String,
-    /// 本级工具索引：工具名 → 条目。工具名在 group 内唯一；跨 group 重名按 group 名排序
-    /// 保留先到者并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
+    /// 本级工具索引：工具名 → 条目。工具名在 group 内唯一；跨 group 重名时保留先并入的 group
+    /// 的工具并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
     tools: DashMap<String, Arc<GroupTool>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
@@ -195,7 +170,6 @@ impl Station {
             let sub = SubStation {
                 config: Arc::new((*scfg).clone()),
                 client: McpClient::new(&endpoint, scfg.timeout_secs, Some(api_key)),
-                kissbot_caps: OnceCell::new(),
             };
             sub_stations.insert(id.clone(), Arc::new(sub));
         }
@@ -208,7 +182,7 @@ impl Station {
     }
 
     /// 把单个 group 的工具并入本级索引：工具名在 group 内唯一（Group 构造保证）；
-    /// 跨 group 重名（当前不会发生，多个内置/自定义 group 时可能）按 group 名排序保留先到者并告警
+    /// 跨 group 重名（当前内置只有 filesystem，多个内置/自定义 group 时可能）保留先并入者并告警
     fn merge_local_group(tools: &DashMap<String, Arc<GroupTool>>, group: &Group) {
         for entry in group.tools.iter() {
             let tool_name = entry.key().clone();
@@ -223,19 +197,15 @@ impl Station {
         }
     }
 
-    /// 直接向本地 nexus 提供工具列表
-    pub async fn list_tools_local(&self, filter: Option<&HashSet<String>>) -> Result<Vec<Arc<Tool>>> {
-        let mut tools = self.list_tools(Arc::new(Vec::new())).await?;
-        if let Some(filter) = filter {
-            let mut result = Vec::new();
-            for tool in tools.drain(..) {
-                if filter.contains(tool.name.as_ref()) {
-                    result.push(tool);
-                }
-            }
-            Ok(result)
-        } else {
-            Ok(tools)
+    /// 直接向本地 nexus 提供工具列表：`groups` 为会话启用的 group 白名单（None = 不过滤）
+    pub async fn list_tools_local(&self, groups: Option<&HashSet<String>>) -> Result<Vec<Arc<Tool>>> {
+        let tools = self.list_tools(Arc::new(Vec::new())).await?;
+        match groups {
+            Some(groups) => Ok(tools
+                .into_iter()
+                .filter(|tool| tool.group().is_some_and(|g| groups.contains(g)))
+                .collect()),
+            None => Ok(tools),
         }
     }
 
@@ -249,7 +219,8 @@ impl Station {
     /// ancestors 为根到当前父节点的 station_id 链
     /// group 是工具的固有属性，随工具定义（`_meta["kissbot/group"]`）携带，因此本方法对每个
     /// 返回的工具都保证带上 group：本级工具用其所属 group；子站工具优先用对端回带的 group，
-    /// 缺省回落该子站的默认 group。
+    /// 缺省回落该子站的默认 group。本方法返回全量工具，不做 group 白名单过滤
+    /// （会话级白名单由 list_tools_local 在 nexus 入口处本地过滤）。
     pub async fn list_tools(&self, mut ancestors: Arc<Vec<String>>) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
@@ -262,8 +233,8 @@ impl Station {
             tools.push(entry.value().config.clone());
         }
         // 经 MCP 实时拉取 → 更新路由缓存 → 合并元数据（剔除冲突项）
-        // - 对端声明支持 kissbot 分组扩展：工具 group 以对端携带为准
-        // - 对端不支持（通用 MCP 服务端）：其工具整体归入默认 group
+        // - 分组归因不依赖对端能力声明：工具带 `kissbot/group` 就用它，否则归入该子的默认 group，
+        //   因此通用 MCP 服务端无需改造即可接入
         // - 祖先链对所有子都附带：纯提示信息，规范要求忽略未知 `_meta` 键，附带可为未声明能力的
         //   同级 kissbot 服务端保留防环能力
         {
@@ -370,7 +341,7 @@ impl McpHandler for Station {
             Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION")),
             Some(STATION_INSTRUCTIONS.to_string()),
         )
-        // 声明 kissbot 扩展能力，供对端经 server/discover 一次性判定
+        // 声明 kissbot 扩展能力（工具定义携带分组、理解级联祖先链），供对端判定
         .with_kissbot_extensions()
     }
 
@@ -457,10 +428,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tools_local_filters_by_tool_name() {
-        // 本地直连 nexus 的入口：按工具名集合过滤（None = 全部）
+    async fn list_tools_local_filters_by_group() {
+        // 本地直连 nexus 的入口：按会话启用的 group 白名单过滤（None = 全部）
         let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
-        let hit: HashSet<String> = ["read".to_string()].into_iter().collect();
+        let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
         let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
         assert_eq!(station.list_tools_local(Some(&hit)).await.unwrap().len(), 1);
         assert!(station.list_tools_local(Some(&miss)).await.unwrap().is_empty());
@@ -570,10 +541,9 @@ mod tests {
     /// tools/list 观测记录：服务端收到的祖先链
     type ListObservation = Arc<tokio::sync::Mutex<Option<Vec<String>>>>;
 
-    /// 测试用 Mock MCP 服务端：可切换工具名、是否声明 kissbot 分组扩展、是否携带 group
+    /// 测试用 Mock MCP 服务端：可切换工具名与是否在工具定义里携带 group
     struct MockMcpHandler {
         tool_name: String,
-        kissbot_group: bool,
         echo_group: bool,
         observed: ListObservation,
     }
@@ -581,15 +551,14 @@ mod tests {
     #[async_trait]
     impl McpHandler for MockMcpHandler {
         async fn discover(&self) -> DiscoverResult {
-            let result = DiscoverResult::tools_only(Implementation::new("mock-mcp", "1.0.0"), None);
-            if self.kissbot_group { result.with_kissbot_extensions() } else { result }
+            DiscoverResult::tools_only(Implementation::new("mock-mcp", "1.0.0"), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
             *self.observed.lock().await = params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
             let mut tool = Tool::new(self.tool_name.clone(), "第三方工具", json!({ "type": "object" }));
             if self.echo_group {
-                tool = tool.with_group("mock-group");
+                tool.set_group("mock-group");
             }
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
@@ -617,11 +586,10 @@ mod tests {
     }
 
     /// 起一个 Mock MCP 服务端，返回（基地址, 观测记录器）
-    async fn spawn_mock_mcp_named(tool_name: &str, kissbot_group: bool, echo_group: bool) -> (String, ListObservation) {
+    async fn spawn_mock_mcp_named(tool_name: &str, echo_group: bool) -> (String, ListObservation) {
         let observed: ListObservation = Arc::new(tokio::sync::Mutex::new(None));
         let handler = Arc::new(MockMcpHandler {
             tool_name: tool_name.to_string(),
-            kissbot_group,
             echo_group,
             observed: observed.clone(),
         });
@@ -633,8 +601,8 @@ mod tests {
         (format!("http://{}", addr), observed)
     }
 
-    async fn spawn_mock_mcp(kissbot_group: bool, echo_group: bool) -> (String, ListObservation) {
-        spawn_mock_mcp_named("mock-tool", kissbot_group, echo_group).await
+    async fn spawn_mock_mcp(echo_group: bool) -> (String, ListObservation) {
+        spawn_mock_mcp_named("mock-tool", echo_group).await
     }
 
     /// 构造只挂一个远程子 Station 的仓库（可选名字前缀）
@@ -653,8 +621,8 @@ mod tests {
 
     #[tokio::test]
     async fn remote_tool_without_group_falls_back_to_station_default_group() {
-        // 通用 MCP 服务端（未声明 kissbot 扩展、不携带 group）
-        let (base, observed) = spawn_mock_mcp(false, false).await;
+        // 对端工具未携带 group（如通用 MCP 服务端）→ 归入子站默认 group
+        let (base, observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
 
         let all = station.list_tools(ancestors(&[])).await.unwrap();
@@ -665,9 +633,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_tool_group_from_kissbot_peer_is_trusted() {
-        // 声明 kissbot 扩展且携带 group 的服务端：以对端 group 为准
-        let (base, _observed) = spawn_mock_mcp(true, true).await;
+    async fn remote_tool_carried_group_is_trusted() {
+        // 对端工具携带 group → 以对端携带的 group 为准
+        let (base, _observed) = spawn_mock_mcp(true).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
@@ -676,19 +644,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_tool_without_group_falls_back_when_peer_is_kissbot() {
-        // 声明支持但工具未携带 group → 回落子站默认 group
-        let (base, _observed) = spawn_mock_mcp(true, false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
-        let tools = station.list_tools(ancestors(&[])).await.unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].group(), Some("[remote]"));
-    }
-
-    #[tokio::test]
     async fn remote_tool_name_gets_prefix_and_call_strips_it() {
         // 前缀让远端工具名在本级唯一；调用时去掉前缀再转发给子站
-        let (base, _observed) = spawn_mock_mcp(false, false).await;
+        let (base, _observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, Some("a/")), "test-key").unwrap();
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
@@ -703,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn local_tool_takes_precedence_over_remote_same_name() {
         // 远端工具与本级同名 → 本级优先，远端被剔除且不进路由表
-        let (base, _observed) = spawn_mock_mcp_named("read", false, false).await;
+        let (base, _observed) = spawn_mock_mcp_named("read", false).await;
         let mut repo = repo_with_remote_sub(&base, None);
         repo.groups = vec!["filesystem".to_string()];
         let station = Station::from_repo(&repo, "test-key").unwrap();
@@ -717,7 +675,7 @@ mod tests {
     #[tokio::test]
     async fn sub_station_kissbot_cycle_error_surfaces_as_protocol_cycle() {
         // 子站以工具级 kissbot 错误（code=TERR_TOOL_CYCLE）报告循环 → 本级识别为协议级自环
-        let (base, _observed) = spawn_mock_mcp(false, false).await;
+        let (base, _observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
         set_routes(&station, &[("cycle-tool", "remote")]);
         let err = station.call_tool("cycle-tool", json!({}), ancestors(&[])).await.unwrap_err();
@@ -727,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn sub_station_foreign_error_passes_through_unchanged() {
         // 非 kissbot 来源的错误体：本级不解释、不改写，原样回传
-        let (base, _observed) = spawn_mock_mcp(false, false).await;
+        let (base, _observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
         set_routes(&station, &[("foreign-tool", "remote")]);
         let result = station.call_tool("foreign-tool", json!({}), ancestors(&[])).await.unwrap();
