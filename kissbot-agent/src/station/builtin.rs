@@ -8,8 +8,6 @@ use serde_json::Value;
 use super::Group;
 use crate::types::Result;
 
-pub mod filesystem;
-
 /// 内置工具的参数 JSON Schema（固定结构，不做手拼 JSON）
 #[derive(Debug, Serialize)]
 pub struct ObjectSchema {
@@ -37,7 +35,7 @@ pub struct PropertySchema {
 /// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
 pub fn builtin_group(name: &str) -> Result<Option<Group>> {
     match name {
-        "filesystem" => Ok(Some(filesystem::group(name)?)),
+        "filesystem" => Ok(Some(super::filesystem::group(name)?)),
         _ => Ok(None),
     }
 }

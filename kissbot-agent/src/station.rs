@@ -16,6 +16,7 @@ use crate::configs::{StationRepo, SubStationConfig};
 use crate::types::{Error, Result};
 
 mod builtin;
+mod filesystem;
 
 use builtin::builtin_group;
 

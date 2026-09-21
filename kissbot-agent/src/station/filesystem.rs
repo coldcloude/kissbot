@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use kissbot_mcp::{CallToolResult, Tool};
 use serde_json::Value;
 
-use super::{ObjectSchema, PropertySchema};
+use super::builtin::{ObjectSchema, PropertySchema};
 use crate::station::{Group, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
 use crate::types::{Error, Result};
 
