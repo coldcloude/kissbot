@@ -9,7 +9,9 @@ use kissbot_mcp::{CallToolResult, Tool};
 use serde_json::Value;
 
 use super::builtin::{ObjectSchema, PropertySchema};
-use crate::station::{Group, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
+use crate::station::{
+    Group, GroupTool, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS,
+};
 use crate::types::{Error, Result};
 
 /// Read 工具返回内容的最大字节数（截断防大文件）
@@ -19,30 +21,31 @@ const READ_MAX_BYTES: usize = 64 * 1024;
 pub fn group(name: &str) -> Result<Group> {
     Group::with_builtin_tools(
         name,
-        vec![(
-            Arc::new(Tool::new(
-                "read",
-                "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
-                read_tool_schema().value(),
-            )),
+        vec![GroupTool::new(
+            read_tool(),
             Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
         )],
     )
 }
 
-/// `read` 工具的参数 schema
-fn read_tool_schema() -> ObjectSchema {
-    ObjectSchema {
-        kind: "object",
-        properties: BTreeMap::from([(
-            "path",
-            PropertySchema {
-                kind: "string",
-                description: "文件路径（相对或绝对，限工作目录内）",
-            },
-        )]),
-        required: &["path"],
-    }
+/// read 工具定义：元数据 + 参数 schema
+fn read_tool() -> Arc<Tool> {
+    Arc::new(Tool::new(
+        "read",
+        "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
+        ObjectSchema {
+            kind: "object",
+            properties: BTreeMap::from([(
+                "path",
+                PropertySchema {
+                    kind: "string",
+                    description: "文件路径（相对或绝对，限工作目录内）",
+                },
+            )]),
+            required: &["path"],
+        }
+        .value(),
+    ))
 }
 
 pub struct ReadTool {
@@ -145,7 +148,7 @@ mod tests {
     #[tokio::test]
     async fn builtin_read_schema_is_typed_object() {
         // 内置工具的参数 schema 由固定结构体给出（非手拼 JSON）
-        let schema = read_tool_schema().value();
+        let schema = read_tool().input_schema.as_ref().clone();
         assert_eq!(schema["type"], "object");
         assert_eq!(schema["properties"]["path"]["type"], "string");
         assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));

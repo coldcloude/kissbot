@@ -53,6 +53,13 @@ struct GroupTool {
     imp: Arc<dyn NativeTool>,
 }
 
+impl GroupTool {
+    /// 元数据与原生实现成对给出；所属 group 由 `Group::with_builtin_tools` 注册时写入
+    fn new(config: Arc<Tool>, imp: Arc<dyn NativeTool>) -> Self {
+        Self { config, imp }
+    }
+}
+
 /// group：一组工具（工具名在本 group 内唯一，不同 group 之间互不约束）
 pub struct Group {
     name: String,
@@ -66,18 +73,18 @@ impl Group {
 
     /// 用内置工具（元数据 + 原生实现）构造 group；同一 group 内工具名必须唯一。
     /// 工具在注册时即写入所属 group（`_meta["kissbot/group"]`），分组随工具定义走
-    fn with_builtin_tools(name: impl Into<String>, tools: Vec<(Arc<Tool>, Arc<dyn NativeTool>)>) -> Result<Self> {
+    fn with_builtin_tools(name: impl Into<String>, tools: Vec<GroupTool>) -> Result<Self> {
         let name = name.into();
         let group = Self::new(name.clone());
-        for (config, imp) in tools {
-            let mut config = (*config).clone();
+        for mut entry in tools {
+            let mut config = (*entry.config).clone();
             config.set_group(name.clone());
-            let config = Arc::new(config);
             let tool_name = config.name.to_string();
             if group.tools.contains_key(&tool_name) {
                 return Err(Error::InternalError(format!("工具名冲突: {}（group 内唯一）", tool_name)));
             }
-            group.tools.insert(tool_name, Arc::new(GroupTool { config, imp }));
+            entry.config = Arc::new(config);
+            group.tools.insert(tool_name, Arc::new(entry));
         }
         Ok(group)
     }
@@ -451,8 +458,8 @@ mod tests {
     fn group_rejects_duplicate_tool_names() {
         // 工具名在 group 内唯一：同一 group 重复注册同名工具 → 报「工具名冲突」
         let tools = vec![
-            (tool_config("read"), noop_tool()),
-            (tool_config("read"), noop_tool()),
+            GroupTool::new(tool_config("read"), noop_tool()),
+            GroupTool::new(tool_config("read"), noop_tool()),
         ];
         // Group 不含 Debug（含 Arc<dyn NativeTool>），用 match 取错而非 unwrap_err
         let err = match Group::with_builtin_tools("filesystem", tools) {
