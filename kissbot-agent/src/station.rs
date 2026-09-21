@@ -337,12 +337,11 @@ const STATION_INSTRUCTIONS: &str = "kissbot Station：提供按 group 分组的�
 #[async_trait]
 impl McpHandler for Station {
     async fn discover(&self) -> DiscoverResult {
-        DiscoverResult::tools_only(
+        // 默认声明 kissbot 级联扩展能力（理解祖先链），供对端判定
+        DiscoverResult::new(
             Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION")),
             Some(STATION_INSTRUCTIONS.to_string()),
         )
-        // 声明 kissbot 扩展能力（工具定义携带分组、理解级联祖先链），供对端判定
-        .with_kissbot_extensions()
     }
 
     async fn list_tools(&self, mut params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
@@ -551,7 +550,7 @@ mod tests {
     #[async_trait]
     impl McpHandler for MockMcpHandler {
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::tools_only(Implementation::new("mock-mcp", "1.0.0"), None)
+            DiscoverResult::new(Implementation::new("mock-mcp", "1.0.0"), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {

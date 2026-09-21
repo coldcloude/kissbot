@@ -84,7 +84,7 @@
 | `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
 
 `DiscoverResult` 提供 `supports_ancestors()` / `supports_kissbot()` 读取该声明；
-`DiscoverResult::with_kissbot_extensions()` 声明该扩展，`KissbotCapability::full()` 为其值。
+`DiscoverResult::new(server_info, instructions)` 构造的结果默认声明该扩展（`capabilities.kissbot = KissbotCapability::full()`）；读取侧 `capabilities.kissbot` 为 `Option`，对端不含该段时解析为「未声明」（第三方通用 MCP 服务端即如此）。
 声明只描述对端是否理解级联扩展键；分组归因不需要声明（工具定义带 `kissbot/group` 即归因于该组，未携带则回落调用方给的默认分组），第三方服务端因此无需声明也能接入。
 
 ```jsonc

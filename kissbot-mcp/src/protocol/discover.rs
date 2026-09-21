@@ -72,26 +72,21 @@ pub struct DiscoverResult {
 }
 
 impl DiscoverResult {
-    /// 以给定服务端身份构造仅含 tools 能力的发现结果
-    pub fn tools_only(server_info: Implementation, instructions: Option<String>) -> Self {
+    /// 以给定服务端身份构造发现结果：本实现默认声明 tools 与 kissbot 级联扩展能力。
+    /// 读取方向仍兼容不带 kissbot 能力段的第三方服务端（`capabilities.kissbot` 为 `Option`）
+    pub fn new(server_info: Implementation, instructions: Option<String>) -> Self {
         Self {
             result_type: ResultType::Complete,
             supported_versions: vec![super::PROTOCOL_VERSION.to_string()],
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: false }),
-                kissbot: None,
+                kissbot: Some(KissbotCapability::full()),
             },
             instructions: instructions.map(Arc::new),
             meta: Some(ResponseMeta {
                 server_info: Some(server_info),
             }),
         }
-    }
-
-    /// 声明支持 kissbot 的级联扩展
-    pub fn with_kissbot_extensions(mut self) -> Self {
-        self.capabilities.kissbot = Some(KissbotCapability::full());
-        self
     }
 
     /// 对端是否声明支持级联祖先链
@@ -114,8 +109,8 @@ mod tests {
 
     #[test]
     fn kissbot_capability_roundtrip() {
-        let result = DiscoverResult::tools_only(Implementation::new("s", "1"), None)
-            .with_kissbot_extensions();
+        // 本实现构造的发现结果默认声明 kissbot 级联扩展
+        let result = DiscoverResult::new(Implementation::new("s", "1"), None);
         let v = serde_json::to_value(&result).unwrap();
         assert_eq!(v["capabilities"]["kissbot"]["ancestors"], true);
         assert!(v["capabilities"]["kissbot"].get("group").is_none(), "分组归因不需要能力声明");

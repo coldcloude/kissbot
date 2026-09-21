@@ -155,7 +155,7 @@ mod tests {
     #[async_trait]
     impl McpHandler for TestHandler {
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::tools_only(Implementation::new("test-server", "0.1.0"), None)
+            DiscoverResult::new(Implementation::new("test-server", "0.1.0"), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {

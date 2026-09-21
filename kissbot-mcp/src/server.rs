@@ -262,7 +262,7 @@ mod tests {
         #[async_trait]
         impl McpHandler for RelayHandler {
             async fn discover(&self) -> DiscoverResult {
-                DiscoverResult::tools_only(Implementation::new("relay", "1"), None)
+                DiscoverResult::new(Implementation::new("relay", "1"), None)
             }
 
             async fn list_tools(&self, _: ToolsListParams) -> Result<ToolsListResult, McpError> {
