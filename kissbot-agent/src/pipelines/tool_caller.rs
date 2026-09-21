@@ -30,14 +30,14 @@ impl AgentToolCaller for StationToolCaller {
     async fn call_tool(&self, mut tool_call: ToolCall) -> ToolCall {
         let arguments = tool_call.data.arguments.take();
         let called = Station::get()
-            .call_tool(tool_call.name.as_str(), arguments.clone(), &[])
+            .call_tool_local(tool_call.name.as_str(), arguments.clone())
             .await;
         tool_call.data = match called {
             Ok(result) => call_result_to_tool_data(arguments, result),
             Err(e) => ToolData {
                 arguments,
                 result: Value::Null,
-                error: tool_error(TERR_TOOL_INTERNAL_ERROR, e.message),
+                error: tool_error(TERR_TOOL_INTERNAL_ERROR, e.to_string()),
             },
         };
         tool_call

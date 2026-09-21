@@ -38,19 +38,6 @@ pub struct SubStationConfig {
     /// 子 Station 基地址（MCP 端点为 base_url + /mcp）
     pub base_url: Arc<String>,
     pub timeout_secs: u64,
-    /// 子 Station 的默认 group：对端不支持 kissbot 分组扩展、或工具列表响应不带
-    /// `kissbot/group` 时，其工具整体归入该 group；缺省（空串）时回落为 station_id
-    #[serde(default)]
-    pub default_group: Arc<String>,
-}
-
-impl SubStationConfig {
-    /// 生效的默认 group（未配置时回落为 station_id）
-    pub fn effective_group(&self) -> &str {
-        if self.default_group.is_empty() {
-            self.station_id.as_str()
-        } else {
-            self.default_group.as_str()
-        }
-    }
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<Arc<String>>,
 }

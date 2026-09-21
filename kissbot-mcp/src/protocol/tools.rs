@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::{Implementation, ToolResponseMeta, with_response_meta};
+
 use super::meta::{RequestMeta, ResponseMeta};
 use super::ResultType;
 
@@ -12,23 +14,33 @@ use super::ResultType;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: Arc<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<Arc<String>>,
+
     #[serde(default)]
     pub description: Arc<String>,
+
     #[serde(rename = "inputSchema")]
     pub input_schema: Arc<Value>,
+
     #[serde(
         rename = "outputSchema",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub output_schema: Option<Arc<Value>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Arc<Value>>,
+
     /// 工具元数据（规范 `Tool._meta`）；kissbot 分组等扩展随工具携带
-    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<Arc<Value>>,
+    #[serde(
+        rename = "_meta",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta: Option<ToolResponseMeta>,
 }
 
 impl Tool {
@@ -50,22 +62,21 @@ impl Tool {
 
     /// 该工具所属的 kissbot 分组（读 `_meta["kissbot/group"]`）
     pub fn group(&self) -> Option<&str> {
-        self.meta.as_ref()?.get(super::meta::META_GROUP)?.as_str()
+        self.meta.as_ref()?.group.as_deref()
+    }
+
+    /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
+    pub fn set_group(&mut self, group: impl Into<String>) {
+        let mut meta = self.meta.take().unwrap_or_default();
+        meta.group = Some(group.into());
+        self.meta = Some(meta);
     }
 
     /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
-        let mut object = self
-            .meta
-            .as_ref()
-            .and_then(|m| m.as_object())
-            .cloned()
-            .unwrap_or_default();
-        object.insert(
-            super::meta::META_GROUP.to_string(),
-            Value::String(group.into()),
-        );
-        self.meta = Some(Arc::new(Value::Object(object)));
+        let mut meta = self.meta.take().unwrap_or_default();
+        meta.group = Some(group.into());
+        self.meta = Some(meta);
         self
     }
 }
@@ -84,15 +95,22 @@ pub struct ToolsListParams {
 pub struct ToolsListResult {
     #[serde(rename = "resultType", default)]
     pub result_type: ResultType,
+
     pub tools: Vec<Arc<Tool>>,
+
     #[serde(
         rename = "nextCursor",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub next_cursor: Option<Arc<String>>,
-    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
-    pub meta: ResponseMeta,
+
+    #[serde(
+        rename = "_meta",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta: Option<ResponseMeta>,
 }
 
 impl ToolsListResult {
@@ -101,10 +119,12 @@ impl ToolsListResult {
             result_type: ResultType::Complete,
             tools,
             next_cursor: None,
-            meta: ResponseMeta::default(),
+            meta: None,
         }
     }
 }
+
+with_response_meta!(ToolsListResult);
 
 /// `tools/call` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,18 +326,26 @@ impl ErrorDetail {
 pub struct CallToolResult {
     #[serde(rename = "resultType", default)]
     pub result_type: ResultType,
+
     #[serde(default)]
     pub content: Vec<Content>,
+
     #[serde(
         rename = "structuredContent",
         default,
         skip_serializing_if = "Value::is_null"
     )]
     pub structured_content: Value,
+
     #[serde(rename = "isError", default)]
     pub is_error: bool,
-    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
-    pub meta: ResponseMeta,
+
+    #[serde(
+        rename = "_meta",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta: Option<ResponseMeta>,
 }
 
 impl CallToolResult {
@@ -340,35 +368,32 @@ impl CallToolResult {
         }
     }
 
-    /// 首个文本块内容
-    pub fn text_content(&self) -> Option<String> {
-        self.content.iter().find_map(|c| c.as_text().map(|t| t.to_string()))
-    }
-
-    /// 解析 `isError` 结果的固定错误结构（不校验来源；结构不符返回 None）
-    pub fn error_detail(&self) -> Option<ErrorDetail> {
-        if !self.is_error {
-            return None;
-        }
-        serde_json::from_value(self.structured_content.clone()).ok()
-    }
-
     /// 仅当错误来源为 kissbot 时给出固定错误结构；解析失败、结构不符或来源非 kissbot 均为 None，
     /// 此时调用方应把结果原样透传，不按错误码解释。
     pub fn kissbot_error(&self) -> Option<ErrorDetail> {
-        self.error_detail().filter(ErrorDetail::is_kissbot)
-    }
-
-    /// 失败结果中携带的错误文案（kissbot 错误结构优先，其次回退首个文本块）
-    pub fn error_message(&self) -> Option<String> {
         if !self.is_error {
             return None;
         }
-        self.error_detail()
-            .map(|d| d.message.to_string())
-            .or_else(|| self.text_content())
+        let Ok(detail) = serde_json::from_value::<ErrorDetail>(self.structured_content.clone()) else {
+            return None;
+        };
+        if detail.is_kissbot() {
+            Some(detail)
+        } else {
+            None
+        }
+    }
+
+    /// 失败结果中携带的错误文案（首个文本块）
+    pub fn error_message(&self) -> Option<&str> {
+        if !self.is_error {
+            return None;
+        }
+        self.content.iter().find_map(|c| c.as_text())
     }
 }
+
+with_response_meta!(CallToolResult);
 
 #[cfg(test)]
 mod tests {

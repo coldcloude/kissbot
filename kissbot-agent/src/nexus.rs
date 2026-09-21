@@ -439,7 +439,7 @@ impl Nexus {
         if cfg.group_set.is_empty() {
             return Vec::new();
         }
-        match Station::get().list_tools(Some(&cfg.group_set), &[]).await {
+        match Station::get().list_tools_local(Some(cfg.group_set.as_ref())).await {
             Ok(tools) => tools
                 .iter()
                 .map(|t| Arc::new(ToolConfig::from(t.as_ref())))

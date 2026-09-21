@@ -43,29 +43,27 @@ impl Implementation {
 /// 请求 `_meta`：协议版本与客户端能力必填，其余可选
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestMeta {
+
     #[serde(rename = "io.modelcontextprotocol/protocolVersion")]
     pub protocol_version: Arc<String>,
+
     #[serde(
         rename = "io.modelcontextprotocol/clientInfo",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub client_info: Option<Implementation>,
+
     #[serde(rename = "io.modelcontextprotocol/clientCapabilities")]
     pub client_capabilities: Value,
-    /// kissbot 扩展：`tools/list` 的组白名单（缺省 = 全部，空数组 = 空结果，非空 = 命中白名单）
-    #[serde(
-        rename = "kissbot/groups",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub groups: Option<Vec<String>>,
+
+    /// kissbot 扩展：MCP 级联
     #[serde(
         rename = "kissbot/ancestors",
         default,
-        skip_serializing_if = "Vec::is_empty"
+        skip_serializing_if = "Option::is_none"
     )]
-    pub ancestors: Vec<String>,
+    pub ancestors: Option<Arc<Vec<String>>>,
 }
 
 impl RequestMeta {
@@ -75,20 +73,13 @@ impl RequestMeta {
             protocol_version: Arc::new(super::PROTOCOL_VERSION.to_string()),
             client_info: Some(client_info),
             client_capabilities: serde_json::json!({}),
-            groups: None,
-            ancestors: Vec::new(),
+            ancestors: None,
         }
     }
 
-    /// 设置 `tools/list` 的组白名单
-    pub fn with_groups(mut self, groups: &[String]) -> Self {
-        self.groups = Some(groups.to_vec());
-        self
-    }
-
     /// 设置级联祖先链
-    pub fn with_ancestors(mut self, ancestors: &[String]) -> Self {
-        self.ancestors = ancestors.to_vec();
+    pub fn with_ancestors(mut self, ancestors: Arc<Vec<String>>) -> Self {
+        self.ancestors = Some(ancestors);
         self
     }
 }
@@ -104,11 +95,29 @@ pub struct ResponseMeta {
     pub server_info: Option<Implementation>,
 }
 
-impl ResponseMeta {
-    /// 没有任何响应元数据（用于序列化时省略 `_meta`）
-    pub fn is_empty(&self) -> bool {
-        self.server_info.is_none()
-    }
+#[macro_export]
+macro_rules! with_response_meta {
+    ($ty:ty) => {
+        impl $ty {
+            /// 添加meta
+            pub fn with_server_info(mut self, server_info: Implementation) -> Self {
+                let mut meta = self.meta.take().unwrap_or_default();
+                meta.server_info = Some(server_info);
+                self.meta = Some(meta);
+                self
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolResponseMeta {
+    #[serde(
+        rename = "kissbot/group",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group: Option<String>,
 }
 
 #[cfg(test)]

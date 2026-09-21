@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::with_response_meta;
+
 use super::meta::{Implementation, RequestMeta, ResponseMeta};
 use super::ResultType;
 
@@ -55,13 +57,21 @@ pub struct ServerCapabilities {
 pub struct DiscoverResult {
     #[serde(rename = "resultType", default)]
     pub result_type: ResultType,
+
     #[serde(rename = "supportedVersions")]
     pub supported_versions: Vec<String>,
+
     pub capabilities: ServerCapabilities,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<Arc<String>>,
-    #[serde(rename = "_meta", default, skip_serializing_if = "ResponseMeta::is_empty")]
-    pub meta: ResponseMeta,
+
+    #[serde(
+        rename = "_meta",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta: Option<ResponseMeta>,
 }
 
 impl DiscoverResult {
@@ -75,9 +85,9 @@ impl DiscoverResult {
                 kissbot: None,
             },
             instructions: instructions.map(Arc::new),
-            meta: ResponseMeta {
+            meta: Some(ResponseMeta {
                 server_info: Some(server_info),
-            },
+            }),
         }
     }
 
@@ -102,6 +112,8 @@ impl DiscoverResult {
         self.capabilities.kissbot.is_some()
     }
 }
+
+with_response_meta!(DiscoverResult);
 
 #[cfg(test)]
 mod tests {

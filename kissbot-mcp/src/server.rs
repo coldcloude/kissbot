@@ -82,7 +82,7 @@ impl<H: McpHandler> McpServer<H> {
                 if self.instructions.is_some() {
                     result.instructions = self.instructions.clone();
                 }
-                result.meta.server_info = Some(self.server_info.clone());
+                result = result.with_server_info(self.server_info.clone());
                 to_value(result)
             }
             METHOD_TOOLS_LIST => {
@@ -90,7 +90,7 @@ impl<H: McpHandler> McpServer<H> {
                 self.check_version(&params.meta)?;
                 let mut result = self.handler.list_tools(params).await?;
                 result.result_type = ResultType::Complete;
-                result.meta.server_info = Some(self.server_info.clone());
+                result = result.with_server_info(self.server_info.clone());
                 to_value(result)
             }
             METHOD_TOOLS_CALL => {
@@ -98,7 +98,7 @@ impl<H: McpHandler> McpServer<H> {
                 self.check_version(&params.meta)?;
                 let mut result = self.handler.call_tool(params).await?;
                 result.result_type = ResultType::Complete;
-                result.meta.server_info = Some(self.server_info.clone());
+                result = result.with_server_info(self.server_info.clone());
                 to_value(result)
             }
             other => Err(McpError::method_not_found(other)),

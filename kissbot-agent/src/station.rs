@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_mcp::{
@@ -90,9 +91,31 @@ pub struct SubStation {
 }
 
 impl SubStation {
-    /// 生效的默认 group（未配置 default_group 时回落为 station_id）
-    fn effective_group(&self) -> &str {
-        self.config.effective_group()
+    /// 生效的默认 group（根据 station_id 构造）
+    fn default_group(&self) -> String {
+        format!("[{}]", self.config.station_id)
+    }
+
+    /// 唯一性前缀
+    fn global_name(&self, name: Arc<String>) -> Arc<String> {
+        if let Some(prefix) = self.config.prefix.as_ref() {
+            Arc::new(format!("{}{}", prefix.as_str(), name.as_str()))
+        } else {
+            name
+        }
+    }
+
+    /// 唯一性前缀
+    fn local_name<'a>(&self, name: &'a str) -> &'a str {
+        if let Some(prefix) = self.config.prefix.as_ref() {
+            if let Some(n) = name.strip_prefix(prefix.as_str()) {
+                n
+            } else {
+                name
+            }
+        } else {
+            name
+        }
     }
 
     /// 对端是否支持 kissbot 分组扩展（经 `server/discover` 探测并缓存）
@@ -130,9 +153,9 @@ pub struct Station {
     tools: DashMap<String, Arc<GroupTool>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
-    /// list_tools 拉取子 Station 成功时更新（快照语义：先清该子旧记录再逐个插入）；
+    /// list_tools 拉取子 Station 成功时更新；
     /// 与本级/先到子重名时保留先到者（后到者剔除 + warn）
-    tool_routes: DashMap<String, String>,
+    tool_routes: ArcSwap<HashMap<String, Arc<String>>>,
 }
 
 impl Station {
@@ -180,7 +203,7 @@ impl Station {
             station_id: repo.station_id.to_string(),
             tools,
             sub_stations,
-            tool_routes: DashMap::new(),
+            tool_routes: ArcSwap::from_pointee(HashMap::new()),
         })
     }
 
@@ -200,83 +223,87 @@ impl Station {
         }
     }
 
-    /// 合并单个子 Station 的工具进路由表（快照语义：先清该子旧记录，再逐个插入）
-    /// 工具名冲突（与本地或先到子重名）保留先到者：后到者不进路由表
-    /// 返回成功插入的工具名集合（调用方据此从返回列表剔除冲突项）
-    fn merge_sub_tools(&self, station_id: &str, tools: Vec<Arc<Tool>>, local_names: &HashSet<String>) -> HashSet<String> {
-        // 1. 清该子旧路由记录（快照语义：该子当前拉取结果为准）
-        self.tool_routes.retain(|_, v| v.as_str() != station_id);
-        // 2. 逐个插入（冲突保留先到者：本地工具与先插入的其他子优先）
-        let mut inserted = HashSet::new();
-        for t in tools {
-            let name = t.name.to_string();
-            if self.tool_routes.contains_key(&name) || local_names.contains(&name) {
-                warn!("工具名冲突: {}（保留先到者，剔除子 Station {} 的同名工具）", name, station_id);
-                continue;
+    /// 直接向本地 nexus 提供工具列表
+    pub async fn list_tools_local(&self, filter: Option<&HashSet<String>>) -> Result<Vec<Arc<Tool>>> {
+        let mut tools = self.list_tools(Arc::new(Vec::new())).await?;
+        if let Some(filter) = filter {
+            let mut result = Vec::new();
+            for tool in tools.drain(..) {
+                if filter.contains(tool.name.as_ref()) {
+                    result.push(tool);
+                }
             }
-            self.tool_routes.insert(name.clone(), station_id.to_string());
-            inserted.insert(name);
+            Ok(result)
+        } else {
+            Ok(tools)
         }
-        inserted
     }
 
-    /// 工具元数据平铺查询：本级 group 白名单过滤 + 直接子经 MCP 实时拉取（更新路由缓存）
-    /// filter = None 返回全部；Some(空集) 返回空；ancestors 为根到当前父节点的 station_id 链
-    ///
+    /// 本地直接 tool call
+    pub async fn call_tool_local(&self, name: &str, arguments: Value) -> Result<CallToolResult> {
+        let result = self.call_tool(name, arguments, Arc::new(Vec::new())).await?;
+        Ok(result)
+    }
+
+    /// 工具元数据平铺查询：本级 + 子 MCP 实时拉取（更新路由缓存）
+    /// ancestors 为根到当前父节点的 station_id 链
     /// group 是工具的固有属性，随工具定义（`_meta["kissbot/group"]`）携带，因此本方法对每个
     /// 返回的工具都保证带上 group：本级工具用其所属 group；子站工具优先用对端回带的 group，
     /// 缺省回落该子站的默认 group。
-    pub async fn list_tools(&self, filter: Option<&HashSet<String>>, ancestors: &[String]) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
+    pub async fn list_tools(&self, mut ancestors: Arc<Vec<String>>) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
         }
         let mut tools = Vec::new();
         // 本级工具名集合（冲突校验用：本级优先，子工具与本级重名剔除）
-        let local_names: HashSet<String> = self.tools.iter().map(|e| e.key().clone()).collect();
+        let mut local_names: HashSet<String> = HashSet::new();
         for entry in self.tools.iter() {
-            let tool = &entry.value().config;
-            let group = tool.group().unwrap_or_default();
-            if let Some(f) = filter {
-                if !f.contains(group) { continue; }
-            }
-            tools.push(tool.clone());
+            local_names.insert(entry.key().clone());
+            tools.push(entry.value().config.clone());
         }
-        // 直接子：经 MCP 实时拉取 → 更新路由缓存 → 合并元数据（剔除冲突项）
-        // - 对端声明支持 kissbot 分组扩展：按本级白名单在服务端过滤，工具 group 以对端携带为准
-        // - 对端不支持（通用 MCP 服务端）：不传 group（传了也会被忽略），其工具整体归入默认 group，
-        //   再由本级按白名单本地过滤
+        // 经 MCP 实时拉取 → 更新路由缓存 → 合并元数据（剔除冲突项）
+        // - 对端声明支持 kissbot 分组扩展：工具 group 以对端携带为准
+        // - 对端不支持（通用 MCP 服务端）：其工具整体归入默认 group
         // - 祖先链对所有子都附带：纯提示信息，规范要求忽略未知 `_meta` 键，附带可为未声明能力的
         //   同级 kissbot 服务端保留防环能力
+        {
+            // 添加自己到 ancestors
+            let child_ancestors = Arc::make_mut(&mut ancestors);
+            child_ancestors.push(self.station_id.clone());
+        }
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(self.station_id.clone());
-        let group_vec: Option<Vec<String>> = filter.map(|s| s.iter().cloned().collect());
         let subs: Vec<Arc<SubStation>> = self.sub_stations.iter().map(|e| e.value().clone()).collect();
+        let mut tool_routes = HashMap::new();
         for sub in subs {
-            let group_supported = sub.supports_group().await;
-            let group_arg = if group_supported { group_vec.as_deref() } else { None };
-            match sub.client.list_tools(group_arg, &child_ancestors).await {
-                Ok(result) => {
-                    let default_group = sub.effective_group();
-                    // 通用 MCP 服务端：本地按默认 group 判断该子是否在白名单内
-                    if !group_supported {
-                        if let Some(f) = filter {
-                            if !f.contains(default_group) { continue; }
+            match sub.client.list_tools(ancestors.clone()).await {
+                Ok(mut result) => {
+                    let default_group = sub.default_group();
+                    for mut tool in result.tools.drain(..) {
+                        let name = sub.global_name(tool.name.clone());
+                        if !local_names.contains(name.as_str()) && !tool_routes.contains_key(name.as_str()) {
+                            {
+                                let t = Arc::make_mut(&mut tool);
+                                // 重写名字
+                                t.name = name.clone();
+                                // 对无 group 的添加默认 group
+                                let mut absent = true;
+                                if let Some(meta) = t.meta.as_ref() {
+                                    absent = meta.group.is_none();
+                                }
+                                if absent {
+                                    t.set_group(default_group.clone())
+                                }
+                            }
+                            tools.push(tool);
+                            tool_routes.insert(name.as_str().to_string(), sub.config.station_id.clone());
                         }
                     }
-                    let inserted = self.merge_sub_tools(sub.config.station_id.as_str(), result.tools.clone(), &local_names);
-                    if inserted.is_empty() { continue; }
-                    tools.extend(result.tools.into_iter()
-                        .filter(|t| inserted.contains(t.name.as_str()))
-                        // 对端未携带 group 时回落该子站默认 group
-                        .map(|tool| {
-                            let group = tool.group().map(str::to_string).unwrap_or_else(|| default_group.to_string());
-                            Arc::new((*tool).clone().with_group(group))
-                        }));
                 }
                 Err(e) => warn!("子 Station {} 查询工具失败: {}", sub.config.station_id.as_str(), e),
             }
         }
+        // 更新route
+        self.tool_routes.store(Arc::new(tool_routes));
         // 确定性顺序（规范建议：同一工具集合的多次请求返回相同顺序，便于客户端缓存与提示词缓存）
         tools.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         Ok(tools)
@@ -285,7 +312,7 @@ impl Station {
     /// 执行工具：本级原生实现命中执行；未命中 → 查远程路由表（工具名 → 直接子 station_id）
     /// 经 MCP `tools/call` 路由到对应子；路由未命中 → 工具不存在
     /// ancestors 为根到当前父节点的 station_id 链；自身在链中 → 级联自环（协议级错误）
-    pub async fn call_tool(&self, name: &str, arguments: Value, ancestors: &[String]) -> std::result::Result<CallToolResult, McpError> {
+    pub async fn call_tool(&self, name: &str, arguments: Value, mut ancestors: Arc<Vec<String>>) -> std::result::Result<CallToolResult, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
         }
@@ -296,12 +323,16 @@ impl Station {
         }
         // 远程路由：查路由缓存表（工具名 → 直接子 station_id），命中 → 该子 MCP 调用
         // 不遍历全部子、不远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
-        let mut child_ancestors = ancestors.to_vec();
-        child_ancestors.push(self.station_id.clone());
-        let routed = self.tool_routes.get(name).map(|r| r.value().clone());
+        {
+            // 添加自己到 ancestors
+            let child_ancestors = Arc::make_mut(&mut ancestors);
+            child_ancestors.push(self.station_id.clone());
+        }
+        let routed = self.tool_routes.load().get(name).map(|r| r.clone());
         if let Some(station_id) = routed {
-            if let Some(sub) = self.sub_stations.get(&station_id).map(|s| s.value().clone()) {
-                return match sub.client.call_tool(name, arguments, &child_ancestors).await {
+            if let Some(sub) = self.sub_stations.get(station_id.as_str()).map(|s| s.value().clone()) {
+                let nn = sub.local_name(name);
+                return match sub.client.call_tool(nn, arguments, ancestors).await {
                     // 工具级失败：识别 kissbot 来源的循环错误码（与本地自环一致地以协议级错误上抛），
                     // 其余（含非 kissbot / 结构不符 / 未识别的 kissbot 错误码）原样透传
                     Ok(result) => {
@@ -343,14 +374,15 @@ impl McpHandler for Station {
         .with_kissbot_extensions()
     }
 
-    async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
-        let filter: Option<HashSet<String>> = params.meta.groups.map(|v| v.into_iter().collect());
-        let tools = self.list_tools(filter.as_ref(), &params.meta.ancestors).await?;
+    async fn list_tools(&self, mut params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
+        let ancestors = if let Some(ancestors) = params.meta.ancestors.take() { ancestors } else { Arc::new(Vec::new()) };
+        let tools = self.list_tools(ancestors).await?;
         Ok(ToolsListResult::new(tools))
     }
 
-    async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
-        self.call_tool(params.name.as_str(), params.arguments, &params.meta.ancestors).await
+    async fn call_tool(&self, mut params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
+        let ancestors = if let Some(ancestors) = params.meta.ancestors.take() { ancestors } else { Arc::new(Vec::new()) };
+        self.call_tool(params.name.as_str(), params.arguments, ancestors).await
     }
 }
 

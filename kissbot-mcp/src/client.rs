@@ -66,13 +66,9 @@ impl McpClient {
     /// `tools/list`：按可选组白名单查询工具
     pub async fn list_tools(
         &self,
-        group: Option<&[String]>,
-        ancestors: &[String],
+        ancestors: Arc<Vec<String>>,
     ) -> Result<ToolsListResult, McpClientError> {
-        let meta = match group {
-            Some(groups) => RequestMeta::new(self.client_info.clone()).with_groups(groups).with_ancestors(ancestors),
-            None => RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
-        };
+        let meta = RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors);
         let params = ToolsListParams { cursor: None, meta };
         let params = serde_json::to_value(params)?;
         self.send(METHOD_TOOLS_LIST, None, params).await
@@ -83,7 +79,7 @@ impl McpClient {
         &self,
         name: &str,
         arguments: Value,
-        ancestors: &[String],
+        ancestors: Arc<Vec<String>>,
     ) -> Result<CallToolResult, McpClientError> {
         let params = ToolsCallParams {
             name: Arc::new(name.to_string()),

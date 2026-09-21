@@ -72,6 +72,9 @@ pub enum Error {
     #[error("WS error: {0}")]
     WsError(#[from] kai_ws::Error),
 
+    #[error("MCP error: {0}")]
+    McpError(#[from] kissbot_mcp::McpError),
+
     #[allow(dead_code)]
     #[error("Internal error: {0}")]
     InternalError(String),
