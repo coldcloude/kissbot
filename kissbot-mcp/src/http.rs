@@ -82,7 +82,7 @@ async fn handle<H: McpHandler>(
             );
         }
     }
-    // 2. 解析 JSON 请求体
+    // 2. 解析 JSON 请求体（体非法时无从取 id）
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
@@ -93,17 +93,9 @@ async fn handle<H: McpHandler>(
             )
         }
     };
-    let id: Option<RequestId> = value
-        .get("id")
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let Some(method) = value.get("method").and_then(Value::as_str) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            id,
-            McpError::invalid_request("缺少 method 字段"),
-        );
-    };
-    // 3. 协议版本头与请求体 `_meta` 必须同时存在且一致
+    // 3. 取请求 id（取到则让后续错误响应回带）
+    let id: Option<RequestId> = serde_json::from_value(value["id"].clone()).ok();
+    // 4. 取必需请求头：协议版本与方法名必填；Mcp-Name 仅 tools/call 必填（与请求体比对时判定）
     let Some(header_version) = header_str(&headers, HEADER_PROTOCOL_VERSION) else {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -111,11 +103,24 @@ async fn handle<H: McpHandler>(
             McpError::new(INVALID_PARAMS, "缺少 MCP-Protocol-Version 请求头"),
         );
     };
-    let meta = value.get("params").and_then(|p| p.get("_meta"));
-    let Some(body_version) = meta
-        .and_then(|m| m.get(META_PROTOCOL_VERSION))
-        .and_then(Value::as_str)
-    else {
+    let Some(header_method) = header_str(&headers, HEADER_METHOD) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            id,
+            McpError::new(INVALID_PARAMS, "缺少 Mcp-Method 请求头"),
+        );
+    };
+    let header_name = header_str(&headers, HEADER_NAME);
+    // 5. 取请求体字段：方法名与 `_meta` 的必填项
+    let meta = &value["params"]["_meta"];
+    let Some(method) = value["method"].as_str() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            id,
+            McpError::invalid_request("缺少 method 字段"),
+        );
+    };
+    let Some(body_version) = meta[META_PROTOCOL_VERSION].as_str() else {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
@@ -125,10 +130,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     };
-    if meta
-        .and_then(|m| m.get(META_CLIENT_CAPABILITIES))
-        .is_none()
-    {
+    if meta[META_CLIENT_CAPABILITIES].is_null() {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
@@ -138,6 +140,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     }
+    // 6. 请求头与请求体必须一致，且协议版本在支持列表内
     if header_version != body_version {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -166,14 +169,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     }
-    // 4. 方法头必填且与请求体一致
-    let Some(header_method) = header_str(&headers, HEADER_METHOD) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            id,
-            McpError::new(INVALID_PARAMS, "缺少 Mcp-Method 请求头"),
-        );
-    };
+    // 7. 方法头与请求体一致
     if header_method != method {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -184,20 +180,16 @@ async fn handle<H: McpHandler>(
             ),
         );
     }
-    // 5. tools/call 的 Mcp-Name 头必填且与 params.name 一致
+    // 8. tools/call 的 Mcp-Name 头必填且与 params.name 一致
     if method == METHOD_TOOLS_CALL {
-        let Some(name) = value
-            .get("params")
-            .and_then(|p| p.get("name"))
-            .and_then(Value::as_str)
-        else {
+        let Some(name) = value["params"]["name"].as_str() else {
             return error_response(
                 StatusCode::BAD_REQUEST,
                 id,
                 McpError::new(INVALID_PARAMS, "tools/call 缺少 params.name"),
             );
         };
-        match header_str(&headers, HEADER_NAME) {
+        match header_name {
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
@@ -218,7 +210,7 @@ async fn handle<H: McpHandler>(
             _ => {}
         }
     }
-    // 6. 解析为 JSON-RPC 请求并分发
+    // 9. 解析为 JSON-RPC 请求并分发
     let request: JsonRpcRequest = match serde_json::from_value(value) {
         Ok(r) => r,
         Err(e) => {
@@ -355,6 +347,40 @@ mod tests {
             app,
             vec![("Mcp-Method", "tools/list")],
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": meta() } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn missing_method_header_wins_over_body_checks_and_echoes_id() {
+        // 头信息先取：缺 Mcp-Method 头即参数错误（先于请求体 `_meta` 必填项判定），且回带请求 id
+        let app = app();
+        let (status, body) = send(
+            app,
+            vec![("MCP-Protocol-Version", PROTOCOL_VERSION)],
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], INVALID_PARAMS);
+        assert!(body["error"]["message"].as_str().unwrap().contains("Mcp-Method"));
+        assert_eq!(body["id"], 1);
+    }
+
+    #[tokio::test]
+    async fn null_client_capabilities_is_invalid_params() {
+        // `_meta` 必填项用 `[]` 取值：显式 null 与缺失同样按缺少处理
+        let app = app();
+        let (status, body) = send(
+            app,
+            std_headers("tools/list"),
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                     "params": { "_meta": {
+                         "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+                         "io.modelcontextprotocol/clientCapabilities": null
+                     } } }),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
