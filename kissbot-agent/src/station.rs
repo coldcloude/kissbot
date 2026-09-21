@@ -153,7 +153,7 @@ impl Station {
     }
 
     /// 把某个 group 的工具并入本级索引：写入所属 group（`_meta["kissbot/group"]`），
-    /// 工具名重名保留先并入者——同 group 内重复注册静默丢弃，跨 group 重名额外告警
+    /// 工具名重名保留先并入者，重复注册静默丢弃
     fn merge_local_group(
         tools: &DashMap<String, Arc<GroupTool>>,
         group: &str,
@@ -161,18 +161,13 @@ impl Station {
     ) {
         for (mut config, imp) in group_tools {
             config.set_group(group.to_string());
-            let tool_name = config.name.to_string();
-            if let Some(existing) = tools.get(&tool_name) {
-                let winner = existing.value().config.group().unwrap_or_default();
-                if winner != group {
-                    warn!("工具名冲突: {}（保留 group {}，忽略 group {}）", tool_name, winner, group);
-                }
-                continue;
+            let tool_name = config.name.as_str();
+            if !tools.contains_key(tool_name) {
+                tools.insert(tool_name.to_string(), Arc::new(GroupTool {
+                    config: Arc::new(config),
+                    imp,
+                }));
             }
-            tools.insert(tool_name, Arc::new(GroupTool {
-                config: Arc::new(config),
-                imp,
-            }));
         }
     }
 

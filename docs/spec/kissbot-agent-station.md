@@ -85,9 +85,9 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 ## 工具名 group 内唯一与重名收敛
 
 - **group 内唯一**：同一 group 内工具名不得重复；并入本级索引时保留先注册者，后到者静默丢弃（不报错）
-- **重名收敛**：不同 group、以及本级与子 Station 之间允许出现同名工具；对外仍必须给出唯一名字（MCP `tools/call` 只带工具名），因此保留先到者、后到者剔除并 warn：
-  - 本级跨 group 重名：构建时保留先声明的 group 的工具，后者忽略并 warn
-  - 本级与子 Station、子与子重名：`list_tools` 合并时保留先到者，后到者剔除（不进路由表、不进返回列表）并 warn
+- **重名收敛**：不同 group、以及本级与子 Station 之间允许出现同名工具；对外仍必须给出唯一名字（MCP `tools/call` 只带工具名），因此保留先到者、后到者剔除：
+  - 本级构建：跨 group（或同 group 重复）重名保留先声明的 group 的工具，后者静默忽略
+  - 级联合并：本级与子 Station、子与子重名在 `list_tools` 合并时保留先到者，后到者剔除（不进路由表、不进返回列表）并 warn
   - 子 Station 可配置 `prefix`，从源头用命名前缀避免与其它节点重名
 
 ## 工具路由（tool_routes）
