@@ -22,9 +22,8 @@ impl StationHttpServer {
     }
 
     /// 构建 Router：以全局 Station 单例为处理器，认证用已加载的 api key
-    pub fn router_with_station(&self) -> Router {
-        let station = Station::shared();
-        let server = McpServer::new(station, server_info());
+    fn build_router(&self) -> Router {
+        let server = McpServer::new(Station::shared(), server_info());
         kissbot_mcp::router(server, McpHttpConfig::default())
             .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(self.api_key.clone()))))
     }
@@ -36,7 +35,7 @@ impl StationHttpServer {
         let addr = format!("{}:{}", host, port);
         let listener = TcpListener::bind(&addr).await?;
         info!("station MCP 服务器启动: {} {}（端点 /mcp）", addr, kissbot_mcp::PROTOCOL_VERSION);
-        axum::serve(listener, self.router_with_station()).await?;
+        axum::serve(listener, self.build_router()).await?;
         Ok(())
     }
 }
