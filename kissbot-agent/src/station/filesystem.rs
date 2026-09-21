@@ -10,18 +10,20 @@ use serde_json::Value;
 
 use super::builtin::{ObjectSchema, PropertySchema};
 use crate::station::{
-    Group, GroupTool, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS,
+    Group, NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS,
 };
 use crate::types::{Error, Result};
+
+pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
 
 /// Read 工具返回内容的最大字节数（截断防大文件）
 const READ_MAX_BYTES: usize = 64 * 1024;
 
 /// 构造 filesystem group：read 工具（元数据 + 原生实现）
-pub fn group(name: &str) -> Result<Group> {
+pub fn group() -> Group {
     Group::with_builtin_tools(
-        name,
-        vec![GroupTool::new(
+        BUILTIN_GROUP_FILESYSTEM,
+        vec![(
             read_tool(),
             Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
         )],
@@ -29,8 +31,8 @@ pub fn group(name: &str) -> Result<Group> {
 }
 
 /// read 工具定义：元数据 + 参数 schema
-fn read_tool() -> Arc<Tool> {
-    Arc::new(Tool::new(
+fn read_tool() -> Tool {
+    Tool::new(
         "read",
         "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
         ObjectSchema {
@@ -43,9 +45,8 @@ fn read_tool() -> Arc<Tool> {
                 },
             )]),
             required: &["path"],
-        }
-        .value(),
-    ))
+        }.value(),
+    )
 }
 
 pub struct ReadTool {
@@ -154,7 +155,7 @@ mod tests {
         assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));
         assert_eq!(schema["required"], serde_json::json!(["path"]));
         // group 里注册的工具元数据用的是同一份 schema，且带所属 group
-        let group = group("filesystem").unwrap();
+        let group = group();
         let entry = group.tools.get("read").expect("filesystem group 应注册 read");
         assert_eq!(entry.value().config.input_schema.as_ref(), &schema);
         assert_eq!(entry.value().config.group(), Some("filesystem"));

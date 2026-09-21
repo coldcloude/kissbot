@@ -13,7 +13,7 @@ use tracing::warn;
 
 use crate::config_manager::ConfigManager;
 use crate::configs::{StationRepo, SubStationConfig};
-use crate::types::{Error, Result};
+use crate::types::Result;
 
 mod builtin;
 mod filesystem;
@@ -53,13 +53,6 @@ struct GroupTool {
     imp: Arc<dyn NativeTool>,
 }
 
-impl GroupTool {
-    /// 元数据与原生实现成对给出；所属 group 由 `Group::with_builtin_tools` 注册时写入
-    fn new(config: Arc<Tool>, imp: Arc<dyn NativeTool>) -> Self {
-        Self { config, imp }
-    }
-}
-
 /// group：一组工具（工具名在本 group 内唯一，不同 group 之间互不约束）
 pub struct Group {
     name: String,
@@ -73,20 +66,24 @@ impl Group {
 
     /// 用内置工具（元数据 + 原生实现）构造 group；同一 group 内工具名必须唯一。
     /// 工具在注册时即写入所属 group（`_meta["kissbot/group"]`），分组随工具定义走
-    fn with_builtin_tools(name: impl Into<String>, tools: Vec<GroupTool>) -> Result<Self> {
+    fn with_builtin_tools(name: impl Into<String>, mut tools: Vec<(Tool, Arc<dyn NativeTool>)>) -> Self {
         let name = name.into();
-        let group = Self::new(name.clone());
-        for mut entry in tools {
-            let mut config = (*entry.config).clone();
+        let group_tools = DashMap::new();
+        for (mut config, imp) in tools.drain(..) {
             config.set_group(name.clone());
-            let tool_name = config.name.to_string();
-            if group.tools.contains_key(&tool_name) {
-                return Err(Error::InternalError(format!("工具名冲突: {}（group 内唯一）", tool_name)));
+            let tool_name = config.name.as_str();
+            // 工具名冲突，静默失败，保持原有
+            if !group_tools.contains_key(tool_name) {
+                group_tools.insert(tool_name.to_string(), Arc::new(GroupTool {
+                    config: Arc::new(config),
+                    imp,
+                }));
             }
-            entry.config = Arc::new(config);
-            group.tools.insert(tool_name, Arc::new(entry));
         }
-        Ok(group)
+        Self {
+            name,
+            tools: group_tools,
+        }
     }
 }
 
@@ -167,7 +164,7 @@ impl Station {
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
         let tools = DashMap::new();
         for name in repo.groups.iter() {
-            let group = builtin_group(name)?.unwrap_or_else(|| Group::new(name.clone()));
+            let group = builtin_group(name).unwrap_or_else(|| Group::new(name.clone()));
             Self::merge_local_group(&tools, &group);
         }
         // 子 Station：只存连接信息 + MCP 客户端（MCP 端点为 base_url + /mcp）
@@ -391,22 +388,6 @@ mod tests {
         repo
     }
 
-    fn tool_config(name: &str) -> Arc<Tool> {
-        Arc::new(Tool::new(name, "d", json!({})))
-    }
-
-    /// 测试用空实现
-    fn noop_tool() -> Arc<dyn NativeTool> {
-        struct Noop;
-        #[async_trait]
-        impl NativeTool for Noop {
-            async fn call(&self, _arguments: Value) -> CallToolResult {
-                CallToolResult::text("noop")
-            }
-        }
-        Arc::new(Noop)
-    }
-
     fn ancestors(list: &[&str]) -> Arc<Vec<String>> {
         Arc::new(list.iter().map(|s| s.to_string()).collect())
     }
@@ -452,21 +433,6 @@ mod tests {
         let listing = station.list_tools(ancestors(&[])).await.unwrap();
         assert!(listing.is_empty(), "无本地工具，子连接错误被跳过");
         assert!(station.tool_routes.load().is_empty(), "无子工具时路由表恒空");
-    }
-
-    #[test]
-    fn group_rejects_duplicate_tool_names() {
-        // 工具名在 group 内唯一：同一 group 重复注册同名工具 → 报「工具名冲突」
-        let tools = vec![
-            GroupTool::new(tool_config("read"), noop_tool()),
-            GroupTool::new(tool_config("read"), noop_tool()),
-        ];
-        // Group 不含 Debug（含 Arc<dyn NativeTool>），用 match 取错而非 unwrap_err
-        let err = match Group::with_builtin_tools("filesystem", tools) {
-            Err(e) => e,
-            Ok(_) => panic!("同 group 内重名应冲突"),
-        };
-        assert!(err.to_string().contains("工具名冲突"), "冲突应报错: {}", err);
     }
 
     #[tokio::test]
