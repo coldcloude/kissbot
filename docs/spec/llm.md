@@ -104,7 +104,7 @@ impl Session {
 
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - 模型未在 `model_configs` 配置时用 provider 默认值合成。
-- 配置的存储、落盘与 agent → role → session 三级继承由调用方实现（agent 中见 [kissbot-agent-nexus 技术规格](kissbot-agent-nexus.md)）。
+- 配置的存储、落盘与 agent → role → session 三级继承由调用方实现（agent 中见 [kissbot-agent-nexus 技术规格](agent-nexus.md)）。
 
 ## LLM API 适配
 
@@ -157,7 +157,7 @@ impl Session {
 
 - 系统消息的 set 只写入待定值（多次 set 保留最近一次）；发送前对比应用：与当前一致仅清空待定，不一致则先归档并清空缓存再以新系统消息重建。
 - 归档与清空缓存文件配对执行；内存为空时不产生归档文件。
-- agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 SessionManager 的去重职责见 [kissbot-agent-nexus 技术规格](kissbot-agent-nexus.md)。
+- agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 SessionManager 的去重职责见 [kissbot-agent-nexus 技术规格](agent-nexus.md)。
 
 ## 数据结构定义
 

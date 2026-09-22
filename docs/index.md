@@ -46,12 +46,12 @@ docs/
 │   ├── memory-store.md              # memory-store 记录写入
 │   ├── memory-index.md              # 记忆索引机制
 │   ├── memory-ego.md                # 自我认知模块文件存储
-│   ├── kissbot-memory-struct-abstract.md  # 摘要记忆技术约定（接口/通知/触发判定/存储）
+│   ├── memory-struct-abstract.md    # 摘要记忆技术约定（接口/通知/触发判定/存储）
 │   ├── agent-modules.md             # Agent 组件模块调用关系
-│   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
-│   ├── kissbot-agent-station.md     # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）
-│   ├── kissbot-llm.md               # LLM 基础库技术约定（provider 配置/API 适配/会话上下文格式）
-│   └── kissbot-mcp.md               # MCP 基础库技术约定（消息结构/HTTP 端点/kissbot 扩展）
+│   ├── agent-nexus.md               # Agent Nexus 技术约定
+│   ├── agent-station.md             # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）
+│   ├── llm.md                       # LLM 基础库技术约定（provider 配置/API 适配/会话上下文格式）
+│   └── mcp.md                       # MCP 基础库技术约定（消息结构/HTTP 端点/kissbot 扩展）
 │
 └── roadmap/                    # 计划中要添加或修改的功能（手工维护，不要编辑）
     ├── new.md                  # 待规划/新增项

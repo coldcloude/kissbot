@@ -1,7 +1,7 @@
 # kissbot-agent-nexus 技术规格
 
 > 说明 kissbot-agent 的配置格式、管理命令、与外部组件的接口约定与关键数据结构。
-> 模块调用关系见 [agent-modules.md](agent-modules.md)；station 侧约定见 [kissbot-agent-station.md](kissbot-agent-station.md)。
+> 模块调用关系见 [agent-modules.md](agent-modules.md)；station 侧约定见 [kissbot-agent-station](agent-station.md)。
 
 ## 配置文件格式
 
@@ -101,7 +101,7 @@ kissbot-agent 使用三份配置：
 
 说明：
 
-- `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](kissbot-llm.md)；agent 只负责其存储、落盘与 CRUD。
+- `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](llm.md)；agent 只负责其存储、落盘与 CRUD。
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
 - `input_processor` / `system_prompter` 为**数组**（同一会话可挂多个输入处理器与系统提示词器）；`message_sender` / `tool_caller` / `output_processor` 为单个名称。
@@ -131,7 +131,7 @@ kissbot-agent 使用三份配置：
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
 | 恢复 | 新建会话时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
 
-缓存文件、行序、归档文件命名与系统消息的待定/应用语义见 [kissbot-llm 技术规格](kissbot-llm.md)。
+缓存文件、行序、归档文件命名与系统消息的待定/应用语义见 [kissbot-llm 技术规格](llm.md)。
 
 ## 管理命令格式
 
@@ -228,13 +228,13 @@ provider 实现（OpenAI 兼容 / Anthropic）的构造（`create_*_provider`）
 | "openai" | OpenAI Chat Completions | `POST {base_url}/chat/completions` | `GET {base_url}/models` |
 | "anthropic" | Anthropic Messages | `POST {base_url}/v1/messages` | `GET {base_url}/v1/models` |
 
-请求参数（`EffectiveLLMConfig`）、响应归一化（`ModelResponse`）与重试语义见 [kissbot-llm 技术规格](kissbot-llm.md)；未知 `provider_type` 由 ProviderManager 在分派处返回 `ModelProviderNotSupported`（不重试）。
+请求参数（`EffectiveLLMConfig`）、响应归一化（`ModelResponse`）与重试语义见 [kissbot-llm 技术规格](llm.md)；未知 `provider_type` 由 ProviderManager 在分派处返回 `ModelProviderNotSupported`（不重试）。
 
 ## 数据结构定义
 
 ```rust
 // 上下文消息、工具调用与模型响应结构（Message / ToolData / ToolCall / ModelResponse / ToolConfig）
-// 由 kissbot-llm 定义（与 MCP 工具的互转在 agent 侧），见 [kissbot-llm 技术规格](kissbot-llm.md)
+// 由 kissbot-llm 定义（与 MCP 工具的互转在 agent 侧），见 [kissbot-llm 技术规格](llm.md)
 
 // 会话标识：agent_id + role_name + mode 三元组（所有绑定 channel 的信息按此去重）
 struct SessionKey { agent_id: String, role_name: String, mode: Mode }

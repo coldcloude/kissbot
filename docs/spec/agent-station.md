@@ -1,6 +1,6 @@
 # kissbot-agent-station 技术规格
 
-Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、group 命名空间、递归平铺语义、工具名 group 内唯一与重名收敛、工具路由、MCP 端点协议、group 白名单与会话对应关系。MCP 协议与 HTTP 传输细节见 [kissbot-mcp 技术规格](kissbot-mcp.md)。
+Station — Agent 组件的 Tool 执行主机模块。本文档为 [kissbot-agent-station 模块设计](../design/components-design/kissbot-agent-station.md) 的技术细节约定：station.json 配置格式、group 命名空间、递归平铺语义、工具名 group 内唯一与重名收敛、工具路由、MCP 端点协议、group 白名单与会话对应关系。MCP 协议与 HTTP 传输细节见 [kissbot-mcp 技术规格](mcp.md)。
 
 ## 配置格式
 
@@ -38,7 +38,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 
 ### 对外工具定义
 
-Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group"]` 携带所属 group；字段定义见 [kissbot-mcp 技术规格](kissbot-mcp.md) 的 `tools/list`。
+Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group"]` 携带所属 group；字段定义见 [kissbot-mcp 技术规格](mcp.md) 的 `tools/list`。
 
 ### SubStationConfig
 
@@ -99,7 +99,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 
 ## MCP 端点
 
-station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `agent.station_port` 的 `/mcp` 端点；协议（方法、消息结构、请求头、状态码）见 [kissbot-mcp 技术规格](kissbot-mcp.md)。认证使用 `security.api_key`（`X-Api-Key` 头，由 kissbot-security 的 AuthLayer 叠加）。
+station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `agent.station_port` 的 `/mcp` 端点；协议（方法、消息结构、请求头、状态码）见 [kissbot-mcp 技术规格](mcp.md)。认证使用 `security.api_key`（`X-Api-Key` 头，由 kissbot-security 的 AuthLayer 叠加）。
 
 对外方法：
 

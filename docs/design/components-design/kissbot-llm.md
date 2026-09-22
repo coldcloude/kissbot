@@ -93,4 +93,4 @@ agent 是本组件的首个使用方：
 - **provider**：agent 保留自己的 ProviderManager，承担「工厂去重 + provider_type 分派 + 有效模型配置解析」，实现与重试来自本组件（`create_*_provider` / `call_with_retry`）。
 - **session**：会话上下文本体改用本组件的 Session/SessionContext；SessionManager 仍在 agent，负责按会话三元组去重与清理，并把三元组编码为 session_id。
 
-详见 [kissbot-agent-nexus 模块设计](kissbot-agent-nexus.md) 与 [kissbot-llm 技术规格](../../spec/kissbot-llm.md)。
+详见 [kissbot-agent-nexus 模块设计](kissbot-agent-nexus.md) 与 [kissbot-llm 技术规格](../../spec/llm.md)。
