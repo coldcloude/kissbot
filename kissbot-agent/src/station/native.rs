@@ -1,4 +1,4 @@
-//! 内置工具注册表：按 group 名给出内置工具（元数据 + 原生实现）
+//! 原生工具：本级自己实现的工具，含实现接口、工具条目、分组与参数 schema，以及内置注册表
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
