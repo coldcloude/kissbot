@@ -26,3 +26,10 @@
   - 追加写入 → 追加级别变更标记
   - 全量重写 → 重建级别变更标记
 - 写入失败仅记录日志，不中断后续写入
+
+## 新数据通知
+
+- 写入完成后向已连接的通知客户端广播新数据（连接方式见 [communication.md](communication.md)）
+- 通知携带记录类型与位置信息：通道消息附时间、agent、记忆后缀与发送者身份；其余类型附时间、agent 与记忆后缀
+- 通知不区分写入方式；客户端按自身水位从共享文件读取
+- 客户端通知的消费方式见 [kissbot-memory-struct-abstract.md](kissbot-memory-struct-abstract.md)

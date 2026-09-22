@@ -18,6 +18,8 @@
 │   └── memory-struct-*/          # 各记忆结构实现的数据
 ```
 
+`memory-struct-*` 下由各实现模块自行组织数据；摘要记忆实现模块的目录与文件见 [kissbot-memory-struct-abstract.md](kissbot-memory-struct-abstract.md)。
+
 `suffix` 由调用方（nexus、memory-struct）拼接，路径构造器不做解析：
 - 角色记忆：`{year}-{role-name}`（role_name 为空时形如 `2026-`）
 - 事件记忆：`{year}-{role-name}-{event-id}`（role_name 为空时形如 `2026--{event-id}`）

@@ -18,7 +18,8 @@ docs/
 │       ├── kissbot-memory.md          # 记忆基础模块
 │       ├── kissbot-memory-store.md    # 记忆存储模块
 │       ├── kissbot-memory-ego.md      # 自我认知模块
-│       ├── kissbot-memory-struct.md   # 记忆结构框架（含 abstract）
+│       ├── kissbot-memory-struct.md   # 记忆结构框架
+│       ├── kissbot-memory-struct-abstract.md  # 摘要记忆实现模块（事件切分与上下文定位）
 │       ├── kissbot-agent-config.md    # 智能体配置 UI
 │       ├── kissbot-memory-manage.md   # 记忆管理 UI
 │       ├── kissbot-config.md          # 公共配置组件
@@ -45,6 +46,7 @@ docs/
 │   ├── memory-store.md              # memory-store 记录写入
 │   ├── memory-index.md              # 记忆索引机制
 │   ├── memory-ego.md                # 自我认知模块文件存储
+│   ├── kissbot-memory-struct-abstract.md  # 摘要记忆技术约定（接口/通知/触发判定/存储）
 │   ├── agent-modules.md             # Agent 组件模块调用关系
 │   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │   ├── kissbot-agent-station.md     # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）

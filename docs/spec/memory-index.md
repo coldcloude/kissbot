@@ -21,7 +21,7 @@
 ## 变更通知
 
 - memory-store 写入记录后，按写入方式（追加 / 全量重写）向本进程内的 MemoryIndexer 发出对应级别的变更标记（见 [memory-store.md](memory-store.md)）
-- 向 memory-struct 等外部模块推送变更通知：未实现
+- 向 memory-struct 等外部模块推送变更通知：由 memory-store 的通知服务广播新数据（见 [memory-store.md](memory-store.md)）
 
 ## 查询能力
 

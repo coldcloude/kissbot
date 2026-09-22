@@ -5,10 +5,13 @@
 
 记忆结构实现模块可使用记忆基础模块的 MemoryIndexer 在内存中维护索引，并将 memory-store 的变更通知对接到 MemoryIndexer 的变更通知接口，以便在追加或重建时自动更新索引。
 
+当前实现模块为 kissbot-memory-struct-abstract（摘要记忆）：把原始记忆切分为事件、生成事件摘要，并按新消息定位事件提供上下文，详见 [kissbot-memory-struct-abstract](kissbot-memory-struct-abstract.md)。
+
 ## 框架接口
 定义标准接口规范，包括：
-- 记忆结构构建接口
-- 记忆搜索工具接口
+- 记忆结构构建接口：连接新数据通知、按作用域构建与更新结构
+- 记忆结构查询接口：按作用域与条件查询结构内容
+- 记忆搜索工具接口：供 nexus 在 agentic loop 内通过 tool call 调用（预留）
 
 ## 记忆结构实现模块的工作方式
 
