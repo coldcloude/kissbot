@@ -8,8 +8,9 @@ use async_trait::async_trait;
 use kissbot_mcp::{CallToolResult, Tool};
 use serde_json::Value;
 
-use super::builtin::{ObjectSchema, PropertySchema};
-use crate::station::{NativeTool, TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
+use super::native::{ToolImplement, ObjectSchema, PropertySchema};
+use crate::station::native::Group;
+use crate::station::{TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
 use crate::types::{Error, Result};
 
 pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
@@ -18,11 +19,13 @@ pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
 const READ_MAX_BYTES: usize = 64 * 1024;
 
 /// filesystem group 的工具：元数据 + 原生实现（所属 group 在并入本级索引时写入）
-pub fn group_tools() -> Vec<(Tool, Arc<dyn NativeTool>)> {
-    vec![(
+pub fn group() -> Group {
+    let mut result = Group::new(BUILTIN_GROUP_FILESYSTEM);
+    result.add_tool(
         read_tool(),
         Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),
-    )]
+    );
+    result
 }
 
 /// read 工具定义：元数据 + 参数 schema
@@ -31,15 +34,15 @@ fn read_tool() -> Tool {
         "read",
         "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
         ObjectSchema {
-            kind: "object",
+            r#type: "object".into(),
             properties: BTreeMap::from([(
-                "path",
+                "path".into(),
                 PropertySchema {
-                    kind: "string",
-                    description: "文件路径（相对或绝对，限工作目录内）",
+                    r#type: "string".into(),
+                    description: "文件路径（相对或绝对，限工作目录内）".into(),
                 },
             )]),
-            required: &["path"],
+            required: vec!["path".into()],
         }.value(),
     )
 }
@@ -79,7 +82,7 @@ impl ReadTool {
 }
 
 #[async_trait]
-impl NativeTool for ReadTool {
+impl ToolImplement for ReadTool {
     async fn call(&self, arguments: Value) -> CallToolResult {
         let Some(raw) = arguments["path"].as_str() else {
             return CallToolResult::error(TERR_TOOL_WRONG_ARGUMENTS, "缺少参数 path");
@@ -150,9 +153,9 @@ mod tests {
         assert!(schema["properties"]["path"]["description"].as_str().unwrap().contains("文件路径"));
         assert_eq!(schema["required"], serde_json::json!(["path"]));
         // 注册表给出的工具元数据用的是同一份 schema（所属 group 在并入本级索引时写入）
-        let tools = group_tools();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].0.name.as_str(), "read");
-        assert_eq!(tools[0].0.input_schema.as_ref(), &schema);
+        let group = group();
+        assert_eq!(group.tools.len(), 1);
+        assert_eq!(group.tools[0].config.name.as_str(), "read");
+        assert_eq!(group.tools[0].config.input_schema.as_ref(), &schema);
     }
 }

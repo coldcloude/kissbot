@@ -30,8 +30,7 @@ async fn main() {
         .expect("初始化配置失败");
 
     // 2. 构建全局 Station 单例（读 station.json：本级 group + 直接子 Station）
-    station::Station::new().await
-        .expect("初始化 Station 失败");
+    station::Station::new().await;
 
     // 3. 初始化 Nexus（装配 + 注册单例；连接与启动动作在 run() 中执行）
     nexus::Nexus::new().await

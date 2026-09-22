@@ -13,12 +13,13 @@ use tracing::warn;
 
 use crate::config_manager::ConfigManager;
 use crate::configs::{StationRepo, SubStationConfig};
+use crate::station::native::NativeTool;
 use crate::types::Result;
 
-mod builtin;
+mod native;
 mod filesystem;
 
-use builtin::builtin_group;
+use native::native_group;
 
 // ========== 工具错误码（工具级失败随 CallToolResult 回带） ==========
 
@@ -37,20 +38,6 @@ pub fn tool_error(code: u32, message: String) -> Value {
         "code": code,
         "message": message
     })
-}
-
-/// Station 原生工具接口：本级 Station 自己实现的工具（区别于代理到子 Station 的 MCP 工具）
-#[async_trait]
-pub trait NativeTool: Send + Sync {
-    async fn call(&self, arguments: Value) -> CallToolResult;
-}
-
-// ========== 运行态结构 ==========
-
-/// group 内单个工具条目：元数据 + 原生实现（注册的工具必须可执行）
-struct GroupTool {
-    config: Arc<Tool>,
-    imp: Arc<dyn NativeTool>,
 }
 
 /// 子 Station 运行态：只存连接信息 + MCP 客户端（孙子由子 Station 自己递归）
@@ -96,7 +83,7 @@ pub struct Station {
     station_id: String,
     /// 本级工具索引：工具名 → 条目。工具名在 group 内唯一；跨 group 重名时保留先并入的 group
     /// 的工具并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
-    tools: DashMap<String, Arc<GroupTool>>,
+    tools: DashMap<String, Arc<NativeTool>>,
     sub_stations: DashMap<String, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
     /// list_tools 拉取子 Station 成功时更新；
@@ -116,25 +103,34 @@ impl Station {
     }
 
     /// 从 ConfigManager 读 station.json 构建全局 Station 并注册单例
-    pub async fn new() -> Result<()> {
+    pub async fn new() {
         let repo = ConfigManager::get().station_repo_snapshot().await;
         let api_key = kissbot_security::SecurityConfig::get().api_key.to_string();
-        let station = Self::from_repo(&repo, &api_key)?;
+        let station = Self::from_repo(&repo, &api_key);
         let _ = SINGLETON.set(Arc::new(station));
-        Ok(())
     }
 
     /// 按配置构建 Station（纯构造，不注册单例；单测直接消费）：
     /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对给出
-    pub fn from_repo(repo: &StationRepo, api_key: &str) -> Result<Station> {
-        let tools = DashMap::new();
+    pub fn from_repo(repo: &StationRepo, api_key: &str) -> Self {
+        let result = Self {
+            station_id: repo.station_id.to_string(),
+            tools: DashMap::new(),
+            sub_stations: DashMap::new(),
+            tool_routes: ArcSwap::from_pointee(HashMap::new()),
+        };
         for name in repo.groups.iter() {
             // 未内置的 group 只有名字、没有工具，注册为空
-            let group_tools = builtin_group(name).unwrap_or_default();
-            Self::merge_local_group(&tools, name, group_tools);
+            if let Some(group) = native_group(name) {
+                for tool in group.tools {
+                    let tool_name = tool.config.name.as_str();
+                    if !result.tools.contains_key(tool_name) {
+                        result.tools.insert(tool_name.to_string(), Arc::new(tool));
+                    }
+                }
+            }
         }
         // 子 Station：只存连接信息 + MCP 客户端（MCP 端点为 base_url + /mcp）
-        let sub_stations = DashMap::new();
         for (id, scfg) in repo.sub_stations.iter() {
             let scfg = scfg.load_full();
             let endpoint = format!("{}/mcp", scfg.base_url.trim_end_matches('/'));
@@ -142,33 +138,9 @@ impl Station {
                 config: Arc::new((*scfg).clone()),
                 client: McpClient::new(&endpoint, scfg.timeout_secs, Some(api_key)),
             };
-            sub_stations.insert(id.clone(), Arc::new(sub));
+            result.sub_stations.insert(id.clone(), Arc::new(sub));
         }
-        Ok(Station {
-            station_id: repo.station_id.to_string(),
-            tools,
-            sub_stations,
-            tool_routes: ArcSwap::from_pointee(HashMap::new()),
-        })
-    }
-
-    /// 把某个 group 的工具并入本级索引：写入所属 group（`_meta["kissbot/group"]`），
-    /// 工具名重名保留先并入者，重复注册静默丢弃
-    fn merge_local_group(
-        tools: &DashMap<String, Arc<GroupTool>>,
-        group: &str,
-        group_tools: Vec<(Tool, Arc<dyn NativeTool>)>,
-    ) {
-        for (mut config, imp) in group_tools {
-            config.set_group(group.to_string());
-            let tool_name = config.name.as_str();
-            if !tools.contains_key(tool_name) {
-                tools.insert(tool_name.to_string(), Arc::new(GroupTool {
-                    config: Arc::new(config),
-                    imp,
-                }));
-            }
-        }
+        result
     }
 
     /// 直接向本地 nexus 提供工具列表：`groups` 为会话启用的 group 白名单（None = 不过滤）
@@ -262,7 +234,7 @@ impl Station {
             return Err(McpError::station_cycle(&self.station_id));
         }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
-        let local = self.tools.get(name).map(|e| e.value().imp.clone());
+        let local = self.tools.get(name).map(|e| e.value().implement.clone());
         if let Some(tool) = local {
             return Ok(tool.call(arguments).await);
         }
@@ -377,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_returns_all_local() {
         // 内置 filesystem group 声明后，read 工具元数据由内置注册表填充
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.len(), 1, "内置注册表应填充 read");
         assert_eq!(tools[0].name.as_str(), "read");
@@ -387,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_local_filters_by_group() {
         // 本地直连 nexus 的入口：按会话启用的 group 白名单过滤（None = 全部）
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
         let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
         assert_eq!(station.list_tools_local(Some(&hit)).await.unwrap().len(), 1);
@@ -398,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_with_unreachable_sub_returns_empty() {
         // 子 Station 不可达：告警跳过，路由表留空，结果只有本地（此处本地为空）
-        let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_sub(), "test-key");
         let listing = station.list_tools(ancestors(&[])).await.unwrap();
         assert!(listing.is_empty(), "无本地工具，子连接错误被跳过");
         assert!(station.tool_routes.load().is_empty(), "无子工具时路由表恒空");
@@ -406,7 +378,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_routes_via_cache_table() {
-        let station = Station::from_repo(&repo_with_sub(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_sub(), "test-key");
         // 注入路由（模拟 list_tools 拉取后缓存）：工具 x 属于 station-a
         set_routes(&station, &[("x", "station-a")]);
         // 命中路由 → 经 MCP 调子 Station（子站不可达）：工具级失败映射为 EXTERNAL_ERROR
@@ -423,14 +395,14 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_local_miss_returns_not_found() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let miss = station.call_tool_local("nope", json!({})).await.unwrap();
         assert_eq!(miss.structured_content["code"], TERR_TOOL_NOT_FOUND);
     }
 
     #[tokio::test]
     async fn call_tool_local_native_tool_executes() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
         let result = station.call_tool_local("read", json!({ "path": "Cargo.toml" })).await.unwrap();
         assert!(!result.is_error, "本地 read 应成功: {:?}", result.error_message());
@@ -439,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_cycle_is_protocol_error() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let err = station
             .call_tool("read", json!({}), ancestors(&["station-self"]))
             .await
@@ -449,14 +421,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_tools_cycle_is_protocol_error() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let err = station.list_tools(ancestors(&["station-self"])).await.unwrap_err();
         assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
     }
 
     #[tokio::test]
     async fn mcp_handler_list_and_call_roundtrip() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let meta = RequestMeta::new(Implementation::new("t", "1"));
         // 显式走 McpHandler 实现（Station 另有同名固有方法）
         let listing = McpHandler::list_tools(&station, ToolsListParams {
@@ -565,7 +537,7 @@ mod tests {
     async fn remote_tool_without_group_falls_back_to_station_default_group() {
         // 对端工具未携带 group（如通用 MCP 服务端）→ 归入子站默认 group
         let (base, observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
 
         let all = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(all.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
@@ -578,7 +550,7 @@ mod tests {
     async fn remote_tool_carried_group_is_trusted() {
         // 对端工具携带 group → 以对端携带的 group 为准
         let (base, _observed) = spawn_mock_mcp(true).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.len(), 1);
@@ -589,7 +561,7 @@ mod tests {
     async fn remote_tool_name_gets_prefix_and_call_strips_it() {
         // 前缀让远端工具名在本级唯一；调用时去掉前缀再转发给子站
         let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, Some("a/")), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, Some("a/")), "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools[0].name.as_str(), "a/mock-tool");
@@ -606,7 +578,7 @@ mod tests {
         let (base, _observed) = spawn_mock_mcp_named("read", false).await;
         let mut repo = repo_with_remote_sub(&base, None);
         repo.groups = vec!["filesystem".to_string()];
-        let station = Station::from_repo(&repo, "test-key").unwrap();
+        let station = Station::from_repo(&repo, "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["read"]);
@@ -618,7 +590,7 @@ mod tests {
     async fn sub_station_kissbot_cycle_error_surfaces_as_protocol_cycle() {
         // 子站以工具级 kissbot 错误（code=TERR_TOOL_CYCLE）报告循环 → 本级识别为协议级自环
         let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
         set_routes(&station, &[("cycle-tool", "remote")]);
         let err = station.call_tool("cycle-tool", json!({}), ancestors(&[])).await.unwrap_err();
         assert_eq!(err.code, kissbot_mcp::STATION_CYCLE, "kissbot 循环错误码应被识别并上抛");
@@ -628,7 +600,7 @@ mod tests {
     async fn sub_station_foreign_error_passes_through_unchanged() {
         // 非 kissbot 来源的错误体：本级不解释、不改写，原样回传
         let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
         set_routes(&station, &[("foreign-tool", "remote")]);
         let result = station.call_tool("foreign-tool", json!({}), ancestors(&[])).await.unwrap();
         assert!(result.is_error);
@@ -638,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn station_discover_declares_kissbot_extensions() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key").unwrap();
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let result = McpHandler::discover(&station).await;
         assert!(result.supports_ancestors() && result.supports_kissbot());
     }
