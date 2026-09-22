@@ -4,17 +4,20 @@ use std::time::Duration;
 
 use chrono::Local;
 use kissbot_api::RESERVED_AGENT_ID;
+use kissbot_llm::{
+    EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig,
+};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveLLMConfig, EffectiveMemoryRecoverConfig, LLMConfig, MemoryRecoverConfig, OutChannel, GroupSetConfig};
+use crate::configs::{EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannel};
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
-    Error, Message, ModelResponse, Result, SessionKey, ToolCall, ToolConfig, role_mode,
+    Error, Result, SessionKey, role_mode,
 };
-use crate::session_manager::{Session, SessionManager};
-use crate::station::Station;
+use crate::session_manager::SessionManager;
+use crate::station::{Station, tool_config_from_mcp};
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
 use crate::message::pack_memory_messages;
@@ -345,6 +348,7 @@ impl Nexus {
         }
     }
 
+    /// 调用 LLM：交给 ProviderManager（工厂去重 + 有效模型配置解析 + provider_type 分派 + kissbot-llm 带重试调用）
     pub async fn call_provider_model(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
         self.provider_manager.call(llm_cfg, messages, tools).await
     }
@@ -442,7 +446,7 @@ impl Nexus {
         match Station::get().list_tools_local(Some(cfg.group_set.as_ref())).await {
             Ok(tools) => tools
                 .iter()
-                .map(|t| Arc::new(ToolConfig::from(t.as_ref())))
+                .map(|t| Arc::new(tool_config_from_mcp(t.as_ref())))
                 .collect(),
             Err(e) => {
                 warn!("工具查询失败: {}", e);
@@ -689,8 +693,11 @@ mod tests {
     async fn channel_command_runs_through_channel_manager_queue() {
         // 覆盖变更队列链路：ChannelManager::channel_command 入队 → 队列消费者
         // → ChannelManager::apply_channel_command → bind_user/unbind_user 落库
+        // 用本地 ChannelManager（队列消费者属本用例运行时）：全局单例的消费者由首个用例的运行时 spawn，
+        // 该用例结束后消费者随运行时停止，跨用例使用全局队列会因队列关闭而失败
         ensure_test_globals().await;
         let cm = ConfigManager::get();
+        let channel_manager = ChannelManager::new();
         let channel_id = "nexus-queue-test";
         let _ = cm.add_channel(ChannelConfig {
             channel_id: Arc::new(channel_id.into()),
@@ -703,14 +710,14 @@ mod tests {
         }).await;
 
         let user = ChannelUser { messenger_id: "web".into(), user_id: "u-queue".into() };
-        let reply = Nexus::get().channel_manager().channel_command(ChannelCommand::BindUser {
+        let reply = channel_manager.channel_command(ChannelCommand::BindUser {
             channel_id: channel_id.to_string(), user: user.clone(),
         }).await.expect("绑定命令应执行成功");
         assert!(reply.contains("已绑定"), "回复文案应说明已绑定: {}", reply);
         let ch = cm.channel(channel_id).await.expect("channel 应存在");
         assert!(ch.bind_users.contains(&user), "绑定应落库");
 
-        let reply = Nexus::get().channel_manager().channel_command(ChannelCommand::UnbindUser {
+        let reply = channel_manager.channel_command(ChannelCommand::UnbindUser {
             channel_id: channel_id.to_string(), user: user.clone(),
         }).await.expect("解绑命令应执行成功");
         assert!(reply.contains("已移除"), "回复文案应说明已移除: {}", reply);
@@ -756,6 +763,21 @@ mod tests {
             "被清理的 key 的 trigger 应移除");
         assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_,_,_))),
             "被清理的 key 的 pipeline 应移除");
+    }
+
+    // ===== provider 分派（未知 provider 名 / 未知 provider_type） =====
+    // 分派与工厂去重由 ProviderManager 承担，其单测见 provider.rs；此处覆盖 Nexus 的委托链路
+
+    #[tokio::test]
+    async fn call_provider_model_delegates_unknown_provider_to_error() {
+        ensure_test_globals().await;
+        // provider 未配置 → ProviderManager 解析有效模型配置失败 → ModelProviderNotFound（不触网）
+        let mut llm_cfg = EffectiveLLMConfig::new();
+        llm_cfg.provider = Arc::new("no-such-provider".into());
+        llm_cfg.model = Arc::new("m".into());
+        let err = Nexus::get().call_provider_model(&llm_cfg, vec![], &vec![]).await
+            .err().expect("未配置的 provider 应返回 Err");
+        assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider: {:?}", err);
     }
 
     #[tokio::test]

@@ -17,7 +17,9 @@ pub use system_prompter::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, session_manager::Session, types::{Error, Message, Mode, Result, SessionKey, ToolConfig}};
+use kissbot_llm::{Message, Session, ToolConfig};
+
+use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Mode, Result, SessionKey}};
 
 pub const PP_IN_BATCH: &str = "batch_input_processor";
 pub const PP_OUT_CHANNEL: &str = "channel_output_processor";

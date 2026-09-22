@@ -19,6 +19,18 @@ pub struct SessionKey {
     pub mode: Mode,
 }
 
+impl SessionKey {
+    /// 会话文件标识（kissbot-llm 会话上下文的 session_id）：{agent_id}-{role_name}（角色模式）
+    /// 或 {agent_id}-{role_name}-{event}（事件模式）；磁盘布局
+    /// <data_dir>/context/<session_id>.jsonl 由该编码决定
+    pub fn encode(&self) -> String {
+        match &self.mode {
+            Mode::Role => format!("{}-{}", self.agent_id, self.role_name),
+            Mode::Event(event) => format!("{}-{}-{}", self.agent_id, self.role_name, event),
+        }
+    }
+}
+
 /// 记忆读写边界的 role 编码：事件模式拼 {role}-{event}（对 memory-store 透明），角色模式原样
 /// 调用方按需从 SessionKey 的 role_name/mode 现场计算（SessionKey 只做会话去重）
 pub fn role_mode(role_name: &str, mode: &Mode) -> String {

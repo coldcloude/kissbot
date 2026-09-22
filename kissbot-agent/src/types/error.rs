@@ -53,4 +53,20 @@ pub enum Error {
     PipelineNotFound(String, String, SessionKey)
 }
 
+/// kissbot-llm 错误逐变体映射到 agent 错误（保持本枚举的对外错误表面不变）
+impl From<kissbot_llm::Error> for Error {
+    fn from(e: kissbot_llm::Error) -> Self {
+        match e {
+            kissbot_llm::Error::ModelApiError(message) => Error::ModelApiError(message),
+            kissbot_llm::Error::ModelProviderNotFound(provider, model) => Error::ModelProviderNotFound(provider, model),
+            kissbot_llm::Error::ModelProviderNotSupported(message) => Error::ModelProviderNotSupported(message),
+            kissbot_llm::Error::IoError(e) => Error::IoError(e),
+            kissbot_llm::Error::ReqwestError(e) => Error::ReqwestError(e),
+            kissbot_llm::Error::JsonError(e) => Error::JsonError(e),
+            kissbot_llm::Error::FileError(e) => Error::FileError(e),
+            kissbot_llm::Error::InternalError(message) => Error::InternalError(message),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

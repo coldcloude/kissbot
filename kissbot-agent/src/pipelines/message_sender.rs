@@ -1,7 +1,9 @@
 use std::sync::{Arc, atomic::{AtomicU64, Ordering::Relaxed}};
 
 use async_trait::async_trait;
-use crate::{config_manager::ConfigManager, configs::{CompressConfig, EffectiveCompressConfig, EffectiveLLMConfig, LLMConfig}, nexus::Nexus, pipeline::AgentMessageSender, session_manager::Session, types::{Error, Message, ModelResponse, Result, SessionKey, ToolConfig}};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolConfig};
+
+use crate::{config_manager::ConfigManager, configs::{CompressConfig, EffectiveCompressConfig}, nexus::Nexus, pipeline::AgentMessageSender, types::{Error, Result, SessionKey}};
 
 pub struct RawMessagerSender {
     pub session_key: Arc<SessionKey>,

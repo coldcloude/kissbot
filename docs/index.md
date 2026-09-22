@@ -11,6 +11,7 @@ docs/
 │   └── components-design/      # 组件设计文档（每个组件一个文件）
 │       ├── kissbot-agent-nexus.md     # Agent Nexus 模块 — LLM 通信枢纽
 │       ├── kissbot-agent-station.md   # Agent Station 模块 — Tool 执行主机
+│       ├── kissbot-llm.md             # LLM 基础库 — provider 调用与会话上下文
 │       ├── kissbot-mcp.md             # MCP 基础库 — 极简 MCP 实现
 │       ├── kissbot-channel.md         # 消息通道框架
 │       ├── kissbot-channel-web.md     # Web 通道（含 web-ui）
@@ -47,6 +48,7 @@ docs/
 │   ├── agent-modules.md             # Agent 组件模块调用关系
 │   ├── kissbot-agent-nexus.md       # Agent Nexus 技术约定
 │   ├── kissbot-agent-station.md     # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）
+│   ├── kissbot-llm.md               # LLM 基础库技术约定（provider 配置/API 适配/会话上下文格式）
 │   └── kissbot-mcp.md               # MCP 基础库技术约定（消息结构/HTTP 端点/kissbot 扩展）
 │
 └── roadmap/                    # 计划中要添加或修改的功能（手工维护，不要编辑）

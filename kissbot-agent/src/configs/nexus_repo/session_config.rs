@@ -5,8 +5,13 @@ use std::{collections::HashMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{configs::{MergeEffectiveConfig, common::{MergeBy, MergeSelf, OptionArcField}, nexus_repo::pipeline_config::*}, types::SessionKey};
-use crate::{impl_option_arc_field, impl_option_arc_field_map};
+use kissbot_api::{
+    MergeBy, MergeEffectiveConfig, MergeSelf, OptionArcField, impl_option_arc_field,
+    impl_option_arc_field_map,
+};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
+
+use crate::{configs::nexus_repo::pipeline_config::*, types::SessionKey};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentRoleConfigMap {

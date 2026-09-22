@@ -470,7 +470,7 @@ mod tests {
     }
 
     use crate::message::pack_memory_messages;
-    use crate::types::Message;
+    use kissbot_llm::Message;
     use axum::routing::post;
     use axum::{Json, Router};
     use serde_json::json;

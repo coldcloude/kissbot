@@ -101,12 +101,15 @@ kissbot-agent 使用三份配置：
 
 说明：
 
+- `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](kissbot-llm.md)；agent 只负责其存储、落盘与 CRUD。
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
 - `input_processor` / `system_prompter` 为**数组**（同一会话可挂多个输入处理器与系统提示词器）；`message_sender` / `tool_caller` / `output_processor` 为单个名称。
 - `sessions` 的 key 是 `SessionKey`（结构体），JSON 不支持结构体作 map 键，故以 `[[key, value], ...]` 数组对承载。
 
 ### 配置继承与合成
+
+配置结构（`ProviderModelConfig` / `LLMConfig` / `EffectiveModelConfig` / `EffectiveLLMConfig`）与继承合并的通用约定由 kissbot-llm / kissbot-api 提供；agent 负责按下列继承链合成并缓存：
 
 | 配置 | 继承链 | 合成结果 |
 |------|--------|----------|
@@ -119,18 +122,16 @@ kissbot-agent 使用三份配置：
 
 例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的会话立即生效。
 
-## 会话上下文本地缓存与归档（session_manager）
+## 会话集合与上下文本地缓存（session_manager）
 
 | 项 | 约定 |
 |----|------|
-| 缓存文件 | `<data_dir>/context/<session_key 编码>.jsonl`，每行一条 Message（JSON），追加写、不截断 |
-| session_key 编码 | 角色模式 `{agent_id}-{role_name}`；事件模式 `{agent_id}-{role_name}-{event}` |
-| 行序 | 首行为当前系统消息（如有），其后为消息行 |
-| 恢复 | 正序全量回读；崩溃一致性清理——丢弃末尾悬挂的 assistant tool_calls 行与开头的孤立 Tool 行；文件不存在视为空上下文 |
-| 归档 | `<data_dir>/context-history/<session_key 编码>-<时间戳>.jsonl`（时间戳 `%Y-%m-%d-%H%M%S`），格式与缓存一致 |
+| 会话集合 | 按 (agent_id, role_name, mode) 去重持有；绑定信息变化时仅保留仍在绑定集合中的会话 |
+| session_id 编码 | 角色模式 `{agent_id}-{role_name}`；事件模式 `{agent_id}-{role_name}-{event}`（作为 kissbot-llm 的会话标识，决定缓存/归档文件名） |
+| 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
+| 恢复 | 新建会话时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
 
-- 系统消息的 set 只写入待定值（多次 set 保留最近一次）；发送前对比应用：与当前一致仅清空待定，不一致则先归档并清空缓存再以新系统消息重建。
-- 归档与清空缓存文件配对执行；内存为空时不产生归档文件。
+缓存文件、行序、归档文件命名与系统消息的待定/应用语义见 [kissbot-llm 技术规格](kissbot-llm.md)。
 
 ## 管理命令格式
 
@@ -220,61 +221,20 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 ## LLM API 适配
 
-### 支持的提供商
+provider 实现（OpenAI 兼容 / Anthropic）的构造（`create_*_provider`）、调用、重试与响应归一化由 kissbot-llm 提供；agent 侧的 ProviderManager 负责按 provider 名缓存实现实例（工厂去重）、解析有效模型配置（超时 / 重试 / token 上限）并按 `provider_type` 分派。
 
 | provider_type | 兼容 API | 请求路径 | 模型列表 |
 |---------------|----------|----------|----------|
 | "openai" | OpenAI Chat Completions | `POST {base_url}/chat/completions` | `GET {base_url}/models` |
 | "anthropic" | Anthropic Messages | `POST {base_url}/v1/messages` | `GET {base_url}/v1/models` |
 
-### 请求参数（EffectiveLLMConfig）
-
-```jsonc
-{
-  "model": "deepseek-flash",
-  "messages": [ { "role": "system", "content": "…" }, { "role": "user", "content": "…" } ],
-  "max_tokens": 4096,          // 未配置时 anthropic 回退 65535
-  "temperature": 0.7,
-  "thinking": { "type": "enabled" },   // openai：映射为协议枚举；anthropic：原样 { "type": … }
-  "reasoning_effort": "low",           // openai：原样字段；anthropic：output_config.effort
-  "stream": false                      // 固定非流式
-}
-```
-
-- messages 直接使用会话上下文的 `Message` 序列（OpenAI 兼容格式）；anthropic 分支把 system 提取为顶层 `system` 字段、丢弃 Tool 消息（本轮不支持工具消息）
-- tools 非空时按 provider 协议包装（openai：`{type:"function", function:{name,description,parameters}}`）；为空则不携带该字段
-
-### 响应归一化（ModelResponse）
-
-| 字段 | 说明 |
-|------|------|
-| raw_content / content | API 原始 content 与剥离 `<think>…</think>` 后的正文 |
-| raw_reasoning_content / reasoning_content | API 思考字段原值 / 解析值（openai `reasoning_content`；anthropic thinking block） |
-| thinking | 正文中 `<think>` 标签内容（与 reasoning_content 相互独立） |
-| raw_tool_calls / tool_calls | API 原始 tool_calls（原样回传上下文）/ 解析出的 `ToolCall` 列表 |
-| finish_reason | 停止原因（当前无消费方） |
-| total_tokens | openai：`usage.total_tokens`（缺省 0）；anthropic：固定 0 |
-
-调用失败按 `retry_count` 指数退避重试；未知 `provider_type` 立即返回 `ModelProviderNotSupported`（不重试）。
+请求参数（`EffectiveLLMConfig`）、响应归一化（`ModelResponse`）与重试语义见 [kissbot-llm 技术规格](kissbot-llm.md)；未知 `provider_type` 由 ProviderManager 在分派处返回 `ModelProviderNotSupported`（不重试）。
 
 ## 数据结构定义
 
 ```rust
-// 上下文消息（OpenAI 兼容，序列化时 role 为平级标签）
-enum Message {
-    System { content: Arc<String> },
-    User { content: Arc<String> },
-    Assistant { content: Value, reasoning_content: Value, tool_calls: Value },  // 后三者原样透传 API 值
-    Tool { tool_call_id: Arc<String>, content: Arc<String> },                    // 无 name 字段
-}
-
-// 工具调用：Nexus 交互层结构（LLM 侧 tool call 与工具结果回填）；
-// Station 内部使用 MCP 工具类型，由 pipeline 的工具调用器在边界转换
-// arguments 执行前、result / error 执行后（三者均为 JSON）；
-// 只承载 MCP content 字段转成的 Value（内容块数组）：成功进 result、失败进 error（result 留空）；
-// structuredContent 仅用于 Station 内部处理，不进入本结构
-struct ToolData { arguments: Value, result: Value, error: Value }
-struct ToolCall { id: Arc<String>, name: Arc<String>, data: ToolData }
+// 上下文消息、工具调用与模型响应结构（Message / ToolData / ToolCall / ModelResponse / ToolConfig）
+// 由 kissbot-llm 定义（与 MCP 工具的互转在 agent 侧），见 [kissbot-llm 技术规格](kissbot-llm.md)
 
 // 会话标识：agent_id + role_name + mode 三元组（所有绑定 channel 的信息按此去重）
 struct SessionKey { agent_id: String, role_name: String, mode: Mode }
@@ -287,9 +247,14 @@ enum Mode {
 
 // 记忆读写边界的 role 编码：事件模式拼 {role}-{event}，角色模式原样
 fn role_mode(role_name: &str, mode: &Mode) -> String;
+
+// 会话标识 → kissbot-llm 会话标识（缓存/归档文件名段）：{agent_id}-{role_name}[-{event}]
+impl SessionKey { fn encode(&self) -> String; }
 ```
 
 ## 错误类型
+
+模型调用相关错误由 kissbot-llm 定义（`ModelApiError` / `ModelProviderNotFound` / `ModelProviderNotSupported` / IO 与解析类），agent 在自己的错误类型上逐变体映射，保持本枚举的对外错误表面不变。
 
 ```rust
 enum Error {

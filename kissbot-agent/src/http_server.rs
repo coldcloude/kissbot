@@ -12,8 +12,9 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config_manager::{ConfigManager};
-use crate::configs::{ChannelConfig, ProviderModelConfig};
+use crate::configs::ChannelConfig;
 use kissbot_api::ChannelUser;
+use kissbot_llm::ProviderModelConfig;
 use crate::types::Result;
 
 /// 管理 REST API 服务器（axum，X-Api-Key 鉴权 layer，security.admin_api_key）
@@ -155,7 +156,7 @@ async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdmin
 
 #[cfg(test)]
 mod tests {
-    use crate::configs::{ModelConfig, ProviderConfig};
+    use kissbot_llm::{ModelConfig, ProviderConfig};
 
     use super::*;
     use axum::body::Body;

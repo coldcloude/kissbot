@@ -4,7 +4,7 @@ use kissbot_api::channel::IncomingMessageEvent;
 use kissbot_api::message::Content;
 use serde_json::Value;
 
-use crate::types::Message;
+use kissbot_llm::Message;
 
 /// 消息内容（channel record 的最小视图：name + 文本段 + is_self；id 类不保留；时间由排序键承担，不保留）
 #[derive(Debug, Clone)]

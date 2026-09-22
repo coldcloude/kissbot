@@ -5,14 +5,18 @@ Agent 是智能体组件，内部由两个模块组成——Nexus（LLM 通信�
 
 Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station MCP 服务端，可被远程 station 作为 sub 调用）；仅 nexus / 仅 station 的裁剪形态为后续能力。
 
+Nexus 的模型调用与会话上下文本体来自 **LLM 基础库（kissbot-llm）**：provider 实现与带重试调用、上下文的内存/缓存/归档由该库承担；Nexus 的 ProviderManager 负责 provider 实例复用（工厂去重）、分派与有效配置解析，会话集合由 SessionManager 管理。
+
 
 ```mermaid
 graph TB
     Memory[记忆系统] -. HTTPS .-> Nexus
+    Llm[kissbot-llm<br/>provider 调用 + 会话上下文]
     subgraph Agent[Agent 组件]
         Nexus[Nexus<br/>LLM 枢纽] -- 内部调用 --- StationLocal[Station<br/>本级工具 + MCP 服务端]
     end
     Nexus -- WSS --- Channel[Channel<br/>通道/外部]
+    Llm --- Nexus
     StationLocal -. MCP .-> StationRemote[下级 Station<br/>MCP 服务端]
 ```
 
@@ -73,9 +77,9 @@ Agent 启用不同的内部模块和记忆模式，形成多种工作方式：
 Agent 组件内部包含两大模块：
 
 **Nexus 模块**：负责 LLM 通信、会话编排和记忆对接
-- LLM 客户端（provider 体系）：按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，封装调用与响应归一化
+- LLM 调用：ProviderManager 按 provider 名缓存实现实例（工厂去重）、按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，解析有效模型配置（超时/重试/token 上限）后经 kissbot-llm 的 call_with_retry 调用（请求构造、重试与响应归一化由该库完成）
 - pipeline 体系：按会话装配输入处理器、消息发送器、工具调用器、输出处理器与系统提示词器（装配时注入会话，运行期直接读写该会话上下文），AgentPipeline 即 agentic loop 本体
-- 会话与上下文：按 (agent_id, role_name, mode) 管理上下文（内存 + 本地缓存 + 历史归档）
+- 会话与上下文：SessionManager 按 (agent_id, role_name, mode) 去重管理会话集合；单个会话的上下文（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担
 - Tool 调用分派：把外置工具分派到 Station（工具分组白名单平铺查询 + 工具调用）
 - 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯
 - 外部输入处理器：对接消息通道（经通道适配层），管理命令路由

@@ -1,18 +1,17 @@
 pub mod channel_config;
 pub mod session_config;
-pub mod provider_model_config;
 pub mod memory_struct_config;
 pub mod pipeline_config;
 
 pub use channel_config::*;
 pub use session_config::*;
-pub use provider_model_config::*;
 pub use memory_struct_config::*;
 pub use pipeline_config::*;
 
 use std::{collections::HashMap, sync::Arc};
 
 use kissbot_api::ArcSwapHashMap;
+use kissbot_llm::ProviderModelConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::types::SessionKey;

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::{config_manager::ConfigManager, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Message, ModelResponse, Result, SessionKey, role_mode}};
+use kissbot_llm::{Message, ModelResponse};
+
+use crate::{config_manager::ConfigManager, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Result, SessionKey, role_mode}};
 use async_trait::async_trait;
 
 /// Agentic Loop 工具调用轮次上限（防死循环）

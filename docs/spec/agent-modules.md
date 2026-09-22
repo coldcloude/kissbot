@@ -11,19 +11,20 @@
 | config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；合成 provider+model 与 (agent, role)+session 的有效配置 | 被几乎所有模块调用 |
 | nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、会话定位与构建、通道连接调度、回复发送、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、mode、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
-| session_manager | SessionManager / Session / SessionContext | 会话三元组去重创建（返回 `(Session, 是否新建)`）；会话上下文一体管理（SessionContext：内存消息 + 本地缓存 + 历史归档，三者格式一致） | 被 nexus 调用 |
+| session_manager | SessionManager | 会话三元组去重创建（返回 `(Session, 是否新建)`）与无绑定会话清理；会话标识编码为 kissbot-llm 的 session_id | 被 nexus 调用；持有 kissbot-llm 的 Session |
 | pipeline | AgentPipeline / AgentTrigger / Agent{Input,Message,Tool,Output}… 等 trait | 定义 agentic loop 的执行体抽象：输入处理器、消息发送器、工具调用器、输出处理器、系统提示词器，以及无手动触发的 trigger 标记 trait；AgentPipeline 装配时注入会话并直接读写其上下文 | 被 pipelines 实现/组合；AgentPipeline::run 是 agentic loop 本体 |
 | pipelines | PipelineManager / SessionPipeline / BatchAgentInputProcessor / TokenLimitMessageSender / ChannelOutputProcessor / DefaultSystemPrompter … | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话；输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，运行中的 pipeline 另有独立锁）、工厂与 preset 映射、保留/清理；合批输入（mpsc + DelayQueue）在 flush 时回调 `Nexus::run_pipeline` | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
-| provider | ProviderManager / OpenAiProvider / AnthropicProvider | 按 provider 配置分派实现：构造请求、调用 API、归一化响应（含 thinking / reasoning_content / tool_calls / usage）；模型列表查询 | 被 nexus 调用（`call_provider_model` / `list_models`） |
+| provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
+| kissbot-llm（库依赖） | Provider / Session / SessionContext / Message / ToolConfig / ProviderModelConfig… | provider 实现构造（`create_*_provider`）与带重试调用（`call_with_retry`）、模型列表；单会话上下文（内存 + 本地缓存 + 历史归档一体）；LLM 配置与消息类型 | 被 provider（构造实现 / 带重试调用）、nexus 与 pipelines（会话上下文）使用 |
 | station | Station / NativeTool / Group / ToolImplement / SubStation / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
 | station_http | StationHttpServer / McpServer | station 对外 MCP 服务端（kissbot-mcp 的 McpServer + 单端点 `POST /mcp`，方法 server/discover / tools/list / tools/call），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus（system_prompt_for_agent）调用 |
 | http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
-| types | Mode / Message / SessionKey / ToolCall / ChannelCommand / ModelResponse … | 共享数据类型 | 被几乎所有模块引用 |
+| types | Mode / SessionKey / ChannelCommand / role_mode | agent 侧共享数据类型（错误、会话标识、通道命令与 MCP→LLM 工具定义转换）；LLM 消息与配置类型见 kissbot-llm | 被几乎所有模块引用 |
 
 ## 二、组件调用关系总览
 
@@ -43,14 +44,15 @@ graph TB
         CFG["config_manager<br/>ConfigManager"]
         CO["nexus<br/>Nexus"]
         CHM["channel_manager<br/>ChannelManager / Channel<br/>+ Terminal 实现 + 变更队列"]
-        SM["session_manager<br/>SessionManager / Session<br/>SessionContext（内存+缓存+历史）"]
+        SM["session_manager<br/>SessionManager<br/>（会话集合去重与清理）"]
         PL["pipeline<br/>AgentPipeline / 各执行体 trait"]
         PLS["pipelines<br/>PipelineManager / SessionPipeline<br/>合批输入 / 发送器 / 工具调用 / 输出处理 / 提示词"]
         CRT["command_router<br/>CommandRouter"]
         MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MEC["memory_ego_client<br/>MemoryEgoClient"]
-        PRV["provider<br/>ProviderManager"]
+        PRV["provider<br/>ProviderManager（工厂 + 分派）"]
+        KLLM["kissbot-llm（库）<br/>provider 实现 / Session<br/>LLM 配置与消息类型"]
         ST["station<br/>Station / SubStation<br/>NativeTool"]
         EGO["ego_md"]
         HS["http_server<br/>HttpServer"]
@@ -71,6 +73,9 @@ graph TB
     CO --> MSC
     CO --> MEC
     CO --> PRV
+    PRV --> KLLM
+    CO --> KLLM
+    PLS --> KLLM
     CO --> ST
     CO --> EGO
     CO --> CRT
@@ -168,8 +173,8 @@ sequenceDiagram
     participant PL as AgentPipeline（run / run_once）
     participant MSN as AgentMessageSender（raw / compress / memory_recover）
     participant CO as Nexus
-    participant CTX as SessionContext（内存 + 缓存 + 历史一体）
-    participant PRV as ProviderManager
+    participant CTX as SessionContext（kissbot-llm：内存 + 缓存 + 历史一体）
+    participant PRV as ProviderManager（工厂 + 分派）
     participant OUT as AgentOutputProcessor（channel）
     participant ST as Station
     participant MSC as MemoryStoreClient
@@ -184,7 +189,8 @@ sequenceDiagram
         end
         MSN->>CTX: context_append(messages) → build_context()（应用待定系统消息）
         MSN->>CO: call_provider_model(llm_cfg, messages, tools)
-        CO->>PRV: ProviderManager::call（按 provider_type 分派 openai / anthropic）
+        CO->>PRV: call（取有效模型配置 + provider_type 分派 + 实现实例工厂去重）
+        PRV->>PRV: kissbot-llm call_with_retry（超时/重试来自有效模型配置）
         PRV-->>MSN: ModelResponse（content / reasoning_content / thinking / tool_calls / total_tokens）
         MSN->>MSN: 记录本次 usage.total_tokens（供下次阈值判定）
         PL->>MSC: send_memory_think（reasoning_content / thinking 任一有值，每轮成功响应都推）
@@ -212,7 +218,7 @@ sequenceDiagram
 sequenceDiagram
     participant CO as Nexus
     participant SM as SessionManager
-    participant SC as SessionContext（内存 + 缓存 + 历史一体）
+    participant SC as SessionContext（kissbot-llm：内存 + 缓存 + 历史一体）
     participant PLS as PipelineManager
     participant SP as AgentSystemPrompter（default / memory_ego）
     participant MEC as MemoryEgoClient
@@ -240,7 +246,7 @@ sequenceDiagram
 | agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 ChannelManager（Terminal 实现：incoming_message / join_group / leave_group / user_removed / download_chunk / closed）；ChannelManager 回显过滤后转 Nexus |
 | agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录（`/store/*`）+ 读记忆（`/store/query/channel*`） |
 | agent → memory-ego | kissbot-memory-ego | HTTP | MemoryEgoClient 查询（`/agent/get`、`/individual/get-all`、`/role/get`）；system_prompt_for_agent / verify_agent_exists 经它发请求 |
-| agent → LLM | 模型提供方 API | HTTP | ProviderManager 按 provider_type 分派（openai: `/chat/completions`、anthropic: `/v1/messages`），支持重试、工具调用、thinking/reasoning 回传 |
+| agent → LLM | 模型提供方 API | HTTP | ProviderManager 按 provider_type 取 kissbot-llm 的实现（openai: `/chat/completions`、anthropic: `/v1/messages`），经 `call_with_retry` 支持重试、工具调用、thinking/reasoning 回传 |
 | agent ← 管理界面 | HttpServer | HTTP | 当前仅 config CRUD（操作 ConfigManager）；管理命令走 channel 消息（/ 开头） |
 | agent ← station（sub） | StationHttpServer | MCP（Streamable HTTP） | 单端点 `POST /mcp`，供其他 station 作为 sub 调用（server/discover、tools/list、tools/call），认证 security.api_key |
 

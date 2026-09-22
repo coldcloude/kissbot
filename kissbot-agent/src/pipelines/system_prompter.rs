@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{nexus::Nexus, pipeline::{AgentSystemPrompter, AgentTrigger}, session_manager::Session, types::SessionKey};
+use kissbot_llm::Session;
+
+use crate::{nexus::Nexus, pipeline::{AgentSystemPrompter, AgentTrigger}, types::SessionKey};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "你是一个通用智能体。使用可用工具完成用户任务";
 

@@ -70,18 +70,19 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
-- 管理 provider+model 参数、(agent, role) 级会话配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级覆盖
+- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级会话配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级覆盖
 - 运行期按 agent → role → session 逐层合成有效配置（带缓存），支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）
-- 按 provider 配置的 provider_type 分派实现（OpenAI 兼容 / Anthropic），封装请求构造、调用、重试与响应归一化
+- provider 实现（OpenAI 兼容 / Anthropic 的请求构造、调用、重试与响应归一化）由 **kissbot-llm** 提供；Nexus 的 ProviderManager 负责按 provider 名缓存实现实例（工厂去重）、解析该会话的有效模型配置（超时 / 重试 / token 上限）并按 provider_type 分派
 - 归一化结果包含正文、思考内容（API 字段与 `<think>` 标签各自独立）、工具调用与 token 占用，供上下文与阈值判定使用
 - 支持模型列表查询（用于模型校验与管理命令）
 
 ### 4. 会话与上下文（session_manager）
-- 会话按 (agent_id, role_name, mode) 去重创建，返回「会话 + 是否新建」；仅负责上下文本体，不做 pipeline 装配
-- 每会话持有 SessionContext（内存消息序列 + 当前/待定 system 消息），消息变更同步写入本地缓存，被压缩或重建前的上下文归档为历史
-- 历史与缓存内容构成一致；恢复时正序全量回读，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
+- 会话集合按 (agent_id, role_name, mode) 去重创建，返回「会话 + 是否新建」；会话标识编码为 kissbot-llm 的 session_id（`{agent_id}-{role_name}[-{event}]`）
+- 单个会话的上下文本体（内存消息序列 + 当前/待定 system 消息 + 本地缓存 + 历史归档）由 **kissbot-llm** 的 Session/SessionContext 承担
+- 恢复时正序全量回读本地缓存，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
+- SessionManager 只负责会话集合的去重持有与无绑定清理，不做 pipeline 装配
 
 ### 5. pipeline 体系（会话执行流程）
 - **AgentPipeline**：agentic loop 本体，装配时注入会话实例，按轮次执行「发送 → 输出处理」，直至无需继续或达到轮次上限；结束轮次后把本轮新消息写回会话上下文

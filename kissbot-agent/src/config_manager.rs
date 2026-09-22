@@ -5,6 +5,9 @@ use arc_swap::ArcSwap;
 use kissbot_api::ChannelUser;
 use tokio::sync::RwLock;
 
+use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
+use kissbot_llm::{EffectiveLLMConfig, EffectiveModelConfig, LLMConfig, ProviderConfig, ProviderModelConfig};
+
 use crate::configs::*;
 use crate::types::*;
 
@@ -304,7 +307,7 @@ impl ConfigManager {
         Some(provider.load().get_effective_config(model))
     }
 
-    /// 按名取 provider 配置（Arc 快照），供 provider 构造（ProviderManager::list_models 使用）
+    /// 按名取 provider 配置（Arc 快照），供 provider 构造（kissbot-llm 的 create_*_provider / list_models 使用）
     /// 不存在返回 None
     pub async fn provider_config(&self, name: &str) -> Option<Arc<ProviderConfig>> {
         let repo = self.nexus_repo.read().await;
@@ -446,6 +449,7 @@ mod tests {
 
     use super::*;
     use kissbot_api::ArcSwapHashMap;
+    use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, ModelConfig};
     use tempfile::tempdir;
 
     use crate::pipelines::{
@@ -1018,16 +1022,6 @@ mod tests {
 
         // station_id 为必填：空对象 {} 应解析失败
         assert!(serde_json::from_str::<StationRepo>("{}").is_err(), "station_id 必填");
-
-        // ToolConfig 序列化（LLM 侧工具定义契约：OpenAI tools[].function 形状）
-        let tc = ToolConfig {
-            name: Arc::new("read".into()),
-            description: Arc::new("读取文本文件".into()),
-            parameters: Arc::new(serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } })),
-        };
-        let tj = serde_json::to_value(&tc).unwrap();
-        assert_eq!(tj["name"], "read");
-        assert_eq!(tj["parameters"]["properties"]["path"]["type"], "string");
     }
 
     // ---- (agent, role) 配置继承与 session 配置 ----

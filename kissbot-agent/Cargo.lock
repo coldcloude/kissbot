@@ -818,6 +818,7 @@ dependencies = [
  "kissbot-api",
  "kissbot-channel-client",
  "kissbot-config",
+ "kissbot-llm",
  "kissbot-mcp",
  "kissbot-security",
  "reqwest",
@@ -874,6 +875,21 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "kissbot-llm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "kai-file",
+ "kissbot-api",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

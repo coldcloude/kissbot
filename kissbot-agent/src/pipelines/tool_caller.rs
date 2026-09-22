@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use kissbot_mcp::CallToolResult;
 use serde_json::Value;
 
+use kissbot_llm::{ToolCall, ToolData};
+
 use crate::{
     pipeline::AgentToolCaller,
     station::{Station, TERR_TOOL_INTERNAL_ERROR, tool_error},
-    types::{ToolCall, ToolData},
 };
 
 /// Nexus 侧工具调用器：把 ToolCall 适配到 Station 的 MCP 工具接口，并把结果还原为 ToolData。

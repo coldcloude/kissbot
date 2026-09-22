@@ -4,6 +4,7 @@ use std::sync::{Arc, OnceLock};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use kissbot_llm::ToolConfig;
 use kissbot_mcp::{
     CallToolResult, DiscoverResult, Implementation, McpClient, McpClientError, McpError,
     McpHandler, Tool, ToolsCallParams, ToolsListParams, ToolsListResult,
@@ -38,6 +39,16 @@ pub fn tool_error(code: u32, message: String) -> Value {
         "code": code,
         "message": message
     })
+}
+
+/// MCP 工具定义 → LLM 侧工具定义（kissbot-llm 的 ToolConfig，OpenAI `tools[].function` 形状）：
+/// 转换留在 agent（kissbot-llm 不依赖 MCP）
+pub fn tool_config_from_mcp(tool: &Tool) -> ToolConfig {
+    ToolConfig {
+        name: tool.name.clone(),
+        description: tool.description.clone(),
+        parameters: tool.input_schema.clone(),
+    }
 }
 
 /// 子 Station 运行态：只存连接信息 + MCP 客户端（孙子由子 Station 自己递归）
