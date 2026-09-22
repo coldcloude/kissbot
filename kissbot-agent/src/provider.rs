@@ -48,11 +48,13 @@ impl ProviderManager {
         match pm_cfg.provider_config.provider_type.as_str() {
             "openai" => {
                 let provider = self.get_openai_provider(provider, pm_cfg.provider_config.as_ref()).await;
-                call_with_retry(provider.as_ref(), llm_cfg, &pm_cfg, messages, tools).await.map_err(Error::from)
+                let result = call_with_retry(provider.as_ref(), llm_cfg, &pm_cfg, messages, tools).await?;
+                Ok(result)
             },
             "anthropic" => {
                 let provider = self.get_anthropic_provider(provider, pm_cfg.provider_config.as_ref()).await;
-                call_with_retry(provider.as_ref(), llm_cfg, &pm_cfg, messages, tools).await.map_err(Error::from)
+                let result = call_with_retry(provider.as_ref(), llm_cfg, &pm_cfg, messages, tools).await?;
+                Ok(result)
             },
             other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other))),
         }
@@ -65,8 +67,16 @@ impl ProviderManager {
             .ok_or_else(|| Error::ModelProviderNotFound(provider_name.to_string(), String::new()))?;
         // 按 provider_type 分派实现（"openai" | "anthropic"）
         match provider_config.provider_type.as_str() {
-            "openai" => self.get_openai_provider(provider_name, provider_config.as_ref()).await.list_models().await.map_err(Error::from),
-            "anthropic" => self.get_anthropic_provider(provider_name, provider_config.as_ref()).await.list_models().await.map_err(Error::from),
+            "openai" => {
+                let provider = self.get_openai_provider(provider_name, provider_config.as_ref()).await;
+                let result = provider.list_models().await?;
+                Ok(result)
+            },
+            "anthropic" => {
+                let provider = self.get_anthropic_provider(provider_name, provider_config.as_ref()).await;
+                let result = provider.list_models().await?;
+                Ok(result)
+            },
             other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other))),
         }
     }

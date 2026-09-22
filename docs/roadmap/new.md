@@ -2,7 +2,7 @@
 
 ## Station
 
-1. [ ] Station和MCP一体化。同一套功能，既可以作为SDK被调用，又可以作为本地工具被调用，又可以作为MCP中封装工具被调用，这就是一个Station。通过将Station的级联功能作为MCP协议的扩展，可以将远程Staion服务，直接改造为MCP服务端。这样就需要一个极简的MCP实现，仅具有MCP协议必要功能，和Station级联扩展。特别的，可以去掉Station的Toolkit功能，改为group和tag概念，并对外暴露为MCP的group和tag扩展概念。
+1. [x] Station和MCP一体化。同一套功能，既可以作为SDK被调用，又可以作为本地工具被调用，又可以作为MCP中封装工具被调用，这就是一个Station。通过将Station的级联功能作为MCP协议的扩展，可以将远程Staion服务，直接改造为MCP服务端。这样就需要一个极简的MCP实现，仅具有MCP协议必要功能，和Station级联扩展。特别的，可以去掉Station的Toolkit功能，改为group和tag概念，并对外暴露为MCP的group和tag扩展概念。
 
 2. [ ] Station的概念可以用于替代工作区概念，甚至可以用于替代沙盒概念。一个Station可以作为一个平台，在其上可以添加扩展，这些扩展可以实现新的工具，这些新的工具可以使用Station平台工具SDK。
 
@@ -10,7 +10,7 @@
 
 4. [ ] 笔记工具，可以将事件记录到工作区的MD文档，LLM自动分类保存。调研obsiding是否是更成熟的解决法方案。
 
-5. [ ] 摘要系统、笔记工具都要使用LLM，可以将provider和session提取出来，在其他模块复用。
+5. [x] 摘要系统、笔记工具都要使用LLM，可以将provider和session提取出来，在其他模块复用。
 
 6. [ ] 做一套客户端，实现两个channel不具备的能力：1、agent流式输出、打断、思考、工具调用等非人类回复者功能；2、各项配置的管理功能。channel以及channel-web的功能更多的是在多人、多agent的环境中按人的方式收发消息，而不适合当前将agent作为生产力提升工具的方案。
 
