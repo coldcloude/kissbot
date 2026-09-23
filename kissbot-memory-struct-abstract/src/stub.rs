@@ -71,6 +71,23 @@ impl DecisionModel for StubModel {
     async fn group(&self, _scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>> {
         self.prompts.lock().unwrap().push(crate::model::grouping_prompt(batch, current));
         if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
+            // 与真实实现一致地校验覆盖：预置不完整时立即暴露，而不是静默丢记录
+            let mut next = 0usize;
+            for group in &groups {
+                if group.messages.first() != Some(&next) {
+                    return Err(crate::error::Error::ModelApiError(format!(
+                        "桩分组未完整覆盖批次：期望下一组从下标 {} 开始，实际为 {:?}",
+                        next, group.messages
+                    )));
+                }
+                next = group.messages.last().expect("桩分组非空") + 1;
+            }
+            if next != total {
+                return Err(crate::error::Error::ModelApiError(format!(
+                    "桩分组未完整覆盖批次：覆盖到下标 {}，批次共 {} 条",
+                    next, total
+                )));
+            }
             return Ok(groups);
         }
         // 默认：整批一组；有当前事件即视为当前事件的延续

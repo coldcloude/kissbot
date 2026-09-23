@@ -134,13 +134,13 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 15000, interva
 async function locateMessages(
   request: APIRequestContext,
   role: string,
-  messages: { channel: TestChannel; text: string; user?: string; isSelf?: number }[],
+  messages: { channel: TestChannel; text: string; user?: string; isSelf?: number; time?: string }[],
 ) {
   const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/locate', {
     agent_id: AGENT,
     role,
     messages: messages.map((item) => ({
-      time: timeAt(200),
+      time: item.time ?? timeAt(200),
       user_name: item.user ?? 'alice',
       is_self: item.isSelf ?? 0,
       messenger_id: item.channel.messenger,
@@ -467,5 +467,41 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const [keys1, keys2] = [await thinkKeys('e1'), await thinkKeys('e2')];
     expect(keys1).toEqual(['keyA'], 'e1 只含 A 通道的思考记录');
     expect(keys2).toEqual(['keyB'], 'e2 只含 B 通道的思考记录');
+  });
+
+  // TC-09 定位触发懒处理：新消息与该通道的待归档记录去重后一并分析（同一条消息不分析两次）
+  test('TC-09: 定位与懒处理合并并去重', async ({ request }) => {
+    const role = 'dev4';
+    const channel: TestChannel = { messenger: 'web', selfUser: 'self4', group: 'g4' };
+    const t0 = timeAt(1000);
+    const t1 = timeAt(1001);
+    const t2 = timeAt(1002);
+    await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0);
+    await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1);
+    // 推送接口返回不代表记录已可读：先等记录真正落盘
+    await waitForStoreFile(role, 'channel', t0, '定位前的提问');
+    await waitForStoreFile(role, 'channel', t1, '定位前的回答');
+
+    // 定位请求：前两条与该通道的待归档记录重复（时间/发送者/is_self/内容全同），第三条是新消息。
+    // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到事件。
+    let data: any = null;
+    await waitFor(async () => {
+      data = await locateMessages(request, role, [
+        { channel, text: '定位前的提问', user: 'alice', isSelf: 0, time: t0 },
+        { channel, text: '定位前的回答', user: 'bot', isSelf: 1, time: t1 },
+        { channel, text: '定位时的新问题', user: 'alice', isSelf: 0, time: t2 },
+      ]);
+      return data.events.length > 0;
+    });
+    expect(data.events.map((e: any) => e.event_id)).toEqual(['e1']);
+    expect(data.groups.map((g: any) => g.messages)).toEqual([[0, 1, 2]], '整个合并批次一次分组（桩模型整批一组）');
+    expect(data.groups[0].event_id).toBe('e1');
+
+    // 已存记录归档一次；定位时的新消息不落盘
+    const records = await waitForEventRecords(request, role, 'e1', 2);
+    expect(records.map((r: any) => r.is_self)).toEqual([0, 1], '新消息不进原文副本');
+    // 水位推进到定位前最后一条记录（新消息不推进水位）
+    const watermark = await waitForWatermark(role, 'self4', t1);
+    expect(watermark.channels[0].watermark.channel.sn).toBe(2);
   });
 });

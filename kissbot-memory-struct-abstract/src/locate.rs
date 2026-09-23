@@ -1,5 +1,10 @@
 //! 定位器：把一批消息按通道用「当前事件 + 消息」分组（与归档同一套），再只读地逐层下探出每组所属事件。
+//!
+//! 定位只读：不新建事件、不读原文副本。触发懒处理时，待归档记录与新消息的去重合并、以及
+//! 只含新消息的组的只读下探由归档器一并完成（见 [`crate::archive`]）；本模块同时提供逐层下探
+//! 与结果汇总的公共实现（`pub(crate)`），供归档器复用。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kissbot_api::{
@@ -9,7 +14,8 @@ use kissbot_api::{
 use crate::error::Result;
 use crate::model::DecisionModel;
 use crate::records::render_content;
-use crate::scope::{ScopeHandle, ScopeState};
+use crate::scope::{ScopeHandle, ScopeId, ScopeState};
+use crate::tree::Tree;
 
 pub struct Locator {
     model: Arc<dyn DecisionModel>,
@@ -21,9 +27,9 @@ impl Locator {
         Self { model, max_depth }
     }
 
-    /// 定位一批消息涉及的全部事件：与归档同一套——先按通道用「当前事件 + 消息」做第 1 轮分组，
+    /// 定位一批消息涉及的全部事件（只读，不含懒处理）：按通道分别做第 1 轮分组，
     /// 属于当前事件的组命中该通道当前事件，其余组只读地逐层下探到所属事件；
-    /// 返回涉及的事件（去重）与分组（哪几条消息属于哪个事件）。定位只读，不新建事件、不读原文。
+    /// 返回涉及的事件（去重）与分组（哪几条消息属于哪个事件）。
     pub async fn locate(
         &self,
         handle: &ScopeHandle,
@@ -41,109 +47,168 @@ impl Locator {
             };
             let is_current = state.current_events.values().any(|id| id == &event_id);
             return Ok(LocateResponse {
-                events: vec![Arc::new(LocatedEventRef { event_id: Arc::new(event_id), is_current })],
+                events: vec![Arc::new(LocatedEventRef { event_id: Arc::new(event_id.clone()), is_current })],
                 groups: vec![Arc::new(LocatedGroup {
                     messages: (0..messages.len()).collect(),
-                    event_id: state.tree.top_level_ids().first().map(|id| Arc::new(id.clone())),
+                    event_id: Some(Arc::new(event_id)),
                     is_current,
                 })],
             });
         }
 
-        // 空树：没有事件可涉及，按通道各成一组（不调模型）
-        if state.tree.is_empty() {
-            let mut groups: Vec<Arc<LocatedGroup>> = Vec::new();
-            for (_, indices) in group_indices_by_channel(messages) {
-                groups.push(Arc::new(LocatedGroup { messages: indices, event_id: None, is_current: false }));
-            }
-            return Ok(LocateResponse { events: Vec::new(), groups });
-        }
-
         // 按通道分别处理：每条通道用自己的当前事件做第 1 轮分组
-        let mut located: Vec<(usize, LocatedGroup)> = Vec::new();
+        let mut located = Vec::new();
         for (channel, indices) in group_indices_by_channel(messages) {
-            let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-            let current = state.current_events.get(&channel).cloned();
-            let current_brief = current.as_deref().and_then(|id| state.tree.brief(id));
-            let text = render_messages(&channel_messages);
-            let groups = self.model.group(&handle.id, &text, channel_messages.len(), current_brief.as_ref()).await?;
-
-            for group in groups {
-                let group_messages: Vec<&LocateMessage> = group.messages.iter().map(|index| channel_messages[*index]).collect();
-                let event_id = if group.is_current {
-                    // 标记为当前事件的组：命中该通道当前事件；没有当前事件时容忍（定位只读，退回下探）
-                    match current.clone() {
-                        Some(current) => Some(current),
-                        None => self.find_event(handle, state, &render_messages(&group_messages)).await?,
-                    }
-                } else {
-                    self.find_event(handle, state, &render_messages(&group_messages)).await?
-                };
-                let is_current = event_id.as_deref() == current.as_deref();
-                let global: Vec<usize> = group.messages.iter().map(|index| indices[*index]).collect();
-                let first = *global.first().expect("分组非空（parse_groups 保证）");
-                located.push((first, LocatedGroup { messages: global, event_id: event_id.map(Arc::new), is_current }));
-            }
+            located.extend(self.locate_channel(handle, state, &channel, &indices, messages).await?);
         }
-
-        // 分组按各组首条消息下标升序；事件按首次出现顺序去重
-        located.sort_by_key(|(first, _)| *first);
-        let mut events: Vec<Arc<LocatedEventRef>> = Vec::new();
-        for (_, group) in &located {
-            let Some(event_id) = group.event_id.as_ref() else { continue };
-            match events.iter_mut().find(|event| event.event_id == *event_id) {
-                Some(event) => {
-                    if group.is_current {
-                        *event = Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current: true });
-                    }
-                }
-                None => events.push(Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current: group.is_current })),
-            }
-        }
-        Ok(LocateResponse { events, groups: located.into_iter().map(|(_, group)| Arc::new(group)).collect() })
+        Ok(merge_located(located, &state.current_events))
     }
 
-    /// 只读地自顶层逐层下探：命中叶子事件返回它；命中非叶子后其子层都未命中则返回该父事件；均未命中返回 None
-    async fn find_event(&self, handle: &ScopeHandle, state: &ScopeState, text: &str) -> Result<Option<String>> {
-        let top = state.tree.top_level_ids();
-        if top.is_empty() {
-            return Ok(None);
-        }
-        let Some(mut event_id) = self.model.locate(&handle.id, text, &state.tree.briefs(&top)).await? else {
-            return Ok(None);
+    /// 定位某通道的一批消息：返回（组内首条消息在请求中的下标, 通道, 分组）。
+    ///
+    /// 标记为当前事件的组命中该通道当前事件；其余组只读地逐层下探；
+    /// 空树与事件模式不调模型。`is_current` 留待 [`merge_located`] 按最终状态统一判定。
+    pub(crate) async fn locate_channel(
+        &self,
+        handle: &ScopeHandle,
+        state: &ScopeState,
+        channel: &ChannelKey,
+        indices: &[usize],
+        messages: &[LocateMessage],
+    ) -> Result<Vec<(usize, ChannelKey, LocatedGroup)>> {
+        let Some(first) = indices.first().copied() else {
+            return Ok(Vec::new());
         };
-        if !state.tree.contains(&event_id) {
-            return Err(crate::error::Error::ModelApiError(format!(
-                "定位给出不存在的事件 {}（作用域 {}）",
-                event_id, handle.id
-            )));
+
+        // 事件模式：作用域整体一个事件，不需要判定
+        if handle.mode == EventMode::Event {
+            let event_id = state.tree.top_level_ids().first().cloned();
+            return Ok(vec![(
+                first,
+                channel.clone(),
+                LocatedGroup { messages: indices.to_vec(), event_id: event_id.map(Arc::new), is_current: false },
+            )]);
         }
-        for _ in 0..self.max_depth {
-            if state.tree.is_leaf(&event_id) {
-                return Ok(Some(event_id));
-            }
-            let children = state.tree.children_ids(&event_id);
-            match self.model.locate(&handle.id, text, &state.tree.briefs(&children)).await? {
-                Some(child_id) => {
-                    if !state.tree.contains(&child_id) {
-                        return Err(crate::error::Error::ModelApiError(format!(
-                            "定位给出不存在的事件 {}（作用域 {}）",
-                            child_id, handle.id
-                        )));
+
+        // 空树：没有事件可涉及，整批一组（不调模型）
+        if state.tree.is_empty() {
+            return Ok(vec![(
+                first,
+                channel.clone(),
+                LocatedGroup { messages: indices.to_vec(), event_id: None, is_current: false },
+            )]);
+        }
+
+        let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
+        let current = state.current_events.get(channel).cloned();
+        let current_brief = current.as_deref().and_then(|id| state.tree.brief(id));
+        let text = render_messages(&channel_messages);
+        let groups = self.model.group(&handle.id, &text, channel_messages.len(), current_brief.as_ref()).await?;
+
+        let mut located = Vec::new();
+        for group in groups {
+            let group_messages: Vec<&LocateMessage> = group.messages.iter().map(|index| channel_messages[*index]).collect();
+            let event_id = if group.is_current {
+                // 标记为当前事件的组：命中该通道当前事件；没有当前事件时容忍（定位只读，退回下探）
+                match current.clone() {
+                    Some(current) => Some(current),
+                    None => {
+                        find_event(self.model.as_ref(), &handle.id, &state.tree, &render_messages(&group_messages), self.max_depth).await?
                     }
-                    event_id = child_id;
                 }
-                // 子事件都未命中：命中该父事件（整体话题的代表）
-                None => return Ok(Some(event_id)),
-            }
+            } else {
+                find_event(self.model.as_ref(), &handle.id, &state.tree, &render_messages(&group_messages), self.max_depth).await?
+            };
+            let global: Vec<usize> = group.messages.iter().map(|index| indices[*index]).collect();
+            let first = *global.first().expect("分组非空（parse_groups 保证）");
+            located.push((
+                first,
+                channel.clone(),
+                LocatedGroup { messages: global, event_id: event_id.map(Arc::new), is_current: false },
+            ));
         }
-        Ok(Some(event_id))
+        Ok(located)
     }
 }
 
+/// 只读地自顶层逐层下探：命中叶子事件返回它；命中非叶子后其子层都未命中则返回该父事件；均未命中返回 None
+pub(crate) async fn find_event(
+    model: &dyn DecisionModel,
+    scope: &ScopeId,
+    tree: &Tree,
+    text: &str,
+    max_depth: usize,
+) -> Result<Option<String>> {
+    let top = tree.top_level_ids();
+    if top.is_empty() {
+        return Ok(None);
+    }
+    let Some(mut event_id) = model.locate(scope, text, &tree.briefs(&top)).await? else {
+        return Ok(None);
+    };
+    if !tree.contains(&event_id) {
+        return Err(crate::error::Error::ModelApiError(format!(
+            "定位给出不存在的事件 {}（作用域 {}）",
+            event_id, scope
+        )));
+    }
+    for _ in 0..max_depth {
+        if tree.is_leaf(&event_id) {
+            return Ok(Some(event_id));
+        }
+        let children = tree.children_ids(&event_id);
+        match model.locate(scope, text, &tree.briefs(&children)).await? {
+            Some(child_id) => {
+                if !tree.contains(&child_id) {
+                    return Err(crate::error::Error::ModelApiError(format!(
+                        "定位给出不存在的事件 {}（作用域 {}）",
+                        child_id, scope
+                    )));
+                }
+                event_id = child_id;
+            }
+            // 子事件都未命中：命中该父事件（整体话题的代表）
+            None => return Ok(Some(event_id)),
+        }
+    }
+    Ok(Some(event_id))
+}
+
+/// 汇总各通道的定位分组：`is_current` 按各通道的最终当前事件判定，
+/// 分组按各组首条消息下标升序，事件按首次出现顺序去重。
+pub(crate) fn merge_located(
+    mut located: Vec<(usize, ChannelKey, LocatedGroup)>,
+    current_events: &BTreeMap<ChannelKey, String>,
+) -> LocateResponse {
+    located.sort_by_key(|(first, _, _)| *first);
+
+    let mut groups: Vec<Arc<LocatedGroup>> = Vec::with_capacity(located.len());
+    let mut events: Vec<Arc<LocatedEventRef>> = Vec::new();
+    for (_, channel, group) in located {
+        let is_current = group
+            .event_id
+            .as_ref()
+            .map(|event_id| current_events.get(&channel).map(|current| current.as_str() == event_id.as_str()).unwrap_or(false))
+            .unwrap_or(false);
+        let group = Arc::new(LocatedGroup { messages: group.messages, event_id: group.event_id, is_current });
+        if let Some(event_id) = group.event_id.as_ref() {
+            match events.iter_mut().find(|event| event.event_id == *event_id) {
+                Some(event) => {
+                    if is_current {
+                        *event = Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current: true });
+                    }
+                }
+                None => events.push(Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current })),
+            }
+        }
+        groups.push(group);
+    }
+    LocateResponse { events, groups }
+}
+
 /// 按通道分组消息下标（通道按三元组升序，组内下标升序）
-fn group_indices_by_channel(messages: &[LocateMessage]) -> Vec<(ChannelKey, Vec<usize>)> {
-    let mut by_channel: std::collections::BTreeMap<ChannelKey, Vec<usize>> = std::collections::BTreeMap::new();
+pub(crate) fn group_indices_by_channel(messages: &[LocateMessage]) -> Vec<(ChannelKey, Vec<usize>)> {
+    let mut by_channel: BTreeMap<ChannelKey, Vec<usize>> = BTreeMap::new();
     for (index, message) in messages.iter().enumerate() {
         by_channel.entry(message.channel()).or_default().push(index);
     }

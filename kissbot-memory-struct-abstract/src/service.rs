@@ -4,20 +4,20 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use kissbot_api::{
-    ChannelEventPointer, ChannelKey, EventCursor, EventListResponse, EventNode, EventRecordsResponse,
-    EventSummaryResponse, LocateRequest, LocateResponse, RebuildResponse, RecordKind,
-    RecordNotification, TreeGetResponse,
+    ChannelEventPointer, ChannelKey, EventCursor, EventListResponse, EventMode, EventNode,
+    EventRecordsResponse, EventSummaryResponse, LocateMessage, LocateRequest, LocateResponse,
+    LocatedGroup, RebuildResponse, RecordKind, RecordNotification, TreeGetResponse,
 };
 use tracing::info;
 
-use crate::archive::{ArchiveOutcome, Archiver};
+use crate::archive::{ArchiveOutcome, Archiver, merge_batch};
 use crate::error::{Error, Result};
-use crate::locate::Locator;
+use crate::locate::{Locator, group_indices_by_channel, merge_located};
 use crate::model::DecisionModel;
 use crate::records::{
     StoreView, read_event_records, read_store_records, records_after, records_tail,
 };
-use crate::scope::{ScopeHandle, ScopeId, ScopeManager};
+use crate::scope::{ScopeHandle, ScopeId, ScopeManager, ScopeState};
 use crate::tree::Tree;
 
 /// 摘要记忆服务
@@ -83,49 +83,98 @@ impl AbstractService {
     /// `force` 为假时只在作用域有待处理标记时做（任意查询前的统一计算）；为真时忽略标记
     /// （手动触发与重建）。每个通道的记录按 `max_batch_records` 分块，逐块归档并落盘：
     /// 一块失败时已完成的块保留进度，失败块回到处理前状态，留待下次查询重试。
-    async fn process_pending(&self, handle: &Arc<ScopeHandle>, force: bool) -> Result<Vec<ArchiveOutcome>> {
-        let mut state = handle.state.lock().await;
+    ///
+    /// `messages` 是定位请求的新消息：按通道与该通道的待归档记录**去重**后一并分析——
+    /// 重复的新消息用已存版本分析一次，其余新消息随批次一起参与分组但不落盘，只产出所属事件。
+    /// 返回（各批归档结果，被一并分析的新消息分组）；没有待归档记录的通道由调用方只读定位。
+    async fn process_pending(
+        &self,
+        handle: &Arc<ScopeHandle>,
+        state: &mut ScopeState,
+        force: bool,
+        messages: &[LocateMessage],
+    ) -> Result<(Vec<ArchiveOutcome>, Vec<(usize, ChannelKey, LocatedGroup)>)> {
         let (all, marked) = (state.dirty_all, state.dirty_channels.clone());
         if !force && !state.is_dirty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let view = self.store_view(handle).await?;
         let mut processed: BTreeSet<ChannelKey> = marked;
         let mut outcomes = Vec::new();
+        let mut located = Vec::new();
+        let chunk_size = self.max_batch_records.max(1);
         for channel in view.known_channels() {
             processed.insert(channel.clone());
             let watermark = state.watermarks.get(&channel).cloned().unwrap_or_default();
             let pending = view.pending_for(&channel, &watermark);
-            let chunk_size = self.max_batch_records.max(1);
-            for chunk in pending.chunks(chunk_size) {
-                let outcome = self.archiver.archive_pending(handle, &mut state, &channel, chunk).await?;
+            if pending.is_empty() {
+                continue;
+            }
+            let indices: Vec<usize> = messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.channel() == channel)
+                .map(|(index, _)| index)
+                .collect();
+            if indices.is_empty() {
+                for chunk in pending.chunks(chunk_size) {
+                    let outcome = self.archiver.archive_pending(handle, state, &channel, chunk).await?;
+                    info!(
+                        "[abstract] process {} [{}]: archived {} records into {:?}",
+                        handle.id,
+                        render_channel(&channel),
+                        outcome.archived,
+                        outcome.event_ids
+                    );
+                    outcomes.push(outcome);
+                    // 逐块落盘：块失败时前面的进度不回退，失败块由 archive_pending 恢复内存状态
+                    self.persist(handle, state).await?;
+                }
+                continue;
+            }
+            // 有定位请求的新消息：与该通道的待归档记录去重后一并分析
+            let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
+            let items = merge_batch(&pending, &channel_messages);
+            for chunk in items.chunks(chunk_size) {
+                let (outcome, groups) = self.archiver.archive_items(handle, state, &channel, chunk).await?;
                 info!(
-                    "[abstract] process {} [{}]: archived {} records into {:?}",
+                    "[abstract] process {} [{}]: archived {} records into {:?} (+{} new messages)",
                     handle.id,
                     render_channel(&channel),
                     outcome.archived,
-                    outcome.event_ids
+                    outcome.event_ids,
+                    chunk.len() - chunk.iter().filter(|item| item.is_stored()).count()
                 );
                 outcomes.push(outcome);
-                // 逐块落盘：块失败时前面的进度不回退，失败块由 archive_pending 恢复内存状态
-                self.persist(handle, &state).await?;
+                for group in groups {
+                    // 只含待归档记录的组不出现在定位结果里
+                    let Some(first) = group.messages.first().copied() else { continue };
+                    located.push((
+                        first,
+                        channel.clone(),
+                        LocatedGroup { messages: group.messages, event_id: group.event_id.map(Arc::new), is_current: false },
+                    ));
+                }
+                self.persist(handle, state).await?;
             }
         }
         // 全部通道处理成功后才清除待处理标记（失败时保留，下次查询重试）
         state.clear_dirty(all, &processed);
-        Ok(outcomes)
+        Ok((outcomes, located))
     }
 
     /// 查询入口的统一处理：有变化时先按该作用域全部通道各算一次
     async fn flush(&self, handle: &Arc<ScopeHandle>) -> Result<()> {
-        self.process_pending(handle, false).await.map(|_| ())
+        let mut state = handle.state.lock().await;
+        self.process_pending(handle, &mut state, false, &[]).await.map(|_| ())
     }
 
     /// 手动触发：忽略待处理标记，把各通道水位之后的记录全部处理一次
     pub async fn manual_trigger(&self, id: &ScopeId) -> Result<ArchiveOutcome> {
         let handle = self.manager.open(id.clone()).await?;
-        let outcomes = self.process_pending(&handle, true).await?;
+        let mut state = handle.state.lock().await;
+        let (outcomes, _) = self.process_pending(&handle, &mut state, true, &[]).await?;
         Ok(sum_outcomes(outcomes))
     }
 
@@ -133,19 +182,15 @@ impl AbstractService {
     pub async fn rebuild(&self, id: &ScopeId) -> Result<RebuildResponse> {
         let handle = self.manager.open(id.clone()).await?;
         self.manager.reset_scope_data(&handle).await?;
-        {
-            let mut state = handle.state.lock().await;
-            state.tree = Tree::new();
-            state.current_events.clear();
-            state.watermarks.clear();
-            state.mark_all();
-        }
-        let outcomes = self.process_pending(&handle, true).await?;
+        let mut state = handle.state.lock().await;
+        state.tree = Tree::new();
+        state.current_events.clear();
+        state.watermarks.clear();
+        state.mark_all();
+        let (outcomes, _) = self.process_pending(&handle, &mut state, true, &[]).await?;
         let archived = outcomes.iter().map(|outcome| outcome.archived).sum();
-        let event_count = {
-            let state = handle.state.lock().await;
-            state.tree.len() as u64
-        };
+        let event_count = state.tree.len() as u64;
+        drop(state);
         info!("[abstract] rebuild {}: {} records, {} events", id, archived, event_count);
         Ok(RebuildResponse { archived, event_count })
     }
@@ -166,9 +211,25 @@ impl AbstractService {
     pub async fn locate(&self, request: &LocateRequest) -> Result<LocateResponse> {
         let id = ScopeId::new(request.agent_id.as_str(), request.role.as_str());
         let handle = self.manager.open(id).await?;
-        self.flush(&handle).await?;
-        let state = handle.state.lock().await;
-        self.locator.locate(&handle, &state, &request.messages).await
+        let mut state = handle.state.lock().await;
+
+        // 事件模式：作用域整体一个事件，新消息不参与判定，无需与待归档记录合并
+        if handle.mode == EventMode::Event {
+            self.process_pending(&handle, &mut state, false, &[]).await?;
+            return self.locator.locate(&handle, &state, &request.messages).await;
+        }
+
+        // 懒处理与定位合并：有待处理变化时，把待归档记录与本批新消息去重后一并分析一次
+        let (_, mut located) = self.process_pending(&handle, &mut state, false, &request.messages).await?;
+        // 没有待归档记录的通道（不涉及合并）走只读定位
+        let handled: BTreeSet<ChannelKey> = located.iter().map(|(_, channel, _)| channel.clone()).collect();
+        for (channel, indices) in group_indices_by_channel(&request.messages) {
+            if handled.contains(&channel) {
+                continue;
+            }
+            located.extend(self.locator.locate_channel(&handle, &state, &channel, &indices, &request.messages).await?);
+        }
+        Ok(merge_located(located, &state.current_events))
     }
 
     // ========== 查询 ==========
@@ -768,30 +829,174 @@ mod tests {
         assert!(!records.iter().any(|r| matches!(r.as_ref(), EventRecord::Think(_))));
     }
 
+    /// 定位用消息（指定通道、时间、is_self）
+    fn locate_message_at(channel: &ChannelKey, time: &str, is_self: usize, text: &str) -> LocateMessage {
+        LocateMessage {
+            time: Arc::new(time.to_string()),
+            user_name: Arc::new("alice".into()),
+            is_self,
+            messenger_id: channel.messenger_id.clone(),
+            self_user_id: channel.self_user_id.clone(),
+            group_id: channel.group_id.clone(),
+            content: Content::Text(Arc::new(text.to_string())),
+        }
+    }
+
+    /// 定位请求
+    fn locate_request(role: &str, messages: Vec<LocateMessage>) -> LocateRequest {
+        LocateRequest { agent_id: Arc::new("0".into()), role: Arc::new(role.into()), messages }
+    }
+
+    /// 第 1 轮（分组轮）提示词
+    fn group_prompts(f: &Fixture) -> Vec<String> {
+        f.model.prompts().into_iter().filter(|prompt| prompt.contains("\"groups\"")).collect()
+    }
+
     #[tokio::test]
-    async fn locate_flushes_then_locates() {
+    async fn locate_merges_pending_records_with_new_messages_once() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 1, "聊天气").await;
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 0, "继续").await;
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题").await;
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答").await;
         notify(&f, "dev", &a).await;
 
-        // 定位是查询：先做懒处理（第 1 次分组），再做定位分组（第 2 次分组）
-        f.model.push_group(&[0], false);
-        f.model.push_group(&[0], true);
+        // 定位请求：第一条与已存记录重复（时间 / 发送者 / is_self / 内容全同），第二条是新消息
         let response = f
             .service
-            .locate(&LocateRequest {
-                agent_id: Arc::new("0".into()),
-                role: Arc::new("dev".into()),
-                messages: vec![locate_message(&a, "还在聊天气吗")],
-            })
+            .locate(&locate_request("dev", vec![
+                locate_message_at(&a, "2099-01-01 10:00:00", 0, "已存的问题"),
+                locate_message_at(&a, "2099-01-01 12:00:00", 0, "新问题"),
+            ]))
             .await
             .unwrap();
+
+        // 懒处理与定位合并为一次分组：待归档记录 + 去重后的新消息
+        let prompts = group_prompts(&f);
+        assert_eq!(prompts.len(), 1, "懒处理与定位只做一次分组");
+        assert_eq!(prompts[0].matches("已存的问题").count(), 1, "重复的新消息不重复送模型");
+        assert!(prompts[0].contains("已存的回答"), "待归档记录参与同一次分析");
+        assert!(prompts[0].contains("新问题"), "不重复的新消息参与同一次分析");
+
+        // 记录归档一次；新消息只返回所属事件，不进原文副本
         assert_eq!(events_of(&response), vec!["e1"]);
-        assert!(response.events[0].is_current);
-        assert_eq!(pending_len(&f, "dev", &a).await, 0, "定位前已完成懒处理");
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].messages, vec![0, 1], "重复的新消息映射到已存记录所在事件");
+        assert!(response.groups[0].is_current);
+        assert_eq!(records_of(&f, "dev", "e1").await.len(), 2, "只有已存记录落盘");
+        assert_eq!(pending_len(&f, "dev", &a).await, 0, "懒处理完成");
+        assert!(!is_dirty(&f, "dev").await);
+    }
+
+    #[tokio::test]
+    async fn locate_with_only_duplicates_archives_records_once() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let a = channel_a();
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题").await;
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答").await;
+        notify(&f, "dev", &a).await;
+
+        // 请求的两条消息都与已存记录重复：批次只剩已存记录，仍只做一次分组
+        let response = f
+            .service
+            .locate(&locate_request("dev", vec![
+                locate_message_at(&a, "2099-01-01 10:00:00", 0, "已存的问题"),
+                locate_message_at(&a, "2099-01-01 10:01:00", 1, "已存的回答"),
+            ]))
+            .await
+            .unwrap();
+
+        let prompts = group_prompts(&f);
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].matches("已存的问题").count(), 1);
+        assert_eq!(events_of(&response), vec!["e1"]);
+        assert_eq!(response.groups[0].messages, vec![0, 1]);
+        assert_eq!(records_of(&f, "dev", "e1").await.len(), 2, "记录不因定位重复落盘");
+    }
+
+    #[tokio::test]
+    async fn locate_dedups_only_within_the_message_channel() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let (a, b) = (channel_a(), channel_b());
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "跨通道同文本").await;
+        append_store_channel(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录").await;
+        notify(&f, "dev", &a).await;
+        notify(&f, "dev", &b).await;
+
+        // 消息属于 B 通道：即便与 A 通道的已存记录同键，也只和 B 通道的记录比对
+        let response = f
+            .service
+            .locate(&locate_request("dev", vec![locate_message_at(&b, "2099-01-01 10:00:00", 0, "跨通道同文本")]))
+            .await
+            .unwrap();
+
+        let prompts = group_prompts(&f);
+        assert_eq!(prompts.len(), 2, "两个通道各一次分组");
+        let b_prompt = prompts.last().unwrap();
+        assert!(b_prompt.contains("B 自己的记录") && b_prompt.contains("跨通道同文本"), "B 的消息按新消息并入 B 的批次");
+        assert_eq!(records_of(&f, "dev", "e1").await.len(), 1, "A 通道照常归档");
+        assert_eq!(records_of(&f, "dev", "e2").await.len(), 1, "B 通道只有自己的记录落盘");
+        assert_eq!(events_of(&response), vec!["e2"], "消息命中 B 通道新建的事件");
+        assert_eq!(pending_len(&f, "dev", &b).await, 0);
+    }
+
+    #[tokio::test]
+    async fn locate_new_message_group_reads_through_without_creating_events() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let a = channel_a();
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧话题").await;
+        notify(&f, "dev", &a).await;
+        query(&f, "dev").await;
+        assert_eq!(current_event(&f, "dev", &a).await.as_deref(), Some("e1"));
+
+        // 待归档记录 C 与新消息 B 分属两组：C 走分层归并新建事件，B 只读下探命中 e1
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题").await;
+        notify(&f, "dev", &a).await;
+        f.model.push_groups(vec![
+            crate::model::MessageGroup { messages: vec![0], is_current: false },
+            crate::model::MessageGroup { messages: vec![1], is_current: false },
+        ]);
+        f.model.push_level(LevelDecision::New);
+        f.model.push_locate(Some("e1"));
+        let response = f
+            .service
+            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "延续旧话题")]))
+            .await
+            .unwrap();
+
+        assert_eq!(tree_len(&f, "dev").await, 2, "只含新消息的组不新建事件");
+        assert_eq!(node(&f, "dev", "e2").await.unwrap().record_count, 1, "待归档记录落到新事件");
+        assert_eq!(node(&f, "dev", "e1").await.unwrap().record_count, 1, "新消息不落盘");
+        assert_eq!(events_of(&response), vec!["e1"]);
+        assert!(!response.events[0].is_current, "当前事件是待归档记录新建的 e2");
+        assert_eq!(response.groups[0].messages, vec![0]);
+        assert_eq!(response.groups[0].event_id.as_ref().map(|id| id.as_str()), Some("e1"));
+    }
+
+    #[tokio::test]
+    async fn locate_chunks_the_merged_batch() {
+        let f = fixture_with_batch(2).await;
+        let root = f.service.root();
+        let a = channel_a();
+        for i in 1..=3u64 {
+            append_store_channel(&root, "0", "dev", &a, &format!("2099-01-01 10:0{}:00", i), i, 0, &format!("记录{}", i)).await;
+        }
+        notify(&f, "dev", &a).await;
+        let response = f
+            .service
+            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "新消息")]))
+            .await
+            .unwrap();
+
+        assert_eq!(group_prompts(&f).len(), 2, "3 条记录 + 1 条新消息按每块 2 条分成 2 块");
+        assert_eq!(pending_len(&f, "dev", &a).await, 0);
+        assert_eq!(watermark_point(&f, "dev", &a).await.1, 3, "新消息不影响水位");
+        assert_eq!(records_of(&f, "dev", "e1").await.len(), 3, "新消息不落盘");
+        assert_eq!(events_of(&response), vec!["e1"]);
+        assert_eq!(response.groups[0].messages, vec![0]);
     }
 
     #[tokio::test]

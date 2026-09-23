@@ -232,5 +232,6 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 1. **通知 → 懒处理**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后调用任意查询（如 `/abstract/tree/get`）→ memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{role}/` 下生成 `tree.json` / `current.json` / `watermark.json` 与 `events/{event-id}/{channel|think|tool-call|tool-result}-records.jsonl`
 2. **懒处理闸门**：没有新数据时反复调用查询不会重复归档（日志不出现新的 `process` 行）
 3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部事件与分组（新话题的组不带 `event_id`）。摘要与原文再用 `event/summary`、`event/records*` 取
-4. **事件模式**：`role` 以第一个 `-` 分隔出的后半段为事件标识（如 `dev-e1`）时，作用域只保留一个顶层事件，不参与判定
-5. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{role}.jsonl` 累积该作用域的判定上下文
+4. **定位与懒处理合并**：定位前该通道还有待归档记录（通知已到）时，日志只出现一次 `process … (+N new messages)`，且把这些记录与新消息去重后一并分析：重复的新消息不重复送模型、新消息不落盘（事件的原文副本条数只增加已存记录）
+5. **事件模式**：`role` 以第一个 `-` 分隔出的后半段为事件标识（如 `dev-e1`）时，作用域只保留一个顶层事件，不参与判定
+6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{role}.jsonl` 累积该作用域的判定上下文
