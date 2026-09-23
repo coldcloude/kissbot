@@ -13,11 +13,12 @@
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、mode、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
 | session_manager | SessionManager | 会话三元组去重创建（返回 `(Session, 是否新建)`）与无绑定会话清理；会话标识编码为 kissbot-llm 的 session_id | 被 nexus 调用；持有 kissbot-llm 的 Session |
 | pipeline | AgentPipeline / AgentTrigger / Agent{Input,Message,Tool,Output}… 等 trait | 定义 agentic loop 的执行体抽象：输入处理器、消息发送器、工具调用器、输出处理器、系统提示词器，以及无手动触发的 trigger 标记 trait；AgentPipeline 装配时注入会话并直接读写其上下文 | 被 pipelines 实现/组合；AgentPipeline::run 是 agentic loop 本体 |
-| pipelines | PipelineManager / SessionPipeline / BatchAgentInputProcessor / TokenLimitMessageSender / ChannelOutputProcessor / DefaultSystemPrompter … | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话；输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，运行中的 pipeline 另有独立锁）、工厂与 preset 映射、保留/清理；合批输入（mpsc + DelayQueue）在 flush 时回调 `Nexus::run_pipeline` | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| pipelines | PipelineManager / SessionPipeline / BatchAgentInputProcessor / AbstractAgentInputProcessor / TokenLimitMessageSender / ChannelOutputProcessor / DefaultSystemPrompter … | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话；输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，运行中的 pipeline 另有独立锁）、工厂与 preset 映射、保留/清理；合批输入（mpsc + DelayQueue）与摘要记忆输入（按通道攒批 + 1s 检测超时，触发时经摘要记忆重建上下文）都在触发时回调 `Nexus::run_pipeline` | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
+| abstract_client | AbstractClient | 摘要记忆（memory-struct-abstract）REST 客户端：事件定位、事件摘要、事件原文副本尾部查询 | 被 pipelines（AbstractAgentInputProcessor）调用 |
 | provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
 | kissbot-llm（库依赖） | Provider / Session / SessionContext / Message / ToolConfig / ProviderModelConfig… | provider 实现构造（`create_*_provider`）与带重试调用（`call_with_retry`）、模型列表；单会话上下文（内存 + 本地缓存 + 历史归档一体）；LLM 配置与消息类型 | 被 provider（构造实现 / 带重试调用）、nexus 与 pipelines（会话上下文）使用 |
 | station | Station / NativeTool / Group / ToolImplement / SubStation / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
@@ -33,6 +34,7 @@ graph TB
     subgraph Ext["外部组件"]
         CC["kissbot-channel-client<br/>ChannelClient（WSS）"]
         MS["kissbot-memory-store"]
+        MSA["kissbot-memory-struct-abstract"]
         EG["kissbot-memory-ego"]
         LLM["LLM API"]
         UI["管理界面 / HTTP"]
@@ -51,6 +53,7 @@ graph TB
         MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MEC["memory_ego_client<br/>MemoryEgoClient"]
+        ABC["abstract_client<br/>AbstractClient"]
         PRV["provider<br/>ProviderManager（工厂 + 分派）"]
         KLLM["kissbot-llm（库）<br/>provider 实现 / Session<br/>LLM 配置与消息类型"]
         ST["station<br/>Station / SubStation<br/>NativeTool"]
@@ -93,6 +96,8 @@ graph TB
     MSC --> MS
     CO -->|system_prompt_for_agent / verify_agent_exists| MEC
     MEC --> EG
+    PLS --> ABC
+    ABC --> MSA
     PRV --> LLM
     ST --> MCP
     SHS --> MCP
@@ -141,7 +146,7 @@ sequenceDiagram
     participant CRT as CommandRouter
     participant SM as SessionManager
     participant PLS as PipelineManager
-    participant IP as BatchAgentInputProcessor
+    participant IP as 输入处理器（合批 / 摘要记忆）
 
     CC->>CHM: incoming_message(channel_id, event)（Terminal 回调）
     CHM->>CHM: consume_pending(msg_id)（回显判定，通道层过滤）
@@ -160,8 +165,8 @@ sequenceDiagram
         else 普通消息
             CO->>SM: ensure_session(key)（不存在则新建 + pipeline 同步 + 系统提示词）
             CO->>PLS: incoming_message(key, event)
-            PLS->>IP: accept(event)（mpsc 入队 + 设置 deadline）
-            Note over IP: 消费任务（DelayQueue）到期 drain → pack_batch → Nexus::run_pipeline
+            PLS->>IP: accept(event)（该会话配置的输入处理器各收一份）
+            Note over IP: 合批：mpsc 入队 + deadline 到期 drain；<br/>摘要记忆：按通道攒批 + 1s 检测超时（触发时经摘要记忆重建上下文）<br/>→ pack_batch → Nexus::run_pipeline
         end
     end
 ```

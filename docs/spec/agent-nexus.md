@@ -24,8 +24,9 @@ kissbot-agent 使用三份配置：
     "admin_api_key": "admin-key-123"  // 管理 API 的 key
   },
   "api": {
-    "memory_store_url": "http://127.0.0.1:8082",  // memory-store 地址（空 = 关闭读写）
-    "memory_ego_url": "http://127.0.0.1:3001"     // memory-ego 地址（空 = ego 未配置）
+    "memory_store_url": "http://127.0.0.1:8082",           // memory-store 地址（空 = 关闭读写）
+    "memory_ego_url": "http://127.0.0.1:3001",             // memory-ego 地址（空 = ego 未配置）
+    "memory_struct_abstract_url": "http://127.0.0.1:8083"  // 摘要记忆地址（空 = 未部署，输入处理器降级为普通合批）
   },
   "agent": {
     "data_dir": "agent-data",                 // nexus.json / station.json / 会话上下文的根目录
@@ -105,6 +106,7 @@ kissbot-agent 使用三份配置：
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
 - `input_processor` / `system_prompter` 为**数组**（同一会话可挂多个输入处理器与系统提示词器）；`message_sender` / `tool_caller` / `output_processor` 为单个名称。
+- `input_processor` 可选 `batch_input_processor`（默认，按会话合批）与 `abstract_input_processor`（摘要记忆：按通道攒批 + 超时触发 + 事件上下文重建）。
 - `sessions` 的 key 是 `SessionKey`（结构体），JSON 不支持结构体作 map 键，故以 `[[key, value], ...]` 数组对承载。
 
 ### 配置继承与合成
@@ -203,6 +205,21 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 `read_recent_for_context` 用两次查询并集：① recent 取最近 N 条，`T_N` = 最旧一条时间；② 时间范围 `[M, T_N]`（`M = min(时间窗起点, T_N)`）取该段全部；结果按 (time, sn) 去重后时间正序，打包为交替的 User/Assistant 消息（结尾为 User 时补空 Assistant）。读路径在 `base_url` 为空时报错（不静默跳过）。
 
+## Memory-Struct-Abstract API 交互
+
+摘要记忆输入处理器（`abstract_input_processor`，需在 `pipeline.input_processor` 显式启用）经 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/abstract/locate` | 定位一批上行消息涉及的事件（请求含 agent_id、role 与带通道三元组的消息） |
+| POST | `/abstract/event/summary` | 取事件摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
+| POST | `/abstract/event/records-tail` | 取事件结尾 count 条原文副本（升序） |
+
+- `role` 与会话写记忆同一编码：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。
+- 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
+- 触发时用「涉及事件的全部摘要 + 各事件结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；查出的记录与本批新消息按（时间、发送者、文本、is_self）去重，去重后本批新消息整体进 pipeline。
+- `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
+
 ## Memory-Ego API 交互
 
 | 方法 | 路径 | 说明 |
@@ -266,6 +283,7 @@ enum Error {
     MemoryStoreError(String),
     MemoryTimeWindow(String),
     MemoryEgoError(String),          // 预留
+    AbstractError(String),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
     WsConnectionError(String),       // 预留
     WsBindError(String),             // 预留
     StationConnectionError(String),  // 预留
