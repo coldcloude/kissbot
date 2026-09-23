@@ -8,16 +8,26 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
+use chrono::{Duration as ChronoDuration, Local};
 use dashmap::DashMap;
-use kissbot_api::{ChannelKey, ChannelRecord, IncomingMessageEvent, LocateMessage};
+use kissbot_api::{ChannelKey, ChannelRecord, EventRecord, IncomingMessageEvent, LocateMessage};
 use kissbot_llm::{Message, Session};
 use tokio::sync::Notify;
+use tracing::warn;
 
 use crate::{
     abstract_client::AbstractClient,
-    message::{MessageContent, extract_content, pack_memory_messages},
-    types::SessionKey,
+    config_manager::ConfigManager,
+    configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig},
+    message::{MessageContent, extract_content, pack_batch, pack_memory_messages},
+    nexus::Nexus,
+    pipeline::{AgentInputProcessor, AgentTrigger},
+    types::{Result, SessionKey, role_mode},
 };
+
+/// tick 间隔（秒）：每秒定时检测是否有 channel 已超时
+const TICK_INTERVAL_SECS: u64 = 1;
 
 /// 消息去重键：时间 + 发送者名 + 文本 + 是否本人（同一条消息在两个来源里等价）
 type MessageKey = (String, String, String, bool);
@@ -142,6 +152,24 @@ fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Mess
 }
 
 impl AbstractAgentInputProcessor {
+    /// 生产构造：从进程级配置构造摘要记忆客户端，并启动 tick 任务（装配期在异步上下文中调用）
+    pub fn new(session_key: Arc<SessionKey>, session: Arc<Session>) -> Self {
+        Self::with_client(session_key, session, Arc::new(AbstractClient::new()))
+    }
+
+    /// 显式客户端构造：搭状态并启动 tick 任务
+    pub fn with_client(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<AbstractClient>) -> Self {
+        let processor = Self::assemble(session_key, session, client);
+        tokio::spawn(tick_loop(
+            processor.session_key.clone(),
+            processor.session.clone(),
+            processor.client.clone(),
+            processor.batches.clone(),
+            processor.notify.clone(),
+        ));
+        processor
+    }
+
     /// 只搭状态、不启动 tick 任务（生产构造与单测共用；单测不启动可避开进程级单例）
     fn assemble(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<AbstractClient>) -> Self {
         Self {
@@ -166,6 +194,115 @@ impl AbstractAgentInputProcessor {
     }
 }
 
+/// tick 任务：每秒检测一次，逐个触发已超时 channel 的批次（顺序执行 → 同会话上下文不并发写）；
+/// 会话销毁（notify）时退出
+async fn tick_loop(
+    session_key: Arc<SessionKey>,
+    session: Arc<Session>,
+    client: Arc<AbstractClient>,
+    batches: Arc<DashMap<ChannelKey, PendingBatch>>,
+    notify: Arc<Notify>,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(TICK_INTERVAL_SECS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = notify.notified() => break,
+            _ = ticker.tick() => {}
+        }
+        if batches.is_empty() {
+            continue; // 空闲时不做配置查询
+        }
+        // 超时阈值取会话配置（与普通合批同一项配置）
+        let timeout = Duration::from_secs(
+            ConfigManager::get()
+                .session_config::<ChannelBatchConfig, ChannelBatchConfig>(&session_key)
+                .await
+                .channel_batch_interval_secs,
+        );
+        for channel in due_channels(&batches, timeout) {
+            let Some((_, batch)) = batches.remove(&channel) else { continue };
+            flush_batch(&session_key, &session, &client, &channel, batch.events).await;
+        }
+    }
+}
+
+/// 触发一个 channel 的批次：摘要记忆重建上下文（失败降级为不重置）→ 本批新消息进 pipeline
+async fn flush_batch(
+    session_key: &Arc<SessionKey>,
+    session: &Arc<Session>,
+    client: &Arc<AbstractClient>,
+    channel: &ChannelKey,
+    events: Vec<Arc<IncomingMessageEvent>>,
+) {
+    match build_context(session_key, client, &events).await {
+        Ok(messages) => session.context_archive_and_clear_cache_and_reset_messages(messages).await,
+        Err(e) => warn!(
+            "摘要记忆重建上下文失败，降级为普通合批（channel={}:{}:{}）: {:?}",
+            channel.messenger_id, channel.self_user_id, channel.group_id, e
+        ),
+    }
+    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&events)).await;
+}
+
+/// 用摘要记忆重建上下文：定位事件 → 各事件摘要 + 事件结尾原文副本 → 时间窗与去重 → 组装消息
+async fn build_context(
+    session_key: &SessionKey,
+    client: &Arc<AbstractClient>,
+    events: &[Arc<IncomingMessageEvent>],
+) -> Result<Vec<Message>> {
+    let agent_id = session_key.agent_id.as_str();
+    let role = role_mode(session_key.role_name.as_str(), &session_key.mode);
+    // 1. 定位本批消息涉及的事件
+    let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
+    let located = client.locate(agent_id, &role, messages).await?;
+    // 2. 涉及事件的全部事件摘要
+    let mut summaries = Vec::new();
+    for event in located.events.iter() {
+        let node = client.event_summary(agent_id, &role, event.event_id.as_str()).await?;
+        summaries.push(node.summary.as_str().to_string());
+    }
+    // 3. 各事件结尾若干条原文副本（条数与时间窗取会话的记忆回溯配置；只保留通道记录）
+    let cfg = ConfigManager::get()
+        .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
+        .await;
+    let mut records: Vec<Arc<ChannelRecord>> = Vec::new();
+    for event in located.events.iter() {
+        let tail = client
+            .event_records_tail(agent_id, &role, event.event_id.as_str(), cfg.memory_count as u64)
+            .await?;
+        for record in tail.records.iter() {
+            if let EventRecord::Channel(channel_record) = record.as_ref() {
+                records.push(channel_record.clone());
+            }
+        }
+    }
+    // 4. 最后一段时间 + 与本批新消息去重
+    let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    let new_keys: HashSet<MessageKey> = events.iter().map(|e| new_message_key(e.as_ref())).collect();
+    let history = filter_history(&records, &cutoff, &new_keys);
+    // 5. 组装上下文（摘要在前，历史在后）
+    Ok(compose_context(&summaries, &history))
+}
+
+impl AgentTrigger for AbstractAgentInputProcessor {}
+
+#[async_trait]
+impl AgentInputProcessor for AbstractAgentInputProcessor {
+    async fn accept(&self, event: Arc<IncomingMessageEvent>) {
+        self.enqueue(event);
+    }
+}
+
+impl Drop for AbstractAgentInputProcessor {
+    fn drop(&mut self) {
+        // 会话销毁：通知 tick 任务退出（notify_one permit 语义：任务错过唤醒后下一轮 notified 立即完成）
+        self.notify.notify_one();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +312,7 @@ mod tests {
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
 
-    use crate::types::Mode;
+    use crate::types::{Error, Mode};
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -316,6 +453,30 @@ mod tests {
         let only_summary = compose_context(&["事件A".to_string()], &[]);
         assert_eq!(only_summary.len(), 1);
         assert!(matches!(&only_summary[0], Message::User { content } if content.contains("事件A")));
+    }
+
+    #[tokio::test]
+    async fn accept_enqueues_through_trait_entry() {
+        // accept（trait 入口）只入批：分桶与最后到达时间刷新见 enqueue
+        let processor = test_processor();
+        processor.accept(ev("u1", "a", "2026-09-23 10:00:00")).await;
+        processor.accept(ev("u2", "b", "2026-09-23 10:00:01")).await;
+        let g1 = ChannelKey::new("web", "self", "g1");
+        assert_eq!(processor.batches.get(&g1).unwrap().events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn build_context_fails_without_abstract_service() {
+        // 摘要记忆未配置：build_context 返回 Err（调用方据此降级为普通合批）
+        let processor = test_processor();
+        let err = build_context(
+            &processor.session_key,
+            &processor.client,
+            &[ev("u1", "a", "2026-09-23 10:00:00")],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::AbstractError(_)), "未配置摘要记忆应返回 AbstractError: {:?}", err);
     }
 
     fn test_processor() -> AbstractAgentInputProcessor {

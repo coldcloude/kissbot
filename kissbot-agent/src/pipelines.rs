@@ -6,6 +6,7 @@ pub mod tool_caller;
 pub mod system_prompter;
 
 use futures_util::future;
+pub use abstract_input_processor::*;
 pub use input_processor::*;
 use dashmap::DashMap;
 use kissbot_api::IncomingMessageEvent;
@@ -23,6 +24,7 @@ use kissbot_llm::{Message, Session, ToolConfig};
 use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Mode, Result, SessionKey}};
 
 pub const PP_IN_BATCH: &str = "batch_input_processor";
+pub const PP_IN_ABSTRACT: &str = "abstract_input_processor";
 pub const PP_OUT_CHANNEL: &str = "channel_output_processor";
 pub const PP_MSG_RAW: &str = "raw_message_sender";
 pub const PP_MSG_COMPRESS: &str = "compress_message_sender";
@@ -34,9 +36,10 @@ pub const PP_SYS_MEMORY_EGO: &str = "memory_ego_system_prompter";
 pub const PP_PRESET_ROLE: &str = "preset_role";
 pub const PP_PRESET_EVENT: &str = "preset_event";
 
-pub fn create_input_processor(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentInputProcessor>> {
+pub fn create_input_processor(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentInputProcessor>> {
     match name {
         PP_IN_BATCH => Ok(Arc::new(BatchAgentInputProcessor::new(session_key))),
+        PP_IN_ABSTRACT => Ok(Arc::new(AbstractAgentInputProcessor::new(session_key, session))),
         _ => Err(Error::PipelineNotFound("input processor".to_string(), name.to_string(), session_key.as_ref().clone())),
     }
 }
@@ -139,7 +142,7 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Se
     })
 }
 
-pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Result<DashMap<String, Arc<dyn AgentInputProcessor>>> {
+pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<String, Arc<dyn AgentInputProcessor>>> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
@@ -166,7 +169,7 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>) -> Resu
     }
     let input_processors = DashMap::new();
     for name in names.drain(..) {
-        let input_processor = create_input_processor(session_key.clone(), name.as_str())?;
+        let input_processor = create_input_processor(session_key.clone(), session.clone(), name.as_str())?;
         input_processors.insert(name, input_processor);
     }
     Ok(input_processors)
@@ -220,7 +223,7 @@ impl PipelineManager {
     }
 
     pub async fn sync_pipeline(&self, session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<()> {
-        let input_processors = create_agent_input_processors(session_key.clone()).await?;
+        let input_processors = create_agent_input_processors(session_key.clone(), session.clone()).await?;
         let system_prompters = create_agent_system_prompters(session_key.clone(), session.clone()).await?;
         let pipeline = create_agent_pipeline(session_key.clone(), session.clone()).await?;
         let session_pipeline = SessionPipeline {
