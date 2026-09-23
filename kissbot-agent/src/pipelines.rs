@@ -1,3 +1,4 @@
+pub mod abstract_input_processor;
 pub mod input_processor;
 pub mod output_processor;
 pub mod message_sender;
