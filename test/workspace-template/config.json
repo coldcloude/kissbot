@@ -36,7 +36,8 @@
   },
   "api": {
     "memory_store_url": "",
-    "memory_ego_url": ""
+    "memory_ego_url": "",
+    "memory_struct_abstract_url": ""
   },
   "channel-web": {
     "messenger_id": "web",
