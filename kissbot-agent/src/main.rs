@@ -1,5 +1,6 @@
 use tracing::info;
 
+mod abstract_client;
 mod channel_manager;
 mod command_router;
 mod configs;

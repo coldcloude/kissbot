@@ -25,6 +25,9 @@ pub enum Error {
     #[error("Memory ego error: {0}")]
     MemoryEgoError(String),
 
+    #[error("Abstract memory error: {0}")]
+    AbstractError(String),
+
     #[error("Invalid command: {0}")]
     InvalidCommand(String),
 
