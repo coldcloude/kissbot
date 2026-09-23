@@ -1,4 +1,4 @@
-﻿use async_trait::async_trait;
+use async_trait::async_trait;
 use dashmap::DashMap;
 use futures_util::future;
 use kai_file::index::{FilePathGenerator};
@@ -68,7 +68,7 @@ where
     K: Eq + Hash + Clone + Send + Sync,
     R: MemoryRecord,
     P: FilePathGenerator<K>,
-    H: FileHook<K>,
+    H: FileHook<K, R>,
 {
     pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
         Self {
@@ -86,7 +86,7 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     R: MemoryRecord + Send + Sync + 'static,
     P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K> + Send + Sync + 'static,
+    H: FileHook<K, R> + Send + Sync + 'static,
 {
     async fn write(&mut self, key: &K, records: Vec<R>) -> std::result::Result<(), kai_file::Error> {
         let file_path = self.parser.get_path(key).await?;
@@ -131,8 +131,11 @@ where
             if let Some(last) = all_records.last() {
                 file_state.time = last.time_string();
             }
+            // tokio::fs::File 的 write_all 可能只把数据交给后台阻塞任务就返回：flush 等到这次写入
+            // 真正落盘，否则紧接着的 hook（发布通知、更新索引）会让读方看到不完整的数据
+            tokio::io::AsyncWriteExt::flush(&mut file).await?;
 
-            self.hook.on_force_append(key);
+            self.hook.on_force_append(key, &all_records);
         } else {
             // 有序 → 追加
             let mut file = tokio::fs::OpenOptions::new()
@@ -145,8 +148,10 @@ where
                 tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
                 file_state.time = record.time_string();
             }
+            // 同上：flush 保证 hook（发布通知）触发时数据已可被读方看到
+            tokio::io::AsyncWriteExt::flush(&mut file).await?;
 
-            self.hook.on_append(key);
+            self.hook.on_append(key, &records);
         }
 
         Ok(())
@@ -165,7 +170,7 @@ where
     K: Eq + Hash + Clone + Send + Sync,
     R: MemoryRecord,
     P: FilePathGenerator<K>,
-    H: FileHook<K>,
+    H: FileHook<K, R>,
 {
     pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
         Self {
@@ -182,7 +187,7 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     R: MemoryRecord + Send + Sync + 'static,
     P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K> + Send + Sync + 'static,
+    H: FileHook<K, R> + Send + Sync + 'static,
 {
     async fn get_lock(&self, key: &K) -> Arc<Mutex<RecordWriterContext<K, R, P, H>>> {
         if let Some(ctx) = self.map.get(key) {
@@ -202,52 +207,60 @@ where
 #[derive(Clone)]
 struct ChannelFileIndexHook;
 
-impl FileHook<RecordKey> for ChannelFileIndexHook {
-    fn on_append(&self, key: &RecordKey) {
+impl FileHook<RecordKey, ChannelRecord> for ChannelFileIndexHook {
+    fn on_append(&self, key: &RecordKey, records: &[ChannelRecord]) {
         MemoryIndexer::get().mark_channel_obsolete(key);
+        crate::notify::publish_channel(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey) {
+    fn on_force_append(&self, key: &RecordKey, records: &[ChannelRecord]) {
         MemoryIndexer::get().mark_channel_all_obsolete(key);
+        crate::notify::publish_channel(key, records);
     }
 }
 
 #[derive(Clone)]
 struct ThinkFileIndexHook;
 
-impl FileHook<RecordKey> for ThinkFileIndexHook {
-    fn on_append(&self, key: &RecordKey) {
+impl FileHook<RecordKey, ThinkRecord> for ThinkFileIndexHook {
+    fn on_append(&self, key: &RecordKey, records: &[ThinkRecord]) {
         MemoryIndexer::get().mark_think_obsolete(key);
+        crate::notify::publish_think(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey) {
+    fn on_force_append(&self, key: &RecordKey, records: &[ThinkRecord]) {
         MemoryIndexer::get().mark_think_all_obsolete(key);
+        crate::notify::publish_think(key, records);
     }
 }
 
 #[derive(Clone)]
 struct ToolCallFileIndexHook;
 
-impl FileHook<RecordKey> for ToolCallFileIndexHook {
-    fn on_append(&self, key: &RecordKey) {
+impl FileHook<RecordKey, ToolCallRecord> for ToolCallFileIndexHook {
+    fn on_append(&self, key: &RecordKey, records: &[ToolCallRecord]) {
         MemoryIndexer::get().mark_tool_call_obsolete(key);
+        crate::notify::publish_tool_call(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey) {
+    fn on_force_append(&self, key: &RecordKey, records: &[ToolCallRecord]) {
         MemoryIndexer::get().mark_tool_call_all_obsolete(key);
+        crate::notify::publish_tool_call(key, records);
     }
 }
 
 #[derive(Clone)]
 struct ToolResultFileIndexHook;
 
-impl FileHook<RecordKey> for ToolResultFileIndexHook {
-    fn on_append(&self, key: &RecordKey) {
+impl FileHook<RecordKey, ToolResultRecord> for ToolResultFileIndexHook {
+    fn on_append(&self, key: &RecordKey, records: &[ToolResultRecord]) {
         MemoryIndexer::get().mark_tool_result_obsolete(key);
+        crate::notify::publish_tool_result(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey) {
+    fn on_force_append(&self, key: &RecordKey, records: &[ToolResultRecord]) {
         MemoryIndexer::get().mark_tool_result_all_obsolete(key);
+        crate::notify::publish_tool_result(key, records);
     }
 }
 
@@ -272,7 +285,7 @@ where
     K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
     R: MemoryRecord + Send + Sync + Clone + 'static,
     P: RequestParser<Q, K, R> + FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K> + Send + Sync + 'static,
+    H: FileHook<K, R> + Send + Sync + 'static,
 {
     let mut records_map: HashMap<K, Vec<R>> = HashMap::new();
     for request in requests {
@@ -350,7 +363,7 @@ where
     K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
     R: MemoryRecord + Send + Sync + Clone + 'static,
     P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K> + Send + Sync + 'static,
+    H: FileHook<K, R> + Send + Sync + 'static,
 {
     FileObjectAppender::new(
         writer.clone(),
@@ -430,9 +443,9 @@ mod tests {
     #[derive(Clone)]
     pub(crate) struct NoopFileHook;
 
-    impl<K> FileHook<K> for NoopFileHook {
-        fn on_append(&self, _key: &K) {}
-        fn on_force_append(&self, _key: &K) {}
+    impl<K, R> FileHook<K, R> for NoopFileHook {
+        fn on_append(&self, _key: &K, _records: &[R]) {}
+        fn on_force_append(&self, _key: &K, _records: &[R]) {}
     }
 
     #[tokio::test]

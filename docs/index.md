@@ -46,7 +46,7 @@ docs/
 │   ├── memory-store.md              # memory-store 记录写入
 │   ├── memory-index.md              # 记忆索引机制
 │   ├── memory-ego.md                # 自我认知模块文件存储
-│   ├── memory-struct-abstract.md    # 摘要记忆技术约定（接口/通知/触发判定/存储）
+│   ├── memory-struct-abstract.md    # 摘要记忆技术约定（接口/通知/懒处理与分组/存储）
 │   ├── agent-modules.md             # Agent 组件模块调用关系
 │   ├── agent-nexus.md               # Agent Nexus 技术约定
 │   ├── agent-station.md             # Agent Station 技术约定（group/递归平铺/工具路由/MCP 端点）

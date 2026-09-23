@@ -13,15 +13,18 @@ const BACKEND_BINARY = join(REPO_ROOT, 'kissbot-channel-web', 'target', 'debug',
 const AGENT_BINARY = join(REPO_ROOT, 'kissbot-agent', 'target', 'debug', 'kissbot-agent');
 const MEMORY_STORE_BINARY = join(REPO_ROOT, 'kissbot-memory-store', 'target', 'debug', 'kissbot-memory-store');
 const MEMORY_EGO_BINARY = join(REPO_ROOT, 'kissbot-memory-ego', 'target', 'debug', 'kissbot-memory-ego');
+const MEMORY_STRUCT_ABSTRACT_BINARY = join(REPO_ROOT, 'kissbot-memory-struct-abstract', 'target', 'debug', 'kissbot-memory-struct-abstract');
 
 export const AGENT_MGMT_PORT = 9090;
+export const MEMORY_STORE_NOTIFY_PORT = 8182;
+export const MEMORY_STRUCT_ABSTRACT_PORT = 8083;
 
-// 清理残留的服务进程（上次运行崩溃/中断遗留的 agent/backend/memory-store/memory-ego）
+// 清理残留的服务进程（上次运行崩溃/中断遗留的 agent/backend/memory-store/memory-ego/memory-struct-abstract）
 // 必要性：残留进程占用端口会导致本测试启动的服务 bind 失败、请求打到旧实例；
 // 且旧实例 cwd 指向 workspace，resetWorkspace 删除目录后其相对 root_dir 路径全部失效（如 memory-store PathNotExist）。
 // 按二进制绝对路径精确匹配，避免误杀 kissbot-agent-config 等无关进程。
 export function killStrayServices(): void {
-  const binaries = [BACKEND_BINARY, AGENT_BINARY, MEMORY_STORE_BINARY, MEMORY_EGO_BINARY];
+  const binaries = [BACKEND_BINARY, AGENT_BINARY, MEMORY_STORE_BINARY, MEMORY_EGO_BINARY, MEMORY_STRUCT_ABSTRACT_BINARY];
   for (const bin of binaries) {
     try {
       execSync(`pkill -9 -f '^${bin}( |$)' || true`, { stdio: 'ignore' });
@@ -108,6 +111,26 @@ export function startMemoryEgo(cwd: string): ChildProcess {
 }
 
 export function stopMemoryEgo(proc?: ChildProcess): void {
+  if (proc && !proc.killed) {
+    proc.kill('SIGTERM');
+  }
+}
+
+// 启动 kissbot-memory-struct-abstract（debug 二进制），cwd 需含 config.json
+// 调用方用 waitForPort(MEMORY_STRUCT_ABSTRACT_PORT) 等待就绪；测试配置用 provider_type=stub，不调用外部模型
+export function startMemoryStructAbstract(cwd: string): ChildProcess {
+  const proc = spawn(MEMORY_STRUCT_ABSTRACT_BINARY, [], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, RUST_LOG: 'info', KISSBOT_CONFIG: join(cwd, 'config.json') },
+  });
+  proc.stdout?.on('data', (d) => process.stdout.write(`[abstract] ${d}`));
+  proc.stderr?.on('data', (d) => process.stderr.write(`[abstract:err] ${d}`));
+  proc.on('error', (e) => process.stderr.write(`[abstract] spawn error: ${e.message}\n`));
+  return proc;
+}
+
+export function stopMemoryStructAbstract(proc?: ChildProcess): void {
   if (proc && !proc.killed) {
     proc.kill('SIGTERM');
   }

@@ -7,11 +7,31 @@
     "root_dir": "memory-data",
     "store": {
       "listen_addr": "127.0.0.1",
-      "listen_port": 8082
+      "listen_port": 8082,
+      "notify_listen_addr": "127.0.0.1",
+      "notify_listen_port": 8182
     },
     "ego": {
       "listen_addr": "127.0.0.1",
       "listen_port": 3001
+    }
+  },
+  "memory_struct_abstract": {
+    "listen_addr": "127.0.0.1",
+    "listen_port": 8083,
+    "notify_url": "ws://127.0.0.1:8182",
+    "provider": {
+      "provider_type": "stub",
+      "base_url": "",
+      "api_key": ""
+    },
+    "default_model_config": {
+      "max_tokens_usage": 131072
+    },
+    "model_configs": {},
+    "llm": {
+      "provider": "stub",
+      "model": "stub"
     }
   },
   "api": {

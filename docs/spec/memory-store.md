@@ -29,7 +29,9 @@
 
 ## 新数据通知
 
-- 写入完成后向已连接的通知客户端广播新数据（连接方式见 [communication.md](communication.md)）
-- 通知携带记录类型与位置信息：通道消息附时间、agent、记忆后缀与发送者身份；其余类型附时间、agent 与记忆后缀
-- 通知不区分写入方式；客户端按自身水位从共享文件读取
-- 客户端通知的消费方式见 [kissbot-memory-struct-abstract](memory-struct-abstract.md)
+- 通知服务在独立的 WS 监听地址上提供服务：`memory.store.notify_listen_addr` / `memory.store.notify_listen_port`（默认 `127.0.0.1:8182`），与 HTTP 服务分开监听（连接方式见 [communication.md](communication.md)）
+- 握手认证与 HTTP 同一套（`X-Api-Key`）；服务端定期发送心跳，连接断开后移除客户端
+- 写入完成后向所有已连接客户端广播新数据，不区分写入方式；通道记录按通道分组逐条通知（同一批可能混合多个通道）
+- 通知携带记录类型与位置信息：记录类型由 kai-ws 信封的 `payload_type` 承载，payload 为时间、agent、记忆后缀；通道消息另附发送者身份 `is_self` 与**通道三元组** `messenger_id` / `self_user_id` / `group_id`（平铺在 payload 顶层），订阅方据此只评估该通道；思考/工具记录只有 key、写入侧无法确定通道，因此不带通道字段
+- 单个连接的握手/读写失败只记录日志，不影响服务继续接受连接
+- 客户端按自身水位从共享文件读取；通知帧格式与消费方式见 [kissbot-memory-struct-abstract](memory-struct-abstract.md)

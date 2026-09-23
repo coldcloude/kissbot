@@ -573,6 +573,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "kai-file",
+ "kai-ws",
  "kissbot-api",
  "kissbot-config",
  "kissbot-memory",

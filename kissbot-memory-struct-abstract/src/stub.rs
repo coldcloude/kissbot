@@ -1,0 +1,98 @@
+//! 测试用模型桩：按队列给出判定结果，摘要按序号生成（spec 验证：模型调用以桩实现替换）。
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use async_trait::async_trait;
+use kissbot_api::EventBrief;
+
+use crate::error::Result;
+use crate::model::{DecisionModel, LevelDecision, MessageGroup};
+use crate::scope::ScopeId;
+
+#[derive(Default)]
+pub struct StubModel {
+    /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前事件即标记为当前事件组）
+    pub group_decisions: Mutex<VecDeque<Vec<MessageGroup>>>,
+    pub level_decisions: Mutex<VecDeque<LevelDecision>>,
+    pub locate_results: Mutex<VecDeque<Option<String>>>,
+    /// 每次 summarize 的输入（断言级联时父事件能看到子事件摘要）
+    pub summary_inputs: Mutex<Vec<String>>,
+    /// 每次判定调用收到的提示词（断言调用顺序与候选集合）
+    pub prompts: Mutex<Vec<String>>,
+    /// 预置的摘要失败次数（各消耗一次，测试模型失败时状态不被破坏）
+    pub fail_summarize: Mutex<VecDeque<()>>,
+    pub summary_count: AtomicU64,
+}
+
+impl StubModel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 预置第 1 轮分组结果（下标范围必须完整覆盖批次，否则归档按失败处理）
+    pub fn push_groups(&self, groups: Vec<MessageGroup>) -> &Self {
+        self.group_decisions.lock().unwrap().push_back(groups);
+        self
+    }
+
+    /// 便捷写法：把一批消息分成「当前事件组 + 若干普通组」
+    pub fn push_group(&self, messages: &[usize], is_current: bool) -> &Self {
+        self.push_groups(vec![MessageGroup { messages: messages.to_vec(), is_current }])
+    }
+
+    pub fn push_level(&self, decision: LevelDecision) -> &Self {
+        self.level_decisions.lock().unwrap().push_back(decision);
+        self
+    }
+
+    pub fn push_summarize_failure(&self) -> &Self {
+        self.fail_summarize.lock().unwrap().push_back(());
+        self
+    }
+
+    pub fn push_locate(&self, result: Option<&str>) -> &Self {
+        self.locate_results.lock().unwrap().push_back(result.map(|s| s.to_string()));
+        self
+    }
+
+    pub fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().unwrap().clone()
+    }
+
+    pub fn summary_inputs(&self) -> Vec<String> {
+        self.summary_inputs.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl DecisionModel for StubModel {
+    async fn group(&self, _scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>> {
+        self.prompts.lock().unwrap().push(crate::model::grouping_prompt(batch, current));
+        if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
+            return Ok(groups);
+        }
+        // 默认：整批一组；有当前事件即视为当前事件的延续
+        Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
+    }
+
+    async fn decide_level(&self, _scope: &ScopeId, batch: &str, level: &[EventBrief]) -> Result<LevelDecision> {
+        self.prompts.lock().unwrap().push(crate::model::level_prompt(batch, level));
+        Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or(LevelDecision::New))
+    }
+
+    async fn summarize(&self, _scope: &ScopeId, content: &str) -> Result<String> {
+        self.summary_inputs.lock().unwrap().push(content.to_string());
+        if self.fail_summarize.lock().unwrap().pop_front().is_some() {
+            return Err(crate::error::Error::ModelApiError("stub summarize failure".into()));
+        }
+        let next = self.summary_count.fetch_add(1, Ordering::Relaxed) + 1;
+        Ok(format!("摘要{}", next))
+    }
+
+    async fn locate(&self, _scope: &ScopeId, message: &str, candidates: &[EventBrief]) -> Result<Option<String>> {
+        self.prompts.lock().unwrap().push(crate::model::locate_prompt(message, candidates));
+        Ok(self.locate_results.lock().unwrap().pop_front().flatten())
+    }
+}

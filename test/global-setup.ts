@@ -7,7 +7,7 @@ import { killStrayServices } from './tests/helpers/server';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function globalSetup() {
-  // 清理残留服务进程（上次运行中断遗留的 agent/backend/memory-store/memory-ego），
+  // 清理残留服务进程（上次运行中断遗留的 agent/backend/memory-store/memory-ego/memory-struct-abstract），
   // 避免端口占用导致本测试服务 bind 失败、以及旧实例 cwd 被 resetWorkspace 删除后路径失效
   console.log('[global-setup] Killing stray service processes...');
   killStrayServices();
@@ -39,6 +39,11 @@ async function globalSetup() {
   });
   console.log('[global-setup] Building memory-ego...');
   execSync('cargo build --manifest-path ../kissbot-memory-ego/Cargo.toml', {
+    stdio: 'inherit',
+    cwd: __dirname,
+  });
+  console.log('[global-setup] Building memory-struct-abstract...');
+  execSync('cargo build --manifest-path ../kissbot-memory-struct-abstract/Cargo.toml', {
     stdio: 'inherit',
     cwd: __dirname,
   });

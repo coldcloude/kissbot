@@ -7,11 +7,45 @@
     "root_dir": "memory-data",
     "store": {
       "listen_addr": "127.0.0.1",
-      "listen_port": 8082
+      "listen_port": 8082,
+      "notify_listen_addr": "127.0.0.1",
+      "notify_listen_port": 8182
     },
     "ego": {
       "listen_addr": "127.0.0.1",
       "listen_port": 3001
+    }
+  },
+  "memory_struct_abstract": {
+    "listen_addr": "127.0.0.1",
+    "listen_port": 8083,
+    "notify_url": "ws://127.0.0.1:8182",
+    "ws_reconnect_interval_secs": 5,
+    "locate_record_limit": 50,
+    "locate_char_limit": 20000,
+    "session_max_messages": 20,
+    "max_event_depth": 16,
+    "max_batch_records": 200,
+    "provider": {
+      "provider_type": "openai",
+      "base_url": "https://api.deepseek.com",
+      "api_key": ""
+    },
+    "default_model_config": {
+      "max_tokens_usage": 131072,
+      "timeout_secs": 60,
+      "retry_count": 3
+    },
+    "model_configs": {
+      "deepseek-flash": {
+        "max_tokens_usage": 131072
+      }
+    },
+    "llm": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "max_tokens": 4096,
+      "has_max_tokens": true
     }
   },
   "api": {

@@ -17,6 +17,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 kissbot-config = { path = "../kissbot-config" }
 kai-file = { path = "../kai-rs/kai-file" }
+kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-memory = { path = "../kissbot-memory" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-security = { path = "../kissbot-security" }

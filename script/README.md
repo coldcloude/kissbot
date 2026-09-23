@@ -4,8 +4,9 @@
 
 - `reset-agent.sh`：按 `template/nexus.json`、`template/station.json` 生成 `../workspace/agent-data/` 下的运行配置（并注入 API key）
 - `reset-workspace.sh`：重置工作区（由 `template/config.json` 生成 `../workspace/config.json`，并重建 `channel-data/`）
-- `start-memory-store.sh` / `start-memory-ego.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
-- `inject-key.mjs`：向模板注入 API key
+- `start-memory-store.sh` / `start-memory-ego.sh` / `start-memory-struct-abstract.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
+- `restart-memory-all.sh`：一键重启 memory-store + memory-ego + memory-struct-abstract（清理 `../workspace/memory-data`）
+- `inject-key.mjs`：向 nexus.json 与 config.json 注入 API key（`node inject-key.mjs <key文件> <nexus.json|-> [config.json]`）
 
 ## 模型上下文系统本地模式验证（手动）
 
@@ -149,3 +150,87 @@ node inject-key.mjs
 ```bash
 ./reset-workspace.sh   # 重置数据目录
 ```
+
+## 摘要记忆系统本地验证（手动）
+
+摘要记忆组件（kissbot-memory-struct-abstract）订阅 memory-store 的新数据通知，把记忆切分为事件并生成摘要，按新消息定位事件提供上下文。
+
+### 1. 配置（`../workspace/config.json`）
+
+```jsonc
+{
+  "memory": {
+    "root_dir": "memory-data",
+    "store": {
+      "listen_addr": "127.0.0.1", "listen_port": 8082,
+      "notify_listen_addr": "127.0.0.1", "notify_listen_port": 8182   // 新数据通知 WS 服务
+    }
+  },
+  "memory_struct_abstract": {
+    "listen_addr": "127.0.0.1", "listen_port": 8083,   // 本组件 HTTP 服务
+    "notify_url": "ws://127.0.0.1:8182",               // memory-store 通知服务地址；缺省则不订阅
+    "max_batch_records": 200,                          // 单通道单次处理的消息条数上限
+    "provider": { "provider_type": "openai", "base_url": "https://api.deepseek.com", "api_key": "sk-…" },
+    "default_model_config": { "max_tokens_usage": 131072, "timeout_secs": 60, "retry_count": 3 },
+    "model_configs": { "deepseek-flash": { "max_tokens_usage": 131072 } },
+    "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": 4096, "has_max_tokens": true }
+  }
+}
+```
+
+`./reset-workspace.sh` 从模板生成该文件；`./start-memory-struct-abstract.sh` 会用 `../key.local.json` 按 `llm.provider` 的名字注入 `api_key`。
+
+说明：
+
+- 记忆根目录取自 `memory.root_dir`，组件不单独配置
+- `default_model_config.max_tokens_usage` 必填；`llm` 的生成参数（`max_tokens` 等）须与 `has_*` 标志成对出现
+- `provider_type` 设为 `"stub"` 时使用确定性桩模型（不调用外部模型），供集成测试/无 key 的手动验证
+
+### 2. 启动与验证
+
+```bash
+./reset-workspace.sh
+./restart-memory-all.sh        # 一键启动三个 memory 服务（或分别 start-memory-*.sh）
+```
+
+```bash
+# 事件树（含各通道的当前事件指针）
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev"}' http://127.0.0.1:8083/abstract/tree/get | jq
+
+# 排障：各通道的已处理水位与当前事件指针直接看状态文件
+cat ../workspace/memory-data/0/memory-struct-abstract/dev/watermark.json | jq
+cat ../workspace/memory-data/0/memory-struct-abstract/dev/current.json | jq
+
+# 定位：一批消息（可跨通道）涉及哪些事件（只返回事件标识与分组）
+# 每条消息的通道三元组（messenger_id / self_user_id / group_id）决定用哪个通道的当前事件指针
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","messages":[
+        {"time":"2026-09-22 13:48:37","user_name":"alice","is_self":0,"messenger_id":"web","self_user_id":"self1","group_id":"g1","content":{"msg_type":"Text","data":"之前聊到哪了"}},
+        {"time":"2026-09-22 13:49:02","user_name":"bob","is_self":0,"messenger_id":"web","self_user_id":"self2","group_id":"g2","content":{"msg_type":"Text","data":"另一个通道问一句"}}]}' \
+  http://127.0.0.1:8083/abstract/locate | jq
+
+# 摘要 / 全部原文 / 指定之后 / 结尾若干条（用定位拿到的事件标识）
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","event_id":"e1"}' http://127.0.0.1:8083/abstract/event/summary | jq
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","event_id":"e1"}' http://127.0.0.1:8083/abstract/event/records | jq
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","event_id":"e1","count":5}' http://127.0.0.1:8083/abstract/event/records-tail | jq
+# 指定之后：after 传上一条记录的 time / sn / record_type
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","event_id":"e1","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
+  http://127.0.0.1:8083/abstract/event/records-after | jq
+
+# 重建：清空事件树后按共享记忆文件重新构建（rebuild=false 时为手动触发归档）
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev","rebuild":true}' http://127.0.0.1:8083/abstract/rebuild | jq
+```
+
+验证点：
+
+1. **通知 → 懒处理**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后调用任意查询（如 `/abstract/tree/get`）→ memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{role}/` 下生成 `tree.json` / `current.json` / `watermark.json` 与 `events/{event-id}/{channel|think|tool-call|tool-result}-records.jsonl`
+2. **懒处理闸门**：没有新数据时反复调用查询不会重复归档（日志不出现新的 `process` 行）
+3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部事件与分组（新话题的组不带 `event_id`）。摘要与原文再用 `event/summary`、`event/records*` 取
+4. **事件模式**：`role` 以第一个 `-` 分隔出的后半段为事件标识（如 `dev-e1`）时，作用域只保留一个顶层事件，不参与判定
+5. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{role}.jsonl` 累积该作用域的判定上下文

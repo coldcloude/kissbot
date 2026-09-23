@@ -7,9 +7,11 @@ use crate::DirectoryManager;
 
 use kissbot_api::memory::*;
 
-pub trait FileHook<K> {
-    fn on_append(&self, key: &K);
-    fn on_force_append(&self, key: &K);
+pub trait FileHook<K, R> {
+    /// 追加写入完成后回调（records 为该批次实际写入的记录，按写入顺序）
+    fn on_append(&self, key: &K, records: &[R]);
+    /// 全量重写完成后回调（records 为文件内全部记录，按时间顺序）
+    fn on_force_append(&self, key: &K, records: &[R]);
 }
 
 //===================== functions ======================

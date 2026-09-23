@@ -19,6 +19,9 @@ pub enum Error {
 
     #[error("Record not in order: key='{0}' latest='{1}' new='{2}'")]
     RecordNotInOrder(String, String, String),
+
+    #[error("WS error: {0}")]
+    Ws(#[from] kai_ws::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

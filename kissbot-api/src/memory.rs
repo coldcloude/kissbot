@@ -205,10 +205,144 @@ pub struct RecordKey {
     pub date: Arc<String>,
 }
 
+//===================== Channel identity ======================
+
+/// 通道标识：messenger + agent 在该通道绑定的用户 + 群组。
+///
+/// 同一会话的 incoming、self、思考/工具占位三类通道记录由此三元组归入同一通道：
+/// incoming 记录的 `self_user_id` 是接收方身份，self 与占位记录取回复通道的绑定用户，二者一致。
+/// 发送者 `user_id` 不参与：self 记录的 `user_id` 是绑定的用户身份，与对话对方的 `user_id` 不同。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ChannelKey {
+    pub messenger_id: Arc<String>,
+    pub self_user_id: Arc<String>,
+    pub group_id: Arc<String>,
+}
+
+impl ChannelKey {
+    pub fn new(messenger_id: impl Into<String>, self_user_id: impl Into<String>, group_id: impl Into<String>) -> Self {
+        Self {
+            messenger_id: Arc::new(messenger_id.into()),
+            self_user_id: Arc::new(self_user_id.into()),
+            group_id: Arc::new(group_id.into()),
+        }
+    }
+}
+
+impl From<&ChannelRecord> for ChannelKey {
+    fn from(record: &ChannelRecord) -> Self {
+        Self {
+            messenger_id: record.messenger_id.clone(),
+            self_user_id: record.self_user_id.clone(),
+            group_id: record.group_id.clone(),
+        }
+    }
+}
+
+//===================== New data notification ======================
+
+/// 记录类型：四类原始记录的公共分类（通知、读取与文件命名共用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordKind {
+    Channel,
+    Think,
+    ToolCall,
+    ToolResult,
+}
+
+impl RecordKind {
+    pub const ALL: [RecordKind; 4] = [
+        RecordKind::Channel,
+        RecordKind::Think,
+        RecordKind::ToolCall,
+        RecordKind::ToolResult,
+    ];
+
+    /// 记录文件名的类型段（`{stem}-records-{date}.jsonl`）
+    pub fn file_stem(self) -> &'static str {
+        match self {
+            RecordKind::Channel => "channel",
+            RecordKind::Think => "think",
+            RecordKind::ToolCall => "tool-call",
+            RecordKind::ToolResult => "tool-result",
+        }
+    }
+
+    /// 通知帧的 payload_type（kai-ws 信封；记录类型由 payload_type 承载）
+    pub fn payload_type(self) -> u32 {
+        match self {
+            RecordKind::Channel => TYPE_NOTIFY_CHANNEL,
+            RecordKind::Think => TYPE_NOTIFY_THINK,
+            RecordKind::ToolCall => TYPE_NOTIFY_TOOL_CALL,
+            RecordKind::ToolResult => TYPE_NOTIFY_TOOL_RESULT,
+        }
+    }
+
+    pub fn from_payload_type(payload_type: u32) -> Option<Self> {
+        match payload_type {
+            TYPE_NOTIFY_CHANNEL => Some(RecordKind::Channel),
+            TYPE_NOTIFY_THINK => Some(RecordKind::Think),
+            TYPE_NOTIFY_TOOL_CALL => Some(RecordKind::ToolCall),
+            TYPE_NOTIFY_TOOL_RESULT => Some(RecordKind::ToolResult),
+            _ => None,
+        }
+    }
+}
+
+/// 新数据通知 payload_type：memory-store → memory-struct-*（0x3001xxxx）
+pub const TYPE_NOTIFY_CHANNEL: u32 = 0x3001_0001;
+pub const TYPE_NOTIFY_THINK: u32 = 0x3001_0002;
+pub const TYPE_NOTIFY_TOOL_CALL: u32 = 0x3001_0003;
+pub const TYPE_NOTIFY_TOOL_RESULT: u32 = 0x3001_0004;
+
+/// 新数据通知 payload：写入完成后广播的位置信息（记录类型见 payload_type，统一走 kai-ws 信封）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecordNotification {
+    pub agent_id: Arc<String>,
+    /// 记忆后缀：角色模式为角色名，事件模式为 `角色名-事件id`
+    pub role: Arc<String>,
+    pub time: Arc<String>,
+    /// 仅通道消息携带：是否 agent 实际发送
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_self: Option<usize>,
+    /// 仅通道消息携带：记录所属通道（平铺为 `messenger_id` / `self_user_id` / `group_id`）。
+    /// 收到通知后只评估该通道；思考/工具记录只有 key、写入侧无法确定通道，因此不带。
+    #[serde(default, flatten)]
+    pub channel: Option<ChannelKey>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use super::*;
+
+    #[test]
+    fn test_channel_key_serde_and_from_record() {
+        let record = ChannelRecord {
+            user_id: Arc::new("alice".into()),
+            self_user_id: Arc::new("self1".into()),
+            messenger_id: Arc::new("web".into()),
+            group_id: Arc::new("g1".into()),
+            is_self: 0,
+            messenger_name: Arc::new(String::new()),
+            user_name: Arc::new("alice".into()),
+            group_name: Arc::new(String::new()),
+            content: Content::Text(Arc::new("你好".into())),
+            time: Arc::new("2026-09-22 10:00:00".into()),
+            sn: 1,
+        };
+        let key = ChannelKey::from(&record);
+        assert_eq!(serde_json::to_value(&key).unwrap(), json!({
+            "messenger_id": "web", "self_user_id": "self1", "group_id": "g1"
+        }));
+        // 发送者身份不参与通道键：同一会话的 self 与非 self 记录同属一个通道
+        let mut self_record = record.clone();
+        self_record.user_id = Arc::new("self1".into());
+        self_record.is_self = 1;
+        assert_eq!(ChannelKey::from(&self_record), key);
+        assert!(key < ChannelKey::new("web", "self1", "g2"), "通道键可排序（BTreeMap 用）");
+    }
 
     #[test]
     fn test_serde_channel_request() {
@@ -556,5 +690,59 @@ mod tests {
         let deserialized: RecordKey = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.agent_id, "agent1");
         assert_eq!(*deserialized.role_name, "default");
+    }
+
+    // ========== New data notification ==========
+
+    #[test]
+    fn test_record_kind_file_stem_and_payload_type() {
+        assert_eq!(RecordKind::Channel.file_stem(), "channel");
+        assert_eq!(RecordKind::ToolCall.file_stem(), "tool-call");
+        for kind in RecordKind::ALL {
+            assert_eq!(RecordKind::from_payload_type(kind.payload_type()), Some(kind), "payload_type 往返");
+        }
+        assert_eq!(RecordKind::from_payload_type(0x9999_9999), None);
+        // 四类 payload_type 互不相同
+        let mut types: Vec<u32> = RecordKind::ALL.iter().map(|k| k.payload_type()).collect();
+        types.sort_unstable();
+        types.dedup();
+        assert_eq!(types.len(), 4);
+    }
+
+    #[test]
+    fn test_record_kind_serde_kebab_case() {
+        assert_eq!(serde_json::to_string(&RecordKind::ToolCall).unwrap(), r#""tool-call""#);
+        assert_eq!(serde_json::from_str::<RecordKind>(r#""tool-result""#).unwrap(), RecordKind::ToolResult);
+    }
+
+    #[test]
+    fn test_serde_record_notification_channel_and_think() {
+        // 通道消息通知带 is_self 与通道三元组（平铺在 payload 顶层）
+        let channel = RecordNotification {
+            agent_id: Arc::new("0".into()),
+            role: Arc::new("dev".into()),
+            time: Arc::new("2026-09-22 13:48:37".into()),
+            is_self: Some(0),
+            channel: Some(ChannelKey::new("web", "self1", "g1")),
+        };
+        let v = serde_json::to_value(&channel).unwrap();
+        assert_eq!(v, json!({
+            "agent_id": "0", "role": "dev", "time": "2026-09-22 13:48:37", "is_self": 0,
+            "messenger_id": "web", "self_user_id": "self1", "group_id": "g1"
+        }));
+        assert_eq!(serde_json::from_value::<RecordNotification>(v).unwrap(), channel);
+
+        // 其余类型不带 is_self 与通道（缺省为 None，可省略）
+        let think = RecordNotification {
+            agent_id: Arc::new("0".into()),
+            role: Arc::new("dev".into()),
+            time: Arc::new("2026-09-22 13:48:37".into()),
+            is_self: None,
+            channel: None,
+        };
+        let v = serde_json::to_value(&think).unwrap();
+        assert!(v.get("is_self").is_none(), "None 不序列化");
+        assert!(v.get("messenger_id").is_none() && v.get("group_id").is_none(), "通道缺省不序列化");
+        assert_eq!(serde_json::from_value::<RecordNotification>(v).unwrap(), think);
     }
 }
