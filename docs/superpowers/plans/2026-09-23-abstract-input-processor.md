@@ -1128,3 +1128,11 @@ git commit -m "摘要记忆输入处理器全量验证修正"
 **Placeholder scan:** 无 TBD/TODO；每个改动步骤都给了完整代码或精确 diff。
 
 **Type consistency:** `MessageKey`（4 元组）在 `message_key` / `new_message_key` / `filter_history` 三处一致；`PendingBatch { events, last_at }` 在 Task 3 定义、Task 3/4 使用一致；`build_context(session_key, client, events)` 的签名在 Task 4 的 `flush_batch` 调用与测试中一致；`assemble`（Task 3）被 Task 3 测试与 Task 4 `with_client` 共用，`new` / `with_client` 只在 Task 4 工厂与生产路径使用；`create_input_processor(session_key, session, name)` 三参签名在定义与 `create_agent_input_processors` 调用处一致。
+
+## 执行偏差（执行期修正）
+
+- Task 3 同时把 `pub mod abstract_input_processor;` 加进 `pipelines.rs`（计划遗漏）：否则新文件不参与编译，`cargo test` 会跑 0 条用例而不是编译失败。
+- Task 4 的 tick 任务改为**构造时启动**（`new` / `with_client` 里 `tokio::spawn`），去掉了计划中的 `started` 惰性启动：惰性启动会让单测里的 tick 任务读到未初始化的进程级单例而 panic。单测统一用私有 `assemble`（只搭状态、不启动任务），并新增 `with_client` 作为显式客户端的生产构造。
+- `build_context` 里会话配置（`memory_recover`）的读取移到 `locate` 之后、取尾部之前：摘要记忆未配置的单测在触达进程级单例前就拿到 `AbstractError`，避免 panic。
+- 去重修正：`(time, sn)` 去重改为**仅在事件内部**（新增 `merge_tail_records`）。`sn` 在各事件自己的记录文件里独立编号，跨事件相同 `(time, sn)` 是不同记录，原计划的跨事件去重会误删。
+- 单测由 9 个变为 11 个（新增 `merge_tail_records_keeps_channel_only_and_dedups_per_event`，`filter_history` 用例拆开）。

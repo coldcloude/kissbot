@@ -100,8 +100,25 @@ fn join_text(mc: &MessageContent) -> String {
     mc.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
 }
 
-/// 历史记录过滤与去重：只留时间窗内（time >= cutoff）且文本非空的通道记录，
-/// 事件之间按 (time, sn) 去重，并与本批新消息去重（查出的消息和新消息做去重）
+/// 合并各事件结尾的原文副本：只保留通道记录；各事件**内部**按 (time, sn) 去重
+/// （sn 在各事件自己的记录文件里独立编号，跨事件不可比，因此不能跨事件去重）
+fn merge_tail_records(tails: &[Vec<Arc<EventRecord>>]) -> Vec<Arc<ChannelRecord>> {
+    let mut records = Vec::new();
+    for tail in tails {
+        let mut seen: HashSet<(String, u64)> = HashSet::new();
+        for record in tail {
+            if let EventRecord::Channel(channel_record) = record.as_ref() {
+                if seen.insert((channel_record.time.as_str().to_string(), channel_record.sn)) {
+                    records.push(channel_record.clone());
+                }
+            }
+        }
+    }
+    records
+}
+
+/// 历史记录过滤：只留时间窗内（time >= cutoff）且文本非空的记录，按 (time, sn) 升序，
+/// 并与本批新消息去重（查出的消息和新消息做去重）
 fn filter_history(
     records: &[Arc<ChannelRecord>],
     cutoff: &str,
@@ -109,14 +126,10 @@ fn filter_history(
 ) -> Vec<MessageContent> {
     let mut sorted: Vec<&Arc<ChannelRecord>> = records.iter().collect();
     sorted.sort_by(|a, b| (a.time.as_str(), a.sn).cmp(&(b.time.as_str(), b.sn)));
-    let mut seen: HashSet<(String, u64)> = HashSet::new();
     let mut history = Vec::new();
     for record in sorted {
         if record.time.as_str() < cutoff {
             continue; // 时间窗外的记录不取（只取最后一段时间）
-        }
-        if !seen.insert((record.time.as_str().to_string(), record.sn)) {
-            continue; // 事件之间/尾部重叠的同一条记录
         }
         let mc = extract_content(record.user_name.clone(), &record.content, record.is_self);
         if mc.content.is_empty() {
@@ -262,21 +275,18 @@ async fn build_context(
         let node = client.event_summary(agent_id, &role, event.event_id.as_str()).await?;
         summaries.push(node.summary.as_str().to_string());
     }
-    // 3. 各事件结尾若干条原文副本（条数与时间窗取会话的记忆回溯配置；只保留通道记录）
+    // 3. 各事件结尾若干条原文副本（条数与时间窗取会话的记忆回溯配置）
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
-    let mut records: Vec<Arc<ChannelRecord>> = Vec::new();
+    let mut tails: Vec<Vec<Arc<EventRecord>>> = Vec::new();
     for event in located.events.iter() {
         let tail = client
             .event_records_tail(agent_id, &role, event.event_id.as_str(), cfg.memory_count as u64)
             .await?;
-        for record in tail.records.iter() {
-            if let EventRecord::Channel(channel_record) = record.as_ref() {
-                records.push(channel_record.clone());
-            }
-        }
+        tails.push(tail.records);
     }
+    let records = merge_tail_records(&tails);
     // 4. 最后一段时间 + 与本批新消息去重
     let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
         .format("%Y-%m-%d %H:%M:%S")
@@ -412,21 +422,41 @@ mod tests {
     }
 
     #[test]
-    fn filter_history_windows_time_channel_and_dedups_new_messages() {
+    fn filter_history_windows_time_and_dedups_new_messages() {
         let records = vec![
             rec("u1", "old", 0, "2026-09-23 09:00:00", 1),      // 时间窗外
             rec("u1", "dup", 0, "2026-09-23 10:00:01", 2),      // 与本批新消息重复
             rec("agent", "reply", 1, "2026-09-23 10:00:02", 3), // 本人回复：保留
             rec("u2", "new", 0, "2026-09-23 10:00:03", 4),
-            rec("u2", "new", 0, "2026-09-23 10:00:03", 4),      // 同 (time, sn)：去重
         ];
         let new_keys = HashSet::from([message_key("2026-09-23 10:00:01", "u1", "dup", false)]);
         let history = filter_history(&records, "2026-09-23 10:00:00", &new_keys);
-        assert_eq!(history.len(), 2, "窗外 1 条 + 重复 1 条 + 本批重复 1 条都被剔除");
+        assert_eq!(history.len(), 2, "窗外 1 条与本批重复 1 条都被剔除");
         assert!(history[0].is_self, "本人回复保留");
         assert_eq!(history[0].content[0].as_str(), "reply");
         assert!(!history[1].is_self);
         assert_eq!(history[1].content[0].as_str(), "new");
+    }
+
+    #[test]
+    fn merge_tail_records_keeps_channel_only_and_dedups_per_event() {
+        // sn 在各事件的记录文件里独立编号：事件内去重，跨事件即使 (time, sn) 相同也各自保留
+        let e1 = vec![
+            Arc::new(EventRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))),
+            Arc::new(EventRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))), // 同事件内重复
+            Arc::new(EventRecord::Think(Arc::new(kissbot_api::ThinkRecord {
+                reasoning_content: Some(Arc::new("推理".into())),
+                thinking: None,
+                key: Arc::new("k1".into()),
+                time: Arc::new("2026-09-23 10:00:01".into()),
+                sn: 1,
+            }))),
+        ];
+        let e2 = vec![Arc::new(EventRecord::Channel(rec("u2", "b", 0, "2026-09-23 10:00:00", 1)))];
+        let merged = merge_tail_records(&[e1, e2]);
+        assert_eq!(merged.len(), 2, "事件内去重、非通道记录跳过、跨事件不去重");
+        assert_eq!(merged[0].user_name.as_str(), "u1");
+        assert_eq!(merged[1].user_name.as_str(), "u2");
     }
 
     #[test]
