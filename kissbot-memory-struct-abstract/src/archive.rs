@@ -101,18 +101,28 @@ struct Placement {
     records: Vec<RecordEntry>,
 }
 
-/// 把某通道的待归档记录与新消息合并为统一分析批次。
+/// 把某通道的待归档记录与该通道的新消息合并为统一分析批次。
 ///
-/// 与新消息重复的记录保留已存版本、把新消息记为该记录的别名（同一内容只分析一次）；
-/// 其余新消息独立成条。按时间升序排列，同一时刻已存记录在前，各自保持原有顺序。
-pub fn merge_batch(records: &[RecordEntry], messages: &[&LocateMessage]) -> Vec<BatchItem> {
+/// 调用方必须已**按通道分开调用**（归档与定位都逐通道进行）：批次内条目同属 `channel`，
+/// 因此判重只比 `msg_id`。与新消息重复的记录保留已存版本、把新消息记为该记录的别名
+/// （同一条消息只分析一次）；其余新消息独立成条。按时间升序排列，同一时刻已存记录在前。
+pub fn merge_batch(channel: &ChannelKey, records: &[RecordEntry], messages: &[&LocateMessage]) -> Vec<BatchItem> {
+    // 通道记录（含思考/工具占位记录）必须属于本通道；思考/工具记录本身没有通道身份，按 key 归属后随批次传入
+    debug_assert!(
+        records.iter().all(|record| record.channel_key().is_none_or(|key| key == *channel)),
+        "merge_batch 只接受同一通道的记录"
+    );
+    debug_assert!(
+        messages.iter().all(|message| &message.channel() == channel),
+        "merge_batch 只接受同一通道的新消息"
+    );
     let mut items: Vec<BatchItem> = records
         .iter()
         .map(|record| BatchItem::Stored { record: record.clone(), aliases: Vec::new() })
         .collect();
     let mut taken = vec![false; records.len()];
     for (index, message) in messages.iter().enumerate() {
-        // 一条已存记录只吸收一条重复的新消息：同一内容在两侧都出现多次时，多出来的新消息按新消息处理
+        // 一条已存记录只吸收一条重复的新消息：同一条消息在两侧都出现多次时，多出来的新消息按新消息处理
         let matched = records
             .iter()
             .enumerate()
@@ -131,8 +141,8 @@ pub fn merge_batch(records: &[RecordEntry], messages: &[&LocateMessage]) -> Vec<
     items
 }
 
-/// 新消息与已存记录是否同一条：通道三元组 + `msg_id` 全同；`msg_id` 为空
-/// （思考/工具占位记录、旧记录）不参与去重、原样保留。
+/// 批次内新消息与已存记录是否同一条：只比 `msg_id`（批次已按通道切分，通道无需再比）；
+/// `msg_id` 为空（思考/工具占位记录、旧记录）不参与去重、原样保留。
 fn duplicates(record: &RecordEntry, message: &LocateMessage) -> bool {
     let RecordBody::Channel(channel) = &record.body else {
         return false;
@@ -140,7 +150,7 @@ fn duplicates(record: &RecordEntry, message: &LocateMessage) -> bool {
     if message.msg_id.is_empty() || channel.msg_id.is_empty() {
         return false;
     }
-    ChannelKey::from(channel.as_ref()) == message.channel() && channel.msg_id == message.msg_id
+    channel.msg_id == message.msg_id
 }
 
 /// 归档器
@@ -549,6 +559,11 @@ mod tests {
         assert_eq!(text, "[0] [2026-09-22 10:00:00] alice: a\n[1] [2026-09-22 10:01:00] alice: b");
     }
 
+    /// 批次所属通道（与各测试构造的记录/消息一致）
+    fn channel_key() -> ChannelKey {
+        ChannelKey::new("web", "self", "g1")
+    }
+
     #[test]
     fn merge_batch_dedups_messages_against_records() {
         let records = vec![
@@ -558,7 +573,7 @@ mod tests {
         // 新消息：msg_id 与已存 A 相同（内容 / 时间 / 发送者都可以不同）；B 的 msg_id 是新的
         let a = message_with_id("2099-01-01 23:59:59", "m1", "内容不同也判为同一条");
         let b = message_with_id("2099-01-01 10:03:00", "m3", "B");
-        let items = merge_batch(&records, &[&a, &b]);
+        let items = merge_batch(&channel_key(), &records, &[&a, &b]);
 
         assert_eq!(items.len(), 3, "重复的新消息不单独成条");
         let text = render_batch(&items);
@@ -586,24 +601,21 @@ mod tests {
     }
 
     #[test]
-    fn merge_batch_dedups_by_channel_and_msg_id() {
+    fn merge_batch_dedups_by_msg_id() {
         let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
 
-        // 通道三元组 + msg_id 相同即同一条：内容 / 时间 / 发送者 / is_self 都不参与判定
+        // 批次已按通道切分，判重只比 msg_id：内容 / 时间 / 发送者 / is_self 都不参与
         let same = message_with_id("2099-01-01 23:00:00", "m1", "另一个内容");
-        assert_eq!(merge_batch(&records, &[&same]).len(), 1, "通道 + msg_id 相同即同一条");
+        assert_eq!(merge_batch(&channel_key(), &records, &[&same]).len(), 1, "msg_id 相同即同一条");
 
         let other = message_with_id("2099-01-01 10:00:00", "m2", "A");
-        assert_eq!(merge_batch(&records, &[&other]).len(), 2, "msg_id 不同不去重");
+        assert_eq!(merge_batch(&channel_key(), &records, &[&other]).len(), 2, "msg_id 不同不去重");
         let other = message_with_id("2099-01-01 10:00:00", "", "A");
-        assert_eq!(merge_batch(&records, &[&other]).len(), 2, "新消息 msg_id 为空时不参与去重");
-        let mut other = message_with_id("2099-01-01 10:00:00", "m1", "A");
-        other.self_user_id = Arc::new("self2".into());
-        assert_eq!(merge_batch(&records, &[&other]).len(), 2, "不同通道的同 msg_id 不去重");
+        assert_eq!(merge_batch(&channel_key(), &records, &[&other]).len(), 2, "新消息 msg_id 为空时不参与去重");
 
         // 已存记录 msg_id 为空（旧记录、思考/工具占位记录）不参与去重、原样保留
         let legacy = vec![channel("2099-01-01 10:00:00", 1, 0, "A")];
-        assert_eq!(merge_batch(&legacy, &[&same]).len(), 2, "已存记录 msg_id 为空时不参与去重");
+        assert_eq!(merge_batch(&channel_key(), &legacy, &[&same]).len(), 2, "已存记录 msg_id 为空时不参与去重");
 
         // 思考/工具记录不参与新消息去重（body 不是通道记录）
         let time = Arc::new("2099-01-01 10:00:00".to_string());
@@ -619,7 +631,18 @@ mod tests {
                 sn: 1,
             })),
         };
-        assert_eq!(merge_batch(&[think], &[&same]).len(), 2, "非通道记录不去重");
+        assert_eq!(merge_batch(&channel_key(), &[think], &[&same]).len(), 2, "非通道记录不去重");
+    }
+
+    /// 调用方必须按通道分开调用：混入其他通道的记录/消息会被契约断言拦住
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "只接受同一通道")]
+    fn merge_batch_rejects_mixed_channels() {
+        let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
+        let mut foreign = message_with_id("2099-01-01 10:00:00", "m1", "A");
+        foreign.self_user_id = Arc::new("self2".into());
+        merge_batch(&channel_key(), &records, &[&foreign]);
     }
 
     #[test]
@@ -627,7 +650,7 @@ mod tests {
         let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
         let first = message_with_id("2099-01-01 10:00:00", "m1", "A");
         let second = message_with_id("2099-01-01 10:01:00", "m1", "A");
-        let items = merge_batch(&records, &[&first, &second]);
+        let items = merge_batch(&channel_key(), &records, &[&first, &second]);
 
         assert_eq!(items.len(), 2, "一条已存记录只吸收一条重复新消息，多出来的按新消息处理");
         match &items[0] {
@@ -645,7 +668,7 @@ mod tests {
         let records = vec![channel("2099-01-01 10:00:00", 1, 0, "已存")];
         let earlier = message("2099-01-01 09:00:00", "更早的新消息");
         let same_time = message("2099-01-01 10:00:00", "同一时刻的新消息");
-        let items = merge_batch(&records, &[&earlier, &same_time]);
+        let items = merge_batch(&channel_key(), &records, &[&earlier, &same_time]);
 
         let times: Vec<&str> = items.iter().map(BatchItem::time).collect();
         assert_eq!(times, vec!["2099-01-01 09:00:00", "2099-01-01 10:00:00", "2099-01-01 10:00:00"]);

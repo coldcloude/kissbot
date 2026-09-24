@@ -133,9 +133,9 @@ impl AbstractService {
                 }
                 continue;
             }
-            // 有定位请求的新消息：与该通道的待归档记录去重后一并分析
+            // 有定位请求的新消息：与该通道的待归档记录去重后一并分析（按通道分开调用）
             let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-            let items = merge_batch(&pending, &channel_messages);
+            let items = merge_batch(&channel, &pending, &channel_messages);
             for chunk in items.chunks(chunk_size) {
                 let (outcome, groups) = self.archiver.archive_items(handle, state, &channel, chunk).await?;
                 info!(

@@ -204,7 +204,7 @@ cat ../workspace/memory-data/0/memory-struct-abstract/dev/current.json | jq
 
 # 定位：一批消息（可跨通道）涉及哪些事件（只返回事件标识与分组）
 # 每条消息的通道三元组（messenger_id / self_user_id / group_id）决定用哪个通道的当前事件指针
-# msg_id 与已存记录按「通道三元组 + msg_id」去重：重复的消息用已存版本分析一次，只返回所属事件
+# 归档与定位都按通道分开处理；同一通道批次内 msg_id 与已存记录相同即同一条：重复的消息用已存版本分析一次，只返回所属事件
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","messages":[
         {"msg_id":"m-1","time":"2026-09-22 13:48:37","user_name":"alice","is_self":0,"messenger_id":"web","self_user_id":"self1","group_id":"g1","content":{"msg_type":"Text","data":"之前聊到哪了"}},
@@ -233,6 +233,6 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 1. **通知 → 懒处理**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后调用任意查询（如 `/abstract/tree/get`）→ memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{role}/` 下生成 `tree.json` / `current.json` / `watermark.json` 与 `events/{event-id}/{channel|think|tool-call|tool-result}-records.jsonl`
 2. **懒处理闸门**：没有新数据时反复调用查询不会重复归档（日志不出现新的 `process` 行）
 3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部事件与分组（新话题的组不带 `event_id`）。摘要与原文再用 `event/summary`、`event/records*` 取
-4. **定位与懒处理合并**：定位前该通道还有待归档记录（通知已到）时，日志只出现一次 `process … (+N new messages)`，且把这些记录与新消息按「通道三元组 + `msg_id`」去重后一并分析：重复的新消息不重复送模型、新消息不落盘（事件的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
+4. **定位与懒处理合并**：定位前该通道还有待归档记录（通知已到）时，日志只出现一次 `process … (+N new messages)`，且把这些记录与新消息按通道分别合并、在单通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（事件的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
 5. **事件模式**：`role` 以第一个 `-` 分隔出的后半段为事件标识（如 `dev-e1`）时，作用域只保留一个顶层事件，不参与判定
 6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{role}.jsonl` 累积该作用域的判定上下文
