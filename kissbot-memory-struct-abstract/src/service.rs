@@ -1045,7 +1045,7 @@ mod tests {
         query(&f, "dev").await;
         assert_eq!(current_event(&f, "dev", &a).await.as_deref(), Some("e1"));
 
-        // 待归档记录 C 与新消息 B 分属两组：C 走分层归并新建事件，B 只读下探命中 e1
+        // 待归档记录 C 与新消息 B 分属两组：两组都走同一套逐层判定，只有有记录的 C 会落地
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题").await;
         notify(&f, "dev", &a).await;
         f.model.push_groups(vec![
@@ -1054,12 +1054,21 @@ mod tests {
         ]);
         f.model.push_level(LevelDecision::New);
         f.model.push_level(LevelDecision::Merge("e1".into()));
+        let before = f.model.prompts().len();
         let response = f
             .service
             .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "延续旧话题", "")]))
             .await
             .unwrap();
 
+        let level_prompts = f
+            .model
+            .prompts()
+            .into_iter()
+            .skip(before)
+            .filter(|prompt| prompt.contains("当层事件"))
+            .count();
+        assert_eq!(level_prompts, 2, "有记录的组与只定位的组走同一套逐层判定");
         assert_eq!(tree_len(&f, "dev").await, 2, "只含新消息的组不新建事件");
         assert_eq!(node(&f, "dev", "e2").await.unwrap().record_count, 1, "待归档记录落到新事件");
         assert_eq!(node(&f, "dev", "e1").await.unwrap().record_count, 1, "新消息不落盘");

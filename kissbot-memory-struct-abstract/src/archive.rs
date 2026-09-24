@@ -105,9 +105,19 @@ pub struct PlaceGroup {
     pub event_id: Option<String>,
 }
 
-/// 分组落位（内部）：批次内条目下标、待归档记录与所属事件
+/// 一个组的落点判定（只读结论，尚未落地）
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GroupVerdict {
+    /// 组里的内容归入该已有事件
+    Event(String),
+    /// 组里的内容需要在 `parent`（`None` 为顶层）下新建叶子事件；
+    /// 只有组里确实有待归档记录时，落盘阶段才会真的建出这个事件
+    New { parent: Option<String> },
+}
+
+/// 分组落位（内部）：落点判定 + 批次内条目下标 + 该组的待归档记录
 struct Placement {
-    event_id: Option<String>,
+    verdict: GroupVerdict,
     items: Vec<usize>,
     records: Vec<RecordEntry>,
 }
@@ -257,7 +267,7 @@ impl Archiver {
         let now = crate::records::now_string();
         let scope = handle.id.clone();
 
-        // 1. 分组落位：得到「事件 → 本批落入该事件的记录」与各组的消息映射（按组序）
+        // 1. 定位（只读）：逐组判定落点，得到「已有事件 / 需在何处新建」，此时不改树
         let placements = match handle.mode {
             // 事件模式：作用域整体一个顶层叶子事件，不分组、不参与判定
             EventMode::Event => {
@@ -267,16 +277,19 @@ impl Archiver {
                     .ok_or_else(|| Error::StateError(format!("事件模式作用域缺少事件标识: {}", scope)))?;
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let records = stored_records(items, &indices);
-                // 有记录要落盘才新建事件；只定位新消息时不新建事件（定位不产生记忆）
-                if items.iter().any(BatchItem::is_stored) && !state.tree.contains(&event_id) {
-                    state.tree.create_node(&event_id, None, EventMode::Event, &now);
-                }
-                let event_id = state.tree.contains(&event_id).then_some(event_id);
-                vec![Placement { event_id, items: indices, records }]
+                let verdict = if state.tree.contains(&event_id) {
+                    GroupVerdict::Event(event_id)
+                } else {
+                    // 事件还不存在：有记录要落盘时由落盘阶段建出作用域事件，只定位时不落地
+                    GroupVerdict::New { parent: None }
+                };
+                vec![Placement { verdict, items: indices, records }]
             }
             EventMode::Role => self.group_and_place(&scope, state, channel, items).await?,
         };
 
+        // 2. 存储（只有组里确实有待归档记录时才落地）：需要新建的此刻建树，
+        //    记录按事件聚合，随后摘要重算、追加原文副本、应用内存状态、推进水位
         let mut new_records: HashMap<String, Vec<RecordEntry>> = HashMap::new();
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut event_ids: Vec<String> = Vec::new();
@@ -285,9 +298,15 @@ impl Archiver {
             let mut messages: Vec<usize> =
                 placement.items.iter().flat_map(|index| items[*index].messages().iter().copied()).collect();
             messages.sort_unstable();
-            groups.push(PlaceGroup { messages, event_id: placement.event_id.clone() });
-            // 只含新消息的组不落盘、不推进任何状态
-            let Some(event_id) = placement.event_id.as_ref() else {
+            let event_id = match &placement.verdict {
+                GroupVerdict::Event(event_id) => Some(event_id.clone()),
+                // 只定位的组不落地：用父事件代表该话题，顶层即「无事件」
+                GroupVerdict::New { parent } if placement.records.is_empty() => parent.clone(),
+                // 有记录要落盘：此时才真正建出事件（角色模式新建叶子，事件模式建作用域事件）
+                GroupVerdict::New { parent } => Some(self.create_event(handle, &mut state.tree, parent.as_deref(), &now)?),
+            };
+            groups.push(PlaceGroup { messages, event_id: event_id.clone() });
+            let Some(event_id) = event_id else {
                 debug_assert!(placement.records.is_empty(), "没有事件的组只可能只含新消息");
                 continue;
             };
@@ -296,13 +315,13 @@ impl Archiver {
             }
             new_records.entry(event_id.clone()).or_default().extend(placement.records.iter().cloned());
             touched.insert(event_id.clone());
-            if !event_ids.contains(event_id) {
-                event_ids.push(event_id.clone());
+            if !event_ids.contains(&event_id) {
+                event_ids.push(event_id);
             }
         }
         let records: Vec<RecordEntry> = items.iter().filter_map(BatchItem::record).cloned().collect();
 
-        // 2. 摘要重算：叶子在前（自底向上），父事件摘要涵盖自身记录与子事件摘要；全部成功后落盘
+        // 3. 摘要重算：叶子在前（自底向上），父事件摘要涵盖自身记录与子事件摘要；全部成功后落盘
         let mut summaries: HashMap<String, String> = HashMap::new();
         for id in self.recompute_order(&state.tree, &touched) {
             if let Some(summary) = self.compute_summary(handle, state, &id, &new_records, &summaries).await? {
@@ -310,12 +329,12 @@ impl Archiver {
             }
         }
 
-        // 3. 落盘原文副本（按事件聚合）
+        // 4. 落盘原文副本（按事件聚合）
         for (event_id, group) in &new_records {
             append_event_records(&handle.event_dir(event_id), group).await?;
         }
 
-        // 4. 内存：应用记录与摘要；当前事件指针指向最后一批有内容的记录落入的事件
+        // 5. 内存：应用记录与摘要；当前事件指针指向最后一批有内容的记录落入的事件
         for (event_id, group) in &new_records {
             state.tree.apply_records(event_id, group, &now);
         }
@@ -330,12 +349,13 @@ impl Archiver {
         Ok((ArchiveOutcome { archived: records.len() as u64, event_ids }, groups))
     }
 
-    /// 角色模式的分组落位：第 1 轮分组（并标记当前事件组），当前事件组直接并入、
-    /// 其余组各自走第 2 轮起的逐层判定；只含新消息的组同样逐层判定，只是不允许新建事件。
+    /// 角色模式的分组与定位（只读）：第 1 轮按事件分组（并标记当前事件组），
+    /// 当前事件组直接命中当前事件，其余组各自逐层判定落点；判定不改树，
+    /// 「要不要落地」由落盘阶段按「组里有没有待归档记录」决定。
     async fn group_and_place(
         &self,
         scope: &ScopeId,
-        state: &mut ScopeState,
+        state: &ScopeState,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<Vec<Placement>> {
@@ -349,43 +369,36 @@ impl Archiver {
             let group_items = group.messages.clone();
             let records = stored_records(items, &group_items);
             let text = render_group(items, &group_items);
-            let event_id = if records.is_empty() {
-                // 组里只有新消息：只定位、不落盘——命中当前事件，或逐层判定（不允许新建，未命中即新话题）
-                match current.clone().filter(|_| group.is_current) {
-                    Some(current) => Some(current),
-                    None => self.descend(scope, &mut state.tree, &text, None, false).await?,
+            let verdict = if group.is_current {
+                match current.clone() {
+                    // 标记为当前事件的组直接命中该通道当前事件
+                    Some(current) => GroupVerdict::Event(current),
+                    // 没有当前事件：只定位的组容忍（退回逐层判定）；有记录要落盘的组无法落位，按失败重试
+                    None if records.is_empty() => self.decide_placement(scope, &state.tree, &text, None).await?,
+                    None => {
+                        return Err(Error::ModelApiError(format!(
+                            "第 1 轮把分组标记为当前事件，但通道 {} 没有当前事件（作用域 {}）",
+                            channel.messenger_id, scope
+                        )))
+                    }
                 }
-            } else if group.is_current {
-                // 标记为当前事件的组直接并入当前事件
-                Some(current.clone().ok_or_else(|| {
-                    Error::ModelApiError(format!(
-                        "第 1 轮把分组标记为当前事件，但通道 {} 没有当前事件（作用域 {}）",
-                        channel.messenger_id, scope
-                    ))
-                })?)
             } else {
-                // 其余组以组为单位自顶层逐层归并（未命中就在当层新建叶子）
-                self.descend(scope, &mut state.tree, &text, None, true).await?
+                self.decide_placement(scope, &state.tree, &text, None).await?
             };
-            placements.push(Placement { event_id, items: group_items, records });
+            placements.push(Placement { verdict, items: group_items, records });
         }
         Ok(placements)
     }
 
-    /// 自 `parent`（None 为顶层）起逐层判定当层事件，两种模式共用同一套提示词与解析：
-    ///
-    /// - `create = true`（组里有待归档记录）：未命中就在当层新建叶子事件，**必有落点**；
-    /// - `create = false`（只有新消息、仅定位）：不新建事件——顶层未命中返回 `None`（新话题），
-    ///   下探之后未命中返回该父事件（整体话题的代表）。
-    async fn descend(
+    /// 逐层判定一个组的落点（只读）：命中叶子事件即 [`GroupVerdict::Event`]；
+    /// 当层未命中（或命中非叶子后其子层都未命中）即 [`GroupVerdict::New`]。
+    async fn decide_placement(
         &self,
         scope: &ScopeId,
-        tree: &mut Tree,
+        tree: &Tree,
         text: &str,
         parent: Option<String>,
-        create: bool,
-    ) -> Result<Option<String>> {
-        let now = crate::records::now_string();
+    ) -> Result<GroupVerdict> {
         let mut parent = parent;
         let mut level = match &parent {
             Some(id) => tree.children_ids(id),
@@ -394,13 +407,11 @@ impl Archiver {
 
         for _ in 0..self.max_depth {
             if level.is_empty() {
-                return Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent });
+                return Ok(GroupVerdict::New { parent });
             }
             let briefs: Vec<EventBrief> = tree.briefs(&level);
             match self.model.decide_level(scope, text, &briefs).await? {
-                LevelDecision::New => {
-                    return Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent });
-                }
+                LevelDecision::New => return Ok(GroupVerdict::New { parent }),
                 LevelDecision::Merge(event_id) => {
                     if !tree.contains(&event_id) {
                         return Err(Error::ModelApiError(format!(
@@ -409,7 +420,7 @@ impl Archiver {
                         )));
                     }
                     if tree.is_leaf(&event_id) {
-                        return Ok(Some(event_id));
+                        return Ok(GroupVerdict::Event(event_id));
                     }
                     // 非叶子：下潜到其子层继续判定
                     level = tree.children_ids(&event_id);
@@ -418,9 +429,24 @@ impl Archiver {
             }
         }
 
-        // 层数达到上限：可写时在当层新开叶子，只定位时返回当前父事件（防御模型环路）
+        // 层数达到上限：落在当前父事件之下（防御模型环路）
         warn!("[abstract] reach max event depth {} for scope {}", self.max_depth, scope);
-        Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent })
+        Ok(GroupVerdict::New { parent })
+    }
+
+    /// 落地新建事件：角色模式在该 `parent` 下新建叶子，事件模式建出作用域固定事件
+    fn create_event(&self, handle: &ScopeHandle, tree: &mut Tree, parent: Option<&str>, now: &str) -> Result<String> {
+        if handle.mode == EventMode::Event {
+            let event_id = handle
+                .event_id
+                .clone()
+                .ok_or_else(|| Error::StateError(format!("事件模式作用域缺少事件标识: {}", handle.id)))?;
+            if !tree.contains(&event_id) {
+                tree.create_node(&event_id, None, EventMode::Event, now);
+            }
+            return Ok(event_id);
+        }
+        Ok(new_leaf(tree, parent, now))
     }
 
     /// 摘要重算顺序：受影响的叶子在前、祖先在后
