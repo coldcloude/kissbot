@@ -196,6 +196,13 @@ impl ScopeHandle {
             .collect();
         write_json(&self.watermark_path(), &serde_json::json!({ "channels": channels })).await
     }
+
+    /// 持久化作用域状态：事件树 + 各通道当前事件指针 + 各通道水位（归档逐块落盘用）
+    pub async fn save_state(&self, state: &ScopeState) -> Result<()> {
+        self.save_tree(&state.tree).await?;
+        self.save_current(&state.current_events).await?;
+        self.save_watermark(&state.watermarks).await
+    }
 }
 
 async fn write_json(path: &Path, value: &Value) -> Result<()> {

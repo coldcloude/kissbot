@@ -36,6 +36,17 @@ pub struct ArchiveOutcome {
     pub event_ids: Vec<String>,
 }
 
+/// 一次归档调用的结果（记录 + 只用于定位的新消息）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveResult {
+    /// 各分块的归档结果（按块序）
+    pub outcomes: Vec<ArchiveOutcome>,
+    /// 消息分组（`PlaceGroup::messages` 是传入 `messages` 的下标）
+    pub groups: Vec<PlaceGroup>,
+    /// 本次并入分析的新消息条数（与已存记录重复的不计）
+    pub new_messages: usize,
+}
+
 /// 统一分析批次的一个条目
 #[derive(Debug, Clone)]
 pub enum BatchItem {
@@ -157,36 +168,65 @@ fn duplicates(record: &RecordEntry, message: &LocateMessage) -> bool {
 pub struct Archiver {
     model: Arc<dyn DecisionModel>,
     max_depth: usize,
+    /// 单通道单次分析（分块）的条目上限
+    max_batch_records: usize,
 }
 
 impl Archiver {
-    pub fn new(model: Arc<dyn DecisionModel>, max_depth: usize) -> Self {
-        Self { model, max_depth }
+    pub fn new(model: Arc<dyn DecisionModel>, max_depth: usize, max_batch_records: usize) -> Self {
+        Self { model, max_depth, max_batch_records: max_batch_records.max(1) }
     }
 
-    /// 归档某通道待处理的全部记录（只含待归档记录，不含只用于定位的新消息）。
-    pub async fn archive_pending(
+    /// 归档某通道的待处理记录，并（可选）一并定位本批新消息。
+    ///
+    /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息结果（`flush` / 手动触发 / 重建走这条）；
+    /// - `messages` 非空：先按 `msg_id`（单通道批次内）与记录**去重合并**为一个批次一起分析：
+    ///   记录照常落盘归档，消息只定位、不落盘、不新建事件，归档完成后按 [`PlaceGroup`] 返回
+    ///   它们所属的事件（`PlaceGroup::messages` 是 `messages` 里的下标）。
+    ///
+    /// 记录按 `max_batch_records` 分块，逐块归档并落盘：一块失败时已完成的块保留进度，
+    /// 失败块回到处理前状态，留待下次查询重试。返回（各块归档结果，消息分组，并入的新消息条数）。
+    pub async fn archive(
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
         channel: &ChannelKey,
         records: &[RecordEntry],
-    ) -> Result<ArchiveOutcome> {
-        let items: Vec<BatchItem> = records
-            .iter()
-            .map(|record| BatchItem::Stored { record: record.clone(), aliases: Vec::new() })
-            .collect();
-        self.archive_items(handle, state, channel, &items).await.map(|(outcome, _)| outcome)
+        messages: &[&LocateMessage],
+    ) -> Result<ArchiveResult> {
+        if records.is_empty() && messages.is_empty() {
+            return Ok(ArchiveResult::default());
+        }
+        // 空树且没有待归档记录：只涉及新消息、没有事件可比对，整批一组（不调模型、不落盘、不新建事件）
+        if records.is_empty() && state.tree.is_empty() {
+            return Ok(ArchiveResult {
+                outcomes: Vec::new(),
+                groups: vec![PlaceGroup { messages: (0..messages.len()).collect(), event_id: None }],
+                new_messages: messages.len(),
+            });
+        }
+
+        let items = merge_batch(channel, records, messages);
+        let new_messages = items.iter().filter(|item| !item.is_stored()).count();
+        let mut outcomes = Vec::new();
+        let mut groups = Vec::new();
+        for chunk in items.chunks(self.max_batch_records) {
+            let (outcome, chunk_groups) = self.archive_chunk(handle, state, channel, chunk).await?;
+            if outcome.archived > 0 {
+                // 逐块落盘：块失败时前面的进度不回退，失败块由 archive_chunk 恢复内存状态
+                handle.save_state(state).await?;
+            }
+            outcomes.push(outcome);
+            groups.extend(chunk_groups);
+        }
+        Ok(ArchiveResult { outcomes, groups, new_messages })
     }
 
-    /// 分析并归档一个批次：已存记录落盘归档，只用于定位的新消息只产出所属事件。
-    ///
-    /// 与 [`Self::archive_pending`] 同一套分组与落位；区别是批次里可能夹带新消息，
-    /// 且只含新消息的组按定位处理（命中当前事件或只读下探，不新建事件）。
+    /// 分析并归档一个分块：批次条目里的记录落盘归档，只用于定位的新消息只产出所属事件。
     ///
     /// 所有模型调用都在落盘之前完成；任一模型调用失败时恢复内存状态，磁盘与水位保持不变，
     /// 这批条目留待下次查询重试（见 spec：解析失败按失败处理并保留原状态）。
-    pub async fn archive_items(
+    async fn archive_chunk(
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
@@ -197,7 +237,7 @@ impl Archiver {
             return Ok((ArchiveOutcome { archived: 0, event_ids: Vec::new() }, Vec::new()));
         }
         let snapshot = state.clone();
-        match self.archive_items_inner(handle, state, channel, items).await {
+        match self.archive_chunk_inner(handle, state, channel, items).await {
             Ok(result) => Ok(result),
             Err(e) => {
                 // 判定阶段会在内存树上新建节点：失败时回到调用前状态，避免留下空节点
@@ -207,7 +247,7 @@ impl Archiver {
         }
     }
 
-    async fn archive_items_inner(
+    async fn archive_chunk_inner(
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
@@ -225,12 +265,14 @@ impl Archiver {
                     .event_id
                     .clone()
                     .ok_or_else(|| Error::StateError(format!("事件模式作用域缺少事件标识: {}", scope)))?;
-                if !state.tree.contains(&event_id) {
-                    state.tree.create_node(&event_id, None, EventMode::Event, &now);
-                }
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let records = stored_records(items, &indices);
-                vec![Placement { event_id: Some(event_id), items: indices, records }]
+                // 有记录要落盘才新建事件；只定位新消息时不新建事件（定位不产生记忆）
+                if items.iter().any(BatchItem::is_stored) && !state.tree.contains(&event_id) {
+                    state.tree.create_node(&event_id, None, EventMode::Event, &now);
+                }
+                let event_id = state.tree.contains(&event_id).then_some(event_id);
+                vec![Placement { event_id, items: indices, records }]
             }
             EventMode::Role => self.group_and_place(&scope, state, channel, items).await?,
         };
@@ -684,7 +726,7 @@ mod tests {
         tree.create_node("e2", Some("e1"), EventMode::Role, "t");
         tree.create_node("e3", Some("e2"), EventMode::Role, "t");
         let touched: BTreeSet<String> = ["e3".to_string()].into_iter().collect();
-        let archiver = Archiver::new(Arc::new(crate::stub::StubModel::new()), 4);
+        let archiver = Archiver::new(Arc::new(crate::stub::StubModel::new()), 4, 200);
         let order = archiver.recompute_order(&tree, &touched);
         assert_eq!(order, vec!["e3".to_string(), "e2".to_string(), "e1".to_string()]);
     }
