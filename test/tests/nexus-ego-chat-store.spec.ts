@@ -90,10 +90,22 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const userMsgs = recs.filter((r) => r.is_self === 0);
   expect(userMsgs.length).toBeGreaterThanOrEqual(1);
   expect(userMsgs[userMsgs.length - 1].user_id).toBe('u2');
-  // agent 回复：以绑定用户 u1 身份发送，is_self=1
+  // agent 回复：以绑定用户 u1 身份发送，is_self=1（区分文本消息与思考/工具占位记录）
   const selfMsgs = recs.filter((r) => r.is_self === 1);
   expect(selfMsgs.length).toBeGreaterThanOrEqual(1);
-  expect(selfMsgs[selfMsgs.length - 1].user_id).toBe('u1');
+  const selfTexts = selfMsgs.filter((r) => r.content?.msg_type === 'Text');
+  expect(selfTexts.length).toBeGreaterThanOrEqual(1);
+  expect(selfTexts[selfTexts.length - 1].user_id).toBe('u1');
+  // 消息标识：上行来自 incoming_message、下行来自 outgoing_message_response，均写入记录（去重用）
+  const userMsgId = userMsgs[userMsgs.length - 1].msg_id;
+  const selfMsgId = selfTexts[selfTexts.length - 1].msg_id;
+  expect(userMsgId, '上行记录的 msg_id 应非空').toBeTruthy();
+  expect(selfMsgId, '下行记录的 msg_id 应非空').toBeTruthy();
+  expect(userMsgId).not.toBe(selfMsgId);
+  // 思考/工具占位记录：msg_id 留空（不参与去重）
+  for (const record of selfMsgs.filter((r) => r.content?.msg_type !== 'Text')) {
+    expect(record.msg_id, `占位记录 ${record.content?.msg_type} 的 msg_id 应为空`).toBe('');
+  }
 }
 
 // ==================== out_channel 路由测试辅助 ====================

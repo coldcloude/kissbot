@@ -29,9 +29,6 @@ use crate::{
 /// tick 间隔（秒）：每秒定时检测是否有 channel 已超时
 const TICK_INTERVAL_SECS: u64 = 1;
 
-/// 消息去重键：时间 + 发送者名 + 文本 + 是否本人（同一条消息在两个来源里等价）
-type MessageKey = (String, String, String, bool);
-
 /// 单个 channel 的待处理批次
 struct PendingBatch {
     events: Vec<Arc<IncomingMessageEvent>>,
@@ -76,6 +73,7 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
         time: event.incoming_message.time.clone(),
         user_name: event.incoming_message.user_name.clone(),
         is_self: 0,
+        msg_id: event.incoming_message.msg_id.clone(),
         messenger_id: event.incoming_message.messenger_id.clone(),
         self_user_id: event.recipient_user_id.clone(),
         group_id: event.incoming_message.group_id.clone(),
@@ -83,21 +81,35 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
     }
 }
 
-/// 一条消息的去重键（时间 + 发送者 + 文本 + is_self 全同即视为同一条）
-fn message_key(time: &str, user_name: &str, text: &str, is_self: bool) -> MessageKey {
-    (time.to_string(), user_name.to_string(), text.to_string(), is_self)
+/// 一条消息的去重键：通道三元组 + msg_id（同一条消息在两个来源里等价）
+type MessageKey = (String, String, String, String);
+
+/// 去重键：msg_id 为空（思考/工具记录、旧记录）时返回 None，不参与去重、原样保留
+fn message_key(messenger_id: &str, self_user_id: &str, group_id: &str, msg_id: &str) -> Option<MessageKey> {
+    if msg_id.is_empty() {
+        return None;
+    }
+    Some((messenger_id.to_string(), self_user_id.to_string(), group_id.to_string(), msg_id.to_string()))
 }
 
-/// 新消息的去重键（与通道记录的可比字段对齐：时间 / 发送者 / 文本 / is_self）
-fn new_message_key(event: &IncomingMessageEvent) -> MessageKey {
-    let mc = extract_content(event.incoming_message.user_name.clone(), &event.incoming_message.content, 0);
-    let text = join_text(&mc);
-    message_key(event.incoming_message.time.as_str(), mc.user_name.as_str(), &text, false)
+/// 新消息的去重键
+fn new_message_key(event: &IncomingMessageEvent) -> Option<MessageKey> {
+    message_key(
+        event.incoming_message.messenger_id.as_str(),
+        event.recipient_user_id.as_str(),
+        event.incoming_message.group_id.as_str(),
+        event.incoming_message.msg_id.as_str(),
+    )
 }
 
-/// 文本拼接（Multi 拆出的多个 Text 段以 \n 连接，与 pack_batch 一致）
-fn join_text(mc: &MessageContent) -> String {
-    mc.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
+/// 通道记录的去重键
+fn record_message_key(record: &ChannelRecord) -> Option<MessageKey> {
+    message_key(
+        record.messenger_id.as_str(),
+        record.self_user_id.as_str(),
+        record.group_id.as_str(),
+        record.msg_id.as_str(),
+    )
 }
 
 /// 合并各事件结尾的原文副本：只保留通道记录；各事件**内部**按 (time, sn) 去重
@@ -118,7 +130,7 @@ fn merge_tail_records(tails: &[Vec<Arc<EventRecord>>]) -> Vec<Arc<ChannelRecord>
 }
 
 /// 历史记录过滤：只留时间窗内（time >= cutoff）且文本非空的记录，按 (time, sn) 升序，
-/// 并与本批新消息去重（查出的消息和新消息做去重）
+/// 并与本批新消息按「通道三元组 + msg_id」去重（msg_id 为空的记录不参与去重，原样保留）
 fn filter_history(
     records: &[Arc<ChannelRecord>],
     cutoff: &str,
@@ -135,8 +147,7 @@ fn filter_history(
         if mc.content.is_empty() {
             continue; // 非文本记录跳过
         }
-        let text = join_text(&mc);
-        if new_keys.contains(&message_key(record.time.as_str(), record.user_name.as_str(), &text, record.is_self > 0)) {
+        if record_message_key(record).map(|key| new_keys.contains(&key)).unwrap_or(false) {
             continue; // 与本批新消息重复：本批会进 pipeline，历史里去掉
         }
         history.push(mc);
@@ -291,7 +302,7 @@ async fn build_context(
     let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let new_keys: HashSet<MessageKey> = events.iter().map(|e| new_message_key(e.as_ref())).collect();
+    let new_keys: HashSet<MessageKey> = events.iter().filter_map(|e| new_message_key(e.as_ref())).collect();
     let history = filter_history(&records, &cutoff, &new_keys);
     // 5. 组装上下文（摘要在前，历史在后）
     Ok(compose_context(&summaries, &history))
@@ -326,10 +337,14 @@ mod tests {
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
+        ev_with_id(messenger, self_user, group, name, text, time, "m")
+    }
+
+    fn ev_with_id(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str, msg_id: &str) -> Arc<IncomingMessageEvent> {
         Arc::new(IncomingMessageEvent {
             recipient_user_id: Arc::new(self_user.into()),
             incoming_message: Arc::new(IncomingMessage {
-                msg_id: Arc::new("m".into()),
+                msg_id: Arc::new(msg_id.into()),
                 messenger_id: Arc::new(messenger.into()),
                 user_id: Arc::new("u".into()),
                 group_id: Arc::new(group.into()),
@@ -343,17 +358,26 @@ mod tests {
     }
 
     fn ev(name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
-        ev_in("web", "self", "g1", name, text, time)
+        ev_id(name, text, time, "m")
     }
 
-    /// 构造测试用通道原文副本
+    fn ev_id(name: &str, text: &str, time: &str, msg_id: &str) -> Arc<IncomingMessageEvent> {
+        ev_with_id("web", "self", "g1", name, text, time, msg_id)
+    }
+
+    /// 构造测试用通道原文副本（msg_id 为空：不参与去重）
     fn rec(user: &str, text: &str, is_self: usize, time: &str, sn: u64) -> Arc<ChannelRecord> {
+        rec_with_id(user, text, is_self, time, sn, "")
+    }
+
+    fn rec_with_id(user: &str, text: &str, is_self: usize, time: &str, sn: u64, msg_id: &str) -> Arc<ChannelRecord> {
         Arc::new(ChannelRecord {
             user_id: Arc::new(user.into()),
             self_user_id: Arc::new("self".into()),
             messenger_id: Arc::new("web".into()),
             group_id: Arc::new("g1".into()),
             is_self,
+            msg_id: Arc::new(msg_id.into()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(user.into()),
             group_name: Arc::new(String::new()),
@@ -380,18 +404,26 @@ mod tests {
 
     #[test]
     fn locate_message_maps_recipient_to_self_user() {
-        let e = ev("u1", "a", "2026-09-23 10:00:00");
+        let e = ev_id("u1", "a", "2026-09-23 10:00:00", "m7");
         let lm = locate_message(&e);
         assert_eq!(lm.self_user_id.as_str(), "self");
         assert_eq!(lm.user_name.as_str(), "u1");
         assert_eq!(lm.is_self, 0, "输入处理器只处理上行消息");
+        assert_eq!(lm.msg_id.as_str(), "m7", "定位消息携带 msg_id 供与已存记录去重");
         assert_eq!(lm.channel(), ChannelKey::new("web", "self", "g1"));
     }
 
     #[test]
-    fn new_message_key_matches_record_identity() {
-        let e = ev("u1", "hello", "2026-09-23 10:00:00");
-        assert_eq!(new_message_key(&e), message_key("2026-09-23 10:00:00", "u1", "hello", false));
+    fn new_message_key_uses_channel_and_msg_id() {
+        let e = ev_id("u1", "hello", "2026-09-23 10:00:00", "m7");
+        assert_eq!(new_message_key(&e), message_key("web", "self", "g1", "m7"));
+        // 内容 / 时间 / 发送者都不参与去重键
+        let other = ev_id("u2", "完全不同的内容", "2099-01-01 00:00:00", "m7");
+        assert_eq!(new_message_key(&other), new_message_key(&e));
+        // msg_id 为空不参与去重
+        let empty = ev_id("u2", "x", "2099-01-01 00:00:00", "");
+        assert_eq!(new_message_key(&empty), None);
+        assert_eq!(message_key("web", "self", "g1", ""), None);
     }
 
     #[test]
@@ -424,18 +456,19 @@ mod tests {
     #[test]
     fn filter_history_windows_time_and_dedups_new_messages() {
         let records = vec![
-            rec("u1", "old", 0, "2026-09-23 09:00:00", 1),      // 时间窗外
-            rec("u1", "dup", 0, "2026-09-23 10:00:01", 2),      // 与本批新消息重复
-            rec("agent", "reply", 1, "2026-09-23 10:00:02", 3), // 本人回复：保留
-            rec("u2", "new", 0, "2026-09-23 10:00:03", 4),
+            rec_with_id("u1", "old", 0, "2026-09-23 09:00:00", 1, "m-old"),   // 时间窗外
+            rec_with_id("u1", "dup", 0, "2026-09-23 10:00:01", 2, "m-dup"),   // 与本批新消息同 msg_id：剔除
+            rec_with_id("agent", "reply", 1, "2026-09-23 10:00:02", 3, ""),   // 本人回复：保留
+            rec_with_id("u2", "new", 0, "2026-09-23 10:00:03", 4, "m-new"),
+            rec_with_id("u1", "dup", 0, "2026-09-23 10:00:04", 5, ""),        // 内容同但 msg_id 为空：原样保留
         ];
-        let new_keys = HashSet::from([message_key("2026-09-23 10:00:01", "u1", "dup", false)]);
+        let new_keys = HashSet::from([message_key("web", "self", "g1", "m-dup").unwrap()]);
         let history = filter_history(&records, "2026-09-23 10:00:00", &new_keys);
-        assert_eq!(history.len(), 2, "窗外 1 条与本批重复 1 条都被剔除");
+        assert_eq!(history.len(), 3, "窗外 1 条与同 msg_id 的 1 条被剔除；msg_id 为空的记录保留");
         assert!(history[0].is_self, "本人回复保留");
         assert_eq!(history[0].content[0].as_str(), "reply");
-        assert!(!history[1].is_self);
         assert_eq!(history[1].content[0].as_str(), "new");
+        assert_eq!(history[2].content[0].as_str(), "dup", "msg_id 为空时不去重");
     }
 
     #[test]

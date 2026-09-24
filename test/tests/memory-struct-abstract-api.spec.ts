@@ -55,9 +55,10 @@ async function apiPost(request: APIRequestContext, base: string, path: string, b
 }
 
 /** 推送一条通道消息到 memory-store（is_self 为 1 表示 agent 实际发送） */
-async function pushChannel(request: APIRequestContext, user: string, isSelf: number, text: string, time: string) {
+async function pushChannel(request: APIRequestContext, user: string, isSelf: number, text: string, time: string, msgId = '') {
   const resp = await apiPost(request, STORE_BASE, '/store/channel', {
     requests: [{
+      msg_id: msgId,
       agent_id: AGENT,
       role_name: ROLE,
       messenger_id: MESSENGER,
@@ -134,12 +135,13 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 15000, interva
 async function locateMessages(
   request: APIRequestContext,
   role: string,
-  messages: { channel: TestChannel; text: string; user?: string; isSelf?: number; time?: string }[],
+  messages: { channel: TestChannel; text: string; user?: string; isSelf?: number; time?: string; msgId?: string }[],
 ) {
   const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/locate', {
     agent_id: AGENT,
     role,
     messages: messages.map((item) => ({
+      msg_id: item.msgId ?? '',
       time: item.time ?? timeAt(200),
       user_name: item.user ?? 'alice',
       is_self: item.isSelf ?? 0,
@@ -160,7 +162,7 @@ interface TestChannel {
   group: string;
 }
 
-/** 往指定通道推送一条通道消息 */
+/** 往指定通道推送一条通道消息（msgId 供消息与记录去重） */
 async function pushChannelIn(
   request: APIRequestContext,
   role: string,
@@ -169,9 +171,11 @@ async function pushChannelIn(
   isSelf: number,
   text: string,
   time: string,
+  msgId = '',
 ) {
   const resp = await apiPost(request, STORE_BASE, '/store/channel', {
     requests: [{
+      msg_id: msgId,
       agent_id: AGENT,
       role_name: role,
       messenger_id: channel.messenger,
@@ -476,20 +480,21 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const t0 = timeAt(1000);
     const t1 = timeAt(1001);
     const t2 = timeAt(1002);
-    await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0);
-    await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1);
+    const t3 = timeAt(1003);
+    await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0, 'msg-1');
+    await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1, 'msg-2');
     // 推送接口返回不代表记录已可读：先等记录真正落盘
     await waitForStoreFile(role, 'channel', t0, '定位前的提问');
     await waitForStoreFile(role, 'channel', t1, '定位前的回答');
 
-    // 定位请求：前两条与该通道的待归档记录重复（时间/发送者/is_self/内容全同），第三条是新消息。
-    // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到事件。
+    // 定位请求：前两条与该通道的待归档记录同 msg_id（内容 / 时间 / 发送者都不同也判为同一条），
+    // 第三条是新消息。通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到事件。
     let data: any = null;
     await waitFor(async () => {
       data = await locateMessages(request, role, [
-        { channel, text: '定位前的提问', user: 'alice', isSelf: 0, time: t0 },
-        { channel, text: '定位前的回答', user: 'bot', isSelf: 1, time: t1 },
-        { channel, text: '定位时的新问题', user: 'alice', isSelf: 0, time: t2 },
+        { channel, text: '内容不同的重复提问', user: 'someone', isSelf: 0, time: timeAt(3000), msgId: 'msg-1' },
+        { channel, text: '内容不同的重复回答', user: 'someone', isSelf: 1, time: timeAt(3001), msgId: 'msg-2' },
+        { channel, text: '定位时的新问题', user: 'alice', isSelf: 0, time: t2, msgId: 'msg-3' },
       ]);
       return data.events.length > 0;
     });
@@ -497,9 +502,11 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(data.groups.map((g: any) => g.messages)).toEqual([[0, 1, 2]], '整个合并批次一次分组（桩模型整批一组）');
     expect(data.groups[0].event_id).toBe('e1');
 
-    // 已存记录归档一次；定位时的新消息不落盘
+    // 已存记录归档一次（去重后用的是已存版本，内容与时间以记录为准）；定位时的新消息不落盘
     const records = await waitForEventRecords(request, role, 'e1', 2);
     expect(records.map((r: any) => r.is_self)).toEqual([0, 1], '新消息不进原文副本');
+    expect(records.map((r: any) => r.content.data)).toEqual(['定位前的提问', '定位前的回答'], '重复消息按已存版本归档');
+    expect(records.map((r: any) => r.msg_id)).toEqual(['msg-1', 'msg-2']);
     // 水位推进到定位前最后一条记录（新消息不推进水位）
     const watermark = await waitForWatermark(role, 'self4', t1);
     expect(watermark.channels[0].watermark.channel.sn).toBe(2);

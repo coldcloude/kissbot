@@ -397,7 +397,23 @@ mod tests {
 
     /// 追加一条通道记录：身份取通道三元组，self 记录的发送者即该通道绑定的用户
     async fn append_store_channel(root: &Path, agent_id: &str, role: &str, channel: &ChannelKey, time: &str, sn: u64, is_self: usize, text: &str) {
+        append_store_channel_with_id(root, agent_id, role, channel, time, sn, is_self, text, "").await;
+    }
+
+    /// 追加一条带 msg_id 的通道记录（消息与记录按「通道三元组 + msg_id」去重）
+    async fn append_store_channel_with_id(
+        root: &Path,
+        agent_id: &str,
+        role: &str,
+        channel: &ChannelKey,
+        time: &str,
+        sn: u64,
+        is_self: usize,
+        text: &str,
+        msg_id: &str,
+    ) {
         let record = serde_json::json!({
+            "msg_id": msg_id,
             "user_id": if is_self == 1 { channel.self_user_id.as_str() } else { "u1" },
             "self_user_id": channel.self_user_id.as_str(),
             "messenger_id": channel.messenger_id.as_str(),
@@ -556,17 +572,9 @@ mod tests {
         f.service.event_records("0", role, event_id).await.unwrap().records
     }
 
-    /// 定位用消息（指定通道）
+    /// 定位用消息（指定通道；msg_id 为空表示不参与与已存记录的去重）
     fn locate_message(channel: &ChannelKey, text: &str) -> LocateMessage {
-        LocateMessage {
-            time: Arc::new("2099-01-01 12:00:00".into()),
-            user_name: Arc::new("alice".into()),
-            is_self: 0,
-            messenger_id: channel.messenger_id.clone(),
-            self_user_id: channel.self_user_id.clone(),
-            group_id: channel.group_id.clone(),
-            content: Content::Text(Arc::new(text.to_string())),
-        }
+        locate_message_at(channel, "2099-01-01 12:00:00", 0, text, "")
     }
 
     /// 定位结果中的事件 id
@@ -830,8 +838,9 @@ mod tests {
     }
 
     /// 定位用消息（指定通道、时间、is_self）
-    fn locate_message_at(channel: &ChannelKey, time: &str, is_self: usize, text: &str) -> LocateMessage {
+    fn locate_message_at(channel: &ChannelKey, time: &str, is_self: usize, text: &str, msg_id: &str) -> LocateMessage {
         LocateMessage {
+            msg_id: Arc::new(msg_id.to_string()),
             time: Arc::new(time.to_string()),
             user_name: Arc::new("alice".into()),
             is_self,
@@ -857,16 +866,16 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题").await;
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答").await;
+        append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
+        append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, "dev", &a).await;
 
-        // 定位请求：第一条与已存记录重复（时间 / 发送者 / is_self / 内容全同），第二条是新消息
+        // 定位请求：第一条与已存记录同 msg_id（内容 / 时间 / 发送者都可以不同），第二条是新消息
         let response = f
             .service
             .locate(&locate_request("dev", vec![
-                locate_message_at(&a, "2099-01-01 10:00:00", 0, "已存的问题"),
-                locate_message_at(&a, "2099-01-01 12:00:00", 0, "新问题"),
+                locate_message_at(&a, "2099-01-01 23:59:59", 0, "内容不同也判为同一条", "m1"),
+                locate_message_at(&a, "2099-01-01 12:00:00", 0, "新问题", "m3"),
             ]))
             .await
             .unwrap();
@@ -875,6 +884,7 @@ mod tests {
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1, "懒处理与定位只做一次分组");
         assert_eq!(prompts[0].matches("已存的问题").count(), 1, "重复的新消息不重复送模型");
+        assert!(!prompts[0].contains("内容不同也判为同一条"), "重复的新消息自身不进批次");
         assert!(prompts[0].contains("已存的回答"), "待归档记录参与同一次分析");
         assert!(prompts[0].contains("新问题"), "不重复的新消息参与同一次分析");
 
@@ -893,16 +903,16 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题").await;
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答").await;
+        append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
+        append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, "dev", &a).await;
 
         // 请求的两条消息都与已存记录重复：批次只剩已存记录，仍只做一次分组
         let response = f
             .service
             .locate(&locate_request("dev", vec![
-                locate_message_at(&a, "2099-01-01 10:00:00", 0, "已存的问题"),
-                locate_message_at(&a, "2099-01-01 10:01:00", 1, "已存的回答"),
+                locate_message_at(&a, "2099-01-01 10:00:00", 0, "已存的问题", "m1"),
+                locate_message_at(&a, "2099-01-01 10:01:00", 1, "已存的回答", "m2"),
             ]))
             .await
             .unwrap();
@@ -920,25 +930,27 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let (a, b) = (channel_a(), channel_b());
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "跨通道同文本").await;
-        append_store_channel(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录").await;
+        // 两个通道的记录用同一个 msg_id：去重只看本通道的记录
+        append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 自己的记录", "m1").await;
+        append_store_channel_with_id(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1").await;
         notify(&f, "dev", &a).await;
         notify(&f, "dev", &b).await;
 
-        // 消息属于 B 通道：即便与 A 通道的已存记录同键，也只和 B 通道的记录比对
+        // 消息属于 B 通道：与 B 通道同 msg_id 的记录去重（不能命中 A 通道的同 msg_id 记录）
         let response = f
             .service
-            .locate(&locate_request("dev", vec![locate_message_at(&b, "2099-01-01 10:00:00", 0, "跨通道同文本")]))
+            .locate(&locate_request("dev", vec![locate_message_at(&b, "2099-01-01 10:00:00", 0, "B 通道的问题", "m1")]))
             .await
             .unwrap();
 
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 2, "两个通道各一次分组");
         let b_prompt = prompts.last().unwrap();
-        assert!(b_prompt.contains("B 自己的记录") && b_prompt.contains("跨通道同文本"), "B 的消息按新消息并入 B 的批次");
+        assert!(b_prompt.contains("B 自己的记录"), "B 的消息与 B 通道的记录合并分析");
+        assert!(!b_prompt.contains("B 通道的问题"), "重复的新消息自身不进批次");
         assert_eq!(records_of(&f, "dev", "e1").await.len(), 1, "A 通道照常归档");
         assert_eq!(records_of(&f, "dev", "e2").await.len(), 1, "B 通道只有自己的记录落盘");
-        assert_eq!(events_of(&response), vec!["e2"], "消息命中 B 通道新建的事件");
+        assert_eq!(events_of(&response), vec!["e2"], "消息命中 B 通道的事件");
         assert_eq!(pending_len(&f, "dev", &b).await, 0);
     }
 
@@ -963,7 +975,7 @@ mod tests {
         f.model.push_locate(Some("e1"));
         let response = f
             .service
-            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "延续旧话题")]))
+            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "延续旧话题", "")]))
             .await
             .unwrap();
 
@@ -987,7 +999,7 @@ mod tests {
         notify(&f, "dev", &a).await;
         let response = f
             .service
-            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "新消息")]))
+            .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "新消息", "")]))
             .await
             .unwrap();
 

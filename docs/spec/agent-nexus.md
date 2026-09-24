@@ -211,13 +211,13 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/abstract/locate` | 定位一批上行消息涉及的事件（请求含 agent_id、role 与带通道三元组的消息） |
+| POST | `/abstract/locate` | 定位一批上行消息涉及的事件（请求含 agent_id、role 与带通道三元组与 msg_id 的消息） |
 | POST | `/abstract/event/summary` | 取事件摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
 | POST | `/abstract/event/records-tail` | 取事件结尾 count 条原文副本（升序） |
 
 - `role` 与会话写记忆同一编码：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。
 - 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 触发时用「涉及事件的全部摘要 + 各事件结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；查出的记录与本批新消息按（时间、发送者、文本、is_self）去重，去重后本批新消息整体进 pipeline。
+- 触发时用「涉及事件的全部摘要 + 各事件结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。
 - `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
 
 ## Memory-Ego API 交互

@@ -383,6 +383,7 @@ mod tests {
             self_user_id: Arc::new("u1".into()),
             group_id: Arc::new("g1".into()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new("".into()),
             user_name: Arc::new("".into()),
             group_name: Arc::new("".into()),

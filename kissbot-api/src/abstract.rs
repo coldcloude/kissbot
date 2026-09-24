@@ -122,6 +122,9 @@ pub struct LocateRequest {
 /// 定位用新消息（公共消息格式中判定所需的字段）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateMessage {
+    /// 消息标识：与已存记录去重只按「通道三元组 + msg_id」判定；为空则不参与去重
+    #[serde(default)]
+    pub msg_id: Arc<String>,
     pub time: Arc<String>,
     pub user_name: Arc<String>,
     pub is_self: usize,
@@ -381,6 +384,7 @@ mod tests {
             time: Arc::new("2026-09-22 13:48:37".into()),
             user_name: Arc::new("alice".into()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_id: Arc::new("web".into()),
             self_user_id: Arc::new("self1".into()),
             group_id: Arc::new("g1".into()),
@@ -559,6 +563,7 @@ mod tests {
             messenger_id: Arc::new("web".into()),
             group_id: Arc::new("g1".into()),
             is_self: 1,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new("alice".into()),
             group_name: Arc::new(String::new()),
@@ -588,7 +593,8 @@ mod tests {
                 RecordKind::Channel => EventRecord::Channel(Arc::new(ChannelRecord {
                     user_id: Arc::new("u".into()), self_user_id: Arc::new("s".into()),
                     messenger_id: Arc::new("m".into()), group_id: Arc::new("g".into()),
-                    is_self: 0, messenger_name: Arc::new(String::new()),
+                    is_self: 0, msg_id: Arc::new(String::new()),
+                    messenger_name: Arc::new(String::new()),
                     user_name: Arc::new("u".into()), group_name: Arc::new(String::new()),
                     content: Content::Text(Arc::new("t".into())),
                     time: Arc::new("t".into()), sn: 1,

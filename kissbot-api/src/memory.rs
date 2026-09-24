@@ -10,6 +10,9 @@ use crate::Content;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRequest {
+    /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具记录为空
+    #[serde(default)]
+    pub msg_id: Arc<String>,
     pub agent_id: Arc<String>,
     pub role_name: Arc<String>,
     pub messenger_id: Arc<String>,
@@ -106,6 +109,10 @@ pub struct RecentQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
+    /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具占位记录为空。
+    /// 消息与记录去重只按「通道三元组 + msg_id」判定，不比较内容。
+    #[serde(default)]
+    pub msg_id: Arc<String>,
     /// 发送者身份（区分对话方向）
     pub user_id: Arc<String>,
     /// agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self）；
@@ -325,6 +332,7 @@ mod tests {
             messenger_id: Arc::new("web".into()),
             group_id: Arc::new("g1".into()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new("alice".into()),
             group_name: Arc::new(String::new()),
@@ -354,6 +362,7 @@ mod tests {
             self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new("m-1".to_string()),
             messenger_name: Arc::new("M1Name".to_string()),
             user_name: Arc::new("U1Name".to_string()),
             group_name: Arc::new("G1Name".to_string()),
@@ -361,13 +370,19 @@ mod tests {
             time: Arc::new("2026-01-01 00:00:00".to_string()),
         };
         let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ChannelRequest = serde_json::from_value(json).unwrap();
+        let deserialized: ChannelRequest = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(*deserialized.msg_id, "m-1");
         assert_eq!(*deserialized.self_user_id, "self1");
         assert_eq!(*deserialized.messenger_name, "M1Name");
         assert_eq!(*deserialized.user_name, "U1Name");
         assert_eq!(*deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(s) if s.as_str() == "Hello"));
+        // 旧调用方不带 msg_id：反序列化为空串（不参与去重）
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("msg_id");
+        let legacy: ChannelRequest = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.msg_id.is_empty());
     }
 
     #[test]
@@ -393,6 +408,7 @@ mod tests {
             self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new("M1Name".to_string()),
             user_name: Arc::new("U1Name".to_string()),
             group_name: Arc::new("G1Name".to_string()),
@@ -541,6 +557,7 @@ mod tests {
             messenger_id: Arc::new("telegram".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
             group_name: Arc::new(String::new()),
@@ -572,6 +589,7 @@ mod tests {
             messenger_id: Arc::new("telegram".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
             group_name: Arc::new(String::new()),
@@ -585,6 +603,7 @@ mod tests {
             messenger_id: Arc::new("telegram".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new(String::new()),
             messenger_name: Arc::new(String::new()),
             user_name: Arc::new(String::new()),
             group_name: Arc::new(String::new()),
@@ -613,6 +632,7 @@ mod tests {
             messenger_id: Arc::new("telegram".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 0,
+            msg_id: Arc::new("m-1".to_string()),
             messenger_name: Arc::new("M1Name".to_string()),
             user_name: Arc::new("U1Name".to_string()),
             group_name: Arc::new("G1Name".to_string()),
@@ -623,6 +643,7 @@ mod tests {
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
         assert_eq!(*deserialized.user_id, "u1");
+        assert_eq!(*deserialized.msg_id, "m-1");
         assert_eq!(*deserialized.self_user_id, "self1");
         assert_eq!(*deserialized.messenger_id, "telegram");
         assert_eq!(*deserialized.group_id, "g1");

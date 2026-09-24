@@ -197,6 +197,7 @@ mod tests {
                 messenger_id: Arc::new("web".into()),
                 group_id: Arc::new("g1".into()),
                 is_self: 0,
+                msg_id: Arc::new(String::new()),
                 messenger_name: Arc::new(String::new()),
                 user_name: Arc::new("alice".into()),
                 group_name: Arc::new(String::new()),

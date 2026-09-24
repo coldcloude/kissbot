@@ -30,7 +30,7 @@
 
 | 文件 | 内容 |
 |------|------|
-| channel-records-{date}.jsonl | 消息通道的文本记录（同 agent、角色、日期下全部通道消息；记录内携带 messenger/group/self 身份） |
+| channel-records-{date}.jsonl | 消息通道的文本记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id 与 messenger/group/self 身份） |
 | think-records-{date}.jsonl | 思考内容记录 |
 | tool-call-records-{date}.jsonl | 工具调用记录 |
 | tool-result-records-{date}.jsonl | 工具调用结果记录 |
@@ -41,12 +41,15 @@ channel 记录包含完整身份字段：
 
 | 字段 | 含义 |
 |------|------|
+| msg_id | 消息标识：上行取自 `incoming_message.msg_id`、下行取自 `outgoing_message_response.msg_id`；思考/工具占位记录为空 |
 | user_id | 消息发送者身份 |
 | self_user_id | agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self） |
 | messenger_id | 消息来源通道标识 |
 | group_id | 群组标识（单聊可为空） |
 | is_self | 是否 agent 实际发送（1 / 0） |
 
+> **msg_id 与去重**：消息与已存记录是否同一条只按「通道三元组 + `msg_id`」判定，不比较内容；`msg_id` 为空（思考/工具占位记录、加字段前的旧记录）的条目不参与去重、原样保留。
+>
 > **is_self 与 self_user_id 不同**：is_self 只在 agent 实际发送消息时为 1（agent 经 msg_id 回显匹配识别并过滤自身回声后确定），不由 `user_id == self_user_id` 推导。其他人使用 agent 绑定的用户发送消息时，`user_id == self_user_id`，但 `is_self == 0`。
 
 ## 自我认知文件

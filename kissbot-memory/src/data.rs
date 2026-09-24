@@ -83,6 +83,7 @@ impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
             messenger_id: request.messenger_id.clone(),
             group_id: request.group_id.clone(),
             is_self: request.is_self,
+            msg_id: request.msg_id.clone(),
             messenger_name: request.messenger_name.clone(),
             user_name: request.user_name.clone(),
             group_name: request.group_name.clone(),
@@ -314,6 +315,7 @@ use super::*;
             self_user_id: Arc::new("self1".to_string()),
             group_id: Arc::new("g1".to_string()),
             is_self: 1,
+            msg_id: Arc::new("m-1001".to_string()),
             messenger_name: Arc::new("TelegramName".to_string()),
             user_name: Arc::new("U1Name".to_string()),
             group_name: Arc::new("G1Name".to_string()),
@@ -332,6 +334,7 @@ use super::*;
         assert_eq!(*record.messenger_id, "telegram");
         assert_eq!(*record.group_id, "g1");
         assert_eq!(record.is_self, 1);
+        assert_eq!(*record.msg_id, "m-1001", "消息标识原样带入记录（消息与记录去重用）");
         assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
         assert_eq!(record.sn, 0);
     }
