@@ -1,6 +1,6 @@
 //! 服务层：把通知、触发判定、归档、定位、查询与管理串成组件的对外能力。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use kissbot_api::{
@@ -74,11 +74,11 @@ impl AbstractService {
         }
     }
 
-    /// 归档某通道并把消息分组映射回请求全局下标（`archive` + `place_groups` 的统一封装）。
+    /// 归档某通道并把消息分组映射回请求全局下标（`archive` + 日志 + `place_groups` 的封装）。
     ///
-    /// `records` 是该通道水位之后的待归档记录（无变化时为空）；`messages` / `indices` 是请求消息
-    /// 与其中属于该通道的全局下标。两处驱动（[`Self::process_pending`] 与 [`Self::locate`] 的补齐
-    /// 循环）都走这个封装，因此每个通道只会归档一次。
+    /// `records` 是该通道水位之后的待归档记录（可为空）；`messages` / `indices` 是请求消息
+    /// 与其中属于该通道的全局下标（可为空）。只在 `process_pending` 的逐通道循环里调用，
+    /// 每个通道一次。
     async fn archive_located(
         &self,
         handle: &Arc<ScopeHandle>,
@@ -106,14 +106,13 @@ impl AbstractService {
         Ok((result.outcomes, place_groups(channel, indices, result.groups)))
     }
 
-    /// 懒处理：某通道水位之后的记录 = 该通道待处理批次，**按通道分开调用归档器**。
+    /// 提取「各通道水位之后的待归档记录」与本批消息，统一按通道分组后逐通道执行「归档 + 定位」。
     ///
-    /// `force` 为假时只在作用域有待处理标记时做（任意查询前的统一计算）；为真时忽略标记
-    /// （手动触发与重建）。
+    /// - `messages` 为空：即原来的归档（查询前的统一处理 / 手动触发 / 重建），不产出定位结果；
+    /// - `messages` 非空：同一批里 pending 记录落盘归档，只在消息里出现的条目仅定位、不落盘；
+    /// - 没有待处理标记且没有消息时直接返回（不读盘）；否则读一次共享记忆提取各通道 pending。
     ///
-    /// `messages` 是定位请求的新消息：某通道有消息时把它与该通道的待归档记录一起交给
-    /// [`Archiver::archive`]——记录落盘归档、消息只定位；`messages` 为空就是原来的归档。
-    /// 返回（各批归档结果，消息分组，按请求全局下标）；没有待归档记录的通道由调用方补齐。
+    /// 返回（各通道归档结果，消息分组，按请求全局下标）。
     async fn process_pending(
         &self,
         handle: &Arc<ScopeHandle>,
@@ -122,19 +121,23 @@ impl AbstractService {
         messages: &[LocateMessage],
     ) -> Result<(Vec<ArchiveOutcome>, Vec<(usize, ChannelKey, LocatedGroup)>)> {
         let (all, marked) = (state.dirty_all, state.dirty_channels.clone());
-        if !force && !state.is_dirty() {
+        if !force && !state.is_dirty() && messages.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
 
         let view = self.store_view(handle).await?;
+        // 统一按通道分组：本批消息所在的通道 ∪ 存储里出现过的通道（pending / 消息都可以为空）
+        let mut grouped: BTreeMap<ChannelKey, Vec<usize>> = group_indices_by_channel(messages).into_iter().collect();
+        for channel in view.known_channels() {
+            grouped.entry(channel).or_default();
+        }
         let mut processed: BTreeSet<ChannelKey> = marked;
         let mut outcomes = Vec::new();
         let mut located = Vec::new();
-        for channel in view.known_channels() {
+        for (channel, indices) in grouped {
             processed.insert(channel.clone());
             let watermark = state.watermarks.get(&channel).cloned().unwrap_or_default();
             let pending = view.pending_for(&channel, &watermark);
-            let indices = message_indices_for(messages, &channel);
             if pending.is_empty() && indices.is_empty() {
                 continue;
             }
@@ -186,26 +189,13 @@ impl AbstractService {
 
     // ========== 定位 ==========
 
-    /// 定位一批消息涉及的事件：逐通道调用 [`Self::archive_located`]（= [`Archiver::archive`]）——
-    /// 通道有待归档记录时把记录与本批消息一起归档（消息只定位），没有时只对消息做定位。
+    /// 定位一批消息涉及的事件：提取各通道的待归档记录与本批消息（两者都可为空），
+    /// 统一按通道分组后逐通道执行「归档 + 定位」——记录落盘、消息只定位。
     pub async fn locate(&self, request: &LocateRequest) -> Result<LocateResponse> {
         let id = ScopeId::new(request.agent_id.as_str(), request.role.as_str());
         let handle = self.manager.open(id).await?;
         let mut state = handle.state.lock().await;
-
-        // 驱动一：有待处理标记时读一次共享记忆，按存储里出现的通道逐通道归档（该通道有消息就一并定位）
-        let (_, mut located) = self.process_pending(&handle, &mut state, false, &request.messages).await?;
-        // 驱动二：补齐上面覆盖不到的通道——作用域没有待处理标记（process_pending 未读存储），
-        // 或该通道在共享记忆里还没有记录（不在 known_channels 里）；此时只有消息、仅定位，不落盘
-        let handled: BTreeSet<ChannelKey> = located.iter().map(|(_, channel, _)| channel.clone()).collect();
-        for (channel, indices) in group_indices_by_channel(&request.messages) {
-            if handled.contains(&channel) {
-                continue;
-            }
-            let (_, channel_groups) =
-                self.archive_located(&handle, &mut state, &channel, &[], &request.messages, &indices).await?;
-            located.extend(channel_groups);
-        }
+        let (_, located) = self.process_pending(&handle, &mut state, false, &request.messages).await?;
         Ok(merge_located(located, &state.current_events))
     }
 
@@ -323,16 +313,6 @@ fn sum_outcomes(outcomes: Vec<ArchiveOutcome>) -> ArchiveOutcome {
         archived: outcomes.iter().map(|outcome| outcome.archived).sum(),
         event_ids: outcomes.into_iter().flat_map(|outcome| outcome.event_ids).collect(),
     }
-}
-
-/// 定位消息里属于某通道的请求全局下标（升序）
-fn message_indices_for(messages: &[LocateMessage], channel: &ChannelKey) -> Vec<usize> {
-    messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| &message.channel() == channel)
-        .map(|(index, _)| index)
-        .collect()
 }
 
 /// 把某通道的分组结果（`PlaceGroup::messages` 是传入消息切片的下标）映射为请求全局下标；
@@ -929,7 +909,35 @@ mod tests {
         assert_eq!(records_of(&f, "dev", "e1").await.len(), 2, "记录不因定位重复落盘");
     }
 
-    /// locate 对每个通道只调用一次 archive：process_pending 覆盖到的通道不会再进补齐循环
+    /// 没有待处理标记时调 locate：仍按「pending 空 + 本批消息」处理（定位不依赖 dirty）
+    #[tokio::test]
+    async fn locate_without_dirty_marks_still_locates_messages() {
+        let f = fixture().await;
+        let a = channel_a();
+        // 显式清掉首次加载置的待处理标记，覆盖「不 dirty」分支
+        {
+            let handle = f.service.manager().open(ScopeId::new("0", "dev")).await.unwrap();
+            let mut state = handle.state.lock().await;
+            state.clear_dirty(true, &BTreeSet::new());
+        }
+
+        let response = f
+            .service
+            .locate(&locate_request("dev", vec![
+                locate_message_at(&a, "2099-01-01 12:00:00", 0, "一问", "m1"),
+                locate_message_at(&a, "2099-01-01 12:01:00", 0, "二问", "m2"),
+            ]))
+            .await
+            .unwrap();
+
+        assert!(response.events.is_empty(), "空树不涉及任何事件");
+        assert_eq!(response.groups.len(), 1, "同通道整批一组");
+        assert_eq!(response.groups[0].messages, vec![0, 1]);
+        assert!(response.groups[0].event_id.is_none());
+        assert!(f.model.prompts().is_empty(), "空树不调模型");
+    }
+
+    /// locate 对每个通道只调用一次 archive：同一次提取里不会重复处理某个通道
     #[tokio::test]
     async fn locate_archives_each_message_channel_once() {
         let f = fixture().await;
