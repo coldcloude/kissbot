@@ -42,9 +42,6 @@ impl DecisionModel for StubModel {
         Ok(format!("{}{}", STUB_SUMMARY_PREFIX, next))
     }
 
-    async fn locate(&self, _scope: &ScopeId, _message: &str, candidates: &[EventBrief]) -> Result<Option<String>> {
-        Ok(candidates.first().map(|brief| brief.event_id.as_str().to_string()))
-    }
 }
 
 #[cfg(test)]
@@ -67,11 +64,5 @@ mod tests {
         assert_eq!(model.decide_level(&scope, "seg", &[]).await.unwrap(), LevelDecision::New);
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要1");
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要2");
-        let candidates = vec![EventBrief {
-            event_id: std::sync::Arc::new("e7".into()),
-            summary: std::sync::Arc::new("s".into()),
-        }];
-        assert_eq!(model.locate(&scope, "msg", &candidates).await.unwrap(), Some("e7".to_string()));
-        assert_eq!(model.locate(&scope, "msg", &[]).await.unwrap(), None);
     }
 }

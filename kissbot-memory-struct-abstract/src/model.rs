@@ -44,14 +44,12 @@ pub trait DecisionModel: Send + Sync {
     /// 第 1 轮（分组轮）：把待处理消息按事件分组，并标记属于当前事件的组
     async fn group(&self, scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>>;
 
-    /// 第 2 轮起分层归并：并入当层某事件（非叶子继续下潜）/ 在本层新增叶子事件
+    /// 第 2 轮起逐层判定：并入当层某事件（非叶子继续下潜）/ 在本层新增叶子事件。
+    /// 只用于定位的组（不落盘）同样用它下探：`New` 表示当层未命中，不新建事件。
     async fn decide_level(&self, scope: &ScopeId, batch: &str, level: &[EventBrief]) -> Result<LevelDecision>;
 
     /// 摘要生成：事件直接记录 + 子事件摘要 → 事件摘要
     async fn summarize(&self, scope: &ScopeId, content: &str) -> Result<String>;
-
-    /// 事件定位：新消息 + 候选事件摘要 → 命中事件 / 未命中
-    async fn locate(&self, scope: &ScopeId, message: &str, candidates: &[EventBrief]) -> Result<Option<String>>;
 }
 
 // ========== 提示词 ==========
@@ -95,7 +93,7 @@ pub fn grouping_prompt(batch: &str, current: Option<&EventBrief>) -> String {
     )
 }
 
-/// 第 2 轮起分层归并提示词：当层全部事件作为候选
+/// 第 2 轮起逐层判定提示词：当层全部事件作为候选（定位的组同样用它，`new` 即当层未命中）
 pub fn level_prompt(batch: &str, level: &[EventBrief]) -> String {
     format!(
         "当层事件（id + 摘要）：\n{level}\n\n\
@@ -114,18 +112,6 @@ pub fn summary_prompt(content: &str) -> String {
         "事件内容（直接记录 + 子事件摘要）：\n{content}\n\n\
 请用简洁中文总结这个事件，保留关键人物、话题、结论与时间线索，输出 {{\"summary\":\"...\"}}",
         content = content
-    )
-}
-
-pub fn locate_prompt(message: &str, candidates: &[EventBrief]) -> String {
-    format!(
-        "新消息：\n{message}\n\n候选事件（id + 摘要）：\n{candidates}\n\n\
-请判断新消息属于哪个事件：\n\
-- 命中某个事件，输出 {{\"matched\":true,\"event_id\":\"<event_id>\"}}\n\
-- 都不属于，输出 {{\"matched\":false}}\n\
-只输出 JSON。",
-        message = message,
-        candidates = render_level(candidates)
     )
 }
 
@@ -226,17 +212,6 @@ pub fn parse_summary(value: &Value) -> Result<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::ModelApiError("摘要输出缺少 summary".into()))
-}
-
-pub fn parse_locate(value: &Value) -> Result<Option<String>> {
-    let matched = value.get("matched").and_then(|m| m.as_bool()).unwrap_or(false);
-    if !matched {
-        return Ok(None);
-    }
-    match value.get("event_id").and_then(|v| v.as_str()) {
-        Some(id) if !id.is_empty() => Ok(Some(id.to_string())),
-        _ => Err(Error::ModelApiError("定位命中但缺少 event_id".into())),
-    }
 }
 
 // ========== LLM 实现 ==========
@@ -386,11 +361,6 @@ impl DecisionModel for LlmModel {
         let value = self.call(scope, &summary_prompt(content)).await?;
         parse_summary(&value)
     }
-
-    async fn locate(&self, scope: &ScopeId, message: &str, candidates: &[EventBrief]) -> Result<Option<String>> {
-        let value = self.call(scope, &locate_prompt(message, candidates)).await?;
-        parse_locate(&value)
-    }
 }
 
 #[cfg(test)]
@@ -452,12 +422,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_summary_and_locate() {
+    fn parse_summary_output() {
         assert_eq!(parse_summary(&json!({"summary":" 摘要 "})).unwrap(), "摘要");
         assert!(parse_summary(&json!({"summary":""})).is_err());
-        assert_eq!(parse_locate(&json!({"matched":true,"event_id":"e1"})).unwrap(), Some("e1".into()));
-        assert_eq!(parse_locate(&json!({"matched":false})).unwrap(), None);
-        assert!(parse_locate(&json!({"matched":true})).is_err());
     }
 
     #[test]
@@ -479,9 +446,5 @@ mod tests {
         assert!(prompt.contains("当层事件"));
         assert!(prompt.contains("\"target\":\"new\""));
         assert_eq!(render_level(&[]), "（当层没有事件）");
-
-        let prompt = locate_prompt("新消息正文", &candidates);
-        assert!(prompt.contains("新消息正文"));
-        assert!(prompt.contains("matched"));
     }
 }

@@ -951,7 +951,7 @@ mod tests {
 
         notify(&f, "dev", &a).await;
         f.model.push_group(&[0, 1], false);
-        f.model.push_locate(None);
+        f.model.push_level(LevelDecision::New);
         let response = f
             .service
             .locate(&locate_request("dev", vec![
@@ -1053,7 +1053,7 @@ mod tests {
             crate::model::MessageGroup { messages: vec![1], is_current: false },
         ]);
         f.model.push_level(LevelDecision::New);
-        f.model.push_locate(Some("e1"));
+        f.model.push_level(LevelDecision::Merge("e1".into()));
         let response = f
             .service
             .locate(&locate_request("dev", vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "延续旧话题", "")]))
@@ -1129,7 +1129,7 @@ mod tests {
 
         // 同一个事件用另一个通道的消息定位：不是该通道的当前事件
         f.model.push_group(&[0], false);
-        f.model.push_locate(Some(current_b.as_str()));
+        f.model.push_level(LevelDecision::Merge(current_b.clone()));
         let cross = locate(&a, "从 A 通道问 B 的话题").await;
         assert_eq!(events_of(&cross), vec![current_b.as_str()]);
         assert!(!cross.events[0].is_current, "is_current 按新消息通道判定");

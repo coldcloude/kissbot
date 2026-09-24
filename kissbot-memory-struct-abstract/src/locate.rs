@@ -1,8 +1,9 @@
-//! 定位（只读下探）与结果汇总：由归档器在对「记录 + 只用于定位的新消息」分组后调用。
+//! 定位结果汇总：归档器对「记录 + 只用于定位的新消息」分组并逐层判定所属事件后，
+//! 本模块把各通道的分组按请求下标合并成对外响应（[`merge_located`]），并提供按通道切分
+//! 消息下标的 [`group_indices_by_channel`] 与新消息的文本渲染 [`render_message`]。
 //!
-//! 定位本身不新建事件、不读原文副本；触发懒处理时，待归档记录与新消息的去重合并、分组落位
-//! 由归档器完成（见 [`crate::archive`]），本模块提供逐层下探（[`find_event`]）与
-//! 结果汇总（[`merge_located`]）的公共实现。
+//! 定位本身不新建事件、不读原文副本：只含新消息的组由归档器用同一套逐层判定（不允许新建）
+//! 得到所属事件，见 [`crate::archive`]。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -11,54 +12,7 @@ use kissbot_api::{
     ChannelKey, LocateMessage, LocateResponse, LocatedEventRef, LocatedGroup,
 };
 
-use crate::error::Result;
-use crate::model::DecisionModel;
 use crate::records::render_content;
-use crate::scope::ScopeId;
-use crate::tree::Tree;
-
-/// 只读地自顶层逐层下探：命中叶子事件返回它；命中非叶子后其子层都未命中则返回该父事件；均未命中返回 None
-pub(crate) async fn find_event(
-    model: &dyn DecisionModel,
-    scope: &ScopeId,
-    tree: &Tree,
-    text: &str,
-    max_depth: usize,
-) -> Result<Option<String>> {
-    let top = tree.top_level_ids();
-    if top.is_empty() {
-        return Ok(None);
-    }
-    let Some(mut event_id) = model.locate(scope, text, &tree.briefs(&top)).await? else {
-        return Ok(None);
-    };
-    if !tree.contains(&event_id) {
-        return Err(crate::error::Error::ModelApiError(format!(
-            "定位给出不存在的事件 {}（作用域 {}）",
-            event_id, scope
-        )));
-    }
-    for _ in 0..max_depth {
-        if tree.is_leaf(&event_id) {
-            return Ok(Some(event_id));
-        }
-        let children = tree.children_ids(&event_id);
-        match model.locate(scope, text, &tree.briefs(&children)).await? {
-            Some(child_id) => {
-                if !tree.contains(&child_id) {
-                    return Err(crate::error::Error::ModelApiError(format!(
-                        "定位给出不存在的事件 {}（作用域 {}）",
-                        child_id, scope
-                    )));
-                }
-                event_id = child_id;
-            }
-            // 子事件都未命中：命中该父事件（整体话题的代表）
-            None => return Ok(Some(event_id)),
-        }
-    }
-    Ok(Some(event_id))
-}
 
 /// 汇总各通道的定位分组：`is_current` 按各通道的最终当前事件判定，
 /// 分组按各组首条消息下标升序，事件按首次出现顺序去重。
@@ -111,9 +65,9 @@ pub fn render_message(message: &LocateMessage) -> String {
 mod tests {
     use super::*;
     use crate::archive::Archiver;
-    use crate::model::MessageGroup;
+    use crate::model::{LevelDecision, MessageGroup};
     use crate::records::{RecordBody, RecordEntry};
-    use crate::scope::{ScopeHandle, ScopeManager};
+    use crate::scope::{ScopeHandle, ScopeId, ScopeManager};
     use crate::stub::StubModel;
     use kissbot_api::{ChannelRecord, Content, EventMode, RecordKind};
 
@@ -257,7 +211,7 @@ mod tests {
 
         // 组未标记当前事件 → 只读下探；顶层未命中 → 该组不涉及任何事件
         model.push_group(&[0], false);
-        model.push_locate(None);
+        model.push_level(LevelDecision::New);
         let response = locate(&handle, &model, &[message("换个话题")]).await;
         assert!(response.events.is_empty(), "新话题不涉及已有事件");
         assert_eq!(response.groups.len(), 1);
@@ -286,8 +240,8 @@ mod tests {
             MessageGroup { messages: vec![2], is_current: false },
             MessageGroup { messages: vec![3], is_current: false },
         ]);
-        model.push_locate(Some("e1")); // 第三条：顶层命中 e1（叶子）
-        model.push_locate(None); // 第四条：顶层未命中 → 新话题
+        model.push_level(LevelDecision::Merge("e1".into())); // 第三条：顶层命中 e1（叶子）
+        model.push_level(LevelDecision::New); // 第四条：顶层未命中 → 新话题
         let response = locate(&handle, &model, &[message("a"), message("b"), message("c"), message("d")]).await;
 
         assert_eq!(event_ids(&response), vec!["e2", "e1"], "涉及的事件按首次出现顺序去重");
@@ -316,15 +270,15 @@ mod tests {
 
         // 第三条消息：顶层命中 e1（非叶子）→ 下探子层命中 e2
         model.push_group(&[0], false);
-        model.push_locate(Some("e1"));
-        model.push_locate(Some("e2"));
+        model.push_level(LevelDecision::Merge("e1".into()));
+        model.push_level(LevelDecision::Merge("e2".into()));
         let response = locate(&handle, &model, &[message("子事件相关")]).await;
         assert_eq!(event_ids(&response), vec!["e2"]);
 
         // 第四条消息：顶层命中 e1（非叶子）→ 子层都未命中 → 命中父事件 e1
         model.push_group(&[0], false);
-        model.push_locate(Some("e1"));
-        model.push_locate(None);
+        model.push_level(LevelDecision::Merge("e1".into()));
+        model.push_level(LevelDecision::New);
         let response = locate(&handle, &model, &[message("父事件相关")]).await;
         assert_eq!(event_ids(&response), vec!["e1"]);
     }

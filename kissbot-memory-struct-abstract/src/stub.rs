@@ -16,7 +16,6 @@ pub struct StubModel {
     /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前事件即标记为当前事件组）
     pub group_decisions: Mutex<VecDeque<Vec<MessageGroup>>>,
     pub level_decisions: Mutex<VecDeque<LevelDecision>>,
-    pub locate_results: Mutex<VecDeque<Option<String>>>,
     /// 每次 summarize 的输入（断言级联时父事件能看到子事件摘要）
     pub summary_inputs: Mutex<Vec<String>>,
     /// 每次判定调用收到的提示词（断言调用顺序与候选集合）
@@ -49,11 +48,6 @@ impl StubModel {
 
     pub fn push_summarize_failure(&self) -> &Self {
         self.fail_summarize.lock().unwrap().push_back(());
-        self
-    }
-
-    pub fn push_locate(&self, result: Option<&str>) -> &Self {
-        self.locate_results.lock().unwrap().push_back(result.map(|s| s.to_string()));
         self
     }
 
@@ -108,8 +102,4 @@ impl DecisionModel for StubModel {
         Ok(format!("摘要{}", next))
     }
 
-    async fn locate(&self, _scope: &ScopeId, message: &str, candidates: &[EventBrief]) -> Result<Option<String>> {
-        self.prompts.lock().unwrap().push(crate::model::locate_prompt(message, candidates));
-        Ok(self.locate_results.lock().unwrap().pop_front().flatten())
-    }
 }

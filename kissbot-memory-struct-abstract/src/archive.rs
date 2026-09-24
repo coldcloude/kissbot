@@ -18,7 +18,7 @@ use kissbot_api::{ChannelKey, EventBrief, EventMode, LocateMessage, RecordKind};
 use tracing::warn;
 
 use crate::error::{Error, Result};
-use crate::locate::{find_event, render_message};
+use crate::locate::render_message;
 use crate::model::{DecisionModel, LevelDecision};
 use crate::records::{
     RecordBody, RecordEntry, append_event_records, read_event_records, render_entry,
@@ -331,7 +331,7 @@ impl Archiver {
     }
 
     /// 角色模式的分组落位：第 1 轮分组（并标记当前事件组），当前事件组直接并入、
-    /// 其余组各自走第 2 轮起的分层归并；只含新消息的组按定位处理（只读下探）。
+    /// 其余组各自走第 2 轮起的逐层判定；只含新消息的组同样逐层判定，只是不允许新建事件。
     async fn group_and_place(
         &self,
         scope: &ScopeId,
@@ -350,10 +350,10 @@ impl Archiver {
             let records = stored_records(items, &group_items);
             let text = render_group(items, &group_items);
             let event_id = if records.is_empty() {
-                // 组里只有新消息：定位只读，不新建事件——命中当前事件，或只读下探，未命中即新话题
+                // 组里只有新消息：只定位、不落盘——命中当前事件，或逐层判定（不允许新建，未命中即新话题）
                 match current.clone().filter(|_| group.is_current) {
                     Some(current) => Some(current),
-                    None => find_event(self.model.as_ref(), scope, &state.tree, &text, self.max_depth).await?,
+                    None => self.descend(scope, &mut state.tree, &text, None, false).await?,
                 }
             } else if group.is_current {
                 // 标记为当前事件的组直接并入当前事件
@@ -364,22 +364,27 @@ impl Archiver {
                     ))
                 })?)
             } else {
-                // 其余组以组为单位自顶层逐层归并
-                Some(self.merge_from(scope, &mut state.tree, &text, None).await?)
+                // 其余组以组为单位自顶层逐层归并（未命中就在当层新建叶子）
+                self.descend(scope, &mut state.tree, &text, None, true).await?
             };
             placements.push(Placement { event_id, items: group_items, records });
         }
         Ok(placements)
     }
 
-    /// 自 `parent`（None 为顶层）起逐层归并：并入当层某事件（非叶子继续下潜）/ 在本层新增叶子
-    async fn merge_from(
+    /// 自 `parent`（None 为顶层）起逐层判定当层事件，两种模式共用同一套提示词与解析：
+    ///
+    /// - `create = true`（组里有待归档记录）：未命中就在当层新建叶子事件，**必有落点**；
+    /// - `create = false`（只有新消息、仅定位）：不新建事件——顶层未命中返回 `None`（新话题），
+    ///   下探之后未命中返回该父事件（整体话题的代表）。
+    async fn descend(
         &self,
         scope: &ScopeId,
         tree: &mut Tree,
         text: &str,
         parent: Option<String>,
-    ) -> Result<String> {
+        create: bool,
+    ) -> Result<Option<String>> {
         let now = crate::records::now_string();
         let mut parent = parent;
         let mut level = match &parent {
@@ -389,26 +394,22 @@ impl Archiver {
 
         for _ in 0..self.max_depth {
             if level.is_empty() {
-                let event_id = tree.allocate_event_id();
-                tree.create_node(&event_id, parent.as_deref(), EventMode::Role, &now);
-                return Ok(event_id);
+                return Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent });
             }
             let briefs: Vec<EventBrief> = tree.briefs(&level);
             match self.model.decide_level(scope, text, &briefs).await? {
                 LevelDecision::New => {
-                    let event_id = tree.allocate_event_id();
-                    tree.create_node(&event_id, parent.as_deref(), EventMode::Role, &now);
-                    return Ok(event_id);
+                    return Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent });
                 }
                 LevelDecision::Merge(event_id) => {
                     if !tree.contains(&event_id) {
                         return Err(Error::ModelApiError(format!(
-                            "分层归并给出不存在的事件 {}（作用域 {}）",
+                            "当层判定给出不存在的事件 {}（作用域 {}）",
                             event_id, scope
                         )));
                     }
                     if tree.is_leaf(&event_id) {
-                        return Ok(event_id);
+                        return Ok(Some(event_id));
                     }
                     // 非叶子：下潜到其子层继续判定
                     level = tree.children_ids(&event_id);
@@ -417,11 +418,9 @@ impl Archiver {
             }
         }
 
-        // 层数达到上限：在当层新开叶子事件（防御模型环路）
+        // 层数达到上限：可写时在当层新开叶子，只定位时返回当前父事件（防御模型环路）
         warn!("[abstract] reach max event depth {} for scope {}", self.max_depth, scope);
-        let event_id = tree.allocate_event_id();
-        tree.create_node(&event_id, parent.as_deref(), EventMode::Role, &now);
-        Ok(event_id)
+        Ok(if create { Some(new_leaf(tree, parent.as_deref(), &now)) } else { parent })
     }
 
     /// 摘要重算顺序：受影响的叶子在前、祖先在后
@@ -490,6 +489,13 @@ impl Archiver {
 
         Ok(Some(self.model.summarize(&handle.id, &content).await?))
     }
+}
+
+/// 在 `parent` 下新建叶子事件，返回事件 id
+fn new_leaf(tree: &mut Tree, parent: Option<&str>, now: &str) -> String {
+    let event_id = tree.allocate_event_id();
+    tree.create_node(&event_id, parent, EventMode::Role, now);
+    event_id
 }
 
 /// 批次文本：每行 `[序号] 时间 内容`
