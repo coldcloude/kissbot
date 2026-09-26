@@ -71,7 +71,7 @@ pub enum CaseMode {
 /// Case 节点（tree.json 的节点形状）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseNode {
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Arc<String>>,
     #[serde(default)]
@@ -95,14 +95,14 @@ impl CaseNode {
 /// Case 摘要（分层归并/上下文装配用的最小 case 描述）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaseBrief {
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     pub summary: Arc<String>,
 }
 
 impl From<&CaseNode> for CaseBrief {
     fn from(node: &CaseNode) -> Self {
         Self {
-            case_id: node.case_id.clone(),
+            case_name: node.case_name.clone(),
             summary: node.summary.clone(),
         }
     }
@@ -149,7 +149,7 @@ impl LocateMessage {
 /// 消息涉及的 case
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocatedCaseRef {
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     /// 是否是涉及该 case 的通道的当前 case
     #[serde(default)]
     pub is_current: bool,
@@ -161,7 +161,7 @@ pub struct LocatedGroup {
     /// 消息在请求 `messages` 中的下标（升序）
     pub messages: Vec<usize>,
     /// 该组所属 case：命中已有 case 即该 case；新话题会在本次定位中建出 case（记忆条数为 0）
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     #[serde(default)]
     pub is_current: bool,
 }
@@ -203,7 +203,7 @@ pub struct CaseListResponse {
 pub struct CaseSummaryRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
 }
 
 /// Case 摘要：节点本身即摘要侧表示（摘要文本 + 层级 + 记录数 + 起止时间）
@@ -237,14 +237,14 @@ impl CaseCursor {
 pub struct CaseRecordsRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsAfterRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     /// 只返回该位置之后的原文副本
     pub after: CaseCursor,
 }
@@ -253,7 +253,7 @@ pub struct CaseRecordsAfterRequest {
 pub struct CaseRecordsTailRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
     /// 只返回结尾若干条原文副本
     pub count: u64,
 }
@@ -344,7 +344,7 @@ impl Watermark {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCasePointer {
     pub channel: ChannelKey,
-    pub case_id: Arc<String>,
+    pub case_name: Arc<String>,
 }
 
 /// 通道水位（watermark.json 的一条）
@@ -441,26 +441,26 @@ mod tests {
         // 都不涉及已有 case：cases 与 groups 都为空
         assert_eq!(serde_json::to_value(LocateResponse::empty()).unwrap(), json!({}));
 
-        // 命中：涉及的 case + 分组（每个组都命中或建出 case，case_id 必填）
+        // 命中：涉及的 case + 分组（每个组都命中或建出 case，case_name 必填）
         let hit = LocateResponse {
             cases: vec![
-                Arc::new(LocatedCaseRef { case_id: Arc::new("e12".into()), is_current: true }),
-                Arc::new(LocatedCaseRef { case_id: Arc::new("e13".into()), is_current: false }),
+                Arc::new(LocatedCaseRef { case_name: Arc::new("e12".into()), is_current: true }),
+                Arc::new(LocatedCaseRef { case_name: Arc::new("e13".into()), is_current: false }),
             ],
             groups: vec![
-                Arc::new(LocatedGroup { messages: vec![0, 1], case_id: Arc::new("e12".into()), is_current: true }),
-                Arc::new(LocatedGroup { messages: vec![2], case_id: Arc::new("e13".into()), is_current: false }),
-                Arc::new(LocatedGroup { messages: vec![3], case_id: Arc::new("e14".into()), is_current: true }),
+                Arc::new(LocatedGroup { messages: vec![0, 1], case_name: Arc::new("e12".into()), is_current: true }),
+                Arc::new(LocatedGroup { messages: vec![2], case_name: Arc::new("e13".into()), is_current: false }),
+                Arc::new(LocatedGroup { messages: vec![3], case_name: Arc::new("e14".into()), is_current: true }),
             ],
         };
         let v = serde_json::to_value(&hit).unwrap();
-        assert_eq!(v["cases"][0], json!({"case_id": "e12", "is_current": true}));
-        assert_eq!(v["groups"][0], json!({"messages": [0, 1], "case_id": "e12", "is_current": true}));
-        assert_eq!(v["groups"][2], json!({"messages": [3], "case_id": "e14", "is_current": true}));
+        assert_eq!(v["cases"][0], json!({"case_name": "e12", "is_current": true}));
+        assert_eq!(v["groups"][0], json!({"messages": [0, 1], "case_name": "e12", "is_current": true}));
+        assert_eq!(v["groups"][2], json!({"messages": [3], "case_name": "e14", "is_current": true}));
         let back: LocateResponse = serde_json::from_value(v).unwrap();
         assert_eq!(back.cases.len(), 2);
         assert_eq!(back.groups.len(), 3);
-        assert_eq!(back.groups[2].case_id.as_str(), "e14");
+        assert_eq!(back.groups[2].case_name.as_str(), "e14");
     }
 
     #[test]
@@ -479,24 +479,24 @@ mod tests {
         assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "think"}));
 
         let after: CaseRecordsAfterRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_id": "e1", "after": v})).unwrap();
+            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_name": "e1", "after": v})).unwrap();
         assert_eq!(after.after.record_type, RecordKind::Think);
 
         let tail: CaseRecordsTailRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_id": "e1", "count": 5})).unwrap();
+            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_name": "e1", "count": 5})).unwrap();
         assert_eq!(tail.count, 5);
 
         // 摘要响应即节点本身（摘要文本 + 层级 + 记录数 + 起止时间）
         let summary = CaseSummaryResponse { case: Arc::new(node()) };
         let v = serde_json::to_value(&summary).unwrap();
-        assert_eq!(v["case"]["case_id"], "e12");
+        assert_eq!(v["case"]["case_name"], "e12");
         assert_eq!(v["case"]["summary"], "摘要");
         assert!(v["case"].get("records").is_none(), "摘要响应不含原文副本");
     }
 
     fn node() -> CaseNode {
         CaseNode {
-            case_id: Arc::new("e12".into()),
+            case_name: Arc::new("e12".into()),
             parent_id: None,
             children: vec![Arc::new("e13".into())],
             mode: CaseMode::Role,
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn test_case_node_serde_and_leaf() {
         let node = CaseNode {
-            case_id: Arc::new("e12".into()),
+            case_name: Arc::new("e12".into()),
             parent_id: None,
             children: vec![Arc::new("e13".into())],
             mode: CaseMode::Role,
@@ -527,10 +527,10 @@ mod tests {
         assert_eq!(v["mode"], "role");
         assert!(v["parent_id"].is_null(), "parent_id 为 null 时序列化为 null（tree.json 形状）");
         assert!(!node.is_leaf());
-        assert_eq!(CaseBrief::from(&node).case_id.as_str(), "e12");
+        assert_eq!(CaseBrief::from(&node).case_name.as_str(), "e12");
 
         let leaf: CaseNode = serde_json::from_value(json!({
-            "case_id": "e13", "mode": "event", "summary": "s", "record_count": 0,
+            "case_name": "e13", "mode": "event", "summary": "s", "record_count": 0,
             "start_time": "t", "end_time": "t", "created_at": "t", "updated_at": "t"
         })).unwrap();
         assert!(leaf.is_leaf());
@@ -620,13 +620,13 @@ mod tests {
     fn test_channel_event_pointer_serde() {
         let p = ChannelCasePointer {
             channel: ChannelKey::new("web", "self1", "g1"),
-            case_id: Arc::new("e13".into()),
+            case_name: Arc::new("e13".into()),
         };
         assert_eq!(serde_json::to_value(&p).unwrap(), json!({
             "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},
-            "case_id": "e13"
+            "case_name": "e13"
         }));
         let back: ChannelCasePointer = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
-        assert_eq!(back.case_id.as_str(), "e13");
+        assert_eq!(back.case_name.as_str(), "e13");
     }
 }

@@ -143,7 +143,7 @@ mod tests {
     fn service(root: &std::path::Path) -> Arc<AbstractService> {
         let manager = Arc::new(ScopeManager::new(root));
         let model = Arc::new(StubModel::new());
-        Arc::new(AbstractService::new(manager, model, 300, 4))
+        Arc::new(AbstractService::new(manager, model, 4))
     }
 
     #[tokio::test]
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
         assert_eq!(tree.current_cases[0].channel, channel);
-        assert_eq!(tree.current_cases[0].case_id.as_str(), "role-case");
+        assert_eq!(tree.current_cases[0].case_name.as_str(), "case");
 
         let state = handle.state.lock().await;
         assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().channel.sn, 2);

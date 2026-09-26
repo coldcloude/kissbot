@@ -85,7 +85,7 @@ fn render_level(level: &[CaseBrief]) -> String {
     }
     level
         .iter()
-        .map(|b| format!("- {}: {}", b.case_id, b.summary))
+        .map(|b| format!("- {}: {}", b.case_name, b.summary))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -93,7 +93,7 @@ fn render_level(level: &[CaseBrief]) -> String {
 /// 第 1 轮（分组轮）提示词：给出当前 case 与全部待处理消息，让模型按 case 分组并标记当前 case
 pub fn grouping_prompt(batch: &str, current: Option<&CaseBrief>) -> String {
     let current = match current {
-        Some(brief) => format!("- {}: {}", brief.case_id, brief.summary),
+        Some(brief) => format!("- {}: {}", brief.case_name, brief.summary),
         None => "（该通道还没有当前 case）".to_string(),
     };
     let current_rule = if current.starts_with("（") {
@@ -121,7 +121,7 @@ pub fn level_prompt(batch: &str, level: &[CaseBrief]) -> String {
         "当层 case（id + 摘要）：\n{level}\n\n\
 待归并内容（每行格式 `[序号] 时间 内容`）：\n{batch}\n\n\
 请判断：\n\
-- 若应并入某个已有 case，输出 {{\"target\":\"<case_id>\"}}\n\
+- 若应并入某个已有 case，输出 {{\"target\":\"<case_name>\"}}\n\
 - 若应在本层新增 case，输出 {{\"target\":\"new\",\"name\":\"<名称>\",\"summary\":\"<摘要>\"}}：\
 名称只能由英文字母、数字与 \"-\" 组成（如 topic-weather-chat），不能用中文、空格或其他字符，且要能概括内容；\
 摘要用简洁中文概括这个新 case（保留关键人物、话题、结论与时间线索）\n\
@@ -408,7 +408,7 @@ mod tests {
     use super::*;
 
     fn brief(id: &str, summary: &str) -> CaseBrief {
-        CaseBrief { case_id: Arc::new(id.into()), summary: Arc::new(summary.into()) }
+        CaseBrief { case_name: Arc::new(id.into()), summary: Arc::new(summary.into()) }
     }
 
     #[test]

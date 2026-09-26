@@ -55,7 +55,7 @@ mod tests {
         let model = StubModel::new();
         let scope = ModelScope::new(&AgentRole::new("0", "dev"), &RoleEvent::parse("dev"));
         let current = vec![CaseBrief {
-            case_id: std::sync::Arc::new("role-1".into()),
+            case_name: std::sync::Arc::new("role-1".into()),
             summary: std::sync::Arc::new("当前 case".into()),
         }];
         let groups = model.group(&scope, "batch", 2, current.first()).await.unwrap();

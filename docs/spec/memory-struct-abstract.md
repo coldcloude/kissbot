@@ -34,10 +34,10 @@
 
 **记忆后缀（role-event）的解析**：按**第一个** `-` 拆分——无 `-` 是角色模式（整个后缀即角色名），含 `-` 是事件模式（前半为角色名，后半为事件标识）。角色名不允许含 `-`，事件标识可以含 `-`（如 UUID），因此 `dev-3f2a-c3d4` 拆成角色 `dev` + 事件标识 `3f2a-c3d4`。
 
-**case id 命名**：
+**case 名**：
 
-- 角色模式：`role-{名称}`——名称由模型在判定「新建」的**同一次调用**里给出，只允许英文字母、数字与 `-`（如 `role-weather-chat`）；与该角色树里已有 case 重名时追加 `-2`、`-3`…。
-- 事件模式：固定为 `event-{事件标识}`（`event-` 前缀），是该角色的**固定顶层叶子 case**。
+- 角色模式：模型给出的名称——名称由模型在判定「新建」的**同一次调用**里给出，只允许英文字母、数字与 `-`（如 `weather-chat`）；与该角色树里已有 case 重名时追加 `-2`、`-3`…。
+- 事件模式：名称就是事件标识本身，是该角色的**固定顶层叶子 case**；因此事件标识也要满足同一字符集（只含英文字母、数字与 `-`，不超过 64 字符），否则归档按失败处理（记忆后缀的 `角色名-事件标识` 里，事件标识可以含 `-`，如 UUID）。
 
 两种模式走**不同的子树、互不并入**：角色模式的逐层判定候选只包含角色模式的 case，事件模式的 case 不参与判定，也不会被并入角色 case。
 
@@ -63,14 +63,14 @@
 定位一批消息涉及的 case：可带多条消息、可跨通道。执行只有一条路径，分三步：
 
 1. **提取**：读一次该记忆后缀的共享记忆，取出各通道水位之后的待归档记录（pending），与本批消息一起**按通道分组**（pending 与本批消息都可以为空）；
-2. **定位（只读）**：对每个通道调用归档入口 `archive(记录, 消息)` —— 角色模式下两者按 `msg_id` 去重合并成一个批次做第 1 轮分组，然后**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 `event-{事件标识}`。判定不改 case 树、不落盘，**pending 是否为空走的是同一套判定**；
+2. **定位（只读）**：对每个通道调用归档入口 `archive(记录, 消息)` —— 角色模式下两者按 `msg_id` 去重合并成一个批次做第 1 轮分组，然后**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 事件标识本身。判定不改 case 树、不落盘，**pending 是否为空走的是同一套判定**；
 3. **存储 + 返回**：只有组里确实有待归档记录的，才真正落地——需要新建的此刻建出 case、记录追加为该 case 的原文副本、重算摘要、推进水位、更新当前 case 指针；其余组只把判定结果作为消息的 case 返回。最后把各通道的分组映射回请求下标合并成响应。
 
 没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（`/abstract/rebuild` 的 rebuild=false 手动触发 / rebuild=true 重建）即原来的归档，不产出分组。
 
 - 没有待处理标记且 `messages` 为空时不读盘、不调模型；带消息时总会读一次共享记忆以提取 pending。
 - 判定阶段一律只读：不建 case、不改 case 树，也不落盘；新建 case、追加原文副本、重算摘要、推进水位都只发生在第 3 步（存储），且只针对组里有待归档记录的组。判定为「需要新建」的组无论有没有记录都对应一个 case：有记录时新建并落地，只定位时同样新建、只是记忆条数为 0。
-- **事件模式**整体一个 case、**不分组、不调模型判定**（分组轮与逐层判定都不执行）：整个后缀固定归入顶层叶子 case `event-{事件标识}`；case 已存在则全部消息归入它，不存在时建出它（记忆条数为 0）。该 case 还需要摘要：由带记录的归档建出时按记录生成，由只带消息的定位建出时当场按消息内容生成（都在本次处理内完成，不留到后续）。
+- **事件模式**整体一个 case、**不分组、不调模型判定**（分组轮与逐层判定都不执行）：整个后缀固定归入名称为事件标识本身的顶层叶子 case；case 已存在则全部消息归入它，不存在时建出它（记忆条数为 0）。该 case 还需要摘要：由带记录的归档建出时按记录生成，由只带消息的定位建出时当场按消息内容生成（都在本次处理内完成，不留到后续）。
 
 **去重与合并**：同一通道批次内，新消息与待归档记录按 `msg_id` 判为同一条（`msg_id` 为空的不参与去重、原样保留；通道已由批次切分，内容、时间、发送者、`is_self` 都不参与判定）。设重复的部分新来为 `A`、已存为 `A'`，不重复的部分新来为 `B`、已存为 `C`，则把 `A'`、`B`、`C` 一起分析：`A'` 与 `C` 照常落盘归档，`A` 与 `B` 只返回所属 case（新消息自身不落盘）。
 
@@ -94,25 +94,25 @@
 // 响应 data
 {
   "cases": [                                        // 消息涉及的全部 case（按首次出现顺序去重）
-    { "case_id": "role-weather-chat", "is_current": true },
-    { "case_id": "role-work-plan", "is_current": false }
+    { "case_name": "weather-chat", "is_current": true },
+    { "case_name": "work-plan", "is_current": false }
   ],
   "groups": [                                       // 分组：哪几条消息属于哪个 case
-    { "messages": [0, 1], "case_id": "role-weather-chat", "is_current": true },
-    { "messages": [2], "case_id": "role-work-plan", "is_current": false },
-    { "messages": [3], "case_id": "role-3", "is_current": true }  // 新话题：本次建出该 case（记忆条数 0）
+    { "messages": [0, 1], "case_name": "weather-chat", "is_current": true },
+    { "messages": [2], "case_name": "work-plan", "is_current": false },
+    { "messages": [3], "case_name": "new-topic", "is_current": true }  // 新话题：本次建出该 case（记忆条数 0）
   ]
 }
 ```
 
 约定：
 
-- 只返回 **case 标识**与分组，不返回摘要与原文副本；摘要与原文由调用方按 case 标识另取（`case/summary`、`case/records*`）。判定阶段只读；落地时每个组都会命中或建出 case，只有组里有待归档记录才会追加原文副本、重算摘要、推进水位。新话题建出的 case 记忆条数为 0，但**名称与摘要当场就有**（模型判定新建的同一次调用一并给出，不留到后续再调模型）；原文副本等这些消息写入记忆并被归档时才补上。
+- 只返回 **case 名**（唯一标识）与分组，不返回摘要与原文副本；摘要与原文由调用方按 case 名另取（`case/summary`、`case/records*`，读取摘要不会重算摘要）。判定阶段只读；落地时每个组都会命中或建出 case，只有组里有待归档记录才会追加原文副本、重算摘要、推进水位。新话题建出的 case 记忆条数为 0，但**名称与摘要当场就有**（模型判定新建的同一次调用一并给出，不留到后续再调模型）；原文副本等这些消息写入记忆并被归档时才补上。
 - 消息按**通道**分别处理：每条消息的通道三元组 `(messenger_id, self_user_id, group_id)` 决定用哪个通道的当前 case 指针（发送者 `user_id` 不参与）；归档与定位都按通道分开调用，去重在单通道批次内只比 `msg_id`。
 - 分组轮的输出必须完整覆盖该通道的合并批次（待归档记录 + 去重后的新消息；下标升序、不重不漏），否则按失败处理。
 - 组标记为当前 case 但该通道没有当前 case 时：含待归档记录的组按归档失败处理（内容无处可落）；只含新消息的组容忍该不一致，退回逐层判定。
-- 其余组自顶层逐层判定：命中叶子 case 即该组的 case；命中非叶子后其子层都未命中则该组落在该父 case 下。判定为「需要新建」时一律建出叶子 case——只有消息的组也建，只是那个 case 的记忆条数为 0（便于这些消息之后写入记忆时并入同一 case）。
-- **事件模式**不分组、不做定位判定：整个后缀固定归入顶层叶子 case `event-{事件标识}`；case 还不存在时建出它（记忆条数为 0）。
+- 其余组自顶层逐层判定，**没有层数上限**：每判定一次要么落在当层（并入叶子 case，或新建），要么下潜一层；case 树有限且无环，下潜必然终止。命中叶子 case 即该组的 case；下潜后当层都未命中则该组在该父 case 下新建。判定为「需要新建」时一律建出叶子 case——只有消息的组也建，只是那个 case 的记忆条数为 0（便于这些消息之后写入记忆时并入同一 case）。
+- **事件模式**不分组、不做定位判定：整个后缀固定归入名称为事件标识本身的顶层叶子 case；case 还不存在时建出它（记忆条数为 0）。
 - 角色树里还没有角色 case（空树）时候选为空，逐层判定照常**调用模型**（提示词写明当层没有 case）：模型必须给出新 case 的名称与摘要，随后每个组建出 case（记忆条数为 0，但已有名称与摘要）。
 - `is_current` 表示该 case 是否是**该组消息所在通道**的当前 case：处理完本批后，该通道的当前 case 指针指向本批**最后一个组**落入的 case（含新建的空 case），`is_current` 据此判定；`cases` 里同一 case 被多个通道命中时，只要有一个通道认为它是当前 case 就为 `true`。
 - `groups` 按各组首条消息在请求 `messages` 中的下标升序；消息在请求中的下标即分组里的 `messages`。重复的新消息映射到已存记录所在的 case。
@@ -120,43 +120,43 @@
 
 ### case/list
 
-按角色树的一层查询 case：`parent_id` 缺省或 `null` 表示查询顶层 case，给出某 case id 则查询其直接子 case。返回的是**整个角色树**在该层的节点——角色模式与事件模式的 case 都在（`mode` 字段区分），与请求的记忆后缀属于哪种模式无关。
+按角色树的一层查询 case：`parent_id` 缺省或 `null` 表示查询顶层 case，给出某 case 名则查询其直接子 case。返回的是**整个角色树**在该层的节点——角色模式与事件模式的 case 都在（`mode` 字段区分），与请求的记忆后缀属于哪种模式无关。
 
 ```jsonc
 // 请求
 { "agent_id": "0", "role": "dev" }                       // 顶层
-{ "agent_id": "0", "role": "dev", "parent_id": "role-weather-chat" } // 某 case 的子层
+{ "agent_id": "0", "role": "dev", "parent_id": "weather-chat" } // 某 case 的子层
 
 // 响应 data
-{ "cases": [ { "case_id": "role-weather-chat", "parent_id": null, "children": ["role-work-plan"], "mode": "role",
+{ "cases": [ { "case_name": "weather-chat", "parent_id": null, "children": ["work-plan"], "mode": "role",
                "summary": "…", "record_count": 42,
                "start_time": "…", "end_time": "…", "created_at": "…", "updated_at": "…" } ] }
 ```
 
 ### case/summary、case/records、case/records-after、case/records-tail
 
-四个接口都以 `{ agent_id, role, case_id }` 定位同一个 case，区别是取回的内容：
+四个接口都以 `{ agent_id, role, case_name }` 定位同一个 case，区别是取回的内容：
 
 ```jsonc
 // /abstract/case/summary 的请求与响应 data
-{ "agent_id": "0", "role": "dev", "case_id": "role-weather-chat" }
-{ "case": { "case_id": "role-weather-chat", "parent_id": null, "children": ["role-work-plan"], "mode": "role",
+{ "agent_id": "0", "role": "dev", "case_name": "weather-chat" }
+{ "case": { "case_name": "weather-chat", "parent_id": null, "children": ["work-plan"], "mode": "role",
             "summary": "…", "record_count": 42,
             "start_time": "…", "end_time": "…", "created_at": "…", "updated_at": "…" } }
 
 // /abstract/case/records 的请求与响应 data（全部原文副本，按 (time, sn) 升序）
-{ "agent_id": "0", "role": "dev", "case_id": "role-weather-chat" }
+{ "agent_id": "0", "role": "dev", "case_name": "weather-chat" }
 { "records": [ { "record_type": "channel", "msg_id": "m-1001", "user_id": "u1",
                  "content": { "msg_type": "Text", "data": "…" },
                  "time": "2026-09-22 13:40:00", "sn": 127, "…": "…" } ] }
 
 // /abstract/case/records-after 的请求与响应 data（指定位置之后的原文副本）
-{ "agent_id": "0", "role": "dev", "case_id": "role-weather-chat",
+{ "agent_id": "0", "role": "dev", "case_name": "weather-chat",
   "after": { "time": "2026-09-22 13:40:00", "sn": 127, "record_type": "channel" } }
 { "records": [ /* 该位置之后的原文副本 */ ] }
 
 // /abstract/case/records-tail 的请求与响应 data（结尾若干条原文副本）
-{ "agent_id": "0", "role": "dev", "case_id": "role-weather-chat", "count": 10 }
+{ "agent_id": "0", "role": "dev", "case_name": "weather-chat", "count": 10 }
 { "records": [ /* 结尾 count 条原文副本，升序 */ ] }
 ```
 
@@ -178,7 +178,7 @@
 {
   "current_cases": [                    // 只含本次请求那个记忆后缀的当前 case 指针
     { "channel": { "messenger_id": "web", "self_user_id": "self1", "group_id": "g1" },
-      "case_id": "event-e1" }
+      "case_name": "e1" }
   ],
   "nodes": [ /* 整棵角色树的节点：角色模式与事件模式的 case 都在 */ ]
 }
@@ -199,7 +199,7 @@
 ```
 
 - `archived` 是本次处理（手动触发或重建）归档的记录条数；`case_count` 是该**角色** case 树的节点总数（两种模式的 case 都算）。
-- `rebuild=false` 忽略待处理标记，把该后缀各通道水位之后的记录全部处理一次；`rebuild=true` 先清空该后缀自己的 case（角色模式为该角色的角色子树，事件模式只清本后缀的 `event-{事件id}`）与该后缀的指针/水位，再重建。
+- `rebuild=false` 忽略待处理标记，把该后缀各通道水位之后的记录全部处理一次；`rebuild=true` 先清空该后缀自己的 case（角色模式为该角色的角色子树，事件模式只清本后缀的 事件标识本身）与该后缀的指针/水位，再重建。
 
 ## 通知协议
 
@@ -259,9 +259,9 @@
 - 逐层判定的当层候选**只有角色模式的 case**（角色子树）；事件模式的固定 case 不参与判定。
 - 分组必须完整覆盖合并批次的全部条目（下标升序、不重不漏）；不满足按失败处理，水位不动，下次查询重试——不能让任何一条记录被水位跳过。
 - 处理完一批后，该通道的当前 case 指针指向本批**最后一个组落入的 case**（含本次新建、记忆条数为 0 的空 case）；水位推进到该批待归档记录中各类记录的最晚位置（只有定位的批次不动水位）。
-- **事件模式**不分组、不做逐层判定：整个记忆后缀固定归入顶层叶子 case `event-{事件标识}`。
+- **事件模式**不分组、不做逐层判定：整个记忆后缀固定归入名称为事件标识本身的顶层叶子 case。
 
-**重建（`/abstract/rebuild` 的 rebuild=true）只清空本次记忆后缀所属模式的那部分子树**：角色模式清空该角色树里全部 `mode == role` 的 case（角色子树），事件模式清空该后缀固定的 `event-*` case；同时复位该后缀的当前 case 指针与水位。另一种模式不受影响。
+**重建（`/abstract/rebuild` 的 rebuild=true）只清空本次记忆后缀所属模式的那部分子树**：角色模式清空该角色树里全部 `mode == role` 的 case（角色子树），事件模式清空该后缀固定的那个事件 case（名称即事件标识）；同时复位该后缀的当前 case 指针与水位。另一种模式不受影响。
 
 ## 配置结构
 
@@ -274,7 +274,6 @@
     "ws_reconnect_interval_secs": 5,         // 通知断线重连间隔
     "max_batch_records": 200,                // 单通道单次处理的条目上限（归档分块）
     "session_max_messages": 20,              // 每个记忆后缀的模型会话上下文保留消息条数上限
-    "max_case_depth": 16,                    // 逐层判定最大层数
     "provider": {                            // provider 配置，结构见 kissbot-llm spec
       "provider_type": "openai",             // "openai" | "anthropic" | "stub"
       "base_url": "https://api.deepseek.com",
@@ -295,7 +294,6 @@
 - 记忆根目录取自 kissbot-memory 的 `memory.root_dir`（`memory-directory.md` 的根目录），本组件不单独配置。
 - memory-store 的 HTTP 地址取自 kissbot-api 的网络地址配置；通知地址为其 WS 端点（`memory.store.notify_listen_addr/notify_listen_port`，见 [memory-store 技术规格](memory-store.md)），在本组件以 `notify_url` 显式给出。
 - provider 与模型配置复用 kissbot-llm 的配置结构（`provider_config` 键名同样接受 `provider`）；本组件只读取自己的配置段。
-- `max_case_depth` 为逐层判定的最大层数（默认 16，防御模型给出环路）。
 - `provider_type = "stub"` 时使用确定性桩模型（不调用外部模型），仅供集成测试与手动验证。
 
 ## 存储格式
@@ -309,20 +307,20 @@
 │   └── context-history/{session-id}-{时间戳}.jsonl
 ├── {角色名}/                              # 角色目录：case 树与原文副本
 │   ├── tree.json                         # 一棵 case 树（角色模式与事件模式共用）
-│   └── cases/{case-id}/                  # 原文副本，每类一个文件
+│   └── cases/{case 名}/                  # 原文副本，每类一个文件
 │       ├── channel-records.jsonl
 │       ├── think-records.jsonl
 │       ├── tool-call-records.jsonl
 │       └── tool-result-records.jsonl
 └── {记忆后缀}/                            # 水位与当前 case 指针（后缀 = 角色名时就是上面的角色目录）
-    ├── current.json                      # 各通道的当前 case 指针（字段 case_id）
+    ├── current.json                      # 各通道的当前 case 指针（字段 case_name）
     └── watermark.json                    # 各通道的已处理水位
 ```
 
 - `{角色名}` 为 RoleEvent 里的角色名；`{记忆后缀}` 为完整 role-event 后缀：角色模式等于角色名（此时后缀目录即角色目录），事件模式为 `{角色名}-{事件标识}`。
 - **case 树按角色共用**：`tree.json` 在角色目录下，同一角色的角色模式与事件模式看到的是同一棵树（查询 `tree/get` 时 `nodes` 相同）。
-- **原始记录、水位、当前指针、模型会话按记忆后缀分开**：原文副本目录在角色目录下按 `case-id` 命名，水位/当前指针在各自的后缀目录下，模型会话按后缀的净化形式（session_id，非字母数字与 `-`/`_`/`.` 的字符替换为 `_`，空后缀用 `_default`）分开。
-- 事件模式的 case 是角色树里固定的顶层叶子，case-id 为 `event-{事件标识}`；角色模式新建 case 的 case-id 为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…）。
+- **原始记录、水位、当前指针、模型会话按记忆后缀分开**：原文副本目录在角色目录下按 `case 名` 命名，水位/当前指针在各自的后缀目录下，模型会话按后缀的净化形式（session_id，非字母数字与 `-`/`_`/`.` 的字符替换为 `_`，空后缀用 `_default`）分开。
+- 事件模式的 case 是角色树里固定的顶层叶子，case 名就是 事件标识本身；角色模式新建 case 的 case 名就是 模型给出的名称（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…）。
 - **新建 case 的名称与摘要都在新建当次给出**：名称非法（含中文、空格或其他字符，或超过 64 字符）或缺摘要都按模型失败处理（保留状态、下次重试）。
 - 原文副本按类型分文件、按时间顺序追加，行内容与记忆存储的记录格式一致；不按日期分文件（日期切分只用于 memory-store 的原始记录文件，case 副本按时间顺序单文件累积）。
 - 记忆存储侧的原始记录仍是 `{根目录}/{agent-id}/memory-store/{year}-{记忆后缀}/…`。
@@ -332,10 +330,10 @@
 ```jsonc
 {
   "nodes": {
-    "role-weather-chat": {
-      "case_id": "role-weather-chat",
+    "weather-chat": {
+      "case_name": "weather-chat",
       "parent_id": null,               // 顶层为 null（序列化时该字段省略，反序列化缺省即 null）
-      "children": ["role-work-plan"],
+      "children": ["work-plan"],
       "mode": "role",                  // "role" | "event"
       "summary": "…",
       "record_count": 42,
@@ -344,8 +342,8 @@
       "created_at": "2026-09-22 10:05:00",
       "updated_at": "2026-09-22 13:49:00"
     },
-    "event-e1": {
-      "case_id": "event-e1",
+    "e1": {
+      "case_name": "e1",
       "children": [],
       "mode": "event",
       "summary": "…",
@@ -362,7 +360,7 @@
 // current.json：某记忆后缀各通道的当前 case 指针（无通道时文件不存在）
 {
   "channels": [
-    { "channel": { "messenger_id": "web", "self_user_id": "self1", "group_id": "g1" }, "case_id": "role-work-plan" }
+    { "channel": { "messenger_id": "web", "self_user_id": "self1", "group_id": "g1" }, "case_name": "work-plan" }
   ]
 }
 
@@ -404,7 +402,7 @@
               { "messages": [2, 3], "current": false } ] } // 其他 case → 以组为单位进入逐层判定
 
 // 第 2 轮起（逐层判定；只含新消息的组同样走这一步，只是不落盘）
-{ "target": "role-3" }    // 并入当层 case（target 为 case_id）；该 case 非叶子时继续下探其子层
+{ "target": "new-topic" }    // 并入当层 case（target 为 case_name）；该 case 非叶子时继续下探其子层
 { "target": "new", "name": "weather-chat", "summary": "…" }  // 在本层新增叶子 case：同一次给出名称与摘要
                                     // name 只能含英文字母、数字与 "-"；校验不通过按模型失败处理
                                     // （只有消息的组也建，记忆条数为 0，但已有名称与摘要）
@@ -437,5 +435,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 ## 验证
 
-- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与两种模式共用 case 树、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取角色子树、分组覆盖校验、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.json 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、跨通道请求的消息下标、重复消息不重复送模型、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、去重按通道进行）、事件模式固定归入 `event-*` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
-- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条/跨通道定位（pending + 消息一次处理）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定 `event-*` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。
+- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与两种模式共用 case 树、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取角色子树、分组覆盖校验、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.json 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、跨通道请求的消息下标、重复消息不重复送模型、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、去重按通道进行）、事件模式固定归入名称为事件标识的顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
+- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条/跨通道定位（pending + 消息一次处理）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入名称为事件标识的顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。

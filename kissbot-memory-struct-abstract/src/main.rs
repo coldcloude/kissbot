@@ -54,12 +54,7 @@ async fn main() {
             }
         }
     };
-    let service = Arc::new(AbstractService::new(
-        manager,
-        model,
-        config.max_case_depth,
-        config.max_batch_records,
-    ));
+    let service = Arc::new(AbstractService::new(manager, model, config.max_batch_records));
 
     info!(
         "[abstract] memory root: {}, max batch records: {}, notify: {:?}",

@@ -58,14 +58,14 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
 }
 
 async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
-    match service.case_summary(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str()).await {
+    match service.case_summary(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
 async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
-    match service.case_records(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str()).await {
+    match service.case_records(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
@@ -73,7 +73,7 @@ async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Js
 
 async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
     match service
-        .case_records_after(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str(), &req.after)
+        .case_records_after(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str(), &req.after)
         .await
     {
         Ok(response) => ok(response),
@@ -83,7 +83,7 @@ async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(re
 
 async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
     match service
-        .case_records_tail(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str(), req.count)
+        .case_records_tail(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str(), req.count)
         .await
     {
         Ok(response) => ok(response),
@@ -130,7 +130,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let manager = Arc::new(ScopeManager::new(temp.path()));
         let model = Arc::new(StubModel::new());
-        let service = Arc::new(AbstractService::new(manager, model, 300, 4));
+        let service = Arc::new(AbstractService::new(manager, model, 4));
         (temp, service)
     }
 
@@ -156,7 +156,7 @@ mod tests {
         let (_temp, service) = test_service();
         let router = create_router(service);
 
-        // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_id
+        // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_name
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
             "agent_id": "0", "role": "dev",
             "messages": [{"time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
@@ -165,19 +165,19 @@ mod tests {
         })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(body["data"]["cases"][0]["case_id"], "role-case");
-        assert_eq!(body["data"]["groups"][0]["case_id"], "role-case");
+        assert_eq!(body["data"]["cases"][0]["case_name"], "case");
+        assert_eq!(body["data"]["groups"][0]["case_name"], "case");
 
         // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
         let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"][0]["case_id"], "role-case");
+        assert_eq!(body["data"]["nodes"][0]["case_name"], "case");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
         assert_eq!(body["data"]["nodes"][0]["summary"], "新 case 摘要");
 
         // case 不存在 → 失败响应（摘要与原文一致）
         for path in ["/abstract/case/summary", "/abstract/case/records"] {
-            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "case_id": "role-9"})).await;
+            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "case_name": "role-9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(body["data"]["case_count"], 1);
 
         let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
-        assert_eq!(body["data"]["cases"][0]["case_id"], "role-case");
+        assert_eq!(body["data"]["cases"][0]["case_name"], "case");
         assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }
 }

@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use crate::config::STRUCT_DIR_NAME;
 use crate::error::{Error, Result};
 use crate::records::list_store_suffixes;
-use crate::tree::{CaseTree, EVENT_CASE_PREFIX, split_role_event};
+use crate::tree::{CaseTree, split_role_event};
 
 /// 角色：作用域标识（agent + 角色名，**不含 event**）。同一角色共用一棵 case 树。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -71,7 +71,7 @@ impl RoleEvent {
         }
     }
 
-    /// 后缀的 case 模式（测试断言用；生产代码直接判 `event_case_id()`）
+    /// 后缀的 case 模式（测试断言用；生产代码直接判 `event_case_name()`）
     #[cfg(test)]
     pub fn mode(&self) -> CaseMode {
         match self.event_id {
@@ -85,9 +85,9 @@ impl RoleEvent {
         AgentRole::new(agent_id, self.role.clone())
     }
 
-    /// 事件模式固定的顶层叶子 case id（`event-{caseid}`）
-    pub fn event_case_id(&self) -> Option<String> {
-        self.event_id.as_ref().map(|event_id| format!("{}{}", EVENT_CASE_PREFIX, event_id))
+    /// 事件模式固定的顶层叶子 case 名称：就是事件标识本身（case 名称即唯一标识）
+    pub fn event_case_name(&self) -> Option<String> {
+        self.event_id.clone()
     }
 
     /// LLM 会话标识（文件名安全；空后缀用 `_default`）
@@ -190,7 +190,7 @@ impl ScopeState {
         self.current_cases
             .iter()
             .filter(|((suffix, _), _)| suffix == role_event)
-            .map(|((_, channel), case_id)| (channel.clone(), case_id.clone()))
+            .map(|((_, channel), case_name)| (channel.clone(), case_name.clone()))
             .collect()
     }
 
@@ -269,8 +269,8 @@ impl ScopeHandle {
         self.dir.join("cases")
     }
 
-    pub fn case_dir(&self, case_id: &str) -> PathBuf {
-        crate::records::case_dir(&self.dir, case_id)
+    pub fn case_dir(&self, case_name: &str) -> PathBuf {
+        crate::records::case_dir(&self.dir, case_name)
     }
 
     /// 持久化 case 树
@@ -278,7 +278,7 @@ impl ScopeHandle {
         let nodes: BTreeMap<String, CaseNode> = tree
             .nodes()
             .into_iter()
-            .map(|n| (n.case_id.as_str().to_string(), n.clone()))
+            .map(|n| (n.case_name.as_str().to_string(), n.clone()))
             .collect();
         write_json(&self.tree_path(), &serde_json::json!({ "nodes": nodes })).await
     }
@@ -290,9 +290,9 @@ impl ScopeHandle {
         }
         let channels: Vec<ChannelCasePointer> = current
             .iter()
-            .map(|(channel, case_id)| ChannelCasePointer {
+            .map(|(channel, case_name)| ChannelCasePointer {
                 channel: channel.clone(),
-                case_id: Arc::new(case_id.clone()),
+                case_name: Arc::new(case_name.clone()),
             })
             .collect();
         write_json(&self.current_path(role_event), &serde_json::json!({ "channels": channels })).await
@@ -330,7 +330,7 @@ impl ScopeHandle {
             None => Vec::new(),
         };
         for pointer in current {
-            state.current_cases.insert((role_event.clone(), pointer.channel), pointer.case_id.as_str().to_string());
+            state.current_cases.insert((role_event.clone(), pointer.channel), pointer.case_name.as_str().to_string());
         }
         let watermarks = match read_json(&dir.join("watermark.json")).await? {
             Some(value) => serde_json::from_value::<WatermarkFile>(value)
@@ -351,8 +351,8 @@ impl ScopeHandle {
     }
 
     /// 删除某 case 的原文副本目录（重建前调用）
-    pub async fn reset_case_records(&self, case_id: &str) -> Result<()> {
-        crate::records::clear_case_records(&self.case_dir(case_id)).await
+    pub async fn reset_case_records(&self, case_name: &str) -> Result<()> {
+        crate::records::clear_case_records(&self.case_dir(case_name)).await
     }
 }
 
@@ -529,14 +529,14 @@ mod tests {
     fn role_event_parses_suffix_and_mode() {
         let role = RoleEvent::parse("dev");
         assert_eq!(role.mode(), CaseMode::Role);
-        assert_eq!(role.event_case_id(), None);
+        assert_eq!(role.event_case_name(), None);
         assert_eq!(role.suffix(), "dev");
         assert_eq!(role.session_id(), "dev");
         assert_eq!(role.agent_role("0"), AgentRole::new("0", "dev"));
 
         let event = RoleEvent::parse("dev-e12");
         assert_eq!(event.mode(), CaseMode::Event);
-        assert_eq!(event.event_case_id().as_deref(), Some("event-e12"));
+        assert_eq!(event.event_case_name().as_deref(), Some("e12"));
         assert_eq!(event.suffix(), "dev-e12");
         assert_eq!(event.session_id(), "dev-e12");
 
@@ -591,7 +591,7 @@ mod tests {
         // current.json / watermark.json 按通道分组，放在记忆后缀目录下
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.current_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["self_user_id"], "self1");
-        assert_eq!(raw["channels"][0]["case_id"], "role-1");
+        assert_eq!(raw["channels"][0]["case_name"], "role-1");
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.watermark_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["messenger_id"], "web");
         assert_eq!(raw["channels"][0]["watermark"]["channel"]["sn"], 1);
@@ -630,7 +630,7 @@ mod tests {
         let event = RoleEvent::parse("dev-e1");
         {
             let mut state = role.state.lock().await;
-            state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "event-e1".into());
+            state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "e1".into());
             role.save_state(&event, &state).await.unwrap();
         }
 

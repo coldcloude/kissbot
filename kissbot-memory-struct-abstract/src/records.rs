@@ -100,9 +100,9 @@ pub fn case_record_path(case_dir: &Path, kind: RecordKind) -> PathBuf {
     case_dir.join(format!("{}-records.jsonl", kind.file_stem()))
 }
 
-/// Case 目录：`{root}/{agent}/memory-struct-abstract/{角色名}/cases/{case_id}`
-pub fn case_dir(role_dir: &Path, case_id: &str) -> PathBuf {
-    role_dir.join("cases").join(case_id)
+/// Case 目录：`{root}/{agent}/memory-struct-abstract/{角色名}/cases/{case_name}`
+pub fn case_dir(role_dir: &Path, case_name: &str) -> PathBuf {
+    role_dir.join("cases").join(case_name)
 }
 
 /// 枚举某记忆后缀在记忆存储中已存在的记录文件（按日期升序，只取 `date >= from_date`）。
@@ -735,8 +735,8 @@ mod tests {
 
     #[test]
     fn case_dir_layout() {
-        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "event-e12");
-        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/event-e12"));
+        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "e12");
+        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/e12"));
     }
 
     #[tokio::test]

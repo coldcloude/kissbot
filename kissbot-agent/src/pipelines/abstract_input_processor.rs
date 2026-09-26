@@ -283,19 +283,18 @@ async fn build_context(
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
-    // 2. 逐个取 case 摘要与结尾若干条原文副本；还没有归档内容的 case 跳过：记忆条数为 0 的
-    //    case 就是本批消息刚建出来的（它概括的正是本批消息，原文也会随本批进 pipeline），
-    //    摘要为空的只可能是历史遗留数据
+    // 2. 逐个取 case 摘要与结尾若干条原文副本（都按 case 名查询，读取摘要不会重算摘要）；
+    //    摘要为空的 case（历史遗留数据）跳过，不进上下文
     let mut summaries = Vec::new();
     let mut tails: Vec<Vec<Arc<CaseRecord>>> = Vec::new();
     for case in located.cases.iter() {
-        let node = client.case_summary(agent_id, &role, case.case_id.as_str()).await?;
-        if node.summary.as_str().is_empty() || node.record_count == 0 {
+        let node = client.case_summary(agent_id, &role, case.case_name.as_str()).await?;
+        if node.summary.as_str().is_empty() {
             continue;
         }
         summaries.push(node.summary.as_str().to_string());
         let tail = client
-            .case_records_tail(agent_id, &role, case.case_id.as_str(), cfg.memory_count as u64)
+            .case_records_tail(agent_id, &role, case.case_name.as_str(), cfg.memory_count as u64)
             .await?;
         tails.push(tail.records);
     }

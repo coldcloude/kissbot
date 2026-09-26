@@ -52,14 +52,14 @@ impl AbstractClient {
     }
 
     /// POST /abstract/case/summary：取 case 摘要（返回节点本身：摘要文本 + 层级 + 记录数 + 起止时间）
-    pub async fn case_summary(&self, agent_id: &str, role: &str, case_id: &str) -> Result<CaseNode> {
+    pub async fn case_summary(&self, agent_id: &str, role: &str, case_name: &str) -> Result<CaseNode> {
         let resp: CaseSummaryResponse = self
             .post(
                 "/abstract/case/summary",
                 &CaseSummaryRequest {
                     agent_id: Arc::new(agent_id.to_string()),
                     role: Arc::new(role.to_string()),
-                    case_id: Arc::new(case_id.to_string()),
+                    case_name: Arc::new(case_name.to_string()),
                 },
             )
             .await?;
@@ -67,13 +67,13 @@ impl AbstractClient {
     }
 
     /// POST /abstract/case/records-tail：取 case 结尾 count 条原文副本（升序）
-    pub async fn case_records_tail(&self, agent_id: &str, role: &str, case_id: &str, count: u64) -> Result<CaseRecordsResponse> {
+    pub async fn case_records_tail(&self, agent_id: &str, role: &str, case_name: &str, count: u64) -> Result<CaseRecordsResponse> {
         self.post(
             "/abstract/case/records-tail",
             &CaseRecordsTailRequest {
                 agent_id: Arc::new(agent_id.to_string()),
                 role: Arc::new(role.to_string()),
-                case_id: Arc::new(case_id.to_string()),
+                case_name: Arc::new(case_name.to_string()),
                 count,
             },
         )

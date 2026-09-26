@@ -2,8 +2,8 @@
 //!
 //! 树以**角色**（`agent + 角色名`）为作用域组织，跨年份持续累积；节点即 kissbot-api 的
 //! [`CaseNode`]。同一个角色的角色模式与事件模式共用这一棵树，但各走各的子树、互不并入：
-//! 角色模式的 case 由模型判定划分（id 前缀 `role-`），事件模式的 case 是外部 case 固定的
-//! 顶层叶子（id 前缀 `event-`，见 [`EVENT_CASE_PREFIX`]）。
+//! 角色模式的 case 由模型判定划分（名称由模型给出），事件模式的 case 是外部事件固定的顶层
+//! 叶子（名称即事件标识）。**case 名称就是 case 的唯一标识**，没有单独分配的 id。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -11,12 +11,6 @@ use std::sync::Arc;
 use kissbot_api::{CaseBrief, CaseMode, CaseNode};
 
 use crate::records::RecordEntry;
-
-/// 角色模式 case id 前缀（本组件分配：`role-1`、`role-2`…）
-pub const ROLE_CASE_PREFIX: &str = "role-";
-
-/// 事件模式 case id 前缀（外部事件标识拼在其后：`event-{event id}`）
-pub const EVENT_CASE_PREFIX: &str = "event-";
 
 #[derive(Debug, Clone, Default)]
 pub struct CaseTree {
@@ -30,7 +24,7 @@ impl CaseTree {
 
     pub fn from_nodes(nodes: Vec<CaseNode>) -> Self {
         Self {
-            nodes: nodes.into_iter().map(|n| (n.case_id.as_str().to_string(), n)).collect(),
+            nodes: nodes.into_iter().map(|n| (n.case_name.as_str().to_string(), n)).collect(),
         }
     }
 
@@ -44,19 +38,19 @@ impl CaseTree {
         self.nodes.len()
     }
 
-    pub fn get(&self, case_id: &str) -> Option<&CaseNode> {
-        self.nodes.get(case_id)
+    pub fn get(&self, case_name: &str) -> Option<&CaseNode> {
+        self.nodes.get(case_name)
     }
 
-    /// 全部节点（按 created_at、case_id 升序）
+    /// 全部节点（按 created_at、case_name 升序）
     pub fn nodes(&self) -> Vec<&CaseNode> {
         let mut nodes: Vec<&CaseNode> = self.nodes.values().collect();
-        nodes.sort_by(|a, b| (a.created_at.as_str(), a.case_id.as_str()).cmp(&(b.created_at.as_str(), b.case_id.as_str())));
+        nodes.sort_by(|a, b| (a.created_at.as_str(), a.case_name.as_str()).cmp(&(b.created_at.as_str(), b.case_name.as_str())));
         nodes
     }
 
-    pub fn contains(&self, case_id: &str) -> bool {
-        self.nodes.contains_key(case_id)
+    pub fn contains(&self, case_name: &str) -> bool {
+        self.nodes.contains_key(case_name)
     }
 
     /// 某模式的全部 case id
@@ -64,7 +58,7 @@ impl CaseTree {
         self.nodes
             .values()
             .filter(|n| n.mode == mode)
-            .map(|n| n.case_id.as_str().to_string())
+            .map(|n| n.case_name.as_str().to_string())
             .collect()
     }
 
@@ -84,13 +78,13 @@ impl CaseTree {
             .into_iter()
             .filter(|n| n.parent_id.is_none())
             .filter(|n| mode.is_none_or(|mode| n.mode == mode))
-            .map(|n| n.case_id.as_str().to_string())
+            .map(|n| n.case_name.as_str().to_string())
             .collect()
     }
 
-    /// 某节点的子 case id（按 created_at、case_id 升序）
-    pub fn children_ids(&self, case_id: &str) -> Vec<String> {
-        let Some(node) = self.nodes.get(case_id) else {
+    /// 某节点的子 case id（按 created_at、case_name 升序）
+    pub fn children_ids(&self, case_name: &str) -> Vec<String> {
+        let Some(node) = self.nodes.get(case_name) else {
             return Vec::new();
         };
         let mut ids = node.children.clone();
@@ -103,19 +97,19 @@ impl CaseTree {
     }
 
     /// 角色模式的子 case id（逐层判定的候选）
-    pub fn role_children_ids(&self, case_id: &str) -> Vec<String> {
-        self.children_ids(case_id)
+    pub fn role_children_ids(&self, case_name: &str) -> Vec<String> {
+        self.children_ids(case_name)
             .into_iter()
             .filter(|id| self.get(id).map(|n| n.mode == CaseMode::Role).unwrap_or(false))
             .collect()
     }
 
-    pub fn is_leaf(&self, case_id: &str) -> bool {
-        self.nodes.get(case_id).map(|n| n.is_leaf()).unwrap_or(false)
+    pub fn is_leaf(&self, case_name: &str) -> bool {
+        self.nodes.get(case_name).map(|n| n.is_leaf()).unwrap_or(false)
     }
 
-    pub fn brief(&self, case_id: &str) -> Option<CaseBrief> {
-        self.nodes.get(case_id).map(CaseBrief::from)
+    pub fn brief(&self, case_name: &str) -> Option<CaseBrief> {
+        self.nodes.get(case_name).map(CaseBrief::from)
     }
 
     pub fn briefs(&self, ids: &[String]) -> Vec<CaseBrief> {
@@ -123,9 +117,9 @@ impl CaseTree {
     }
 
     /// 父链（自近到远）
-    pub fn ancestors(&self, case_id: &str) -> Vec<String> {
+    pub fn ancestors(&self, case_name: &str) -> Vec<String> {
         let mut chain = Vec::new();
-        let mut cursor = self.nodes.get(case_id).and_then(|n| n.parent_id.clone());
+        let mut cursor = self.nodes.get(case_name).and_then(|n| n.parent_id.clone());
         while let Some(parent) = cursor {
             chain.push(parent.as_str().to_string());
             cursor = self.nodes.get(parent.as_str()).and_then(|n| n.parent_id.clone());
@@ -134,9 +128,9 @@ impl CaseTree {
     }
 
     /// 新建节点并挂到父节点下（`parent_id` 为 None 即顶层）
-    pub fn create_node(&mut self, case_id: &str, parent_id: Option<&str>, mode: CaseMode, now: &str) -> CaseNode {
+    pub fn create_node(&mut self, case_name: &str, parent_id: Option<&str>, mode: CaseMode, now: &str) -> CaseNode {
         let node = CaseNode {
-            case_id: Arc::new(case_id.to_string()),
+            case_name: Arc::new(case_name.to_string()),
             parent_id: parent_id.map(|p| Arc::new(p.to_string())),
             children: Vec::new(),
             mode,
@@ -149,26 +143,26 @@ impl CaseTree {
         };
         if let Some(parent) = parent_id {
             if let Some(parent_node) = self.nodes.get_mut(parent) {
-                parent_node.children.push(Arc::new(case_id.to_string()));
+                parent_node.children.push(Arc::new(case_name.to_string()));
             }
         }
-        self.nodes.insert(case_id.to_string(), node.clone());
+        self.nodes.insert(case_name.to_string(), node.clone());
         node
     }
 
     /// 删除若干 case（并从父节点的 children 摘除）；重建时按模式清空子树用
-    pub fn remove_nodes(&mut self, case_ids: &BTreeSet<String>) {
-        for case_id in case_ids {
-            self.nodes.remove(case_id);
+    pub fn remove_nodes(&mut self, case_names: &BTreeSet<String>) {
+        for case_name in case_names {
+            self.nodes.remove(case_name);
         }
         for node in self.nodes.values_mut() {
-            node.children.retain(|child| !case_ids.contains(child.as_str()));
+            node.children.retain(|child| !case_names.contains(child.as_str()));
         }
     }
 
     /// case 内容变化后更新节点统计（记录条数、起止时间、更新时间）
-    pub fn apply_records(&mut self, case_id: &str, entries: &[RecordEntry], now: &str) -> Option<&CaseNode> {
-        let node = self.nodes.get_mut(case_id)?;
+    pub fn apply_records(&mut self, case_name: &str, entries: &[RecordEntry], now: &str) -> Option<&CaseNode> {
+        let node = self.nodes.get_mut(case_name)?;
         if !entries.is_empty() {
             let start = entries.iter().map(|e| e.time.as_str()).min().unwrap_or("").to_string();
             let end = entries.iter().map(|e| e.time.as_str()).max().unwrap_or("").to_string();
@@ -181,24 +175,23 @@ impl CaseTree {
             node.record_count += entries.len() as u64;
         }
         node.updated_at = Arc::new(now.to_string());
-        self.nodes.get(case_id)
+        self.nodes.get(case_name)
     }
 
-    pub fn set_summary(&mut self, case_id: &str, summary: &str, now: &str) {
-        if let Some(node) = self.nodes.get_mut(case_id) {
+    pub fn set_summary(&mut self, case_name: &str, summary: &str, now: &str) {
+        if let Some(node) = self.nodes.get_mut(case_name) {
             node.summary = Arc::new(summary.to_string());
             node.updated_at = Arc::new(now.to_string());
         }
     }
 
-    /// 角色模式的新 case id：`role-{模型给出的名称}`；与该角色树里已有 case 重名时追加 `-2`、`-3`…
-    pub fn unique_role_case_id(&self, name: &str) -> String {
-        let base = format!("{}{}", ROLE_CASE_PREFIX, name);
-        if !self.contains(&base) {
-            return base;
+    /// 角色模式的新 case 名称：模型给出的名称；与角色树里已有 case 重名时追加 `-2`、`-3`…
+    pub fn unique_case_name(&self, name: &str) -> String {
+        if !self.contains(name) {
+            return name.to_string();
         }
         for suffix in 2u64.. {
-            let candidate = format!("{}-{}", base, suffix);
+            let candidate = format!("{}-{}", name, suffix);
             if !self.contains(&candidate) {
                 return candidate;
             }
@@ -266,12 +259,12 @@ mod tests {
         let mut tree = CaseTree::new();
         tree.create_node("role-1", None, CaseMode::Role, NOW);
         tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("event-e12", None, CaseMode::Event, NOW);
+        tree.create_node("e12", None, CaseMode::Event, NOW);
 
-        assert_eq!(tree.top_level_ids(), vec!["event-e12", "role-1"], "查询可见全部顶层 case（按 created_at、case_id 升序）");
+        assert_eq!(tree.top_level_ids(), vec!["e12", "role-1"], "查询可见全部顶层 case（按 created_at、case_name 升序）");
         assert_eq!(tree.role_top_level_ids(), vec!["role-1"], "角色模式判定只看角色子树");
         assert_eq!(tree.role_children_ids("role-1"), vec!["role-2"]);
-        assert_eq!(tree.ids_of_mode(CaseMode::Event), ["event-e12".to_string()].into_iter().collect());
+        assert_eq!(tree.ids_of_mode(CaseMode::Event), ["e12".to_string()].into_iter().collect());
     }
 
     #[test]
@@ -279,10 +272,10 @@ mod tests {
         let mut tree = CaseTree::new();
         tree.create_node("role-1", None, CaseMode::Role, NOW);
         tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("event-e12", None, CaseMode::Event, NOW);
+        tree.create_node("e12", None, CaseMode::Event, NOW);
 
         tree.remove_nodes(&tree.ids_of_mode(CaseMode::Event));
-        assert!(!tree.contains("event-e12"));
+        assert!(!tree.contains("e12"));
         assert_eq!(tree.top_level_ids(), vec!["role-1"]);
 
         tree.remove_nodes(&tree.ids_of_mode(CaseMode::Role));
@@ -309,18 +302,18 @@ mod tests {
     }
 
     #[test]
-    fn unique_role_case_id_appends_suffix_on_conflict() {
+    fn unique_case_name_appends_suffix_on_conflict() {
         let mut tree = CaseTree::new();
-        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat");
+        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat");
 
         // 重名（含模型本批内给出同名）时追加 -2、-3…，名称字符集仍然合法
-        tree.create_node("role-weather-chat", None, CaseMode::Role, NOW);
-        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-2");
-        tree.create_node("role-weather-chat-2", None, CaseMode::Role, NOW);
-        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-3");
-        // 事件模式的固定 case 不影响角色命名空间
-        tree.create_node("event-weather-chat", None, CaseMode::Event, NOW);
-        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-3");
+        tree.create_node("weather-chat", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat-2");
+        tree.create_node("weather-chat-2", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat-3");
+        // 名称是整棵角色树的唯一标识：事件模式的 case 占用的名称同样要避开
+        tree.create_node("e1", None, CaseMode::Event, NOW);
+        assert_eq!(tree.unique_case_name("e1"), "e1-2");
     }
 
     #[test]
@@ -342,9 +335,9 @@ mod tests {
         tree.set_summary("role-2", "摘要二", NOW);
         let briefs = tree.briefs(&["role-2".to_string(), "missing".to_string(), "role-1".to_string()]);
         assert_eq!(briefs.len(), 2);
-        assert_eq!(briefs[0].case_id.as_str(), "role-2");
+        assert_eq!(briefs[0].case_name.as_str(), "role-2");
         assert_eq!(briefs[0].summary.as_str(), "摘要二");
-        assert_eq!(briefs[1].case_id.as_str(), "role-1");
+        assert_eq!(briefs[1].case_name.as_str(), "role-1");
     }
 
     #[test]
