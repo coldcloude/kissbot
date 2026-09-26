@@ -25,21 +25,18 @@ pub(crate) fn merge_located(
     let mut groups: Vec<Arc<LocatedGroup>> = Vec::with_capacity(located.len());
     let mut events: Vec<Arc<LocatedEventRef>> = Vec::new();
     for (_, channel, group) in located {
-        let is_current = group
-            .event_id
-            .as_ref()
-            .map(|event_id| current_events.get(&channel).map(|current| current.as_str() == event_id.as_str()).unwrap_or(false))
+        let is_current = current_events
+            .get(&channel)
+            .map(|current| current.as_str() == group.event_id.as_str())
             .unwrap_or(false);
         let group = Arc::new(LocatedGroup { messages: group.messages, event_id: group.event_id, is_current });
-        if let Some(event_id) = group.event_id.as_ref() {
-            match events.iter_mut().find(|event| event.event_id == *event_id) {
-                Some(event) => {
-                    if is_current {
-                        *event = Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current: true });
-                    }
+        match events.iter_mut().find(|event| event.event_id == group.event_id) {
+            Some(event) => {
+                if is_current {
+                    *event = Arc::new(LocatedEventRef { event_id: group.event_id.clone(), is_current: true });
                 }
-                None => events.push(Arc::new(LocatedEventRef { event_id: event_id.clone(), is_current })),
             }
+            None => events.push(Arc::new(LocatedEventRef { event_id: group.event_id.clone(), is_current })),
         }
         groups.push(group);
     }
@@ -139,7 +136,7 @@ mod tests {
         archiver.archive(handle, &mut state, channel, entries, &[]).await.unwrap();
     }
 
-    /// 定位一批消息：逐通道走归档入口，但只传消息（不落盘、不新建事件）
+    /// 定位一批消息：逐通道走归档入口，但只传消息（不落盘；新话题会建出记忆条数为 0 的事件）
     async fn locate(handle: &ScopeHandle, model: &Arc<StubModel>, messages: &[LocateMessage]) -> LocateResponse {
         let archiver = Archiver::new(model.clone(), 4, 200);
         let mut state = handle.state.lock().await;
@@ -153,7 +150,7 @@ mod tests {
                 located.push((
                     first,
                     channel.clone(),
-                    LocatedGroup { messages: global, event_id: group.event_id.map(Arc::new), is_current: false },
+                    LocatedGroup { messages: global, event_id: Arc::new(group.event_id), is_current: false },
                 ));
             }
         }
@@ -165,22 +162,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_messages_or_empty_tree_returns_no_events() {
+    async fn empty_messages_returns_nothing_and_empty_tree_creates_event_without_model() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(ScopeId::new("0", "dev")).await.unwrap();
         let model = Arc::new(StubModel::new());
 
-        // 没有消息
+        // 没有消息：不建事件
         let response = locate(&handle, &model, &[]).await;
         assert!(response.events.is_empty());
+        assert!(response.groups.is_empty());
 
-        // 空树：按通道各成一组，但不涉及任何事件，且不调模型
+        // 空树 + 消息：整批一组、直接建出事件（记忆条数 0）；没有事件可比对，不调逐层判定
         let response = locate(&handle, &model, &[message("你好"), message("在吗")]).await;
-        assert!(response.events.is_empty());
+        assert_eq!(event_ids(&response), vec!["e1"]);
         assert_eq!(response.groups.len(), 1, "同一通道归一组");
-        assert!(response.groups[0].event_id.is_none());
-        assert!(model.prompts().is_empty(), "空树不调模型");
+        assert_eq!(response.groups[0].event_id.as_str(), "e1");
+        assert_eq!(model.prompts().len(), 1, "只有第 1 轮分组，没有逐层判定");
+        assert!(model.prompts()[0].contains("\"groups\""));
+        let (tree_len, record_count) = {
+            let state = handle.state.lock().await;
+            (state.tree.len(), state.tree.get("e1").unwrap().record_count)
+        };
+        assert_eq!(tree_len, 1, "定位为新话题建出事件");
+        assert_eq!(record_count, 0, "事件记忆条数为 0");
     }
 
     #[tokio::test]
@@ -198,24 +203,28 @@ mod tests {
         assert!(response.events[0].is_current);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[0].event_id.as_ref().map(|id| id.as_str()), Some("e1"));
+        assert_eq!(response.groups[0].event_id.as_str(), "e1");
     }
 
     #[tokio::test]
-    async fn new_topic_group_has_no_event() {
+    async fn new_topic_group_creates_empty_event() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(ScopeId::new("0", "dev")).await.unwrap();
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
 
-        // 组未标记当前事件 → 只读下探；顶层未命中 → 该组不涉及任何事件
+        // 组未标记当前事件 → 逐层判定顶层未命中 → 建出记忆条数为 0 的新事件
         model.push_group(&[0], false);
         model.push_level(LevelDecision::New);
         let response = locate(&handle, &model, &[message("换个话题")]).await;
-        assert!(response.events.is_empty(), "新话题不涉及已有事件");
+        assert_eq!(event_ids(&response), vec!["e2"], "新话题也建出事件");
         assert_eq!(response.groups.len(), 1);
-        assert!(response.groups[0].event_id.is_none());
+        assert_eq!(response.groups[0].event_id.as_str(), "e2");
+        assert!(response.events[0].is_current, "指针指向本批最后一个组的事件");
+        let state = handle.state.lock().await;
+        assert_eq!(state.tree.get("e2").unwrap().record_count, 0, "新事件记忆条数为 0");
+        assert_eq!(state.tree.len(), 2);
     }
 
     #[tokio::test]
@@ -244,19 +253,19 @@ mod tests {
         model.push_level(LevelDecision::New); // 第四条：顶层未命中 → 新话题
         let response = locate(&handle, &model, &[message("a"), message("b"), message("c"), message("d")]).await;
 
-        assert_eq!(event_ids(&response), vec!["e2", "e1"], "涉及的事件按首次出现顺序去重");
+        assert_eq!(event_ids(&response), vec!["e2", "e1", "e3"], "涉及的事件按首次出现顺序去重（新话题建出 e3）");
         let flags: Vec<bool> = response.events.iter().map(|event| event.is_current).collect();
-        assert_eq!(flags, vec![true, false]);
+        assert_eq!(flags, vec![false, false, true], "指针指向本批最后一个组的事件 e3");
         assert_eq!(response.groups.len(), 3);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[1].event_id.as_ref().map(|id| id.as_str()), Some("e1"));
-        assert!(response.groups[0].is_current);
+        assert_eq!(response.groups[1].event_id.as_str(), "e1");
+        assert!(!response.groups[0].is_current);
         assert!(!response.groups[1].is_current);
-        assert!(response.groups[2].event_id.is_none(), "新话题组没有事件");
+        assert_eq!(response.groups[2].event_id.as_str(), "e3", "新话题组建出新事件");
     }
 
     #[tokio::test]
-    async fn level_descent_picks_child_or_returns_parent() {
+    async fn level_descent_picks_child_or_creates_child() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(ScopeId::new("0", "dev")).await.unwrap();
@@ -275,12 +284,16 @@ mod tests {
         let response = locate(&handle, &model, &[message("子事件相关")]).await;
         assert_eq!(event_ids(&response), vec!["e2"]);
 
-        // 第四条消息：顶层命中 e1（非叶子）→ 子层都未命中 → 命中父事件 e1
+        // 第四条消息：顶层命中 e1（非叶子）→ 子层都未命中 → 在 e1 下建出新的空事件
         model.push_group(&[0], false);
         model.push_level(LevelDecision::Merge("e1".into()));
         model.push_level(LevelDecision::New);
         let response = locate(&handle, &model, &[message("父事件相关")]).await;
-        assert_eq!(event_ids(&response), vec!["e1"]);
+        assert_eq!(event_ids(&response), vec!["e3"]);
+        let state = handle.state.lock().await;
+        let created = state.tree.get("e3").unwrap();
+        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("e1"), "建在命中的父事件下");
+        assert_eq!(created.record_count, 0, "新事件记忆条数为 0");
     }
 
     #[tokio::test]
@@ -342,20 +355,21 @@ mod tests {
         assert!(model.prompts().is_empty(), "事件模式不触发定位判定");
     }
 
-    /// 事件模式 + 没有事件（也没有记录）：只定位新消息，不新建事件
+    /// 事件模式 + 没有事件（也没有记录）：定位会建出作用域事件（记忆条数 0），不调模型
     #[tokio::test]
-    async fn event_mode_without_event_returns_no_event() {
+    async fn event_mode_without_event_creates_scope_event() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(ScopeId::new("0", "dev-e1")).await.unwrap();
         let model = Arc::new(StubModel::new());
 
         let response = locate(&handle, &model, &[message("任意消息")]).await;
-        assert!(response.events.is_empty(), "定位不新建事件");
+        assert_eq!(event_ids(&response), vec!["e1"]);
         assert_eq!(response.groups.len(), 1);
-        assert!(response.groups[0].event_id.is_none());
+        assert_eq!(response.groups[0].event_id.as_str(), "e1");
         assert!(model.prompts().is_empty(), "事件模式不调模型");
-        assert!(handle.state.lock().await.tree.is_empty(), "定位不落盘、不建节点");
+        let state = handle.state.lock().await;
+        assert_eq!(state.tree.get("e1").unwrap().record_count, 0, "事件记忆条数为 0");
     }
 
     #[test]

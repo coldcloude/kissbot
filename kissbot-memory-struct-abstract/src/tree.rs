@@ -28,6 +28,8 @@ impl Tree {
         }
     }
 
+    /// 事件树是否为空（测试断言用）
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }

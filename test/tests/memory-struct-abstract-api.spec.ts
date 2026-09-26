@@ -532,4 +532,25 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const watermark = await waitForWatermark(role, 'self4', t1);
     expect(watermark.channels[0].watermark.channel.sn).toBe(2);
   });
+
+  // TC-10 定位新话题：作用域里没有任何已存记录时也建出事件（记忆条数 0）
+  test('TC-10: 定位新话题建出空事件', async ({ request }) => {
+    const role = 'dev5';
+    const channel: TestChannel = { messenger: 'web', selfUser: 'self5', group: 'g5' };
+
+    const data = await locateMessages(request, role, [{ channel, text: '一个全新话题' }]);
+    const eventId = data.events[0]?.event_id;
+    expect(eventId, '新话题也返回事件标识').toBeTruthy();
+    expect(data.events[0].is_current).toBe(true);
+    expect(data.groups).toEqual([{ messages: [0], event_id: eventId, is_current: true }]);
+
+    // 查询只读：能看到这个事件，但记忆条数为 0、摘要为空、原文为空
+    const tree = await treeOf(request, role);
+    const node = tree.nodes.find((n: any) => n.event_id === eventId);
+    expect(node.record_count).toBe(0);
+    expect(node.summary).toBe('');
+    const records = await apiPost(request, ABSTRACT_BASE, '/abstract/event/records', { agent_id: AGENT, role, event_id: eventId });
+    expect(records.success).toBe(true);
+    expect(records.data.records).toHaveLength(0);
+  });
 });

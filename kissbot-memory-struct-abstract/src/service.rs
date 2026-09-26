@@ -318,7 +318,7 @@ fn place_groups(channel: &ChannelKey, indices: &[usize], groups: Vec<PlaceGroup>
             Some((
                 first,
                 channel.clone(),
-                LocatedGroup { messages, event_id: group.event_id.map(Arc::new), is_current: false },
+                LocatedGroup { messages, event_id: Arc::new(group.event_id), is_current: false },
             ))
         })
         .collect()
@@ -941,11 +941,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(response.events.is_empty(), "空树不涉及任何事件");
+        assert_eq!(events_of(&response), vec!["e1"], "新话题也建出事件（记忆条数 0）");
         assert_eq!(response.groups.len(), 1, "同通道整批一组");
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert!(response.groups[0].event_id.is_none());
-        assert!(f.model.prompts().is_empty(), "空树不调模型");
+        assert_eq!(response.groups[0].event_id.as_str(), "e1");
+        assert_eq!(f.model.prompts().len(), 1, "只有第 1 轮分组（空树没有逐层判定）");
+        assert_eq!(node(&f, "dev", "e1").await.unwrap().record_count, 0);
     }
 
     /// locate 对每个通道只调用一次 archive：同一次提取里不会重复处理某个通道
@@ -980,7 +981,7 @@ mod tests {
         );
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert!(response.groups[0].event_id.is_none());
+        assert_eq!(response.groups[0].event_id.as_str(), "e2", "新话题建出记忆条数为 0 的事件");
         assert_eq!(pending_len(&f, "dev", &a).await, 0);
     }
 
@@ -1003,18 +1004,18 @@ mod tests {
             .await
             .unwrap();
 
-        let mut groups: Vec<(Vec<usize>, Option<String>)> = response
+        let mut groups: Vec<(Vec<usize>, String)> = response
             .groups
             .iter()
-            .map(|group| (group.messages.clone(), group.event_id.as_ref().map(|id| id.as_str().to_string())))
+            .map(|group| (group.messages.clone(), group.event_id.as_str().to_string()))
             .collect();
         groups.sort();
         assert_eq!(
             groups,
-            vec![(vec![0], None), (vec![1], Some("e1".to_string()))],
-            "B 的消息下标应是请求全局下标 1，而不是该通道批次内的 0"
+            vec![(vec![0], "e1".to_string()), (vec![1], "e2".to_string())],
+            "分组下标是请求全局下标（B 的消息是 1，不是该通道批次内的 0），且每个组都有事件"
         );
-        assert_eq!(events_of(&response), vec!["e1"]);
+        assert_eq!(events_of(&response), vec!["e1", "e2"]);
     }
 
     #[tokio::test]
@@ -1047,7 +1048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locate_new_message_group_reads_through_without_creating_events() {
+    async fn locate_message_group_merges_into_existing_event() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
@@ -1080,13 +1081,13 @@ mod tests {
             .filter(|prompt| prompt.contains("当层事件"))
             .count();
         assert_eq!(level_prompts, 2, "有记录的组与只定位的组走同一套逐层判定");
-        assert_eq!(tree_len(&f, "dev").await, 2, "只含新消息的组不新建事件");
+        assert_eq!(tree_len(&f, "dev").await, 2, "只有记录组建事件（消息组并入 e1）");
         assert_eq!(node(&f, "dev", "e2").await.unwrap().record_count, 1, "待归档记录落到新事件");
         assert_eq!(node(&f, "dev", "e1").await.unwrap().record_count, 1, "新消息不落盘");
         assert_eq!(events_of(&response), vec!["e1"]);
-        assert!(!response.events[0].is_current, "当前事件是待归档记录新建的 e2");
+        assert!(response.events[0].is_current, "指针指向本批最后一个组的事件 e1");
         assert_eq!(response.groups[0].messages, vec![0]);
-        assert_eq!(response.groups[0].event_id.as_ref().map(|id| id.as_str()), Some("e1"));
+        assert_eq!(response.groups[0].event_id.as_str(), "e1");
     }
 
     #[tokio::test]
@@ -1147,12 +1148,14 @@ mod tests {
         assert_eq!(events_of(&from_b), vec![current_b.as_str()]);
         assert!(from_b.events[0].is_current);
 
-        // 同一个事件用另一个通道的消息定位：不是该通道的当前事件
+        // 同一个事件用另一个通道的消息定位：命中 B 的事件，A 通道的当前事件指针也跟随到它
         f.model.push_group(&[0], false);
         f.model.push_level(LevelDecision::Merge(current_b.clone()));
         let cross = locate(&a, "从 A 通道问 B 的话题").await;
         assert_eq!(events_of(&cross), vec![current_b.as_str()]);
-        assert!(!cross.events[0].is_current, "is_current 按新消息通道判定");
+        assert!(cross.events[0].is_current, "定位后该事件成为 A 通道的当前事件");
+        assert_eq!(current_event(&f, "dev", &a).await.as_deref(), Some(current_b.as_str()));
+        assert_eq!(current_event(&f, "dev", &b).await.as_deref(), Some(current_b.as_str()), "B 通道指针不变");
     }
 
     #[tokio::test]

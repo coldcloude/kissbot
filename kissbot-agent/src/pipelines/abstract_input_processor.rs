@@ -280,18 +280,19 @@ async fn build_context(
     // 1. 定位本批消息涉及的事件
     let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
     let located = client.locate(agent_id, &role, messages).await?;
-    // 2. 涉及事件的全部事件摘要
-    let mut summaries = Vec::new();
-    for event in located.events.iter() {
-        let node = client.event_summary(agent_id, &role, event.event_id.as_str()).await?;
-        summaries.push(node.summary.as_str().to_string());
-    }
-    // 3. 各事件结尾若干条原文副本（条数与时间窗取会话的记忆回溯配置）
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
+    // 2. 逐个取事件摘要与结尾若干条原文副本；定位为新话题建出的空事件（记忆条数 0、无摘要）
+    //    还没有内容可拼进上下文，跳过（等这些消息写入记忆并归档后自然会有摘要）
+    let mut summaries = Vec::new();
     let mut tails: Vec<Vec<Arc<EventRecord>>> = Vec::new();
     for event in located.events.iter() {
+        let node = client.event_summary(agent_id, &role, event.event_id.as_str()).await?;
+        if node.summary.as_str().is_empty() {
+            continue;
+        }
+        summaries.push(node.summary.as_str().to_string());
         let tail = client
             .event_records_tail(agent_id, &role, event.event_id.as_str(), cfg.memory_count as u64)
             .await?;

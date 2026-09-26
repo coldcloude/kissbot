@@ -101,8 +101,8 @@ impl BatchItem {
 pub struct PlaceGroup {
     /// 组内新消息在请求中的下标（升序；只含待归档记录的组为空）
     pub messages: Vec<usize>,
-    /// 该组所属事件；`None` 表示该组只含新消息且只读下探未命中（新话题）
-    pub event_id: Option<String>,
+    /// 该组所属事件：命中已有事件即该事件，新话题即本次新建的事件（记忆条数为 0）
+    pub event_id: String,
 }
 
 /// 一个组的落点判定（只读结论，尚未落地）
@@ -110,8 +110,7 @@ pub struct PlaceGroup {
 enum GroupVerdict {
     /// 组里的内容归入该已有事件
     Event(String),
-    /// 组里的内容需要在 `parent`（`None` 为顶层）下新建叶子事件；
-    /// 只有组里确实有待归档记录时，落盘阶段才会真的建出这个事件
+    /// 组里的内容需要在该 `parent`（`None` 为顶层）下新建叶子事件
     New { parent: Option<String> },
 }
 
@@ -189,10 +188,10 @@ impl Archiver {
 
     /// 归档某通道的待处理记录，并（可选）一并定位本批新消息。
     ///
-    /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息结果（`flush` / 手动触发 / 重建走这条）；
+    /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息分组（手动触发 / 重建走这条）；
     /// - `messages` 非空：先按 `msg_id`（单通道批次内）与记录**去重合并**为一个批次一起分析：
-    ///   记录照常落盘归档，消息只定位、不落盘、不新建事件，归档完成后按 [`PlaceGroup`] 返回
-    ///   它们所属的事件（`PlaceGroup::messages` 是 `messages` 里的下标）。
+    ///   记录落盘归档，消息只定位；每组都会命中或建出事件（新话题建出的事件记忆条数为 0），
+    ///   按 [`PlaceGroup`] 返回（`PlaceGroup::messages` 是 `messages` 里的下标）。
     ///
     /// 记录按 `max_batch_records` 分块，逐块归档并落盘：一块失败时已完成的块保留进度，
     /// 失败块回到处理前状态，留待下次查询重试。返回（各块归档结果，消息分组，并入的新消息条数）。
@@ -206,14 +205,6 @@ impl Archiver {
     ) -> Result<ArchiveResult> {
         if records.is_empty() && messages.is_empty() {
             return Ok(ArchiveResult::default());
-        }
-        // 空树且没有待归档记录：只涉及新消息、没有事件可比对，整批一组（不调模型、不落盘、不新建事件）
-        if records.is_empty() && state.tree.is_empty() {
-            return Ok(ArchiveResult {
-                outcomes: Vec::new(),
-                groups: vec![PlaceGroup { messages: (0..messages.len()).collect(), event_id: None }],
-                new_messages: messages.len(),
-            });
         }
 
         let items = merge_batch(channel, records, messages);
@@ -280,7 +271,7 @@ impl Archiver {
                 let verdict = if state.tree.contains(&event_id) {
                     GroupVerdict::Event(event_id)
                 } else {
-                    // 事件还不存在：有记录要落盘时由落盘阶段建出作用域事件，只定位时不落地
+                    // 事件还不存在：由落盘阶段建出作用域事件（只含消息时记忆条数为 0）
                     GroupVerdict::New { parent: None }
                 };
                 vec![Placement { verdict, items: indices, records }]
@@ -288,8 +279,8 @@ impl Archiver {
             EventMode::Role => self.group_and_place(&scope, state, channel, items).await?,
         };
 
-        // 2. 存储（只有组里确实有待归档记录时才落地）：需要新建的此刻建树，
-        //    记录按事件聚合，随后摘要重算、追加原文副本、应用内存状态、推进水位
+        // 2. 落地 + 存储：逐组建出/命中事件（新话题建出记忆条数为 0 的事件），
+        //    有记录的组再聚合记录；随后摘要重算、追加原文副本、应用内存状态、推进水位
         let mut new_records: HashMap<String, Vec<RecordEntry>> = HashMap::new();
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let mut event_ids: Vec<String> = Vec::new();
@@ -299,17 +290,10 @@ impl Archiver {
                 placement.items.iter().flat_map(|index| items[*index].messages().iter().copied()).collect();
             messages.sort_unstable();
             let event_id = match &placement.verdict {
-                GroupVerdict::Event(event_id) => Some(event_id.clone()),
-                // 只定位的组不落地：用父事件代表该话题，顶层即「无事件」
-                GroupVerdict::New { parent } if placement.records.is_empty() => parent.clone(),
-                // 有记录要落盘：此时才真正建出事件（角色模式新建叶子，事件模式建作用域事件）
-                GroupVerdict::New { parent } => Some(self.create_event(handle, &mut state.tree, parent.as_deref(), &now)?),
+                GroupVerdict::Event(event_id) => event_id.clone(),
+                GroupVerdict::New { parent } => self.create_event(handle, &mut state.tree, parent.as_deref(), &now)?,
             };
             groups.push(PlaceGroup { messages, event_id: event_id.clone() });
-            let Some(event_id) = event_id else {
-                debug_assert!(placement.records.is_empty(), "没有事件的组只可能只含新消息");
-                continue;
-            };
             if placement.records.is_empty() {
                 continue;
             }
@@ -334,15 +318,15 @@ impl Archiver {
             append_event_records(&handle.event_dir(event_id), group).await?;
         }
 
-        // 5. 内存：应用记录与摘要；当前事件指针指向最后一批有内容的记录落入的事件
+        // 5. 内存：应用记录与摘要；当前事件指针指向本批最后一个组落入的事件
         for (event_id, group) in &new_records {
             state.tree.apply_records(event_id, group, &now);
         }
         for (id, summary) in &summaries {
             state.tree.set_summary(id, summary, &now);
         }
-        if let Some(last) = event_ids.last() {
-            state.current_events.insert(channel.clone(), last.clone());
+        if let Some(last) = groups.last() {
+            state.current_events.insert(channel.clone(), last.event_id.clone());
         }
         advance_watermark(state.watermarks.entry(channel.clone()).or_default(), &records);
 
@@ -351,7 +335,7 @@ impl Archiver {
 
     /// 角色模式的分组与定位（只读）：第 1 轮按事件分组（并标记当前事件组），
     /// 当前事件组直接命中当前事件，其余组各自逐层判定落点；判定不改树，
-    /// 「要不要落地」由落盘阶段按「组里有没有待归档记录」决定。
+    /// 由落盘阶段逐组建出/命中事件——有记录的组再追加记录。
     async fn group_and_place(
         &self,
         scope: &ScopeId,

@@ -160,9 +160,8 @@ pub struct LocatedEventRef {
 pub struct LocatedGroup {
     /// 消息在请求 `messages` 中的下标（升序）
     pub messages: Vec<usize>,
-    /// 该组涉及的事件；没有对应的已有事件时缺省（该组是新话题）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<Arc<String>>,
+    /// 该组所属事件：命中已有事件即该事件；新话题会在本次定位中建出事件（记忆条数为 0）
+    pub event_id: Arc<String>,
     #[serde(default)]
     pub is_current: bool,
 }

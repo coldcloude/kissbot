@@ -157,7 +157,7 @@ mod tests {
         let (_temp, service) = test_service();
         let router = create_router(service);
 
-        // 空作用域定位：没有消息涉及的事件
+        // 空作用域定位：新话题也建出事件（记忆条数 0），分组一定带 event_id
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
             "agent_id": "0", "role": "dev",
             "messages": [{"time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
@@ -166,21 +166,18 @@ mod tests {
         })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert!(body["data"]["events"].is_null(), "没有已存在事件时不返回 events");
+        assert_eq!(body["data"]["events"][0]["event_id"], "e1");
+        assert_eq!(body["data"]["groups"][0]["event_id"], "e1");
 
-        // 空树查询
+        // 查询只读：能看到刚由定位建出的事件（记忆条数 0）
         let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"], serde_json::json!([]));
-
-        // 事件树查询（空作用域）
-        let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"], serde_json::json!([]));
+        assert_eq!(body["data"]["nodes"][0]["event_id"], "e1");
+        assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
 
         // 事件不存在 → 失败响应（摘要与原文一致）
         for path in ["/abstract/event/summary", "/abstract/event/records"] {
-            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "event_id": "e1"})).await;
+            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "event_id": "e9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
