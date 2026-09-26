@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use crate::config::STRUCT_DIR_NAME;
 use crate::error::{Error, Result};
 use crate::records::list_store_suffixes;
-use crate::tree::{CaseTree, split_role_event};
+use crate::tree::{CaseTree, EVENT_CASE_PREFIX, split_role_event};
 
 /// 角色：作用域标识（agent + 角色名，**不含 event**）。同一角色共用一棵 case 树。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -85,9 +85,9 @@ impl RoleEvent {
         AgentRole::new(agent_id, self.role.clone())
     }
 
-    /// 事件模式固定的顶层叶子 case 名称：就是事件标识本身（case 名称即唯一标识）
+    /// 事件模式固定的顶层叶子 case 名：`event-{事件标识}`（前缀与角色模式的 `role-` 不同，天然不重名）
     pub fn event_case_name(&self) -> Option<String> {
-        self.event_id.clone()
+        self.event_id.as_ref().map(|event_id| format!("{}{}", EVENT_CASE_PREFIX, event_id))
     }
 
     /// LLM 会话标识（文件名安全；空后缀用 `_default`）
@@ -536,7 +536,7 @@ mod tests {
 
         let event = RoleEvent::parse("dev-e12");
         assert_eq!(event.mode(), CaseMode::Event);
-        assert_eq!(event.event_case_name().as_deref(), Some("e12"));
+        assert_eq!(event.event_case_name().as_deref(), Some("event-e12"));
         assert_eq!(event.suffix(), "dev-e12");
         assert_eq!(event.session_id(), "dev-e12");
 
@@ -630,7 +630,7 @@ mod tests {
         let event = RoleEvent::parse("dev-e1");
         {
             let mut state = role.state.lock().await;
-            state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "e1".into());
+            state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "event-e1".into());
             role.save_state(&event, &state).await.unwrap();
         }
 

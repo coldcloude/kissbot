@@ -213,14 +213,14 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 
 # 摘要 / 全部原文 / 指定之后 / 结尾若干条（用定位拿到的 case 名；角色模式为模型给出的名称如 weather-chat，事件模式为事件标识如 e1）
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"weather-chat"}' http://127.0.0.1:8083/abstract/case/summary | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/abstract/case/summary | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"weather-chat"}' http://127.0.0.1:8083/abstract/case/records | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/abstract/case/records | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"weather-chat","count":5}' http://127.0.0.1:8083/abstract/case/records-tail | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","count":5}' http://127.0.0.1:8083/abstract/case/records-tail | jq
 # 指定之后：after 传上一条记录的 time / sn / record_type
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"weather-chat","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
   http://127.0.0.1:8083/abstract/case/records-after | jq
 # 事件模式：记忆后缀含 `-`（前半为角色名、后半为事件标识），整个后缀固定归入名称为该事件标识的顶层叶子 case
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \

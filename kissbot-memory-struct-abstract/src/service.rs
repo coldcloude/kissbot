@@ -621,7 +621,7 @@ mod tests {
         assert!(is_dirty(&f, "dev").await, "查询不清除待处理标记");
         assert_eq!(f.model.prompts().len(), 0);
         assert!(f.service.case_list("0", "dev", None).await.unwrap().cases.is_empty());
-        assert!(f.service.case_summary("0", "dev", "case").await.is_err(), "case 还没归档出来");
+        assert!(f.service.case_summary("0", "dev", "role-case").await.is_err(), "case 还没归档出来");
 
         // 手动触发才统一计算
         let outcome = process(&f, "dev").await;
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道水位之后的全部记录一起处理");
         assert_eq!(tree.nodes[0].summary.as_str(), "新 case 摘要", "新建 case 建立当次就带上模型给出的摘要");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case");
         assert!(!is_dirty(&f, "dev").await, "处理成功后标记清空");
         assert_eq!(watermark_point(&f, "dev", &a).await.1, 2, "水位推进到该通道最后一条记录");
     }
@@ -649,7 +649,7 @@ mod tests {
         let restarted = AbstractService::new(Arc::new(ScopeManager::new(root)), Arc::new(StubModel::new()), 200);
         let tree = restarted.tree_get("0", "dev").await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "case 树来自磁盘");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case", "当前 case 指针来自磁盘");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "当前 case 指针来自磁盘");
         assert_eq!(restarted.case_count("0", "dev").await.unwrap(), 1);
 
         // 同一角色的事件后缀：共用磁盘上的同一棵树，但有自己的（空的）指针状态
@@ -687,10 +687,10 @@ mod tests {
 
         let tree = query(&f, "dev").await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批、各得一个 case");
-        assert_eq!(node(&f, "dev", "case").await.unwrap().record_count, 2);
-        assert_eq!(node(&f, "dev", "case-2").await.unwrap().record_count, 1);
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case");
-        assert_eq!(current_pointer(&tree, &b).unwrap().case_name.as_str(), "case-2");
+        assert_eq!(node(&f, "dev", "role-case").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, "dev", "role-case-2").await.unwrap().record_count, 1);
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case");
+        assert_eq!(current_pointer(&tree, &b).unwrap().case_name.as_str(), "role-case-2");
         assert_eq!(watermark_point(&f, "dev", &a).await.1, 2);
         assert_eq!(watermark_point(&f, "dev", &b).await.1, 3);
         assert_eq!(pending_len(&f, "dev", &a).await, 0);
@@ -725,8 +725,8 @@ mod tests {
         {
             let handle = f.service.manager().get(&agent_role("dev")).unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("case"), CaseMode::Role, "t");
-            state.current_cases.insert((RoleEvent::parse("dev"), a.clone()), "case".into());
+            state.tree.create_node("role-2", Some("role-case"), CaseMode::Role, "t");
+            state.current_cases.insert((RoleEvent::parse("dev"), a.clone()), "role-case".into());
         }
 
         // 第 1 轮分组：消息 0 属于当前 case（直接并入父 case case），消息 1、2 属于新 case（分层归并）
@@ -734,7 +734,7 @@ mod tests {
             crate::model::MessageGroup { messages: vec![0], is_current: true },
             crate::model::MessageGroup { messages: vec![1, 2], is_current: false },
         ]);
-        f.model.push_level(LevelDecision::Merge("case".into()));
+        f.model.push_level(LevelDecision::Merge("role-case".into()));
         f.model.push_level(LevelDecision::new_case("child", "子摘要"));
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "当前话题的延续").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:01:00", 3, 0, "新话题").await;
@@ -742,13 +742,13 @@ mod tests {
         notify(&f, "dev", &a).await;
         query(&f, "dev").await;
 
-        let parent = node(&f, "dev", "case").await.unwrap();
+        let parent = node(&f, "dev", "role-case").await.unwrap();
         assert_eq!(parent.record_count, 2, "当前 case 组直接并入父 case 本身（不下潜）");
         assert_eq!(parent.children.len(), 2, "其他组经分层归并：Merge(case) 下潜后 New → case 下新建叶子");
-        let child = node(&f, "dev", "child").await.unwrap();
-        assert_eq!(child.parent_id.as_ref().map(|p| p.as_str()), Some("case"));
+        let child = node(&f, "dev", "role-child").await.unwrap();
+        assert_eq!(child.parent_id.as_ref().map(|p| p.as_str()), Some("role-case"));
         assert_eq!(child.record_count, 2);
-        assert_eq!(current_case(&f, "dev", &a).await.as_deref(), Some("child"), "指针指向最后一批消息落入的 case");
+        assert_eq!(current_case(&f, "dev", &a).await.as_deref(), Some("role-child"), "指针指向最后一批消息落入的 case");
     }
 
     #[tokio::test]
@@ -767,8 +767,8 @@ mod tests {
 
         let tree = query(&f, "dev").await;
         assert_eq!(tree.nodes.len(), 2, "一批消息按分组落成两个 case");
-        assert_eq!(node(&f, "dev", "case").await.unwrap().record_count, 2);
-        assert_eq!(node(&f, "dev", "case-2").await.unwrap().record_count, 1);
+        assert_eq!(node(&f, "dev", "role-case").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, "dev", "role-case-2").await.unwrap().record_count, 1);
         assert_eq!(watermark_point(&f, "dev", &a).await.1, 3, "水位覆盖整批");
         assert_eq!(pending_len(&f, "dev", &a).await, 0);
     }
@@ -812,7 +812,7 @@ mod tests {
             assert!(state.watermarks.get(&(role_event.clone(), a.clone())).is_none(), "失败不推进水位");
             assert!(state.current_cases.get(&(role_event, a.clone())).is_none());
         }
-        assert!(!handle.case_dir("case").exists(), "失败不落盘原文副本");
+        assert!(!handle.case_dir("role-case").exists(), "失败不落盘原文副本");
         assert!(is_dirty(&f, "dev").await, "失败保留待处理标记");
 
         // 再次查询（模型恢复）：批次被完整归档一次，无重复
@@ -840,7 +840,7 @@ mod tests {
             assert!(state.tree.is_empty(), "失败不留下空 case");
             assert!(state.watermarks.get(&(role_event, a.clone())).is_none(), "失败不推进水位");
         }
-        assert!(!handle.case_dir("e1").exists(), "失败不落盘原文副本");
+        assert!(!handle.case_dir("event-e1").exists(), "失败不落盘原文副本");
         assert!(is_dirty(&f, "dev-e1").await, "失败保留待处理标记");
 
         let tree = query(&f, "dev-e1").await;
@@ -849,7 +849,7 @@ mod tests {
         assert!(!tree.nodes[0].summary.is_empty(), "重试成功后有摘要");
     }
 
-    /// 事件模式的 case 名就是事件标识：标识含非法字符时按状态错误处理，不建 case、不落原文副本
+    /// 事件模式的 case 名是 `event-{事件标识}`：标识含非法字符时按状态错误处理，不建 case、不落原文副本
     #[tokio::test]
     async fn invalid_event_id_is_rejected_without_creating_case() {
         for suffix in ["dev-e_1", "dev-事件"] {
@@ -865,30 +865,9 @@ mod tests {
             // dev-e_1 与 dev-事件 都属于同一个角色 dev：共享的 case 树上不应有节点
             let handle = f.service.manager().get(&agent_role(suffix)).unwrap();
             assert!(handle.state.lock().await.tree.is_empty(), "失败不建出 case ({})", suffix);
-            let event_id = RoleEvent::parse(suffix).event_id.unwrap();
-            assert!(!handle.case_dir(&event_id).exists(), "失败不落原文副本 ({})", suffix);
+            let case_name = RoleEvent::parse(suffix).event_case_name().unwrap();
+            assert!(!handle.case_dir(&case_name).exists(), "失败不落原文副本 ({})", suffix);
         }
-    }
-
-    /// 事件 case 名与角色 case 重名时按状态错误处理（两种模式互不并入）
-    #[tokio::test]
-    async fn event_case_name_must_not_collide_with_role_case() {
-        let f = fixture().await;
-        let root = f.service.root();
-        let a = channel_a();
-        // 角色模式先手工建出名为 e1 的 case，随后事件后缀 dev-e1 的固定名正是 e1
-        {
-            let handle = f.service.manager().open(agent_role("dev")).await.unwrap();
-            let mut state = handle.state.lock().await;
-            state.tree.create_node("e1", None, CaseMode::Role, "t");
-        }
-        append_store_channel(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "内容").await;
-        notify(&f, "dev-e1", &a).await;
-
-        assert!(
-            f.service.manual_trigger("0", "dev-e1").await.is_err(),
-            "事件 case 名与角色 case 重名应报错"
-        );
     }
 
     #[tokio::test]
@@ -933,8 +912,8 @@ mod tests {
                 .collect()
         };
         let mut all = vec![
-            think_keys(records_of(&f, "dev", "case").await),
-            think_keys(records_of(&f, "dev", "case-2").await),
+            think_keys(records_of(&f, "dev", "role-case").await),
+            think_keys(records_of(&f, "dev", "role-case-2").await),
         ];
         all.sort();
         assert_eq!(all, vec![vec!["keyA".to_string()], vec!["keyB".to_string()]]);
@@ -952,7 +931,7 @@ mod tests {
         query(&f, "dev").await;
 
         assert_eq!(pending_len(&f, "dev", &a).await, 0, "该通道记录已处理完");
-        let records = records_of(&f, "dev", "case").await;
+        let records = records_of(&f, "dev", "role-case").await;
         assert_eq!(records.len(), 2, "孤儿思考记录不属于任何通道，不进 case");
         assert!(!records.iter().any(|r| matches!(r.as_ref(), CaseRecord::Think(_))));
     }
@@ -1009,11 +988,11 @@ mod tests {
         assert!(prompts[0].contains("新问题"), "不重复的新消息参与同一次分析");
 
         // 记录归档一次；新消息只返回所属 case，不进原文副本
-        assert_eq!(cases_of(&response), vec!["case"]);
+        assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1], "重复的新消息映射到已存记录所在 case");
         assert!(response.groups[0].is_current);
-        assert_eq!(records_of(&f, "dev", "case").await.len(), 2, "只有已存记录落盘");
+        assert_eq!(records_of(&f, "dev", "role-case").await.len(), 2, "只有已存记录落盘");
         assert_eq!(pending_len(&f, "dev", &a).await, 0, "懒处理完成");
         assert!(!is_dirty(&f, "dev").await);
     }
@@ -1040,9 +1019,9 @@ mod tests {
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts[0].matches("已存的问题").count(), 1);
-        assert_eq!(cases_of(&response), vec!["case"]);
+        assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(records_of(&f, "dev", "case").await.len(), 2, "记录不因定位重复落盘");
+        assert_eq!(records_of(&f, "dev", "role-case").await.len(), 2, "记录不因定位重复落盘");
     }
 
     /// 没有待处理标记时调 locate：仍按「pending 空 + 本批消息」处理（定位不依赖 dirty）
@@ -1066,12 +1045,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(cases_of(&response), vec!["case"], "新话题也建出 case（记忆条数 0）");
+        assert_eq!(cases_of(&response), vec!["role-case"], "新话题也建出 case（记忆条数 0）");
         assert_eq!(response.groups.len(), 1, "同通道整批一组");
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
         assert_eq!(f.model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称与摘要）");
-        let created = node(&f, "dev", "case").await.unwrap();
+        let created = node(&f, "dev", "role-case").await.unwrap();
         assert_eq!(created.record_count, 0);
         assert_eq!(created.summary.as_str(), "新 case 摘要", "新 case 建立当次就有摘要");
     }
@@ -1089,7 +1068,7 @@ mod tests {
         {
             let handle = f.service.manager().get(&agent_role("dev")).unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("case"), CaseMode::Role, "t");
+            state.tree.create_node("role-2", Some("role-case"), CaseMode::Role, "t");
         }
 
         // 顶层判定直接给出深层 case role-2（不在顶层候选里）→ 失败
@@ -1131,7 +1110,7 @@ mod tests {
         );
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[0].case_name.as_str(), "two", "新话题建出记忆条数为 0 的 case");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-two", "新话题建出记忆条数为 0 的 case");
         assert_eq!(pending_len(&f, "dev", &a).await, 0);
     }
 
@@ -1162,10 +1141,10 @@ mod tests {
         groups.sort();
         assert_eq!(
             groups,
-            vec![(vec![0], "case".to_string()), (vec![1], "case-2".to_string())],
+            vec![(vec![0], "role-case".to_string()), (vec![1], "role-case-2".to_string())],
             "分组下标是请求全局下标（B 的消息是 1，不是该通道批次内的 0），且每个组都有 case"
         );
-        assert_eq!(cases_of(&response), vec!["case", "case-2"]);
+        assert_eq!(cases_of(&response), vec!["role-case", "role-case-2"]);
     }
 
     #[tokio::test]
@@ -1191,9 +1170,9 @@ mod tests {
         let b_prompt = prompts.last().unwrap();
         assert!(b_prompt.contains("B 自己的记录"), "B 的消息与 B 通道的记录合并分析");
         assert!(!b_prompt.contains("B 通道的问题"), "重复的新消息自身不进批次");
-        assert_eq!(records_of(&f, "dev", "case").await.len(), 1, "A 通道照常归档");
-        assert_eq!(records_of(&f, "dev", "case-2").await.len(), 1, "B 通道只有自己的记录落盘");
-        assert_eq!(cases_of(&response), vec!["case-2"], "消息命中 B 通道的 case");
+        assert_eq!(records_of(&f, "dev", "role-case").await.len(), 1, "A 通道照常归档");
+        assert_eq!(records_of(&f, "dev", "role-case-2").await.len(), 1, "B 通道只有自己的记录落盘");
+        assert_eq!(cases_of(&response), vec!["role-case-2"], "消息命中 B 通道的 case");
         assert_eq!(pending_len(&f, "dev", &b).await, 0);
     }
 
@@ -1205,7 +1184,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧话题").await;
         notify(&f, "dev", &a).await;
         query(&f, "dev").await;
-        assert_eq!(current_case(&f, "dev", &a).await.as_deref(), Some("case"));
+        assert_eq!(current_case(&f, "dev", &a).await.as_deref(), Some("role-case"));
 
         // 待归档记录 C 与新消息 B 分属两组：两组都走同一套逐层判定，只有有记录的 C 会落地
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题").await;
@@ -1215,7 +1194,7 @@ mod tests {
             crate::model::MessageGroup { messages: vec![1], is_current: false },
         ]);
         f.model.push_level(LevelDecision::new_case("two", "第二摘要"));
-        f.model.push_level(LevelDecision::Merge("case".into()));
+        f.model.push_level(LevelDecision::Merge("role-case".into()));
         let before = f.model.prompts().len();
         let response = f
             .service
@@ -1232,12 +1211,12 @@ mod tests {
             .count();
         assert_eq!(level_prompts, 2, "有记录的组与只定位的组走同一套逐层判定");
         assert_eq!(tree_len(&f, "dev").await, 2, "只有记录组建 case（消息组并入 case）");
-        assert_eq!(node(&f, "dev", "two").await.unwrap().record_count, 1, "待归档记录落到新 case");
-        assert_eq!(node(&f, "dev", "case").await.unwrap().record_count, 1, "新消息不落盘");
-        assert_eq!(cases_of(&response), vec!["case"]);
+        assert_eq!(node(&f, "dev", "role-two").await.unwrap().record_count, 1, "待归档记录落到新 case");
+        assert_eq!(node(&f, "dev", "role-case").await.unwrap().record_count, 1, "新消息不落盘");
+        assert_eq!(cases_of(&response), vec!["role-case"]);
         assert!(response.cases[0].is_current, "指针指向本批最后一个组的 case case");
         assert_eq!(response.groups[0].messages, vec![0]);
-        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
     }
 
     #[tokio::test]
@@ -1258,8 +1237,8 @@ mod tests {
         assert_eq!(group_prompts(&f).len(), 2, "3 条记录 + 1 条新消息按每块 2 条分成 2 块");
         assert_eq!(pending_len(&f, "dev", &a).await, 0);
         assert_eq!(watermark_point(&f, "dev", &a).await.1, 3, "新消息不影响水位");
-        assert_eq!(records_of(&f, "dev", "case").await.len(), 3, "新消息不落盘");
-        assert_eq!(cases_of(&response), vec!["case"]);
+        assert_eq!(records_of(&f, "dev", "role-case").await.len(), 3, "新消息不落盘");
+        assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups[0].messages, vec![0]);
     }
 
@@ -1319,13 +1298,13 @@ mod tests {
         process(&f, "dev").await;
 
         // 摘要：只有节点（摘要文本 + 记录数），不带原文；新建 case 的摘要来自逐层判定
-        let summary = f.service.case_summary("0", "dev", "case").await.unwrap();
-        assert_eq!(summary.case.case_name.as_str(), "case");
+        let summary = f.service.case_summary("0", "dev", "role-case").await.unwrap();
+        assert_eq!(summary.case.case_name.as_str(), "role-case");
         assert_eq!(summary.case.record_count, 2);
         assert_eq!(summary.case.summary.as_str(), "新 case 摘要");
 
         // 全部原文
-        let all = f.service.case_records("0", "dev", "case").await.unwrap();
+        let all = f.service.case_records("0", "dev", "role-case").await.unwrap();
         assert_eq!(all.records.len(), 2);
         assert_eq!(all.records[0].sn(), 1);
         assert_eq!(all.records[1].sn(), 2);
@@ -1333,17 +1312,17 @@ mod tests {
         // 指定之后：把上一条记录的 time/sn/record_type 当游标回传
         let after = f
             .service
-            .case_records_after("0", "dev", "case", &CaseCursor::of(&all.records[0]))
+            .case_records_after("0", "dev", "role-case", &CaseCursor::of(&all.records[0]))
             .await
             .unwrap();
         assert_eq!(after.records.len(), 1);
         assert_eq!(after.records[0].sn(), 2);
 
         // 结尾若干条（升序返回；0 条为空）
-        let tail = f.service.case_records_tail("0", "dev", "case", 1).await.unwrap();
+        let tail = f.service.case_records_tail("0", "dev", "role-case", 1).await.unwrap();
         assert_eq!(tail.records.len(), 1);
         assert_eq!(tail.records[0].sn(), 2);
-        assert!(f.service.case_records_tail("0", "dev", "case", 0).await.unwrap().records.is_empty());
+        assert!(f.service.case_records_tail("0", "dev", "role-case", 0).await.unwrap().records.is_empty());
 
         // case 不存在：摘要与原文查询都报错
         assert!(f.service.case_summary("0", "dev", "role-9").await.is_err());
@@ -1367,7 +1346,7 @@ mod tests {
         // 手动触发：忽略待处理标记，把水位之后全部记录处理一次（桩模型：整批一组）
         let first = f.service.manual_trigger("0", "dev").await.unwrap();
         assert_eq!(first.archived, 4, "手动触发处理全部待处理记录");
-        assert_eq!(first.case_names, vec!["case".to_string()]);
+        assert_eq!(first.case_names, vec!["role-case".to_string()]);
         let second = f.service.manual_trigger("0", "dev").await.unwrap();
         assert_eq!(second.archived, 0, "水位已推进，无剩余记录");
 
@@ -1392,7 +1371,7 @@ mod tests {
         assert_eq!(tree.nodes[0].mode, CaseMode::Event);
         assert_eq!(tree.nodes[0].record_count, 2);
         assert!(!tree.nodes[0].summary.is_empty(), "有记录的 event case 由第 3 步摘要重算生成摘要");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "e1");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "event-e1");
         // 事件模式不参与分组与分层归并：模型只被要求生成摘要
         assert!(f.model.prompts().iter().all(|p| !p.contains("分组") && !p.contains("当层 case")));
     }
@@ -1417,10 +1396,10 @@ mod tests {
         assert_eq!(response.archived, 1, "只重建本后缀的记录");
         let tree = f.service.tree_get("0", "dev").await.unwrap();
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
-        assert!(ids.contains(&"case"), "角色子树保留: {:?}", ids);
-        assert!(ids.contains(&"e1"), "本后缀的 case 重建出来: {:?}", ids);
-        assert!(ids.contains(&"e2"), "其他事件后缀的 case 不受影响: {:?}", ids);
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case", "角色后缀的指针不动");
+        assert!(ids.contains(&"role-case"), "角色子树保留: {:?}", ids);
+        assert!(ids.contains(&"event-e1"), "本后缀的 case 重建出来: {:?}", ids);
+        assert!(ids.contains(&"event-e2"), "其他事件后缀的 case 不受影响: {:?}", ids);
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "角色后缀的指针不动");
 
         // 重建角色模式：清角色子树，事件 case 都保留
         f.service.rebuild("0", "dev").await.unwrap();
@@ -1428,7 +1407,9 @@ mod tests {
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
         let role_count = tree.nodes.iter().filter(|n| n.mode == CaseMode::Role).count();
         let event_count = tree.nodes.iter().filter(|n| n.mode == CaseMode::Event).count();
-        assert_eq!(ids, vec!["case", "e1", "e2"], "角色子树重建 + 事件 case 都保留: {:?}", ids);
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["event-e1", "event-e2", "role-case"], "角色子树重建 + 事件 case 都保留: {:?}", ids);
         assert_eq!(role_count, 1, "角色子树重建: {:?}", ids);
         assert_eq!(event_count, 2, "事件 case 都保留: {:?}", ids);
     }
@@ -1446,7 +1427,7 @@ mod tests {
         {
             let handle = f.service.manager().get(&agent_role("dev")).unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("case"), CaseMode::Role, "t");
+            state.tree.create_node("role-2", Some("role-case"), CaseMode::Role, "t");
             state.current_cases.insert((RoleEvent::parse("dev"), a.clone()), "role-2".into());
         }
 

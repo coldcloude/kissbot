@@ -2,8 +2,9 @@
 //!
 //! 树以**角色**（`agent + 角色名`）为作用域组织，跨年份持续累积；节点即 kissbot-api 的
 //! [`CaseNode`]。同一个角色的角色模式与事件模式共用这一棵树，但各走各的子树、互不并入：
-//! 角色模式的 case 由模型判定划分（名称由模型给出），事件模式的 case 是外部事件固定的顶层
-//! 叶子（名称即事件标识）。**case 名称就是 case 的唯一标识**，没有单独分配的 id。
+//! 角色模式的 case 由模型判定划分（名称 = `role-{模型给出的名称}`），事件模式的 case 是外部事件
+//! 固定的顶层叶子（名称 = `event-{事件标识}`）。**case 名称就是 case 的唯一标识**，没有单独分配的
+//! id；两种名称前缀不同，因此角色模式与事件模式天然不会重名。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -11,6 +12,12 @@ use std::sync::Arc;
 use kissbot_api::{CaseBrief, CaseMode, CaseNode};
 
 use crate::records::RecordEntry;
+
+/// 角色模式 case 名前缀
+pub const ROLE_CASE_PREFIX: &str = "role-";
+
+/// 事件模式 case 名前缀
+pub const EVENT_CASE_PREFIX: &str = "event-";
 
 #[derive(Debug, Clone, Default)]
 pub struct CaseTree {
@@ -185,13 +192,14 @@ impl CaseTree {
         }
     }
 
-    /// 角色模式的新 case 名称：模型给出的名称；与角色树里已有 case 重名时追加 `-2`、`-3`…
-    pub fn unique_case_name(&self, name: &str) -> String {
-        if !self.contains(name) {
-            return name.to_string();
+    /// 角色模式的新 case 名：`role-{模型给出的名称}`；同一角色树里重名时追加 `-2`、`-3`…
+    pub fn unique_role_case_name(&self, name: &str) -> String {
+        let base = format!("{}{}", ROLE_CASE_PREFIX, name);
+        if !self.contains(&base) {
+            return base;
         }
         for suffix in 2u64.. {
-            let candidate = format!("{}-{}", name, suffix);
+            let candidate = format!("{}-{}", base, suffix);
             if !self.contains(&candidate) {
                 return candidate;
             }
@@ -259,12 +267,12 @@ mod tests {
         let mut tree = CaseTree::new();
         tree.create_node("role-1", None, CaseMode::Role, NOW);
         tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("e12", None, CaseMode::Event, NOW);
+        tree.create_node("event-e12", None, CaseMode::Event, NOW);
 
-        assert_eq!(tree.top_level_ids(), vec!["e12", "role-1"], "查询可见全部顶层 case（按 created_at、case_name 升序）");
+        assert_eq!(tree.top_level_ids(), vec!["event-e12", "role-1"], "查询可见全部顶层 case（按 created_at、case_name 升序）");
         assert_eq!(tree.role_top_level_ids(), vec!["role-1"], "角色模式判定只看角色子树");
         assert_eq!(tree.role_children_ids("role-1"), vec!["role-2"]);
-        assert_eq!(tree.ids_of_mode(CaseMode::Event), ["e12".to_string()].into_iter().collect());
+        assert_eq!(tree.ids_of_mode(CaseMode::Event), ["event-e12".to_string()].into_iter().collect());
     }
 
     #[test]
@@ -272,10 +280,10 @@ mod tests {
         let mut tree = CaseTree::new();
         tree.create_node("role-1", None, CaseMode::Role, NOW);
         tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("e12", None, CaseMode::Event, NOW);
+        tree.create_node("event-e12", None, CaseMode::Event, NOW);
 
         tree.remove_nodes(&tree.ids_of_mode(CaseMode::Event));
-        assert!(!tree.contains("e12"));
+        assert!(!tree.contains("event-e12"));
         assert_eq!(tree.top_level_ids(), vec!["role-1"]);
 
         tree.remove_nodes(&tree.ids_of_mode(CaseMode::Role));
@@ -302,18 +310,18 @@ mod tests {
     }
 
     #[test]
-    fn unique_case_name_appends_suffix_on_conflict() {
+    fn unique_role_case_name_appends_suffix_on_conflict() {
         let mut tree = CaseTree::new();
-        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat");
+        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat");
 
-        // 重名（含模型本批内给出同名）时追加 -2、-3…，名称字符集仍然合法
-        tree.create_node("weather-chat", None, CaseMode::Role, NOW);
-        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat-2");
-        tree.create_node("weather-chat-2", None, CaseMode::Role, NOW);
-        assert_eq!(tree.unique_case_name("weather-chat"), "weather-chat-3");
-        // 名称是整棵角色树的唯一标识：事件模式的 case 占用的名称同样要避开
-        tree.create_node("e1", None, CaseMode::Event, NOW);
-        assert_eq!(tree.unique_case_name("e1"), "e1-2");
+        // 重名（含模型本批内给出同名）时追加 -2、-3…，名称仍然合法
+        tree.create_node("role-weather-chat", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-2");
+        tree.create_node("role-weather-chat-2", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-3");
+        // 事件 case 名带 event- 前缀，与角色名天然不会重名
+        tree.create_node("event-e1", None, CaseMode::Event, NOW);
+        assert_eq!(tree.unique_role_case_name("e1"), "role-e1");
     }
 
     #[test]

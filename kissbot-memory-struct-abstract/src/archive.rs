@@ -267,28 +267,26 @@ impl Archiver {
         // 1. 定位（只读）：逐组判定落点，得到「已有 case / 需在何处新建」，此时不改树
         let placements = match role_event.event_case_name() {
             // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定。
-            // 名称即事件标识；同名 case 已存在时必须是事件模式的（角色模式占用了同名就报错）
+            // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
             Some(case_name) => {
-                // case 名就是事件标识，必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
-                if !crate::model::valid_case_name(&case_name) {
+                // 事件标识部分必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
+                let Some(event_id) = case_name.strip_prefix(crate::tree::EVENT_CASE_PREFIX) else {
+                    return Err(Error::StateError(format!("事件模式 case 名缺少前缀: {}", case_name)));
+                };
+                if !crate::model::valid_case_name(event_id) {
                     return Err(Error::StateError(format!(
-                        "事件标识不能作为 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
+                        "事件标识不能用于 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
                         crate::model::MAX_CASE_NAME_LEN,
-                        case_name
+                        event_id
                     )));
                 }
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let records = stored_records(items, &indices);
-                let verdict = match state.tree.get(&case_name) {
-                    Some(node) if node.mode == CaseMode::Role => {
-                        return Err(Error::StateError(format!(
-                            "事件模式的 case 名称 {} 与角色 case 重名（记忆后缀 {}）",
-                            case_name, role_event
-                        )))
-                    }
-                    Some(_) => GroupVerdict::Case(case_name),
+                let verdict = if state.tree.contains(&case_name) {
+                    GroupVerdict::Case(case_name)
+                } else {
                     // case 还不存在：由落盘阶段建出（只含消息时记忆条数为 0）
-                    None => GroupVerdict::NewEvent,
+                    GroupVerdict::NewEvent
                 };
                 vec![Placement { verdict, items: indices, records }]
             }
@@ -312,7 +310,7 @@ impl Archiver {
             let case_name = match &placement.verdict {
                 GroupVerdict::Case(case_name) => case_name.clone(),
                 GroupVerdict::NewRole { parent, name, summary } => {
-                    let case_name = state.tree.unique_case_name(name);
+                    let case_name = state.tree.unique_role_case_name(name);
                     state.tree.create_node(&case_name, parent.as_deref(), CaseMode::Role, &now);
                     state.tree.set_summary(&case_name, summary, &now);
                     created.insert(case_name.clone());

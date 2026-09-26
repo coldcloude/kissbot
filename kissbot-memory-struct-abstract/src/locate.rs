@@ -186,15 +186,15 @@ mod tests {
 
         // 空树 + 消息：整批一组；当层没有候选也调一次逐层判定，由它给出名称与摘要
         let response = locate(&handle, &model, &role, &[message("你好"), message("在吗")]).await;
-        assert_eq!(case_names(&response), vec!["case"]);
+        assert_eq!(case_names(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1, "同一通道归一组");
-        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
         assert_eq!(model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称与摘要）");
         assert!(model.prompts()[0].contains("\"groups\""));
         assert!(model.prompts()[1].contains("当层 case"), "第二次是逐层判定");
         let (tree_len, record_count, summary) = {
             let state = handle.state.lock().await;
-            let node = state.tree.get("case").unwrap();
+            let node = state.tree.get("role-case").unwrap();
             (state.tree.len(), node.record_count, node.summary.as_str().to_string())
         };
         assert_eq!(tree_len, 1, "定位为新话题建出 case");
@@ -214,11 +214,11 @@ mod tests {
         // 第 1 轮把整批标记为当前 case 组 → 命中该通道当前 case
         model.push_group(&[0, 1], true);
         let response = locate(&handle, &model, &role, &[message("今天下雨吗"), message("带伞吗")]).await;
-        assert_eq!(case_names(&response), vec!["case"]);
+        assert_eq!(case_names(&response), vec!["role-case"]);
         assert!(response.cases[0].is_current);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
     }
 
     #[tokio::test]
@@ -234,12 +234,12 @@ mod tests {
         model.push_group(&[0], false);
         model.push_level(LevelDecision::new_case("topic", "话题摘要"));
         let response = locate(&handle, &model, &role, &[message("换个话题")]).await;
-        assert_eq!(case_names(&response), vec!["topic"], "新话题也建出 case");
+        assert_eq!(case_names(&response), vec!["role-topic"], "新话题也建出 case");
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].case_name.as_str(), "topic");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-topic");
         assert!(response.cases[0].is_current, "指针指向本批最后一个组的 case");
         let state = handle.state.lock().await;
-        let created = state.tree.get("topic").unwrap();
+        let created = state.tree.get("role-topic").unwrap();
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
         assert_eq!(created.summary.as_str(), "话题摘要", "新 case 摘要来自逐层判定");
         assert_eq!(state.tree.len(), 2);
@@ -259,7 +259,7 @@ mod tests {
         {
             let state = handle.state.lock().await;
             assert_eq!(state.tree.len(), 2);
-            assert_eq!(state.current_case(&role, &channel_key()).map(|id| id.as_str()), Some("case-2"));
+            assert_eq!(state.current_case(&role, &channel_key()).map(|id| id.as_str()), Some("role-case-2"));
         }
 
         // 4 条消息分成三组：前两条延续当前 case case-2；第三条命中已有 case case；第四条是新话题
@@ -268,19 +268,19 @@ mod tests {
             MessageGroup { messages: vec![2], is_current: false },
             MessageGroup { messages: vec![3], is_current: false },
         ]);
-        model.push_level(LevelDecision::Merge("case".into())); // 第三条：顶层命中 case（叶子）
+        model.push_level(LevelDecision::Merge("role-case".into())); // 第三条：顶层命中 case（叶子）
         model.push_level(LevelDecision::new_case("third", "第三摘要")); // 第四条：顶层未命中 → 新话题
         let response = locate(&handle, &model, &role, &[message("a"), message("b"), message("c"), message("d")]).await;
 
-        assert_eq!(case_names(&response), vec!["case-2", "case", "third"], "涉及的 case 按首次出现顺序去重（新话题建出 third）");
+        assert_eq!(case_names(&response), vec!["role-case-2", "role-case", "role-third"], "涉及的 case 按首次出现顺序去重（新话题建出 third）");
         let flags: Vec<bool> = response.cases.iter().map(|event| event.is_current).collect();
         assert_eq!(flags, vec![false, false, true], "指针指向本批最后一个组的 case third");
         assert_eq!(response.groups.len(), 3);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
-        assert_eq!(response.groups[1].case_name.as_str(), "case");
+        assert_eq!(response.groups[1].case_name.as_str(), "role-case");
         assert!(!response.groups[0].is_current);
         assert!(!response.groups[1].is_current);
-        assert_eq!(response.groups[2].case_name.as_str(), "third", "新话题组建出新 case");
+        assert_eq!(response.groups[2].case_name.as_str(), "role-third", "新话题组建出新 case");
     }
 
     #[tokio::test]
@@ -294,25 +294,25 @@ mod tests {
         // 构造 case（父）/ role-2（子）结构
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("case"), CaseMode::Role, "t");
+            state.tree.create_node("role-2", Some("role-case"), CaseMode::Role, "t");
         }
 
         // 第三条消息：顶层命中 case（非叶子）→ 下探子层命中 role-2
         model.push_group(&[0], false);
-        model.push_level(LevelDecision::Merge("case".into()));
+        model.push_level(LevelDecision::Merge("role-case".into()));
         model.push_level(LevelDecision::Merge("role-2".into()));
         let response = locate(&handle, &model, &role, &[message("子 case 相关")]).await;
         assert_eq!(case_names(&response), vec!["role-2"]);
 
         // 第四条消息：顶层命中 case（非叶子）→ 子层都未命中 → 在 case 下建出新的空 case
         model.push_group(&[0], false);
-        model.push_level(LevelDecision::Merge("case".into()));
+        model.push_level(LevelDecision::Merge("role-case".into()));
         model.push_level(LevelDecision::new_case("child", "子摘要"));
         let response = locate(&handle, &model, &role, &[message("父 case 相关")]).await;
-        assert_eq!(case_names(&response), vec!["child"]);
+        assert_eq!(case_names(&response), vec!["role-child"]);
         let state = handle.state.lock().await;
-        let created = state.tree.get("child").unwrap();
-        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("case"), "建在命中的父 case 下");
+        let created = state.tree.get("role-child").unwrap();
+        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("role-case"), "建在命中的父 case 下");
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
     }
 
@@ -359,7 +359,7 @@ mod tests {
 
         model.push_group(&[0], true);
         let response = locate(&handle, &model, &role, &[message("今天下雨吗")]).await;
-        assert_eq!(case_names(&response), vec!["case"]);
+        assert_eq!(case_names(&response), vec!["role-case"]);
     }
 
     #[tokio::test]
@@ -372,12 +372,12 @@ mod tests {
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")]).await;
 
         let response = locate(&handle, &model, &role, &[message("任意消息"), message("又一条")]).await;
-        assert_eq!(case_names(&response), vec!["e1"], "事件模式固定归入事件标识本身");
+        assert_eq!(case_names(&response), vec!["event-e1"], "事件模式固定归入事件标识本身");
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
         assert!(model.prompts().is_empty(), "事件模式不触发定位判定");
         let state = handle.state.lock().await;
-        let node = state.tree.get("e1").unwrap();
+        let node = state.tree.get("event-e1").unwrap();
         assert!(node.parent_id.is_none(), "case 固定在顶层");
         assert!(node.is_leaf(), "case 是顶层叶子");
         assert_eq!(node.mode, CaseMode::Event);
@@ -394,23 +394,23 @@ mod tests {
         let model = Arc::new(StubModel::new());
 
         let response = locate(&handle, &model, &role, &[message("任意消息")]).await;
-        assert_eq!(case_names(&response), vec!["e1"]);
+        assert_eq!(case_names(&response), vec!["event-e1"]);
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].case_name.as_str(), "e1");
+        assert_eq!(response.groups[0].case_name.as_str(), "event-e1");
         assert!(model.prompts().is_empty(), "事件模式不调模型");
         {
             let state = handle.state.lock().await;
-            let node = state.tree.get("e1").unwrap();
+            let node = state.tree.get("event-e1").unwrap();
             assert_eq!(node.record_count, 0, "case 记忆条数为 0");
             assert!(!node.summary.is_empty(), "纯定位（只有消息）也当场生成摘要");
         }
         assert_eq!(model.summary_inputs().len(), 1, "纯定位由 summarize 生成摘要");
-        assert!(!handle.case_dir("e1").exists(), "没有记录就不落原文副本");
+        assert!(!handle.case_dir("event-e1").exists(), "没有记录就不落原文副本");
         // dev 与 dev-e1 是同一个角色：同一个句柄、同一棵 case 树
         let shared = open(&manager, "dev").await;
         assert!(Arc::ptr_eq(&shared, &handle), "角色模式与事件模式共用同一个句柄");
         assert_eq!(shared.id, AgentRole::new("0", "dev"), "记忆后缀 dev-e1 的角色是 dev");
-        assert!(shared.state.lock().await.tree.contains("e1"), "case 在角色共享的 case 树上");
+        assert!(shared.state.lock().await.tree.contains("event-e1"), "case 在角色共享的 case 树上");
     }
 
     #[test]

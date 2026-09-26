@@ -735,8 +735,8 @@ mod tests {
 
     #[test]
     fn case_dir_layout() {
-        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "e12");
-        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/e12"));
+        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "event-e12");
+        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/event-e12"));
     }
 
     #[tokio::test]

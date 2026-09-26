@@ -165,13 +165,13 @@ mod tests {
         })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(body["data"]["cases"][0]["case_name"], "case");
-        assert_eq!(body["data"]["groups"][0]["case_name"], "case");
+        assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
+        assert_eq!(body["data"]["groups"][0]["case_name"], "role-case");
 
         // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
         let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"][0]["case_name"], "case");
+        assert_eq!(body["data"]["nodes"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
         assert_eq!(body["data"]["nodes"][0]["summary"], "新 case 摘要");
 
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(body["data"]["case_count"], 1);
 
         let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
-        assert_eq!(body["data"]["cases"][0]["case_name"], "case");
+        assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }
 }
