@@ -19,7 +19,7 @@ docs/
 │       ├── kissbot-memory-store.md    # 记忆存储模块
 │       ├── kissbot-memory-ego.md      # 自我认知模块
 │       ├── kissbot-memory-struct.md   # 记忆结构框架
-│       ├── kissbot-memory-struct-abstract.md  # 摘要记忆实现模块（事件切分与上下文定位）
+│       ├── kissbot-memory-struct-abstract.md  # 摘要记忆实现模块（case 切分与上下文定位）
 │       ├── kissbot-agent-config.md    # 智能体配置 UI
 │       ├── kissbot-memory-manage.md   # 记忆管理 UI
 │       ├── kissbot-config.md          # 公共配置组件

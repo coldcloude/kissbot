@@ -18,11 +18,33 @@
 │   └── memory-struct-*/          # 各记忆结构实现的数据
 ```
 
-`memory-struct-*` 下由各实现模块自行组织数据；摘要记忆实现模块的目录与文件见 [kissbot-memory-struct-abstract](memory-struct-abstract.md)。
+`memory-struct-*` 下由各实现模块自行组织数据。摘要记忆实现模块（kissbot-memory-struct-abstract）的目录布局：
 
-`suffix` 由调用方（nexus、memory-struct）拼接，路径构造器不做解析：
-- 角色记忆：`{year}-{role-name}`（role_name 为空时形如 `2026-`）
-- 事件记忆：`{year}-{role-name}-{event-id}`（role_name 为空时形如 `2026--{event-id}`）
+```
+{根目录}/{agent-id}/memory-struct-abstract/
+├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
+├── {角色名}/                      # 角色目录：case 树与原文副本
+│   ├── tree.json                 # 一棵 case 树（角色模式与事件模式共用）
+│   └── cases/{case-id}/          # case 原文副本，每类一个文件
+│       ├── channel-records.jsonl
+│       ├── think-records.jsonl
+│       ├── tool-call-records.jsonl
+│       └── tool-result-records.jsonl
+└── {记忆后缀}/                    # 水位与当前 case 指针（后缀 = 角色名时就是上面的角色目录）
+    ├── current.json              # 各通道的当前 case 指针（字段 case_id）
+    └── watermark.json            # 各通道的已处理水位
+```
+
+case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。case id 命名：角色模式为 `role-1`、`role-2`…（角色树内递增），事件模式固定为 `event-{事件标识}`（顶层叶子）。详见 [memory-struct-abstract.md](memory-struct-abstract.md)。
+
+## role-event 后缀命名
+
+`suffix` 由调用方（nexus、memory-struct）拼接，路径构造器不做解析。摘要记忆实现模块按**第一个** `-` 把它拆成「角色名 + 可选事件标识」（角色名不允许含 `-`，事件标识可以含 `-`，如 UUID）：
+
+- 角色记忆：`{role-name}`（不含 `-`），在 memory-store 里形如 `{year}-{role-name}`（role_name 为空时形如 `2026-`）
+- 事件记忆：`{role-name}-{event-id}`，在 memory-store 里形如 `{year}-{role-name}-{event-id}`（role_name 为空时形如 `2026--{event-id}`）
+
+例：`dev-3f2a-c3d4` 的角色是 `dev`、事件标识是 `3f2a-c3d4`。
 
 ## 文件格式
 

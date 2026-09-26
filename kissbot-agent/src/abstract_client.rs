@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use kissbot_api::{
-    ApiResponse, EventNode, EventRecordsResponse, EventRecordsTailRequest, EventSummaryRequest,
-    EventSummaryResponse, LocateMessage, LocateRequest, LocateResponse,
+    ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
+    CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -38,7 +38,7 @@ impl AbstractClient {
         }
     }
 
-    /// POST /abstract/locate：定位一批消息涉及的事件（摘要与原文副本由调用方按事件标识另取）
+    /// POST /abstract/locate：定位一批消息涉及的 case（摘要与原文副本由调用方按 case 标识另取）
     pub async fn locate(&self, agent_id: &str, role: &str, messages: Vec<LocateMessage>) -> Result<LocateResponse> {
         self.post(
             "/abstract/locate",
@@ -51,29 +51,29 @@ impl AbstractClient {
         .await
     }
 
-    /// POST /abstract/event/summary：取事件摘要（返回节点本身：摘要文本 + 层级 + 记录数 + 起止时间）
-    pub async fn event_summary(&self, agent_id: &str, role: &str, event_id: &str) -> Result<EventNode> {
-        let resp: EventSummaryResponse = self
+    /// POST /abstract/case/summary：取 case 摘要（返回节点本身：摘要文本 + 层级 + 记录数 + 起止时间）
+    pub async fn case_summary(&self, agent_id: &str, role: &str, case_id: &str) -> Result<CaseNode> {
+        let resp: CaseSummaryResponse = self
             .post(
-                "/abstract/event/summary",
-                &EventSummaryRequest {
+                "/abstract/case/summary",
+                &CaseSummaryRequest {
                     agent_id: Arc::new(agent_id.to_string()),
                     role: Arc::new(role.to_string()),
-                    event_id: Arc::new(event_id.to_string()),
+                    case_id: Arc::new(case_id.to_string()),
                 },
             )
             .await?;
-        Ok(resp.event.as_ref().clone())
+        Ok(resp.case.as_ref().clone())
     }
 
-    /// POST /abstract/event/records-tail：取事件结尾 count 条原文副本（升序）
-    pub async fn event_records_tail(&self, agent_id: &str, role: &str, event_id: &str, count: u64) -> Result<EventRecordsResponse> {
+    /// POST /abstract/case/records-tail：取 case 结尾 count 条原文副本（升序）
+    pub async fn case_records_tail(&self, agent_id: &str, role: &str, case_id: &str, count: u64) -> Result<CaseRecordsResponse> {
         self.post(
-            "/abstract/event/records-tail",
-            &EventRecordsTailRequest {
+            "/abstract/case/records-tail",
+            &CaseRecordsTailRequest {
                 agent_id: Arc::new(agent_id.to_string()),
                 role: Arc::new(role.to_string()),
-                event_id: Arc::new(event_id.to_string()),
+                case_id: Arc::new(case_id.to_string()),
                 count,
             },
         )

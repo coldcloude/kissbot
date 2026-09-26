@@ -153,7 +153,7 @@ node inject-key.mjs
 
 ## 摘要记忆系统本地验证（手动）
 
-摘要记忆组件（kissbot-memory-struct-abstract）订阅 memory-store 的新数据通知，把记忆切分为事件并生成摘要，按新消息定位事件提供上下文。
+摘要记忆组件（kissbot-memory-struct-abstract）订阅 memory-store 的新数据通知，把记忆切分为 case（专案）并生成摘要，按新消息定位 case 提供上下文。
 
 ### 1. 配置（`../workspace/config.json`）
 
@@ -170,6 +170,7 @@ node inject-key.mjs
     "listen_addr": "127.0.0.1", "listen_port": 8083,   // 本组件 HTTP 服务
     "notify_url": "ws://127.0.0.1:8182",               // memory-store 通知服务地址；缺省则不订阅
     "max_batch_records": 200,                          // 单通道单次处理的消息条数上限
+    "max_case_depth": 16,                              // 逐层判定最大层数
     "provider": { "provider_type": "openai", "base_url": "https://api.deepseek.com", "api_key": "sk-…" },
     "default_model_config": { "max_tokens_usage": 131072, "timeout_secs": 60, "retry_count": 3 },
     "model_configs": { "deepseek-flash": { "max_tokens_usage": 131072 } },
@@ -194,49 +195,52 @@ node inject-key.mjs
 ```
 
 ```bash
-# 事件树（含各通道的当前事件指针）
+# case 树（整棵角色树）与本次记忆后缀各通道的当前 case 指针
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev"}' http://127.0.0.1:8083/abstract/tree/get | jq
 
-# 排障：各通道的已处理水位与当前事件指针直接看状态文件
+# 排障：各记忆后缀的已处理水位与当前 case 指针直接看状态文件
 cat ../workspace/memory-data/0/memory-struct-abstract/dev/watermark.json | jq
 cat ../workspace/memory-data/0/memory-struct-abstract/dev/current.json | jq
 
-# 定位：一批消息（可跨通道）涉及哪些事件（只返回事件标识与分组）
-# 每条消息的通道三元组（messenger_id / self_user_id / group_id）决定用哪个通道的当前事件指针
-# 归档与定位都按通道分开处理；同一通道批次内 msg_id 与已存记录相同即同一条：重复的消息用已存版本分析一次，只返回所属事件
+# 定位：一批消息（可跨通道）涉及哪些 case（只返回 case 标识与分组）
+# 每条消息的通道三元组（messenger_id / self_user_id / group_id）决定用哪个通道的当前 case 指针
+# 归档与定位都按通道分开处理；同一通道批次内 msg_id 与已存记录相同即同一条：重复的消息用已存版本分析一次，只返回所属 case
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","messages":[
         {"msg_id":"m-1","time":"2026-09-22 13:48:37","user_name":"alice","is_self":0,"messenger_id":"web","self_user_id":"self1","group_id":"g1","content":{"msg_type":"Text","data":"之前聊到哪了"}},
         {"msg_id":"m-2","time":"2026-09-22 13:49:02","user_name":"bob","is_self":0,"messenger_id":"web","self_user_id":"self2","group_id":"g2","content":{"msg_type":"Text","data":"另一个通道问一句"}}]}' \
   http://127.0.0.1:8083/abstract/locate | jq
 
-# 摘要 / 全部原文 / 指定之后 / 结尾若干条（用定位拿到的事件标识）
+# 摘要 / 全部原文 / 指定之后 / 结尾若干条（用定位拿到的 case 标识；角色模式为 role-1，事件模式为 event-e1）
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","event_id":"e1"}' http://127.0.0.1:8083/abstract/event/summary | jq
+  -d '{"agent_id":"0","role":"dev","case_id":"role-1"}' http://127.0.0.1:8083/abstract/case/summary | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","event_id":"e1"}' http://127.0.0.1:8083/abstract/event/records | jq
+  -d '{"agent_id":"0","role":"dev","case_id":"role-1"}' http://127.0.0.1:8083/abstract/case/records | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","event_id":"e1","count":5}' http://127.0.0.1:8083/abstract/event/records-tail | jq
+  -d '{"agent_id":"0","role":"dev","case_id":"role-1","count":5}' http://127.0.0.1:8083/abstract/case/records-tail | jq
 # 指定之后：after 传上一条记录的 time / sn / record_type
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","event_id":"e1","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
-  http://127.0.0.1:8083/abstract/event/records-after | jq
+  -d '{"agent_id":"0","role":"dev","case_id":"role-1","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
+  http://127.0.0.1:8083/abstract/case/records-after | jq
+# 事件模式：记忆后缀含 `-`（前半为角色名、后半为事件标识），整个后缀固定归入顶层叶子 case event-{事件标识}
+curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
+  -d '{"agent_id":"0","role":"dev-e1","case_id":"event-e1"}' http://127.0.0.1:8083/abstract/case/summary | jq
 
-# 手动触发归档：把各通道水位之后的记录处理一次（查询接口只读，不会触发归档）
+# 手动触发归档：把本次记忆后缀各通道水位之后的记录处理一次（查询接口只读，不会触发归档）
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","rebuild":false}' http://127.0.0.1:8083/abstract/rebuild | jq
 
-# 重建：清空事件树后按共享记忆文件重新构建
+# 重建：只清空本次记忆后缀所属模式的子树（角色模式清角色 case、事件模式清 event-*）后按共享记忆文件重新构建
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","rebuild":true}' http://127.0.0.1:8083/abstract/rebuild | jq
 ```
 
 验证点：
 
-1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`event/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{role}/` 下生成 `tree.json` / `current.json` / `watermark.json` 与 `events/{event-id}/{channel|think|tool-call|tool-result}-records.jsonl`
+1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.json` 与 `cases/{case-id}/{channel|think|tool-call|tool-result}-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
 2. **归档不重复**：没有新数据时反复手动触发不会重复归档（`archived` 为 0，日志不再出现新的记录数）
-3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部事件与分组；每个组都有 `event_id`，新话题会建出记忆条数为 0 的事件（摘要为空、原文为空），等这些消息写入记忆并归档后补上。摘要与原文再用 `event/summary`、`event/records*` 取
-4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（事件的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
-5. **事件模式**：`role` 以第一个 `-` 分隔出的后半段为事件标识（如 `dev-e1`）时，作用域只保留一个顶层事件，不参与判定
-6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{role}.jsonl` 累积该作用域的判定上下文
+3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_id`，新话题会建出记忆条数为 0 的 case（摘要为空、原文为空），等这些消息写入记忆并归档后补上。摘要与原文再用 `case/summary`、`case/records*` 取
+4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（case 的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
+5. **事件模式**：`role` 含 `-`（按第一个 `-` 拆分，前半为角色名、后半为事件标识，如 `dev-e1`）时，整个后缀固定归入该角色树里的顶层叶子 case `event-e1`，不分组、不做定位判定，也不参与角色模式的判定
+6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{session_id}.jsonl` 累积该记忆后缀的判定上下文（session_id 为后缀的净化形式）

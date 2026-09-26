@@ -1,5 +1,5 @@
 //! 摘要记忆输入处理器：按 channel（messenger + 接收方用户 + 群组）攒批，每秒定时检测，
-//! 某 channel 的最后一条消息超时即触发该批：先经摘要记忆（定位事件 → 事件摘要 + 事件结尾原文副本）
+//! 某 channel 的最后一条消息超时即触发该批：先经摘要记忆（定位 case → case 摘要 + case 结尾原文副本）
 //! 重建会话上下文，再把本批新消息交给 pipeline 运行。摘要记忆未配置或调用失败时降级为普通合批。
 
 use std::{
@@ -11,7 +11,7 @@ use std::{
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Local};
 use dashmap::DashMap;
-use kissbot_api::{ChannelKey, ChannelRecord, EventRecord, IncomingMessageEvent, LocateMessage};
+use kissbot_api::{ChannelKey, ChannelRecord, CaseRecord, IncomingMessageEvent, LocateMessage};
 use kissbot_llm::{Message, Session};
 use tokio::sync::Notify;
 use tracing::warn;
@@ -31,7 +31,7 @@ const TICK_INTERVAL_SECS: u64 = 1;
 
 /// 单个 channel 的待处理批次
 struct PendingBatch {
-    events: Vec<Arc<IncomingMessageEvent>>,
+    cases: Vec<Arc<IncomingMessageEvent>>,
     /// 最后一条消息到达时间（超时判定基准）
     last_at: Instant,
 }
@@ -112,14 +112,14 @@ fn record_message_key(record: &ChannelRecord) -> Option<MessageKey> {
     )
 }
 
-/// 合并各事件结尾的原文副本：只保留通道记录；各事件**内部**按 (time, sn) 去重
-/// （sn 在各事件自己的记录文件里独立编号，跨事件不可比，因此不能跨事件去重）
-fn merge_tail_records(tails: &[Vec<Arc<EventRecord>>]) -> Vec<Arc<ChannelRecord>> {
+/// 合并各 case 结尾的原文副本：只保留通道记录；各 case **内部**按 (time, sn) 去重
+/// （sn 在各 case 自己的记录文件里独立编号，跨 case 不可比，因此不能跨 case 去重）
+fn merge_tail_records(tails: &[Vec<Arc<CaseRecord>>]) -> Vec<Arc<ChannelRecord>> {
     let mut records = Vec::new();
     for tail in tails {
         let mut seen: HashSet<(String, u64)> = HashSet::new();
         for record in tail {
-            if let EventRecord::Channel(channel_record) = record.as_ref() {
+            if let CaseRecord::Channel(channel_record) = record.as_ref() {
                 if seen.insert((channel_record.time.as_str().to_string(), channel_record.sn)) {
                     records.push(channel_record.clone());
                 }
@@ -162,7 +162,7 @@ fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Mess
         return messages;
     }
     let block = format!(
-        "【相关事件摘要】\n{}",
+        "【相关专案摘要】\n{}",
         summaries.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n")
     );
     if matches!(messages.first(), Some(Message::User { .. })) {
@@ -212,8 +212,8 @@ impl AbstractAgentInputProcessor {
         let mut batch = self
             .batches
             .entry(key)
-            .or_insert_with(|| PendingBatch { events: Vec::new(), last_at: now });
-        batch.events.push(event);
+            .or_insert_with(|| PendingBatch { cases: Vec::new(), last_at: now });
+        batch.cases.push(event);
         batch.last_at = now;
     }
 }
@@ -246,7 +246,7 @@ async fn tick_loop(
         );
         for channel in due_channels(&batches, timeout) {
             let Some((_, batch)) = batches.remove(&channel) else { continue };
-            flush_batch(&session_key, &session, &client, &channel, batch.events).await;
+            flush_batch(&session_key, &session, &client, &channel, batch.cases).await;
         }
     }
 }
@@ -257,44 +257,44 @@ async fn flush_batch(
     session: &Arc<Session>,
     client: &Arc<AbstractClient>,
     channel: &ChannelKey,
-    events: Vec<Arc<IncomingMessageEvent>>,
+    cases: Vec<Arc<IncomingMessageEvent>>,
 ) {
-    match build_context(session_key, client, &events).await {
+    match build_context(session_key, client, &cases).await {
         Ok(messages) => session.context_archive_and_clear_cache_and_reset_messages(messages).await,
         Err(e) => warn!(
             "摘要记忆重建上下文失败，降级为普通合批（channel={}:{}:{}）: {:?}",
             channel.messenger_id, channel.self_user_id, channel.group_id, e
         ),
     }
-    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&events)).await;
+    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&cases)).await;
 }
 
-/// 用摘要记忆重建上下文：定位事件 → 各事件摘要 + 事件结尾原文副本 → 时间窗与去重 → 组装消息
+/// 用摘要记忆重建上下文：定位 case → 各 case 摘要 + case 结尾原文副本 → 时间窗与去重 → 组装消息
 async fn build_context(
     session_key: &SessionKey,
     client: &Arc<AbstractClient>,
-    events: &[Arc<IncomingMessageEvent>],
+    cases: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
     let agent_id = session_key.agent_id.as_str();
     let role = role_mode(session_key.role_name.as_str(), &session_key.mode);
-    // 1. 定位本批消息涉及的事件
-    let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
+    // 1. 定位本批消息涉及的 case
+    let messages: Vec<LocateMessage> = cases.iter().map(|e| locate_message(e.as_ref())).collect();
     let located = client.locate(agent_id, &role, messages).await?;
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
-    // 2. 逐个取事件摘要与结尾若干条原文副本；定位为新话题建出的空事件（记忆条数 0、无摘要）
+    // 2. 逐个取 case 摘要与结尾若干条原文副本；定位为新话题建出的空 case（记忆条数 0、无摘要）
     //    还没有内容可拼进上下文，跳过（等这些消息写入记忆并归档后自然会有摘要）
     let mut summaries = Vec::new();
-    let mut tails: Vec<Vec<Arc<EventRecord>>> = Vec::new();
-    for event in located.events.iter() {
-        let node = client.event_summary(agent_id, &role, event.event_id.as_str()).await?;
+    let mut tails: Vec<Vec<Arc<CaseRecord>>> = Vec::new();
+    for case in located.cases.iter() {
+        let node = client.case_summary(agent_id, &role, case.case_id.as_str()).await?;
         if node.summary.as_str().is_empty() {
             continue;
         }
         summaries.push(node.summary.as_str().to_string());
         let tail = client
-            .event_records_tail(agent_id, &role, event.event_id.as_str(), cfg.memory_count as u64)
+            .case_records_tail(agent_id, &role, case.case_id.as_str(), cfg.memory_count as u64)
             .await?;
         tails.push(tail.records);
     }
@@ -303,7 +303,7 @@ async fn build_context(
     let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let new_keys: HashSet<MessageKey> = events.iter().filter_map(|e| new_message_key(e.as_ref())).collect();
+    let new_keys: HashSet<MessageKey> = cases.iter().filter_map(|e| new_message_key(e.as_ref())).collect();
     let history = filter_history(&records, &cutoff, &new_keys);
     // 5. 组装上下文（摘要在前，历史在后）
     Ok(compose_context(&summaries, &history))
@@ -336,7 +336,7 @@ mod tests {
 
     use crate::types::{Error, Mode};
 
-    /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
+    /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定；此处「事件」指通道域的消息事件）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
         ev_with_id(messenger, self_user, group, name, text, time, "m")
     }
@@ -432,11 +432,11 @@ mod tests {
         let batches = DashMap::new();
         batches.insert(
             ChannelKey::new("web", "self", "g1"),
-            PendingBatch { events: vec![], last_at: Instant::now() },
+            PendingBatch { cases: vec![], last_at: Instant::now() },
         );
         batches.insert(
             ChannelKey::new("web", "self", "g2"),
-            PendingBatch { events: vec![], last_at: Instant::now() - Duration::from_secs(10) },
+            PendingBatch { cases: vec![], last_at: Instant::now() - Duration::from_secs(10) },
         );
         let due = due_channels(&batches, Duration::from_secs(3));
         assert_eq!(due, vec![ChannelKey::new("web", "self", "g2")], "只有超时 channel 被触发");
@@ -450,8 +450,8 @@ mod tests {
         processor.enqueue(ev_in("web", "self", "g2", "u3", "c", "2026-09-23 10:00:02"));
         let g1 = ChannelKey::new("web", "self", "g1");
         let g2 = ChannelKey::new("web", "self", "g2");
-        assert_eq!(processor.batches.get(&g1).unwrap().events.len(), 2, "同 channel 合入一批");
-        assert_eq!(processor.batches.get(&g2).unwrap().events.len(), 1, "不同 channel 分开攒");
+        assert_eq!(processor.batches.get(&g1).unwrap().cases.len(), 2, "同 channel 合入一批");
+        assert_eq!(processor.batches.get(&g2).unwrap().cases.len(), 1, "不同 channel 分开攒");
     }
 
     #[test]
@@ -473,12 +473,12 @@ mod tests {
     }
 
     #[test]
-    fn merge_tail_records_keeps_channel_only_and_dedups_per_event() {
-        // sn 在各事件的记录文件里独立编号：事件内去重，跨事件即使 (time, sn) 相同也各自保留
+    fn merge_tail_records_keeps_channel_only_and_dedups_per_case() {
+        // sn 在各 case 的记录文件里独立编号：case 内去重，跨 case 即使 (time, sn) 相同也各自保留
         let e1 = vec![
-            Arc::new(EventRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))),
-            Arc::new(EventRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))), // 同事件内重复
-            Arc::new(EventRecord::Think(Arc::new(kissbot_api::ThinkRecord {
+            Arc::new(CaseRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))),
+            Arc::new(CaseRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))), // 同 case 内重复
+            Arc::new(CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
                 reasoning_content: Some(Arc::new("推理".into())),
                 thinking: None,
                 key: Arc::new("k1".into()),
@@ -486,9 +486,9 @@ mod tests {
                 sn: 1,
             }))),
         ];
-        let e2 = vec![Arc::new(EventRecord::Channel(rec("u2", "b", 0, "2026-09-23 10:00:00", 1)))];
+        let e2 = vec![Arc::new(CaseRecord::Channel(rec("u2", "b", 0, "2026-09-23 10:00:00", 1)))];
         let merged = merge_tail_records(&[e1, e2]);
-        assert_eq!(merged.len(), 2, "事件内去重、非通道记录跳过、跨事件不去重");
+        assert_eq!(merged.len(), 2, "case 内去重、非通道记录跳过、跨 case 不去重");
         assert_eq!(merged[0].user_name.as_str(), "u1");
         assert_eq!(merged[1].user_name.as_str(), "u2");
     }
@@ -496,12 +496,12 @@ mod tests {
     #[test]
     fn compose_context_puts_summary_first_and_keeps_history() {
         let history = vec![mc("u1", "hi", false), mc("agent", "yo", true)];
-        let messages = compose_context(&["事件A".to_string(), "事件B".to_string()], &history);
+        let messages = compose_context(&["专案A".to_string(), "专案B".to_string()], &history);
         assert_eq!(messages.len(), 2, "摘要并入首条 User，不新增消息");
         match &messages[0] {
             Message::User { content } => {
-                assert!(content.starts_with("【相关事件摘要】"), "摘要块置首: {}", content);
-                assert!(content.contains("- 事件A") && content.contains("- 事件B"));
+                assert!(content.starts_with("【相关专案摘要】"), "摘要块置首: {}", content);
+                assert!(content.contains("- 专案A") && content.contains("- 专案B"));
                 assert!(content.ends_with("u1: hi"), "原首条 User 内容保留");
             }
             other => panic!("首条应为 User: {:?}", other),
@@ -514,9 +514,9 @@ mod tests {
         // 无摘要无历史 → 空上下文
         assert!(compose_context(&[], &[]).is_empty());
         // 只有摘要 → 单条 User
-        let only_summary = compose_context(&["事件A".to_string()], &[]);
+        let only_summary = compose_context(&["专案A".to_string()], &[]);
         assert_eq!(only_summary.len(), 1);
-        assert!(matches!(&only_summary[0], Message::User { content } if content.contains("事件A")));
+        assert!(matches!(&only_summary[0], Message::User { content } if content.contains("专案A")));
     }
 
     #[tokio::test]
@@ -526,7 +526,7 @@ mod tests {
         processor.accept(ev("u1", "a", "2026-09-23 10:00:00")).await;
         processor.accept(ev("u2", "b", "2026-09-23 10:00:01")).await;
         let g1 = ChannelKey::new("web", "self", "g1");
-        assert_eq!(processor.batches.get(&g1).unwrap().events.len(), 2);
+        assert_eq!(processor.batches.get(&g1).unwrap().cases.len(), 2);
     }
 
     #[tokio::test]

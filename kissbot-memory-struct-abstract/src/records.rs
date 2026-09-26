@@ -1,8 +1,8 @@
-//! 原始记录读取与事件原文副本读写。
+//! 原始记录读取与 Case 原文副本读写。
 //!
-//! 读取侧按共享记忆文件（`{root}/{agent}/memory-store/{year}-{role}/…`）正序读取四类记录，
+//! 读取侧按共享记忆文件（`{root}/{agent}/memory-store/{year}-{记忆后缀}/…`）正序读取四类记录，
 //! 并给出每条记录的通道归属（通道记录按自身身份，思考/工具记录按 key 关联的占位通道记录）；
-//! 事件原文副本按类型分文件（`{kind}-records.jsonl`，行内容与记忆存储的记录格式一致，不再按日期分文件）。
+//! Case 原文副本按类型分文件（`{kind}-records.jsonl`，行内容与记忆存储的记录格式一致，不再按日期分文件）。
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kissbot_api::{
-    ChannelKey, ChannelRecord, Content, EventCursor, EventRecord, RecordKind, ThinkRecord,
+    CaseCursor, CaseRecord, ChannelKey, ChannelRecord, Content, RecordKind, ThinkRecord,
     ToolCallRecord, ToolResultRecord, Watermark,
 };
 use kai_file::LineReader;
@@ -18,6 +18,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::error::Result;
+use crate::scope::RoleEvent;
 
 /// 一条原始记录（读取阶段带类型；落盘为记忆存储的记录格式）
 #[derive(Debug, Clone)]
@@ -37,7 +38,7 @@ pub enum RecordBody {
 }
 
 impl RecordEntry {
-    /// 记忆存储中的记录 JSON（事件原文副本的落盘格式）
+    /// 记忆存储中的记录 JSON（case 原文副本的落盘格式）
     pub fn to_value(&self) -> Result<Value> {
         Ok(match &self.body {
             RecordBody::Channel(r) => serde_json::to_value(r.as_ref())?,
@@ -94,24 +95,24 @@ impl Ord for RecordEntry {
     }
 }
 
-/// 事件原文副本文件：`{event_dir}/{kind}-records.jsonl`
-pub fn event_record_path(event_dir: &Path, kind: RecordKind) -> PathBuf {
-    event_dir.join(format!("{}-records.jsonl", kind.file_stem()))
+/// Case 原文副本文件：`{case_dir}/{kind}-records.jsonl`
+pub fn case_record_path(case_dir: &Path, kind: RecordKind) -> PathBuf {
+    case_dir.join(format!("{}-records.jsonl", kind.file_stem()))
 }
 
-/// 事件目录：`{root}/{agent}/memory-struct-abstract/{role}/events/{event_id}`
-pub fn event_dir(scope_dir: &Path, event_id: &str) -> PathBuf {
-    scope_dir.join("events").join(event_id)
+/// Case 目录：`{root}/{agent}/memory-struct-abstract/{角色名}/cases/{case_id}`
+pub fn case_dir(role_dir: &Path, case_id: &str) -> PathBuf {
+    role_dir.join("cases").join(case_id)
 }
 
-/// 枚举作用域在记忆存储中已存在的记录文件（按日期升序，只取 `date >= from_date`）。
+/// 枚举某记忆后缀在记忆存储中已存在的记录文件（按日期升序，只取 `date >= from_date`）。
 ///
 /// 直接枚举 `memory-store` 下的年目录，避免按日期逐个探测不存在的文件；
 /// 不设上界：记录时间可能晚于本机当前日期，上界过滤会漏读。
 pub async fn list_store_files(
     root: &Path,
     agent_id: &str,
-    role: &str,
+    suffix: &str,
     kind: RecordKind,
     from_date: &str,
 ) -> Result<Vec<(String, PathBuf)>> {
@@ -133,7 +134,7 @@ pub async fn list_store_files(
         if dir_name.len() < 5 || !dir_name.as_bytes()[..4].iter().all(|b| b.is_ascii_digit()) || &dir_name[4..5] != "-" {
             continue;
         }
-        if &dir_name[5..] != role {
+        if &dir_name[5..] != suffix {
             continue;
         }
         let mut dir_entries = tokio::fs::read_dir(entry.path()).await?;
@@ -150,6 +151,34 @@ pub async fn list_store_files(
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
+}
+
+/// 枚举某角色在记忆存储中出现过的记忆后缀（`{year}-{后缀}` 的后缀段）。
+///
+/// 服务启动恢复时用：磁盘上的原始记录与水位的关系未知，这些后缀全部按待处理处理。
+pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Result<BTreeSet<String>> {
+    let store_root = root.join(agent_id).join("memory-store");
+    let mut year_dirs = match tokio::fs::read_dir(&store_root).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut suffixes = BTreeSet::new();
+    while let Some(entry) = year_dirs.next_entry().await? {
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        // 年目录形如 "2026-dev-e1"：前 4 位数字 + '-' + 记忆后缀
+        if dir_name.len() < 5 || !dir_name.as_bytes()[..4].iter().all(|b| b.is_ascii_digit()) || &dir_name[4..5] != "-" {
+            continue;
+        }
+        let suffix = &dir_name[5..];
+        if RoleEvent::parse(suffix).role == role {
+            suffixes.insert(suffix.to_string());
+        }
+    }
+    Ok(suffixes)
 }
 
 /// 共享记忆文件的全量视图：记录与逐条对应的通道归属
@@ -182,15 +211,15 @@ impl StoreView {
     }
 }
 
-/// 读取共享记忆文件的全部四类记录（按 (time, sn) 升序）并标注通道归属。
+/// 读取某记忆后缀的共享记忆文件全部四类记录（按 (time, sn) 升序）并标注通道归属。
 ///
 /// 不做水位过滤：按通道判定批次需要看到全部记录——思考/工具记录的归属依赖同 key 的占位通道记录，
 /// 该占位记录可能已被归档到更早的水位之下；水位过滤由 [`StoreView::pending_for`] 按通道完成。
-pub async fn read_store_records(root: &Path, agent_id: &str, role: &str) -> Result<StoreView> {
+pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Result<StoreView> {
     let from_date = kissbot_api::WATERMARK_ZERO_TIME[..10].to_string();
     let mut entries = Vec::new();
     for kind in RecordKind::ALL {
-        let files = list_store_files(root, agent_id, role, kind, &from_date).await?;
+        let files = list_store_files(root, agent_id, suffix, kind, &from_date).await?;
         for (_, path) in files {
             let mut reader = LineReader::new(&path, None, None).await?;
             while let Some(line) = reader.next_line().await? {
@@ -260,11 +289,11 @@ pub fn value_time_sn(value: &Value) -> Option<(String, u64)> {
     Some((time, sn))
 }
 
-/// 把批次记录追加为事件的原文副本（按记录类型分文件，保持记忆存储的记录格式）。
+/// 把批次记录追加为 case 的原文副本（按记录类型分文件，保持记忆存储的记录格式）。
 ///
 /// 同类型记录合并为一次写入，并等待写入真正完成：`tokio::fs::File` 的 `write_all` 可能只把数据
-/// 交给后台阻塞任务就返回，随后同一进程内的读取（摘要重算、事件查询）会看到不完整的内容。
-pub async fn append_event_records(dir: &Path, entries: &[RecordEntry]) -> Result<()> {
+/// 交给后台阻塞任务就返回，随后同一进程内的读取（摘要重算、case 查询）会看到不完整的内容。
+pub async fn append_case_records(dir: &Path, entries: &[RecordEntry]) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
@@ -278,7 +307,7 @@ pub async fn append_event_records(dir: &Path, entries: &[RecordEntry]) -> Result
         buffer.push('\n');
     }
     for (kind, buffer) in buffers {
-        let path = event_record_path(dir, kind);
+        let path = case_record_path(dir, kind);
         let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await?;
         file.write_all(buffer.as_bytes()).await?;
         file.flush().await?;
@@ -289,7 +318,7 @@ pub async fn append_event_records(dir: &Path, entries: &[RecordEntry]) -> Result
 /// 取游标之后的原文副本：同类型比较 `(time, sn)`；同一时刻的其他类型记录视为在其后
 /// （各类型文件的 `sn` 相互独立、跨类型不可比——与归档批次末尾的同一条规则）。
 /// 调用方把上一条记录的 `time` / `sn` / `record_type` 原样回传即可连续分页。
-pub fn records_after(records: &[EventRecord], after: &EventCursor) -> Vec<EventRecord> {
+pub fn records_after(records: &[CaseRecord], after: &CaseCursor) -> Vec<CaseRecord> {
     records
         .iter()
         .filter(|record| match record.time().cmp(after.time.as_str()) {
@@ -302,16 +331,16 @@ pub fn records_after(records: &[EventRecord], after: &EventCursor) -> Vec<EventR
 }
 
 /// 取结尾若干条原文副本（保持升序）
-pub fn records_tail(records: &[EventRecord], count: u64) -> Vec<EventRecord> {
+pub fn records_tail(records: &[CaseRecord], count: u64) -> Vec<CaseRecord> {
     let count = (count as usize).min(records.len());
     records[records.len() - count..].to_vec()
 }
 
-/// 读取事件的全部原文副本（按 (time, sn) 升序）
-pub async fn read_event_records(dir: &Path) -> Result<Vec<EventRecord>> {
+/// 读取 case 的全部原文副本（按 (time, sn) 升序）
+pub async fn read_case_records(dir: &Path) -> Result<Vec<CaseRecord>> {
     let mut records = Vec::new();
     for kind in RecordKind::ALL {
-        let path = event_record_path(dir, kind);
+        let path = case_record_path(dir, kind);
         if !path.exists() {
             continue;
         }
@@ -321,9 +350,9 @@ pub async fn read_event_records(dir: &Path) -> Result<Vec<EventRecord>> {
             if text.is_empty() {
                 continue;
             }
-            match parse_event_record(kind, text) {
+            match parse_case_record(kind, text) {
                 Ok(record) => records.push(record),
-                Err(e) => warn!("[abstract] skip unparsable event record in {}: {}", path.display(), e),
+                Err(e) => warn!("[abstract] skip unparsable case record in {}: {}", path.display(), e),
             }
         }
     }
@@ -331,17 +360,17 @@ pub async fn read_event_records(dir: &Path) -> Result<Vec<EventRecord>> {
     Ok(records)
 }
 
-fn parse_event_record(kind: RecordKind, text: &str) -> Result<EventRecord> {
+fn parse_case_record(kind: RecordKind, text: &str) -> Result<CaseRecord> {
     Ok(match kind {
-        RecordKind::Channel => EventRecord::Channel(Arc::new(serde_json::from_str::<ChannelRecord>(text)?)),
-        RecordKind::Think => EventRecord::Think(Arc::new(serde_json::from_str::<ThinkRecord>(text)?)),
-        RecordKind::ToolCall => EventRecord::ToolCall(Arc::new(serde_json::from_str::<ToolCallRecord>(text)?)),
-        RecordKind::ToolResult => EventRecord::ToolResult(Arc::new(serde_json::from_str::<ToolResultRecord>(text)?)),
+        RecordKind::Channel => CaseRecord::Channel(Arc::new(serde_json::from_str::<ChannelRecord>(text)?)),
+        RecordKind::Think => CaseRecord::Think(Arc::new(serde_json::from_str::<ThinkRecord>(text)?)),
+        RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(serde_json::from_str::<ToolCallRecord>(text)?)),
+        RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(serde_json::from_str::<ToolResultRecord>(text)?)),
     })
 }
 
-/// 删除事件目录下全部原文副本（重建时使用）
-pub async fn clear_event_records(dir: &Path) -> Result<()> {
+/// 删除 case 目录下全部原文副本（重建时使用）
+pub async fn clear_case_records(dir: &Path) -> Result<()> {
     match tokio::fs::remove_dir_all(dir).await {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -364,13 +393,13 @@ pub fn render_entry(entry: &RecordEntry) -> String {
     }
 }
 
-/// 渲染一条事件原文副本（类型来自所在文件）
-pub fn render_event_record(record: &EventRecord) -> String {
+/// 渲染一条 case 原文副本（类型来自所在文件）
+pub fn render_case_record(record: &CaseRecord) -> String {
     match record {
-        EventRecord::Channel(r) => format!("[{}] {}: {}", r.time, r.user_name, render_content(&r.content)),
-        EventRecord::Think(r) => format!("[{}] (思考) {}", r.time, think_text(r)),
-        EventRecord::ToolCall(r) => format!("[{}] (工具调用) {} {}", r.time, r.tool_name, r.tool_params),
-        EventRecord::ToolResult(r) => {
+        CaseRecord::Channel(r) => format!("[{}] {}: {}", r.time, r.user_name, render_content(&r.content)),
+        CaseRecord::Think(r) => format!("[{}] (思考) {}", r.time, think_text(r)),
+        CaseRecord::ToolCall(r) => format!("[{}] (工具调用) {} {}", r.time, r.tool_name, r.tool_params),
+        CaseRecord::ToolResult(r) => {
             let payload = if !r.tool_error.is_null() { &r.tool_error } else { &r.tool_result };
             format!("[{}] (工具结果) {}", r.time, payload)
         }
@@ -570,15 +599,15 @@ mod tests {
     }
 
     #[test]
-    fn event_record_path_is_per_kind_without_date() {
-        let dir = Path::new("/root/0/memory-struct-abstract/dev/events/e12");
-        assert_eq!(event_record_path(dir, RecordKind::Channel), dir.join("channel-records.jsonl"));
-        assert_eq!(event_record_path(dir, RecordKind::ToolCall), dir.join("tool-call-records.jsonl"));
+    fn case_record_path_is_per_kind_without_date() {
+        let dir = Path::new("/root/0/memory-struct-abstract/dev/cases/e12");
+        assert_eq!(case_record_path(dir, RecordKind::Channel), dir.join("channel-records.jsonl"));
+        assert_eq!(case_record_path(dir, RecordKind::ToolCall), dir.join("tool-call-records.jsonl"));
     }
 
-    fn event_records_fixture() -> Vec<EventRecord> {
+    fn case_records_fixture() -> Vec<CaseRecord> {
         vec![
-            EventRecord::Channel(Arc::new(ChannelRecord {
+            CaseRecord::Channel(Arc::new(ChannelRecord {
                 user_id: Arc::new("u1".into()), self_user_id: Arc::new("self".into()),
                 messenger_id: Arc::new("web".into()), group_id: Arc::new("g1".into()),
                 is_self: 0, msg_id: Arc::new(String::new()),
@@ -587,12 +616,12 @@ mod tests {
                 content: Content::Text(Arc::new("问".into())),
                 time: Arc::new("2026-09-22 10:00:00".into()), sn: 1,
             })),
-            EventRecord::Think(Arc::new(ThinkRecord {
+            CaseRecord::Think(Arc::new(ThinkRecord {
                 reasoning_content: Some(Arc::new("推理".into())), thinking: None,
                 key: Arc::new("k1".into()),
                 time: Arc::new("2026-09-22 10:00:00".into()), sn: 1,
             })),
-            EventRecord::Channel(Arc::new(ChannelRecord {
+            CaseRecord::Channel(Arc::new(ChannelRecord {
                 user_id: Arc::new("self".into()), self_user_id: Arc::new("self".into()),
                 messenger_id: Arc::new("web".into()), group_id: Arc::new("g1".into()),
                 is_self: 1, msg_id: Arc::new(String::new()),
@@ -606,32 +635,32 @@ mod tests {
 
     #[test]
     fn records_after_uses_cursor_rule() {
-        let records = event_records_fixture();
+        let records = case_records_fixture();
 
         // 游标为第一条（通道记录 10:00:00 sn1）：同类型的 sn1 不算在其后，同一时刻的思考记录算在其后
-        let after = EventCursor::of(&records[0]);
+        let after = CaseCursor::of(&records[0]);
         let rest = records_after(&records, &after);
         assert_eq!(rest.len(), 2);
         assert_eq!(rest[0].kind(), RecordKind::Think, "同一时刻的其他类型记录视为在其后");
         assert_eq!(rest[1].kind(), RecordKind::Channel);
 
         // 游标为思考记录（10:00:00 sn1）：通道记录 sn1 视为在其后（跨类型不比 sn）
-        let after = EventCursor::of(&records[1]);
+        let after = CaseCursor::of(&records[1]);
         let rest = records_after(&records, &after);
         assert_eq!(rest.len(), 2);
         assert_eq!(rest[0].kind(), RecordKind::Channel);
         assert_eq!(rest[0].sn(), 1);
 
         // 游标为最后一条：之后为空
-        assert!(records_after(&records, &EventCursor::of(&records[2])).is_empty());
+        assert!(records_after(&records, &CaseCursor::of(&records[2])).is_empty());
         // 游标晚于全部记录：之后为空
-        let cursor = EventCursor { time: Arc::new("2099-01-01 00:00:00".into()), sn: 1, record_type: RecordKind::Channel };
+        let cursor = CaseCursor { time: Arc::new("2099-01-01 00:00:00".into()), sn: 1, record_type: RecordKind::Channel };
         assert!(records_after(&records, &cursor).is_empty());
     }
 
     #[test]
     fn records_tail_keeps_last_ascending() {
-        let records = event_records_fixture();
+        let records = case_records_fixture();
         assert!(records_tail(&records, 0).is_empty());
         let last = records_tail(&records, 1);
         assert_eq!(last.len(), 1);
@@ -641,15 +670,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_and_read_event_records_roundtrip() {
+    async fn append_and_read_case_records_roundtrip() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("events/e1");
+        let dir = temp.path().join("cases/e1");
         let entries = vec![
             channel_entry("2026-09-22 10:00:01", 2, 1),
             think_entry("2026-09-22 10:00:00", 1),
             channel_entry("2026-09-22 10:00:02", 3, 0),
         ];
-        append_event_records(&dir, &entries).await.unwrap();
+        append_case_records(&dir, &entries).await.unwrap();
 
         // 每类一个文件，行内容与记忆存储一致（不含类型标签）
         let channel_raw = tokio::fs::read_to_string(dir.join("channel-records.jsonl")).await.unwrap();
@@ -660,24 +689,24 @@ mod tests {
         assert!(!dir.join("tool-call-records.jsonl").exists());
 
         // 读回按 (time, sn) 升序，类型来自文件
-        let records = read_event_records(&dir).await.unwrap();
+        let records = read_case_records(&dir).await.unwrap();
         assert_eq!(records.len(), 3);
         assert_eq!(records[0].kind(), RecordKind::Think);
         assert_eq!(records[1].kind(), RecordKind::Channel);
         assert_eq!(records[1].time(), "2026-09-22 10:00:01");
         assert_eq!(records[2].sn(), 3);
-        assert!(render_event_record(&records[0]).contains("(思考) 推理"));
+        assert!(render_case_record(&records[0]).contains("(思考) 推理"));
         let value = serde_json::to_value(&records[1]).unwrap();
         assert_eq!(value["record_type"], "channel");
     }
 
     #[tokio::test]
-    async fn append_event_records_accumulates_across_batches() {
+    async fn append_case_records_accumulates_across_batches() {
         let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("events/e1");
-        append_event_records(&dir, &[channel_entry("2026-09-22 10:00:00", 1, 1)]).await.unwrap();
-        append_event_records(&dir, &[channel_entry("2026-09-22 10:00:01", 2, 0)]).await.unwrap();
-        let records = read_event_records(&dir).await.unwrap();
+        let dir = temp.path().join("cases/e1");
+        append_case_records(&dir, &[channel_entry("2026-09-22 10:00:00", 1, 1)]).await.unwrap();
+        append_case_records(&dir, &[channel_entry("2026-09-22 10:00:01", 2, 0)]).await.unwrap();
+        let records = read_case_records(&dir).await.unwrap();
         assert_eq!(records.len(), 2);
     }
 
@@ -705,28 +734,28 @@ mod tests {
     }
 
     #[test]
-    fn event_dir_layout() {
-        let dir = event_dir(Path::new("/root/0/memory-struct-abstract/dev"), "e12");
-        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/events/e12"));
+    fn case_dir_layout() {
+        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "event-e12");
+        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/event-e12"));
     }
 
     #[tokio::test]
-    async fn list_store_files_matches_role_and_date_range() {
+    async fn list_store_files_matches_suffix_and_date_range() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        // 记忆存储布局：{root}/{agent}/memory-store/{year}-{role}/{stem}-records-{date}.jsonl
+        // 记忆存储布局：{root}/{agent}/memory-store/{year}-{记忆后缀}/{stem}-records-{date}.jsonl
         let dir = root.join("0").join("memory-store").join("2026-dev");
         tokio::fs::create_dir_all(&dir).await.unwrap();
         for name in ["channel-records-2026-09-21.jsonl", "channel-records-2026-09-22.jsonl", "think-records-2026-09-22.jsonl"] {
             tokio::fs::write(dir.join(name), b"").await.unwrap();
         }
-        // 角色前缀更长的作用域不应误匹配（"dev-x" 不是 "dev"）
+        // 后缀更长的目录不应误匹配（"dev-x" 不是 "dev"）
         let other = root.join("0").join("memory-store").join("2026-dev-x");
         tokio::fs::create_dir_all(&other).await.unwrap();
         tokio::fs::write(other.join("channel-records-2026-09-22.jsonl"), b"").await.unwrap();
 
         let files = list_store_files(root, "0", "dev", RecordKind::Channel, "2026-09-22").await.unwrap();
-        assert_eq!(files.len(), 1, "只取不早于起始日期且匹配类型/角色的文件");
+        assert_eq!(files.len(), 1, "只取不早于起始日期且匹配类型/后缀的文件");
         assert_eq!(files[0].0, "2026-09-22");
         assert!(files[0].1.ends_with("2026-dev/channel-records-2026-09-22.jsonl"));
 
@@ -736,6 +765,24 @@ mod tests {
 
         let empty = list_store_files(root, "none", "dev", RecordKind::Channel, "2026-09-01").await.unwrap();
         assert!(empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_store_suffixes_keeps_same_role_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for name in ["2026-dev", "2026-dev-e1", "2026-dev-3f2a-c3d4", "2026-dev2", "2026-other", "not-a-date"] {
+            tokio::fs::create_dir_all(root.join("0").join("memory-store").join(name)).await.unwrap();
+        }
+
+        let suffixes = list_store_suffixes(root, "0", "dev").await.unwrap();
+        assert_eq!(
+            suffixes,
+            ["dev", "dev-3f2a-c3d4", "dev-e1"].into_iter().map(String::from).collect(),
+            "同角色的全部后缀（含事件模式），dev2 / other 不属于本角色"
+        );
+        assert!(list_store_suffixes(root, "0", "none").await.unwrap().is_empty());
+        assert!(list_store_suffixes(root, "9", "dev").await.unwrap().is_empty(), "没有存储目录时不报错");
     }
 
 }

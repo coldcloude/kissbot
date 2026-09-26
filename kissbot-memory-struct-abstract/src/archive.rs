@@ -1,39 +1,42 @@
 //! 归档器：批次分组、分组落位与摘要级联重算。
 //!
-//! 角色模式一次处理某通道的一批条目，分两段：
-//! 1. 第 1 轮（分组轮）：把当前事件与该批条目一起交给模型，模型按事件分组并标记属于当前事件的组；
-//!    标记为当前事件的组直接并入当前事件（不下潜）；
-//! 2. 第 2 轮起分层归并：其余组以组为单位，自顶层逐层归并（非叶子继续下潜），或在本层新增叶子事件。
+//! 角色模式一次处理某记忆后缀某通道的一批条目，分两段：
+//! 1. 第 1 轮（分组轮）：把当前 case 与该批条目一起交给模型，模型按 case 分组并标记属于当前 case 的组；
+//!    标记为当前 case 的组直接并入当前 case（不下潜）；
+//! 2. 第 2 轮起分层归并：其余组以组为单位，自顶层逐层归并（非叶子继续下潜），或在本层新增叶子 case。
+//!
+//! 事件模式（记忆后缀含 event）不分组、不参与判定：整个后缀固定归入角色树里的顶层叶子
+//! `event-{caseid}`（见 [`crate::tree::EVENT_CASE_PREFIX`]），角色模式的判定看不到它。
 //!
 //! 批次条目既可以是待归档记录，也可以是只用于定位的新消息（见 [`BatchItem`]）：定位请求触发懒处理时
-//! 先按通道与待归档记录去重（重复的新消息用已存版本分析一次、只返回所属事件），其余新消息随批次一起
-//! 参与分组但不落盘。只含新消息的组按定位处理：只读下探，不新建事件。
+//! 先按通道与待归档记录去重（重复的新消息用已存版本分析一次、只返回所属 case），其余新消息随批次一起
+//! 参与分组但不落盘。只含新消息的组同样命中或建出 case（新话题建出的 case 记忆条数为 0）。
 //!
-//! 事件之间的关联关系与「多个事件合并为大事件」由后续定时程序产生，因此当前新建的事件都是叶子。
+//! Case 之间的关联关系与「多个 case 合并为大 case」由后续定时程序产生，因此当前新建的 case 都是叶子。
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use kissbot_api::{ChannelKey, EventBrief, EventMode, LocateMessage, RecordKind};
+use kissbot_api::{CaseBrief, CaseMode, ChannelKey, LocateMessage, RecordKind};
 use tracing::warn;
 
 use crate::error::{Error, Result};
 use crate::locate::render_message;
 use crate::model::{DecisionModel, LevelDecision};
 use crate::records::{
-    RecordBody, RecordEntry, append_event_records, read_event_records, render_entry,
-    render_event_record,
+    RecordBody, RecordEntry, append_case_records, read_case_records, render_case_record,
+    render_entry,
 };
-use crate::scope::{ScopeHandle, ScopeId, ScopeState};
-use crate::tree::Tree;
+use crate::scope::{ModelScope, RoleEvent, ScopeHandle, ScopeState};
+use crate::tree::CaseTree;
 
 /// 归档结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveOutcome {
     /// 本次归档的记录条数
     pub archived: u64,
-    /// 内容落入的事件（按落位顺序）
-    pub event_ids: Vec<String>,
+    /// 内容落入的 case（按落位顺序）
+    pub case_ids: Vec<String>,
 }
 
 /// 一次归档调用的结果（记录 + 只用于定位的新消息）
@@ -51,7 +54,7 @@ pub struct ArchiveResult {
 #[derive(Debug, Clone)]
 pub enum BatchItem {
     /// 共享记忆中的待归档记录；`aliases` 是与之重复的新消息在请求中的下标
-    /// （分析只用已存版本一次，重复的新消息只返回所属事件）
+    /// （分析只用已存版本一次，重复的新消息只返回所属 case）
     Stored { record: RecordEntry, aliases: Vec<usize> },
     /// 只用于定位的新消息（请求内下标）
     New { index: usize, message: LocateMessage },
@@ -101,17 +104,17 @@ impl BatchItem {
 pub struct PlaceGroup {
     /// 组内新消息在请求中的下标（升序；只含待归档记录的组为空）
     pub messages: Vec<usize>,
-    /// 该组所属事件：命中已有事件即该事件，新话题即本次新建的事件（记忆条数为 0）
-    pub event_id: String,
+    /// 该组所属 case：命中已有 case 即该 case，新话题即本次新建的 case（记忆条数为 0）
+    pub case_id: String,
 }
 
 /// 一个组的落点判定（只读结论，尚未落地）
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GroupVerdict {
-    /// 组里的内容归入该已有事件
-    Event(String),
-    /// 组里的内容需要在该 `parent`（`None` 为顶层）下新建叶子事件
-    New { parent: Option<String> },
+    /// 组里的内容归入该已有 case
+    Case(String),
+    /// 组里的内容需要在该 `parent`（`None` 为顶层）下新建叶子 case；`mode` 决定由谁分配 id
+    New { parent: Option<String>, mode: CaseMode },
 }
 
 /// 分组落位（内部）：落点判定 + 批次内条目下标 + 该组的待归档记录
@@ -186,11 +189,11 @@ impl Archiver {
         Self { model, max_depth, max_batch_records: max_batch_records.max(1) }
     }
 
-    /// 归档某通道的待处理记录，并（可选）一并定位本批新消息。
+    /// 归档某记忆后缀某通道的待处理记录，并（可选）一并定位本批新消息。
     ///
     /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息分组（手动触发 / 重建走这条）；
     /// - `messages` 非空：先按 `msg_id`（单通道批次内）与记录**去重合并**为一个批次一起分析：
-    ///   记录落盘归档，消息只定位；每组都会命中或建出事件（新话题建出的事件记忆条数为 0），
+    ///   记录落盘归档，消息只定位；每组都会命中或建出 case（新话题建出的 case 记忆条数为 0），
     ///   按 [`PlaceGroup`] 返回（`PlaceGroup::messages` 是 `messages` 里的下标）。
     ///
     /// 记录按 `max_batch_records` 分块，逐块归档并落盘：一块失败时已完成的块保留进度，
@@ -199,6 +202,7 @@ impl Archiver {
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
+        role_event: &RoleEvent,
         channel: &ChannelKey,
         records: &[RecordEntry],
         messages: &[&LocateMessage],
@@ -212,10 +216,10 @@ impl Archiver {
         let mut outcomes = Vec::new();
         let mut groups = Vec::new();
         for chunk in items.chunks(self.max_batch_records) {
-            let (outcome, chunk_groups) = self.archive_chunk(handle, state, channel, chunk).await?;
+            let (outcome, chunk_groups) = self.archive_chunk(handle, state, role_event, channel, chunk).await?;
             if outcome.archived > 0 {
                 // 逐块落盘：块失败时前面的进度不回退，失败块由 archive_chunk 恢复内存状态
-                handle.save_state(state).await?;
+                handle.save_state(role_event, state).await?;
             }
             outcomes.push(outcome);
             groups.extend(chunk_groups);
@@ -223,7 +227,7 @@ impl Archiver {
         Ok(ArchiveResult { outcomes, groups, new_messages })
     }
 
-    /// 分析并归档一个分块：批次条目里的记录落盘归档，只用于定位的新消息只产出所属事件。
+    /// 分析并归档一个分块：批次条目里的记录落盘归档，只用于定位的新消息只产出所属 case。
     ///
     /// 所有模型调用都在落盘之前完成；任一模型调用失败时恢复内存状态，磁盘与水位保持不变，
     /// 这批条目留待下次查询重试（见 spec：解析失败按失败处理并保留原状态）。
@@ -231,14 +235,15 @@ impl Archiver {
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
+        role_event: &RoleEvent,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<(ArchiveOutcome, Vec<PlaceGroup>)> {
         if items.is_empty() {
-            return Ok((ArchiveOutcome { archived: 0, event_ids: Vec::new() }, Vec::new()));
+            return Ok((ArchiveOutcome { archived: 0, case_ids: Vec::new() }, Vec::new()));
         }
         let snapshot = state.clone();
-        match self.archive_chunk_inner(handle, state, channel, items).await {
+        match self.archive_chunk_inner(handle, state, role_event, channel, items).await {
             Ok(result) => Ok(result),
             Err(e) => {
                 // 判定阶段会在内存树上新建节点：失败时回到调用前状态，避免留下空节点
@@ -252,99 +257,110 @@ impl Archiver {
         &self,
         handle: &ScopeHandle,
         state: &mut ScopeState,
+        role_event: &RoleEvent,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<(ArchiveOutcome, Vec<PlaceGroup>)> {
         let now = crate::records::now_string();
-        let scope = handle.id.clone();
+        let scope = ModelScope::new(&handle.id, role_event);
 
-        // 1. 定位（只读）：逐组判定落点，得到「已有事件 / 需在何处新建」，此时不改树
-        let placements = match handle.mode {
-            // 事件模式：作用域整体一个顶层叶子事件，不分组、不参与判定
-            EventMode::Event => {
-                let event_id = handle
-                    .event_id
-                    .clone()
-                    .ok_or_else(|| Error::StateError(format!("事件模式作用域缺少事件标识: {}", scope)))?;
+        // 1. 定位（只读）：逐组判定落点，得到「已有 case / 需在何处新建」，此时不改树
+        let placements = match role_event.event_case_id() {
+            // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定
+            Some(case_id) => {
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let records = stored_records(items, &indices);
-                let verdict = if state.tree.contains(&event_id) {
-                    GroupVerdict::Event(event_id)
+                let verdict = if state.tree.contains(&case_id) {
+                    GroupVerdict::Case(case_id)
                 } else {
-                    // 事件还不存在：由落盘阶段建出作用域事件（只含消息时记忆条数为 0）
-                    GroupVerdict::New { parent: None }
+                    // case 还不存在：由落盘阶段建出（只含消息时记忆条数为 0）
+                    GroupVerdict::New { parent: None, mode: CaseMode::Event }
                 };
                 vec![Placement { verdict, items: indices, records }]
             }
-            EventMode::Role => self.group_and_place(&scope, state, channel, items).await?,
+            // 角色模式：模型分组 + 逐层判定，只看角色子树（事件模式固定的 case 不在候选里）
+            None => self.group_and_place(&scope, state, channel, items).await?,
         };
 
-        // 2. 落地 + 存储：逐组建出/命中事件（新话题建出记忆条数为 0 的事件），
+        // 2. 落地 + 存储：逐组建出/命中 case（新话题建出记忆条数为 0 的 case），
         //    有记录的组再聚合记录；随后摘要重算、追加原文副本、应用内存状态、推进水位
         let mut new_records: HashMap<String, Vec<RecordEntry>> = HashMap::new();
         let mut touched: BTreeSet<String> = BTreeSet::new();
-        let mut event_ids: Vec<String> = Vec::new();
+        let mut case_ids: Vec<String> = Vec::new();
         let mut groups: Vec<PlaceGroup> = Vec::with_capacity(placements.len());
         for placement in &placements {
             let mut messages: Vec<usize> =
                 placement.items.iter().flat_map(|index| items[*index].messages().iter().copied()).collect();
             messages.sort_unstable();
-            let event_id = match &placement.verdict {
-                GroupVerdict::Event(event_id) => event_id.clone(),
-                GroupVerdict::New { parent } => self.create_event(handle, &mut state.tree, parent.as_deref(), &now)?,
+            let case_id = match &placement.verdict {
+                GroupVerdict::Case(case_id) => case_id.clone(),
+                GroupVerdict::New { parent, mode } => match mode {
+                    // 事件模式：id 由记忆后缀固定，可能已被建出（并发/重复请求）
+                    CaseMode::Event => {
+                        let case_id = role_event
+                            .event_case_id()
+                            .ok_or_else(|| Error::StateError(format!("事件模式缺少事件标识: {}", role_event)))?;
+                        if !state.tree.contains(&case_id) {
+                            state.tree.create_node(&case_id, None, CaseMode::Event, &now);
+                        }
+                        case_id
+                    }
+                    CaseMode::Role => new_leaf(&mut state.tree, parent.as_deref(), &now),
+                },
             };
-            groups.push(PlaceGroup { messages, event_id: event_id.clone() });
+            groups.push(PlaceGroup { messages, case_id: case_id.clone() });
             if placement.records.is_empty() {
                 continue;
             }
-            new_records.entry(event_id.clone()).or_default().extend(placement.records.iter().cloned());
-            touched.insert(event_id.clone());
-            if !event_ids.contains(&event_id) {
-                event_ids.push(event_id);
+            new_records.entry(case_id.clone()).or_default().extend(placement.records.iter().cloned());
+            touched.insert(case_id.clone());
+            if !case_ids.contains(&case_id) {
+                case_ids.push(case_id);
             }
         }
         let records: Vec<RecordEntry> = items.iter().filter_map(BatchItem::record).cloned().collect();
 
-        // 3. 摘要重算：叶子在前（自底向上），父事件摘要涵盖自身记录与子事件摘要；全部成功后落盘
+        // 3. 摘要重算：叶子在前（自底向上），父 case 摘要涵盖自身记录与子 case 摘要；全部成功后落盘
         let mut summaries: HashMap<String, String> = HashMap::new();
         for id in self.recompute_order(&state.tree, &touched) {
-            if let Some(summary) = self.compute_summary(handle, state, &id, &new_records, &summaries).await? {
+            if let Some(summary) = self.compute_summary(handle, state, &scope, &id, &new_records, &summaries).await? {
                 summaries.insert(id, summary);
             }
         }
 
-        // 4. 落盘原文副本（按事件聚合）
-        for (event_id, group) in &new_records {
-            append_event_records(&handle.event_dir(event_id), group).await?;
+        // 4. 落盘原文副本（按 case 聚合）
+        for (case_id, group) in &new_records {
+            append_case_records(&handle.case_dir(case_id), group).await?;
         }
 
-        // 5. 内存：应用记录与摘要；当前事件指针指向本批最后一个组落入的事件
-        for (event_id, group) in &new_records {
-            state.tree.apply_records(event_id, group, &now);
+        // 5. 内存：应用记录与摘要；当前 case 指针指向本批最后一个组落入的 case
+        for (case_id, group) in &new_records {
+            state.tree.apply_records(case_id, group, &now);
         }
         for (id, summary) in &summaries {
             state.tree.set_summary(id, summary, &now);
         }
+        let key = (role_event.clone(), channel.clone());
         if let Some(last) = groups.last() {
-            state.current_events.insert(channel.clone(), last.event_id.clone());
+            state.current_cases.insert(key.clone(), last.case_id.clone());
         }
-        advance_watermark(state.watermarks.entry(channel.clone()).or_default(), &records);
+        advance_watermark(state.watermarks.entry(key).or_default(), &records);
 
-        Ok((ArchiveOutcome { archived: records.len() as u64, event_ids }, groups))
+        Ok((ArchiveOutcome { archived: records.len() as u64, case_ids }, groups))
     }
 
-    /// 角色模式的分组与定位（只读）：第 1 轮按事件分组（并标记当前事件组），
-    /// 当前事件组直接命中当前事件，其余组各自逐层判定落点；判定不改树，
-    /// 由落盘阶段逐组建出/命中事件——有记录的组再追加记录。
+    /// 角色模式的分组与定位（只读）：第 1 轮按 case 分组（并标记当前 case 组），
+    /// 当前 case 组直接命中当前 case，其余组各自逐层判定落点；判定不改树，
+    /// 由落盘阶段逐组建出/命中 case——有记录的组再追加记录。
     async fn group_and_place(
         &self,
-        scope: &ScopeId,
+        scope: &ModelScope,
         state: &ScopeState,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<Vec<Placement>> {
         let text = render_batch(items);
-        let current = state.current_events.get(channel).cloned();
+        let current = state.current_case(&scope.role_event, channel).cloned();
         let current_brief = current.as_deref().and_then(|id| state.tree.brief(id));
         let groups = self.model.group(scope, &text, items.len(), current_brief.as_ref()).await?;
 
@@ -355,13 +371,13 @@ impl Archiver {
             let text = render_group(items, &group_items);
             let verdict = if group.is_current {
                 match current.clone() {
-                    // 标记为当前事件的组直接命中该通道当前事件
-                    Some(current) => GroupVerdict::Event(current),
-                    // 没有当前事件：只定位的组容忍（退回逐层判定）；有记录要落盘的组无法落位，按失败重试
+                    // 标记为当前 case 的组直接命中该通道当前 case
+                    Some(current) => GroupVerdict::Case(current),
+                    // 没有当前 case：只定位的组容忍（退回逐层判定）；有记录要落盘的组无法落位，按失败重试
                     None if records.is_empty() => self.decide_placement(scope, &state.tree, &text, None).await?,
                     None => {
                         return Err(Error::ModelApiError(format!(
-                            "第 1 轮把分组标记为当前事件，但通道 {} 没有当前事件（作用域 {}）",
+                            "第 1 轮把分组标记为当前 case，但通道 {} 没有当前 case（记忆后缀 {}）",
                             channel.messenger_id, scope
                         )))
                     }
@@ -374,71 +390,59 @@ impl Archiver {
         Ok(placements)
     }
 
-    /// 逐层判定一个组的落点（只读）：命中叶子事件即 [`GroupVerdict::Event`]；
+    /// 逐层判定一个组的落点（只读）：命中叶子 case 即 [`GroupVerdict::Case`]；
     /// 当层未命中（或命中非叶子后其子层都未命中）即 [`GroupVerdict::New`]。
+    ///
+    /// 候选只取角色子树（[`CaseTree::role_top_level_ids`] / [`CaseTree::role_children_ids`]）：
+    /// 事件模式固定的 case 不参与判定，两种模式互不并入。
     async fn decide_placement(
         &self,
-        scope: &ScopeId,
-        tree: &Tree,
+        scope: &ModelScope,
+        tree: &CaseTree,
         text: &str,
         parent: Option<String>,
     ) -> Result<GroupVerdict> {
         let mut parent = parent;
         let mut level = match &parent {
-            Some(id) => tree.children_ids(id),
-            None => tree.top_level_ids(),
+            Some(id) => tree.role_children_ids(id),
+            None => tree.role_top_level_ids(),
         };
 
         for _ in 0..self.max_depth {
             if level.is_empty() {
-                return Ok(GroupVerdict::New { parent });
+                return Ok(GroupVerdict::New { parent, mode: CaseMode::Role });
             }
-            let briefs: Vec<EventBrief> = tree.briefs(&level);
+            let briefs: Vec<CaseBrief> = tree.briefs(&level);
             match self.model.decide_level(scope, text, &briefs).await? {
-                LevelDecision::New => return Ok(GroupVerdict::New { parent }),
-                LevelDecision::Merge(event_id) => {
-                    if !tree.contains(&event_id) {
+                LevelDecision::New => return Ok(GroupVerdict::New { parent, mode: CaseMode::Role }),
+                LevelDecision::Merge(case_id) => {
+                    if !tree.contains(&case_id) {
                         return Err(Error::ModelApiError(format!(
-                            "当层判定给出不存在的事件 {}（作用域 {}）",
-                            event_id, scope
+                            "当层判定给出不存在的 case {}（记忆后缀 {}）",
+                            case_id, scope
                         )));
                     }
-                    if tree.is_leaf(&event_id) {
-                        return Ok(GroupVerdict::Event(event_id));
+                    if tree.is_leaf(&case_id) {
+                        return Ok(GroupVerdict::Case(case_id));
                     }
                     // 非叶子：下潜到其子层继续判定
-                    level = tree.children_ids(&event_id);
-                    parent = Some(event_id);
+                    level = tree.role_children_ids(&case_id);
+                    parent = Some(case_id);
                 }
             }
         }
 
-        // 层数达到上限：落在当前父事件之下（防御模型环路）
-        warn!("[abstract] reach max event depth {} for scope {}", self.max_depth, scope);
-        Ok(GroupVerdict::New { parent })
-    }
-
-    /// 落地新建事件：角色模式在该 `parent` 下新建叶子，事件模式建出作用域固定事件
-    fn create_event(&self, handle: &ScopeHandle, tree: &mut Tree, parent: Option<&str>, now: &str) -> Result<String> {
-        if handle.mode == EventMode::Event {
-            let event_id = handle
-                .event_id
-                .clone()
-                .ok_or_else(|| Error::StateError(format!("事件模式作用域缺少事件标识: {}", handle.id)))?;
-            if !tree.contains(&event_id) {
-                tree.create_node(&event_id, None, EventMode::Event, now);
-            }
-            return Ok(event_id);
-        }
-        Ok(new_leaf(tree, parent, now))
+        // 层数达到上限：落在当前父 case 之下（防御模型环路）
+        warn!("[abstract] reach max case depth {} for suffix {}", self.max_depth, scope);
+        Ok(GroupVerdict::New { parent, mode: CaseMode::Role })
     }
 
     /// 摘要重算顺序：受影响的叶子在前、祖先在后
-    fn recompute_order(&self, tree: &Tree, touched: &BTreeSet<String>) -> Vec<String> {
+    fn recompute_order(&self, tree: &CaseTree, touched: &BTreeSet<String>) -> Vec<String> {
         let mut all: BTreeSet<String> = BTreeSet::new();
-        for event_id in touched {
-            all.insert(event_id.clone());
-            for ancestor in tree.ancestors(event_id) {
+        for case_id in touched {
+            all.insert(case_id.clone());
+            for ancestor in tree.ancestors(case_id) {
                 all.insert(ancestor);
             }
         }
@@ -452,22 +456,23 @@ impl Archiver {
         ordered.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// 计算单个事件的新摘要：自身直接记录（已落盘 + 本批新增）+ 子事件摘要 → 模型摘要。
+    /// 计算单个 case 的新摘要：自身直接记录（已落盘 + 本批新增）+ 子 case 摘要 → 模型摘要。
     ///
-    /// 返回 `None` 表示该事件没有内容（无记录且无子事件），无需摘要。
+    /// 返回 `None` 表示该 case 没有内容（无记录且无子 case），无需摘要。
     async fn compute_summary(
         &self,
         handle: &ScopeHandle,
         state: &ScopeState,
-        event_id: &str,
+        scope: &ModelScope,
+        case_id: &str,
         new_records: &HashMap<String, Vec<RecordEntry>>,
         computed: &HashMap<String, String>,
     ) -> Result<Option<String>> {
-        let Some(node) = state.tree.get(event_id) else {
+        let Some(node) = state.tree.get(case_id) else {
             return Ok(None);
         };
-        let records = read_event_records(&handle.event_dir(event_id)).await?;
-        let extra = new_records.get(event_id);
+        let records = read_case_records(&handle.case_dir(case_id)).await?;
+        let extra = new_records.get(case_id);
         if records.is_empty() && extra.map(|e| e.is_empty()).unwrap_or(true) && node.children.is_empty() {
             return Ok(None);
         }
@@ -476,7 +481,7 @@ impl Archiver {
         if !records.is_empty() || extra.map(|e| !e.is_empty()).unwrap_or(false) {
             content.push_str("记录：\n");
             for record in &records {
-                content.push_str(&render_event_record(record));
+                content.push_str(&render_case_record(record));
                 content.push('\n');
             }
             for entry in extra.into_iter().flatten() {
@@ -485,9 +490,9 @@ impl Archiver {
             }
         }
         if !node.children.is_empty() {
-            content.push_str("\n子事件摘要：\n");
-            for child in state.tree.children_ids(event_id) {
-                // 本批刚重算的子事件摘要优先（父摘要必须涵盖子事件的最新内容）
+            content.push_str("\n子 case 摘要：\n");
+            for child in state.tree.children_ids(case_id) {
+                // 本批刚重算的子 case 摘要优先（父摘要必须涵盖子 case 的最新内容）
                 let summary = computed
                     .get(&child)
                     .cloned()
@@ -497,15 +502,15 @@ impl Archiver {
             }
         }
 
-        Ok(Some(self.model.summarize(&handle.id, &content).await?))
+        Ok(Some(self.model.summarize(scope, &content).await?))
     }
 }
 
-/// 在 `parent` 下新建叶子事件，返回事件 id
-fn new_leaf(tree: &mut Tree, parent: Option<&str>, now: &str) -> String {
-    let event_id = tree.allocate_event_id();
-    tree.create_node(&event_id, parent, EventMode::Role, now);
-    event_id
+/// 在 `parent` 下新建角色模式叶子 case，返回 case id
+fn new_leaf(tree: &mut CaseTree, parent: Option<&str>, now: &str) -> String {
+    let case_id = tree.allocate_case_id();
+    tree.create_node(&case_id, parent, CaseMode::Role, now);
+    case_id
 }
 
 /// 批次文本：每行 `[序号] 时间 内容`
@@ -737,14 +742,14 @@ mod tests {
 
     #[test]
     fn recompute_order_puts_descendants_first() {
-        let mut tree = Tree::new();
-        tree.create_node("e1", None, EventMode::Role, "t");
-        tree.create_node("e2", Some("e1"), EventMode::Role, "t");
-        tree.create_node("e3", Some("e2"), EventMode::Role, "t");
-        let touched: BTreeSet<String> = ["e3".to_string()].into_iter().collect();
+        let mut tree = CaseTree::new();
+        tree.create_node("role-1", None, CaseMode::Role, "t");
+        tree.create_node("role-2", Some("role-1"), CaseMode::Role, "t");
+        tree.create_node("role-3", Some("role-2"), CaseMode::Role, "t");
+        let touched: BTreeSet<String> = ["role-3".to_string()].into_iter().collect();
         let archiver = Archiver::new(Arc::new(crate::stub::StubModel::new()), 4, 200);
         let order = archiver.recompute_order(&tree, &touched);
-        assert_eq!(order, vec!["e3".to_string(), "e2".to_string(), "e1".to_string()]);
+        assert_eq!(order, vec!["role-3".to_string(), "role-2".to_string(), "role-1".to_string()]);
     }
 
 }

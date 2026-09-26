@@ -22,7 +22,7 @@ pub const DEFAULT_WS_RECONNECT_INTERVAL_SECS: u64 = 5;
 /// 模型会话上下文保留的消息条数上限
 pub const DEFAULT_SESSION_MAX_MESSAGES: usize = 20;
 /// 分层归并最大层数（防御模型给出环路）
-pub const DEFAULT_MAX_EVENT_DEPTH: usize = 16;
+pub const DEFAULT_MAX_CASE_DEPTH: usize = 16;
 
 fn default_listen_addr() -> String {
     DEFAULT_LISTEN_ADDR.to_string()
@@ -44,8 +44,8 @@ fn default_session_max_messages() -> usize {
     DEFAULT_SESSION_MAX_MESSAGES
 }
 
-fn default_max_event_depth() -> usize {
-    DEFAULT_MAX_EVENT_DEPTH
+fn default_max_case_depth() -> usize {
+    DEFAULT_MAX_CASE_DEPTH
 }
 
 /// 摘要记忆组件配置（`memory_struct_abstract` 段）
@@ -68,8 +68,8 @@ pub struct Config {
     #[serde(default = "default_session_max_messages")]
     pub session_max_messages: usize,
     /// 分层归并最大层数
-    #[serde(default = "default_max_event_depth")]
-    pub max_event_depth: usize,
+    #[serde(default = "default_max_case_depth")]
+    pub max_case_depth: usize,
     /// provider 配置（结构与 kissbot-llm 的 ProviderModelConfig 一致；同时接受文档中的 `provider` 键名）
     #[serde(alias = "provider")]
     pub provider_config: Arc<ProviderConfig>,
@@ -90,7 +90,7 @@ impl Config {
         })
     }
 
-    /// 记忆根目录：取 kissbot-memory 的 `memory.root_dir`（事件数据与原始记录同根，不单独配置）
+    /// 记忆根目录：取 kissbot-memory 的 `memory.root_dir`（case 数据与原始记录同根，不单独配置）
     pub fn storage_root(&self) -> PathBuf {
         kissbot_memory::Config::get().root_dir.clone()
     }
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(cfg.max_batch_records, DEFAULT_MAX_BATCH_RECORDS);
         assert_eq!(cfg.ws_reconnect_interval_secs, DEFAULT_WS_RECONNECT_INTERVAL_SECS);
         assert_eq!(cfg.session_max_messages, DEFAULT_SESSION_MAX_MESSAGES);
-        assert_eq!(cfg.max_event_depth, DEFAULT_MAX_EVENT_DEPTH);
+        assert_eq!(cfg.max_case_depth, DEFAULT_MAX_CASE_DEPTH);
         assert!(cfg.notify_url.is_none());
         assert_eq!(cfg.provider_config.provider_type.as_str(), "openai");
         assert_eq!(cfg.llm.model.as_deref().map(String::as_str), Some("deepseek-flash"));

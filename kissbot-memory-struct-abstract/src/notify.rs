@@ -136,7 +136,7 @@ pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::{ScopeId, ScopeManager};
+    use crate::scope::{AgentRole, RoleEvent, ScopeManager};
     use crate::service::AbstractService;
     use crate::stub::StubModel;
 
@@ -182,12 +182,13 @@ mod tests {
 
         // 懒处理：通知只登记待处理标记，不做任何计算
         let channel = kissbot_api::ChannelKey::new("web", "self", "g1");
-        let handle = service.manager().get(&ScopeId::new("0", "dev")).unwrap();
+        let role = RoleEvent::parse("dev");
+        let handle = service.manager().get(&AgentRole::new("0", "dev")).unwrap();
         {
             let state = handle.state.lock().await;
-            assert!(state.is_dirty(), "通知登记待处理标记");
+            assert!(state.is_dirty(&role), "通知登记待处理标记");
             assert!(state.tree.is_empty(), "通知本身不归档");
-            assert!(state.dirty_channels.contains(&channel), "通道通知按通道登记");
+            assert!(state.dirty_channels.contains(&(role.clone(), channel.clone())), "通道通知按通道登记");
         }
 
         // 查询只读：不触发归档
@@ -195,22 +196,22 @@ mod tests {
         assert!(tree.nodes.is_empty(), "查询不触发归档");
         {
             let state = handle.state.lock().await;
-            assert!(state.is_dirty(), "查询不清除待处理标记");
+            assert!(state.is_dirty(&role), "查询不清除待处理标记");
         }
 
-        // 手动触发归档：该通道水位之后的全部记录落成一个事件
-        let outcome = service.manual_trigger(&ScopeId::new("0", "dev")).await.unwrap();
+        // 手动触发归档：该通道水位之后的全部记录落成一个 case
+        let outcome = service.manual_trigger("0", "dev").await.unwrap();
         assert_eq!(outcome.archived, 2, "手动触发处理该通道全部待处理记录");
         let tree = service.tree_get("0", "dev").await.unwrap();
-        assert_eq!(tree.nodes.len(), 1, "手动触发归档出事件");
+        assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
-        assert_eq!(tree.current_events.len(), 1);
-        assert_eq!(tree.current_events[0].channel, channel);
-        assert_eq!(tree.current_events[0].event_id.as_str(), "e1");
+        assert_eq!(tree.current_cases.len(), 1);
+        assert_eq!(tree.current_cases[0].channel, channel);
+        assert_eq!(tree.current_cases[0].case_id.as_str(), "role-1");
 
         let state = handle.state.lock().await;
-        assert_eq!(state.watermarks.get(&channel).unwrap().channel.sn, 2);
-        assert!(!state.is_dirty(), "处理成功后清除标记");
+        assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().channel.sn, 2);
+        assert!(!state.is_dirty(&role), "处理成功后清除标记");
     }
 
     #[tokio::test]
@@ -251,8 +252,9 @@ mod tests {
 
     #[test]
     fn scope_ids_used_by_notifications() {
-        // 通知里的 agent/role 直接构成作用域
-        let id = ScopeId::new("0", "dev-e1");
-        assert_eq!(id.mode(), kissbot_api::EventMode::Event);
+        // 通知里的 agent/role 解析出「角色 + 记忆后缀」：角色决定 case 树，后缀决定输入与状态
+        let role_event = RoleEvent::parse("dev-e1");
+        assert_eq!(role_event.mode(), kissbot_api::CaseMode::Event);
+        assert_eq!(role_event.agent_role("0"), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
     }
 }

@@ -24,7 +24,7 @@
     "locate_record_limit": 50,
     "locate_char_limit": 20000,
     "session_max_messages": 20,
-    "max_event_depth": 16,
+    "max_case_depth": 16,
     "max_batch_records": 200,
     "provider": {
       "provider_type": "openai",

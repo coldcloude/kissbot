@@ -1,4 +1,4 @@
-//! 对外 HTTP 接口：定位、事件查询、状态与重建（统一 `ApiResponse`，认证走 X-Api-Key）。
+//! 对外 HTTP 接口：定位、case 查询、状态与重建（统一 `ApiResponse`，认证走 X-Api-Key）。
 
 use std::sync::Arc;
 
@@ -16,11 +16,11 @@ use crate::service::AbstractService;
 pub fn create_router(service: Arc<AbstractService>) -> Router {
     Router::new()
         .route("/abstract/locate", post(locate))
-        .route("/abstract/event/list", post(event_list))
-        .route("/abstract/event/summary", post(event_summary))
-        .route("/abstract/event/records", post(event_records))
-        .route("/abstract/event/records-after", post(event_records_after))
-        .route("/abstract/event/records-tail", post(event_records_tail))
+        .route("/abstract/case/list", post(case_list))
+        .route("/abstract/case/summary", post(case_summary))
+        .route("/abstract/case/records", post(case_records))
+        .route("/abstract/case/records-after", post(case_records_after))
+        .route("/abstract/case/records-tail", post(case_records_tail))
         .route("/abstract/tree/get", post(tree_get))
         .route("/abstract/rebuild", post(rebuild))
         .with_state(service)
@@ -43,9 +43,9 @@ async fn locate(State(service): State<Arc<AbstractService>>, Json(req): Json<Loc
     }
 }
 
-async fn event_list(State(service): State<Arc<AbstractService>>, Json(req): Json<EventListRequest>) -> impl IntoResponse {
+async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseListRequest>) -> impl IntoResponse {
     match service
-        .event_list(
+        .case_list(
             req.agent_id.as_str(),
             req.role.as_str(),
             req.parent_id.as_ref().map(|id| id.as_str()),
@@ -57,23 +57,23 @@ async fn event_list(State(service): State<Arc<AbstractService>>, Json(req): Json
     }
 }
 
-async fn event_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<EventSummaryRequest>) -> impl IntoResponse {
-    match service.event_summary(req.agent_id.as_str(), req.role.as_str(), req.event_id.as_str()).await {
+async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
+    match service.case_summary(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
-async fn event_records(State(service): State<Arc<AbstractService>>, Json(req): Json<EventRecordsRequest>) -> impl IntoResponse {
-    match service.event_records(req.agent_id.as_str(), req.role.as_str(), req.event_id.as_str()).await {
+async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
+    match service.case_records(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
-async fn event_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<EventRecordsAfterRequest>) -> impl IntoResponse {
+async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
     match service
-        .event_records_after(req.agent_id.as_str(), req.role.as_str(), req.event_id.as_str(), &req.after)
+        .case_records_after(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str(), &req.after)
         .await
     {
         Ok(response) => ok(response),
@@ -81,9 +81,9 @@ async fn event_records_after(State(service): State<Arc<AbstractService>>, Json(r
     }
 }
 
-async fn event_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<EventRecordsTailRequest>) -> impl IntoResponse {
+async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
     match service
-        .event_records_tail(req.agent_id.as_str(), req.role.as_str(), req.event_id.as_str(), req.count)
+        .case_records_tail(req.agent_id.as_str(), req.role.as_str(), req.case_id.as_str(), req.count)
         .await
     {
         Ok(response) => ok(response),
@@ -99,17 +99,16 @@ async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<T
 }
 
 async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<RebuildRequest>) -> impl IntoResponse {
-    let id = crate::scope::ScopeId::new(req.agent_id.as_str(), req.role.as_str());
     if req.rebuild {
-        match service.rebuild(&id).await {
+        match service.rebuild(req.agent_id.as_str(), req.role.as_str()).await {
             Ok(response) => ok(response),
             Err(e) => err(e.to_string()),
         }
     } else {
-        match service.manual_trigger(&id).await {
+        match service.manual_trigger(req.agent_id.as_str(), req.role.as_str()).await {
             Ok(outcome) => {
-                let event_count = service.event_count(id.agent_id.as_str(), id.role.as_str()).await.unwrap_or(0);
-                ok(RebuildResponse { archived: outcome.archived, event_count })
+                let case_count = service.case_count(req.agent_id.as_str(), req.role.as_str()).await.unwrap_or(0);
+                ok(RebuildResponse { archived: outcome.archived, case_count })
             }
             Err(e) => err(e.to_string()),
         }
@@ -157,7 +156,7 @@ mod tests {
         let (_temp, service) = test_service();
         let router = create_router(service);
 
-        // 空作用域定位：新话题也建出事件（记忆条数 0），分组一定带 event_id
+        // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_id
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
             "agent_id": "0", "role": "dev",
             "messages": [{"time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
@@ -166,18 +165,18 @@ mod tests {
         })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(body["data"]["events"][0]["event_id"], "e1");
-        assert_eq!(body["data"]["groups"][0]["event_id"], "e1");
+        assert_eq!(body["data"]["cases"][0]["case_id"], "role-1");
+        assert_eq!(body["data"]["groups"][0]["case_id"], "role-1");
 
-        // 查询只读：能看到刚由定位建出的事件（记忆条数 0）
+        // 查询只读：能看到刚由定位建出的 case（记忆条数 0）
         let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"][0]["event_id"], "e1");
+        assert_eq!(body["data"]["nodes"][0]["case_id"], "role-1");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
 
-        // 事件不存在 → 失败响应（摘要与原文一致）
-        for path in ["/abstract/event/summary", "/abstract/event/records"] {
-            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "event_id": "e9"})).await;
+        // case 不存在 → 失败响应（摘要与原文一致）
+        for path in ["/abstract/case/summary", "/abstract/case/records"] {
+            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "case_id": "role-9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
@@ -205,10 +204,10 @@ mod tests {
         let (status, body) = post_json(router.clone(), "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role": "dev", "rebuild": true})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["archived"], 1);
-        assert_eq!(body["data"]["event_count"], 1);
+        assert_eq!(body["data"]["case_count"], 1);
 
-        let (_, body) = post_json(router, "/abstract/event/list", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
-        assert_eq!(body["data"]["events"][0]["event_id"], "e1");
-        assert_eq!(body["data"]["events"][0]["record_count"], 1);
+        let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
+        assert_eq!(body["data"]["cases"][0]["case_id"], "role-1");
+        assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }
 }

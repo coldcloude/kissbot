@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use kissbot_api::EventBrief;
+use kissbot_api::CaseBrief;
 use kissbot_llm::{
     AnthropicProvider, EffectiveLLMConfig, EffectiveModelConfig, Message, ModelResponse,
     OpenAiProvider, Session, call_with_retry, create_anthropic_provider, create_openai_provider,
@@ -19,70 +19,70 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::scope::ScopeId;
+use crate::scope::ModelScope;
 
-/// 第 1 轮（分组轮）的一个分组：属于同一事件的消息（批次内下标，升序）
+/// 第 1 轮（分组轮）的一个分组：属于同一 case 的消息（批次内下标，升序）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageGroup {
     pub messages: Vec<usize>,
-    /// 是否属于当前事件（该通道的当前话题延续）
+    /// 是否属于当前 case（该通道的当前话题延续）
     pub is_current: bool,
 }
 
 /// 分层归并判定结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LevelDecision {
-    /// 在本层新增叶子事件
+    /// 在本层新增叶子 case
     New,
-    /// 并入当层某事件（非叶子时继续下潜）
+    /// 并入当层某 case（非叶子时继续下潜）
     Merge(String),
 }
 
 /// 各判定环节的模型接口
 #[async_trait]
 pub trait DecisionModel: Send + Sync {
-    /// 第 1 轮（分组轮）：把待处理消息按事件分组，并标记属于当前事件的组
-    async fn group(&self, scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>>;
+    /// 第 1 轮（分组轮）：把待处理消息按 case 分组，并标记属于当前 case 的组
+    async fn group(&self, scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>>;
 
-    /// 第 2 轮起逐层判定：并入当层某事件（非叶子继续下潜）/ 在本层新增叶子事件。
-    /// 只用于定位的组（不落盘）同样用它下探：`New` 表示当层未命中，不新建事件。
-    async fn decide_level(&self, scope: &ScopeId, batch: &str, level: &[EventBrief]) -> Result<LevelDecision>;
+    /// 第 2 轮起逐层判定：并入当层某 case（非叶子继续下潜）/ 在本层新增叶子 case。
+    /// 只用于定位的组（不落盘）同样用它下探：`New` 表示当层未命中，不新建 case。
+    async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision>;
 
-    /// 摘要生成：事件直接记录 + 子事件摘要 → 事件摘要
-    async fn summarize(&self, scope: &ScopeId, content: &str) -> Result<String>;
+    /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
+    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<String>;
 }
 
 // ========== 提示词 ==========
 
-const SYSTEM_PROMPT: &str = "你是记忆事件归档与定位的判定器。输入是记忆记录文本与候选事件摘要。\
+const SYSTEM_PROMPT: &str = "你是记忆 case 归档与定位的判定器。输入是记忆记录文本与候选 case 摘要。\
 你只输出一个 JSON 对象，不输出解释、markdown 代码块或其他任何内容。";
 
-fn render_level(level: &[EventBrief]) -> String {
+fn render_level(level: &[CaseBrief]) -> String {
     if level.is_empty() {
-        return "（当层没有事件）".to_string();
+        return "（当层没有 case）".to_string();
     }
     level
         .iter()
-        .map(|b| format!("- {}: {}", b.event_id, b.summary))
+        .map(|b| format!("- {}: {}", b.case_id, b.summary))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// 第 1 轮（分组轮）提示词：给出当前事件与全部待处理消息，让模型按事件分组并标记当前事件
-pub fn grouping_prompt(batch: &str, current: Option<&EventBrief>) -> String {
+/// 第 1 轮（分组轮）提示词：给出当前 case 与全部待处理消息，让模型按 case 分组并标记当前 case
+pub fn grouping_prompt(batch: &str, current: Option<&CaseBrief>) -> String {
     let current = match current {
-        Some(brief) => format!("- {}: {}", brief.event_id, brief.summary),
-        None => "（该通道还没有当前事件）".to_string(),
+        Some(brief) => format!("- {}: {}", brief.case_id, brief.summary),
+        None => "（该通道还没有当前 case）".to_string(),
     };
     let current_rule = if current.starts_with("（") {
-        "该通道还没有当前事件：所有组都不得标记 current"
+        "该通道还没有当前 case：所有组都不得标记 current"
     } else {
-        "与当前事件属于同一话题（当前事件的延续）的组标记 \"current\": true，其余组标记 false"
+        "与当前 case 属于同一话题（当前 case 的延续）的组标记 \"current\": true，其余组标记 false"
     };
     format!(
-        "当前事件：\n{current}\n\n\
+        "当前 case：\n{current}\n\n\
 待处理消息（每行格式 `[下标] 时间 内容`，下标从 0 开始）：\n{batch}\n\n\
-请把这些消息按事件分组（一组 = 一个独立话题/事件）：\n\
+请把这些消息按 case 分组（一组 = 一个独立话题/case）：\n\
 - `messages` 是该组消息的下标数组，升序、不重复、不遗漏\n\
 - 各组按首个下标升序排列，且合起来正好覆盖全部下标\n\
 - {current_rule}\n\
@@ -93,14 +93,14 @@ pub fn grouping_prompt(batch: &str, current: Option<&EventBrief>) -> String {
     )
 }
 
-/// 第 2 轮起逐层判定提示词：当层全部事件作为候选（定位的组同样用它，`new` 即当层未命中）
-pub fn level_prompt(batch: &str, level: &[EventBrief]) -> String {
+/// 第 2 轮起逐层判定提示词：当层全部 case 作为候选（定位的组同样用它，`new` 即当层未命中）
+pub fn level_prompt(batch: &str, level: &[CaseBrief]) -> String {
     format!(
-        "当层事件（id + 摘要）：\n{level}\n\n\
+        "当层 case（id + 摘要）：\n{level}\n\n\
 待归并内容（每行格式 `[序号] 时间 内容`）：\n{batch}\n\n\
 请判断：\n\
-- 若应并入某个已有事件，输出 {{\"target\":\"<event_id>\"}}\n\
-- 若应在本层新增事件，输出 {{\"target\":\"new\"}}\n\
+- 若应并入某个已有 case，输出 {{\"target\":\"<case_id>\"}}\n\
+- 若应在本层新增 case，输出 {{\"target\":\"new\"}}\n\
 只输出 JSON。",
         level = render_level(level),
         batch = batch
@@ -109,8 +109,8 @@ pub fn level_prompt(batch: &str, level: &[EventBrief]) -> String {
 
 pub fn summary_prompt(content: &str) -> String {
     format!(
-        "事件内容（直接记录 + 子事件摘要）：\n{content}\n\n\
-请用简洁中文总结这个事件，保留关键人物、话题、结论与时间线索，输出 {{\"summary\":\"...\"}}",
+        "case 内容（直接记录 + 子 case 摘要）：\n{content}\n\n\
+请用简洁中文总结这个 case，保留关键人物、话题、结论与时间线索，输出 {{\"summary\":\"...\"}}",
         content = content
     )
 }
@@ -136,7 +136,7 @@ pub fn extract_json(text: &str) -> Result<Value> {
         .map_err(|e| Error::ModelApiError(format!("模型输出 JSON 解析失败: {} ({})", e, text)))
 }
 
-/// 第 1 轮输出：按事件分组的结果。
+/// 第 1 轮输出：按 case 分组的结果。
 ///
 /// 严格校验分组可拼成完整批次：下标必须唯一、升序、组内不重复、各组按首下标升序，
 /// 且合起来正好覆盖 `0..total`——漏掉任何一条都不允许（否则该记录会被水位跳过而丢失）。
@@ -196,7 +196,7 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
     Ok(parsed)
 }
 
-/// 第 2 轮输出：`new` 或当层事件 id
+/// 第 2 轮输出：`new` 或当层 case id
 pub fn parse_level_decision(value: &Value) -> Result<LevelDecision> {
     match value.get("target").and_then(|t| t.as_str()) {
         Some("new") => Ok(LevelDecision::New),
@@ -221,7 +221,7 @@ enum ProviderKind {
     Anthropic(AnthropicProvider),
 }
 
-/// 真实模型实现：按作用域隔离会话上下文
+/// 真实模型实现：按判定作用域（agent + 记忆后缀）隔离会话上下文
 pub struct LlmModel {
     provider: ProviderKind,
     llm_cfg: EffectiveLLMConfig,
@@ -229,7 +229,7 @@ pub struct LlmModel {
     /// 记忆根目录（会话上下文按 `{root}/{agent}/memory-struct-abstract/llm` 落盘）
     root: PathBuf,
     session_max_messages: usize,
-    sessions: DashMap<ScopeId, Arc<Session>>,
+    sessions: DashMap<ModelScope, Arc<Session>>,
     session_lock: Mutex<()>,
 }
 
@@ -257,7 +257,7 @@ impl LlmModel {
         })
     }
 
-    async fn session(&self, scope: &ScopeId) -> Result<Arc<Session>> {
+    async fn session(&self, scope: &ModelScope) -> Result<Arc<Session>> {
         if let Some(session) = self.sessions.get(scope) {
             return Ok(session.clone());
         }
@@ -272,7 +272,7 @@ impl LlmModel {
             .join("llm")
             .to_string_lossy()
             .to_string();
-        let session = Arc::new(Session::new(&data_dir, &scope.session_id()));
+        let session = Arc::new(Session::new(&data_dir, &scope.role_event.session_id()));
         session.recover_from_cache().await?;
         session.set_system_message(SYSTEM_PROMPT.to_string()).await;
         self.sessions.insert(scope.clone(), session.clone());
@@ -280,7 +280,7 @@ impl LlmModel {
     }
 
     /// 一次判定调用：会话上下文 + 本次提示 → 结构化 JSON
-    async fn call(&self, scope: &ScopeId, prompt: &str) -> Result<Value> {
+    async fn call(&self, scope: &ModelScope, prompt: &str) -> Result<Value> {
         let session = self.session(scope).await?;
         let mut messages = session.build_context().await;
         messages.push(Message::User { content: Arc::new(prompt.to_string()) });
@@ -312,7 +312,7 @@ impl LlmModel {
         extract_json(&text)
     }
 
-    async fn trim_session(&self, scope: &ScopeId, session: &Arc<Session>) {
+    async fn trim_session(&self, scope: &ModelScope, session: &Arc<Session>) {
         let context = session.build_context().await;
         let non_system: Vec<Message> = context
             .into_iter()
@@ -346,18 +346,18 @@ fn response_text(response: &ModelResponse) -> Result<String> {
 
 #[async_trait]
 impl DecisionModel for LlmModel {
-    async fn group(&self, scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>> {
+    async fn group(&self, scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
         let value = self.call(scope, &grouping_prompt(batch, current)).await?;
         // 按下标总数严格校验：必须完整覆盖批次，漏掉任何一条都按失败处理（不能让它被水位跳过）
         parse_groups(&value, total)
     }
 
-    async fn decide_level(&self, scope: &ScopeId, batch: &str, level: &[EventBrief]) -> Result<LevelDecision> {
+    async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
         let value = self.call(scope, &level_prompt(batch, level)).await?;
         parse_level_decision(&value)
     }
 
-    async fn summarize(&self, scope: &ScopeId, content: &str) -> Result<String> {
+    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<String> {
         let value = self.call(scope, &summary_prompt(content)).await?;
         parse_summary(&value)
     }
@@ -369,8 +369,8 @@ mod tests {
 
     use super::*;
 
-    fn brief(id: &str, summary: &str) -> EventBrief {
-        EventBrief { event_id: Arc::new(id.into()), summary: Arc::new(summary.into()) }
+    fn brief(id: &str, summary: &str) -> CaseBrief {
+        CaseBrief { case_id: Arc::new(id.into()), summary: Arc::new(summary.into()) }
     }
 
     #[test]
@@ -431,20 +431,20 @@ mod tests {
     fn prompts_include_context_and_require_json() {
         let candidates = vec![brief("e1", "聊了天气"), brief("e2", "聊了工作")];
 
-        // 分组轮：当前事件 + 全部待处理消息
+        // 分组轮：当前 case + 全部待处理消息
         let prompt = grouping_prompt("[0] 2026-09-22 10:00:00 alice: 你好\n[1] 2026-09-22 10:01:00 bot: 你好呀", Some(&candidates[0]));
         assert!(prompt.contains("- e1: 聊了天气"));
         assert!(prompt.contains("\"groups\""));
         assert!(prompt.contains("[0] 2026-09-22 10:00:00 alice: 你好"));
         assert!(prompt.contains("标记 \"current\": true"));
-        // 没有当前事件：要求所有组都不得标记 current
+        // 没有当前 case：要求所有组都不得标记 current
         let prompt = grouping_prompt("[0] 内容", None);
-        assert!(prompt.contains("还没有当前事件"));
+        assert!(prompt.contains("还没有当前 case"));
         assert!(prompt.contains("都不得标记 current"));
 
         let prompt = level_prompt("内容", &candidates);
-        assert!(prompt.contains("当层事件"));
+        assert!(prompt.contains("当层 case"));
         assert!(prompt.contains("\"target\":\"new\""));
-        assert_eq!(render_level(&[]), "（当层没有事件）");
+        assert_eq!(render_level(&[]), "（当层没有 case）");
     }
 }

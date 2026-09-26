@@ -1,6 +1,6 @@
 //! kissbot-memory-struct-abstract：摘要记忆实现组件（独立服务）。
 //!
-//! 订阅 memory-store 的新数据通知，把记忆切分为事件、生成事件摘要，并按新消息定位事件提供上下文。
+//! 订阅 memory-store 的新数据通知，把记忆切分为 case、生成 case 摘要，并按新消息定位 case 提供上下文。
 //! 组件设计与职责边界见 docs/design/components-design/kissbot-memory-struct-abstract.md，
 //! 对外接口与存储格式见 docs/spec/memory-struct-abstract.md。
 
@@ -57,7 +57,7 @@ async fn main() {
     let service = Arc::new(AbstractService::new(
         manager,
         model,
-        config.max_event_depth,
+        config.max_case_depth,
         config.max_batch_records,
     ));
 

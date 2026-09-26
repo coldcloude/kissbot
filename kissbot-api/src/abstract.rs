@@ -1,6 +1,6 @@
 //! 摘要记忆实现模块（memory-struct-abstract）的请求/响应类型。
 //!
-//! 事件与事件树查询、事件定位、归档状态与重建；接口路径与字段约定见
+//! Case 与 case 树查询、定位、归档状态与重建；接口路径与字段约定见
 //! [memory-struct-abstract 技术规格](../../docs/spec/memory-struct-abstract.md)。
 
 use std::sync::Arc;
@@ -11,44 +11,44 @@ use crate::{
     ChannelKey, ChannelRecord, Content, RecordKind, ThinkRecord, ToolCallRecord, ToolResultRecord,
 };
 
-// ========== 事件原文副本 ==========
+// ========== Case 原文副本 ==========
 
-/// 事件原文副本：按记录类型分文件的原始记录（行内容与记忆存储的记录格式一致，
+/// Case 原文副本：按记录类型分文件的原始记录（行内容与记忆存储的记录格式一致，
 /// 类型由所在文件的类型段决定；API 上以 `record_type` 标签暴露）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record_type", rename_all = "kebab-case")]
-pub enum EventRecord {
+pub enum CaseRecord {
     Channel(Arc<ChannelRecord>),
     Think(Arc<ThinkRecord>),
     ToolCall(Arc<ToolCallRecord>),
     ToolResult(Arc<ToolResultRecord>),
 }
 
-impl EventRecord {
+impl CaseRecord {
     pub fn kind(&self) -> RecordKind {
         match self {
-            EventRecord::Channel(_) => RecordKind::Channel,
-            EventRecord::Think(_) => RecordKind::Think,
-            EventRecord::ToolCall(_) => RecordKind::ToolCall,
-            EventRecord::ToolResult(_) => RecordKind::ToolResult,
+            CaseRecord::Channel(_) => RecordKind::Channel,
+            CaseRecord::Think(_) => RecordKind::Think,
+            CaseRecord::ToolCall(_) => RecordKind::ToolCall,
+            CaseRecord::ToolResult(_) => RecordKind::ToolResult,
         }
     }
 
     pub fn time(&self) -> &str {
         match self {
-            EventRecord::Channel(r) => r.time.as_str(),
-            EventRecord::Think(r) => r.time.as_str(),
-            EventRecord::ToolCall(r) => r.time.as_str(),
-            EventRecord::ToolResult(r) => r.time.as_str(),
+            CaseRecord::Channel(r) => r.time.as_str(),
+            CaseRecord::Think(r) => r.time.as_str(),
+            CaseRecord::ToolCall(r) => r.time.as_str(),
+            CaseRecord::ToolResult(r) => r.time.as_str(),
         }
     }
 
     pub fn sn(&self) -> u64 {
         match self {
-            EventRecord::Channel(r) => r.sn,
-            EventRecord::Think(r) => r.sn,
-            EventRecord::ToolCall(r) => r.sn,
-            EventRecord::ToolResult(r) => r.sn,
+            CaseRecord::Channel(r) => r.sn,
+            CaseRecord::Think(r) => r.sn,
+            CaseRecord::ToolCall(r) => r.sn,
+            CaseRecord::ToolResult(r) => r.sn,
         }
     }
 
@@ -58,27 +58,27 @@ impl EventRecord {
     }
 }
 
-// ========== 事件与事件树 ==========
+// ========== Case 与 case 树 ==========
 
-/// 事件模式：角色模式（记录经模型判定切分为事件、可多层归并）与事件模式（作用域整体一个顶层叶子事件）
+/// Case 模式：角色模式（记录经模型判定切分为 case、可多层归并）与事件模式（记忆后缀含 event，整体固定为一个顶层叶子 case）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum EventMode {
+pub enum CaseMode {
     Role,
     Event,
 }
 
-/// 事件节点（tree.json 的节点形状）
+/// Case 节点（tree.json 的节点形状）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventNode {
-    pub event_id: Arc<String>,
+pub struct CaseNode {
+    pub case_id: Arc<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Arc<String>>,
     #[serde(default)]
     pub children: Vec<Arc<String>>,
-    pub mode: EventMode,
+    pub mode: CaseMode,
     pub summary: Arc<String>,
-    /// 本事件直接持有的原文副本条数（不含子事件）
+    /// 本 case 直接持有的原文副本条数（不含子 case）
     pub record_count: u64,
     pub start_time: Arc<String>,
     pub end_time: Arc<String>,
@@ -86,23 +86,23 @@ pub struct EventNode {
     pub updated_at: Arc<String>,
 }
 
-impl EventNode {
+impl CaseNode {
     pub fn is_leaf(&self) -> bool {
         self.children.is_empty()
     }
 }
 
-/// 事件摘要（分层归并/上下文装配用的最小事件描述）
+/// Case 摘要（分层归并/上下文装配用的最小 case 描述）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EventBrief {
-    pub event_id: Arc<String>,
+pub struct CaseBrief {
+    pub case_id: Arc<String>,
     pub summary: Arc<String>,
 }
 
-impl From<&EventNode> for EventBrief {
-    fn from(node: &EventNode) -> Self {
+impl From<&CaseNode> for CaseBrief {
+    fn from(node: &CaseNode) -> Self {
         Self {
-            event_id: node.event_id.clone(),
+            case_id: node.case_id.clone(),
             summary: node.summary.clone(),
         }
     }
@@ -113,9 +113,9 @@ impl From<&EventNode> for EventBrief {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateRequest {
     pub agent_id: Arc<String>,
-    /// 记忆后缀；事件模式下形如 `dev-e1`
+    /// 记忆后缀（外部传入的 role）：无 `-` 为角色模式，含 `-` 的事件模式下形如 `dev-e1`
     pub role: Arc<String>,
-    /// 待定位消息（可多条、可跨通道）：每条自带通道三元组，按通道分别与各自的当前事件比对
+    /// 待定位消息（可多条、可跨通道）：每条自带通道三元组，按通道分别与各自的当前 case 比对
     pub messages: Vec<LocateMessage>,
 }
 
@@ -128,7 +128,7 @@ pub struct LocateMessage {
     pub time: Arc<String>,
     pub user_name: Arc<String>,
     pub is_self: usize,
-    /// 通道三元组：决定用哪个通道的当前事件指针做比对
+    /// 通道三元组：决定用哪个通道的当前 case 指针做比对
     pub messenger_id: Arc<String>,
     pub self_user_id: Arc<String>,
     pub group_id: Arc<String>,
@@ -146,32 +146,32 @@ impl LocateMessage {
     }
 }
 
-/// 消息涉及的事件
+/// 消息涉及的 case
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LocatedEventRef {
-    pub event_id: Arc<String>,
-    /// 是否是涉及该事件的通道的当前事件
+pub struct LocatedCaseRef {
+    pub case_id: Arc<String>,
+    /// 是否是涉及该 case 的通道的当前 case
     #[serde(default)]
     pub is_current: bool,
 }
 
-/// 定位分组：一组属于同一事件的消息
+/// 定位分组：一组属于同一 case 的消息
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocatedGroup {
     /// 消息在请求 `messages` 中的下标（升序）
     pub messages: Vec<usize>,
-    /// 该组所属事件：命中已有事件即该事件；新话题会在本次定位中建出事件（记忆条数为 0）
-    pub event_id: Arc<String>,
+    /// 该组所属 case：命中已有 case 即该 case；新话题会在本次定位中建出 case（记忆条数为 0）
+    pub case_id: Arc<String>,
     #[serde(default)]
     pub is_current: bool,
 }
 
-/// 定位结果：消息涉及的全部事件 + 分组（哪几条消息属于哪个事件）
+/// 定位结果：消息涉及的全部 case + 分组（哪几条消息属于哪个 case）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateResponse {
-    /// 消息涉及的全部事件（按首次出现顺序去重；都不涉及已有事件时为空）
+    /// 消息涉及的全部 case（按首次出现顺序去重；都不涉及已有 case 时为空）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub events: Vec<Arc<LocatedEventRef>>,
+    pub cases: Vec<Arc<LocatedCaseRef>>,
     /// 分组结果（按各组首条消息的下标升序）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<Arc<LocatedGroup>>,
@@ -179,43 +179,43 @@ pub struct LocateResponse {
 
 impl LocateResponse {
     pub fn empty() -> Self {
-        Self { events: Vec::new(), groups: Vec::new() }
+        Self { cases: Vec::new(), groups: Vec::new() }
     }
 }
 
-// ========== 事件查询 ==========
+// ========== Case 查询 ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventListRequest {
+pub struct CaseListRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    /// 父事件 id；缺省或 null 表示查询顶层事件
+    /// 父 case id；缺省或 null 表示查询顶层 case
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Arc<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventListResponse {
-    pub events: Vec<Arc<EventNode>>,
+pub struct CaseListResponse {
+    pub cases: Vec<Arc<CaseNode>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventSummaryRequest {
+pub struct CaseSummaryRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub event_id: Arc<String>,
+    pub case_id: Arc<String>,
 }
 
-/// 事件摘要：节点本身即摘要侧表示（摘要文本 + 层级 + 记录数 + 起止时间）
+/// Case 摘要：节点本身即摘要侧表示（摘要文本 + 层级 + 记录数 + 起止时间）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventSummaryResponse {
-    pub event: Arc<EventNode>,
+pub struct CaseSummaryResponse {
+    pub case: Arc<CaseNode>,
 }
 
-/// 事件原文副本的位置（分页游标）：与某一条原文副本一一对应，
+/// Case 原文副本的位置（分页游标）：与某一条原文副本一一对应，
 /// 调用方把上一条记录的 `time` / `sn` / `record_type` 原样回传
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EventCursor {
+pub struct CaseCursor {
     pub time: Arc<String>,
     pub sn: u64,
     /// 记录类型（`channel` / `think` / `tool-call` / `tool-result`）：
@@ -223,8 +223,8 @@ pub struct EventCursor {
     pub record_type: RecordKind,
 }
 
-impl EventCursor {
-    pub fn of(record: &EventRecord) -> Self {
+impl CaseCursor {
+    pub fn of(record: &CaseRecord) -> Self {
         Self {
             time: Arc::new(record.time().to_string()),
             sn: record.sn(),
@@ -234,34 +234,34 @@ impl EventCursor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRecordsRequest {
+pub struct CaseRecordsRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub event_id: Arc<String>,
+    pub case_id: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRecordsAfterRequest {
+pub struct CaseRecordsAfterRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub event_id: Arc<String>,
+    pub case_id: Arc<String>,
     /// 只返回该位置之后的原文副本
-    pub after: EventCursor,
+    pub after: CaseCursor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRecordsTailRequest {
+pub struct CaseRecordsTailRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    pub event_id: Arc<String>,
+    pub case_id: Arc<String>,
     /// 只返回结尾若干条原文副本
     pub count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventRecordsResponse {
+pub struct CaseRecordsResponse {
     /// 原文副本（四类记录按 (time, sn) 升序）
-    pub records: Vec<Arc<EventRecord>>,
+    pub records: Vec<Arc<CaseRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,10 +272,10 @@ pub struct TreeGetRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeGetResponse {
-    /// 各通道的当前事件指针（无指针的通道不出现）
+    /// 各通道的当前 case 指针（无指针的通道不出现）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub current_events: Vec<Arc<ChannelEventPointer>>,
-    pub nodes: Vec<Arc<EventNode>>,
+    pub current_cases: Vec<Arc<ChannelCasePointer>>,
+    pub nodes: Vec<Arc<CaseNode>>,
 }
 
 // ========== 状态与重建 ==========
@@ -340,11 +340,11 @@ impl Watermark {
     }
 }
 
-/// 通道的当前事件指针（current.json 的一条）
+/// 通道的当前 case 指针（current.json 的一条）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelEventPointer {
+pub struct ChannelCasePointer {
     pub channel: ChannelKey,
-    pub event_id: Arc<String>,
+    pub case_id: Arc<String>,
 }
 
 /// 通道水位（watermark.json 的一条）
@@ -358,7 +358,7 @@ pub struct ChannelWatermark {
 pub struct RebuildRequest {
     pub agent_id: Arc<String>,
     pub role: Arc<String>,
-    /// false：手动触发一次归档（等同通知触发的判定）；true：清空事件树后按共享记忆文件重建
+    /// false：手动触发一次归档（等同通知触发的判定）；true：清空本次记忆后缀所属模式的子树后按共享记忆文件重建
     #[serde(default)]
     pub rebuild: bool,
 }
@@ -367,8 +367,8 @@ pub struct RebuildRequest {
 pub struct RebuildResponse {
     /// 本次归档的记录条数
     pub archived: u64,
-    /// 作用域当前事件节点总数
-    pub event_count: u64,
+    /// 角色 case 树节点总数
+    pub case_count: u64,
 }
 
 #[cfg(test)]
@@ -438,34 +438,34 @@ mod tests {
         assert_eq!(back.messages[0].is_self, 0);
         assert_eq!(back.messages[0].channel(), ChannelKey::new("web", "self1", "g1"));
 
-        // 都不涉及已有事件：events 与 groups 都为空
+        // 都不涉及已有 case：cases 与 groups 都为空
         assert_eq!(serde_json::to_value(LocateResponse::empty()).unwrap(), json!({}));
 
-        // 命中：涉及的事件 + 分组（新话题的组没有 event_id）
+        // 命中：涉及的 case + 分组（每个组都命中或建出 case，case_id 必填）
         let hit = LocateResponse {
-            events: vec![
-                Arc::new(LocatedEventRef { event_id: Arc::new("e12".into()), is_current: true }),
-                Arc::new(LocatedEventRef { event_id: Arc::new("e13".into()), is_current: false }),
+            cases: vec![
+                Arc::new(LocatedCaseRef { case_id: Arc::new("e12".into()), is_current: true }),
+                Arc::new(LocatedCaseRef { case_id: Arc::new("e13".into()), is_current: false }),
             ],
             groups: vec![
-                Arc::new(LocatedGroup { messages: vec![0, 1], event_id: Some(Arc::new("e12".into())), is_current: true }),
-                Arc::new(LocatedGroup { messages: vec![2], event_id: Some(Arc::new("e13".into())), is_current: false }),
-                Arc::new(LocatedGroup { messages: vec![3], event_id: None, is_current: false }),
+                Arc::new(LocatedGroup { messages: vec![0, 1], case_id: Arc::new("e12".into()), is_current: true }),
+                Arc::new(LocatedGroup { messages: vec![2], case_id: Arc::new("e13".into()), is_current: false }),
+                Arc::new(LocatedGroup { messages: vec![3], case_id: Arc::new("e14".into()), is_current: true }),
             ],
         };
         let v = serde_json::to_value(&hit).unwrap();
-        assert_eq!(v["events"][0], json!({"event_id": "e12", "is_current": true}));
-        assert_eq!(v["groups"][0], json!({"messages": [0, 1], "event_id": "e12", "is_current": true}));
-        assert!(v["groups"][2].get("event_id").is_none(), "新话题的组不带 event_id");
+        assert_eq!(v["cases"][0], json!({"case_id": "e12", "is_current": true}));
+        assert_eq!(v["groups"][0], json!({"messages": [0, 1], "case_id": "e12", "is_current": true}));
+        assert_eq!(v["groups"][2], json!({"messages": [3], "case_id": "e14", "is_current": true}));
         let back: LocateResponse = serde_json::from_value(v).unwrap();
-        assert_eq!(back.events.len(), 2);
+        assert_eq!(back.cases.len(), 2);
         assert_eq!(back.groups.len(), 3);
-        assert!(back.groups[2].event_id.is_none());
+        assert_eq!(back.groups[2].case_id.as_str(), "e14");
     }
 
     #[test]
-    fn test_event_cursor_and_records_requests_serde() {
-        let cursor = EventCursor::of(&EventRecord::Think(Arc::new(ThinkRecord {
+    fn test_case_cursor_and_records_requests_serde() {
+        let cursor = CaseCursor::of(&CaseRecord::Think(Arc::new(ThinkRecord {
             reasoning_content: Some(Arc::new("推理".into())),
             thinking: None,
             key: Arc::new("k1".into()),
@@ -478,28 +478,28 @@ mod tests {
         let v = serde_json::to_value(&cursor).unwrap();
         assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "think"}));
 
-        let after: EventRecordsAfterRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "event_id": "e1", "after": v})).unwrap();
+        let after: CaseRecordsAfterRequest =
+            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_id": "e1", "after": v})).unwrap();
         assert_eq!(after.after.record_type, RecordKind::Think);
 
-        let tail: EventRecordsTailRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "event_id": "e1", "count": 5})).unwrap();
+        let tail: CaseRecordsTailRequest =
+            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_id": "e1", "count": 5})).unwrap();
         assert_eq!(tail.count, 5);
 
         // 摘要响应即节点本身（摘要文本 + 层级 + 记录数 + 起止时间）
-        let summary = EventSummaryResponse { event: Arc::new(node()) };
+        let summary = CaseSummaryResponse { case: Arc::new(node()) };
         let v = serde_json::to_value(&summary).unwrap();
-        assert_eq!(v["event"]["event_id"], "e12");
-        assert_eq!(v["event"]["summary"], "摘要");
-        assert!(v["event"].get("records").is_none(), "摘要响应不含原文副本");
+        assert_eq!(v["case"]["case_id"], "e12");
+        assert_eq!(v["case"]["summary"], "摘要");
+        assert!(v["case"].get("records").is_none(), "摘要响应不含原文副本");
     }
 
-    fn node() -> EventNode {
-        EventNode {
-            event_id: Arc::new("e12".into()),
+    fn node() -> CaseNode {
+        CaseNode {
+            case_id: Arc::new("e12".into()),
             parent_id: None,
             children: vec![Arc::new("e13".into())],
-            mode: EventMode::Role,
+            mode: CaseMode::Role,
             summary: Arc::new("摘要".into()),
             record_count: 42,
             start_time: Arc::new("2026-09-22 10:00:00".into()),
@@ -510,12 +510,12 @@ mod tests {
     }
 
     #[test]
-    fn test_event_node_serde_and_leaf() {
-        let node = EventNode {
-            event_id: Arc::new("e12".into()),
+    fn test_case_node_serde_and_leaf() {
+        let node = CaseNode {
+            case_id: Arc::new("e12".into()),
             parent_id: None,
             children: vec![Arc::new("e13".into())],
-            mode: EventMode::Role,
+            mode: CaseMode::Role,
             summary: Arc::new("摘要".into()),
             record_count: 42,
             start_time: Arc::new("2026-09-22 10:00:00".into()),
@@ -527,22 +527,22 @@ mod tests {
         assert_eq!(v["mode"], "role");
         assert!(v["parent_id"].is_null(), "parent_id 为 null 时序列化为 null（tree.json 形状）");
         assert!(!node.is_leaf());
-        assert_eq!(EventBrief::from(&node).event_id.as_str(), "e12");
+        assert_eq!(CaseBrief::from(&node).case_id.as_str(), "e12");
 
-        let leaf: EventNode = serde_json::from_value(json!({
-            "event_id": "e13", "mode": "event", "summary": "s", "record_count": 0,
+        let leaf: CaseNode = serde_json::from_value(json!({
+            "case_id": "e13", "mode": "event", "summary": "s", "record_count": 0,
             "start_time": "t", "end_time": "t", "created_at": "t", "updated_at": "t"
         })).unwrap();
         assert!(leaf.is_leaf());
         assert!(leaf.parent_id.is_none());
-        assert_eq!(leaf.mode, EventMode::Event);
+        assert_eq!(leaf.mode, CaseMode::Event);
     }
 
     #[test]
-    fn test_event_list_request_parent_optional() {
-        let top = serde_json::from_value::<EventListRequest>(json!({"agent_id": "0", "role": "dev"})).unwrap();
-        assert!(top.parent_id.is_none(), "缺省查询顶层事件");
-        let child = serde_json::from_value::<EventListRequest>(json!({"agent_id": "0", "role": "dev", "parent_id": "e12"})).unwrap();
+    fn test_case_list_request_parent_optional() {
+        let top = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role": "dev"})).unwrap();
+        assert!(top.parent_id.is_none(), "缺省查询顶层 case");
+        let child = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role": "dev", "parent_id": "e12"})).unwrap();
         assert_eq!(child.parent_id.unwrap().as_str(), "e12");
     }
 
@@ -555,8 +555,8 @@ mod tests {
     }
 
     #[test]
-    fn test_event_record_tagged_shape() {
-        let record = EventRecord::Channel(Arc::new(ChannelRecord {
+    fn test_case_record_tagged_shape() {
+        let record = CaseRecord::Channel(Arc::new(ChannelRecord {
             user_id: Arc::new("u1".into()),
             self_user_id: Arc::new("self".into()),
             messenger_id: Arc::new("web".into()),
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(value["record_type"], "channel");
         assert_eq!(value["sn"], 3);
         assert_eq!(value["content"]["msg_type"], "Text");
-        let back: EventRecord = serde_json::from_value(value).unwrap();
+        let back: CaseRecord = serde_json::from_value(value).unwrap();
         assert_eq!(back.kind(), RecordKind::Channel);
         assert_eq!(back.time(), "2026-09-22 10:00:00");
         assert_eq!(back.sn(), 3);
@@ -589,7 +589,7 @@ mod tests {
             (RecordKind::ToolResult, "tool-result"),
         ] {
             let record = match kind {
-                RecordKind::Channel => EventRecord::Channel(Arc::new(ChannelRecord {
+                RecordKind::Channel => CaseRecord::Channel(Arc::new(ChannelRecord {
                     user_id: Arc::new("u".into()), self_user_id: Arc::new("s".into()),
                     messenger_id: Arc::new("m".into()), group_id: Arc::new("g".into()),
                     is_self: 0, msg_id: Arc::new(String::new()),
@@ -598,15 +598,15 @@ mod tests {
                     content: Content::Text(Arc::new("t".into())),
                     time: Arc::new("t".into()), sn: 1,
                 })),
-                RecordKind::Think => EventRecord::Think(Arc::new(ThinkRecord {
+                RecordKind::Think => CaseRecord::Think(Arc::new(ThinkRecord {
                     reasoning_content: None, thinking: None,
                     key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
                 })),
-                RecordKind::ToolCall => EventRecord::ToolCall(Arc::new(ToolCallRecord {
+                RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(ToolCallRecord {
                     tool_name: Arc::new("read".into()), tool_params: Arc::new(Value::Null),
                     key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
                 })),
-                RecordKind::ToolResult => EventRecord::ToolResult(Arc::new(ToolResultRecord {
+                RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(ToolResultRecord {
                     tool_result: Arc::new(Value::Null), tool_error: Arc::new(Value::Null),
                     key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
                 })),
@@ -618,15 +618,15 @@ mod tests {
 
     #[test]
     fn test_channel_event_pointer_serde() {
-        let p = ChannelEventPointer {
+        let p = ChannelCasePointer {
             channel: ChannelKey::new("web", "self1", "g1"),
-            event_id: Arc::new("e13".into()),
+            case_id: Arc::new("e13".into()),
         };
         assert_eq!(serde_json::to_value(&p).unwrap(), json!({
             "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},
-            "event_id": "e13"
+            "case_id": "e13"
         }));
-        let back: ChannelEventPointer = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
-        assert_eq!(back.event_id.as_str(), "e13");
+        let back: ChannelCasePointer = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+        assert_eq!(back.case_id.as_str(), "e13");
     }
 }

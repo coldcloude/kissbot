@@ -106,7 +106,7 @@ kissbot-agent 使用三份配置：
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
 - `input_processor` / `system_prompter` 为**数组**（同一会话可挂多个输入处理器与系统提示词器）；`message_sender` / `tool_caller` / `output_processor` 为单个名称。
-- `input_processor` 可选 `batch_input_processor`（默认，按会话合批）与 `abstract_input_processor`（摘要记忆：按通道攒批 + 超时触发 + 事件上下文重建）。
+- `input_processor` 可选 `batch_input_processor`（默认，按会话合批）与 `abstract_input_processor`（摘要记忆：按通道攒批 + 超时触发 + case 上下文重建）。
 - `sessions` 的 key 是 `SessionKey`（结构体），JSON 不支持结构体作 map 键，故以 `[[key, value], ...]` 数组对承载。
 
 ### 配置继承与合成
@@ -211,13 +211,13 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/abstract/locate` | 定位一批上行消息涉及的事件（请求含 agent_id、role 与带通道三元组与 msg_id 的消息） |
-| POST | `/abstract/event/summary` | 取事件摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
-| POST | `/abstract/event/records-tail` | 取事件结尾 count 条原文副本（升序） |
+| POST | `/abstract/locate` | 定位一批上行消息涉及的 case（请求含 agent_id、role 与带通道三元组与 msg_id 的消息） |
+| POST | `/abstract/case/summary` | 取 case 摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
+| POST | `/abstract/case/records-tail` | 取 case 结尾 count 条原文副本（升序） |
 
-- `role` 与会话写记忆同一编码：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。
+- `role` 与会话写记忆同一编码，即 **role-event 记忆后缀**：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。摘要记忆按**第一个** `-` 拆分出角色名与事件标识（角色名不允许含 `-`，事件标识可以含 `-`）：后缀决定原始记录读取、水位、当前 case 指针与模型会话，前缀（角色名）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
 - 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 触发时用「涉及事件的全部摘要 + 各事件结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；摘要为空的事件（定位为本批消息新建、记忆条数还是 0）跳过，不进上下文。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（事件原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
+- 触发时用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；摘要为空的 case（定位为本批消息新建、记忆条数还是 0）跳过，不进上下文。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（case 原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
 - `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
 
 ## Memory-Ego API 交互

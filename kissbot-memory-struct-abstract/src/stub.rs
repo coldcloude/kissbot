@@ -5,18 +5,18 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use kissbot_api::EventBrief;
+use kissbot_api::CaseBrief;
 
 use crate::error::Result;
 use crate::model::{DecisionModel, LevelDecision, MessageGroup};
-use crate::scope::ScopeId;
+use crate::scope::ModelScope;
 
 #[derive(Default)]
 pub struct StubModel {
-    /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前事件即标记为当前事件组）
+    /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前 case 即标记为当前 case 组）
     pub group_decisions: Mutex<VecDeque<Vec<MessageGroup>>>,
     pub level_decisions: Mutex<VecDeque<LevelDecision>>,
-    /// 每次 summarize 的输入（断言级联时父事件能看到子事件摘要）
+    /// 每次 summarize 的输入（断言级联时父 case 能看到子 case 摘要）
     pub summary_inputs: Mutex<Vec<String>>,
     /// 每次判定调用收到的提示词（断言调用顺序与候选集合）
     pub prompts: Mutex<Vec<String>>,
@@ -36,7 +36,7 @@ impl StubModel {
         self
     }
 
-    /// 便捷写法：把一批消息分成「当前事件组 + 若干普通组」
+    /// 便捷写法：把一批消息分成「当前 case 组 + 若干普通组」
     pub fn push_group(&self, messages: &[usize], is_current: bool) -> &Self {
         self.push_groups(vec![MessageGroup { messages: messages.to_vec(), is_current }])
     }
@@ -62,7 +62,7 @@ impl StubModel {
 
 #[async_trait]
 impl DecisionModel for StubModel {
-    async fn group(&self, _scope: &ScopeId, batch: &str, total: usize, current: Option<&EventBrief>) -> Result<Vec<MessageGroup>> {
+    async fn group(&self, _scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
         self.prompts.lock().unwrap().push(crate::model::grouping_prompt(batch, current));
         if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
             // 与真实实现一致地校验覆盖：预置不完整时立即暴露，而不是静默丢记录
@@ -84,16 +84,16 @@ impl DecisionModel for StubModel {
             }
             return Ok(groups);
         }
-        // 默认：整批一组；有当前事件即视为当前事件的延续
+        // 默认：整批一组；有当前 case 即视为当前 case 的延续
         Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
     }
 
-    async fn decide_level(&self, _scope: &ScopeId, batch: &str, level: &[EventBrief]) -> Result<LevelDecision> {
+    async fn decide_level(&self, _scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
         self.prompts.lock().unwrap().push(crate::model::level_prompt(batch, level));
         Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or(LevelDecision::New))
     }
 
-    async fn summarize(&self, _scope: &ScopeId, content: &str) -> Result<String> {
+    async fn summarize(&self, _scope: &ModelScope, content: &str) -> Result<String> {
         self.summary_inputs.lock().unwrap().push(content.to_string());
         if self.fail_summarize.lock().unwrap().pop_front().is_some() {
             return Err(crate::error::Error::ModelApiError("stub summarize failure".into()));
