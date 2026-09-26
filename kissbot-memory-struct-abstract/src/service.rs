@@ -151,12 +151,6 @@ impl AbstractService {
         Ok((outcomes, located))
     }
 
-    /// 查询入口的统一处理：有变化时先按该作用域全部通道各算一次
-    async fn flush(&self, handle: &Arc<ScopeHandle>) -> Result<()> {
-        let mut state = handle.state.lock().await;
-        self.process_pending(handle, &mut state, false, &[]).await.map(|_| ())
-    }
-
     /// 手动触发：忽略待处理标记，把各通道水位之后的记录全部处理一次
     pub async fn manual_trigger(&self, id: &ScopeId) -> Result<ArchiveOutcome> {
         let handle = self.manager.open(id.clone()).await?;
@@ -201,9 +195,9 @@ impl AbstractService {
 
     // ========== 查询 ==========
 
+    /// 事件列表：只读已归档的事件树，不触发归档（要处理待归档记录请用 `/abstract/rebuild` 的 rebuild=false）
     pub async fn event_list(&self, agent_id: &str, role: &str, parent_id: Option<&str>) -> Result<EventListResponse> {
         let handle = self.manager.open(ScopeId::new(agent_id, role)).await?;
-        self.flush(&handle).await?;
         let state = handle.state.lock().await;
         let events: Vec<Arc<EventNode>> = state
             .tree
@@ -219,10 +213,9 @@ impl AbstractService {
         Ok(EventListResponse { events })
     }
 
-    /// 事件摘要：节点本身（摘要文本 + 层级 + 记录数 + 起止时间），不含原文副本
+    /// 事件摘要：节点本身（摘要文本 + 层级 + 记录数 + 起止时间），不含原文副本；只读，不触发归档
     pub async fn event_summary(&self, agent_id: &str, role: &str, event_id: &str) -> Result<EventSummaryResponse> {
         let handle = self.manager.open(ScopeId::new(agent_id, role)).await?;
-        self.flush(&handle).await?;
         let state = handle.state.lock().await;
         let node = state
             .tree
@@ -261,10 +254,9 @@ impl AbstractService {
         Ok(response_of(records))
     }
 
-    /// 读取事件原文副本（事件不存在时报错，与摘要查询一致）
+    /// 读取事件原文副本（事件不存在时报错，与摘要查询一致）；只读，不触发归档
     async fn read_event(&self, agent_id: &str, role: &str, event_id: &str) -> Result<Vec<kissbot_api::EventRecord>> {
         let handle = self.manager.open(ScopeId::new(agent_id, role)).await?;
-        self.flush(&handle).await?;
         {
             let state = handle.state.lock().await;
             if !state.tree.contains(event_id) {
@@ -274,9 +266,9 @@ impl AbstractService {
         read_event_records(&handle.event_dir(event_id)).await
     }
 
+    /// 事件树与各通道当前事件指针；只读，不触发归档
     pub async fn tree_get(&self, agent_id: &str, role: &str) -> Result<TreeGetResponse> {
         let handle = self.manager.open(ScopeId::new(agent_id, role)).await?;
-        self.flush(&handle).await?;
         let state = handle.state.lock().await;
         let current_events = state
             .current_events
@@ -503,8 +495,14 @@ mod tests {
             .unwrap();
     }
 
-    /// 任意查询：查询前会先做一次懒处理
+    /// 手动归档一次（`/abstract/rebuild` 的 rebuild=false 路径）
+    async fn process(f: &Fixture, role: &str) -> ArchiveOutcome {
+        f.service.manual_trigger(&ScopeId::new("0", role)).await.unwrap()
+    }
+
+    /// 手动归档一次后读事件树（查询接口本身只读、不触发归档）
     async fn query(f: &Fixture, role: &str) -> TreeGetResponse {
+        process(f, role).await;
         f.service.tree_get("0", role).await.unwrap()
     }
 
@@ -572,7 +570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn notification_only_marks_dirty_until_query() {
+    async fn notification_only_marks_dirty_until_manual_trigger() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
@@ -584,9 +582,20 @@ mod tests {
         assert_eq!(tree_len(&f, "dev").await, 0, "登记本身不做任何计算");
         assert_eq!(f.model.prompts().len(), 0, "登记不调用模型");
 
-        // 任意查询触发统一计算
-        let tree = query(&f, "dev").await;
-        assert_eq!(tree.nodes.len(), 1, "查询时归档出事件");
+        // 查询只读：不触发归档、不清标记
+        let tree = f.service.tree_get("0", "dev").await.unwrap();
+        assert_eq!(tree.nodes.len(), 0, "查询不触发归档");
+        assert_eq!(f.service.event_count("0", "dev").await.unwrap(), 0);
+        assert!(is_dirty(&f, "dev").await, "查询不清除待处理标记");
+        assert_eq!(f.model.prompts().len(), 0);
+        assert!(f.service.event_list("0", "dev", None).await.unwrap().events.is_empty());
+        assert!(f.service.event_summary("0", "dev", "e1").await.is_err(), "事件还没归档出来");
+
+        // 手动触发才统一计算
+        let outcome = process(&f, "dev").await;
+        assert_eq!(outcome.archived, 2, "手动触发处理该作用域水位之后的记录");
+        let tree = f.service.tree_get("0", "dev").await.unwrap();
+        assert_eq!(tree.nodes.len(), 1, "手动触发归档出事件");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道水位之后的全部记录一起处理");
         assert_eq!(current_pointer(&tree, &a).unwrap().event_id.as_str(), "e1");
         assert!(!is_dirty(&f, "dev").await, "处理成功后标记清空");
@@ -594,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_without_changes_does_nothing() {
+    async fn manual_trigger_without_changes_does_nothing() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
@@ -603,8 +612,10 @@ mod tests {
         query(&f, "dev").await;
 
         let prompts = f.model.prompts().len();
-        let tree = query(&f, "dev").await;
-        assert_eq!(tree.nodes.len(), 1, "没有新变化时不再重复计算");
+        let outcome = process(&f, "dev").await;
+        assert_eq!(outcome.archived, 0, "没有新变化时不再重复计算");
+        let tree = f.service.tree_get("0", "dev").await.unwrap();
+        assert_eq!(tree.nodes.len(), 1, "事件树保持");
         assert_eq!(f.model.prompts().len(), prompts, "没有新变化时不调用模型");
     }
 
@@ -716,8 +727,8 @@ mod tests {
         // 模型错误地把分组标记为当前事件，但该通道还没有当前事件 → 按失败处理
         f.model.push_group(&[0], true);
         notify(&f, "dev", &a).await;
-        assert!(f.service.tree_get("0", "dev").await.is_err(), "非法分组按失败处理");
-        assert!(is_dirty(&f, "dev").await, "失败后保留待处理标记，等待下次查询重试");
+        assert!(f.service.manual_trigger(&ScopeId::new("0", "dev")).await.is_err(), "非法分组按失败处理");
+        assert!(is_dirty(&f, "dev").await, "失败后保留待处理标记，等待下次处理重试");
         assert_eq!(pending_len(&f, "dev", &a).await, 1, "水位不动");
 
         // 重新给出合法分组 → 重试成功且记录不重复
@@ -737,7 +748,7 @@ mod tests {
 
         // 摘要调用失败：归档整体失败，状态与磁盘保持不变
         f.model.push_summarize_failure();
-        assert!(f.service.tree_get("0", "dev").await.is_err(), "模型失败应向上报错");
+        assert!(f.service.manual_trigger(&ScopeId::new("0", "dev")).await.is_err(), "模型失败应向上报错");
         let handle = f.service.manager().get(&ScopeId::new("0", "dev")).unwrap();
         {
             let state = handle.state.lock().await;
@@ -1152,6 +1163,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问一").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "答一").await;
         notify(&f, "dev", &a).await;
+        process(&f, "dev").await;
 
         // 摘要：只有节点（摘要文本 + 记录数），不带原文
         let summary = f.service.event_summary("0", "dev", "e1").await.unwrap();

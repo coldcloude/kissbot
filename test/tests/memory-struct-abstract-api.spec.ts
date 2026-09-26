@@ -109,18 +109,29 @@ async function waitForWatermark(role: string, selfUser: string, channelTime: str
 }
 
 /**
- * 轮询某个事件的原文条数：既是等待（memory-store 批量刷盘、懒处理在查询时才发生），
- * 也是驱动（event/records 就是查询，查询前会先做一次懒处理）
+ * 手动触发一次归档：`/abstract/rebuild` 的 rebuild=false 路径（唯一处理待归档记录的入口）。
+ * 查询接口（tree/get、event/*）本身只读，不触发归档；locate 会带上本批消息一起处理。
+ */
+async function flushRole(request: APIRequestContext, role: string) {
+  const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/rebuild', { agent_id: AGENT, role, rebuild: false });
+  expect(resp.success, `手动触发归档失败: ${JSON.stringify(resp)}`).toBe(true);
+  return resp.data;
+}
+
+/**
+ * 轮询某个事件的原文条数：每轮先手动触发一次归档（等 memory-store 批量刷盘落地），
+ * 再读 event/records 断言条数
  */
 async function waitForEventRecords(request: APIRequestContext, role: string, eventId: string, count: number) {
   await waitFor(async () => {
+    await flushRole(request, role);
     const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/event/records', { agent_id: AGENT, role, event_id: eventId });
     return resp.success === true && (resp.data.records ?? []).length === count;
   });
   return (await apiPost(request, ABSTRACT_BASE, '/abstract/event/records', { agent_id: AGENT, role, event_id: eventId })).data.records;
 }
 
-/** 轮询等待条件成立（通知与懒处理都是异步链路） */
+/** 轮询等待条件成立（通知、手动触发与定位都是异步链路） */
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 15000, intervalMs = 200): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -246,16 +257,26 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(watermarkFile(ROLE)).toBeNull();
   });
 
-  // TC-02 懒处理：通知只登记，查询时才把该作用域各通道水位之后的记录统一处理
-  test('TC-02: 查询触发懒处理并生成事件摘要', async ({ request }) => {
+  // TC-02 懒处理：通知只登记；查询只读，手动触发（rebuild=false）才归档
+  test('TC-02: 手动触发归档并生成事件摘要', async ({ request }) => {
     const t0 = timeAt(0);
     const t1 = timeAt(1);
     const t2 = timeAt(2);
     await pushChannel(request, 'alice', 0, '第一个问题', t0);
     await pushChannel(request, 'bot', 1, '第一个回答', t1);
     await pushChannel(request, 'alice', 0, '下一个问题', t2);
+    // 记录真正落盘后再断言（推送接口返回不代表已可读）
+    await waitForStoreFile(ROLE, 'channel', t2, '下一个问题');
 
-    // event/records 是查询：查询前先做一次懒处理
+    // 查询只读：不触发归档（事件树仍为空、没有水位状态文件）
+    const before = await treeOf(request, ROLE);
+    expect(before.nodes).toHaveLength(0);
+    expect(before.current_events).toHaveLength(0);
+    expect(watermarkFile(ROLE)).toBeNull();
+
+    // 手动触发才把该作用域各通道水位之后的记录一起处理
+    const flushed = await flushRole(request, ROLE);
+    expect(flushed.archived).toBe(3, '手动触发归档该通道待处理记录');
     const records = await waitForEventRecords(request, ROLE, 'e1', 3);
     expect(records.map((r: any) => r.is_self)).toEqual([0, 1, 0], '该通道待处理记录一起处理');
 
@@ -384,7 +405,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(tree.current_events[0].event_id).toBe('e1');
   });
 
-  // TC-07 通道隔离：查询时作用域内每个通道单独成批，互不吞并；定位按新消息的通道取当前事件
+  // TC-07 通道隔离：手动触发时作用域内每个通道单独成批，互不吞并；定位按新消息的通道取当前事件
   test('TC-07: 按通道分别处理与当前事件', async ({ request }) => {
     const role = 'dev2';
     const channelA: TestChannel = { messenger: 'web', selfUser: 'selfA', group: 'gA' };
@@ -398,7 +419,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     await pushChannelIn(request, role, channelB, 'carol', 0, 'B 的消息', tB[0]);
     await pushChannelIn(request, role, channelB, 'dave', 0, 'B 的另一条', tB[1]);
 
-    // 一次查询把两个通道各算一次
+    // 手动触发一次，把两个通道各算一次
     const recordsA = await waitForEventRecords(request, role, 'e1', 3);
     const recordsB = await waitForEventRecords(request, role, 'e2', 2);
     expect(recordsA.every((r: any) => r.self_user_id === 'selfA'), 'A 的事件只含 A 通道的记录');
@@ -473,7 +494,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(keys2).toEqual(['keyB'], 'e2 只含 B 通道的思考记录');
   });
 
-  // TC-09 定位触发懒处理：新消息与该通道的待归档记录去重后一并分析（同一条消息不分析两次）
+  // TC-09 定位即处理：新消息与该通道的待归档记录去重后一并分析（同一条消息不分析两次）
   test('TC-09: 定位与懒处理合并并去重', async ({ request }) => {
     const role = 'dev4';
     const channel: TestChannel = { messenger: 'web', selfUser: 'self4', group: 'g4' };

@@ -190,9 +190,19 @@ mod tests {
             assert!(state.dirty_channels.contains(&channel), "通道通知按通道登记");
         }
 
-        // 任意查询触发统一计算：该通道水位之后的全部记录落成一个事件
+        // 查询只读：不触发归档
         let tree = service.tree_get("0", "dev").await.unwrap();
-        assert_eq!(tree.nodes.len(), 1, "查询时归档出事件");
+        assert!(tree.nodes.is_empty(), "查询不触发归档");
+        {
+            let state = handle.state.lock().await;
+            assert!(state.is_dirty(), "查询不清除待处理标记");
+        }
+
+        // 手动触发归档：该通道水位之后的全部记录落成一个事件
+        let outcome = service.manual_trigger(&ScopeId::new("0", "dev")).await.unwrap();
+        assert_eq!(outcome.archived, 2, "手动触发处理该通道全部待处理记录");
+        let tree = service.tree_get("0", "dev").await.unwrap();
+        assert_eq!(tree.nodes.len(), 1, "手动触发归档出事件");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_events.len(), 1);
         assert_eq!(tree.current_events[0].channel, channel);

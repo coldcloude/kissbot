@@ -25,16 +25,16 @@
 
 所有参数放在 JSON 请求体中，路径不含动态参数；响应统一使用 `ApiResponse`；认证走 `X-Api-Key`。
 
-| 接口 | 用途 |
-|------|------|
-| `POST /abstract/locate` | 传入 agent、角色与新消息，返回命中事件的标识 |
-| `POST /abstract/event/list` | 按作用域与父事件查询事件节点 |
-| `POST /abstract/event/summary` | 取事件摘要（节点：摘要文本、层级、记录数、起止时间） |
-| `POST /abstract/event/records` | 取事件全部原文副本 |
-| `POST /abstract/event/records-after` | 取事件中指定位置之后的原文副本（分页续读） |
-| `POST /abstract/event/records-tail` | 取事件结尾若干条原文副本 |
-| `POST /abstract/tree/get` | 取某作用域的事件树与各通道的当前事件指针 |
-| `POST /abstract/rebuild` | 手动触发或重建某作用域的归档 |
+| 接口 | 用途 | 触发归档 |
+|------|------|----------|
+| `POST /abstract/locate` | 传入 agent、角色与新消息，返回命中事件的标识 | 是（pending + 本批消息一次处理） |
+| `POST /abstract/event/list` | 按作用域与父事件查询事件节点 | 否（只读） |
+| `POST /abstract/event/summary` | 取事件摘要（节点：摘要文本、层级、记录数、起止时间） | 否（只读） |
+| `POST /abstract/event/records` | 取事件全部原文副本 | 否（只读） |
+| `POST /abstract/event/records-after` | 取事件中指定位置之后的原文副本（分页续读） | 否（只读） |
+| `POST /abstract/event/records-tail` | 取事件结尾若干条原文副本 | 否（只读） |
+| `POST /abstract/tree/get` | 取某作用域的事件树与各通道的当前事件指针 | 否（只读） |
+| `POST /abstract/rebuild` | `rebuild=false` 手动触发归档；`rebuild=true` 清空后重建 | 是 |
 
 请求与响应类型作为模块专属类型定义在 kissbot-api（见 [system-design-api](../design/system-design-api.md)）。
 
@@ -46,7 +46,7 @@
 2. **定位（只读）**：对每个通道调用归档入口 `archive(记录, 消息)` —— 两者按 `msg_id` 去重合并成一个批次做第 1 轮分组，然后**逐组判定落点**：归入某个已有事件，或「需要新建在某个父事件之下」。判定不改事件树、不落盘，**pending 是否为空走的是同一套判定**；
 3. **存储 + 返回**：只有组里确实有待归档记录的，才真正落地——需要新建的此刻建出事件、记录追加为该事件的原文副本、重算摘要、推进水位、更新当前事件指针；其余组只把判定结果作为消息的事件返回。最后把各通道的分组映射回请求下标合并成响应。
 
-没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（查询前的统一处理 / 手动触发 / 重建）即原来的归档，不产出分组。
+没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（`/abstract/rebuild` 的 rebuild=false 手动触发 / rebuild=true 重建）即原来的归档，不产出分组。
 
 - 没有待处理标记且 `messages` 为空时不读盘、不调模型；带消息时总会读一次共享记忆以提取 pending。
 - 只定位的组不落地：判定为「需要新建」时不建事件，用它所属的父事件代表该话题（顶层则视为新话题、不带 `event_id`）。
@@ -158,11 +158,11 @@
 - 共享记忆文件按 agent+role+日期共用，一次刷盘可能混合多个通道的记录：memory-store 按通道分组逐条通知，每个通道一条；订阅方不依赖「一条通知覆盖一批」。
 - 思考/工具记录只有 key、写入侧无法确定通道，因此其通知不带通道字段——按整个作用域登记，通道归属由记录读取时按 key 关联的占位通道记录确定。
 - 通知服务由 memory-store 提供（监听地址见 [memory-store 技术规格](memory-store.md)），本组件作为客户端连接并在配置的 `notify_url` 上重连。
-- 本组件按 `(agent_id, role, 通道)` 维护已处理水位；通知只是「有新数据」的信号，真正的读取与归档发生在查询时（见懒处理）。
+- 本组件按 `(agent_id, role, 通道)` 维护已处理水位；通知只是「有新数据」的信号，真正的读取与归档只发生在定位、手动触发与重建时（见懒处理）。
 
 ## 懒处理与分组
 
-**懒处理**：收到通知只登记待处理标记；**任意查询触发时**才统一计算——对查询的作用域，把**每个通道**水位之后的记录各自成批处理一次，通道之间互不影响。
+**懒处理**：收到通知只登记待处理标记；**只有三种入口**会统一计算——`locate`（pending + 本批消息）、`/abstract/rebuild` 的 rebuild=false（手动触发，messages 为空）、rebuild=true（重建）。事件树/摘要/原文查询**只读**，不触发归档、也不清除待处理标记。计算时把该作用域**每个通道**水位之后的记录各自成批处理一次，通道之间互不影响。
 
 - 待处理标记是内存态（不落盘）：通道级（通道消息通知）或作用域级（思考/工具通知、首次加载、通知重连）。作用域级标记按该作用域全部通道处理。
 - 没有待处理标记时，不带消息的查询不做任何读盘与模型调用；**定位请求**即使没有标记也会提取 pending 并定位本批消息（pending 可空）。
@@ -197,7 +197,7 @@
     "listen_port": 8083,
     "notify_url": "ws://127.0.0.1:8182",     // memory-store 通知服务地址；缺省则不订阅通知
     "ws_reconnect_interval_secs": 5,         // 通知断线重连间隔
-    "max_batch_records": 200,                // 单通道单次处理的消息条数上限（懒处理分块）
+    "max_batch_records": 200,                // 单通道单次处理的条目上限（归档分块）
     "session_max_messages": 20,              // 作用域会话上下文保留的消息条数上限
     "max_event_depth": 16,                   // 逐层判定最大层数
     "provider": {                            // provider 配置，结构见 kissbot-llm spec
@@ -346,4 +346,4 @@ pub type Result<T> = std::result::Result<T, Error>;
 ## 验证
 
 - 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（懒处理与待处理标记、分组落位与分层下探、分组覆盖校验、通道归属与通道隔离、摘要级联、水位推进、事件树读写、定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、跨通道请求的消息下标、重复消息不重复送模型、判定与落地分开：有记录才落地、只定位的组不建事件不落盘、去重按通道进行）、通知帧解析、写入可见性、模型失败后的状态保留）。
-- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知登记 → 查询触发懒处理 → 多条/跨通道定位 → 定位触发懒处理时与已存记录去重 → 摘要/原文分页查询 → 重建 → 事件模式 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。
+- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条/跨通道定位（pending + 消息一次处理）→ 摘要/原文分页查询 → 重建 → 事件模式 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。
