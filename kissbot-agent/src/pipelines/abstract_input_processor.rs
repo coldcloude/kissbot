@@ -257,39 +257,40 @@ async fn flush_batch(
     session: &Arc<Session>,
     client: &Arc<AbstractClient>,
     channel: &ChannelKey,
-    cases: Vec<Arc<IncomingMessageEvent>>,
+    events: Vec<Arc<IncomingMessageEvent>>,
 ) {
-    match build_context(session_key, client, &cases).await {
+    match build_context(session_key, client, &events).await {
         Ok(messages) => session.context_archive_and_clear_cache_and_reset_messages(messages).await,
         Err(e) => warn!(
             "摘要记忆重建上下文失败，降级为普通合批（channel={}:{}:{}）: {:?}",
             channel.messenger_id, channel.self_user_id, channel.group_id, e
         ),
     }
-    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&cases)).await;
+    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&events)).await;
 }
 
 /// 用摘要记忆重建上下文：定位 case → 各 case 摘要 + case 结尾原文副本 → 时间窗与去重 → 组装消息
 async fn build_context(
     session_key: &SessionKey,
     client: &Arc<AbstractClient>,
-    cases: &[Arc<IncomingMessageEvent>],
+    events: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
     let agent_id = session_key.agent_id.as_str();
     let role = role_mode(session_key.role_name.as_str(), &session_key.mode);
     // 1. 定位本批消息涉及的 case
-    let messages: Vec<LocateMessage> = cases.iter().map(|e| locate_message(e.as_ref())).collect();
+    let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
     let located = client.locate(agent_id, &role, messages).await?;
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
-    // 2. 逐个取 case 摘要与结尾若干条原文副本；定位为新话题建出的空 case（记忆条数 0、无摘要）
-    //    还没有内容可拼进上下文，跳过（等这些消息写入记忆并归档后自然会有摘要）
+    // 2. 逐个取 case 摘要与结尾若干条原文副本；还没有归档内容的 case 跳过：记忆条数为 0 的
+    //    case 就是本批消息刚建出来的（它概括的正是本批消息，原文也会随本批进 pipeline），
+    //    摘要为空的只可能是历史遗留数据
     let mut summaries = Vec::new();
     let mut tails: Vec<Vec<Arc<CaseRecord>>> = Vec::new();
     for case in located.cases.iter() {
         let node = client.case_summary(agent_id, &role, case.case_id.as_str()).await?;
-        if node.summary.as_str().is_empty() {
+        if node.summary.as_str().is_empty() || node.record_count == 0 {
             continue;
         }
         summaries.push(node.summary.as_str().to_string());
@@ -303,7 +304,7 @@ async fn build_context(
     let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let new_keys: HashSet<MessageKey> = cases.iter().filter_map(|e| new_message_key(e.as_ref())).collect();
+    let new_keys: HashSet<MessageKey> = events.iter().filter_map(|e| new_message_key(e.as_ref())).collect();
     let history = filter_history(&records, &cutoff, &new_keys);
     // 5. 组装上下文（摘要在前，历史在后）
     Ok(compose_context(&summaries, &history))

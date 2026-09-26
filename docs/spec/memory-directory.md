@@ -35,7 +35,7 @@
     └── watermark.json            # 各通道的已处理水位
 ```
 
-case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。case id 命名：角色模式为 `role-1`、`role-2`…（角色树内递增），事件模式固定为 `event-{事件标识}`（顶层叶子）。详见 [memory-struct-abstract.md](memory-struct-abstract.md)。
+case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。case id 命名：角色模式为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…），事件模式固定为 `event-{事件标识}`（顶层叶子）。详见 [memory-struct-abstract.md](memory-struct-abstract.md)。
 
 ## role-event 后缀命名
 

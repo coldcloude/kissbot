@@ -217,7 +217,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 - `role` 与会话写记忆同一编码，即 **role-event 记忆后缀**：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。摘要记忆按**第一个** `-` 拆分出角色名与事件标识（角色名不允许含 `-`，事件标识可以含 `-`）：后缀决定原始记录读取、水位、当前 case 指针与模型会话，前缀（角色名）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
 - 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 触发时用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；摘要为空的 case（定位为本批消息新建、记忆条数还是 0）跳过，不进上下文。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（case 原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
+- 触发时用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；还没有归档内容的 case 跳过、不进上下文：记忆条数为 0 的 case 正是本批消息刚定位建出的（它概括的就是本批消息，原文也会随本批进 pipeline），摘要为空的只可能是历史遗留数据。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（case 原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
 - `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
 
 ## Memory-Ego API 交互

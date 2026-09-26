@@ -1,7 +1,7 @@
 //! 桩模型：`provider_type = "stub"` 时启用，用确定性判定替代模型调用。
 //!
 //! 供集成测试与手动验证使用（spec 验证：模型调用以桩实现替换）：分组轮把整批消息归为一组
-//! （有当前 case 时标记为当前 case 组，直接并入当前 case）、分层归并一律新开叶子 case、
+//! （有当前 case 时标记为当前 case 组，直接并入当前 case）、分层归并一律新开叶子 case（同时给出名称与摘要）、
 //! 摘要为固定前缀，定位命中第一个候选 case。
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +34,8 @@ impl DecisionModel for StubModel {
     }
 
     async fn decide_level(&self, _scope: &ModelScope, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
-        Ok(LevelDecision::New)
+        // 桩：一律新建 case，名称固定 "case"（重名时组件追加 -2、-3…），摘要与 summarize 同前缀
+        Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX))
     }
 
     async fn summarize(&self, _scope: &ModelScope, _content: &str) -> Result<String> {
@@ -61,7 +62,7 @@ mod tests {
         assert_eq!(groups, vec![MessageGroup { messages: vec![0, 1], is_current: true }]);
         let groups = model.group(&scope, "batch", 1, None).await.unwrap();
         assert_eq!(groups, vec![MessageGroup { messages: vec![0], is_current: false }], "没有当前 case 时不标记");
-        assert_eq!(model.decide_level(&scope, "seg", &[]).await.unwrap(), LevelDecision::New);
+        assert_eq!(model.decide_level(&scope, "seg", &[]).await.unwrap(), LevelDecision::new_case("case", STUB_SUMMARY_PREFIX));
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要1");
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要2");
     }

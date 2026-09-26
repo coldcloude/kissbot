@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
         assert_eq!(tree.current_cases[0].channel, channel);
-        assert_eq!(tree.current_cases[0].case_id.as_str(), "role-1");
+        assert_eq!(tree.current_cases[0].case_id.as_str(), "role-case");
 
         let state = handle.state.lock().await;
         assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().channel.sn, 2);

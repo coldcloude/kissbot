@@ -1,4 +1,4 @@
-//! 测试用模型桩：按队列给出判定结果，摘要按序号生成（spec 验证：模型调用以桩实现替换）。
+//! 测试用模型桩：按队列给出判定结果（默认整批一组并新开叶子 case），摘要按序号生成（spec 验证：模型调用以桩实现替换）。
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -90,7 +90,8 @@ impl DecisionModel for StubModel {
 
     async fn decide_level(&self, _scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
         self.prompts.lock().unwrap().push(crate::model::level_prompt(batch, level));
-        Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or(LevelDecision::New))
+        // 默认新开叶子 case：名称固定 "case"（重名时组件追加 -2、-3…），摘要一并给出
+        Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or_else(|| LevelDecision::new_case("case", "新 case 摘要")))
     }
 
     async fn summarize(&self, _scope: &ModelScope, content: &str) -> Result<String> {

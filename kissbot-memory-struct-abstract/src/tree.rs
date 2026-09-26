@@ -191,16 +191,19 @@ impl CaseTree {
         }
     }
 
-    /// 分配角色模式的新 case id（角色树内递增：`role-1`、`role-2`…）
-    pub fn allocate_case_id(&self) -> String {
-        let max = self
-            .nodes
-            .keys()
-            .filter_map(|id| id.strip_prefix(ROLE_CASE_PREFIX))
-            .filter_map(|n| n.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
-        format!("{}{}", ROLE_CASE_PREFIX, max + 1)
+    /// 角色模式的新 case id：`role-{模型给出的名称}`；与该角色树里已有 case 重名时追加 `-2`、`-3`…
+    pub fn unique_role_case_id(&self, name: &str) -> String {
+        let base = format!("{}{}", ROLE_CASE_PREFIX, name);
+        if !self.contains(&base) {
+            return base;
+        }
+        for suffix in 2u64.. {
+            let candidate = format!("{}-{}", base, suffix);
+            if !self.contains(&candidate) {
+                return candidate;
+            }
+        }
+        unreachable!("u64 后缀不可能被用尽")
     }
 }
 
@@ -306,18 +309,18 @@ mod tests {
     }
 
     #[test]
-    fn allocate_case_id_increments_within_role() {
+    fn unique_role_case_id_appends_suffix_on_conflict() {
         let mut tree = CaseTree::new();
-        assert_eq!(tree.allocate_case_id(), "role-1");
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        assert_eq!(tree.allocate_case_id(), "role-3");
-        // 事件模式的固定 case 不参与角色编号
-        tree.create_node("event-e1", None, CaseMode::Event, NOW);
-        assert_eq!(tree.allocate_case_id(), "role-3", "event-* 不参与角色编号");
-        // 数字取最大值而非最大值+1（避免删除后重号）
-        tree.create_node("role-10", None, CaseMode::Role, NOW);
-        assert_eq!(tree.allocate_case_id(), "role-11");
+        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat");
+
+        // 重名（含模型本批内给出同名）时追加 -2、-3…，名称字符集仍然合法
+        tree.create_node("role-weather-chat", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-2");
+        tree.create_node("role-weather-chat-2", None, CaseMode::Role, NOW);
+        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-3");
+        // 事件模式的固定 case 不影响角色命名空间
+        tree.create_node("event-weather-chat", None, CaseMode::Event, NOW);
+        assert_eq!(tree.unique_role_case_id("weather-chat"), "role-weather-chat-3");
     }
 
     #[test]

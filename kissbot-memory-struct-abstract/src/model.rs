@@ -32,11 +32,33 @@ pub struct MessageGroup {
 /// 分层归并判定结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LevelDecision {
-    /// 在本层新增叶子 case
-    New,
+    /// 在本层新增叶子 case：模型同一次调用就给出 case 名称与摘要（不等到后续再调用模型）
+    New {
+        /// case 名称：只能由英文字母、数字与 `-` 组成
+        name: String,
+        /// case 摘要
+        summary: String,
+    },
     /// 并入当层某 case（非叶子时继续下潜）
     Merge(String),
 }
+
+impl LevelDecision {
+    /// 便捷构造：新建名为 `name`、摘要为 `summary` 的 case（测试与桩模型用）
+    pub fn new_case(name: &str, summary: &str) -> Self {
+        Self::New { name: name.to_string(), summary: summary.to_string() }
+    }
+}
+
+/// case 名称是否合法：非空、长度不超过 [`MAX_CASE_NAME_LEN`]，且只含英文字母、数字与 `-`
+pub fn valid_case_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CASE_NAME_LEN
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// case 名称长度上限（避免超长目录名）
+pub const MAX_CASE_NAME_LEN: usize = 64;
 
 /// 各判定环节的模型接口
 #[async_trait]
@@ -45,7 +67,7 @@ pub trait DecisionModel: Send + Sync {
     async fn group(&self, scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>>;
 
     /// 第 2 轮起逐层判定：并入当层某 case（非叶子继续下潜）/ 在本层新增叶子 case。
-    /// 只用于定位的组（不落盘）同样用它下探：`New` 表示当层未命中，不新建 case。
+    /// 判定为新增时同一次调用就给出 case 名称与摘要（只用于定位的组也一样，新 case 一建出来就有内容）。
     async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision>;
 
     /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
@@ -100,7 +122,9 @@ pub fn level_prompt(batch: &str, level: &[CaseBrief]) -> String {
 待归并内容（每行格式 `[序号] 时间 内容`）：\n{batch}\n\n\
 请判断：\n\
 - 若应并入某个已有 case，输出 {{\"target\":\"<case_id>\"}}\n\
-- 若应在本层新增 case，输出 {{\"target\":\"new\"}}\n\
+- 若应在本层新增 case，输出 {{\"target\":\"new\",\"name\":\"<名称>\",\"summary\":\"<摘要>\"}}：\
+名称只能由英文字母、数字与 \"-\" 组成（如 topic-weather-chat），不能用中文、空格或其他字符，且要能概括内容；\
+摘要用简洁中文概括这个新 case（保留关键人物、话题、结论与时间线索）\n\
 只输出 JSON。",
         level = render_level(level),
         batch = batch
@@ -196,10 +220,24 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
     Ok(parsed)
 }
 
-/// 第 2 轮输出：`new` 或当层 case id
+/// 第 2 轮输出：当层某 case id，或带名称与摘要的新 case
 pub fn parse_level_decision(value: &Value) -> Result<LevelDecision> {
     match value.get("target").and_then(|t| t.as_str()) {
-        Some("new") => Ok(LevelDecision::New),
+        Some("new") => {
+            let name = value
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n.trim())
+                .filter(|n| valid_case_name(n))
+                .ok_or_else(|| {
+                    Error::ModelApiError(format!(
+                        "新增 case 的 name 非法（只能含英文字母、数字与 '-'，且不超过 {} 字符）: {}",
+                        MAX_CASE_NAME_LEN, value
+                    ))
+                })?;
+            let summary = parse_summary(value)?;
+            Ok(LevelDecision::New { name: name.to_string(), summary })
+        }
         Some(id) if !id.is_empty() => Ok(LevelDecision::Merge(id.to_string())),
         other => Err(Error::ModelApiError(format!("分层归并 target 非法: {:?}", other))),
     }
@@ -415,10 +453,37 @@ mod tests {
 
     #[test]
     fn parse_level_decision_variants() {
-        assert_eq!(parse_level_decision(&json!({"target":"new"})).unwrap(), LevelDecision::New);
+        // target=new 必须同时给出合法的 name 与 summary
+        assert_eq!(
+            parse_level_decision(&json!({"target":"new","name":"weather-chat","summary":"聊天气"})).unwrap(),
+            LevelDecision::new_case("weather-chat", "聊天气")
+        );
+        // name 只要求字符集与长度合法：`role-x` 这类字符串也允许
+        assert_eq!(
+            parse_level_decision(&json!({"target":"new","name":"role-x","summary":"摘要"})).unwrap(),
+            LevelDecision::new_case("role-x", "摘要")
+        );
         assert_eq!(parse_level_decision(&json!({"target":"e12"})).unwrap(), LevelDecision::Merge("e12".into()));
         assert!(parse_level_decision(&json!({"target":""})).is_err());
         assert!(parse_level_decision(&json!({})).is_err());
+
+        // name 非法：空 / 中文 / 空格 / 其他符号 / 超长
+        let too_long = "a".repeat(MAX_CASE_NAME_LEN + 1);
+        for name in ["", "天气", "weather chat", "weather_chat", "weather.dot", too_long.as_str()] {
+            let value = json!({"target":"new","name":name,"summary":"摘要"});
+            assert!(parse_level_decision(&value).is_err(), "name 非法应报错: {:?}", name);
+        }
+        // 缺 name / 缺 summary / summary 为空白
+        assert!(parse_level_decision(&json!({"target":"new","summary":"摘要"})).is_err());
+        assert!(parse_level_decision(&json!({"target":"new","name":"ok"})).is_err());
+        assert!(parse_level_decision(&json!({"target":"new","name":"ok","summary":"  "})).is_err());
+
+        // 边界：恰好达到长度上限（全为合法字符）可通过
+        let max = "a".repeat(MAX_CASE_NAME_LEN);
+        assert_eq!(
+            parse_level_decision(&json!({"target":"new","name":max,"summary":"摘要"})).unwrap(),
+            LevelDecision::new_case(&max, "摘要")
+        );
     }
 
     #[test]
