@@ -291,14 +291,14 @@ pub struct WatermarkPoint {
 impl Default for WatermarkPoint {
     fn default() -> Self {
         Self {
-            time: ArcStr::from(WATERMARK_ZERO_TIME),
+            time: WATERMARK_ZERO_TIME.clone(),
             sn: 0,
         }
     }
 }
 
 /// 水位起点（早于任何真实记录）
-pub const WATERMARK_ZERO_TIME: &str = "2000-01-01 00:00:00";
+pub const WATERMARK_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Watermark {

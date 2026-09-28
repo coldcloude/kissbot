@@ -77,8 +77,8 @@ pub trait DecisionModel: Send + Sync {
 
 // ========== 提示词 ==========
 
-const SYSTEM_PROMPT: &str = "你是记忆 case 归档与定位的判定器。输入是记忆记录文本与候选 case 摘要。\
-你只输出一个 JSON 对象，不输出解释、markdown 代码块或其他任何内容。";
+const SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是记忆 case 归档与定位的判定器。输入是记忆记录文本与候选 case 摘要。\
+你只输出一个 JSON 对象，不输出解释、markdown 代码块或其他任何内容。");
 
 fn render_level(level: &[CaseBrief]) -> String {
     if level.is_empty() {
@@ -307,7 +307,7 @@ impl LlmModel {
         let data_dir = self
             .root
             .join(scope.agent_id.as_str())
-            .join(crate::config::STRUCT_DIR_NAME)
+            .join(crate::config::STRUCT_DIR_NAME.as_str())
             .join("llm")
             .to_string_lossy()
             .to_string();

@@ -76,7 +76,7 @@ impl DiscoverResult {
     pub fn new(server_info: Implementation, instructions: Option<ArcStr>) -> Self {
         Self {
             result_type: ResultType::Complete,
-            supported_versions: vec![ArcStr::from(super::PROTOCOL_VERSION)],
+            supported_versions: vec![super::PROTOCOL_VERSION.clone()],
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: false }),
                 kissbot: Some(KissbotCapability::full()),

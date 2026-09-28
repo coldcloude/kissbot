@@ -15,7 +15,7 @@ use crate::error::Error;
 use crate::code::validate_code;
 use kissbot_api::{ChannelUser, Individual, IndividualRecognition};
 
-pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: &str = "individual-recognition-";
+pub const EGO_INDIVIDUAL_RECOGNITION_PREFIX: ArcStr = arcstr::literal!("individual-recognition-");
 
 pub fn ego_individual_recognition_path(ego_dir: impl AsRef<std::path::Path>) -> PathBuf {
     ego_dir.as_ref().to_path_buf().join(format!("{}.json", EGO_INDIVIDUAL_RECOGNITION_PREFIX))

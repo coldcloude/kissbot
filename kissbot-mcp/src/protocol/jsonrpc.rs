@@ -79,7 +79,7 @@ pub struct JsonRpcRequest {
 impl JsonRpcRequest {
     pub fn new(id: impl Into<RequestId>, method: impl Into<ArcStr>, params: Value) -> Self {
         Self {
-            jsonrpc: ArcStr::from(JSONRPC_VERSION),
+            jsonrpc: JSONRPC_VERSION.clone(),
             id: id.into(),
             method: method.into(),
             params,
@@ -141,7 +141,7 @@ impl JsonRpcResponse {
     /// 成功响应：result 必须携带 resultType（由上层结果类型保证）
     pub fn success(id: RequestId, result: Value) -> Self {
         Self {
-            jsonrpc: ArcStr::from(JSONRPC_VERSION),
+            jsonrpc: JSONRPC_VERSION.clone(),
             id: Some(id),
             result: Some(result),
             error: None,
@@ -151,7 +151,7 @@ impl JsonRpcResponse {
     /// 错误响应；id 未知（如解析失败）时为 None
     pub fn error(id: Option<RequestId>, error: McpError) -> Self {
         Self {
-            jsonrpc: ArcStr::from(JSONRPC_VERSION),
+            jsonrpc: JSONRPC_VERSION.clone(),
             id,
             result: None,
             error: Some(JsonRpcError {

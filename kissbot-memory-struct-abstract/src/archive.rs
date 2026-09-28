@@ -271,7 +271,7 @@ impl Archiver {
             // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
             Some(case_name) => {
                 // 事件标识部分必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
-                let Some(event_id) = case_name.strip_prefix(crate::tree::EVENT_CASE_PREFIX) else {
+                let Some(event_id) = case_name.strip_prefix(crate::tree::EVENT_CASE_PREFIX.as_str()) else {
                     return Err(Error::StateError(format!("事件模式 case 名缺少前缀: {}", case_name).into()));
                 };
                 if !crate::model::valid_case_name(event_id) {

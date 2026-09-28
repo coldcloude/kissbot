@@ -12,11 +12,11 @@ use crate::search::SearchManager;
 use kissbot_api::AgentMetadata;
 use kissbot_memory::DirectoryManager;
 
-pub const AGENT_METADATA_JSON: &str = "metadata.json";
+pub const AGENT_METADATA_JSON: ArcStr = arcstr::literal!("metadata.json");
 
 async fn agent_metadata_path(agent_id: &str) -> Result<PathBuf> {
     let agent_dir = DirectoryManager::get().ensure_agent_dir(agent_id).await?;
-    let metadata_path = agent_dir.join(AGENT_METADATA_JSON);
+    let metadata_path = agent_dir.join(AGENT_METADATA_JSON.as_str());
     Ok(metadata_path)
 }
 

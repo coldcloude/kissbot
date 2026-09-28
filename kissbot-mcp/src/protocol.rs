@@ -14,17 +14,17 @@ pub use meta::*;
 pub use tools::*;
 
 /// 本实现所实现的 MCP 协议版本
-pub const PROTOCOL_VERSION: &str = "2026-07-28";
+pub const PROTOCOL_VERSION: ArcStr = arcstr::literal!("2026-07-28");
 
 /// JSON-RPC 版本（消息固定携带该值）
-pub const JSONRPC_VERSION: &str = "2.0";
+pub const JSONRPC_VERSION: ArcStr = arcstr::literal!("2.0");
 
 /// `server/discover` 方法名
-pub const METHOD_DISCOVER: &str = "server/discover";
+pub const METHOD_DISCOVER: ArcStr = arcstr::literal!("server/discover");
 /// `tools/list` 方法名
-pub const METHOD_TOOLS_LIST: &str = "tools/list";
+pub const METHOD_TOOLS_LIST: ArcStr = arcstr::literal!("tools/list");
 /// `tools/call` 方法名
-pub const METHOD_TOOLS_CALL: &str = "tools/call";
+pub const METHOD_TOOLS_CALL: ArcStr = arcstr::literal!("tools/call");
 
 /// 结果类型：`complete` 表示请求已完成
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

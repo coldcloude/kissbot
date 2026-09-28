@@ -354,7 +354,7 @@ impl ScopeManager {
 
     /// 角色目录：`{root}/{agent}/memory-struct-abstract/{role}`
     pub fn scope_dir(&self, id: &AgentRole) -> PathBuf {
-        self.root.join(id.agent_id.as_str()).join(STRUCT_DIR_NAME).join(id.role.as_str())
+        self.root.join(id.agent_id.as_str()).join(STRUCT_DIR_NAME.as_str()).join(id.role.as_str())
     }
 
     pub fn get(&self, id: &AgentRole) -> Option<Arc<ScopeHandle>> {
@@ -415,7 +415,7 @@ impl ScopeManager {
                 continue;
             }
             let agent_id = agent_entry.file_name().to_string_lossy().to_string();
-            let struct_root = agent_entry.path().join(STRUCT_DIR_NAME);
+            let struct_root = agent_entry.path().join(STRUCT_DIR_NAME.as_str());
             let mut roles = match tokio::fs::read_dir(&struct_root).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
@@ -583,7 +583,7 @@ mod tests {
         same.ensure_suffix(&mut state, &event).await.unwrap();
         assert!(state.tree.contains("role-1"), "角色与事件后缀共用一棵 case 树");
         assert!(state.current_of(&event).is_empty(), "事件后缀有自己的当前指针");
-        assert_eq!(same.suffix_dir(&event), temp.path().join("0").join(STRUCT_DIR_NAME).join("dev-e1"));
+        assert_eq!(same.suffix_dir(&event), temp.path().join("0").join(STRUCT_DIR_NAME.as_str()).join("dev-e1"));
         assert_eq!(same.suffix_dir(&role_event("dev", None)), same.dir, "角色模式下后缀目录即角色目录");
     }
 

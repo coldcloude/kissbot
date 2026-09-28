@@ -747,7 +747,7 @@ mod tests {
                 let sender = pipeline.message_sender.as_deref().unwrap_or("");
                 let caller = pipeline.tool_caller.as_deref().unwrap_or("");
                 let output = pipeline.output_processor.as_deref().unwrap_or("");
-                assert!([PP_MSG_RAW, PP_MSG_COMPRESS, PP_MSG_MEMORY_RECOVER].contains(&sender),
+                assert!([PP_MSG_RAW.as_str(), PP_MSG_COMPRESS.as_str(), PP_MSG_MEMORY_RECOVER.as_str()].contains(&sender),
                     "{} 的 agent {} message_sender 名无效: {}", rel, agent_id, sender);
                 assert_eq!(caller, PP_TOOL_STATION, "{} 的 agent {} tool_caller 名无效", rel, agent_id);
                 assert_eq!(output, PP_OUT_CHANNEL, "{} 的 agent {} output_processor 名无效", rel, agent_id);
@@ -756,7 +756,7 @@ mod tests {
                         "{} 的 agent {} input_processor 名无效: {}", rel, agent_id, name);
                 }
                 for name in pipeline.system_prompter.iter().flatten() {
-                    assert!([PP_SYS_DEFAULT, PP_SYS_MEMORY_EGO].contains(&name.as_str()),
+                    assert!([PP_SYS_DEFAULT.as_str(), PP_SYS_MEMORY_EGO.as_str()].contains(&name.as_str()),
                         "{} 的 agent {} system_prompter 名无效: {}", rel, agent_id, name);
                 }
                 // 工具集齐备；out_channel 可缺省（缺省 = 只存不回复，out_channel 路由测试用无默认值 agent）

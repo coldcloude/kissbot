@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::model::{DecisionModel, LevelDecision, MessageGroup};
 use crate::scope::ModelScope;
 
-pub const STUB_SUMMARY_PREFIX: &str = "桩摘要";
+pub const STUB_SUMMARY_PREFIX: ArcStr = arcstr::literal!("桩摘要");
 
 #[derive(Default)]
 pub struct StubModel {
@@ -36,7 +36,7 @@ impl DecisionModel for StubModel {
 
     async fn decide_level(&self, _scope: &ModelScope, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
         // 桩：一律新建 case，名称固定 "case"（重名时组件追加 -2、-3…），摘要与 summarize 同前缀
-        Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX))
+        Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str()))
     }
 
     async fn summarize(&self, _scope: &ModelScope, _content: &str) -> Result<ArcStr> {
@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(groups, vec![MessageGroup { messages: vec![0, 1], is_current: true }]);
         let groups = model.group(&scope, "batch", 1, None).await.unwrap();
         assert_eq!(groups, vec![MessageGroup { messages: vec![0], is_current: false }], "没有当前 case 时不标记");
-        assert_eq!(model.decide_level(&scope, "seg", &[]).await.unwrap(), LevelDecision::new_case("case", STUB_SUMMARY_PREFIX));
+        assert_eq!(model.decide_level(&scope, "seg", &[]).await.unwrap(), LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str()));
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要1");
         assert_eq!(model.summarize(&scope, "content").await.unwrap(), "桩摘要2");
     }

@@ -23,10 +23,10 @@ use crate::protocol::{
 };
 use crate::server::{McpHandler, McpServer};
 
-const HEADER_PROTOCOL_VERSION: &str = "mcp-protocol-version";
-const HEADER_METHOD: &str = "mcp-method";
-const HEADER_NAME: &str = "mcp-name";
-const HEADER_ORIGIN: &str = "origin";
+const HEADER_PROTOCOL_VERSION: ArcStr = arcstr::literal!("mcp-protocol-version");
+const HEADER_METHOD: ArcStr = arcstr::literal!("mcp-method");
+const HEADER_NAME: ArcStr = arcstr::literal!("mcp-name");
+const HEADER_ORIGIN: ArcStr = arcstr::literal!("origin");
 
 /// MCP HTTP 端点配置
 #[derive(Debug, Clone)]
@@ -74,7 +74,7 @@ async fn handle<H: McpHandler>(
     body: Bytes,
 ) -> Response {
     // 1. Origin 校验（防 DNS rebinding；无 Origin 的 CLI 请求放行）
-    if let Some(origin) = header_str(&headers, HEADER_ORIGIN) {
+    if let Some(origin) = header_str(&headers, HEADER_ORIGIN.as_str()) {
         if !origin_allowed(origin, &state.config.allowed_origins) {
             return error_response(
                 StatusCode::FORBIDDEN,
@@ -97,21 +97,21 @@ async fn handle<H: McpHandler>(
     // 3. 取请求 id（取到则让后续错误响应回带）
     let id: Option<RequestId> = serde_json::from_value(value["id"].clone()).ok();
     // 4. 取必需请求头：协议版本与方法名必填；Mcp-Name 仅 tools/call 必填（与请求体比对时判定）
-    let Some(header_version) = header_str(&headers, HEADER_PROTOCOL_VERSION) else {
+    let Some(header_version) = header_str(&headers, HEADER_PROTOCOL_VERSION.as_str()) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
             McpError::new(INVALID_PARAMS, "缺少 MCP-Protocol-Version 请求头"),
         );
     };
-    let Some(header_method) = header_str(&headers, HEADER_METHOD) else {
+    let Some(header_method) = header_str(&headers, HEADER_METHOD.as_str()) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
             McpError::new(INVALID_PARAMS, "缺少 Mcp-Method 请求头"),
         );
     };
-    let header_name = header_str(&headers, HEADER_NAME);
+    let header_name = header_str(&headers, HEADER_NAME.as_str());
     // 5. 取请求体字段：方法名
     let Some(method) = value["method"].as_str() else {
         return error_response(
@@ -133,7 +133,7 @@ async fn handle<H: McpHandler>(
     }
     // 7. 取请求体字段： `_meta` 的必填项
     let meta = &value["params"]["_meta"];
-    let Some(body_version) = meta[META_PROTOCOL_VERSION].as_str() else {
+    let Some(body_version) = meta[META_PROTOCOL_VERSION.as_str()].as_str() else {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
@@ -143,7 +143,7 @@ async fn handle<H: McpHandler>(
             ),
         );
     };
-    if meta[META_CLIENT_CAPABILITIES].is_null() {
+    if meta[META_CLIENT_CAPABILITIES.as_str()].is_null() {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
@@ -251,7 +251,7 @@ fn origin_allowed(origin: &str, allowed: &[ArcStr]) -> bool {
 }
 
 /// MCP 端点支持的方法名集合（供文档与测试断言）
-pub const SUPPORTED_METHODS: [&str; 3] = [METHOD_DISCOVER, METHOD_TOOLS_LIST, METHOD_TOOLS_CALL];
+pub const SUPPORTED_METHODS: [ArcStr; 3] = [METHOD_DISCOVER, METHOD_TOOLS_LIST, METHOD_TOOLS_CALL];
 
 #[cfg(test)]
 mod tests {
@@ -302,13 +302,18 @@ mod tests {
         })
     }
 
-    async fn send(app: Router, headers: Vec<(&str, &str)>, body: Value) -> (StatusCode, Value) {
+    async fn send<V: AsRef<str>>(
+        app: Router,
+        headers: Vec<(&str, V)>,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .method("POST")
             .uri("/mcp")
             .header("content-type", "application/json");
         for (k, v) in headers {
-            builder = builder.header(k, v);
+            let value: &str = v.as_ref();
+            builder = builder.header(k, value);
         }
         let req = builder.body(Body::from(body.to_string())).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -317,10 +322,10 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
-    fn std_headers(method: &'static str) -> Vec<(&'static str, &'static str)> {
+    fn std_headers(method: &'static str) -> Vec<(&'static str, ArcStr)> {
         vec![
-            ("MCP-Protocol-Version", PROTOCOL_VERSION),
-            ("Mcp-Method", method),
+            ("MCP-Protocol-Version", PROTOCOL_VERSION.clone()),
+            ("Mcp-Method", ArcStr::from(method)),
         ]
     }
 
@@ -361,7 +366,7 @@ mod tests {
         let app = app();
         let (status, body) = send(
             app,
-            vec![("MCP-Protocol-Version", PROTOCOL_VERSION)],
+            vec![("MCP-Protocol-Version", PROTOCOL_VERSION.as_str())],
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }),
         )
         .await;
@@ -421,7 +426,7 @@ mod tests {
         let (status, body) = send(
             app,
             vec![
-                ("MCP-Protocol-Version", PROTOCOL_VERSION),
+                ("MCP-Protocol-Version", PROTOCOL_VERSION.as_str()),
                 ("Mcp-Method", "tools/call"),
                 ("Mcp-Name", "other"),
             ],
@@ -439,7 +444,7 @@ mod tests {
             app,
             vec![
                 ("Origin", "http://evil.example"),
-                ("MCP-Protocol-Version", PROTOCOL_VERSION),
+                ("MCP-Protocol-Version", PROTOCOL_VERSION.as_str()),
                 ("Mcp-Method", "tools/list"),
             ],
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": meta() } }),
@@ -456,7 +461,7 @@ mod tests {
             app,
             vec![
                 ("Origin", "http://127.0.0.1:3080"),
-                ("MCP-Protocol-Version", PROTOCOL_VERSION),
+                ("MCP-Protocol-Version", PROTOCOL_VERSION.as_str()),
                 ("Mcp-Method", "tools/list"),
             ],
             json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { "_meta": meta() } }),

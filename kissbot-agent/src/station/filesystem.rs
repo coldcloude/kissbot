@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_mcp::{CallToolResult, Tool};
 use serde_json::Value;
@@ -13,14 +14,14 @@ use crate::station::native::Group;
 use crate::station::{TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
 use crate::types::{Error, Result};
 
-pub const BUILTIN_GROUP_FILESYSTEM: &str = "filesystem";
+pub const BUILTIN_GROUP_FILESYSTEM: ArcStr = arcstr::literal!("filesystem");
 
 /// Read 工具返回内容的最大字节数（截断防大文件）
 const READ_MAX_BYTES: usize = 64 * 1024;
 
 /// filesystem group 的工具：元数据 + 原生实现（所属 group 在并入本级索引时写入）
 pub fn group() -> Group {
-    let mut result = Group::new(BUILTIN_GROUP_FILESYSTEM);
+    let mut result = Group::new(BUILTIN_GROUP_FILESYSTEM.clone());
     result.add_tool(
         read_tool(),
         Arc::new(ReadTool::new(std::env::current_dir().unwrap_or_default())),

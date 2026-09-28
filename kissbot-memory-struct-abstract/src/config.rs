@@ -11,9 +11,9 @@ use kissbot_llm::{
 use serde::Deserialize;
 
 /// 组件数据目录名（记忆根目录下各 agent 目录内的子目录）
-pub const STRUCT_DIR_NAME: &str = "memory-struct-abstract";
+pub const STRUCT_DIR_NAME: ArcStr = arcstr::literal!("memory-struct-abstract");
 
-pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1";
+pub const DEFAULT_LISTEN_ADDR: ArcStr = arcstr::literal!("127.0.0.1");
 /// HTTP 服务默认端口（memory-store 8082 / memory-ego 3001 之外）
 pub const DEFAULT_LISTEN_PORT: u16 = 8083;
 /// 单通道单次处理的消息条数上限（懒处理时按此分块，避免一次把过长记录送入模型）
@@ -23,7 +23,7 @@ pub const DEFAULT_WS_RECONNECT_INTERVAL_SECS: u64 = 5;
 /// 模型会话上下文保留的消息条数上限
 pub const DEFAULT_SESSION_MAX_MESSAGES: usize = 20;
 fn default_listen_addr() -> ArcStr {
-    ArcStr::from(DEFAULT_LISTEN_ADDR)
+    DEFAULT_LISTEN_ADDR.clone()
 }
 
 fn default_listen_port() -> u16 {

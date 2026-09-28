@@ -4,12 +4,12 @@ use std::sync::OnceLock;
 use arcstr::ArcStr;
 
 /// 通知服务默认监听地址（与 HTTP 服务分开监听，连接方式见 communication.md）
-pub const DEFAULT_NOTIFY_LISTEN_ADDR: &str = "127.0.0.1";
+pub const DEFAULT_NOTIFY_LISTEN_ADDR: ArcStr = arcstr::literal!("127.0.0.1");
 /// 通知服务默认监听端口（HTTP 8082 之外的独立端口）
 pub const DEFAULT_NOTIFY_LISTEN_PORT: u16 = 8182;
 
 fn default_notify_listen_addr() -> ArcStr {
-    ArcStr::from(DEFAULT_NOTIFY_LISTEN_ADDR)
+    DEFAULT_NOTIFY_LISTEN_ADDR.clone()
 }
 
 fn default_notify_listen_port() -> u16 {

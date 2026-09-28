@@ -6,25 +6,25 @@ use arcstr::ArcStr;
 use crate::error::Result;
 use crate::{Config, Error};
 
-const AGENT_UUID_PRREFIX: &str = "agent-";
+const AGENT_UUID_PRREFIX: ArcStr = arcstr::literal!("agent-");
 
-const MEMORY_EGO: &str = "memory-ego";
-const MEMORY_STORE: &str = "memory-store";
+const MEMORY_EGO: ArcStr = arcstr::literal!("memory-ego");
+const MEMORY_STORE: ArcStr = arcstr::literal!("memory-store");
 
 fn agent_dir(root_dir: impl AsRef<Path>, agent_id: &str) -> PathBuf {
     root_dir.as_ref().join(agent_id)
 }
 
 fn agent_uuid_file(agent_dir: impl AsRef<Path>, agent_id: &str) -> PathBuf {
-    agent_dir.as_ref().to_path_buf().join(format!("{}{}", AGENT_UUID_PRREFIX, agent_id))
+    agent_dir.as_ref().to_path_buf().join(format!("{}{}", AGENT_UUID_PRREFIX.as_str(), agent_id))
 }
 
 fn agent_ego_dir(agent_dir: impl AsRef<Path>) -> PathBuf {
-    agent_dir.as_ref().to_path_buf().join(MEMORY_EGO)
+    agent_dir.as_ref().to_path_buf().join(MEMORY_EGO.as_str())
 }
 
 fn agent_store_dir(agent_dir: impl AsRef<Path>) -> PathBuf {
-    agent_dir.as_ref().to_path_buf().join(MEMORY_STORE)
+    agent_dir.as_ref().to_path_buf().join(MEMORY_STORE.as_str())
 }
 
 fn agent_struct_dir(agent_dir: impl AsRef<Path>, struct_name: &str) -> PathBuf {

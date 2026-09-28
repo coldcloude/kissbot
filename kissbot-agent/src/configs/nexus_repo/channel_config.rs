@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// ChannelConfig.agent_id 缺省值：保留 agent（"0"）
 fn default_agent_id() -> ArcStr {
-    ArcStr::from(RESERVED_AGENT_ID)
+    RESERVED_AGENT_ID.clone()
 }
 
 /// ChannelConfig.agent_id 反序列化：空串自动归一化为保留 agent（"0"），非空原样
@@ -15,7 +15,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let s = String::deserialize(d)?;
-    Ok(if s.is_empty() { ArcStr::from(RESERVED_AGENT_ID) } else { ArcStr::from(s) })
+    Ok(if s.is_empty() { RESERVED_AGENT_ID.clone() } else { ArcStr::from(s) })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

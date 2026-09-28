@@ -73,8 +73,8 @@ impl CommandRouter {
                 // /agent [agent_id] [role]：缺省 agent_id 用保留 agent（"0"），缺省 role 用保留 role（空）
                 let agent_id = parts.get(1).map(|s| s.to_string());
                 let role = parts.get(2).map(|s| s.to_string());
-                let new_agent_id = ArcStr::from(agent_id.filter(|s| !s.is_empty()).unwrap_or_else(|| RESERVED_AGENT_ID.to_string()));
-                let new_role = ArcStr::from(role.unwrap_or_else(|| RESERVED_ROLE_NAME.to_string()));
+                let new_agent_id = agent_id.filter(|s| !s.is_empty()).map(ArcStr::from).unwrap_or_else(|| RESERVED_AGENT_ID.clone());
+                let new_role = role.map(ArcStr::from).unwrap_or_else(|| RESERVED_ROLE_NAME.clone());
                 // 校验 agent 存在（空/保留 id 直接通过）；role 非空时一并校验（agent+role 联合校验）
                 nexus.verify_agent_exists(new_agent_id.as_str()).await?;
                 if !new_role.is_empty() {
@@ -88,7 +88,7 @@ impl CommandRouter {
             "/role" => {
                 // /role [name]：缺省用保留 role（空）
                 let role = parts.get(1).map(|s| s.to_string());
-                let new_role = ArcStr::from(role.unwrap_or_else(|| RESERVED_ROLE_NAME.to_string()));
+                let new_role = role.map(ArcStr::from).unwrap_or_else(|| RESERVED_ROLE_NAME.clone());
                 // 经 channel_id 校验 role 存在（内部取当前 agent_id；空串保留 role 直接通过；channel 不存在报错）
                 nexus.verify_role_exists_for_channel(channel_id, new_role.as_str()).await?;
                 // 保持当前运行态事件（role 变更不改变事件模式）；Arc clone 浅拷贝入队

@@ -130,7 +130,7 @@ mod tests {
         let mut svc = make_auth_service(Ok(()));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY, "valid-key")
+            .header(crate::HEADER_API_KEY.as_str(), "valid-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();
@@ -153,7 +153,7 @@ mod tests {
         let mut svc = make_auth_service(Err(Error::InvalidKey));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY, "wrong-key")
+            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();
@@ -165,7 +165,7 @@ mod tests {
         let mut svc = make_auth_service(Err(Error::InvalidKey));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY, "wrong-key")
+            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();

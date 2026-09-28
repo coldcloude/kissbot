@@ -282,7 +282,7 @@ impl Content {
 }
 
 /// kissbot 错误来源标识（`ErrorDetail.source`），kissbot 实现固定填该值
-pub const ERROR_SOURCE_KISSBOT: &str = "kissbot";
+pub const ERROR_SOURCE_KISSBOT: ArcStr = arcstr::literal!("kissbot");
 
 /// `isError=true` 时 `structuredContent` 的固定错误结构
 ///
@@ -301,13 +301,13 @@ impl ErrorDetail {
         Self {
             code,
             message: message.into(),
-            source: ArcStr::from(ERROR_SOURCE_KISSBOT),
+            source: ERROR_SOURCE_KISSBOT.clone(),
         }
     }
 
     /// 错误是否来自 kissbot
     pub fn is_kissbot(&self) -> bool {
-        self.source.as_str() == ERROR_SOURCE_KISSBOT
+        self.source.as_str() == ERROR_SOURCE_KISSBOT.as_str()
     }
 }
 
@@ -418,7 +418,7 @@ mod tests {
         tool.set_group("filesystem");
         assert_eq!(tool.group(), Some("filesystem"));
         let v = serde_json::to_value(&tool).unwrap();
-        assert_eq!(v["_meta"][super::super::meta::META_GROUP], "filesystem");
+        assert_eq!(v["_meta"][super::super::meta::META_GROUP.as_str()], "filesystem");
         let back: Tool = serde_json::from_value(v).unwrap();
         assert_eq!(back.group(), Some("filesystem"));
 
@@ -427,7 +427,7 @@ mod tests {
         plain.set_group("g1");
         assert_eq!(plain.group(), Some("g1"));
         assert_eq!(
-            serde_json::to_value(&plain).unwrap()["_meta"][super::super::meta::META_GROUP],
+            serde_json::to_value(&plain).unwrap()["_meta"][super::super::meta::META_GROUP.as_str()],
             "g1"
         );
     }
@@ -494,7 +494,7 @@ mod tests {
         // 固定错误结构：code / message / source
         assert_eq!(r.structured_content["code"], 1002);
         assert_eq!(r.structured_content["message"], "工具不存在: nope");
-        assert_eq!(r.structured_content["source"], ERROR_SOURCE_KISSBOT);
+        assert_eq!(r.structured_content["source"], ERROR_SOURCE_KISSBOT.as_str());
         assert_eq!(r.error_message().unwrap(), "工具不存在: nope");
         let detail = r.kissbot_error().expect("kissbot 来源应能解析");
         assert_eq!(detail.code, 1002);

@@ -61,7 +61,7 @@ mod tests {
         let filter = ApiKeyWsFilter::new(Arc::new(MockValidator { result: Ok(()) }));
         let request = http::Request::builder()
             .uri("ws://example.com/ws")
-            .header(crate::HEADER_API_KEY, "valid-key")
+            .header(crate::HEADER_API_KEY.as_str(), "valid-key")
             .body(())
             .unwrap();
         let result = filter.filter(&request);
@@ -88,7 +88,7 @@ mod tests {
         }));
         let request = http::Request::builder()
             .uri("ws://example.com/ws")
-            .header(crate::HEADER_API_KEY, "wrong-key")
+            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
             .body(())
             .unwrap();
         let result = filter.filter(&request);

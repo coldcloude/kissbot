@@ -24,53 +24,53 @@ use kissbot_llm::{Message, Session, ToolConfig};
 
 use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Result, SessionKey}};
 
-pub const PP_IN_BATCH: &str = "batch_input_processor";
-pub const PP_IN_ABSTRACT: &str = "abstract_input_processor";
-pub const PP_OUT_CHANNEL: &str = "channel_output_processor";
-pub const PP_MSG_RAW: &str = "raw_message_sender";
-pub const PP_MSG_COMPRESS: &str = "compress_message_sender";
-pub const PP_MSG_MEMORY_RECOVER: &str = "memory_recover_message_sender";
-pub const PP_TOOL_STATION: &str = "station_tool_caller";
-pub const PP_SYS_DEFAULT: &str = "default_system_prompter";
-pub const PP_SYS_MEMORY_EGO: &str = "memory_ego_system_prompter";
+pub const PP_IN_BATCH: ArcStr = arcstr::literal!("batch_input_processor");
+pub const PP_IN_ABSTRACT: ArcStr = arcstr::literal!("abstract_input_processor");
+pub const PP_OUT_CHANNEL: ArcStr = arcstr::literal!("channel_output_processor");
+pub const PP_MSG_RAW: ArcStr = arcstr::literal!("raw_message_sender");
+pub const PP_MSG_COMPRESS: ArcStr = arcstr::literal!("compress_message_sender");
+pub const PP_MSG_MEMORY_RECOVER: ArcStr = arcstr::literal!("memory_recover_message_sender");
+pub const PP_TOOL_STATION: ArcStr = arcstr::literal!("station_tool_caller");
+pub const PP_SYS_DEFAULT: ArcStr = arcstr::literal!("default_system_prompter");
+pub const PP_SYS_MEMORY_EGO: ArcStr = arcstr::literal!("memory_ego_system_prompter");
 
-pub const PP_PRESET_ROLE: &str = "preset_role";
-pub const PP_PRESET_EVENT: &str = "preset_event";
+pub const PP_PRESET_ROLE: ArcStr = arcstr::literal!("preset_role");
+pub const PP_PRESET_EVENT: ArcStr = arcstr::literal!("preset_event");
 
 pub fn create_input_processor(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentInputProcessor>> {
     match name {
-        PP_IN_BATCH => Ok(Arc::new(BatchAgentInputProcessor::new(session_key))),
-        PP_IN_ABSTRACT => Ok(Arc::new(AbstractAgentInputProcessor::new(session_key, session))),
+        n if n == PP_IN_BATCH => Ok(Arc::new(BatchAgentInputProcessor::new(session_key))),
+        n if n == PP_IN_ABSTRACT => Ok(Arc::new(AbstractAgentInputProcessor::new(session_key, session))),
         _ => Err(Error::PipelineNotFound(ArcStr::from("input processor"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
 pub fn create_system_prompter(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentSystemPrompter>> {
     match name {
-        PP_SYS_DEFAULT => Ok(Arc::new(DefaultSystemPrompter::new(session))),
-        PP_SYS_MEMORY_EGO => Ok(Arc::new(MemoryEgoSystemPrompter::new(session_key, session))),
+        n if n == PP_SYS_DEFAULT => Ok(Arc::new(DefaultSystemPrompter::new(session))),
+        n if n == PP_SYS_MEMORY_EGO => Ok(Arc::new(MemoryEgoSystemPrompter::new(session_key, session))),
         _ => Err(Error::PipelineNotFound(ArcStr::from("system_prompter"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
 pub fn create_message_sender(session_key: Arc<SessionKey>, session: Arc<Session>, name: &str) -> Result<Arc<dyn AgentMessageSender>> {
     match name {
-        PP_MSG_RAW => Ok(Arc::new(RawMessagerSender { session_key, session })),
-        PP_MSG_COMPRESS => Ok(Arc::new(TokenLimitMessageSender::new_compress(session_key, session))),
-        PP_MSG_MEMORY_RECOVER => Ok(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key, session))),
+        n if n == PP_MSG_RAW => Ok(Arc::new(RawMessagerSender { session_key, session })),
+        n if n == PP_MSG_COMPRESS => Ok(Arc::new(TokenLimitMessageSender::new_compress(session_key, session))),
+        n if n == PP_MSG_MEMORY_RECOVER => Ok(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key, session))),
         _ => Err(Error::PipelineNotFound(ArcStr::from("message sender"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 pub fn create_tool_caller(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentToolCaller>> {
     match name {
-        PP_TOOL_STATION => Ok(Arc::new(StationToolCaller)),
+        n if n == PP_TOOL_STATION => Ok(Arc::new(StationToolCaller)),
         _ => Err(Error::PipelineNotFound(ArcStr::from("tool caller"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
 pub fn create_output_processor(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentOutputProcessor>> {
     match name {
-        PP_OUT_CHANNEL => Ok(Arc::new(ChannelOutputProcessor::new(session_key))),
+        n if n == PP_OUT_CHANNEL => Ok(Arc::new(ChannelOutputProcessor::new(session_key))),
         _ => Err(Error::PipelineNotFound(ArcStr::from("output processor"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
@@ -84,50 +84,50 @@ pub struct SessionPipeline {
 
 pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<AgentPipeline> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
-    let mut message_sender_cfg: Option<&str> = None;
-    let mut tool_caller_cfg: Option<&str> = None;
-    let mut output_processor_cfg: Option<&str> = None;
+    let mut message_sender_cfg: Option<ArcStr> = None;
+    let mut tool_caller_cfg: Option<ArcStr> = None;
+    let mut output_processor_cfg: Option<ArcStr> = None;
     if let Some(preset) = config.preset.as_ref() {
-        let preset = if preset.as_str().is_empty() {
-            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
+        let preset: ArcStr = if preset.as_str().is_empty() {
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT.clone() } else { PP_PRESET_ROLE.clone() }
         } else {
-            preset.as_str()
+            preset.clone()
         };
         match preset {
-            PP_PRESET_ROLE => {
-                message_sender_cfg = Some(PP_MSG_MEMORY_RECOVER);
-                tool_caller_cfg = Some(PP_TOOL_STATION);
-                output_processor_cfg = Some(PP_OUT_CHANNEL);
+            n if n == PP_PRESET_ROLE => {
+                message_sender_cfg = Some(PP_MSG_MEMORY_RECOVER.clone());
+                tool_caller_cfg = Some(PP_TOOL_STATION.clone());
+                output_processor_cfg = Some(PP_OUT_CHANNEL.clone());
             },
-            PP_PRESET_EVENT => {
-                message_sender_cfg = Some(PP_MSG_COMPRESS);
-                tool_caller_cfg = Some(PP_TOOL_STATION);
-                output_processor_cfg = Some(PP_OUT_CHANNEL);
+            n if n == PP_PRESET_EVENT => {
+                message_sender_cfg = Some(PP_MSG_COMPRESS.clone());
+                tool_caller_cfg = Some(PP_TOOL_STATION.clone());
+                output_processor_cfg = Some(PP_OUT_CHANNEL.clone());
             },
             _ => {},
         };
     }
     if let Some(cfg) = config.message_sender.as_ref() {
-        message_sender_cfg = Some(cfg.as_str());
+        message_sender_cfg = Some(cfg.clone());
     }
     if let Some(cfg) = config.tool_caller.as_ref() {
-        tool_caller_cfg = Some(cfg.as_str());
+        tool_caller_cfg = Some(cfg.clone());
     }
     if let Some(cfg) = config.output_processor.as_ref() {
-        output_processor_cfg = Some(cfg.as_str());
+        output_processor_cfg = Some(cfg.clone());
     }
     let message_sender: Arc<dyn AgentMessageSender> = if let Some(name) = message_sender_cfg {
-        create_message_sender(session_key.clone(), session.clone(), name)?
+        create_message_sender(session_key.clone(), session.clone(), name.as_str())?
     } else {
         return Err(Error::PipelineNotFound(ArcStr::from("message sender"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
     let tool_caller: Arc<dyn AgentToolCaller> = if let Some(name) = tool_caller_cfg {
-        create_tool_caller(session_key.clone(), name)?
+        create_tool_caller(session_key.clone(), name.as_str())?
     } else {
         return Err(Error::PipelineNotFound(ArcStr::from("ttool caller"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
     let output_processor: Arc<dyn AgentOutputProcessor> = if let Some(name) = output_processor_cfg {
-        create_output_processor(session_key.clone(), name)?
+        create_output_processor(session_key.clone(), name.as_str())?
     } else {
         return Err(Error::PipelineNotFound(ArcStr::from("out channel"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
@@ -144,17 +144,17 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
-        let preset = if preset.as_str().is_empty() {
-            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
+        let preset: ArcStr = if preset.as_str().is_empty() {
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT.clone() } else { PP_PRESET_ROLE.clone() }
         } else {
-            preset.as_str()
+            preset.clone()
         };
         match preset {
-            PP_PRESET_ROLE => {
-                names.push(ArcStr::from(PP_IN_BATCH));
+            n if n == PP_PRESET_ROLE => {
+                names.push(PP_IN_BATCH.clone());
             },
-            PP_PRESET_EVENT => {
-                names.push(ArcStr::from(PP_IN_BATCH));
+            n if n == PP_PRESET_EVENT => {
+                names.push(PP_IN_BATCH.clone());
             },
             _ => {},
         };
@@ -174,17 +174,17 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
-        let preset = if preset.as_str().is_empty() {
-            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
+        let preset: ArcStr = if preset.as_str().is_empty() {
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT.clone() } else { PP_PRESET_ROLE.clone() }
         } else {
-            preset.as_str()
+            preset.clone()
         };
         match preset {
-            PP_PRESET_ROLE => {
-                names.push(ArcStr::from(PP_SYS_MEMORY_EGO));
+            n if n == PP_PRESET_ROLE => {
+                names.push(PP_SYS_MEMORY_EGO.clone());
             },
-            PP_PRESET_EVENT => {
-                names.push(ArcStr::from(PP_SYS_MEMORY_EGO));
+            n if n == PP_PRESET_EVENT => {
+                names.push(PP_SYS_MEMORY_EGO.clone());
             },
             _ => {},
         };

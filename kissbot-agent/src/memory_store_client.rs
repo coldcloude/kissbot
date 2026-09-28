@@ -22,10 +22,10 @@ use crate::types::{Error, Result};
 // 批处理参数
 const RECORD_QUEUE_SIZE: usize = 10;
 const RECORD_MAX_DELAY: Duration = Duration::from_millis(100);
-const CHANNEL_KEY: &str = "1";
-const THINK_KEY: &str = "2";
-const TOOL_CALL_KEY: &str = "3";
-const TOOL_RESULT_KEY: &str = "4";
+const CHANNEL_KEY: ArcStr = arcstr::literal!("1");
+const THINK_KEY: ArcStr = arcstr::literal!("2");
+const TOOL_CALL_KEY: ArcStr = arcstr::literal!("3");
+const TOOL_RESULT_KEY: ArcStr = arcstr::literal!("4");
 
 // ========== 共享发送段（各记录类型复用，只写一遍） ==========
 
@@ -60,7 +60,7 @@ impl StoreHttpConfig {
         }
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         let response = self.client.post(&url)
-            .header(HEADER_API_KEY, self.api_key.as_str())
+            .header(HEADER_API_KEY.as_str(), self.api_key.as_str())
             .json(body)
             .send()
             .await
@@ -83,7 +83,7 @@ impl StoreHttpConfig {
     ) -> std::result::Result<T, kai_file::Error> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         let response = self.client.post(&url)
-            .header(HEADER_API_KEY, self.api_key.as_str())
+            .header(HEADER_API_KEY.as_str(), self.api_key.as_str())
             .json(body)
             .send()
             .await
@@ -184,23 +184,23 @@ impl MemoryStoreClient {
     }
 
     pub async fn push_channel_record(&self, record: ChannelRequest) {
-        self.channel_appender.append(ArcStr::from(CHANNEL_KEY), vec![record]).await;
+        self.channel_appender.append(CHANNEL_KEY.clone(), vec![record]).await;
     }
 
     /// 推送 think 记录（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
     /// 调用方：AgentPipeline::run_once（思考记忆推送）
     pub async fn push_think(&self, record: ThinkRequest) {
-        self.think_appender.append(ArcStr::from(THINK_KEY), vec![record]).await;
+        self.think_appender.append(THINK_KEY.clone(), vec![record]).await;
     }
 
     /// 推送 tool-call 记录（station 工具调用后写入记忆）
     pub async fn push_tool_call(&self, record: ToolCallRequest) {
-        self.tool_call_appender.append(ArcStr::from(TOOL_CALL_KEY), vec![record]).await;
+        self.tool_call_appender.append(TOOL_CALL_KEY.clone(), vec![record]).await;
     }
 
     /// 推送 tool-result 记录（station 工具调用后写入记忆）
     pub async fn push_tool_result(&self, record: ToolResultRequest) {
-        self.tool_result_appender.append(ArcStr::from(TOOL_RESULT_KEY), vec![record]).await;
+        self.tool_result_appender.append(TOOL_RESULT_KEY.clone(), vec![record]).await;
     }
 
     /// 记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；

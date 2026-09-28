@@ -43,7 +43,7 @@ impl<H: McpHandler> McpServer<H> {
             handler,
             server_info,
             instructions: None,
-            supported_versions: vec![ArcStr::from(PROTOCOL_VERSION)],
+            supported_versions: vec![PROTOCOL_VERSION.clone()],
         }
     }
 
@@ -72,8 +72,9 @@ impl<H: McpHandler> McpServer<H> {
 
     async fn dispatch(&self, request: JsonRpcRequest) -> Result<Value, McpError> {
         request.validate()?;
+        // `ArcStr` 常量不能作为 match 模式（非 structural-match 类型），用守卫比较
         match request.method.as_str() {
-            METHOD_DISCOVER => {
+            m if m == METHOD_DISCOVER => {
                 let params: DiscoverParams = parse_params(&request)?;
                 self.check_version(&params.meta)?;
                 let mut result = self.handler.discover().await;
@@ -86,7 +87,7 @@ impl<H: McpHandler> McpServer<H> {
                 result = result.with_server_info(self.server_info.clone());
                 to_value(result)
             }
-            METHOD_TOOLS_LIST => {
+            m if m == METHOD_TOOLS_LIST => {
                 let params: ToolsListParams = parse_params(&request)?;
                 self.check_version(&params.meta)?;
                 let mut result = self.handler.list_tools(params).await?;
@@ -94,7 +95,7 @@ impl<H: McpHandler> McpServer<H> {
                 result = result.with_server_info(self.server_info.clone());
                 to_value(result)
             }
-            METHOD_TOOLS_CALL => {
+            m if m == METHOD_TOOLS_CALL => {
                 let params: ToolsCallParams = parse_params(&request)?;
                 self.check_version(&params.meta)?;
                 let mut result = self.handler.call_tool(params).await?;
@@ -186,7 +187,7 @@ mod tests {
         let resp = server.handle(req).await;
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["result"]["resultType"], "complete");
-        assert_eq!(v["result"]["supportedVersions"][0], PROTOCOL_VERSION);
+        assert_eq!(v["result"]["supportedVersions"][0], PROTOCOL_VERSION.as_str());
         assert_eq!(v["result"]["instructions"], "测试服务端");
         assert_eq!(
             v["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
@@ -251,7 +252,7 @@ mod tests {
         );
         assert_eq!(
             v["error"]["data"]["supportedVersions"][0],
-            PROTOCOL_VERSION
+            PROTOCOL_VERSION.as_str()
         );
     }
 

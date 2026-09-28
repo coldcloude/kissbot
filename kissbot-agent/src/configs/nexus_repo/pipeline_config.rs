@@ -26,7 +26,7 @@ impl MergeBy<CompressConfig> for CompressConfig {
 impl MergeSelf for CompressConfig {}
 
 /// 压缩默认模板
-pub const DEFAULT_COMPRESS_PROMPT: &str = "请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。";
+pub const DEFAULT_COMPRESS_PROMPT: ArcStr = arcstr::literal!("请用简洁的语言总结以上对话的关键信息，保留重要细节、结论与未完成事项，供后续对话参考。");
 
 /// 压缩默认阈值
 pub const DEFAULT_COMPRESS_THRESHOLD: f64 = 0.8;
@@ -40,7 +40,7 @@ pub struct EffectiveCompressConfig {
 impl EffectiveCompressConfig {
     pub fn new() -> Self {
         Self {
-            compress_prompt: ArcStr::from(DEFAULT_COMPRESS_PROMPT),
+            compress_prompt: DEFAULT_COMPRESS_PROMPT.clone(),
             compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
         }
     }

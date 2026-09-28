@@ -17,8 +17,8 @@ use crate::error::Error;
 use crate::code::validate_code;
 use crate::search::SearchManager;
 
-pub const EGO_ROLE_PLAY_PREFIX: &str = "role-play-";
-pub const JSON_SUFFIX: &str = ".json";
+pub const EGO_ROLE_PLAY_PREFIX: ArcStr = arcstr::literal!("role-play-");
+pub const JSON_SUFFIX: ArcStr = arcstr::literal!(".json");
 
 pub fn ego_role_play_path(ego_dir: impl AsRef<std::path::Path>, role_name: &str) -> PathBuf {
     ego_dir
@@ -169,8 +169,8 @@ impl RolePlayManager {
             let role_file = entry.path();
             if role_file.is_file() {
                 if let Some(role_file_name) = role_file.file_name().and_then(|n| n.to_str()) {
-                    if role_file_name.starts_with(EGO_ROLE_PLAY_PREFIX) && role_file_name.ends_with(JSON_SUFFIX) {
-                        if let Some(role_name) = role_file_name.get(EGO_ROLE_PLAY_PREFIX.len() .. role_file_name.len() - JSON_SUFFIX.len()) {
+                    if role_file_name.starts_with(EGO_ROLE_PLAY_PREFIX.as_str()) && role_file_name.ends_with(JSON_SUFFIX.as_str()) {
+                        if let Some(role_name) = role_file_name.get(EGO_ROLE_PLAY_PREFIX.as_str().len() .. role_file_name.len() - JSON_SUFFIX.as_str().len()) {
                             roles.push(ArcStr::from(role_name.trim()));
                         }
                     }

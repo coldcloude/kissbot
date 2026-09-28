@@ -12,7 +12,7 @@ use kissbot_channel::{GroupChangeEvent, GroupChangeType, UserRemoveEvent};
 use kissbot_channel_client::error::Result as ClientResult;
 use kissbot_channel_client::Terminal;
 
-pub const TEST_TIME: &str = "2026-07-27 00:00:00";
+pub const TEST_TIME: ArcStr = arcstr::literal!("2026-07-27 00:00:00");
 pub const DOWNLOAD_CHUNK_SIZE: usize = 4;
 
 /// 测试配置：ChannelServer 内部会读取 config.json（memory-store 推送、api key 校验），
@@ -123,7 +123,7 @@ impl MockMessenger {
                     group_name: ArcStr::new(),
                 }),
                 change_type,
-                time: ArcStr::from(TEST_TIME),
+                time: TEST_TIME.clone(),
             });
             tokio::spawn(async move {
                 manager.handle_group_change(event).await;
@@ -144,7 +144,7 @@ impl MockMessenger {
                     messenger_name: ArcStr::new(),
                     user_name: ArcStr::new(),
                 }),
-                time: ArcStr::from(TEST_TIME),
+                time: TEST_TIME.clone(),
             });
             tokio::spawn(async move {
                 manager.handle_user_remove(event).await;
@@ -172,7 +172,7 @@ impl Messenger for MockMessenger {
         let _ = self.sent_messages.send(message);
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id: ArcStr::from(format!("msg-{}", self.next_msg_id.fetch_add(1, Ordering::Relaxed))),
-            time: ArcStr::from(TEST_TIME),
+            time: TEST_TIME.clone(),
             content,
             messenger_name: ArcStr::new(),
             user_name: ArcStr::new(),
@@ -353,6 +353,6 @@ pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, tex
         user_name: ArcStr::new(),
         group_name: ArcStr::new(),
         content: Content::Text(ArcStr::from(text)),
-        time: ArcStr::from(TEST_TIME),
+        time: TEST_TIME.clone(),
     }
 }

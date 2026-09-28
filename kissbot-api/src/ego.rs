@@ -8,7 +8,7 @@ use crate::ArcSwapHashMap;
 use crate::channel::ChannelUser;
 
 /// 保留 agent 的 memory-store/ego agent_id（"0"）
-pub const RESERVED_AGENT_ID: &str = "0";
+pub const RESERVED_AGENT_ID: ArcStr = arcstr::literal!("0");
 
 /// 角色键：agent + 角色名（ego 无事件概念，保持纯角色名）
 ///

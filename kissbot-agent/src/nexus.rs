@@ -29,7 +29,7 @@ use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::message::Content;
 /// 保留 role：空串 = 保留 role
-pub const RESERVED_ROLE_NAME: &str = "";
+pub const RESERVED_ROLE_NAME: ArcStr = ArcStr::new();
 
 // 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
 // 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发重置，
@@ -634,11 +634,11 @@ mod tests {
         //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
         //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![ArcStr::from(PP_IN_BATCH)]);
-        pipeline.system_prompter = Some(vec![ArcStr::from(PP_SYS_DEFAULT)]);
-        pipeline.message_sender = Some(ArcStr::from(PP_MSG_RAW));
-        pipeline.tool_caller = Some(ArcStr::from(PP_TOOL_STATION));
-        pipeline.output_processor = Some(ArcStr::from(PP_OUT_CHANNEL));
+        pipeline.input_processor = Some(vec![PP_IN_BATCH.clone()]);
+        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.clone()]);
+        pipeline.message_sender = Some(PP_MSG_RAW.clone());
+        pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
+        pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
         cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(agent_id, "", Arc::new(pipeline)).await.unwrap();
         // 合批间隔缩到 1 秒，让 flush 尽快发生
         cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
@@ -735,11 +735,11 @@ mod tests {
         let k2 = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event("", "e1")) };
         // agent 级 pipeline：显式指定组件，使两个 key 都能注册
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![ArcStr::from(PP_IN_BATCH)]);
-        pipeline.system_prompter = Some(vec![ArcStr::from(PP_SYS_DEFAULT)]);
-        pipeline.message_sender = Some(ArcStr::from(PP_MSG_RAW));
-        pipeline.tool_caller = Some(ArcStr::from(PP_TOOL_STATION));
-        pipeline.output_processor = Some(ArcStr::from(PP_OUT_CHANNEL));
+        pipeline.input_processor = Some(vec![PP_IN_BATCH.clone()]);
+        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.clone()]);
+        pipeline.message_sender = Some(PP_MSG_RAW.clone());
+        pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
+        pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
         ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
             agent_id, "", Arc::new(pipeline)).await.unwrap();
 
@@ -805,7 +805,7 @@ mod tests {
 
         for (preset, is_event) in [(PP_PRESET_ROLE, false), (PP_PRESET_EVENT, true)] {
             let mut pipeline = PipelineConfig::default();
-            pipeline.preset = Some(ArcStr::from(preset));
+            pipeline.preset = Some(preset.clone());
             ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
                 agent_id, "", Arc::new(pipeline)).await.unwrap();
 

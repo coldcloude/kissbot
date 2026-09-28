@@ -61,7 +61,7 @@ impl McpClient {
     /// `server/discover`：查询服务端支持的协议版本、能力与身份
     pub async fn discover(&self) -> Result<DiscoverResult, McpClientError> {
         let params = serde_json::json!({ "_meta": RequestMeta::new(self.client_info.clone()) });
-        self.send(METHOD_DISCOVER, None, params).await
+        self.send(METHOD_DISCOVER.as_str(), None, params).await
     }
 
     /// `tools/list`：按可选组白名单查询工具
@@ -72,7 +72,7 @@ impl McpClient {
         let meta = RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors);
         let params = ToolsListParams { cursor: None, meta };
         let params = serde_json::to_value(params)?;
-        self.send(METHOD_TOOLS_LIST, None, params).await
+        self.send(METHOD_TOOLS_LIST.as_str(), None, params).await
     }
 
     /// `tools/call`：调用远端工具
@@ -88,7 +88,7 @@ impl McpClient {
             meta: RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
         };
         let params = serde_json::to_value(params)?;
-        self.send(METHOD_TOOLS_CALL, Some(name), params).await
+        self.send(METHOD_TOOLS_CALL.as_str(), Some(name), params).await
     }
 
     /// 发送 JSON-RPC 请求并解析结果；远程错误映射为 `Remote`
@@ -104,7 +104,7 @@ impl McpClient {
             .client
             .post(self.endpoint.as_str())
             .header("Accept", "application/json, text/event-stream")
-            .header("MCP-Protocol-Version", PROTOCOL_VERSION)
+            .header("MCP-Protocol-Version", PROTOCOL_VERSION.as_str())
             .header("Mcp-Method", method);
         if let Some(name) = name {
             builder = builder.header("Mcp-Name", name);

@@ -291,7 +291,7 @@ impl Station {
 }
 
 /// `server/discover` 返回的自然语言说明
-const STATION_INSTRUCTIONS: &str = "kissbot Station：提供按 group 分组的工具，并可级联下级 Station。";
+const STATION_INSTRUCTIONS: ArcStr = arcstr::literal!("kissbot Station：提供按 group 分组的工具，并可级联下级 Station。");
 
 #[async_trait]
 impl McpHandler for Station {
@@ -299,7 +299,7 @@ impl McpHandler for Station {
         // 默认声明 kissbot 级联扩展能力（理解祖先链），供对端判定
         DiscoverResult::new(
             Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION")),
-            Some(ArcStr::from(STATION_INSTRUCTIONS)),
+            Some(STATION_INSTRUCTIONS.clone()),
         )
     }
 

@@ -14,10 +14,10 @@ use kissbot_api::{CaseBrief, CaseMode, CaseNode};
 use crate::records::RecordEntry;
 
 /// 角色模式 case 名前缀
-pub const ROLE_CASE_PREFIX: &str = "role-";
+pub const ROLE_CASE_PREFIX: ArcStr = arcstr::literal!("role-");
 
 /// 事件模式 case 名前缀
-pub const EVENT_CASE_PREFIX: &str = "event-";
+pub const EVENT_CASE_PREFIX: ArcStr = arcstr::literal!("event-");
 
 #[derive(Debug, Clone, Default)]
 pub struct CaseTree {
@@ -216,7 +216,7 @@ mod tests {
     use crate::records::{RecordBody, RecordEntry};
     use kissbot_api::ChannelRecord;
 
-    const NOW: &str = "2026-09-22 13:49:00";
+    const NOW: ArcStr = arcstr::literal!("2026-09-22 13:49:00");
 
     fn entry(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
@@ -243,9 +243,9 @@ mod tests {
     #[test]
     fn create_node_links_parent_and_lists_levels() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("role-3", Some("role-1"), CaseMode::Role, NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
+        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW.as_str());
+        tree.create_node("role-3", Some("role-1"), CaseMode::Role, NOW.as_str());
 
         assert_eq!(tree.top_level_ids(), vec![ArcStr::from("role-1")]);
         assert_eq!(tree.children_ids("role-1"), vec![ArcStr::from("role-2"), ArcStr::from("role-3")]);
@@ -259,9 +259,9 @@ mod tests {
     #[test]
     fn role_candidates_exclude_event_cases() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("event-e12", None, CaseMode::Event, NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
+        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW.as_str());
+        tree.create_node("event-e12", None, CaseMode::Event, NOW.as_str());
 
         assert_eq!(tree.top_level_ids(), vec![ArcStr::from("event-e12"), ArcStr::from("role-1")], "查询可见全部顶层 case（按 created_at、case_name 升序）");
         assert_eq!(tree.role_top_level_ids(), vec![ArcStr::from("role-1")], "角色模式判定只看角色子树");
@@ -272,9 +272,9 @@ mod tests {
     #[test]
     fn remove_nodes_unlinks_parents() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW);
-        tree.create_node("event-e12", None, CaseMode::Event, NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
+        tree.create_node("role-2", Some("role-1"), CaseMode::Role, NOW.as_str());
+        tree.create_node("event-e12", None, CaseMode::Event, NOW.as_str());
 
         tree.remove_nodes(&tree.ids_of_mode(CaseMode::Event));
         assert!(!tree.contains("event-e12"));
@@ -287,16 +287,16 @@ mod tests {
     #[test]
     fn apply_records_tracks_count_and_time_bounds() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.apply_records("role-1", &[entry("2026-09-22 10:00:00", 1), entry("2026-09-22 10:05:00", 2)], NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
+        tree.apply_records("role-1", &[entry("2026-09-22 10:00:00", 1), entry("2026-09-22 10:05:00", 2)], NOW.as_str());
         let node = tree.get("role-1").unwrap();
         assert_eq!(node.record_count, 2);
         assert_eq!(node.start_time.as_str(), "2026-09-22 10:00:00");
         assert_eq!(node.end_time.as_str(), "2026-09-22 10:05:00");
 
         // 追加更早与更晚的记录：边界随内容扩展
-        tree.apply_records("role-1", &[entry("2026-09-21 09:00:00", 3)], NOW);
-        tree.apply_records("role-1", &[entry("2026-09-23 09:00:00", 4)], NOW);
+        tree.apply_records("role-1", &[entry("2026-09-21 09:00:00", 3)], NOW.as_str());
+        tree.apply_records("role-1", &[entry("2026-09-23 09:00:00", 4)], NOW.as_str());
         let node = tree.get("role-1").unwrap();
         assert_eq!(node.record_count, 4);
         assert_eq!(node.start_time.as_str(), "2026-09-21 09:00:00");
@@ -309,19 +309,19 @@ mod tests {
         assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat");
 
         // 重名（含模型本批内给出同名）时追加 -2、-3…，名称仍然合法
-        tree.create_node("role-weather-chat", None, CaseMode::Role, NOW);
+        tree.create_node("role-weather-chat", None, CaseMode::Role, NOW.as_str());
         assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-2");
-        tree.create_node("role-weather-chat-2", None, CaseMode::Role, NOW);
+        tree.create_node("role-weather-chat-2", None, CaseMode::Role, NOW.as_str());
         assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-3");
         // 事件 case 名带 event- 前缀，与角色名天然不会重名
-        tree.create_node("event-e1", None, CaseMode::Event, NOW);
+        tree.create_node("event-e1", None, CaseMode::Event, NOW.as_str());
         assert_eq!(tree.unique_role_case_name("e1"), "role-e1");
     }
 
     #[test]
     fn from_nodes_keeps_all() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
         let nodes = tree.nodes().into_iter().cloned().collect::<Vec<_>>();
         let restored = CaseTree::from_nodes(nodes);
         assert_eq!(restored.len(), 1);
@@ -331,10 +331,10 @@ mod tests {
     #[test]
     fn briefs_skip_missing_and_keep_order() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, CaseMode::Role, NOW);
-        tree.set_summary("role-1", "摘要一", NOW);
-        tree.create_node("role-2", None, CaseMode::Role, NOW);
-        tree.set_summary("role-2", "摘要二", NOW);
+        tree.create_node("role-1", None, CaseMode::Role, NOW.as_str());
+        tree.set_summary("role-1", "摘要一", NOW.as_str());
+        tree.create_node("role-2", None, CaseMode::Role, NOW.as_str());
+        tree.set_summary("role-2", "摘要二", NOW.as_str());
         let briefs = tree.briefs(&[ArcStr::from("role-2"), ArcStr::from("missing"), ArcStr::from("role-1")]);
         assert_eq!(briefs.len(), 2);
         assert_eq!(briefs[0].case_name.as_str(), "role-2");

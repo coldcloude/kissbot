@@ -73,7 +73,7 @@ impl Group {
 /// 配置显式声明对应 group 名时才注册；未声明则不注册（内置工具也须显式配置 group 才可用）
 pub fn native_group(name: &str) -> Option<Group> {
     match name {
-        BUILTIN_GROUP_FILESYSTEM => Some(super::filesystem::group()),
+        n if n == BUILTIN_GROUP_FILESYSTEM => Some(super::filesystem::group()),
         _ => None,
     }
 }

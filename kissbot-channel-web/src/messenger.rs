@@ -45,11 +45,11 @@ impl SseDispatcher {
         senders.retain(|_, tx| tx.try_send(ArcStr::from(data)).is_ok());
     }
 }
-const ADMIN_USER_GROUP_PREFIX: &str = "a_";
-const WEB_MESSENGER_NAME: &str = "Web Chat";
+const ADMIN_USER_GROUP_PREFIX: ArcStr = arcstr::literal!("a_");
+const WEB_MESSENGER_NAME: ArcStr = arcstr::literal!("Web Chat");
 pub static ADMIN_USER_ID: LazyLock<ArcStr> = LazyLock::new(|| ArcStr::from("admin"));
-const USER_ID_PREFIX: &str = "u";
-const GROUP_ID_PREFIX: &str = "g";
+const USER_ID_PREFIX: ArcStr = arcstr::literal!("u");
+const GROUP_ID_PREFIX: ArcStr = arcstr::literal!("g");
 // ========== JSON 配置 ==========
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebMessengerRepo {
@@ -164,7 +164,7 @@ impl WebMessenger {
     /// group_id 是 admin-user 单聊组时返回对应的 user_id，否则 None。
     /// 验证前缀匹配、user 存在于 config。
     fn parse_admin_user_group_ref(cfg: &WebMessengerRepo, group_id: &str) -> Option<ArcStr> {
-        let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX)?;
+        let uid = group_id.strip_prefix(ADMIN_USER_GROUP_PREFIX.as_str())?;
         if cfg.users.contains_key(uid) {
             Some(ArcStr::from(uid))
         } else {
@@ -174,7 +174,7 @@ impl WebMessenger {
 
     /// 按 user_id/group_id 解析 (messenger_name, user_name, group_name)
     fn resolve_names(&self, cfg: &WebMessengerRepo, user_id: &str, group_id: &str) -> (ArcStr, ArcStr, ArcStr) {
-        let messenger_name = ArcStr::from(WEB_MESSENGER_NAME);
+        let messenger_name = WEB_MESSENGER_NAME.clone();
         let user_name = if user_id == ADMIN_USER_ID.as_str() {
             // admin（agent 绑定身份）的展示名取 repo.admin_name
             cfg.admin_name.clone()
@@ -183,7 +183,7 @@ impl WebMessenger {
                 .map(|s| s.load().user_name.clone())
                 .unwrap_or_else(|| ArcStr::new())
         };
-        let group_name = if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        let group_name = if group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             // admin-user 单聊组：group_name = 对端 user 的 user_name
             match Self::parse_admin_user_group_ref(cfg, group_id) {
                 Some(uid) => cfg.users.get(uid.as_str())
@@ -260,7 +260,7 @@ impl WebMessenger {
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id: self.messenger_id.clone(),
                     user_id: ArcStr::from(user_id),
-                    messenger_name: ArcStr::from(WEB_MESSENGER_NAME),
+                    messenger_name: WEB_MESSENGER_NAME.clone(),
                     user_name,
                 }),
                 time: ArcStr::from(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
@@ -292,7 +292,7 @@ impl WebMessenger {
         Ok(group_id)
     }
     pub async fn rename_group(&self, group_id: &str, new_name: &str) -> Result<()> {
-        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             return Err(Error::GroupNotFound(ArcStr::from(group_id)));
         }
         self.write_config(|repo| {
@@ -305,7 +305,7 @@ impl WebMessenger {
         }).await
     }
     pub async fn manage_members(&self, group_id: &str, add_ids: &[ArcStr], remove_ids: &[ArcStr]) -> Result<()> {
-        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             return Err(Error::GroupNotFound(ArcStr::from(group_id)));
         }
         self.write_config(|repo| {
@@ -334,7 +334,7 @@ impl WebMessenger {
         Ok(())
     }
     pub async fn delete_group(&self, group_id: &str) -> Result<()> {
-        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        if group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             return Err(Error::GroupNotFound(ArcStr::from(group_id)));
         }
         let members = self.write_config(|repo| {
@@ -368,7 +368,7 @@ impl WebMessenger {
         }
         let cfg = self.config.read().await;
         // 判断用户和群组信息是否正确
-        if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+        if outgoing.group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             // 处理 admin-user 单聊组
             if outgoing.user_id.as_str() == ADMIN_USER_ID.as_str() {
                 if Self::parse_admin_user_group_ref(&cfg, outgoing.group_id.as_str()).is_none() {
@@ -441,7 +441,7 @@ impl WebMessenger {
         let mut messages = Vec::new();
         let cfg = self.config.read().await;
         for admin_msg in msgs.iter() {
-            let members: Vec<ArcStr> = if admin_msg.group_id.starts_with(ADMIN_USER_GROUP_PREFIX) {
+            let members: Vec<ArcStr> = if admin_msg.group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
                 if admin_msg.user_id.as_str() == ADMIN_USER_ID.as_str() {
                     // admin 对 admin-user 单聊组发消息：用 parse 验证用户存在并提取 uid
                     match Self::parse_admin_user_group_ref(&cfg, admin_msg.group_id.as_str()) {

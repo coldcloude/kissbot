@@ -7,7 +7,7 @@ use kissbot_llm::Session;
 
 use crate::{nexus::Nexus, pipeline::{AgentSystemPrompter, AgentTrigger}, types::SessionKey};
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "你是一个通用智能体。使用可用工具完成用户任务";
+pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用可用工具完成用户任务");
 
 pub struct DefaultSystemPrompter {
     session: Arc<Session>,
@@ -18,7 +18,7 @@ impl DefaultSystemPrompter {
     pub fn new(session: Arc<Session>) -> Self {
         Self {
             session,
-            prompt: ArcStr::from(DEFAULT_SYSTEM_PROMPT),
+            prompt: DEFAULT_SYSTEM_PROMPT.clone(),
         }
     }
 
@@ -62,7 +62,7 @@ impl AgentSystemPrompter for MemoryEgoSystemPrompter {
         let prompt = if let Some(prompt) = nexus.system_prompt_for_agent(self.session_key.agent_id.as_str(), self.session_key.role_event.role_name.as_str()).await {
             prompt
         } else {
-            ArcStr::from(DEFAULT_SYSTEM_PROMPT)
+            DEFAULT_SYSTEM_PROMPT.clone()
         };
         self.session.set_system_message(prompt).await;
     }

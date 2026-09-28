@@ -10,17 +10,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 协议版本（每请求必填）
-pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+pub const META_PROTOCOL_VERSION: ArcStr = arcstr::literal!("io.modelcontextprotocol/protocolVersion");
 /// 客户端身份
-pub const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
+pub const META_CLIENT_INFO: ArcStr = arcstr::literal!("io.modelcontextprotocol/clientInfo");
 /// 客户端能力（每请求必填）
-pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+pub const META_CLIENT_CAPABILITIES: ArcStr = arcstr::literal!("io.modelcontextprotocol/clientCapabilities");
 /// 服务端身份
-pub const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+pub const META_SERVER_INFO: ArcStr = arcstr::literal!("io.modelcontextprotocol/serverInfo");
 /// kissbot 扩展：工具自身所属的组名（`Tool._meta`）
-pub const META_GROUP: &str = "kissbot/group";
+pub const META_GROUP: ArcStr = arcstr::literal!("kissbot/group");
 /// kissbot 扩展：station 级联祖先链（根 → 当前父节点）
-pub const META_ANCESTORS: &str = "kissbot/ancestors";
+pub const META_ANCESTORS: ArcStr = arcstr::literal!("kissbot/ancestors");
 
 /// 实现身份（客户端/服务端自报，协议不校验）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +69,7 @@ impl RequestMeta {
     /// 构造客户端请求 `_meta`（协议版本固定为本实现版本，能力为空对象）
     pub fn new(client_info: Implementation) -> Self {
         Self {
-            protocol_version: ArcStr::from(super::PROTOCOL_VERSION),
+            protocol_version: super::PROTOCOL_VERSION.clone(),
             client_info: Some(client_info),
             client_capabilities: serde_json::json!({}),
             ancestors: None,
@@ -155,8 +155,8 @@ mod tests {
     fn request_meta_omits_empty_ancestors() {
         let meta = RequestMeta::new(Implementation::new("c", "1"));
         let v = serde_json::to_value(&meta).unwrap();
-        assert!(v.get(META_ANCESTORS).is_none(), "空祖先链不序列化");
-        assert_eq!(v[META_PROTOCOL_VERSION], "2026-07-28");
+        assert!(v.get(META_ANCESTORS.as_str()).is_none(), "空祖先链不序列化");
+        assert_eq!(v[META_PROTOCOL_VERSION.as_str()], "2026-07-28");
     }
 
     #[test]
@@ -167,7 +167,7 @@ mod tests {
         let filled = ResponseMeta {
             server_info: Some(Implementation::new("s", "1")),
         };
-        assert_eq!(serde_json::to_value(&filled).unwrap()[META_SERVER_INFO]["name"], "s");
+        assert_eq!(serde_json::to_value(&filled).unwrap()[META_SERVER_INFO.as_str()]["name"], "s");
     }
 
     #[test]
@@ -177,7 +177,7 @@ mod tests {
             server_info: Some(Implementation::new("kissbot-station", "0.1.0")),
         };
         let v = serde_json::to_value(&meta).unwrap();
-        assert_eq!(v[META_SERVER_INFO]["name"], "kissbot-station");
-        assert!(v.get(META_GROUP).is_none(), "响应 meta 不带 group");
+        assert_eq!(v[META_SERVER_INFO.as_str()]["name"], "kissbot-station");
+        assert!(v.get(META_GROUP.as_str()).is_none(), "响应 meta 不带 group");
     }
 }
