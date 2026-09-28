@@ -62,9 +62,16 @@ mod tests {
     use crate::archive::Archiver;
     use crate::model::{LevelDecision, MessageGroup};
     use crate::records::{RecordBody, RecordEntry};
-    use crate::scope::{AgentRole, RoleEvent, ScopeHandle, ScopeManager};
+    use crate::scope::{AgentRole, ScopeHandle, ScopeManager, agent_role};
     use crate::stub::StubModel;
-    use kissbot_api::{ChannelRecord, Content, CaseMode, RecordKind};
+    use kissbot_api::{CaseMode, ChannelRecord, Content, RecordKind, RoleEvent};
+
+    fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
+        RoleEvent {
+            role_name: Arc::new(role_name.to_string()),
+            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+        }
+    }
 
     fn record_entry(time: &str, sn: u64, text: &str) -> RecordEntry {
         RecordEntry {
@@ -128,8 +135,8 @@ mod tests {
     }
 
     /// 打开某记忆后缀所属的角色句柄（角色树按角色共享）
-    async fn open(manager: &ScopeManager, suffix: &str) -> Arc<ScopeHandle> {
-        manager.open(RoleEvent::parse(suffix).agent_role("0")).await.unwrap()
+    async fn open(manager: &ScopeManager, role_event: &RoleEvent) -> Arc<ScopeHandle> {
+        manager.open(agent_role("0", role_event)).await.unwrap()
     }
 
     /// 归档一批记录（不带新消息 = 原来的归档）
@@ -174,8 +181,8 @@ mod tests {
     async fn empty_messages_returns_nothing_and_empty_tree_creates_named_case() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
 
         // 没有消息：不建 case
@@ -206,8 +213,8 @@ mod tests {
     async fn current_case_group_hits_current_case() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
 
@@ -225,8 +232,8 @@ mod tests {
     async fn new_topic_group_creates_empty_case() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
 
@@ -249,8 +256,8 @@ mod tests {
     async fn multiple_messages_map_to_multiple_cases() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "case 一")]).await;
         // 第二批未标记当前 case → 顶层归并新建 case-2
@@ -287,8 +294,8 @@ mod tests {
     async fn level_descent_picks_child_or_creates_child() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "父 case 内容")]).await;
         // 构造 case（父）/ role-2（子）结构
@@ -320,8 +327,8 @@ mod tests {
     async fn messages_on_different_channels_use_their_own_current_case() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         let other = ChannelKey::new("web", "self2", "g2");
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")]).await;
@@ -350,8 +357,8 @@ mod tests {
     async fn locate_does_not_read_records() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev").await;
-        let role = RoleEvent::parse("dev");
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
         // 删掉原文副本目录：定位不读原文，仍应命中
@@ -366,8 +373,8 @@ mod tests {
     async fn case_mode_returns_single_case_without_model() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev-e1").await;
-        let role = RoleEvent::parse("dev-e1");
+        let handle = open(&manager, &role_event("dev", Some("e1"))).await;
+        let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")]).await;
 
@@ -389,8 +396,8 @@ mod tests {
     async fn case_mode_without_event_creates_scope_case() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let handle = open(&manager, "dev-e1").await;
-        let role = RoleEvent::parse("dev-e1");
+        let handle = open(&manager, &role_event("dev", Some("e1"))).await;
+        let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
 
         let response = locate(&handle, &model, &role, &[message("任意消息")]).await;
@@ -407,7 +414,7 @@ mod tests {
         assert_eq!(model.summary_inputs().len(), 1, "纯定位由 summarize 生成摘要");
         assert!(!handle.case_dir("event-e1").exists(), "没有记录就不落原文副本");
         // dev 与 dev-e1 是同一个角色：同一个句柄、同一棵 case 树
-        let shared = open(&manager, "dev").await;
+        let shared = open(&manager, &role_event("dev", None)).await;
         assert!(Arc::ptr_eq(&shared, &handle), "角色模式与事件模式共用同一个句柄");
         assert_eq!(shared.id, AgentRole::new("0", "dev"), "记忆后缀 dev-e1 的角色是 dev");
         assert!(shared.state.lock().await.tree.contains("event-e1"), "case 在角色共享的 case 树上");

@@ -192,8 +192,7 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-
-    use crate::types::Mode;
+    use kissbot_api::RoleEvent;
 
     fn ev(name: &str, text: &str) -> Arc<IncomingMessageEvent> {
         Arc::new(IncomingMessageEvent {
@@ -213,7 +212,7 @@ mod tests {
     }
 
     fn test_key() -> Arc<SessionKey> {
-        Arc::new(SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role })
+        Arc::new(SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::new("r1")) })
     }
 
     /// 测试 producer/consumer 对（未 spawn；与 BatchAgentInputProcessor::new 的依赖序构造同构：

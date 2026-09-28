@@ -208,14 +208,6 @@ impl CaseTree {
     }
 }
 
-/// 记忆后缀的拆分：`{角色名}-{caseid}`（以**第一个** `-` 分隔）。
-///
-/// 角色名不允许包含 `-`，因此只要出现 `-` 即为「含 event」；无 `-` 为纯角色。
-/// 角色名为空时后缀形如 `-e1`，拆分出空角色名。
-pub fn split_role_event(suffix: &str) -> Option<(&str, &str)> {
-    suffix.split_once('-')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,15 +338,5 @@ mod tests {
         assert_eq!(briefs[0].case_name.as_str(), "role-2");
         assert_eq!(briefs[0].summary.as_str(), "摘要二");
         assert_eq!(briefs[1].case_name.as_str(), "role-1");
-    }
-
-    #[test]
-    fn role_event_detection() {
-        // 以第一个 '-' 分隔：前半为角色名、后半为事件标识（角色名不允许含 '-'）
-        assert_eq!(split_role_event("dev-e1"), Some(("dev", "e1")));
-        assert_eq!(split_role_event("-e12"), Some(("", "e12")));
-        assert_eq!(split_role_event("dev"), None);
-        assert_eq!(split_role_event("my-role"), Some(("my", "role")));
-        assert_eq!(split_role_event("dev-e1-x"), Some(("dev", "e1-x")), "只按第一个 '-' 拆分");
     }
 }

@@ -435,7 +435,7 @@ impl ConfigManager {
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
-            let target = ChannelUser { messenger_id: messenger_id.into(), user_id: user_id.into() };
+            let target = ChannelUser { messenger_id: Arc::new(messenger_id.to_string()), user_id: Arc::new(user_id.to_string()) };
             Arc::make_mut(&mut ch_mut.admins).remove(&target);
             swap.store(ch);
             Ok(())
@@ -448,7 +448,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use kissbot_api::ArcSwapHashMap;
+    use kissbot_api::{ArcSwapHashMap, RoleEvent};
     use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, ModelConfig};
     use tempfile::tempdir;
 
@@ -559,7 +559,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         // channel 不存在：add_admin / remove_admin 都应返回 ConfigNotFound 而非静默成功
-        let admin = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
+        let admin = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
         let err = manager.add_admin("nope", &admin).await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
         let err = manager.remove_admin("nope", "m1", "u1").await.unwrap_err();
@@ -571,7 +571,7 @@ mod tests {
             channel_id: Arc::new(id.into()),
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
-            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }])),
+            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }])),
             agent_id: Arc::new("0".into()),
             role_name: Arc::new("".into()),
             enabled: true,
@@ -585,8 +585,8 @@ mod tests {
             ws_url: Arc::new("ws://127.0.0.1:8201".into()),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::from([
-                ChannelUser { messenger_id: "web".into(), user_id: "u1".into() },
-                ChannelUser { messenger_id: "web".into(), user_id: "u2".into() },
+                ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
+                ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u2".into()) },
             ])),
             agent_id: Arc::new("a1".into()),
             role_name: Arc::new("r1".into()),
@@ -613,7 +613,7 @@ mod tests {
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(*back.channel_id, "web-main");
-        assert!(back.bind_users.contains(&ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }), "bind_users 应包含 web/u1");
+        assert!(back.bind_users.contains(&ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }), "bind_users 应包含 web/u1");
     }
 
     #[test]
@@ -657,7 +657,7 @@ mod tests {
             c.agent_id = Arc::new("a1".into());
             c.role_name = Arc::new("r1".into());
             // HashSet 追加（Arc::make_mut 写时复制）
-            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: "web".into(), user_id: "u2".into() });
+            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u2".into()) });
         }).await.unwrap();
 
         // 内存可见
@@ -677,8 +677,8 @@ mod tests {
 
     #[test]
     fn channel_user_hash_eq_by_value() {
-        let a = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
-        let b = ChannelUser { messenger_id: "m1".into(), user_id: "u1".into() };
+        let a = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let b = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 ChannelUser 应命中 HashSet");
@@ -1027,7 +1027,7 @@ mod tests {
     // ---- (agent, role) 配置继承与 session 配置 ----
 
     fn session_key(agent_id: &str, role_name: &str) -> SessionKey {
-        SessionKey { agent_id: agent_id.into(), role_name: role_name.into(), mode: Mode::Role }
+        SessionKey { agent_id: Arc::new(agent_id.into()), role_event: Arc::new(RoleEvent::new(role_name)) }
     }
 
     /// LLM 配置助手：provider/model 已配，其余字段按需覆盖
@@ -1242,7 +1242,7 @@ mod tests {
         let sessions = saved["sessions"].as_array().expect("sessions 应为数组对");
         assert_eq!(sessions.len(), 1, "一条 session 配置一个数组对");
         assert_eq!(sessions[0][0]["agent_id"], "a1", "数组对首项为 SessionKey");
-        assert_eq!(sessions[0][0]["role_name"], "r1");
+        assert_eq!(sessions[0][0]["role_event"]["role_name"], "r1");
         assert_eq!(sessions[0][1]["llm"]["provider"], "openai", "数组对次项为 session 配置");
         assert_eq!(sessions[0][1]["llm"]["model"], "gpt-4o");
     }
@@ -1254,7 +1254,7 @@ mod tests {
         let manager = test_manager(&dir);
         let out = Arc::new(OutChannel {
             channel_id: Arc::new("web-main".into()),
-            user: Arc::new(ChannelUser { messenger_id: "web".into(), user_id: "u1".into() }),
+            user: Arc::new(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }),
             group_id: Arc::new("g1".into()),
         });
         // role 级设置：role out1 命中，同 agent 的其他 role 不受影响

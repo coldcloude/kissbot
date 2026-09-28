@@ -7,3 +7,4 @@ pub mod index;
 pub use error::Error;
 pub use config::Config;
 pub use directory::DirectoryManager;
+pub use data::role_event_suffix;

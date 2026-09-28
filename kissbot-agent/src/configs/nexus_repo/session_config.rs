@@ -212,7 +212,7 @@ macro_rules! impl_agent_role_session_config_map_field {
         impl AgentRoleSessionConfigMapField<$ct, $et> for SessionConfigMap {
             fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> $et {
                 let merge_config = if let Some(agent_role_config) = agents.get(session_key.agent_id.as_str()) {
-                    agent_role_config.build::<$ct>(session_key.role_name.as_str())
+                    agent_role_config.build::<$ct>(session_key.role_event.role_name.as_str())
                 } else {
                     <$ct>::default()
                 };

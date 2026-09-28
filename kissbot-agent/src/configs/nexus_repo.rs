@@ -25,7 +25,7 @@ pub struct NexusRepo {
     pub providers: Arc<ArcSwapHashMap<String, ProviderModelConfig>>, // key = provider 名
     pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
     pub agents: Arc<HashMap<String, Arc<AgentRoleConfig>>>,
-    /// session 运行配置（key = SessionKey，三元组结构体）：JSON 的 map 键必须是字符串，
+    /// session 运行配置（key = SessionKey，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
     /// 故经 sessions_serde 以 [[key, value], ...] 数组对承载（不是 JSON 对象）
     #[serde(with = "sessions_serde")]
     pub sessions: Arc<HashMap<SessionKey, Arc<SessionConfigMap>>>,

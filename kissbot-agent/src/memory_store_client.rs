@@ -8,7 +8,7 @@ use kissbot_api::memory::{
     ChannelRecord, ChannelRequest, ChannelRequests, QueryRequest, RecentQuery, RecordKey,
     ThinkRequest, ThinkRequests, ToolCallRequest, ToolCallRequests, ToolResultRequest, ToolResultRequests,
 };
-use kissbot_api::ApiResponse;
+use kissbot_api::{ApiResponse, RoleEvent};
 use kissbot_security::HEADER_API_KEY;
 use reqwest::Client;
 use serde::Serialize;
@@ -202,15 +202,15 @@ impl MemoryStoreClient {
         self.tool_result_appender.append(TOOL_RESULT_KEY.to_string(), vec![record]).await;
     }
 
-    /// role 模式记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
+    /// 记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
     /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
     /// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序返回
     /// （HTTP 经共享 config.send_store_query 发送）
-    /// 参数：memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
+    /// 参数：role_event 角色 + 事件模式、memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
     pub async fn read_recent_for_context(
         &self,
         agent_id: &str,
-        role_name: &str,
+        role_event: &RoleEvent,
         memory_time_secs: u64,
         memory_count: usize,
     ) -> Result<Vec<MessageContent>> {
@@ -223,12 +223,12 @@ impl MemoryStoreClient {
         let count = memory_count;
 
         let agent_id = Arc::new(agent_id.to_string());
-        let role_name = Arc::new(role_name.to_string());
+        let role_event = role_event.clone();
 
         // ===== Query1：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
         let body = RecentQuery {
             agent_id: agent_id.clone(),
-            role_name: role_name.clone(),
+            role_event: role_event.clone(),
             count: count as u32,
         };
         // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
@@ -260,7 +260,7 @@ impl MemoryStoreClient {
         // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 map 去重）
         let body = QueryRequest {
             agent_id,
-            role_name,
+            role_event,
             start_time: Arc::new(m),
             end_time: Arc::new(ln),
         };
@@ -363,7 +363,7 @@ mod tests {
     fn think_requests_force_is_one() {
         let reqs = think_requests(vec![ThinkRequest {
             agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("r1".into()),
+            role_event: RoleEvent::new("r1"),
             reasoning_content: Some(Arc::new("推理".into())),
             thinking: None,
             key: Arc::new("k1".into()),
@@ -377,7 +377,7 @@ mod tests {
     fn channel_requests_force_is_one() {
         let reqs = channel_requests(vec![ChannelRequest {
             agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("r1".into()),
+            role_event: RoleEvent::new("r1"),
             messenger_id: Arc::new("web".into()),
             user_id: Arc::new("u1".into()),
             self_user_id: Arc::new("u1".into()),
@@ -398,7 +398,7 @@ mod tests {
     fn tool_call_and_result_requests_force_is_one() {
         let call = tool_call_requests(vec![ToolCallRequest {
             agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("r1".into()),
+            role_event: RoleEvent::new("r1"),
             tool_name: Arc::new("get_date".into()),
             tool_params: Arc::new(serde_json::json!({})),
             key: Arc::new(String::new()),
@@ -409,7 +409,7 @@ mod tests {
 
         let result = tool_result_requests(vec![ToolResultRequest {
             agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("r1".into()),
+            role_event: RoleEvent::new("r1"),
             tool_result: Arc::new(serde_json::json!({ "ok": true })),
             tool_error: Arc::new(serde_json::Value::Null),
             key: Arc::new(String::new()),
@@ -522,8 +522,8 @@ mod tests {
                 json!([sn, rec])
             })
             .collect();
-        // group key 为 RecordKey（agent_id/role_name/date），与真实 store 返回一致
-        json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, entries]])
+        // group key 为 RecordKey（agent_id/role_event/date），与真实 store 返回一致
+        json!([[{ "agent_id": "agent", "role_event": { "role": "role" }, "date": "2026-08-05" }, entries]])
     }
 
     // 启动本地 mock memory-store：
@@ -543,7 +543,7 @@ mod tests {
                 v.sort_by(|a, b| a.1["time"].as_str().cmp(&b.1["time"].as_str()).then(a.0.cmp(&b.0)));
                 let tail: Vec<_> = v.into_iter().rev().take(req.count as usize).collect();
                 let entries: Vec<_> = tail.into_iter().rev().map(|(sn, rec)| json!([sn, rec])).collect();
-                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_name": req.role_name, "date": "2026-08-05" }, entries]], "error": null }))
+                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_event": req.role_event, "date": "2026-08-05" }, entries]], "error": null }))
             }))
             .route("/store/query/channel", post(move |Json(req): Json<QueryRequest>| async move {
                 let entries: Vec<_> = range_all.iter()
@@ -553,7 +553,7 @@ mod tests {
                     })
                     .map(|(sn, rec)| json!([sn, rec.clone()]))
                     .collect();
-                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_name": req.role_name, "date": "2026-08-05" }, entries]], "error": null }))
+                Json(json!({ "success": true, "data": [[{ "agent_id": req.agent_id, "role_event": req.role_event, "date": "2026-08-05" }, entries]], "error": null }))
             }));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -579,7 +579,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-7200 早于 ln=now-600 → M = cutoff
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
         assert_eq!(out[29].content, vec![Arc::new("m29".to_string())]);
@@ -594,7 +594,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // 窗口起点 now-60s 晚于全部记录 → M = ln
-        let out = client_at(&url).read_recent_for_context("agent", "role", 60, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 60, 10).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
         assert_eq!(out[0].content, vec![Arc::new("m5".to_string())], "起点 = 第 6 条（最后 10 条最旧一条）");
     }
@@ -603,7 +603,7 @@ mod tests {
     async fn read_recent_empty_and_less_than_n() {
         // 空数据 → 空结果
         let url = start_mock_store(channel_data(vec![])).await;
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert!(out.is_empty(), "空数据返回空");
 
         // 不足 N 条取全部
@@ -612,7 +612,7 @@ mod tests {
             record_json(&time_ago(120), "u", "b"),
         ];
         let url = start_mock_store(channel_data(records)).await;
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 2, "不足 N 条取全部");
 
         // count = 0：不参与并集，直接返回空（防 start_idx = len 空切片 panic）
@@ -620,7 +620,7 @@ mod tests {
             record_json(&time_ago(60), "u", "a"),
             record_json(&time_ago(120), "u", "b"),
         ])).await;
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 0).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 0).await.unwrap();
         assert!(out.is_empty(), "count=0 返回空");
     }
 
@@ -638,7 +638,7 @@ mod tests {
         for i in 7..15 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-250 介于 t0 与 t1 之间 → M = cutoff
-        let out = client_at(&url).read_recent_for_context("agent", "role", 250, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 250, 10).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
         assert!(out.iter().any(|m| m.content == vec![Arc::new("m4".to_string())]), "start_idx 之前的同时间记录被并集取回");
@@ -659,7 +659,7 @@ mod tests {
         for i in 5..13 { records.push(record_json(&t2, "u", &format!("m{}", i))); }
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-150 晚于 ln(t1=now-200) → M = ln → [ln, ln]
-        let out = client_at(&url).read_recent_for_context("agent", "role", 150, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 150, 10).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
         assert!(out.iter().any(|m| m.content == vec![Arc::new("m2".to_string())]), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
@@ -671,7 +671,7 @@ mod tests {
         let t = time_ago(60);
         // 非 Text 变体（ToolCall 等）content 为空 Vec；Multi 取其中 Text 子项拼接
         // 注意：旧测试数据用的 "Image" 不是真实 Content 变体，typed 反序列化会失败
-        let data = json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, [
+        let data = json!([[{ "agent_id": "agent", "role_event": { "role": "role" }, "date": "2026-08-05" }, [
             [0, channel_record_json(&t, "u1", json!({ "msg_type": "Text", "data": "你好" }), false, 0)],
             [1, channel_record_json(&t, "u2", json!({ "msg_type": "Multi", "data": [
                 { "msg_type": "Text", "data": "a" }, { "msg_type": "ToolCall", "data": "key1" }, { "msg_type": "Text", "data": "b" }
@@ -679,7 +679,7 @@ mod tests {
             [2, channel_record_json(&t, "u3", json!({ "msg_type": "ToolCall", "data": "key2" }), false, 2)],
         ]]]);
         let url = start_mock_store(data).await;
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "非文本记录保留在结果中（空 content）");
         assert_eq!(out[0].content, vec![Arc::new("你好".to_string())]);
         assert_eq!(out[1].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())], "Multi 内容取 Text 子项拼接");
@@ -693,7 +693,7 @@ mod tests {
         // store 响应含重复记录（同 time+sn）：解析阶段先去重（而非并集末尾），
         // 不足 N 条直接返回的路径也不泄漏重复；不同 sn 的同内容记录不被误合并
         let t = time_ago(60);
-        let data = json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, [
+        let data = json!([[{ "agent_id": "agent", "role_event": { "role": "role" }, "date": "2026-08-05" }, [
             [0, channel_record_json(&time_ago(120), "u", json!({ "msg_type": "Text", "data": "a" }), false, 0)],
             [1, channel_record_json(&t, "u", json!({ "msg_type": "Text", "data": "hello" }), false, 1)],
             [2, channel_record_json(&t, "u", json!({ "msg_type": "Text", "data": "hello" }), false, 1)],  // 同 time+sn 重复 → 去重
@@ -701,7 +701,7 @@ mod tests {
         ]]]);
         let url = start_mock_store(data).await;
         // 不足 N 条（4 → count=10）：直接返回 msgs，重复记录也不得泄漏
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
         assert_eq!(out.iter().filter(|m| m.content == vec![Arc::new("hello".to_string())]).count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
     }
@@ -716,7 +716,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
-        let out = client_at(&url).read_recent_for_context("agent", "role", 1800, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
         assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
@@ -739,7 +739,7 @@ mod tests {
             .collect();
         let url = start_mock_store(channel_data(records)).await;
         // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
-        let out = client_at(&url).read_recent_for_context("agent", "role", 1800, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "map.len()=10=count 不早退，Query2 补 m0,m1 → 12 条（含空 content 的 m5）");
         assert!(out.iter().any(|m| m.content.is_empty()), "非文本 m5 以空 content 保留在结果中");
         assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
@@ -750,7 +750,7 @@ mod tests {
     async fn read_recent_recursively_collects_nested_multi_text() {
         // 嵌套 Multi：递归收集全部 Text 段（任意深度），非文本子项跳过
         let t = time_ago(60);
-        let data = json!([[{ "agent_id": "agent", "role_name": "role", "date": "2026-08-05" }, [
+        let data = json!([[{ "agent_id": "agent", "role_event": { "role": "role" }, "date": "2026-08-05" }, [
             [0, channel_record_json(&t, "u1", json!({ "msg_type": "Multi", "data": [
                 { "msg_type": "Text", "data": "a" },
                 { "msg_type": "Multi", "data": [
@@ -762,7 +762,7 @@ mod tests {
             ] }), false, 0)],
         ]]]);
         let url = start_mock_store(data).await;
-        let out = client_at(&url).read_recent_for_context("agent", "role", 7200, 10).await.unwrap();
+        let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string()), Arc::new("c".to_string()), Arc::new("d".to_string())], "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
     }
@@ -779,7 +779,7 @@ mod tests {
             record_json_self(&time_ago(200), "u3", "m2", false),
         ];
         let url = start_mock_store(channel_data(records)).await;
-        let msgs = client_at(&url).read_recent_for_context("agent", "role", 7200, 100).await.unwrap();
+        let msgs = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 100).await.unwrap();
         let out = pack_memory_messages(&msgs);
         // 期望：[User("u1: m0\nu2: m1"), Assistant("a2"), User("u3: m2"), Assistant("")]
         assert_eq!(out.len(), 4);

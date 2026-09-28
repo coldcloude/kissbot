@@ -18,7 +18,6 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::error::Result;
-use crate::scope::RoleEvent;
 
 /// 一条原始记录（读取阶段带类型；落盘为记忆存储的记录格式）
 #[derive(Debug, Clone)]
@@ -174,7 +173,8 @@ pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Res
             continue;
         }
         let suffix = &dir_name[5..];
-        if RoleEvent::parse(suffix).role == role {
+        // 目录名形如 `{角色名}` 或 `{角色名}-{事件标识}`：已知角色名做前缀匹配，不还原 RoleEvent
+        if suffix == role || suffix.strip_prefix(role).is_some_and(|rest| rest.starts_with('-')) {
             suffixes.insert(suffix.to_string());
         }
     }

@@ -25,6 +25,12 @@ let b1Id: string;   // ego 里预建 agent b1 的 agent_id（无默认 out_chann
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+/** 记忆后缀（测试内部的目录/文件寻址用）→ 请求里的 RoleEvent 字段（按第一个 '-' 拆角色与事件） */
+function roleEventOf(suffix: string): { role_name: string; event_id?: string } {
+  const i = suffix.indexOf('-');
+  return i < 0 ? { role_name: suffix } : { role_name: suffix.slice(0, i), event_id: suffix.slice(i + 1) };
+}
+
 // 本地日期（agent think 记录 time 来自 Local::now()，归档按本地日期分区）
 function todayDate(): string {
   const d = new Date();
@@ -73,7 +79,7 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
-      agent_id: agentId, role_name: roleName,
+      agent_id: agentId, role_event: roleEventOf(roleName),
       start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
       // 查询日期用 UTC（backend channel 记录 time 来自 Utc::now()）
     },
@@ -83,7 +89,7 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const key = resp.data[0][0];
   // key 为公共 RecordKey；agent_id 为 ego 解析出的 UUID（非保留值 "0"）
   expect(key.agent_id).toBe(agentId);
-  expect(key.role_name).toBe(roleName);
+  expect(key.role_event).toEqual(roleEventOf(roleName));
 
   const recs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
   // 用户消息：u2 发送，is_self=0
@@ -124,7 +130,7 @@ async function queryChannelRecords(request: APIRequestContext, agentId: string, 
   const resp = await (await request.post(`${STORE_BASE}/store/query/channel`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
-      agent_id: agentId, role_name: roleName,
+      agent_id: agentId, role_event: roleEventOf(roleName),
       start_time: `${utcDate()} 00:00:00`, end_time: `${utcDate()} 23:59:59`,
     },
   })).json();
@@ -173,7 +179,7 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
   const resp = await (await request.post(`${STORE_BASE}/store/query/think`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
     data: {
-      agent_id: agentId, role_name: roleName,
+      agent_id: agentId, role_event: roleEventOf(roleName),
       start_time: `${todayDate()} 00:00:00`, end_time: `${todayDate()} 23:59:59`,
       // 查询日期用本地（agent think 记录 time 来自 Local::now()）
     },
@@ -183,7 +189,7 @@ async function assertThinkRecords(request: APIRequestContext, roleName: string):
   const key = resp.data[0][0];
   // ego 读取验证：agent_id 为 ego 解析出的 UUID（非保留值 "0"）
   expect(key.agent_id).toBe(agentId);
-  expect(key.role_name).toBe(roleName);
+  expect(key.role_event).toEqual(roleEventOf(roleName));
   const thinkRecs: any[] = resp.data[0][1].map((entry: [number, any]) => entry[1]);
   expect(thinkRecs.length).toBeGreaterThanOrEqual(1, 'think 记录应已写入（agent 侧 MemoryStoreClient 推送 /store/think）');
   const t = thinkRecs[thinkRecs.length - 1];

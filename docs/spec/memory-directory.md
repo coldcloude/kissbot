@@ -37,14 +37,14 @@
 
 case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 名就是 case 的唯一标识**：角色模式为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…），事件模式为 `event-{事件标识}`（顶层叶子）；前缀不同，两种模式天然不会重名。详见 [memory-struct-abstract.md](memory-struct-abstract.md)。
 
-## role-event 后缀命名
+## 记忆后缀（RoleEvent）
 
-`suffix` 由调用方（nexus、memory-struct）拼接，路径构造器不做解析。摘要记忆实现模块按**第一个** `-` 把它拆成「角色名 + 可选事件标识」（角色名不允许含 `-`，事件标识可以含 `-`，如 UUID）：
+记忆后缀是 memory 内部的文件/目录名段，由项目级基础类型 `RoleEvent { role_name, event_id }` 拼成。**拼接由 memory（kissbot-memory 的 `role_event_suffix`，只在构造文件名时拼接）负责**，对外通信一律传 `RoleEvent`，调用方不再自己拼接字符串（`suffix` 只出现在 memory 内部的路径构造）：
 
-- 角色记忆：`{role-name}`（不含 `-`），在 memory-store 里形如 `{year}-{role-name}`（role_name 为空时形如 `2026-`）
-- 事件记忆：`{role-name}-{event-id}`，在 memory-store 里形如 `{year}-{role-name}-{event-id}`（role_name 为空时形如 `2026--{event-id}`）
+- 角色记忆：`{role_name}`（`event_id` 缺省），在 memory-store 里形如 `{year}-{role_name}`（角色名为空时形如 `2026-`）
+- 事件记忆：`{role_name}-{event_id}`，在 memory-store 里形如 `{year}-{role_name}-{event_id}`（角色名为空时形如 `2026--{event_id}`）
 
-例：`dev-3f2a-c3d4` 的角色是 `dev`、事件标识是 `3f2a-c3d4`。
+磁盘上的历史目录名按**第一个** `-` 识别角色名与可选事件标识：角色名不允许含 `-`，事件标识可以含 `-`（如 UUID）。例：`dev-3f2a-c3d4` 的角色是 `dev`、事件标识是 `3f2a-c3d4`。
 
 ## 文件格式
 

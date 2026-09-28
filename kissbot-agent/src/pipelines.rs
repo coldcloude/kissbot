@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use kissbot_llm::{Message, Session, ToolConfig};
 
-use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Mode, Result, SessionKey}};
+use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Result, SessionKey}};
 
 pub const PP_IN_BATCH: &str = "batch_input_processor";
 pub const PP_IN_ABSTRACT: &str = "abstract_input_processor";
@@ -88,10 +88,7 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Se
     let mut output_processor_cfg: Option<&str> = None;
     if let Some(preset) = config.preset.as_ref() {
         let preset = if preset.as_str().is_empty() {
-            match session_key.mode {
-                Mode::Role => PP_PRESET_ROLE,
-                Mode::Event(_) => PP_PRESET_EVENT,
-            }
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
         } else {
             preset.as_str()
         };
@@ -147,10 +144,7 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
         let preset = if preset.as_str().is_empty() {
-            match session_key.mode {
-                Mode::Role => PP_PRESET_ROLE,
-                Mode::Event(_) => PP_PRESET_EVENT,
-            }
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
         } else {
             preset.as_str()
         };
@@ -180,10 +174,7 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
         let preset = if preset.as_str().is_empty() {
-            match session_key.mode {
-                Mode::Role => PP_PRESET_ROLE,
-                Mode::Event(_) => PP_PRESET_EVENT,
-            }
+            if session_key.role_event.event_id.is_some() { PP_PRESET_EVENT } else { PP_PRESET_ROLE }
         } else {
             preset.as_str()
         };

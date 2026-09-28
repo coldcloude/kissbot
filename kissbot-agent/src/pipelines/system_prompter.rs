@@ -58,7 +58,7 @@ impl AgentTrigger for MemoryEgoSystemPrompter {}
 impl AgentSystemPrompter for MemoryEgoSystemPrompter {
     async fn reset_system_prompt(&self) {
         let nexus = Nexus::get();
-        let prompt = if let Some(prompt) = nexus.system_prompt_for_agent(self.session_key.agent_id.as_str(), self.session_key.role_name.as_str()).await {
+        let prompt = if let Some(prompt) = nexus.system_prompt_for_agent(self.session_key.agent_id.as_str(), self.session_key.role_event.role_name.as_str()).await {
             prompt
         } else {
             DEFAULT_SYSTEM_PROMPT.to_string()

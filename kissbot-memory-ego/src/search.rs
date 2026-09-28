@@ -76,7 +76,7 @@ fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> 
     if let Some(agent_id) = agent_id {
         let mut filtered_results = Vec::new();
         for result in results.drain(0..results.len()) {
-            if result.as_role_key().agent_id == agent_id {
+            if result.as_role_key().agent_id.as_str() == agent_id {
                 filtered_results.push(result);
             }
         }
@@ -226,8 +226,8 @@ impl SearchManager {
 
     pub async fn force_sync_role(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: agent_id.to_string(),
-            role_name: role_name.to_string(),
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
         };
         //取得旧索引值
         let old_search_metadata_or_none = self.role_search_metadata.remove(&role_key);
@@ -304,8 +304,8 @@ impl SearchManager {
 
     pub async fn sync_role(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: agent_id.to_string(),
-            role_name: role_name.to_string(),
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
         };
         if self.role_dirty.remove(&role_key).is_some() {
             self.force_sync_role(agent_id, role_name).await;
@@ -338,8 +338,8 @@ impl SearchManager {
 
     pub fn mark_role_dirty(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: agent_id.to_string(),
-            role_name: role_name.to_string(),
+            agent_id: Arc::new(agent_id.to_string()),
+            role_name: Arc::new(role_name.to_string()),
         };
         self.role_dirty.insert(role_key);
     }
@@ -451,7 +451,7 @@ mod tests {
         manager.force_sync_role("role-fn-agt", "admin").await;
         let results = manager.search_role_by_description("超级", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
-        assert_eq!(results[0].role_name, "admin");
+        assert_eq!(results[0].role_name.as_str(), "admin");
     }
 
     #[tokio::test]

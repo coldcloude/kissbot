@@ -23,7 +23,7 @@ use crate::{
     message::{MessageContent, extract_content, pack_batch, pack_memory_messages},
     nexus::Nexus,
     pipeline::{AgentInputProcessor, AgentTrigger},
-    types::{Result, SessionKey, role_mode},
+    types::{Result, SessionKey},
 };
 
 /// tick 间隔（秒）：每秒定时检测是否有 channel 已超时
@@ -276,10 +276,10 @@ async fn build_context(
     events: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
     let agent_id = session_key.agent_id.as_str();
-    let role = role_mode(session_key.role_name.as_str(), &session_key.mode);
+    let role_event = session_key.role_event.as_ref();
     // 1. 定位本批消息涉及的 case
     let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
-    let located = client.locate(agent_id, &role, messages).await?;
+    let located = client.locate(agent_id, role_event, messages).await?;
     let cfg = ConfigManager::get()
         .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
         .await;
@@ -288,13 +288,13 @@ async fn build_context(
     let mut summaries = Vec::new();
     let mut tails: Vec<Vec<Arc<CaseRecord>>> = Vec::new();
     for case in located.cases.iter() {
-        let node = client.case_summary(agent_id, &role, case.case_name.as_str()).await?;
+        let node = client.case_summary(agent_id, role_event, case.case_name.as_str()).await?;
         if node.summary.as_str().is_empty() {
             continue;
         }
         summaries.push(node.summary.as_str().to_string());
         let tail = client
-            .case_records_tail(agent_id, &role, case.case_name.as_str(), cfg.memory_count as u64)
+            .case_records_tail(agent_id, role_event, case.case_name.as_str(), cfg.memory_count as u64)
             .await?;
         tails.push(tail.records);
     }
@@ -333,8 +333,9 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
+    use kissbot_api::RoleEvent;
 
-    use crate::types::{Error, Mode};
+    use crate::types::Error;
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定；此处「事件」指通道域的消息事件）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -545,7 +546,7 @@ mod tests {
 
     fn test_processor() -> AbstractAgentInputProcessor {
         AbstractAgentInputProcessor::assemble(
-            Arc::new(SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role }),
+            Arc::new(SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::new("r1")) }),
             Arc::new(Session::new("", "test-session")),
             Arc::new(AbstractClient::with_url(String::new(), String::new())),
         )

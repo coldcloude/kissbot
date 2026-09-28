@@ -8,7 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChannelKey, ChannelRecord, Content, RecordKind, ThinkRecord, ToolCallRecord, ToolResultRecord,
+    ChannelKey, ChannelRecord, Content, RecordKind, RoleEvent, ThinkRecord, ToolCallRecord, ToolResultRecord,
 };
 
 // ========== Case 原文副本 ==========
@@ -113,8 +113,8 @@ impl From<&CaseNode> for CaseBrief {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateRequest {
     pub agent_id: Arc<String>,
-    /// 记忆后缀（外部传入的 role）：无 `-` 为角色模式，含 `-` 的事件模式下形如 `dev-e1`
-    pub role: Arc<String>,
+    /// 记忆后缀：角色模式（无事件）或事件模式（角色 + 事件标识）
+    pub role_event: RoleEvent,
     /// 待定位消息（可多条、可跨通道）：每条自带通道三元组，按通道分别与各自的当前 case 比对
     pub messages: Vec<LocateMessage>,
 }
@@ -188,7 +188,7 @@ impl LocateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseListRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     /// 父 case id；缺省或 null 表示查询顶层 case
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<Arc<String>>,
@@ -202,7 +202,7 @@ pub struct CaseListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseSummaryRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     pub case_name: Arc<String>,
 }
 
@@ -236,14 +236,14 @@ impl CaseCursor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     pub case_name: Arc<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsAfterRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     pub case_name: Arc<String>,
     /// 只返回该位置之后的原文副本
     pub after: CaseCursor,
@@ -252,7 +252,7 @@ pub struct CaseRecordsAfterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsTailRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     pub case_name: Arc<String>,
     /// 只返回结尾若干条原文副本
     pub count: u64,
@@ -267,7 +267,7 @@ pub struct CaseRecordsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeGetRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,7 +357,7 @@ pub struct ChannelWatermark {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildRequest {
     pub agent_id: Arc<String>,
-    pub role: Arc<String>,
+    pub role_event: RoleEvent,
     /// false：手动触发一次归档（等同通知触发的判定）；true：清空本次记忆后缀所属模式的子树后按共享记忆文件重建
     #[serde(default)]
     pub rebuild: bool,
@@ -423,12 +423,12 @@ mod tests {
     fn test_locate_request_response_serde() {
         let req = LocateRequest {
             agent_id: Arc::new("0".into()),
-            role: Arc::new("dev".into()),
+            role_event: RoleEvent::new("dev"),
             messages: vec![message(), message()],
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["agent_id"], "0");
-        assert_eq!(v["role"], "dev");
+        assert_eq!(v["role_event"], json!({"role_name": "dev"}));
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
         assert_eq!(v["messages"][0]["messenger_id"], "web");
         assert_eq!(v["messages"][0]["self_user_id"], "self1");
@@ -479,11 +479,11 @@ mod tests {
         assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "think"}));
 
         let after: CaseRecordsAfterRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_name": "e1", "after": v})).unwrap();
+            serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "after": v})).unwrap();
         assert_eq!(after.after.record_type, RecordKind::Think);
 
         let tail: CaseRecordsTailRequest =
-            serde_json::from_value(json!({"agent_id": "0", "role": "dev", "case_name": "e1", "count": 5})).unwrap();
+            serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "count": 5})).unwrap();
         assert_eq!(tail.count, 5);
 
         // 摘要响应即节点本身（摘要文本 + 层级 + 记录数 + 起止时间）
@@ -540,17 +540,17 @@ mod tests {
 
     #[test]
     fn test_case_list_request_parent_optional() {
-        let top = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role": "dev"})).unwrap();
+        let top = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).unwrap();
         assert!(top.parent_id.is_none(), "缺省查询顶层 case");
-        let child = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role": "dev", "parent_id": "e12"})).unwrap();
+        let child = serde_json::from_value::<CaseListRequest>(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "parent_id": "e12"})).unwrap();
         assert_eq!(child.parent_id.unwrap().as_str(), "e12");
     }
 
     #[test]
     fn test_rebuild_request_default_flag() {
-        let req = serde_json::from_value::<RebuildRequest>(json!({"agent_id": "0", "role": "dev"})).unwrap();
+        let req = serde_json::from_value::<RebuildRequest>(json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).unwrap();
         assert!(!req.rebuild, "缺省为手动触发");
-        let req = serde_json::from_value::<RebuildRequest>(json!({"agent_id": "0", "role": "dev", "rebuild": true})).unwrap();
+        let req = serde_json::from_value::<RebuildRequest>(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "rebuild": true})).unwrap();
         assert!(req.rebuild);
     }
 

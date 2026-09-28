@@ -93,7 +93,7 @@ kissbot-agent 使用三份配置：
     }
   },
   "sessions": [
-    [ { "agent_id": "0", "role_name": "", "mode": "Role" },
+    [ { "agent_id": "0", "role_event": { "role_name": "" } },
       { "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": null,
                  "temperature": null, "thinking": null, "reasoning_effort": null } } ]
   ]
@@ -128,8 +128,8 @@ kissbot-agent 使用三份配置：
 
 | 项 | 约定 |
 |----|------|
-| 会话集合 | 按 (agent_id, role_name, mode) 去重持有；绑定信息变化时仅保留仍在绑定集合中的会话 |
-| session_id 编码 | 角色模式 `{agent_id}-{role_name}`；事件模式 `{agent_id}-{role_name}-{event}`（作为 kissbot-llm 的会话标识，决定缓存/归档文件名） |
+| 会话集合 | 按 (agent_id, role_event) 去重持有；绑定信息变化时仅保留仍在绑定集合中的会话 |
+| session_id 编码 | 角色模式 `{agent_id}-{role}`；事件模式 `{agent_id}-{role}-{event}`（作为 kissbot-llm 的会话标识，决定缓存/归档文件名） |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
 | 恢复 | 新建会话时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
 
@@ -200,8 +200,8 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 | 方法 | 路径 | 请求体 |
 |------|------|--------|
-| POST | `/store/query/channel/recent` | RecentQuery — 按 (agent_id, role_name) 取最近 count 条（跨日期文件） |
-| POST | `/store/query/channel` | QueryRequest — 按 (agent_id, role_name) + 时间范围查询（所有 channel 记录同文件，无需组合枚举） |
+| POST | `/store/query/channel/recent` | RecentQuery — 按 (agent_id, role_event) 取最近 count 条（跨日期文件） |
+| POST | `/store/query/channel` | QueryRequest — 按 (agent_id, role_event) + 时间范围查询（所有 channel 记录同文件，无需组合枚举） |
 
 `read_recent_for_context` 用两次查询并集：① recent 取最近 N 条，`T_N` = 最旧一条时间；② 时间范围 `[M, T_N]`（`M = min(时间窗起点, T_N)`）取该段全部；结果按 (time, sn) 去重后时间正序，打包为交替的 User/Assistant 消息（结尾为 User 时补空 Assistant）。读路径在 `base_url` 为空时报错（不静默跳过）。
 
@@ -211,11 +211,11 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/abstract/locate` | 定位一批上行消息涉及的 case（请求含 agent_id、role 与带通道三元组与 msg_id 的消息） |
+| POST | `/abstract/locate` | 定位一批上行消息涉及的 case（请求含 agent_id、role_event 与带通道三元组与 msg_id 的消息） |
 | POST | `/abstract/case/summary` | 取 case 摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
 | POST | `/abstract/case/records-tail` | 取 case 结尾 count 条原文副本（升序） |
 
-- `role` 与会话写记忆同一编码，即 **role-event 记忆后缀**：角色模式为角色名，事件模式为 `{role}-{event}`（`role_mode`）。摘要记忆按**第一个** `-` 拆分出角色名与事件标识（角色名不允许含 `-`，事件标识可以含 `-`）：后缀决定原始记录读取、水位、当前 case 指针与模型会话，前缀（角色名）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
+- 请求里的 `role_event` 与会话写记忆用同一个 `RoleEvent`（项目级基础类型）：`event_id` 缺省为角色模式，给出事件标识为事件模式。拼接记忆后缀是 memory 内部的事（只在构造文件名时进行），agent 不再自己拼字符串。后缀决定原始记录读取、水位、当前 case 指针与模型会话，角色名（`role_name`）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
 - 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
 - 触发时用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；还没有归档内容的 case 跳过、不进上下文：记忆条数为 0 的 case 正是本批消息刚定位建出的（它概括的就是本批消息，原文也会随本批进 pipeline），摘要为空的只可能是历史遗留数据。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（case 原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
 - `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
@@ -253,19 +253,11 @@ provider 实现（OpenAI 兼容 / Anthropic）的构造（`create_*_provider`）
 // 上下文消息、工具调用与模型响应结构（Message / ToolData / ToolCall / ModelResponse / ToolConfig）
 // 由 kissbot-llm 定义（与 MCP 工具的互转在 agent 侧），见 [kissbot-llm 技术规格](llm.md)
 
-// 会话标识：agent_id + role_name + mode 三元组（所有绑定 channel 的信息按此去重）
-struct SessionKey { agent_id: String, role_name: String, mode: Mode }
+// 会话标识：agent_id + RoleEvent（所有绑定 channel 的信息按此去重）
+// 内部字段用 Arc，结构体实现 PartialEq / Hash，因此 Arc<SessionKey> 可直接作 Set / Map 键
+struct SessionKey { agent_id: Arc<String>, role_event: Arc<RoleEvent> }
 
-// 模式状态
-enum Mode {
-    Role,           // 角色模式（默认）
-    Event(String),  // 事件模式，String = 事件 ID
-}
-
-// 记忆读写边界的 role 编码：事件模式拼 {role}-{event}，角色模式原样
-fn role_mode(role_name: &str, mode: &Mode) -> String;
-
-// 会话标识 → kissbot-llm 会话标识（缓存/归档文件名段）：{agent_id}-{role_name}[-{event}]
+// 会话标识 → kissbot-llm 会话标识（缓存/归档文件名段）：{agent_id}-{role}[-{event}]
 impl SessionKey { fn encode(&self) -> String; }
 ```
 

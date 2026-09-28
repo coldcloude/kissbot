@@ -48,12 +48,13 @@ impl DecisionModel for StubModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::{AgentRole, RoleEvent};
+    use crate::scope::AgentRole;
+    use kissbot_api::RoleEvent;
 
     #[tokio::test]
     async fn stub_is_deterministic() {
         let model = StubModel::new();
-        let scope = ModelScope::new(&AgentRole::new("0", "dev"), &RoleEvent::parse("dev"));
+        let scope = ModelScope::new(&AgentRole::new("0", "dev"), &RoleEvent::new("dev"));
         let current = vec![CaseBrief {
             case_name: std::sync::Arc::new("role-1".into()),
             summary: std::sync::Arc::new("当前 case".into()),

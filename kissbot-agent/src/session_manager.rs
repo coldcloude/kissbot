@@ -6,7 +6,7 @@ use kissbot_llm::Session;
 
 use crate::types::SessionKey;
 
-/// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_name, mode) 去重维护会话集合
+/// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_event) 去重维护会话集合
 /// （session_key 仅用于去重；agent_id 直接取 key 的 agent_id 字段）。
 /// 会话上下文本体（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担，
 /// 本结构只负责「按会话标识去重持有」与「无绑定会话清理」。
@@ -57,10 +57,10 @@ impl SessionManager {
 mod tests {
     use super::*;
 
-    use crate::types::Mode;
+    use kissbot_api::RoleEvent;
 
     fn key(agent: &str, role: &str) -> SessionKey {
-        SessionKey { agent_id: agent.into(), role_name: role.into(), mode: Mode::Role }
+        SessionKey { agent_id: Arc::new(agent.into()), role_event: Arc::new(RoleEvent::new(role)) }
     }
 
     /// 测试用 SessionManager（data_dir 指向临时目录；会话持久化路径仅构造不落盘）
@@ -79,10 +79,10 @@ mod tests {
         let (s2, new2) = mgr.get_or_create(&k).await;
         assert!(!new2, "已存在不应报告新建");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
-        // 不同 mode 是不同会话
-        let k_event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        // 不同事件是不同会话
+        let k_event = SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::with_event("r1", "e1")) };
         let (s3, _) = mgr.get_or_create(&k_event).await;
-        assert!(!Arc::ptr_eq(&s1, &s3), "不同 mode 应返回不同 Session");
+        assert!(!Arc::ptr_eq(&s1, &s3), "不同事件应返回不同 Session");
     }
 
     #[tokio::test]

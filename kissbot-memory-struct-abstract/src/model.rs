@@ -310,7 +310,7 @@ impl LlmModel {
             .join("llm")
             .to_string_lossy()
             .to_string();
-        let session = Arc::new(Session::new(&data_dir, &scope.role_event.session_id()));
+        let session = Arc::new(Session::new(&data_dir, &crate::scope::session_id(&scope.role_event)));
         session.recover_from_cache().await?;
         session.set_system_message(SYSTEM_PROMPT.to_string()).await;
         self.sessions.insert(scope.clone(), session.clone());
@@ -360,7 +360,7 @@ impl LlmModel {
             return;
         }
         warn!(
-            "[abstract] session context of {} exceeds {} messages, archive and keep recent",
+            "[abstract] session context of {:?} exceeds {} messages, archive and keep recent",
             scope, self.session_max_messages
         );
         let keep = non_system[non_system.len() - self.session_max_messages..].to_vec();

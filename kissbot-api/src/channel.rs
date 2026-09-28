@@ -42,10 +42,13 @@ pub struct MessengerInfoRequest {
 }
 
 /// 通道用户标识（消息方身份：messenger_id + user_id）
+///
+/// 内部字段用 `Arc<String>`，并实现 `PartialEq` / `Hash`，因此 `Arc<ChannelUser>`
+/// 可直接作为 Set / Map 的键。
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct ChannelUser {
-    pub messenger_id: String,
-    pub user_id: String,
+    pub messenger_id: Arc<String>,
+    pub user_id: Arc<String>,
 }
 
 // ========================= Message & Attachment ==========================
@@ -165,6 +168,19 @@ pub struct BindRequest {
 mod tests {
     use super::*;
     use crate::message::{AttachmentInfo, AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+
+    #[test]
+    fn arc_channel_user_works_as_set_key() {
+        // 内部字段用 Arc<String>，结构体实现 PartialEq + Hash，Arc<ChannelUser> 可直接作 Set / Map 键
+        use std::collections::HashSet;
+        let a = Arc::new(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) });
+        let b = Arc::new(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) });
+        let c = Arc::new(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u2".into()) });
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b), "等值 Arc<ChannelUser> 应命中 HashSet");
+        assert!(!set.contains(&c), "不同用户不应命中");
+    }
 
     fn make_att_header(id: u32, size: u32, pos: u64) -> Vec<u8> {
         let mut buf = Vec::with_capacity(28);

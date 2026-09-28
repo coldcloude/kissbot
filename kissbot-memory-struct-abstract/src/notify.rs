@@ -114,8 +114,8 @@ impl WsJsonProcessor for RecordNotificationProcessor {
         };
         if let Err(e) = self.service.on_notification(self.kind, &notification).await {
             error!(
-                "[abstract] handle notification ({:?}, {}/{}) failed: {}",
-                self.kind, notification.agent_id, notification.role, e
+                "[abstract] handle notification ({:?}, {}/{:?}) failed: {}",
+                self.kind, notification.agent_id, notification.role_event, e
             );
         }
     }
@@ -136,14 +136,22 @@ pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::{AgentRole, RoleEvent, ScopeManager};
+    use crate::scope::{AgentRole, ScopeManager, agent_role, case_mode};
     use crate::service::AbstractService;
     use crate::stub::StubModel;
+    use kissbot_api::RoleEvent;
 
     fn service(root: &std::path::Path) -> Arc<AbstractService> {
         let manager = Arc::new(ScopeManager::new(root));
         let model = Arc::new(StubModel::new());
         Arc::new(AbstractService::new(manager, model, 4))
+    }
+
+    fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
+        RoleEvent {
+            role_name: Arc::new(role_name.to_string()),
+            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+        }
     }
 
     #[tokio::test]
@@ -174,7 +182,7 @@ mod tests {
             payload_type: RecordKind::Channel.payload_type(),
             status_code: kai_ws::CODE_SUCCESS,
             payload: Some(serde_json::json!({
-                "agent_id": "0", "role": "dev", "time": "2026-09-22 10:02:00", "is_self": 0,
+                "agent_id": "0", "role_event": {"role_name": "dev"}, "time": "2026-09-22 10:02:00", "is_self": 0,
                 "messenger_id": "web", "self_user_id": "self", "group_id": "g1"
             })),
         };
@@ -182,7 +190,7 @@ mod tests {
 
         // 懒处理：通知只登记待处理标记，不做任何计算
         let channel = kissbot_api::ChannelKey::new("web", "self", "g1");
-        let role = RoleEvent::parse("dev");
+        let role = role_event("dev", None);
         let handle = service.manager().get(&AgentRole::new("0", "dev")).unwrap();
         {
             let state = handle.state.lock().await;
@@ -192,7 +200,7 @@ mod tests {
         }
 
         // 查询只读：不触发归档
-        let tree = service.tree_get("0", "dev").await.unwrap();
+        let tree = service.tree_get("0", &role_event("dev", None)).await.unwrap();
         assert!(tree.nodes.is_empty(), "查询不触发归档");
         {
             let state = handle.state.lock().await;
@@ -200,9 +208,9 @@ mod tests {
         }
 
         // 手动触发归档：该通道水位之后的全部记录落成一个 case
-        let outcome = service.manual_trigger("0", "dev").await.unwrap();
+        let outcome = service.manual_trigger("0", &role_event("dev", None)).await.unwrap();
         assert_eq!(outcome.archived, 2, "手动触发处理该通道全部待处理记录");
-        let tree = service.tree_get("0", "dev").await.unwrap();
+        let tree = service.tree_get("0", &role_event("dev", None)).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
@@ -252,9 +260,9 @@ mod tests {
 
     #[test]
     fn scope_ids_used_by_notifications() {
-        // 通知里的 agent/role 解析出「角色 + 记忆后缀」：角色决定 case 树，后缀决定输入与状态
-        let role_event = RoleEvent::parse("dev-e1");
-        assert_eq!(role_event.mode(), kissbot_api::CaseMode::Event);
-        assert_eq!(role_event.agent_role("0"), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
+        // 通知里的 agent/role_event 解析出「角色 + 记忆后缀」：角色决定 case 树，后缀决定输入与状态
+        let role_event = role_event("dev", Some("e1"));
+        assert_eq!(case_mode(&role_event), kissbot_api::CaseMode::Event);
+        assert_eq!(agent_role("0", &role_event), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
     }
 }

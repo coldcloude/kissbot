@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use kissbot_api::{
     ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
-    CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse,
+    CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -39,12 +39,12 @@ impl AbstractClient {
     }
 
     /// POST /abstract/locate：定位一批消息涉及的 case（摘要与原文副本由调用方按 case 标识另取）
-    pub async fn locate(&self, agent_id: &str, role: &str, messages: Vec<LocateMessage>) -> Result<LocateResponse> {
+    pub async fn locate(&self, agent_id: &str, role_event: &RoleEvent, messages: Vec<LocateMessage>) -> Result<LocateResponse> {
         self.post(
             "/abstract/locate",
             &LocateRequest {
                 agent_id: Arc::new(agent_id.to_string()),
-                role: Arc::new(role.to_string()),
+                role_event: role_event.clone(),
                 messages,
             },
         )
@@ -52,13 +52,13 @@ impl AbstractClient {
     }
 
     /// POST /abstract/case/summary：取 case 摘要（返回节点本身：摘要文本 + 层级 + 记录数 + 起止时间）
-    pub async fn case_summary(&self, agent_id: &str, role: &str, case_name: &str) -> Result<CaseNode> {
+    pub async fn case_summary(&self, agent_id: &str, role_event: &RoleEvent, case_name: &str) -> Result<CaseNode> {
         let resp: CaseSummaryResponse = self
             .post(
                 "/abstract/case/summary",
                 &CaseSummaryRequest {
                     agent_id: Arc::new(agent_id.to_string()),
-                    role: Arc::new(role.to_string()),
+                    role_event: role_event.clone(),
                     case_name: Arc::new(case_name.to_string()),
                 },
             )
@@ -67,12 +67,12 @@ impl AbstractClient {
     }
 
     /// POST /abstract/case/records-tail：取 case 结尾 count 条原文副本（升序）
-    pub async fn case_records_tail(&self, agent_id: &str, role: &str, case_name: &str, count: u64) -> Result<CaseRecordsResponse> {
+    pub async fn case_records_tail(&self, agent_id: &str, role_event: &RoleEvent, case_name: &str, count: u64) -> Result<CaseRecordsResponse> {
         self.post(
             "/abstract/case/records-tail",
             &CaseRecordsTailRequest {
                 agent_id: Arc::new(agent_id.to_string()),
-                role: Arc::new(role.to_string()),
+                role_event: role_event.clone(),
                 case_name: Arc::new(case_name.to_string()),
                 count,
             },
@@ -117,7 +117,7 @@ mod tests {
     async fn empty_base_url_returns_abstract_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
         let client = AbstractClient::with_url(String::new(), String::new());
-        let err = client.locate("0", "dev", vec![]).await.unwrap_err();
+        let err = client.locate("0", &RoleEvent::new("dev"), vec![]).await.unwrap_err();
         assert!(matches!(err, Error::AbstractError(_)), "未配置地址应返回 AbstractError: {:?}", err);
     }
 }

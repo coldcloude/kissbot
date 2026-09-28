@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use kissbot_llm::{Message, ModelResponse};
 
-use crate::{config_manager::ConfigManager, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Result, SessionKey, role_mode}};
+use crate::{config_manager::ConfigManager, nexus::Nexus, pipeline::AgentOutputProcessor, types::{Result, SessionKey}};
 use async_trait::async_trait;
 
 /// Agentic Loop 工具调用轮次上限（防死循环）
@@ -83,12 +83,11 @@ impl AgentOutputProcessor for ChannelOutputProcessor {
                 }
             }
             if let Some(content) = resp.content.as_ref() {
-                let oc_cfg = ConfigManager::get().out_channel_config(self.session_key.agent_id.as_str(), self.session_key.role_name.as_str()).await;
+                let oc_cfg = ConfigManager::get().out_channel_config(self.session_key.agent_id.as_str(), self.session_key.role_event.role_name.as_str()).await;
                 if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
                     let agent_id = self.session_key.agent_id.as_str();
-                    let role_name = self.session_key.role_name.as_str();
-                    let role_event = role_mode(role_name, &self.session_key.mode);
-                    Nexus::get().send_outgoing(agent_id, role_name, &role_event, out_channel.as_ref(), content.clone()).await;
+                    let role_name = self.session_key.role_event.role_name.as_str();
+                    Nexus::get().send_outgoing(agent_id, role_name, self.session_key.role_event.as_ref(), out_channel.as_ref(), content.clone()).await;
                 }
             }
             if round >= MAX_TOOL_ROUNDS {

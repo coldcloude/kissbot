@@ -63,7 +63,7 @@ pub fn channel_notifications(key: &RecordKey, records: &[ChannelRecord]) -> Vec<
         .into_iter()
         .map(|(channel, last)| RecordNotification {
             agent_id: key.agent_id.clone(),
-            role: key.role_name.clone(),
+            role_event: key.role_event.clone(),
             time: last.time.clone(),
             is_self: Some(last.is_self),
             channel: Some(channel),
@@ -75,7 +75,7 @@ pub fn publish_think(key: &RecordKey, records: &[ThinkRecord]) {
     if let Some(last) = records.last() {
         publish(RecordKind::Think, RecordNotification {
             agent_id: key.agent_id.clone(),
-            role: key.role_name.clone(),
+            role_event: key.role_event.clone(),
             time: last.time.clone(),
             is_self: None,
             channel: None,
@@ -87,7 +87,7 @@ pub fn publish_tool_call(key: &RecordKey, records: &[ToolCallRecord]) {
     if let Some(last) = records.last() {
         publish(RecordKind::ToolCall, RecordNotification {
             agent_id: key.agent_id.clone(),
-            role: key.role_name.clone(),
+            role_event: key.role_event.clone(),
             time: last.time.clone(),
             is_self: None,
             channel: None,
@@ -99,7 +99,7 @@ pub fn publish_tool_result(key: &RecordKey, records: &[ToolResultRecord]) {
     if let Some(last) = records.last() {
         publish(RecordKind::ToolResult, RecordNotification {
             agent_id: key.agent_id.clone(),
-            role: key.role_name.clone(),
+            role_event: key.role_event.clone(),
             time: last.time.clone(),
             is_self: None,
             channel: None,
@@ -206,11 +206,12 @@ impl WsCloseProcessor for NotifyClientCloseProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kissbot_api::RoleEvent;
 
     fn key() -> RecordKey {
         RecordKey {
             agent_id: Arc::new("0".into()),
-            role_name: Arc::new("dev".into()),
+            role_event: RoleEvent::new("dev"),
             date: Arc::new("2026-09-22".into()),
         }
     }
@@ -220,7 +221,7 @@ mod tests {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
         publish(RecordKind::Think, RecordNotification {
             agent_id: Arc::new("0".into()),
-            role: Arc::new("dev".into()),
+            role_event: RoleEvent::new("dev"),
             time: Arc::new("2026-09-22 13:48:37".into()),
             is_self: None,
             channel: None,

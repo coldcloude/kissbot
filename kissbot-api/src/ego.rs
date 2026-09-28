@@ -9,10 +9,14 @@ use crate::channel::ChannelUser;
 /// 保留 agent 的 memory-store/ego agent_id（"0"）
 pub const RESERVED_AGENT_ID: &str = "0";
 
+/// 角色键：agent + 角色名（ego 无事件概念，保持纯角色名）
+///
+/// 内部字段用 `Arc<String>`，并实现 `PartialEq` / `Hash`，因此 `Arc<RoleKey>`
+/// 可直接作为 Set / Map 的键。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoleKey {
-    pub agent_id: String,
-    pub role_name: String,
+    pub agent_id: Arc<String>,
+    pub role_name: Arc<String>,
 }
 
 impl std::fmt::Display for RoleKey {
@@ -304,6 +308,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn arc_role_key_works_as_set_key() {
+        // 内部字段用 Arc<String>，结构体实现 PartialEq + Hash，Arc<RoleKey> 可直接作 Set / Map 键
+        use std::collections::HashSet;
+        let a = Arc::new(RoleKey { agent_id: Arc::new("a1".into()), role_name: Arc::new("admin".into()) });
+        let b = Arc::new(RoleKey { agent_id: Arc::new("a1".into()), role_name: Arc::new("admin".into()) });
+        let c = Arc::new(RoleKey { agent_id: Arc::new("a1".into()), role_name: Arc::new("guest".into()) });
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b), "等值 Arc<RoleKey> 应命中 HashSet");
+        assert!(!set.contains(&c), "不同角色不应命中");
+    }
+
+    #[test]
     fn test_serde_agent_metadata() {
         let obj = AgentMetadata {
             agent_id: Arc::new("a1".to_string()),
@@ -391,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_serde_retrieve_roles_request() {
-        let role_key = Arc::new(RoleKey { agent_id: "a1".to_string(), role_name: "admin".to_string() });
+        let role_key = Arc::new(RoleKey { agent_id: Arc::new("a1".to_string()), role_name: Arc::new("admin".to_string()) });
         let obj = RetrieveRolesRequest { role_keys: vec![role_key] };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: RetrieveRolesRequest = serde_json::from_value(json).unwrap();
@@ -475,8 +492,8 @@ mod tests {
     #[test]
     fn test_serde_replace_individual_identifiers_request() {
         let identifier = ChannelUser {
-            messenger_id: "m1".to_string(),
-            user_id: "u1".to_string(),
+            messenger_id: Arc::new("m1".to_string()),
+            user_id: Arc::new("u1".to_string()),
         };
         let obj = ReplaceIndividualIdentifiersRequest {
             agent_id: Arc::new("a1".to_string()),

@@ -7,6 +7,15 @@ use crate::DirectoryManager;
 
 use kissbot_api::memory::*;
 
+
+/// 拼记忆后缀：角色模式为角色名，事件模式为 `角色名-事件标识`（只在构造文件/目录名时拼接）。
+pub fn role_event_suffix(role_event: &RoleEvent) -> String {
+    match &role_event.event_id {
+        Some(event_id) => format!("{}-{}", role_event.role_name, event_id),
+        None => role_event.role_name.as_str().to_string(),
+    }
+}
+
 pub trait FileHook<K, R> {
     /// 追加写入完成后回调（records 为该批次实际写入的记录，按写入顺序）
     fn on_append(&self, key: &K, records: &[R]);
@@ -16,11 +25,11 @@ pub trait FileHook<K, R> {
 
 //===================== functions ======================
 
-pub async fn ensure_year_role_dir(agent_id: &str, role_name: &str, date: &str) -> std::result::Result<PathBuf,kai_file::Error> {
+pub async fn ensure_year_role_dir(agent_id: &str, suffix: &str, date: &str) -> std::result::Result<PathBuf,kai_file::Error> {
     let year = as_year(date);
     match DirectoryManager::get().ensure_agent_store_dir(agent_id).await {
         Ok(store_dir) => {
-            let year_role_dir = store_dir.join(format!("{}-{}", year, role_name));
+            let year_role_dir = store_dir.join(format!("{}-{}", year, suffix));
             
             if !year_role_dir.exists() {
                 tokio::fs::create_dir_all(&year_role_dir).await?;
@@ -48,7 +57,7 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
             let date = as_date(&time.0);
             results.push((RecordKey {
                 agent_id: query.agent_id.clone(),
-                role_name: query.role_name.clone(),
+                role_event: query.role_event.clone(),
                 date: Arc::new(date.to_string()),
             }, time));
         }
@@ -62,7 +71,7 @@ pub struct ChannelParser;
 #[async_trait]
 impl FilePathGenerator<RecordKey> for ChannelParser {
     async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("channel-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
@@ -74,7 +83,7 @@ impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
         // record 保存完整身份：user_id=发送者、self_user_id=agent 绑定用户（接收方）、messenger_id/group_id
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
-            role_name: request.role_name.clone(),
+            role_event: request.role_event.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ChannelRecord {
@@ -107,7 +116,7 @@ pub struct ThinkParser;
 #[async_trait]
 impl FilePathGenerator<RecordKey> for ThinkParser {
     async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("think-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
@@ -117,7 +126,7 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
     fn parse_request(&self, request: ThinkRequest) -> (RecordKey, ThinkRecord) {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
-            role_name: request.role_name.clone(),
+            role_event: request.role_event.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ThinkRecord {
@@ -143,7 +152,7 @@ pub struct ToolCallParser;
 #[async_trait]
 impl FilePathGenerator<RecordKey> for ToolCallParser {
     async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("tool-call-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
@@ -153,7 +162,7 @@ impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParse
     fn parse_request(&self, request: ToolCallRequest) -> (RecordKey, ToolCallRecord) {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
-            role_name: request.role_name.clone(),
+            role_event: request.role_event.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ToolCallRecord {
@@ -179,7 +188,7 @@ pub struct ToolResultParser;
 #[async_trait]
 impl FilePathGenerator<RecordKey> for ToolResultParser {
     async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), key.role_name.as_str(), key.date.as_str()).await?;
+        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("tool-result-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
@@ -189,7 +198,7 @@ impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResul
     fn parse_request(&self, request: ToolResultRequest) -> (RecordKey, ToolResultRecord) {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
-            role_name: request.role_name.clone(),
+            role_event: request.role_event.clone(),
             date: Arc::new(as_date(&request.time).to_string()),
         };
         let record = ToolResultRecord {
@@ -214,6 +223,15 @@ mod tests {
     use kissbot_api::Content;
 
 use super::*;
+
+    #[test]
+    fn role_event_suffix_concatenates_role_and_event() {
+        assert_eq!(role_event_suffix(&RoleEvent::new("dev")), "dev");
+        assert_eq!(role_event_suffix(&RoleEvent::with_event("dev", "e1")), "dev-e1");
+        // 事件标识本身可以含 '-'（UUID）
+        assert_eq!(role_event_suffix(&RoleEvent::with_event("dev", "3f2a-c3d4")), "dev-3f2a-c3d4");
+        assert_eq!(role_event_suffix(&RoleEvent::new("")), "");
+    }
 
     // ========== FilePathGenerator ==========
 
@@ -240,7 +258,7 @@ use super::*;
         init_test_config();
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ChannelParser;
@@ -251,11 +269,11 @@ use super::*;
 
     #[tokio::test]
     async fn test_channel_file_dir_empty_role() {
-        // 空 role_name 目录应为 `2026-`（非 `2026`）
+        // 空记忆后缀目录应为 `2026-`（非 `2026`）
         init_test_config();
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("".to_string()),
+            role_event: kissbot_api::RoleEvent::new(""),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ChannelParser;
@@ -268,7 +286,7 @@ use super::*;
     async fn test_think_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ThinkParser;
@@ -281,7 +299,7 @@ use super::*;
     async fn test_tool_call_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ToolCallParser;
@@ -294,7 +312,7 @@ use super::*;
     async fn test_tool_result_file_name() {
         let key = RecordKey {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             date: Arc::new("2026-06-24".to_string()),
         };
         let parser = ToolResultParser;
@@ -309,7 +327,7 @@ use super::*;
     fn test_channel_request_parser() {
         let request = ChannelRequest {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             messenger_id: Arc::new("telegram".to_string()),
             user_id: Arc::new("u1".to_string()),
             self_user_id: Arc::new("self1".to_string()),
@@ -326,7 +344,7 @@ use super::*;
         let (key, record) = parser.parse_request(request);
         // key 为公共 RecordKey（无 messenger/user/group 字段）
         assert_eq!(*key.agent_id, "agent1");
-        assert_eq!(*key.role_name, "default");
+        assert_eq!(key.role_event, kissbot_api::RoleEvent::new("default"));
         assert_eq!(*key.date, "2026-06-24");
         // record 保存完整身份：user_id=发送者、self_user_id=绑定用户、messenger_id/group_id
         assert_eq!(*record.user_id, "u1");
@@ -343,7 +361,7 @@ use super::*;
     fn test_think_request_parser() {
         let request = ThinkRequest {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             reasoning_content: Some(Arc::new("thinking...".to_string())),
             thinking: None,
             key: Arc::new("k1".to_string()),
@@ -362,7 +380,7 @@ use super::*;
     fn test_tool_call_request_parser() {
         let request = ToolCallRequest {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             tool_name: Arc::new("get_weather".to_string()),
             tool_params: serde_json::json!({"city": "Beijing"}).into(),
             key: Arc::new("k1".to_string()),
@@ -380,7 +398,7 @@ use super::*;
     fn test_tool_result_request_parser() {
         let request = ToolResultRequest {
             agent_id: Arc::new("agent1".to_string()),
-            role_name: Arc::new("default".to_string()),
+            role_event: kissbot_api::RoleEvent::new("default"),
             tool_result: Arc::new(serde_json::json!({"temp": 25}).into()),
             tool_error: Arc::new(serde_json::Value::Null),
             key: Arc::new("k1".to_string()),

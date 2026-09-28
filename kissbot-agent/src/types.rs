@@ -8,32 +8,52 @@ pub use channel_api::*;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use kissbot_api::RoleEvent;
+
     use super::*;
+
+    fn key(agent_id: &str, role: &str, event: Option<&str>) -> SessionKey {
+        SessionKey {
+            agent_id: Arc::new(agent_id.to_string()),
+            role_event: Arc::new(match event {
+                Some(event) => RoleEvent::with_event(role, event),
+                None => RoleEvent::new(role),
+            }),
+        }
+    }
 
     #[test]
     fn session_key_hash_eq_by_value() {
         use std::collections::HashSet;
-        let a = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let b = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        let c = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
+        let a = key("a1", "r1", None);
+        let b = key("a1", "r1", None);
+        let c = key("a1", "r1", Some("e1"));
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 SessionKey 应命中 HashSet");
-        assert!(!set.contains(&c), "不同 mode 不应命中");
+        assert!(!set.contains(&c), "不同事件不应命中");
     }
 
     #[test]
-    fn role_mode_encodes_event_only() {
-        assert_eq!(role_mode("dev", &Mode::Role), "dev");
-        assert_eq!(role_mode("dev", &Mode::Event("e1".into())), "dev-e1");
+    fn arc_session_key_works_as_set_key() {
+        // 内部字段用 Arc<String> / Arc<RoleEvent>，结构体实现 PartialEq + Hash，
+        // 因此 Arc<SessionKey> 可直接作 Set / Map 键
+        use std::collections::HashSet;
+        let a = Arc::new(key("a1", "r1", None));
+        let b = Arc::new(key("a1", "r1", None));
+        let c = Arc::new(key("a1", "r1", Some("e1")));
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b), "等值 Arc<SessionKey> 应命中 HashSet");
+        assert!(!set.contains(&c), "不同事件不应命中");
     }
 
     #[test]
     fn session_key_encode_matches_context_file_layout() {
         // session_id 编码决定 <data_dir>/context/<session_id>.jsonl 的文件名段
-        let role = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role };
-        assert_eq!(role.encode(), "a1-r1", "角色模式不带事件段");
-        let event = SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Event("e1".into()) };
-        assert_eq!(event.encode(), "a1-r1-e1", "事件模式拼事件 id");
+        assert_eq!(key("a1", "r1", None).encode(), "a1-r1", "角色模式不带事件段");
+        assert_eq!(key("a1", "r1", Some("e1")).encode(), "a1-r1-e1", "事件模式拼事件 id");
     }
 }

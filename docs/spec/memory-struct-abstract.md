@@ -29,10 +29,12 @@
 | 概念 | 结构 | 决定什么 |
 |------|------|----------|
 | 角色 | `AgentRole { agent_id, role }` | **case 树**：同一角色的角色模式与事件模式**共用一棵树**、同一个 `ScopeManager` 句柄与同一个目录 |
-| 记忆后缀 | `RoleEvent`（外部传入的 `role` 字段） | **输入与状态**：原始记录读取、水位、当前 case 指针、模型会话都按后缀区分 |
+| 记忆后缀 | `RoleEvent { role_name, event_id }`（项目级基础类型，memory 对外通信统一使用） | **输入与状态**：原始记录读取、水位、当前 case 指针、模型会话都按后缀区分 |
 | 模型会话作用域 | `ModelScope { agent_id, role_event }` | 模型会话上下文（同一后缀的连续判定共享上下文） |
 
-**记忆后缀（role-event）的解析**：按**第一个** `-` 拆分——无 `-` 是角色模式（整个后缀即角色名），含 `-` 是事件模式（前半为角色名，后半为事件标识）。角色名不允许含 `-`，事件标识可以含 `-`（如 UUID），因此 `dev-3f2a-c3d4` 拆成角色 `dev` + 事件标识 `3f2a-c3d4`。
+**记忆后缀的表示**：项目级基础类型 `RoleEvent { role_name, event_id }` 直接给出角色名与事件标识（`event_id` 缺省即角色模式），外部调用方不需要手工拼接。拼成文件/目录后缀（角色名，或 `角色名-事件标识`）是 memory 的内部约定，由 kissbot-memory 统一负责（`role_event_suffix`）。
+
+磁盘上历史目录名仍按**第一个** `-` 识别：无 `-` 是角色名，含 `-` 时前半为角色名、后半为事件标识；角色名不允许含 `-`，事件标识可以含 `-`（如 UUID）。
 
 **case 名**：
 
@@ -56,7 +58,7 @@
 | `POST /abstract/tree/get` | 取某角色的 case 树与该记忆后缀各通道的当前 case 指针 | 否（只读） |
 | `POST /abstract/rebuild` | `rebuild=false` 手动触发归档；`rebuild=true` 清空后重建 | 是 |
 
-请求与响应类型作为模块专属类型定义在 kissbot-api（见 [system-design-api](../design/system-design-api.md)）。请求里的 `role` 字段名保持不变——它就是 **role-event 记忆后缀**（不是纯角色名）：角色模式为角色名，事件模式为 `角色名-事件标识`。
+请求与响应类型作为模块专属类型定义在 kissbot-api（见 [system-design-api](../design/system-design-api.md)）。请求里的 `role_event` 字段为项目级基础类型 **`RoleEvent`**（`{ role_name, event_id }`，`event_id` 缺省即角色模式）；所有 memory 组件的对外通信统一使用它，文件/目录后缀由 memory 内部拼接。
 
 ### locate
 
@@ -78,7 +80,7 @@
 // 请求
 {
   "agent_id": "0",
-  "role": "dev",                       // 记忆后缀（role-event）：角色模式为角色名，事件模式形如 "dev-e1"
+  "role_event": { "role_name": "dev" },   // 记忆后缀：角色模式省略 event_id；事件模式为 { "role_name": "dev", "event_id": "e1" }
   "messages": [                        // 待定位消息：可多条、可跨通道，每条自带通道三元组
     { "msg_id": "m-1001",              // 消息标识：与同通道的已存记录去重只按 msg_id
       "time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
@@ -124,8 +126,8 @@
 
 ```jsonc
 // 请求
-{ "agent_id": "0", "role": "dev" }                       // 顶层
-{ "agent_id": "0", "role": "dev", "parent_id": "role-weather-chat" } // 某 case 的子层
+{ "agent_id": "0", "role_event": { "role_name": "dev" } }                       // 顶层
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "parent_id": "role-weather-chat" } // 某 case 的子层
 
 // 响应 data
 { "cases": [ { "case_name": "role-weather-chat", "parent_id": null, "children": ["role-work-plan"], "mode": "role",
@@ -139,24 +141,24 @@
 
 ```jsonc
 // /abstract/case/summary 的请求与响应 data
-{ "agent_id": "0", "role": "dev", "case_name": "role-weather-chat" }
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat" }
 { "case": { "case_name": "role-weather-chat", "parent_id": null, "children": ["role-work-plan"], "mode": "role",
             "summary": "…", "record_count": 42,
             "start_time": "…", "end_time": "…", "created_at": "…", "updated_at": "…" } }
 
 // /abstract/case/records 的请求与响应 data（全部原文副本，按 (time, sn) 升序）
-{ "agent_id": "0", "role": "dev", "case_name": "role-weather-chat" }
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat" }
 { "records": [ { "record_type": "channel", "msg_id": "m-1001", "user_id": "u1",
                  "content": { "msg_type": "Text", "data": "…" },
                  "time": "2026-09-22 13:40:00", "sn": 127, "…": "…" } ] }
 
 // /abstract/case/records-after 的请求与响应 data（指定位置之后的原文副本）
-{ "agent_id": "0", "role": "dev", "case_name": "role-weather-chat",
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat",
   "after": { "time": "2026-09-22 13:40:00", "sn": 127, "record_type": "channel" } }
 { "records": [ /* 该位置之后的原文副本 */ ] }
 
 // /abstract/case/records-tail 的请求与响应 data（结尾若干条原文副本）
-{ "agent_id": "0", "role": "dev", "case_name": "role-weather-chat", "count": 10 }
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat", "count": 10 }
 { "records": [ /* 结尾 count 条原文副本，升序 */ ] }
 ```
 
@@ -172,7 +174,7 @@
 
 ```jsonc
 // 请求
-{ "agent_id": "0", "role": "dev-e1" }   // role 为记忆后缀
+{ "agent_id": "0", "role_event": { "role_name": "dev", "event_id": "e1" } }
 
 // 响应 data
 {
@@ -191,8 +193,8 @@
 
 ```jsonc
 // 请求（rebuild 缺省为 false）
-{ "agent_id": "0", "role": "dev", "rebuild": false }   // 手动触发一次归档
-{ "agent_id": "0", "role": "dev", "rebuild": true }    // 清空本后缀自己的 case 后按共享记忆重建
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "rebuild": false }   // 手动触发一次归档
+{ "agent_id": "0", "role_event": { "role_name": "dev" }, "rebuild": true }    // 清空本后缀自己的 case 后按共享记忆重建
 
 // 响应 data
 { "archived": 3, "case_count": 1 }   // 本次归档的记录条数 + 该角色的 case 树节点总数
@@ -218,13 +220,13 @@
 // WsMessage 信封
 { "sn": 0, "payload_type": 805371905, "status_code": 200,
   // payload：位置信息；通道消息另附发送者身份与通道三元组（平铺）
-  "payload": { "agent_id": "0", "role": "dev", "time": "2026-09-22 13:48:37",
+  "payload": { "agent_id": "0", "role_event": { "role_name": "dev" }, "time": "2026-09-22 13:48:37",
                "is_self": 0,
                "messenger_id": "web", "self_user_id": "self1", "group_id": "g1" } }
 ```
 
-- `role` 为记忆后缀（role-event）：角色模式为角色名，事件模式为以第一个 `-` 分隔出的 `角色名-事件标识`。
-- 通道消息的 payload 携带 `time`、`agent_id`、`role`、`is_self` 与通道三元组 `messenger_id` / `self_user_id` / `group_id`；其余类型只携带 `time`、`agent_id`、`role`，用于登记（通道未知时按该后缀全部通道登记）。
+- `role_event` 为 `RoleEvent`：角色模式省略 `event_id`，事件模式给出 `角色-事件标识`。
+- 通道消息的 payload 携带 `time`、`agent_id`、`role_event`、`is_self` 与通道三元组 `messenger_id` / `self_user_id` / `group_id`；其余类型只携带 `time`、`agent_id`、`role_event`，用于登记（通道未知时按该后缀全部通道登记）。
 - 收到通知后**只登记**「哪个记忆后缀哪个通道有新数据」，不做任何计算（懒处理）：通道消息通知按通道登记，通知缺省通道字段时按该后缀全部通道登记。
 - 共享记忆文件按 agent+后缀+日期共用，一次刷盘可能混合多个通道的记录：memory-store 按通道分组逐条通知，每个通道一条；订阅方不依赖「一条通知覆盖一批」。
 - 思考/工具记录只有 key、写入侧无法确定通道，因此其通知不带通道字段——按该后缀全部通道登记，通道归属由记录读取时按 key 关联的占位通道记录确定。

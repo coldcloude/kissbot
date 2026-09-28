@@ -1,8 +1,9 @@
 //! 作用域：**角色**（`agent + 角色名`）标识、目录布局，以及 case 树 + 各记忆后缀的当前指针/水位/待处理标记的加载与持久化。
 //!
 //! - 角色（[`AgentRole`]）决定 case 树：同一个角色无论角色模式还是事件模式都共用一棵树；
-//! - 记忆后缀（[`RoleEvent`]，即外部传入的 `role`）决定输入与状态：原始记录、水位、当前指针
-//!   与模型会话都按后缀区分（事件模式的后缀为 `角色名-caseid`）。
+//! - 记忆后缀（[`RoleEvent`]）决定输入与状态：原始记录、水位、当前指针与模型会话都按后缀区分
+//!   （事件模式的后缀为 `角色名-事件标识`）。后缀字符串只在构造文件/目录路径时由 kissbot-memory 的
+//!   `role_event_suffix` 拼出，本模块不做拆分。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, Watermark};
+use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, RoleEvent, Watermark};
 #[cfg(test)]
 use kissbot_api::CaseMode;
 use serde_json::Value;
@@ -19,7 +20,7 @@ use tokio::sync::Mutex;
 use crate::config::STRUCT_DIR_NAME;
 use crate::error::{Error, Result};
 use crate::records::list_store_suffixes;
-use crate::tree::{CaseTree, EVENT_CASE_PREFIX, split_role_event};
+use crate::tree::{CaseTree, EVENT_CASE_PREFIX};
 
 /// 角色：作用域标识（agent + 角色名，**不含 event**）。同一角色共用一棵 case 树。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -45,69 +46,33 @@ impl fmt::Display for AgentRole {
     }
 }
 
-/// 记忆后缀：外部传入的 `role`。无 `-` 为角色模式（纯角色名），含 `-` 为事件模式（`角色名-caseid`）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RoleEvent {
-    /// 角色名（不含 event）
-    pub role: String,
-    /// 事件标识（事件模式）；角色模式为 None
-    pub event_id: Option<String>,
+/// 事件模式固定的顶层叶子 case 名：`event-{事件标识}`（前缀与角色模式的 `role-` 不同，天然不重名）；
+/// 角色模式为 `None`。
+pub fn event_case_name(role_event: &RoleEvent) -> Option<String> {
+    role_event.event_id.as_ref().map(|event_id| format!("{}{}", EVENT_CASE_PREFIX, event_id))
 }
 
-impl RoleEvent {
-    /// 解析记忆后缀：按第一个 `-` 拆分（角色名不允许含 `-`）
-    pub fn parse(suffix: &str) -> Self {
-        match split_role_event(suffix) {
-            Some((role, event_id)) => Self { role: role.to_string(), event_id: Some(event_id.to_string()) },
-            None => Self { role: suffix.to_string(), event_id: None },
-        }
-    }
-
-    /// 记忆后缀原样（记忆存储目录、水位/指针与模型会话都按它区分）
-    pub fn suffix(&self) -> String {
-        match &self.event_id {
-            Some(event_id) => format!("{}-{}", self.role, event_id),
-            None => self.role.clone(),
-        }
-    }
-
-    /// 后缀的 case 模式（测试断言用；生产代码直接判 `event_case_name()`）
-    #[cfg(test)]
-    pub fn mode(&self) -> CaseMode {
-        match self.event_id {
-            Some(_) => CaseMode::Event,
-            None => CaseMode::Role,
-        }
-    }
-
-    /// 所属角色（case 树的作用域）
-    pub fn agent_role(&self, agent_id: &str) -> AgentRole {
-        AgentRole::new(agent_id, self.role.clone())
-    }
-
-    /// 事件模式固定的顶层叶子 case 名：`event-{事件标识}`（前缀与角色模式的 `role-` 不同，天然不重名）
-    pub fn event_case_name(&self) -> Option<String> {
-        self.event_id.as_ref().map(|event_id| format!("{}{}", EVENT_CASE_PREFIX, event_id))
-    }
-
-    /// LLM 会话标识（文件名安全；空后缀用 `_default`）
-    pub fn session_id(&self) -> String {
-        let mut id: String = self
-            .suffix()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
-            .collect();
-        if id.is_empty() {
-            id = "_default".to_string();
-        }
-        id
-    }
+/// 记忆后缀所属角色（case 树的作用域）：事件模式与角色模式共用同一个角色。
+pub fn agent_role(agent_id: &str, role_event: &RoleEvent) -> AgentRole {
+    AgentRole::new(agent_id, role_event.role_name.as_str())
 }
 
-impl fmt::Display for RoleEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.suffix())
+/// 后缀的 case 模式（测试断言用；生产代码直接判 [`event_case_name`]）
+#[cfg(test)]
+pub fn case_mode(role_event: &RoleEvent) -> CaseMode {
+    if role_event.event_id.is_some() { CaseMode::Event } else { CaseMode::Role }
+}
+
+/// LLM 会话标识（文件名安全；空后缀用 `_default`）：基于 kissbot-memory 的记忆后缀做字符替换。
+pub fn session_id(role_event: &RoleEvent) -> String {
+    let mut id: String = kissbot_memory::role_event_suffix(role_event)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    if id.is_empty() {
+        id = "_default".to_string();
     }
+    id
 }
 
 /// 状态键：记忆后缀 + 通道
@@ -126,12 +91,6 @@ impl ModelScope {
     }
 }
 
-impl fmt::Display for ModelScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}", self.agent_id, self.role_event)
-    }
-}
-
 /// 角色运行态：case 树 + 各记忆后缀的当前 case 指针/水位 + 待处理标记
 #[derive(Debug, Clone, Default)]
 pub struct ScopeState {
@@ -143,8 +102,9 @@ pub struct ScopeState {
     /// 已从磁盘加载过状态文件的后缀（避免重复读盘）
     loaded_suffixes: BTreeSet<RoleEvent>,
     /// 待处理标记：通知只登记「哪个后缀哪个通道变了」，不计算。
-    /// `dirty_roles` 表示某后缀的**全部通道**（思考/工具通知、后缀未知通道、首次加载、通知重连）
-    pub dirty_roles: BTreeSet<RoleEvent>,
+    /// `dirty_roles` 表示某后缀的**全部通道**（思考/工具通知、后缀未知通道、首次加载、通知重连），
+    /// 按记忆后缀字符串登记（拼接见 [`kissbot_memory::role_event_suffix`]），因此磁盘扫描出的目录名可直接登记。
+    pub dirty_roles: BTreeSet<String>,
     pub dirty_channels: BTreeSet<SuffixChannel>,
 }
 
@@ -156,12 +116,13 @@ impl ScopeState {
 
     /// 标记某后缀的全部通道有新数据（通道未知）
     pub fn mark_role(&mut self, role_event: &RoleEvent) {
-        self.dirty_roles.insert(role_event.clone());
+        self.dirty_roles.insert(kissbot_memory::role_event_suffix(role_event));
     }
 
     /// 某后缀是否有待处理的新数据（据此决定是否做一次归档计算）
     pub fn is_dirty(&self, role_event: &RoleEvent) -> bool {
-        self.dirty_roles.contains(role_event) || self.dirty_channels.iter().any(|(suffix, _)| suffix == role_event)
+        self.dirty_roles.contains(&kissbot_memory::role_event_suffix(role_event))
+            || self.dirty_channels.iter().any(|(suffix, _)| suffix == role_event)
     }
 
     /// 某后缀被显式标记过待处理的通道
@@ -175,7 +136,7 @@ impl ScopeState {
 
     /// 处理成功后清除该后缀的本轮标记
     pub fn clear_dirty(&mut self, role_event: &RoleEvent, processed: &BTreeSet<ChannelKey>) {
-        self.dirty_roles.remove(role_event);
+        self.dirty_roles.remove(&kissbot_memory::role_event_suffix(role_event));
         self.dirty_channels
             .retain(|(suffix, channel)| suffix != role_event || !processed.contains(channel));
     }
@@ -252,7 +213,8 @@ impl ScopeHandle {
     /// 记忆后缀目录（`{root}/{agent}/memory-struct-abstract/{后缀}`）：水位与当前指针。
     /// 角色模式下后缀即角色名，与角色目录相同。
     pub fn suffix_dir(&self, role_event: &RoleEvent) -> PathBuf {
-        self.dir.parent().map(|parent| parent.join(role_event.suffix())).unwrap_or_else(|| self.dir.join(role_event.suffix()))
+        let suffix = kissbot_memory::role_event_suffix(role_event);
+        self.dir.parent().map(|parent| parent.join(&suffix)).unwrap_or_else(|| self.dir.join(&suffix))
     }
 
     pub fn current_path(&self, role_event: &RoleEvent) -> PathBuf {
@@ -428,9 +390,8 @@ impl ScopeManager {
 
         let mut state = ScopeState { tree, ..ScopeState::default() };
         // 首次加载：磁盘上的原始记录与水位的关系未知，按「记忆存储里出现过的后缀全部通道待处理」处理
-        for suffix in list_store_suffixes(&self.root, &id.agent_id, &id.role).await? {
-            state.mark_role(&RoleEvent::parse(&suffix));
-        }
+        // （后缀字符串可直接作待处理标记的键，无需还原成 RoleEvent）
+        state.dirty_roles.extend(list_store_suffixes(&self.root, &id.agent_id, &id.role).await?);
 
         Ok(ScopeHandle {
             id,
@@ -439,7 +400,8 @@ impl ScopeManager {
         })
     }
 
-    /// 扫描磁盘上已有的角色（服务启动时恢复）：目录名即记忆后缀，角色名取第一个 `-` 之前的部分
+    /// 扫描磁盘上已有的角色（服务启动时恢复）：角色目录即角色名（含 `tree.json` 的目录），
+    /// 事件后缀目录只放水位/指针、没有 `tree.json`，不会作为角色被打开
     pub async fn load_all(&self) -> Result<Vec<Arc<ScopeHandle>>> {
         let mut handles = Vec::new();
         let mut agents = match tokio::fs::read_dir(&self.root).await {
@@ -453,20 +415,16 @@ impl ScopeManager {
             }
             let agent_id = agent_entry.file_name().to_string_lossy().to_string();
             let struct_root = agent_entry.path().join(STRUCT_DIR_NAME);
-            let mut suffixes = match tokio::fs::read_dir(&struct_root).await {
+            let mut roles = match tokio::fs::read_dir(&struct_root).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
-            while let Some(suffix_entry) = suffixes.next_entry().await? {
-                if !suffix_entry.file_type().await?.is_dir() {
+            while let Some(role_entry) = roles.next_entry().await? {
+                if !role_entry.file_type().await?.is_dir() || !role_entry.path().join("tree.json").exists() {
+                    // 模型会话目录与事件后缀目录都没有 tree.json，不是角色目录
                     continue;
                 }
-                let suffix = suffix_entry.file_name().to_string_lossy().to_string();
-                if suffix == "llm" && !suffix_entry.path().join("tree.json").exists() {
-                    // 模型会话目录不是记忆后缀（除非真有一个叫 llm 的角色目录）
-                    continue;
-                }
-                let role = RoleEvent::parse(&suffix).role;
+                let role = role_entry.file_name().to_string_lossy().to_string();
                 let handle = self.open(AgentRole::new(agent_id.clone(), role)).await?;
                 if !handles.iter().any(|h: &Arc<ScopeHandle>| h.id.key() == handle.id.key()) {
                     handles.push(handle);
@@ -525,28 +483,35 @@ mod tests {
         }
     }
 
+    fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
+        RoleEvent {
+            role_name: Arc::new(role_name.to_string()),
+            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+        }
+    }
+
     #[test]
-    fn role_event_parses_suffix_and_mode() {
-        let role = RoleEvent::parse("dev");
-        assert_eq!(role.mode(), CaseMode::Role);
-        assert_eq!(role.event_case_name(), None);
-        assert_eq!(role.suffix(), "dev");
-        assert_eq!(role.session_id(), "dev");
-        assert_eq!(role.agent_role("0"), AgentRole::new("0", "dev"));
+    fn role_event_free_functions_and_mode() {
+        let role = role_event("dev", None);
+        assert_eq!(case_mode(&role), CaseMode::Role);
+        assert_eq!(event_case_name(&role), None);
+        assert_eq!(kissbot_memory::role_event_suffix(&role), "dev");
+        assert_eq!(session_id(&role), "dev");
+        assert_eq!(agent_role("0", &role), AgentRole::new("0", "dev"));
 
-        let event = RoleEvent::parse("dev-e12");
-        assert_eq!(event.mode(), CaseMode::Event);
-        assert_eq!(event.event_case_name().as_deref(), Some("event-e12"));
-        assert_eq!(event.suffix(), "dev-e12");
-        assert_eq!(event.session_id(), "dev-e12");
+        let event = role_event("dev", Some("e12"));
+        assert_eq!(case_mode(&event), CaseMode::Event);
+        assert_eq!(event_case_name(&event).as_deref(), Some("event-e12"));
+        assert_eq!(kissbot_memory::role_event_suffix(&event), "dev-e12");
+        assert_eq!(session_id(&event), "dev-e12");
 
-        // 事件标识本身可以含 '-'（UUID）：只按第一个 '-' 拆分
-        assert_eq!(RoleEvent::parse("dev-3f2a-c3d4").event_id.as_deref(), Some("3f2a-c3d4"));
+        // 事件标识本身可以含 '-'（UUID）：RoleEvent 显式区分角色名与事件标识，后缀拼接不做拆分
+        assert_eq!(role_event("dev", Some("3f2a-c3d4")).event_id.as_deref().map(String::as_str), Some("3f2a-c3d4"));
 
-        let empty = RoleEvent::parse("");
-        assert_eq!(empty.session_id(), "_default");
-        let weird = RoleEvent::parse("a/b c");
-        assert_eq!(weird.session_id(), "a_b_c");
+        let empty = role_event("", None);
+        assert_eq!(session_id(&empty), "_default");
+        let weird = RoleEvent::new("a/b c");
+        assert_eq!(session_id(&weird), "a_b_c");
     }
 
     #[tokio::test]
@@ -555,7 +520,7 @@ mod tests {
         let manager = ScopeManager::new(temp.path());
         let id = AgentRole::new("0", "dev");
         let key = ChannelKey::new("web", "self1", "g1");
-        let role_event = RoleEvent::parse("dev");
+        let role_event = role_event("dev", None);
 
         let handle = manager.open(id.clone()).await.unwrap();
         assert!(handle.state.lock().await.tree.is_empty());
@@ -601,15 +566,15 @@ mod tests {
     async fn event_suffix_shares_role_tree_and_keeps_own_state() {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
-        let event = RoleEvent::parse("dev-e1");
+        let event = role_event("dev", Some("e1"));
         let key = ChannelKey::new("web", "self1", "g1");
 
         let role = manager.open(AgentRole::new("0", "dev")).await.unwrap();
         {
             let mut state = role.state.lock().await;
             state.tree.create_node("role-1", None, CaseMode::Role, "t");
-            state.current_cases.insert((RoleEvent::parse("dev"), key.clone()), "role-1".into());
-            role.save_state(&RoleEvent::parse("dev"), &state).await.unwrap();
+            state.current_cases.insert((role_event("dev", None), key.clone()), "role-1".into());
+            role.save_state(&role_event("dev", None), &state).await.unwrap();
         }
         // 事件后缀：同一棵树（能看到角色 case），状态文件独立
         let same = manager.open(AgentRole::new("0", "dev")).await.unwrap();
@@ -618,7 +583,7 @@ mod tests {
         assert!(state.tree.contains("role-1"), "角色与事件后缀共用一棵 case 树");
         assert!(state.current_of(&event).is_empty(), "事件后缀有自己的当前指针");
         assert_eq!(same.suffix_dir(&event), temp.path().join("0").join(STRUCT_DIR_NAME).join("dev-e1"));
-        assert_eq!(same.suffix_dir(&RoleEvent::parse("dev")), same.dir, "角色模式下后缀目录即角色目录");
+        assert_eq!(same.suffix_dir(&role_event("dev", None)), same.dir, "角色模式下后缀目录即角色目录");
     }
 
     #[tokio::test]
@@ -627,7 +592,7 @@ mod tests {
         let manager = ScopeManager::new(temp.path());
         let role = manager.open(AgentRole::new("0", "dev")).await.unwrap();
         role.save_tree(&CaseTree::new()).await.unwrap();
-        let event = RoleEvent::parse("dev-e1");
+        let event = role_event("dev", Some("e1"));
         {
             let mut state = role.state.lock().await;
             state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "event-e1".into());
@@ -645,7 +610,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
-        let role_event = RoleEvent::parse("dev");
+        let role_event = role_event("dev", None);
         {
             let mut state = handle.state.lock().await;
             state.tree.create_node("role-1", None, CaseMode::Role, "t");
@@ -664,7 +629,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
-        let role_event = RoleEvent::parse("dev");
+        let role_event = role_event("dev", None);
         let mut current = BTreeMap::new();
         current.insert(ChannelKey::new("web", "self1", "g1"), "role-1".to_string());
         handle.save_current(&role_event, &current).await.unwrap();
@@ -678,7 +643,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let manager = ScopeManager::new(temp.path());
         let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
-        let role_event = RoleEvent::parse("dev");
+        let role_event = role_event("dev", None);
         tokio::fs::create_dir_all(handle.suffix_dir(&role_event)).await.unwrap();
         // 旧版按类型平铺的水位文件：形状不再匹配 → 报错而非静默丢水位
         tokio::fs::write(handle.watermark_path(&role_event), b"{\"channel\":{\"time\":\"t\",\"sn\":1}}").await.unwrap();
@@ -691,18 +656,18 @@ mod tests {
     #[tokio::test]
     async fn dirty_marks_are_kept_per_suffix() {
         let mut state = ScopeState::default();
-        let role_event = RoleEvent::parse("dev-e1");
-        let other = RoleEvent::parse("dev-e2");
+        let first = role_event("dev", Some("e1"));
+        let other = role_event("dev", Some("e2"));
         let channel = ChannelKey::new("web", "self1", "g1");
 
-        state.mark_channel(&role_event, &channel);
-        assert!(state.is_dirty(&role_event));
+        state.mark_channel(&first, &channel);
+        assert!(state.is_dirty(&first));
         assert!(!state.is_dirty(&other), "标记按后缀隔离");
-        assert_eq!(state.dirty_channels_of(&role_event), [channel.clone()].into_iter().collect());
+        assert_eq!(state.dirty_channels_of(&first), [channel.clone()].into_iter().collect());
 
         state.mark_role(&other);
-        state.clear_dirty(&role_event, &[channel].into_iter().collect());
-        assert!(!state.is_dirty(&role_event));
+        state.clear_dirty(&first, &[channel].into_iter().collect());
+        assert!(!state.is_dirty(&first));
         assert!(state.is_dirty(&other), "清除只影响本后缀");
     }
 }

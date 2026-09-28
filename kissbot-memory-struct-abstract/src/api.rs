@@ -47,7 +47,7 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
     match service
         .case_list(
             req.agent_id.as_str(),
-            req.role.as_str(),
+            &req.role_event,
             req.parent_id.as_ref().map(|id| id.as_str()),
         )
         .await
@@ -58,14 +58,14 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
 }
 
 async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
-    match service.case_summary(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str()).await {
+    match service.case_summary(req.agent_id.as_str(), &req.role_event, req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
 async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
-    match service.case_records(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str()).await {
+    match service.case_records(req.agent_id.as_str(), &req.role_event, req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
@@ -73,7 +73,7 @@ async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Js
 
 async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
     match service
-        .case_records_after(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str(), &req.after)
+        .case_records_after(req.agent_id.as_str(), &req.role_event, req.case_name.as_str(), &req.after)
         .await
     {
         Ok(response) => ok(response),
@@ -83,7 +83,7 @@ async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(re
 
 async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
     match service
-        .case_records_tail(req.agent_id.as_str(), req.role.as_str(), req.case_name.as_str(), req.count)
+        .case_records_tail(req.agent_id.as_str(), &req.role_event, req.case_name.as_str(), req.count)
         .await
     {
         Ok(response) => ok(response),
@@ -92,7 +92,7 @@ async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req
 }
 
 async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<TreeGetRequest>) -> impl IntoResponse {
-    match service.tree_get(req.agent_id.as_str(), req.role.as_str()).await {
+    match service.tree_get(req.agent_id.as_str(), &req.role_event).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
@@ -100,14 +100,14 @@ async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<T
 
 async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<RebuildRequest>) -> impl IntoResponse {
     if req.rebuild {
-        match service.rebuild(req.agent_id.as_str(), req.role.as_str()).await {
+        match service.rebuild(req.agent_id.as_str(), &req.role_event).await {
             Ok(response) => ok(response),
             Err(e) => err(e.to_string()),
         }
     } else {
-        match service.manual_trigger(req.agent_id.as_str(), req.role.as_str()).await {
+        match service.manual_trigger(req.agent_id.as_str(), &req.role_event).await {
             Ok(outcome) => {
-                let case_count = service.case_count(req.agent_id.as_str(), req.role.as_str()).await.unwrap_or(0);
+                let case_count = service.case_count(req.agent_id.as_str(), &req.role_event).await.unwrap_or(0);
                 ok(RebuildResponse { archived: outcome.archived, case_count })
             }
             Err(e) => err(e.to_string()),
@@ -158,7 +158,7 @@ mod tests {
 
         // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_name
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
-            "agent_id": "0", "role": "dev",
+            "agent_id": "0", "role_event": {"role_name": "dev"},
             "messages": [{"time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
                           "messenger_id": "web", "self_user_id": "self1", "group_id": "g1",
                           "content": {"msg_type": "Text", "data": "你好"}}]
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(body["data"]["groups"][0]["case_name"], "role-case");
 
         // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
-        let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
+        let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["nodes"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
@@ -177,13 +177,13 @@ mod tests {
 
         // case 不存在 → 失败响应（摘要与原文一致）
         for path in ["/abstract/case/summary", "/abstract/case/records"] {
-            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role": "dev", "case_name": "role-9"})).await;
+            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "role-9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
 
         // 手动触发（无记录 → 0）
-        let (status, body) = post_json(router, "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
+        let (status, body) = post_json(router, "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["archived"], 0);
     }
@@ -202,12 +202,12 @@ mod tests {
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), format!("{}\n", record)).await.unwrap();
 
         let router = create_router(service);
-        let (status, body) = post_json(router.clone(), "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role": "dev", "rebuild": true})).await;
+        let (status, body) = post_json(router.clone(), "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "rebuild": true})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["archived"], 1);
         assert_eq!(body["data"]["case_count"], 1);
 
-        let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role": "dev"})).await;
+        let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }

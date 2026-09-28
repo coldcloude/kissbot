@@ -17,7 +17,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use kissbot_api::{CaseBrief, CaseMode, ChannelKey, LocateMessage, RecordKind};
+use kissbot_api::{CaseBrief, CaseMode, ChannelKey, LocateMessage, RecordKind, RoleEvent};
 
 use crate::error::{Error, Result};
 use crate::locate::render_message;
@@ -26,7 +26,7 @@ use crate::records::{
     RecordBody, RecordEntry, append_case_records, read_case_records, render_case_record,
     render_entry,
 };
-use crate::scope::{ModelScope, RoleEvent, ScopeHandle, ScopeState};
+use crate::scope::{ModelScope, ScopeHandle, ScopeState, event_case_name};
 use crate::tree::CaseTree;
 
 /// 归档结果
@@ -265,7 +265,7 @@ impl Archiver {
         let scope = ModelScope::new(&handle.id, role_event);
 
         // 1. 定位（只读）：逐组判定落点，得到「已有 case / 需在何处新建」，此时不改树
-        let placements = match role_event.event_case_name() {
+        let placements = match event_case_name(role_event) {
             // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定。
             // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
             Some(case_name) => {
@@ -319,9 +319,8 @@ impl Archiver {
                 }
                 GroupVerdict::NewEvent => {
                     // id 由记忆后缀固定，可能已被建出（并发/重复请求）
-                    let case_name = role_event
-                        .event_case_name()
-                        .ok_or_else(|| Error::StateError(format!("事件模式缺少事件标识: {}", role_event)))?;
+                    let case_name = event_case_name(role_event)
+                        .ok_or_else(|| Error::StateError(format!("事件模式缺少事件标识: {:?}", role_event)))?;
                     if !state.tree.contains(&case_name) {
                         state.tree.create_node(&case_name, None, CaseMode::Event, &now);
                         // 只有消息、还没有记录：立刻按本组内容生成摘要（有记录时交给第 3 步按记录生成）
@@ -409,7 +408,7 @@ impl Archiver {
                     None if records.is_empty() => self.decide_placement(scope, &state.tree, &text, None).await?,
                     None => {
                         return Err(Error::ModelApiError(format!(
-                            "第 1 轮把分组标记为当前 case，但通道 {} 没有当前 case（记忆后缀 {}）",
+                            "第 1 轮把分组标记为当前 case，但通道 {} 没有当前 case（记忆后缀 {:?}）",
                             channel.messenger_id, scope
                         )))
                     }
@@ -451,7 +450,7 @@ impl Archiver {
                 LevelDecision::Merge(case_name) => {
                     if !level.contains(&case_name) {
                         return Err(Error::ModelApiError(format!(
-                            "当层判定给出的 case {} 不在当层候选里（记忆后缀 {}，候选 {:?}）",
+                            "当层判定给出的 case {} 不在当层候选里（记忆后缀 {:?}，候选 {:?}）",
                             case_name, scope, level
                         )));
                     }

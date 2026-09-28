@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WORKSPACE = join(__dirname, '..', 'workspace');
 
-// 测试常量（role_name 仅允许 [A-Za-z0-9_]+）
+// 测试常量（role_event.role_name 仅允许 [A-Za-z0-9_]+）
 const AGENT = 'agent_a';
 const ROLE = 'admin';
 const MESSENGER = 'web';
@@ -57,7 +57,7 @@ test.describe.serial('memory-store API 测试', () => {
     const date = time.slice(0, 10); // 从 time 推断日期（单一时间源，避免两次取时钟在午夜边界不一致）
     const resp = await apiPost(request, '/store/channel', {
       requests: [{
-        agent_id: AGENT, role_name: ROLE, messenger_id: MESSENGER,
+        agent_id: AGENT, role_event: { role_name: ROLE }, messenger_id: MESSENGER,
         user_id: USER, self_user_id: SELF_USER, group_id: GROUP, is_self: 0,
         messenger_name: 'Web', user_name: '用户1', group_name: '群组1',
         content: { msg_type: 'Text', data: '你好' }, time,
@@ -70,7 +70,7 @@ test.describe.serial('memory-store API 测试', () => {
     await sleep(1000);
 
     const q = await apiPost(request, '/store/query/channel', {
-      agent_id: AGENT, role_name: ROLE,
+      agent_id: AGENT, role_event: { role_name: ROLE },
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
@@ -78,9 +78,9 @@ test.describe.serial('memory-store API 测试', () => {
     expect(q.data.length).toBeGreaterThanOrEqual(1);
     const records = q.data[0][1]; // [[line, record], ...]
     expect(records.length).toBeGreaterThanOrEqual(1);
-    // key 为公共 RecordKey（agent_id/role_name/date）；所有 channel 记录同文件，key 无身份字段
+    // key 为公共 RecordKey（agent_id/role_event/date）；所有 channel 记录同文件，key 无身份字段
     expect(q.data[0][0].agent_id).toBe(AGENT);
-    expect(q.data[0][0].role_name).toBe(ROLE);
+    expect(q.data[0][0].role_event).toEqual({ role_name: ROLE });
     expect(q.data[0][0].date).toBe(date);
     const record = records[records.length - 1][1];
     // record 保存完整身份：user_id=发送者、self_user_id=接收方（绑定用户）、messenger_id/group_id
@@ -100,7 +100,7 @@ test.describe.serial('memory-store API 测试', () => {
     const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/think', {
       requests: [{
-        agent_id: AGENT, role_name: ROLE,
+        agent_id: AGENT, role_event: { role_name: ROLE },
         reasoning_content: '思考内容', thinking: '', key: 'think_key_1', time,
       }],
       force: 1,
@@ -110,7 +110,7 @@ test.describe.serial('memory-store API 测试', () => {
     await sleep(1000);
 
     const q = await apiPost(request, '/store/query/think', {
-      agent_id: AGENT, role_name: ROLE,
+      agent_id: AGENT, role_event: { role_name: ROLE },
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
@@ -129,7 +129,7 @@ test.describe.serial('memory-store API 测试', () => {
     const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/tool-call', {
       requests: [{
-        agent_id: AGENT, role_name: ROLE,
+        agent_id: AGENT, role_event: { role_name: ROLE },
         tool_name: 'get_weather', tool_params: { city: 'Beijing' }, key: 'tool_call_key_1', time,
       }],
       force: 1,
@@ -139,7 +139,7 @@ test.describe.serial('memory-store API 测试', () => {
     await sleep(1000);
 
     const q = await apiPost(request, '/store/query/tool-call', {
-      agent_id: AGENT, role_name: ROLE,
+      agent_id: AGENT, role_event: { role_name: ROLE },
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
@@ -159,7 +159,7 @@ test.describe.serial('memory-store API 测试', () => {
     const date = time.slice(0, 10); // 单一时间源
     const resp = await apiPost(request, '/store/tool-result', {
       requests: [{
-        agent_id: AGENT, role_name: ROLE,
+        agent_id: AGENT, role_event: { role_name: ROLE },
         tool_result: { temp: 25 }, key: 'tool_result_key_1', time,
       }],
       force: 1,
@@ -169,7 +169,7 @@ test.describe.serial('memory-store API 测试', () => {
     await sleep(1000);
 
     const q = await apiPost(request, '/store/query/tool-result', {
-      agent_id: AGENT, role_name: ROLE,
+      agent_id: AGENT, role_event: { role_name: ROLE },
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);

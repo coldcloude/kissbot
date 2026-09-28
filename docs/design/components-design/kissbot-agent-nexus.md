@@ -5,7 +5,7 @@ Nexus — Agent 组件的编排中心。智能体的"思考"部分：负责将�
 
 Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消息收发，与 memory-store、memory-ego 和 station 通过请求-响应方式通信。一个系统内可运行多个 agent 实例，每个实例独立的 Nexus 与 Station 单例。
 
-一个 nexus 可同时管理多个会话。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name、mode 将所有绑定项去重，每个 agent_id+role_name+mode 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读写范围、pipeline 配置与模式状态。会话的回复目标由 (agent, role) 级 out_channel 配置决定（未配置 = 只存不回复），而不取决于消息从哪个 channel 到达。
+一个 nexus 可同时管理多个会话。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name 与运行期 event 合成项目级 `RoleEvent` 后去重，每个 agent_id + RoleEvent 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读写范围、pipeline 配置与模式状态。会话的回复目标由 (agent, role) 级 out_channel 配置决定（未配置 = 只存不回复），而不取决于消息从哪个 channel 到达。
 
 ## 核心功能
 
@@ -47,7 +47,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **目标**：作为客户端连接消息通道的服务端，支持多通道同时连接、心跳检测和断线重连
 - **依赖**：kissbot-channel（消息通道服务端与绑定协议）
 - **用户故事**：
-  - 作为一个管理员，我要配置通道绑定（每项含 channel 身份与 agent_id、role_name、mode），以让智能体启动时连接配置的通道并绑定用户
+  - 作为一个管理员，我要配置通道绑定（每项含 channel 身份与 agent_id、role_name；event 由 `/mode` 在运行期设置），以让智能体启动时连接配置的通道并绑定用户
   - 作为一个外部系统（消息通道），我要与智能体保持长连接，以保持通信的稳定性
   - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息
 
@@ -66,7 +66,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 按消息来源 channel 的绑定配置定位会话，将输入路由到管理命令处理或该会话的 pipeline
 - 装配会话 pipeline 时注入会话实例（会话由 Nexus 创建），运行期 pipeline 直接读写会话上下文
 - 提供能力接口供 pipeline 回调：Provider 调用、Station 工具分组白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
-- 会话绑定（agent_id / role_name / mode）变更走串行队列，避免写-写竞态
+- 会话绑定（agent_id / role_name / event）变更走串行队列，避免写-写竞态
 
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
@@ -79,7 +79,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 支持模型列表查询（用于模型校验与管理命令）
 
 ### 4. 会话与上下文（session_manager）
-- 会话集合按 (agent_id, role_name, mode) 去重创建，返回「会话 + 是否新建」；会话标识编码为 kissbot-llm 的 session_id（`{agent_id}-{role_name}[-{event}]`）
+- 会话集合按 (agent_id, role_event) 去重创建，返回「会话 + 是否新建」；会话标识编码为 kissbot-llm 的 session_id（`{agent_id}-{role_name}[-{event}]`）
 - 单个会话的上下文本体（内存消息序列 + 当前/待定 system 消息 + 本地缓存 + 历史归档）由 **kissbot-llm** 的 Session/SessionContext 承担
 - 恢复时正序全量回读本地缓存，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
 - SessionManager 只负责会话集合的去重持有与无绑定清理，不做 pipeline 装配
@@ -96,7 +96,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 6. 记忆读写
 - 上行消息、下行回复、思考内容、tool call / tool result 统一经 memory-store 客户端写入；写入失败仅记录日志、不重试
-- 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_name) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
+- 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
 - 首次合成会话配置时也读取记忆回溯配置（时间窗、条数），与 LLM 参数独立
 
 ### 7. 管理命令路由器
@@ -105,9 +105,9 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 命令与命令回复不入记忆、不进会话上下文
 
 ### 8. 会话管理器
-- 汇总所有绑定 channel 的 (agent_id, role_name, mode) 并去重，维护会话集合；按消息来源 channel 定位会话
+- 汇总所有绑定 channel 的 (agent_id, role_name, event) 并去重合成 RoleEvent，维护会话集合；按消息来源 channel 定位会话
 - 绑定信息变化时清理无绑定会话（连同其 pipeline 与合批任务）
-- 维护各 channel 的运行态 mode（默认角色模式，不回写配置）；事件模式会话按事件标识隔离上下文与记忆
+- 维护各 channel 的运行态 event（缺省 = 角色模式，不回写配置）；事件模式会话按事件标识隔离上下文与记忆
 
 ### 9. Station 运行态
 - 全局 Station 单例（每 agent 一个）从配置构建：本级 group 集合（工具元数据 + 原生实现，由内置注册表按 group 名填充）+ 直接子 Station 集合（仅连接信息，MCP 客户端）
@@ -119,7 +119,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 本级工具：按工具名在本级工具索引中查找并执行（注册的工具必带原生实现）；子 Station 工具：本级未命中时按工具名路由到归属的直接子 Station，经 MCP 调用（不遍历全部子）
 
 ### 11. 边界组件（非 Nexus 内部模块）
-- **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 转发业务）、每 channel 运行态（pending msg_id、mode、client、断线通知）、连接/重连/发送，并持有 channel 变更串行队列（其执行体之一即会话重定位，回调 Nexus）
+- **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 转发业务）、每 channel 运行态（pending msg_id、event、client、断线通知）、连接/重连/发送，并持有 channel 变更串行队列（其执行体之一即会话重定位，回调 Nexus）
 - **管理 API（http_server）**：管理界面用的配置 CRUD，直接操作配置管理器
 - **station MCP 服务端（station_http）**：把全局 Station 作为 MCP 处理器对外提供 server/discover、tools/list、tools/call，供其他 station 作为 sub 使用
 
@@ -188,7 +188,7 @@ kissbot-agent 启动
 
 ### 会话定义与记忆模式隔离规则
 
-- 会话由（agent_id、role_name、mode）唯一标识；nexus 将所有绑定 channel 的信息去重生成会话集合，多个绑定相同三元组的 channel 共享同一会话
+- 会话由（agent_id、role_event）唯一标识；nexus 将所有绑定 channel 的信息去重生成会话集合，多个绑定相同三元组的 channel 共享同一会话
 - 记忆读写用 agent_id 直接定位（配置即 agent_id，无需二次解析），role 编码 = 角色名（角色模式）或「角色名-事件 ID」（事件模式）
 - 角色模式会话：记忆读写覆盖该角色下所有记录；事件模式会话：只覆盖本事件的记录
 - 绑定信息变化产生新会话时重新恢复/构建上下文
