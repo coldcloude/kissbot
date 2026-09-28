@@ -10,6 +10,7 @@ pub use pipeline_config::*;
 
 use std::{collections::HashMap, sync::Arc};
 
+use arcstr::ArcStr;
 use kissbot_api::ArcSwapHashMap;
 use kissbot_llm::ProviderModelConfig;
 use serde::{Deserialize, Serialize};
@@ -21,10 +22,10 @@ use crate::types::SessionKey;
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NexusRepo {
-    pub channels: Arc<ArcSwapHashMap<String, ChannelConfig>>,
-    pub providers: Arc<ArcSwapHashMap<String, ProviderModelConfig>>, // key = provider 名
-    pub memory_structs: Arc<ArcSwapHashMap<String, MemoryStructConfig>>,
-    pub agents: Arc<HashMap<String, Arc<AgentRoleConfig>>>,
+    pub channels: Arc<ArcSwapHashMap<ArcStr, ChannelConfig>>,
+    pub providers: Arc<ArcSwapHashMap<ArcStr, ProviderModelConfig>>, // key = provider 名
+    pub memory_structs: Arc<ArcSwapHashMap<ArcStr, MemoryStructConfig>>,
+    pub agents: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
     /// session 运行配置（key = SessionKey，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
     /// 故经 sessions_serde 以 [[key, value], ...] 数组对承载（不是 JSON 对象）
     #[serde(with = "sessions_serde")]

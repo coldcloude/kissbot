@@ -50,7 +50,7 @@ async fn main() {
         .layer(CorsLayer::permissive());
 
     let addr = config.http_listen_addr.clone();
-    let listener = TcpListener::bind(&addr).await.unwrap();
+    let listener = TcpListener::bind(addr.as_str()).await.unwrap();
     println!("kissbot-channel-web HTTP server listening on {}", addr);
 
     // 7. 启动所有服务器

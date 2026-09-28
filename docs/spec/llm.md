@@ -24,7 +24,7 @@ pub trait Provider: Send + Sync {
     fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Self::Request;
     async fn send_request(&self, request: &Self::Request, timeout: u64) -> Result<Value>;
     fn parse_response(&self, data: Value) -> ModelResponse;
-    async fn list_models(&self) -> Result<Vec<String>>;
+    async fn list_models(&self) -> Result<Vec<ArcStr>>;
 }
 
 /// 按 provider 配置构造实现（调用方按 provider_type 分派）
@@ -43,8 +43,8 @@ pub async fn call_with_retry<P: Provider>(
 // ===== session =====
 pub struct SessionContext { /* 私有 */ }
 impl SessionContext {
-    pub fn new(data_dir: &str, session_id: &str) -> Self;
-    pub fn set_system_message(&mut self, content: String);
+    pub fn new(data_dir: &str, session_id: impl Into<ArcStr>) -> Self;
+    pub fn set_system_message(&mut self, content: impl Into<ArcStr>);
     pub async fn apply_pending_system(&mut self) -> Result<()>;
     pub async fn append(&mut self, messages: Vec<Message>) -> Result<()>;
     pub async fn recover_from_cache(&mut self) -> Result<()>;
@@ -59,7 +59,7 @@ impl Session {
     pub async fn build_context(&self) -> Vec<Message>;
     pub async fn context_append(&self, messages: Vec<Message>);
     pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>);
-    pub async fn set_system_message(&self, content: String);
+    pub async fn set_system_message(&self, content: impl Into<ArcStr>);
 }
 ```
 
@@ -164,10 +164,10 @@ impl Session {
 ```rust
 // 上下文消息（OpenAI 兼容，序列化时 role 为平级标签）
 enum Message {
-    System { content: Arc<String> },
-    User { content: Arc<String> },
+    System { content: ArcStr },
+    User { content: ArcStr },
     Assistant { content: Value, reasoning_content: Value, tool_calls: Value },  // 后三者原样透传 API 值
-    Tool { tool_call_id: Arc<String>, content: Arc<String> },                    // 无 name 字段
+    Tool { tool_call_id: ArcStr, content: ArcStr },                    // 无 name 字段
 }
 
 // 工具调用：调用方交互层结构（LLM 侧 tool call 与工具结果回填）；
@@ -176,17 +176,17 @@ enum Message {
 // 只承载 MCP content 字段转成的 Value（内容块数组）：成功进 result、失败进 error（result 留空）；
 // structuredContent 仅用于工具宿主内部处理，不进入本结构
 struct ToolData { arguments: Value, result: Value, error: Value }
-struct ToolCall { id: Arc<String>, name: Arc<String>, data: ToolData }
+struct ToolCall { id: ArcStr, name: ArcStr, data: ToolData }
 
 // LLM 请求中的工具定义（OpenAI tools[].function 形状）；与 MCP 工具的互转在调用方
-struct ToolConfig { name: Arc<String>, description: Arc<String>, parameters: Arc<Value> }
+struct ToolConfig { name: ArcStr, description: ArcStr, parameters: Arc<Value> }
 
 // 模型响应（归一化）
 struct ModelResponse {
-    raw_content: Value, content: Option<Arc<String>>, thinking: Option<Arc<String>>,
-    raw_reasoning_content: Value, reasoning_content: Option<Arc<String>>,
+    raw_content: Value, content: Option<ArcStr>, thinking: Option<ArcStr>,
+    raw_reasoning_content: Value, reasoning_content: Option<ArcStr>,
     raw_tool_calls: Value, tool_calls: Option<Vec<ToolCall>>,
-    finish_reason: Option<Arc<String>>, total_tokens: u64,
+    finish_reason: Option<ArcStr>, total_tokens: u64,
 }
 ```
 
@@ -194,14 +194,14 @@ struct ModelResponse {
 
 ```rust
 enum Error {
-    ModelApiError(String),                              // 服务商返回非成功状态或调用失败
-    ModelProviderNotFound(String, String),              // (provider 名, model 名)
-    ModelProviderNotSupported(String),                  // 未知 provider_type
+    ModelApiError(ArcStr),                              // 服务商返回非成功状态或调用失败
+    ModelProviderNotFound(ArcStr, ArcStr),              // (provider 名, model 名)
+    ModelProviderNotSupported(ArcStr),                  // 未知 provider_type
     IoError(std::io::Error),
     ReqwestError(reqwest::Error),
     JsonError(serde_json::Error),
     FileError(kai_file::Error),
-    InternalError(String),
+    InternalError(ArcStr),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 ```

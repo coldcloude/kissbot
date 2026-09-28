@@ -1,12 +1,13 @@
 use std::{collections::HashSet, sync::Arc};
 
+use arcstr::ArcStr;
 use kissbot_api::{ChannelUser, MergeBy, MergeEffectiveConfig, MergeSelf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompressConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compress_prompt: Option<Arc<String>>,
+    pub compress_prompt: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress_threshold: Option<f64>,
 }
@@ -32,14 +33,14 @@ pub const DEFAULT_COMPRESS_THRESHOLD: f64 = 0.8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveCompressConfig {
-    pub compress_prompt: Arc<String>,
+    pub compress_prompt: ArcStr,
     pub compress_threshold: f64,
 }
 
 impl EffectiveCompressConfig {
     pub fn new() -> Self {
         Self {
-            compress_prompt: Arc::new(DEFAULT_COMPRESS_PROMPT.to_string()),
+            compress_prompt: ArcStr::from(DEFAULT_COMPRESS_PROMPT),
             compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
         }
     }
@@ -168,9 +169,9 @@ impl MergeEffectiveConfig<ChannelBatchConfig> for ChannelBatchConfig {
 /// 由 /bind-outgoing 在来源 channel 构造（channel_id = 来源 channel），Agentic Loop 回复经此发送
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutChannel {
-    pub channel_id: Arc<String>,
+    pub channel_id: ArcStr,
     pub user: Arc<ChannelUser>,
-    pub group_id: Arc<String>,
+    pub group_id: ArcStr,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -198,7 +199,7 @@ impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GroupSetConfig {
     /// 会话启用的 group 名集合
-    pub group_set: Arc<HashSet<String>>,
+    pub group_set: Arc<HashSet<ArcStr>>,
 }
 
 impl MergeBy<GroupSetConfig> for GroupSetConfig {
@@ -223,17 +224,17 @@ impl MergeEffectiveConfig<GroupSetConfig> for GroupSetConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<String>,
+    pub preset: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_processor: Option<Vec<String>>,
+    pub input_processor: Option<Vec<ArcStr>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompter: Option<Vec<String>>,
+    pub system_prompter: Option<Vec<ArcStr>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_sender: Option<String>,
+    pub message_sender: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_caller: Option<String>,
+    pub tool_caller: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_processor: Option<String>,
+    pub output_processor: Option<ArcStr>,
 }
 
 impl MergeBy<PipelineConfig> for PipelineConfig {

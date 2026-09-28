@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
@@ -38,9 +39,9 @@ impl DecisionModel for StubModel {
         Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX))
     }
 
-    async fn summarize(&self, _scope: &ModelScope, _content: &str) -> Result<String> {
+    async fn summarize(&self, _scope: &ModelScope, _content: &str) -> Result<ArcStr> {
         let next = self.summary_count.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(format!("{}{}", STUB_SUMMARY_PREFIX, next))
+        Ok(ArcStr::from(format!("{}{}", STUB_SUMMARY_PREFIX, next)))
     }
 
 }
@@ -56,8 +57,8 @@ mod tests {
         let model = StubModel::new();
         let scope = ModelScope::new(&AgentRole::new("0", "dev"), &RoleEvent::new("dev"));
         let current = vec![CaseBrief {
-            case_name: std::sync::Arc::new("role-1".into()),
-            summary: std::sync::Arc::new("当前 case".into()),
+            case_name: ArcStr::from("role-1"),
+            summary: ArcStr::from("当前 case"),
         }];
         let groups = model.group(&scope, "batch", 2, current.first()).await.unwrap();
         assert_eq!(groups, vec![MessageGroup { messages: vec![0, 1], is_current: true }]);

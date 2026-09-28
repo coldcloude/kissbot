@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use arc_swap::ArcSwap;
+use arcstr::ArcStr;
 use kissbot_api::ArcSwapHashMap;
 use kissbot_api::OtherRoleEntry;
 use kissbot_api::RoleKey;
@@ -29,7 +30,7 @@ pub fn ego_role_play_path(ego_dir: impl AsRef<std::path::Path>, role_name: &str)
 type RolePlayLock = Arc<RwLock<Option<Arc<RolePlay>>>>;
 
 pub struct RolePlayManager {
-    manager_lock: dashmap::DashMap<String, dashmap::DashMap<String, RolePlayLock>>,
+    manager_lock: dashmap::DashMap<ArcStr, dashmap::DashMap<ArcStr, RolePlayLock>>,
 }
 
 static ROLE_PLAY_MANAGER_INSTANCE: OnceLock<RolePlayManager> = OnceLock::new();
@@ -49,9 +50,9 @@ impl RolePlayManager {
 
     async fn get_or_create_lock(&self, agent_id: &str, role_name: &str) -> RolePlayLock {
         self.manager_lock
-            .entry(agent_id.to_string())
+            .entry(ArcStr::from(agent_id))
             .or_insert_with(|| dashmap::DashMap::new())
-            .entry(role_name.to_string())
+            .entry(ArcStr::from(role_name))
             .or_insert_with(|| Arc::new(RwLock::new(None)))
             .clone()
     }
@@ -77,7 +78,7 @@ impl RolePlayManager {
             let json_path = ego_role_play_path(&ego_dir, role_name);
             
             if !json_path.exists() {
-                return Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()));
+                return Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)));
             }
             
             let content = tokio::fs::read_to_string(json_path).await?;
@@ -88,13 +89,13 @@ impl RolePlayManager {
         let guard = lock.read().await;
         match guard.as_ref() {
             Some(role) => return Ok(role.clone()),
-            None => return Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string())),
+            None => return Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name))),
         }
     }
 
     async fn read_role_play_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
         let role = self.read_role_play(agent_id, role_name).await?;
-        let entry = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))?;
+        let entry = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
         Ok(entry.load().clone())
     }
 
@@ -132,7 +133,7 @@ impl RolePlayManager {
                 Ok(())
             }
             None => {
-                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }
     }
@@ -149,15 +150,15 @@ impl RolePlayManager {
                     entry.store(updated);
                     Ok(role)
                 } else {
-                    Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()))
+                    Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
                 }
             } else {
-                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }).await
     }
 
-    pub async fn list_roles(&self, agent_id: &str) -> Result<Vec<String>> {
+    pub async fn list_roles(&self, agent_id: &str) -> Result<Vec<ArcStr>> {
         let ego_dir = DirectoryManager::get().ensure_agent_ego_dir(agent_id).await?;
 
         let mut roles = Vec::new();
@@ -170,7 +171,7 @@ impl RolePlayManager {
                 if let Some(role_file_name) = role_file.file_name().and_then(|n| n.to_str()) {
                     if role_file_name.starts_with(EGO_ROLE_PLAY_PREFIX) && role_file_name.ends_with(JSON_SUFFIX) {
                         if let Some(role_name) = role_file_name.get(EGO_ROLE_PLAY_PREFIX.len() .. role_file_name.len() - JSON_SUFFIX.len()) {
-                            roles.push(role_name.trim().to_string());
+                            roles.push(ArcStr::from(role_name.trim()));
                         }
                     }
                 }
@@ -188,19 +189,19 @@ impl RolePlayManager {
         self.read_role_play(agent_id, role_name).await
     }
 
-    pub async fn create_role(&self, agent_id: &str, role_name: Arc<String>, description: Arc<String>) -> Result<()> {
+    pub async fn create_role(&self, agent_id: &str, role_name: ArcStr, description: ArcStr) -> Result<()> {
         validate_code(role_name.as_str())?;
-        self.write_role_play_ref(agent_id, role_name.clone().as_str(), |old| {
+        self.write_role_play_ref(agent_id, role_name.as_str(), |old| {
             match old {
                 Some(_) => {
-                    Err(Error::AgentRoleAlreadyExists(agent_id.to_string(), role_name.to_string()))
+                    Err(Error::AgentRoleAlreadyExists(ArcStr::from(agent_id), role_name.clone()))
                 }
                 None => {
                     Ok(Arc::new(RolePlay {
                         role: Arc::new(Role {
-                            agent_id: Arc::new(agent_id.to_string()),
+                            agent_id: ArcStr::from(agent_id),
                             role_name: role_name.clone(),
-                            full_name: Arc::new(String::new()),
+                            full_name: ArcStr::new(),
                             description,
                         }),
                         other_roles: Arc::new(ArcSwapHashMap::new()),
@@ -212,7 +213,7 @@ impl RolePlayManager {
         Ok(())
     }
 
-    pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: Arc<String>) -> Result<()> {
+    pub async fn create_role_from(&self, agent_id: &str, role_name: &str, new_name: ArcStr) -> Result<()> {
         validate_code(new_name.as_str())?;
         let role = self.get_role(agent_id, role_name).await?;
         self.create_role(agent_id, new_name.clone(), role.role.description.clone()).await?;
@@ -220,7 +221,7 @@ impl RolePlayManager {
         Ok(())
     }
 
-    pub async fn update_role_description(&self, agent_id: &str, role_name: &str, description: Arc<String>) -> Result<()> {
+    pub async fn update_role_description(&self, agent_id: &str, role_name: &str, description: ArcStr) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
@@ -234,14 +235,14 @@ impl RolePlayManager {
                         other_roles: role.other_roles.clone()
                     }))
                 },
-                None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                None => Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }).await?;
         SearchManager::get().await.mark_role_dirty(agent_id, role_name);
         Ok(())
     }
 
-    pub async fn update_role_full_name(&self, agent_id: &str, role_name: &str, full_name: Arc<String>) -> Result<()> {
+    pub async fn update_role_full_name(&self, agent_id: &str, role_name: &str, full_name: ArcStr) -> Result<()> {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             match role_or_none {
                 Some(role) => {
@@ -255,7 +256,7 @@ impl RolePlayManager {
                         other_roles: role.other_roles.clone()
                     }))
                 },
-                None => Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                None => Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }).await?;
         SearchManager::get().await.mark_role_dirty(agent_id, role_name);
@@ -266,7 +267,7 @@ impl RolePlayManager {
         self.read_role_play_other_role(agent_id, role_name, other_role_name).await
     }
 
-    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<String>, mut insert_other_roles: Vec<OtherRoleEntry>) -> Result<()> {
+    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<ArcStr>, mut insert_other_roles: Vec<OtherRoleEntry>) -> Result<()> {
         for entry in insert_other_roles.iter() {
             validate_code(&entry.role_name)?;
         }
@@ -284,7 +285,7 @@ impl RolePlayManager {
                 Ok(role_new_arc)
             }
             else {
-                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }).await
     }
@@ -295,27 +296,27 @@ impl RolePlayManager {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
                 if role.other_roles.contains_key(new_name) {
-                    Err(Error::AgentRoleOtherRoleAlreadyExists(agent_id.to_string(), role_name.to_string(), new_name.to_string()))
+                    Err(Error::AgentRoleOtherRoleAlreadyExists(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(new_name)))
                 } else {
                     if let Some(other_role) = role.other_roles.get(other_role_name) {
                         let mut role_new_arc = role.clone();
                         let role_new = Arc::make_mut(&mut role_new_arc);
                         let other_roles = Arc::make_mut(&mut role_new.other_roles);
                         other_roles.remove(other_role_name);
-                        other_roles.insert(new_name.to_string(), ArcSwap::new(other_role.load_full()));
+                        other_roles.insert(ArcStr::from(new_name), ArcSwap::new(other_role.load_full()));
                         Ok(role_new_arc)
                     } else {
-                        Err(Error::AgentRoleOtherRoleNotFound(agent_id.to_string(), role_name.to_string(), other_role_name.to_string()))
+                        Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
                     }
                 }
             }
             else {
-                Err(Error::AgentRoleNotFound(agent_id.to_string(), role_name.to_string()))
+                Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
         }).await
     }
 
-    pub async fn update_other_role_individual_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_individual_name: Arc<String>) -> Result<()> {
+    pub async fn update_other_role_individual_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_individual_name: ArcStr) -> Result<()> {
         validate_code(new_individual_name.as_str())?;
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
@@ -327,7 +328,7 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn update_other_role_description(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_description: Arc<String>) -> Result<()> {
+    pub async fn update_other_role_description(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_description: ArcStr) -> Result<()> {
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             Ok(Arc::new(OtherRole {
                 individual_name: other_role.individual_name.clone(),
@@ -349,7 +350,7 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<String>, mut insert_relations: Vec<RoleRelationEntry>) -> Result<()> {
+    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<ArcStr>, mut insert_relations: Vec<RoleRelationEntry>) -> Result<()> {
         for entry in insert_relations.iter() {
             validate_code(&entry.role_name)?;
         }
@@ -357,7 +358,7 @@ impl RolePlayManager {
             let other_role = Arc::make_mut(&mut other_role_arc);
             let other_role_relations = Arc::make_mut(&mut other_role.other_role_relations);
             for name in remove_relations.drain(..) {
-                other_role_relations.remove(&name);
+                other_role_relations.remove(name.as_str());
             }
             for entry in insert_relations.drain(..) {
                 other_role_relations.insert(entry.role_name, ArcSwap::new(entry.relation));
@@ -394,10 +395,10 @@ mod tests {
         dm.ensure_agent_dir("agent-role1").await.unwrap();
         dm.ensure_agent_ego_dir("agent-role1").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-role1", Arc::new("admin".to_string()), Arc::new("Administrator".to_string())).await.unwrap();
+        manager.create_role("agent-role1", ArcStr::from("admin"), ArcStr::from("Administrator")).await.unwrap();
         let role = manager.get_role("agent-role1", "admin").await.unwrap();
-        assert_eq!(*role.role.role_name, "admin");
-        assert_eq!(*role.role.description, "Administrator");
+        assert_eq!(role.role.role_name, "admin");
+        assert_eq!(role.role.description, "Administrator");
     }
 
     #[tokio::test]
@@ -407,8 +408,8 @@ mod tests {
         dm.ensure_agent_dir("agent-dup").await.unwrap();
         dm.ensure_agent_ego_dir("agent-dup").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-dup", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
-        let result = manager.create_role("agent-dup", Arc::new("admin".to_string()), Arc::new("Other".to_string())).await;
+        manager.create_role("agent-dup", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
+        let result = manager.create_role("agent-dup", ArcStr::from("admin"), ArcStr::from("Other")).await;
         assert!(matches!(result, Err(Error::AgentRoleAlreadyExists(_, _))));
     }
 
@@ -419,10 +420,10 @@ mod tests {
         dm.ensure_agent_dir("agent-from").await.unwrap();
         dm.ensure_agent_ego_dir("agent-from").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-from", Arc::new("admin".to_string()), Arc::new("Original desc".to_string())).await.unwrap();
-        manager.create_role_from("agent-from", "admin", Arc::new("mod".to_string())).await.unwrap();
+        manager.create_role("agent-from", ArcStr::from("admin"), ArcStr::from("Original desc")).await.unwrap();
+        manager.create_role_from("agent-from", "admin", ArcStr::from("mod")).await.unwrap();
         let new_role = manager.get_role("agent-from", "mod").await.unwrap();
-        assert_eq!(*new_role.role.description, "Original desc");
+        assert_eq!(new_role.role.description, "Original desc");
     }
 
     #[tokio::test]
@@ -432,12 +433,12 @@ mod tests {
         dm.ensure_agent_dir("agent-list").await.unwrap();
         dm.ensure_agent_ego_dir("agent-list").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-list", Arc::new("admin".to_string()), Arc::new("".to_string())).await.unwrap();
-        manager.create_role("agent-list", Arc::new("mod".to_string()), Arc::new("".to_string())).await.unwrap();
+        manager.create_role("agent-list", ArcStr::from("admin"), ArcStr::from("")).await.unwrap();
+        manager.create_role("agent-list", ArcStr::from("mod"), ArcStr::from("")).await.unwrap();
         let roles = manager.list_roles("agent-list").await.unwrap();
         assert_eq!(roles.len(), 2);
-        assert!(roles.contains(&"admin".to_string()));
-        assert!(roles.contains(&"mod".to_string()));
+        assert!(roles.contains(&ArcStr::from("admin")));
+        assert!(roles.contains(&ArcStr::from("mod")));
     }
 
     #[tokio::test]
@@ -457,10 +458,10 @@ mod tests {
         dm.ensure_agent_dir("agent-upd-desc").await.unwrap();
         dm.ensure_agent_ego_dir("agent-upd-desc").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-upd-desc", Arc::new("admin".to_string()), Arc::new("Old".to_string())).await.unwrap();
-        manager.update_role_description("agent-upd-desc", "admin", Arc::new("New desc".to_string())).await.unwrap();
+        manager.create_role("agent-upd-desc", ArcStr::from("admin"), ArcStr::from("Old")).await.unwrap();
+        manager.update_role_description("agent-upd-desc", "admin", ArcStr::from("New desc")).await.unwrap();
         let role = manager.get_role("agent-upd-desc", "admin").await.unwrap();
-        assert_eq!(*role.role.description, "New desc");
+        assert_eq!(role.role.description, "New desc");
     }
 
     #[tokio::test]
@@ -470,11 +471,11 @@ mod tests {
         dm.ensure_agent_dir("agent-upd-full-name").await.unwrap();
         dm.ensure_agent_ego_dir("agent-upd-full-name").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-upd-full-name", Arc::new("admin".to_string()), Arc::new("Old desc".to_string())).await.unwrap();
-        manager.update_role_full_name("agent-upd-full-name", "admin", Arc::new("新展示名".to_string())).await.unwrap();
+        manager.create_role("agent-upd-full-name", ArcStr::from("admin"), ArcStr::from("Old desc")).await.unwrap();
+        manager.update_role_full_name("agent-upd-full-name", "admin", ArcStr::from("新展示名")).await.unwrap();
         let role = manager.get_role("agent-upd-full-name", "admin").await.unwrap();
-        assert_eq!(*role.role.full_name, "新展示名");
-        assert_eq!(*role.role.description, "Old desc");
+        assert_eq!(role.role.full_name, "新展示名");
+        assert_eq!(role.role.description, "Old desc");
     }
 
     #[tokio::test]
@@ -484,24 +485,24 @@ mod tests {
         dm.ensure_agent_dir("agent-other1").await.unwrap();
         dm.ensure_agent_ego_dir("agent-other1").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-other1", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-other1", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("Works together".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from("Works together"),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("A colleague".to_string()),
+            description: ArcStr::from("A colleague"),
         });
         manager.replace_other_roles(
             "agent-other1", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         let result = manager.get_other_role("agent-other1", "admin", "Bob").await.unwrap();
-        assert_eq!(*result.individual_name, "Bob");
+        assert_eq!(result.individual_name, "Bob");
     }
 
     #[tokio::test]
@@ -511,25 +512,25 @@ mod tests {
         dm.ensure_agent_dir("agent-other-rename").await.unwrap();
         dm.ensure_agent_ego_dir("agent-other-rename").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-other-rename", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-other-rename", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         manager.replace_other_roles(
             "agent-other-rename", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         manager.rename_other_role("agent-other-rename", "admin", "Bob", "Robert").await.unwrap();
         let robert = manager.get_other_role("agent-other-rename", "admin", "Robert").await.unwrap();
-        assert_eq!(*robert.individual_name, "Bob");
+        assert_eq!(robert.individual_name, "Bob");
         let result = manager.get_other_role("agent-other-rename", "admin", "Bob").await;
         assert!(matches!(result, Err(Error::AgentRoleNotFound(_, _))));
     }
@@ -541,21 +542,21 @@ mod tests {
         dm.ensure_agent_dir("agent-other-rename-invalid").await.unwrap();
         dm.ensure_agent_ego_dir("agent-other-rename-invalid").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-other-rename-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-other-rename-invalid", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         manager.replace_other_roles(
             "agent-other-rename-invalid", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         // 非法 new_name 应被拒
         let result = manager.rename_other_role("agent-other-rename-invalid", "admin", "Bob", "a b").await;
@@ -563,7 +564,7 @@ mod tests {
         // 合法 new_name 仍成功
         manager.rename_other_role("agent-other-rename-invalid", "admin", "Bob", "Robert2").await.unwrap();
         let robert = manager.get_other_role("agent-other-rename-invalid", "admin", "Robert2").await.unwrap();
-        assert_eq!(*robert.individual_name, "Bob");
+        assert_eq!(robert.individual_name, "Bob");
     }
 
     #[tokio::test]
@@ -573,36 +574,36 @@ mod tests {
         dm.ensure_agent_dir("agent-other-rel").await.unwrap();
         dm.ensure_agent_ego_dir("agent-other-rel").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-other-rel", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-other-rel", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         manager.replace_other_roles(
             "agent-other-rel", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         let relation = Arc::new(RoleRelation {
-            relation: Arc::new("friend".to_string()),
-            full_name: Arc::new(String::new()),
-            description: Arc::new("close friend".to_string()),
+            relation: ArcStr::from("friend"),
+            full_name: ArcStr::new(),
+            description: ArcStr::from("close friend"),
         });
         manager.replace_other_role_relations(
             "agent-other-rel", "admin", "Bob",
             vec![],
-            vec![RoleRelationEntry { role_name: "enemy".to_string(), relation }],
+            vec![RoleRelationEntry { role_name: ArcStr::from("enemy"), relation }],
         ).await.unwrap();
         let bob = manager.get_other_role("agent-other-rel", "admin", "Bob").await.unwrap();
         let entry = bob.other_role_relations.get("enemy").unwrap();
         let rel = entry.load();
-        assert_eq!(*rel.relation, "friend");
+        assert_eq!(rel.relation, "friend");
     }
 
     #[tokio::test]
@@ -613,8 +614,8 @@ mod tests {
         dm.ensure_agent_ego_dir("agent-invalid-role").await.unwrap();
         let result = RolePlayManager::get().create_role(
             "agent-invalid-role",
-            Arc::new("a b".to_string()),
-            Arc::new("Desc".to_string()),
+            ArcStr::from("a b"),
+            ArcStr::from("Desc"),
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
@@ -626,8 +627,8 @@ mod tests {
         dm.ensure_agent_dir("agent-from-invalid").await.unwrap();
         dm.ensure_agent_ego_dir("agent-from-invalid").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-from-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
-        let result = manager.create_role_from("agent-from-invalid", "admin", Arc::new("a b".to_string())).await;
+        manager.create_role("agent-from-invalid", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
+        let result = manager.create_role_from("agent-from-invalid", "admin", ArcStr::from("a b")).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
 
@@ -638,21 +639,21 @@ mod tests {
         dm.ensure_agent_dir("agent-other-invalid").await.unwrap();
         dm.ensure_agent_ego_dir("agent-other-invalid").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-other-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-other-invalid", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         let result = manager.replace_other_roles(
             "agent-other-invalid", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "a b".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("a b"), other_role }],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
@@ -664,25 +665,25 @@ mod tests {
         dm.ensure_agent_dir("agent-ind-invalid").await.unwrap();
         dm.ensure_agent_ego_dir("agent-ind-invalid").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-ind-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-ind-invalid", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         manager.replace_other_roles(
             "agent-ind-invalid", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         let result = manager.update_other_role_individual_name(
             "agent-ind-invalid", "admin", "Bob",
-            Arc::new("a b".to_string()),
+            ArcStr::from("a b"),
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
@@ -694,31 +695,31 @@ mod tests {
         dm.ensure_agent_dir("agent-rel-invalid").await.unwrap();
         dm.ensure_agent_ego_dir("agent-rel-invalid").await.unwrap();
         let manager = RolePlayManager::get();
-        manager.create_role("agent-rel-invalid", Arc::new("admin".to_string()), Arc::new("Desc".to_string())).await.unwrap();
+        manager.create_role("agent-rel-invalid", ArcStr::from("admin"), ArcStr::from("Desc")).await.unwrap();
         let other_role = Arc::new(OtherRole {
-            individual_name: Arc::new("Bob".to_string()),
+            individual_name: ArcStr::from("Bob"),
             role_relation: Arc::new(RoleRelation {
-                relation: Arc::new("colleague".to_string()),
-                full_name: Arc::new(String::new()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                full_name: ArcStr::new(),
+                description: ArcStr::from(""),
             }),
             other_role_relations: Arc::new(ArcSwapHashMap::new()),
-            description: Arc::new("".to_string()),
+            description: ArcStr::from(""),
         });
         manager.replace_other_roles(
             "agent-rel-invalid", "admin",
             vec![],
-            vec![OtherRoleEntry { role_name: "Bob".to_string(), other_role }],
+            vec![OtherRoleEntry { role_name: ArcStr::from("Bob"), other_role }],
         ).await.unwrap();
         let relation = Arc::new(RoleRelation {
-            relation: Arc::new("friend".to_string()),
-            full_name: Arc::new(String::new()),
-            description: Arc::new("".to_string()),
+            relation: ArcStr::from("friend"),
+            full_name: ArcStr::new(),
+            description: ArcStr::from(""),
         });
         let result = manager.replace_other_role_relations(
             "agent-rel-invalid", "admin", "Bob",
             vec![],
-            vec![RoleRelationEntry { role_name: "a b".to_string(), relation }],
+            vec![RoleRelationEntry { role_name: ArcStr::from("a b"), relation }],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }

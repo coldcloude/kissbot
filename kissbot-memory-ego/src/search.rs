@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use dashmap::{DashMap, DashSet};
 use futures_util::future;
-use kai_index::document::to_document;
+use kai_index::document::{to_document, AsStr};
 use kai_index::prefix_completion::{SimplePrefixCompletion, CompletionResult, PrefixCompletion};
 use kai_index::{Document, SubstringIndex};
 use kissbot_api::RoleKey;
@@ -14,8 +15,38 @@ use kissbot_api::AgentMetadata;
 use crate::role_play::RolePlayManager;
 use kissbot_api::Role;
 
+/// 索引文档内容：kai-index 的 `Document<S>` 要求内容类型实现 `AsStr`，而 `ArcStr` 未实现该 trait，
+/// 此薄包装在 `ArcStr` 上补出该实现，克隆仅增加引用计数。
+#[derive(Clone)]
+struct IndexContent(ArcStr);
+
+impl AsStr for IndexContent {
+    fn as_string(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+/// 全文索引文档：内容由 `ArcStr` 组成。
+struct IndexDocument {
+    value: Vec<IndexContent>,
+}
+
+impl IndexDocument {
+    fn new(contents: &[ArcStr]) -> Self {
+        Self {
+            value: contents.iter().cloned().map(IndexContent).collect(),
+        }
+    }
+}
+
+impl Document<IndexContent> for IndexDocument {
+    fn contents(&self) -> &Vec<IndexContent> {
+        &self.value
+    }
+}
+
 struct SearchMetadata {
-    value: Vec<Arc<String>>,
+    value: Vec<ArcStr>,
 }
 
 impl SearchMetadata {
@@ -26,14 +57,8 @@ impl SearchMetadata {
     }
 }
 
-impl Document<Arc<String>> for SearchMetadata {
-    fn contents(&self) -> &Vec<Arc<String>> {
-        &self.value
-    }
-}
-
 struct RoleSearchMetadata {
-    value: Vec<Arc<String>>,
+    value: Vec<ArcStr>,
 }
 
 impl RoleSearchMetadata {
@@ -41,12 +66,6 @@ impl RoleSearchMetadata {
         Self {
             value: vec![role.role_name.clone(), role.full_name.clone(), role.description.clone()],
         }
-    }
-}
-
-impl Document<Arc<String>> for RoleSearchMetadata {
-    fn contents(&self) -> &Vec<Arc<String>> {
-        &self.value
     }
 }
 
@@ -88,10 +107,10 @@ fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> 
 }
 
 pub struct SearchManager {
-    identity_dirty: DashSet<String>,
-    name_descr_index: Arc<RwLock<SubstringIndex<String>>>,
-    name_completion: SimplePrefixCompletion<String>,
-    search_metadata: DashMap<String, SearchMetadata>,
+    identity_dirty: DashSet<ArcStr>,
+    name_descr_index: Arc<RwLock<SubstringIndex<ArcStr>>>,
+    name_completion: SimplePrefixCompletion<ArcStr>,
+    search_metadata: DashMap<ArcStr, SearchMetadata>,
     role_dirty: DashSet<RoleKey>,
     role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
     role_name_completion: SimplePrefixCompletion<RoleKey>,
@@ -132,6 +151,7 @@ impl SearchManager {
     }
 
     pub async fn force_sync_identity(&self, agent_id: &str) {
+        let agent_key = ArcStr::from(agent_id);
         let old_metadata = self.search_metadata.remove(agent_id).map(|(_, m)| m);
         let was_indexed = old_metadata.is_some();
         if let Ok(metadata) = AgentManager::get().get_agent(agent_id).await {
@@ -148,39 +168,39 @@ impl SearchManager {
                 let mut guard = self.name_descr_index.write().await;
                 //有旧值，先移除
                 if let Some(old) = old_metadata {
-                    guard.remove(&agent_id.to_string(), &old);
+                    guard.remove(&agent_key, &IndexDocument::new(&old.value));
                 }
                 //插入新值
-                guard.insert(&agent_id.to_string(), &new_search_metadata);
+                guard.insert(&agent_key, &IndexDocument::new(&new_search_metadata.value));
             }
             //name_completion（索引 agent_id，不可变，仅首次索引时插入）
             if !was_indexed {
                 let new_id_document = to_document(metadata.agent_id.clone());
-                self.name_completion.insert(&agent_id.to_string(), &new_id_document);
+                self.name_completion.insert(&agent_key, &new_id_document);
             }
             //保存search_metadata
-            self.search_metadata.insert(agent_id.to_string(), new_search_metadata);
+            self.search_metadata.insert(agent_key, new_search_metadata);
         }
         else {
             //移除旧全文索引与补全索引
             if let Some(old) = old_metadata {
                 let mut guard = self.name_descr_index.write().await;
-                guard.remove(&agent_id.to_string(), &old);
+                guard.remove(&agent_key, &IndexDocument::new(&old.value));
                 let old_id_document = to_document(old.value[0].clone());
-                self.name_completion.remove(&agent_id.to_string(), &old_id_document);
+                self.name_completion.remove(&agent_key, &old_id_document);
             }
         }
     }
 
     pub async fn sync_identity(&self, agent_id: &str) {
-        if self.identity_dirty.remove(&agent_id.to_string()).is_some() {
+        if self.identity_dirty.remove(agent_id).is_some() {
             self.force_sync_identity(agent_id).await;
         }
     }
 
     pub async fn sync_all_identity(&self) {
         while !self.identity_dirty.is_empty() {
-            let agent_ids: Vec<String> = self.identity_dirty.iter().map(|id| id.clone()).collect();
+            let agent_ids: Vec<ArcStr> = self.identity_dirty.iter().map(|id| id.clone()).collect();
             let mut futs = Vec::new();
             agent_ids.iter().for_each(|id| {
                 let fut = self.sync_identity(id.as_str());
@@ -190,7 +210,7 @@ impl SearchManager {
         }
     }
 
-    pub async fn retrieve_agents(&self, mut agent_ids: Vec<Arc<String>>) -> Vec<Arc<AgentMetadata>> {
+    pub async fn retrieve_agents(&self, mut agent_ids: Vec<ArcStr>) -> Vec<Arc<AgentMetadata>> {
         let mut results = Vec::new();
         let mut futs = Vec::new();
         for id in agent_ids.drain(..) {
@@ -206,18 +226,18 @@ impl SearchManager {
     }
 
     pub fn mark_identity_dirty(&self, agent_id: &str) {
-        self.identity_dirty.insert(agent_id.to_string());
+        self.identity_dirty.insert(ArcStr::from(agent_id));
     }
 
-    pub async fn search_by_description(&self, query: &str) -> Vec<String> {
+    pub async fn search_by_description(&self, query: &str) -> Vec<ArcStr> {
         //先同步脏数据
         self.sync_all_identity().await;
         //搜索
         let guard = self.name_descr_index.read().await;
-        guard.find_all_keys(query, true).iter().map(|id| id.to_string()).collect()
+        guard.find_all_keys(query, true)
     }
 
-    pub async fn name_completion(&self, query: &str) -> Vec<CompletionResult<String>> {
+    pub async fn name_completion(&self, query: &str) -> Vec<CompletionResult<ArcStr>> {
         //先同步脏数据
         self.sync_all_identity().await;
         //搜索
@@ -226,8 +246,8 @@ impl SearchManager {
 
     pub async fn force_sync_role(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: Arc::new(agent_id.to_string()),
-            role_name: Arc::new(role_name.to_string()),
+            agent_id: ArcStr::from(agent_id),
+            role_name: ArcStr::from(role_name),
         };
         //取得旧索引值
         let old_search_metadata_or_none = self.role_search_metadata.remove(&role_key);
@@ -280,10 +300,10 @@ impl SearchManager {
                 let mut guard = self.role_name_descr_index.write().await;
                 //有旧值，先移除
                 if let Some((_, old_metadata)) = old_search_metadata_or_none {
-                    guard.remove(&role_key, &old_metadata);
+                    guard.remove(&role_key, &IndexDocument::new(&old_metadata.value));
                 }
                 //插入新值
-                guard.insert(&role_key, &new_search_metadata);
+                guard.insert(&role_key, &IndexDocument::new(&new_search_metadata.value));
             }
             //保存search_metadata
             self.role_search_metadata.insert(role_key, new_search_metadata);
@@ -297,15 +317,15 @@ impl SearchManager {
             //移除旧全文索引
             if let Some((_, old_metadata)) = old_search_metadata_or_none {
                 let mut guard = self.role_name_descr_index.write().await;
-                guard.remove(&role_key, &old_metadata);
+                guard.remove(&role_key, &IndexDocument::new(&old_metadata.value));
             }
         }
     }
 
     pub async fn sync_role(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: Arc::new(agent_id.to_string()),
-            role_name: Arc::new(role_name.to_string()),
+            agent_id: ArcStr::from(agent_id),
+            role_name: ArcStr::from(role_name),
         };
         if self.role_dirty.remove(&role_key).is_some() {
             self.force_sync_role(agent_id, role_name).await;
@@ -338,8 +358,8 @@ impl SearchManager {
 
     pub fn mark_role_dirty(&self, agent_id: &str, role_name: &str) {
         let role_key = RoleKey {
-            agent_id: Arc::new(agent_id.to_string()),
-            role_name: Arc::new(role_name.to_string()),
+            agent_id: ArcStr::from(agent_id),
+            role_name: ArcStr::from(role_name),
         };
         self.role_dirty.insert(role_key);
     }
@@ -466,7 +486,7 @@ mod tests {
         let results = manager.search_role_by_description("旧描述", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
         // 仅 description 变更（name/full_name 不变）-> 重索引
-        RolePlayManager::get().update_role_description("role-desc-chg-agt", "admin", Arc::new("新描述".into())).await.unwrap();
+        RolePlayManager::get().update_role_description("role-desc-chg-agt", "admin", ArcStr::from("新描述")).await.unwrap();
         manager.force_sync_role("role-desc-chg-agt", "admin").await;
         let results = manager.search_role_by_description("新描述", None).await;
         assert_eq!(results.len(), 1, "expected 1 after desc change, got {:?}", results);
@@ -487,7 +507,7 @@ mod tests {
         let results = manager.search_role_by_description("旧全名", None).await;
         assert_eq!(results.len(), 1, "expected 1, got {:?}", results);
         // 仅 full_name 变更（name/description 不变）-> 重索引
-        RolePlayManager::get().update_role_full_name("role-fn-chg-agt", "admin", Arc::new("新全名".into())).await.unwrap();
+        RolePlayManager::get().update_role_full_name("role-fn-chg-agt", "admin", ArcStr::from("新全名")).await.unwrap();
         manager.force_sync_role("role-fn-chg-agt", "admin").await;
         let results = manager.search_role_by_description("新全名", None).await;
         assert_eq!(results.len(), 1, "expected 1 after full_name change, got {:?}", results);
@@ -505,8 +525,8 @@ mod tests {
         manager.force_sync_identity("ret-agt1").await;
         manager.force_sync_identity("ret-agt2").await;
         let results = manager.retrieve_agents(vec![
-            Arc::new("ret-agt1".to_string()),
-            Arc::new("ret-agt2".to_string()),
+            ArcStr::from("ret-agt1"),
+            ArcStr::from("ret-agt2"),
         ]).await;
         assert_eq!(results.len(), 2, "expected 2, got {:?}", results);
         let names: Vec<&str> = results.iter().map(|a| a.agent_id.as_str()).collect();

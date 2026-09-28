@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
@@ -17,9 +18,9 @@ pub struct StubModel {
     pub group_decisions: Mutex<VecDeque<Vec<MessageGroup>>>,
     pub level_decisions: Mutex<VecDeque<LevelDecision>>,
     /// 每次 summarize 的输入（断言级联时父 case 能看到子 case 摘要）
-    pub summary_inputs: Mutex<Vec<String>>,
+    pub summary_inputs: Mutex<Vec<ArcStr>>,
     /// 每次判定调用收到的提示词（断言调用顺序与候选集合）
-    pub prompts: Mutex<Vec<String>>,
+    pub prompts: Mutex<Vec<ArcStr>>,
     /// 预置的摘要失败次数（各消耗一次，测试模型失败时状态不被破坏）
     pub fail_summarize: Mutex<VecDeque<()>>,
     pub summary_count: AtomicU64,
@@ -51,11 +52,11 @@ impl StubModel {
         self
     }
 
-    pub fn prompts(&self) -> Vec<String> {
+    pub fn prompts(&self) -> Vec<ArcStr> {
         self.prompts.lock().unwrap().clone()
     }
 
-    pub fn summary_inputs(&self) -> Vec<String> {
+    pub fn summary_inputs(&self) -> Vec<ArcStr> {
         self.summary_inputs.lock().unwrap().clone()
     }
 }
@@ -63,7 +64,7 @@ impl StubModel {
 #[async_trait]
 impl DecisionModel for StubModel {
     async fn group(&self, _scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
-        self.prompts.lock().unwrap().push(crate::model::grouping_prompt(batch, current));
+        self.prompts.lock().unwrap().push(ArcStr::from(crate::model::grouping_prompt(batch, current)));
         if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
             // 与真实实现一致地校验覆盖：预置不完整时立即暴露，而不是静默丢记录
             let mut next = 0usize;
@@ -72,7 +73,7 @@ impl DecisionModel for StubModel {
                     return Err(crate::error::Error::ModelApiError(format!(
                         "桩分组未完整覆盖批次：期望下一组从下标 {} 开始，实际为 {:?}",
                         next, group.messages
-                    )));
+                    ).into()));
                 }
                 next = group.messages.last().expect("桩分组非空") + 1;
             }
@@ -80,7 +81,7 @@ impl DecisionModel for StubModel {
                 return Err(crate::error::Error::ModelApiError(format!(
                     "桩分组未完整覆盖批次：覆盖到下标 {}，批次共 {} 条",
                     next, total
-                )));
+                ).into()));
             }
             return Ok(groups);
         }
@@ -89,18 +90,18 @@ impl DecisionModel for StubModel {
     }
 
     async fn decide_level(&self, _scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
-        self.prompts.lock().unwrap().push(crate::model::level_prompt(batch, level));
+        self.prompts.lock().unwrap().push(ArcStr::from(crate::model::level_prompt(batch, level)));
         // 默认新开叶子 case：名称固定 "case"（重名时组件追加 -2、-3…），摘要一并给出
         Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or_else(|| LevelDecision::new_case("case", "新 case 摘要")))
     }
 
-    async fn summarize(&self, _scope: &ModelScope, content: &str) -> Result<String> {
-        self.summary_inputs.lock().unwrap().push(content.to_string());
+    async fn summarize(&self, _scope: &ModelScope, content: &str) -> Result<ArcStr> {
+        self.summary_inputs.lock().unwrap().push(ArcStr::from(content));
         if self.fail_summarize.lock().unwrap().pop_front().is_some() {
             return Err(crate::error::Error::ModelApiError("stub summarize failure".into()));
         }
         let next = self.summary_count.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(format!("摘要{}", next))
+        Ok(ArcStr::from(format!("摘要{}", next)))
     }
 
 }

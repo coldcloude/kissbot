@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -31,24 +32,24 @@ const HEADER_ORIGIN: &str = "origin";
 #[derive(Debug, Clone)]
 pub struct McpHttpConfig {
     /// MCP 端点路径（默认 `/mcp`）
-    pub endpoint_path: Arc<String>,
+    pub endpoint_path: ArcStr,
     /// 允许的 Origin 白名单；空列表时仅放行本机回环来源
-    pub allowed_origins: Vec<String>,
+    pub allowed_origins: Vec<ArcStr>,
 }
 
 impl Default for McpHttpConfig {
     fn default() -> Self {
         Self {
-            endpoint_path: Arc::new("/mcp".to_string()),
+            endpoint_path: ArcStr::from("/mcp"),
             allowed_origins: Vec::new(),
         }
     }
 }
 
 impl McpHttpConfig {
-    pub fn with_endpoint(endpoint_path: impl Into<String>) -> Self {
+    pub fn with_endpoint(endpoint_path: impl Into<ArcStr>) -> Self {
         Self {
-            endpoint_path: Arc::new(endpoint_path.into()),
+            endpoint_path: endpoint_path.into(),
             ..Default::default()
         }
     }
@@ -61,9 +62,9 @@ struct McpHttpState<H: McpHandler> {
 
 /// 构建 MCP HTTP Router（不含认证；认证由调用方以 layer 叠加）
 pub fn router<H: McpHandler>(server: McpServer<H>, config: McpHttpConfig) -> Router {
-    let path = config.endpoint_path.to_string();
+    let path = config.endpoint_path.as_str();
     Router::new()
-        .route(&path, post(handle::<H>))
+        .route(path, post(handle::<H>))
         .with_state(Arc::new(McpHttpState { server, config }))
 }
 
@@ -239,8 +240,8 @@ fn error_response(status: StatusCode, id: Option<RequestId>, error: McpError) ->
 }
 
 /// Origin 校验：命中白名单或本机回环来源放行
-fn origin_allowed(origin: &str, allowed: &[String]) -> bool {
-    if allowed.iter().any(|a| a == origin) {
+fn origin_allowed(origin: &str, allowed: &[ArcStr]) -> bool {
+    if allowed.iter().any(|a| a.as_str() == origin) {
         return true;
     }
     let lower = origin.to_ascii_lowercase();

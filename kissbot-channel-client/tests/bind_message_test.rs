@@ -2,6 +2,8 @@ mod mock;
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+
+use arcstr::ArcStr;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_channel::GroupChangeType;
@@ -16,47 +18,47 @@ async fn test_bind_send_and_notify() {
 
     let terminal = MockTerminal::new();
     let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
-    client.connect("ws://127.0.0.1:19101", "test-key").await.expect("connect failed");
+    client.clone().connect("ws://127.0.0.1:19101", "test-key").await.expect("connect failed");
 
     // 绑定
     client.bind(make_bind_request("m1", "u1")).await.expect("bind failed");
 
     // messenger info 查询
-    let info = client.get_info(Arc::new("m1".to_string())).await.expect("get_info failed");
+    let info = client.get_info(ArcStr::from("m1")).await.expect("get_info failed");
     assert!(info.user_map.contains_key("u1"));
 
     // 发送文本消息 → mock messenger 收到
     let response = client.send_message(OutgoingMessage {
-        messenger_id: Arc::new("m1".to_string()),
-        user_id: Arc::new("u1".to_string()),
-        group_id: Arc::new("g1".to_string()),
-        content: Content::Text(Arc::new("hello".to_string())),
+        messenger_id: ArcStr::from("m1"),
+        user_id: ArcStr::from("u1"),
+        group_id: ArcStr::from("g1"),
+        content: Content::Text(ArcStr::from("hello")),
     }).await.expect("send_message failed");
     let sent = tokio::time::timeout(Duration::from_secs(2), messenger.sent_messages_rx().recv_async()).await.unwrap().unwrap();
-    assert_eq!(sent.content, Content::Text(Arc::new("hello".to_string())));
-    assert_eq!(response.content, Content::Text(Arc::new("hello".to_string())));
+    assert_eq!(sent.content, Content::Text(ArcStr::from("hello")));
+    assert_eq!(response.content, Content::Text(ArcStr::from("hello")));
 
     // 上行消息 → terminal.incoming_message
     messenger.push_incoming(make_text_incoming("m1", "u1", "g1", "hi"));
     let incoming = tokio::time::timeout(Duration::from_secs(2), terminal.incoming_rx().recv_async()).await.unwrap().unwrap();
     // 全链路透传：recipient_user_id 随 event 到达
-    assert_eq!(*incoming.recipient_user_id, "u1");
-    assert_eq!(incoming.incoming_message.content, Content::Text(Arc::new("hi".to_string())));
+    assert_eq!(incoming.recipient_user_id, "u1");
+    assert_eq!(incoming.incoming_message.content, Content::Text(ArcStr::from("hi")));
 
     // 群组变化 join → terminal.join_group（同时会产生一条系统消息）
     messenger.push_group_change(GroupChangeType::Joined, "u1", "g1");
     let join = tokio::time::timeout(Duration::from_secs(2), terminal.joins_rx().recv_async()).await.unwrap().unwrap();
-    assert_eq!(*join.group_id, "g1");
+    assert_eq!(join.group_id, "g1");
 
     // 群组变化 leave → terminal.leave_group
     messenger.push_group_change(GroupChangeType::Left, "u1", "g1");
     let leave = tokio::time::timeout(Duration::from_secs(2), terminal.leaves_rx().recv_async()).await.unwrap().unwrap();
-    assert_eq!(*leave.group_id, "g1");
+    assert_eq!(leave.group_id, "g1");
 
     // 用户删除 → terminal.user_removed
     messenger.push_user_remove("u1");
     let removed = tokio::time::timeout(Duration::from_secs(2), terminal.removals_rx().recv_async()).await.unwrap().unwrap();
-    assert_eq!(*removed.user_id, "u1");
+    assert_eq!(removed.user_id, "u1");
 
     // 重新绑定后解绑
     client.bind(make_bind_request("m1", "u1")).await.expect("re-bind failed");

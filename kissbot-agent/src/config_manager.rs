@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use arc_swap::ArcSwap;
 use kissbot_api::ChannelUser;
@@ -21,8 +22,8 @@ pub struct ConfigManager {
     agent_config: AgentConfig,
     nexus_repo: Arc<RwLock<NexusRepo>>,
     station_repo: Arc<RwLock<StationRepo>>,
-    nexus_path: String,
-    station_path: String,
+    nexus_path: ArcStr,
+    station_path: ArcStr,
 }
 
 #[async_trait]
@@ -81,7 +82,7 @@ macro_rules! impl_session_config_field {
                         agent_role_config.set::<$ct>(role_name, config);
                         Arc::new(agent_role_config)
                     };
-                    agents.insert(agent_id.to_string(), agent_role_config);
+                    agents.insert(ArcStr::from(agent_id), agent_role_config);
                     Ok(())
                 }).await
             }
@@ -145,8 +146,8 @@ impl ConfigManager {
         for sub in ["sessions", "attachments", "station"] {
             let _ = tokio::fs::create_dir_all(format!("{}/{}", data_dir, sub)).await;
         }
-        let nexus_path = format!("{}/nexus.json", data_dir);
-        let station_path = format!("{}/station.json", data_dir);
+        let nexus_path = ArcStr::from(format!("{}/nexus.json", data_dir));
+        let station_path = ArcStr::from(format!("{}/station.json", data_dir));
 
         let nexus_repo = Self::load_or_create_nexus(&nexus_path).await?;
         let station_repo = Self::load_or_create_station(&station_path).await?;
@@ -199,7 +200,7 @@ impl ConfigManager {
         let mut guard = self.nexus_repo.write().await;
         let rst = op(&mut *guard)?;
         let json = serde_json::to_string_pretty(&*guard)?;
-        tokio::fs::write(&self.nexus_path, json.as_bytes()).await?;
+        tokio::fs::write(self.nexus_path.as_str(), json.as_bytes()).await?;
         Ok(rst)
     }
 
@@ -212,7 +213,7 @@ impl ConfigManager {
         let mut guard = self.station_repo.write().await;
         let rst = op(&mut *guard)?;
         let json = serde_json::to_string_pretty(&*guard)?;
-        tokio::fs::write(&self.station_path, json.as_bytes()).await?;
+        tokio::fs::write(self.station_path.as_str(), json.as_bytes()).await?;
         Ok(rst)
     }
 
@@ -246,7 +247,7 @@ impl ConfigManager {
 
     // ---------- channels ----------
     /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
-    pub async fn channels(&self) -> Vec<(String, Arc<ChannelConfig>)> {
+    pub async fn channels(&self) -> Vec<(ArcStr, Arc<ChannelConfig>)> {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
     }
@@ -260,15 +261,15 @@ impl ConfigManager {
         repo.channels.get(channel_id).map(|s| s.load().clone())
     }
     #[allow(dead_code)]
-    pub async fn channel_ws_url(&self, channel_id: &str) -> Option<String> {
+    pub async fn channel_ws_url(&self, channel_id: &str) -> Option<ArcStr> {
         let repo = self.nexus_repo.read().await;
-        repo.channels.get(channel_id).map(|s| s.load().ws_url.to_string())
+        repo.channels.get(channel_id).map(|s| s.load().ws_url.clone())
     }
     #[allow(dead_code)]
     pub async fn add_channel(&self, ch: ChannelConfig) -> Result<()> {
         self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.channels);
-            map.insert(ch.channel_id.to_string(), ArcSwap::new(Arc::new(ch)));
+            map.insert(ch.channel_id.clone(), ArcSwap::new(Arc::new(ch)));
             Ok(())
         }).await
     }
@@ -289,7 +290,7 @@ impl ConfigManager {
     {
         self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
             let mut ch = swap.load_full();
             let ch_mut = Arc::make_mut(&mut ch);
             f(ch_mut);
@@ -374,9 +375,9 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.providers);
             if map.contains_key(name) {
-                return Err(Error::ConfigNotFound(format!("provider 已存在: {}", name.to_string())));
+                return Err(Error::ConfigNotFound(format!("provider 已存在: {}", name.to_string()).into()));
             }
-            map.insert(name.to_string(), ArcSwap::new(Arc::new(cfg)));
+            map.insert(ArcStr::from(name), ArcSwap::new(Arc::new(cfg)));
             Ok(())
         }).await
     }
@@ -385,7 +386,7 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.providers);
             if !map.contains_key(name) {
-                return Err(Error::ConfigNotFound(format!("provider 不存在: {}", name)));
+                return Err(Error::ConfigNotFound(format!("provider 不存在: {}", name).into()));
             }
             map.remove(name);
             Ok(())
@@ -419,7 +420,7 @@ impl ConfigManager {
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
             Arc::make_mut(&mut ch_mut.admins).insert(admin.clone());
@@ -432,10 +433,10 @@ impl ConfigManager {
     pub async fn remove_admin(&self, channel_id: &str, messenger_id: &str, user_id: &str) -> Result<()> {
         self.write_nexus_config(|repo| {
             let swap = repo.channels.get(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)))?;
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
             let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
-            let target = ChannelUser { messenger_id: Arc::new(messenger_id.to_string()), user_id: Arc::new(user_id.to_string()) };
+            let target = ChannelUser { messenger_id: ArcStr::from(messenger_id), user_id: ArcStr::from(user_id) };
             Arc::make_mut(&mut ch_mut.admins).remove(&target);
             swap.store(ch);
             Ok(())
@@ -459,10 +460,10 @@ mod tests {
 
     fn agent_config(data_dir: &str) -> AgentConfig {
         AgentConfig {
-            data_dir: Arc::new(data_dir.into()),
-            mgmt_host: Arc::new("127.0.0.1".into()),
+            data_dir: ArcStr::from(data_dir),
+            mgmt_host: ArcStr::from("127.0.0.1"),
             mgmt_port: 9090,
-            station_host: Arc::new("127.0.0.1".into()),
+            station_host: ArcStr::from("127.0.0.1"),
             station_port: 9100,
             ws_reconnect_interval_secs: 5,
         }
@@ -475,8 +476,8 @@ mod tests {
             agent_config: agent_config(dir.path().to_str().unwrap()),
             nexus_repo: Arc::new(RwLock::new(NexusRepo::default())),
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
-            nexus_path: dir.path().join("nexus.json").to_str().unwrap().to_string(),
-            station_path: dir.path().join("station.json").to_str().unwrap().to_string(),
+            nexus_path: ArcStr::from(dir.path().join("nexus.json").to_str().unwrap()),
+            station_path: ArcStr::from(dir.path().join("station.json").to_str().unwrap()),
         }
     }
 
@@ -508,7 +509,7 @@ mod tests {
         // 手工写入一个 provider 后落盘（模拟人工编辑/管理 API 写入）
         {
             let providers = Arc::make_mut(&mut repo.providers);
-            providers.insert("deepseek".to_string(), ArcSwap::new(Arc::new(sample_provider())));
+            providers.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
         }
         std::fs::write(&path, serde_json::to_string_pretty(&repo).unwrap()).unwrap();
         // 第二次加载：文件已存在为权威（内容不变，不重新种子）
@@ -523,7 +524,7 @@ mod tests {
         let mut repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
         {
             let map = Arc::make_mut(&mut repo.providers);
-            map.insert("deepseek".to_string(), ArcSwap::new(Arc::new(sample_provider())));
+            map.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
         }
         // 模拟写回再读
         let json = serde_json::to_string_pretty(&repo).unwrap();
@@ -549,7 +550,7 @@ mod tests {
         assert_eq!(before, after, "op 失败不应写入文件");
 
         // 成功路径：落盘可见
-        manager.update_channel("web-main", |c| c.agent_id = Arc::new("a1".into())).await.unwrap();
+        manager.update_channel("web-main", |c| c.agent_id = ArcStr::from("a1")).await.unwrap();
         let saved = read_nexus_json(&dir);
         assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
     }
@@ -559,7 +560,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         // channel 不存在：add_admin / remove_admin 都应返回 ConfigNotFound 而非静默成功
-        let admin = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let admin = ChannelUser { messenger_id: ArcStr::from("m1"), user_id: ArcStr::from("u1") };
         let err = manager.add_admin("nope", &admin).await.unwrap_err();
         assert!(matches!(err, Error::ConfigNotFound(_)));
         let err = manager.remove_admin("nope", "m1", "u1").await.unwrap_err();
@@ -568,12 +569,12 @@ mod tests {
 
     fn sample_channel(id: &str) -> ChannelConfig {
         ChannelConfig {
-            channel_id: Arc::new(id.into()),
-            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            channel_id: ArcStr::from(id),
+            ws_url: ArcStr::from("ws://127.0.0.1:8201"),
             admins: Arc::new(HashSet::new()),
-            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }])),
-            agent_id: Arc::new("0".into()),
-            role_name: Arc::new("".into()),
+            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }])),
+            agent_id: ArcStr::from("0"),
+            role_name: ArcStr::from(""),
             enabled: true,
         }
     }
@@ -581,15 +582,15 @@ mod tests {
     #[test]
     fn channel_config_bind_users_roundtrip() {
         let ch = ChannelConfig {
-            channel_id: Arc::new("c1".into()),
-            ws_url: Arc::new("ws://127.0.0.1:8201".into()),
+            channel_id: ArcStr::from("c1"),
+            ws_url: ArcStr::from("ws://127.0.0.1:8201"),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::from([
-                ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) },
-                ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u2".into()) },
+                ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") },
+                ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") },
             ])),
-            agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("r1".into()),
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from("r1"),
             enabled: true,
         };
         let json = serde_json::to_value(&ch).unwrap();
@@ -612,8 +613,8 @@ mod tests {
         assert!(!json.contains("\"is_send_channel\""), "ChannelConfig 无 is_send_channel 字段");
         assert!(json.contains("\"enabled\""));
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(*back.channel_id, "web-main");
-        assert!(back.bind_users.contains(&ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }), "bind_users 应包含 web/u1");
+        assert_eq!(back.channel_id, "web-main");
+        assert!(back.bind_users.contains(&ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }), "bind_users 应包含 web/u1");
     }
 
     #[test]
@@ -654,16 +655,16 @@ mod tests {
 
         // 修改 agent_id/role_name/bind_users（绑定为数组追加）
         manager.update_channel("web-main", |c| {
-            c.agent_id = Arc::new("a1".into());
-            c.role_name = Arc::new("r1".into());
+            c.agent_id = ArcStr::from("a1");
+            c.role_name = ArcStr::from("r1");
             // HashSet 追加（Arc::make_mut 写时复制）
-            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u2".into()) });
+            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") });
         }).await.unwrap();
 
         // 内存可见
         let ch = manager.channels().await.into_iter()
             .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
-        assert_eq!(*ch.agent_id, "a1");
+        assert_eq!(ch.agent_id, "a1");
         assert_eq!(ch.bind_users.len(), 2, "bind_users 追加应可见");
 
         // 落盘可见（重新读文件）
@@ -677,8 +678,8 @@ mod tests {
 
     #[test]
     fn channel_user_hash_eq_by_value() {
-        let a = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
-        let b = ChannelUser { messenger_id: Arc::new("m1".into()), user_id: Arc::new("u1".into()) };
+        let a = ChannelUser { messenger_id: ArcStr::from("m1"), user_id: ArcStr::from("u1") };
+        let b = ChannelUser { messenger_id: ArcStr::from("m1"), user_id: ArcStr::from("u1") };
         let mut set = HashSet::new();
         set.insert(a.clone());
         assert!(set.contains(&b), "等值 ChannelUser 应命中 HashSet");
@@ -691,7 +692,7 @@ mod tests {
         let mut repo = NexusRepo::default();
         {
             let map = Arc::make_mut(&mut repo.providers);
-            map.insert("deepseek".to_string(), ArcSwap::new(Arc::new(sample_provider())));
+            map.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"providers\""), "应序列化 providers");
@@ -774,9 +775,9 @@ mod tests {
     fn sample_provider() -> ProviderModelConfig {
         ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
-                provider_type: Arc::new("openai".into()),
-                base_url: Arc::new("https://api.deepseek.com".into()),
-                api_key: Arc::new("sk-test".into()),
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from("https://api.deepseek.com"),
+                api_key: ArcStr::from("sk-test"),
             }),
             default_model_config: ModelConfig {
                 max_tokens_usage: 128000,
@@ -791,7 +792,7 @@ mod tests {
     fn with_model(mut provider: ProviderModelConfig, model: &str, config: ModelConfig) -> ProviderModelConfig {
         {
             let map = Arc::make_mut(&mut provider.model_configs);
-            map.insert(model.to_string(), ArcSwap::new(Arc::new(config)));
+            map.insert(ArcStr::from(model), ArcSwap::new(Arc::new(config)));
         }
         provider
     }
@@ -994,25 +995,25 @@ mod tests {
     fn station_repo_new_shape_serde_roundtrip() {
         // StationRepo 形状：station_id + groups（key = group 名，value = 工具元数据）+ sub_stations
         let mut repo = StationRepo::default();
-        repo.station_id = Arc::new("station-self".into());
-        repo.groups = vec!["filesystem".to_string()];
+        repo.station_id = ArcStr::from("station-self");
+        repo.groups = vec![ArcStr::from("filesystem")];
         {
             let map = Arc::make_mut(&mut repo.sub_stations);
-            map.insert("station-a".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
-                station_id: Arc::new("station-a".into()),
-                base_url: Arc::new("http://127.0.0.1:9001".into()),
+            map.insert(ArcStr::from("station-a"), ArcSwap::new(Arc::new(SubStationConfig {
+                station_id: ArcStr::from("station-a"),
+                base_url: ArcStr::from("http://127.0.0.1:9001"),
                 timeout_secs: 30,
-                prefix: Some(Arc::new("a/".into())),
+                prefix: Some(ArcStr::from("a/")),
             })));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"station_id\"") && json.contains("\"groups\"") && json.contains("\"sub_stations\""), "形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
-        assert_eq!(back.groups, vec!["filesystem".to_string()], "group 列表回读");
+        assert_eq!(back.groups, vec![ArcStr::from("filesystem")], "group 列表回读");
         let sub = back.sub_stations.get("station-a").unwrap().load_full();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
-        assert_eq!(sub.prefix.as_deref().map(String::as_str), Some("a/"), "前缀回读");
+        assert_eq!(sub.prefix.as_deref(), Some("a/"), "前缀回读");
         // 前缀可缺省
         let minimal: SubStationConfig = serde_json::from_str(
             r#"{"station_id":"s1","base_url":"http://127.0.0.1:9002","timeout_secs":5}"#,
@@ -1027,14 +1028,14 @@ mod tests {
     // ---- (agent, role) 配置继承与 session 配置 ----
 
     fn session_key(agent_id: &str, role_name: &str) -> SessionKey {
-        SessionKey { agent_id: Arc::new(agent_id.into()), role_event: Arc::new(RoleEvent::new(role_name)) }
+        SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(role_name)) }
     }
 
     /// LLM 配置助手：provider/model 已配，其余字段按需覆盖
     fn llm_config(provider: &str, model: &str) -> LLMConfig {
         LLMConfig {
-            provider: Some(Arc::new(provider.into())),
-            model: Some(Arc::new(model.into())),
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
             ..LLMConfig::default()
         }
     }
@@ -1057,18 +1058,18 @@ mod tests {
         agent.set::<LLMConfig>("", Arc::new(agent_llm));
         // role 只配 model：其余继承 agent
         let mut role_llm = LLMConfig::default();
-        role_llm.model = Some(Arc::new("deepseek-reasoner".into()));
+        role_llm.model = Some(ArcStr::from("deepseek-reasoner"));
         agent.set::<LLMConfig>("r1", Arc::new(role_llm));
 
         let llm: LLMConfig = agent.build("r1");
-        assert_eq!(llm.provider.as_deref().map(|s| s.as_str()), Some("deepseek"), "provider 继承 agent");
-        assert_eq!(llm.model.as_deref().map(|s| s.as_str()), Some("deepseek-reasoner"), "model 被 role 覆盖");
+        assert_eq!(llm.provider.as_deref(), Some("deepseek"), "provider 继承 agent");
+        assert_eq!(llm.model.as_deref(), Some("deepseek-reasoner"), "model 被 role 覆盖");
         assert_eq!(llm.max_tokens, Some(1024), "max_tokens 继承 agent");
         assert!(llm.has_max_tokens, "继承后 has_* 保留");
 
         // 未配置的 role 只拿 agent 默认
         let other: LLMConfig = agent.build("r2");
-        assert_eq!(other.model.as_deref().map(|s| s.as_str()), Some("deepseek-chat"), "未配置 role 继承 agent");
+        assert_eq!(other.model.as_deref(), Some("deepseek-chat"), "未配置 role 继承 agent");
     }
 
     #[test]
@@ -1100,10 +1101,10 @@ mod tests {
         // GroupSetConfig::merge 为并集（agent 与 role 的 group 累加，区别于 LLMConfig 的覆盖语义）
         let mut agent = AgentRoleConfig::default();
         let mut agent_tk = GroupSetConfig::default();
-        agent_tk.group_set = Arc::new(HashSet::from(["filesystem".to_string()]));
+        agent_tk.group_set = Arc::new(HashSet::from([ArcStr::from("filesystem")]));
         agent.set::<GroupSetConfig>("", Arc::new(agent_tk));
         let mut role_tk = GroupSetConfig::default();
-        role_tk.group_set = Arc::new(HashSet::from(["web".to_string()]));
+        role_tk.group_set = Arc::new(HashSet::from([ArcStr::from("web")]));
         agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
 
         let tk: GroupSetConfig = agent.build("r1");
@@ -1117,13 +1118,13 @@ mod tests {
         agent_llm.set_max_tokens(Some(2048));
         agent.set::<LLMConfig>("", Arc::new(agent_llm));
         let mut role_tk = GroupSetConfig::default();
-        role_tk.group_set = Arc::new(HashSet::from(["filesystem".to_string()]));
+        role_tk.group_set = Arc::new(HashSet::from([ArcStr::from("filesystem")]));
         agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
 
         let json = serde_json::to_string(&agent).unwrap();
         let back: AgentRoleConfig = serde_json::from_str(&json).unwrap();
         let llm: LLMConfig = back.build("");
-        assert_eq!(llm.provider.as_deref().map(|s| s.as_str()), Some("deepseek"));
+        assert_eq!(llm.provider.as_deref(), Some("deepseek"));
         assert_eq!(llm.max_tokens, Some(2048), "has_max_tokens 应随取值一起持久化");
         let tk: GroupSetConfig = back.build("r1");
         assert!(tk.group_set.contains("filesystem"), "role 级配置应持久化");
@@ -1142,8 +1143,8 @@ mod tests {
         let snap = manager.nexus_snapshot().await;
         let agent = snap.agents.get("a1").expect("agent 条目应懒建");
         let llm: LLMConfig = agent.build("");
-        assert_eq!(llm.provider.as_deref().map(|s| s.as_str()), Some("deepseek"), "已有取值不被覆盖");
-        assert_eq!(llm.model.as_deref().map(|s| s.as_str()), Some("deepseek-chat"));
+        assert_eq!(llm.provider.as_deref(), Some("deepseek"), "已有取值不被覆盖");
+        assert_eq!(llm.model.as_deref(), Some("deepseek-chat"));
         assert_eq!(llm.max_tokens, Some(4096), "第二次配置合并进同一条");
         // 落盘可见（agents 的 key 为字符串，可正常序列化）
         let saved = read_nexus_json(&dir);
@@ -1219,7 +1220,7 @@ mod tests {
 
         // session 级覆盖 model（provider 未配 → 保留原值）
         let mut session_llm = LLMConfig::default();
-        session_llm.model = Some(Arc::new("deepseek-reasoner".into()));
+        session_llm.model = Some(ArcStr::from("deepseek-reasoner"));
         manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &session_llm).await.unwrap();
 
         let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&key).await;
@@ -1253,9 +1254,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let out = Arc::new(OutChannel {
-            channel_id: Arc::new("web-main".into()),
-            user: Arc::new(ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u1".into()) }),
-            group_id: Arc::new("g1".into()),
+            channel_id: ArcStr::from("web-main"),
+            user: Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }),
+            group_id: ArcStr::from("g1"),
         });
         // role 级设置：role out1 命中，同 agent 的其他 role 不受影响
         manager.set_out_channel("a1", "out1", Some(out)).await.unwrap();

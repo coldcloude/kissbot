@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kai_file::{FileAppendWriter, FileAppendWriterContext, FileObjectAppender, ErrorHandler};
 use kissbot_api::memory::{
@@ -31,8 +32,8 @@ const TOOL_RESULT_KEY: &str = "4";
 /// 共享的 HTTP 配置（client / base_url / api_key，各类型 context 经 Arc 同源引用）
 pub struct StoreHttpConfig {
     client: Client,
-    base_url: String,
-    api_key: Arc<String>,
+    base_url: ArcStr,
+    api_key: ArcStr,
 }
 
 impl StoreHttpConfig {
@@ -138,10 +139,10 @@ where
 pub struct MemoryStoreClient {
     /// 共享 HTTP 配置（与各 context 同一 Arc；读路径 read_recent_for_context 也经它发请求）
     config: Arc<StoreHttpConfig>,
-    channel_appender: FileObjectAppender<String, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
-    think_appender: FileObjectAppender<String, ThinkRequest, StoreSender<ThinkStoreContext>, ThinkStoreContext, LoggingErrorHandler>,
-    tool_call_appender: FileObjectAppender<String, ToolCallRequest, StoreSender<ToolCallStoreContext>, ToolCallStoreContext, LoggingErrorHandler>,
-    tool_result_appender: FileObjectAppender<String, ToolResultRequest, StoreSender<ToolResultStoreContext>, ToolResultStoreContext, LoggingErrorHandler>,
+    channel_appender: FileObjectAppender<ArcStr, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
+    think_appender: FileObjectAppender<ArcStr, ThinkRequest, StoreSender<ThinkStoreContext>, ThinkStoreContext, LoggingErrorHandler>,
+    tool_call_appender: FileObjectAppender<ArcStr, ToolCallRequest, StoreSender<ToolCallStoreContext>, ToolCallStoreContext, LoggingErrorHandler>,
+    tool_result_appender: FileObjectAppender<ArcStr, ToolResultRequest, StoreSender<ToolResultStoreContext>, ToolResultStoreContext, LoggingErrorHandler>,
 }
 
 impl MemoryStoreClient {
@@ -183,23 +184,23 @@ impl MemoryStoreClient {
     }
 
     pub async fn push_channel_record(&self, record: ChannelRequest) {
-        self.channel_appender.append(CHANNEL_KEY.to_string(), vec![record]).await;
+        self.channel_appender.append(ArcStr::from(CHANNEL_KEY), vec![record]).await;
     }
 
     /// 推送 think 记录（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
     /// 调用方：AgentPipeline::run_once（思考记忆推送）
     pub async fn push_think(&self, record: ThinkRequest) {
-        self.think_appender.append(THINK_KEY.to_string(), vec![record]).await;
+        self.think_appender.append(ArcStr::from(THINK_KEY), vec![record]).await;
     }
 
     /// 推送 tool-call 记录（station 工具调用后写入记忆）
     pub async fn push_tool_call(&self, record: ToolCallRequest) {
-        self.tool_call_appender.append(TOOL_CALL_KEY.to_string(), vec![record]).await;
+        self.tool_call_appender.append(ArcStr::from(TOOL_CALL_KEY), vec![record]).await;
     }
 
     /// 推送 tool-result 记录（station 工具调用后写入记忆）
     pub async fn push_tool_result(&self, record: ToolResultRequest) {
-        self.tool_result_appender.append(TOOL_RESULT_KEY.to_string(), vec![record]).await;
+        self.tool_result_appender.append(ArcStr::from(TOOL_RESULT_KEY), vec![record]).await;
     }
 
     /// 记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
@@ -217,12 +218,12 @@ impl MemoryStoreClient {
         // 时间窗起点计算失败（checked_sub_signed 溢出）→ 直接报错，不静默回退
         let start = chrono::Local::now()
             .checked_sub_signed(chrono::Duration::seconds(memory_time_secs as i64))
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-            .ok_or_else(|| Error::MemoryTimeWindow("计算记忆时间窗起点失败".to_string()))?;
+            .map(|t| ArcStr::from(t.format("%Y-%m-%d %H:%M:%S").to_string()))
+            .ok_or_else(|| Error::MemoryTimeWindow("计算记忆时间窗起点失败".into()))?;
 
         let count = memory_count;
 
-        let agent_id = Arc::new(agent_id.to_string());
+        let agent_id = ArcStr::from(agent_id);
         let role_event = role_event.clone();
 
         // ===== Query1：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
@@ -234,12 +235,12 @@ impl MemoryStoreClient {
         // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
         let resp: ApiResponse<QueryChannelData> = self.config
             .send_store_query("/store/query/channel/recent", &body).await
-            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e)))?;
+            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
         let groups = resp.data.unwrap_or_default();
 
         // ===== 解析：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
         // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
-        let mut map: BTreeMap<(String, u64), MessageContent> = BTreeMap::new();
+        let mut map: BTreeMap<(ArcStr, u64), MessageContent> = BTreeMap::new();
         parse_channel_groups(groups, &mut map);
 
         // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
@@ -261,12 +262,12 @@ impl MemoryStoreClient {
         let body = QueryRequest {
             agent_id,
             role_event,
-            start_time: Arc::new(m),
-            end_time: Arc::new(ln),
+            start_time: m,
+            end_time: ln,
         };
         let resp: ApiResponse<QueryChannelData> = self.config
             .send_store_query("/store/query/channel", &body).await
-            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e)))?;
+            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
         parse_channel_groups(resp.data.unwrap_or_default(), &mut map);
         Ok(map.into_values().collect())
     }
@@ -278,10 +279,10 @@ type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
 /// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
 /// 文本提取走 extract_content（递归收集全部 Text 段）
-fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(String, u64), MessageContent>) {
+fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u64), MessageContent>) {
     for (_, records) in groups {
         for (_, rec) in records {
-            let time = rec.time.as_str().to_string();  // 键用（MessageContent 值不保留 time）
+            let time = rec.time.clone();  // 键用（MessageContent 值不保留 time）
             let sn = rec.sn;
             let key = (time, sn);
             // 同 (time, sn) 已存在（两查询并集在 ln 处重叠）→ 提前跳过，免去 user_name clone 与文本提取
@@ -302,8 +303,8 @@ fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<String, ChannelRequest> for ChannelStoreContext {
-    async fn write(&mut self, _key: &String, records: Vec<ChannelRequest>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<ArcStr, ChannelRequest> for ChannelStoreContext {
+    async fn write(&mut self, _key: &ArcStr, records: Vec<ChannelRequest>) -> std::result::Result<(), kai_file::Error> {
         self.config.send_store_request("/store/channel", &channel_requests(records)).await
     }
 }
@@ -319,8 +320,8 @@ fn think_requests(records: Vec<ThinkRequest>) -> ThinkRequests {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<String, ThinkRequest> for ThinkStoreContext {
-    async fn write(&mut self, _key: &String, records: Vec<ThinkRequest>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<ArcStr, ThinkRequest> for ThinkStoreContext {
+    async fn write(&mut self, _key: &ArcStr, records: Vec<ThinkRequest>) -> std::result::Result<(), kai_file::Error> {
         self.config.send_store_request("/store/think", &think_requests(records)).await
     }
 }
@@ -334,8 +335,8 @@ fn tool_call_requests(records: Vec<ToolCallRequest>) -> ToolCallRequests {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<String, ToolCallRequest> for ToolCallStoreContext {
-    async fn write(&mut self, _key: &String, records: Vec<ToolCallRequest>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<ArcStr, ToolCallRequest> for ToolCallStoreContext {
+    async fn write(&mut self, _key: &ArcStr, records: Vec<ToolCallRequest>) -> std::result::Result<(), kai_file::Error> {
         self.config.send_store_request("/store/tool-call", &tool_call_requests(records)).await
     }
 }
@@ -349,8 +350,8 @@ fn tool_result_requests(records: Vec<ToolResultRequest>) -> ToolResultRequests {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<String, ToolResultRequest> for ToolResultStoreContext {
-    async fn write(&mut self, _key: &String, records: Vec<ToolResultRequest>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<ArcStr, ToolResultRequest> for ToolResultStoreContext {
+    async fn write(&mut self, _key: &ArcStr, records: Vec<ToolResultRequest>) -> std::result::Result<(), kai_file::Error> {
         self.config.send_store_request("/store/tool-result", &tool_result_requests(records)).await
     }
 }
@@ -362,33 +363,33 @@ mod tests {
     #[test]
     fn think_requests_force_is_one() {
         let reqs = think_requests(vec![ThinkRequest {
-            agent_id: Arc::new("a1".into()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            reasoning_content: Some(Arc::new("推理".into())),
+            reasoning_content: Some(ArcStr::from("推理")),
             thinking: None,
-            key: Arc::new("k1".into()),
-            time: Arc::new("2026-08-04 10:00:00".into()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-08-04 10:00:00"),
         }]);
         assert_eq!(reqs.force, 1, "force 统一为 1");
-        assert_eq!(reqs.requests[0].reasoning_content.as_deref().unwrap().as_str(), "推理");
+        assert_eq!(reqs.requests[0].reasoning_content.as_deref().unwrap(), "推理");
     }
 
     #[test]
     fn channel_requests_force_is_one() {
         let reqs = channel_requests(vec![ChannelRequest {
-            agent_id: Arc::new("a1".into()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            messenger_id: Arc::new("web".into()),
-            user_id: Arc::new("u1".into()),
-            self_user_id: Arc::new("u1".into()),
-            group_id: Arc::new("g1".into()),
+            messenger_id: ArcStr::from("web"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("u1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new("".into()),
-            user_name: Arc::new("".into()),
-            group_name: Arc::new("".into()),
-            content: kissbot_api::Content::Text(Arc::new("你好".into())),
-            time: Arc::new("2026-08-03 10:00:00".into()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::from(""),
+            user_name: ArcStr::from(""),
+            group_name: ArcStr::from(""),
+            content: kissbot_api::Content::Text(ArcStr::from("你好")),
+            time: ArcStr::from("2026-08-03 10:00:00"),
         }]);
         assert_eq!(reqs.force, 1, "channel force 统一为 1");
         assert_eq!(reqs.requests[0].user_id.as_str(), "u1");
@@ -397,23 +398,23 @@ mod tests {
     #[test]
     fn tool_call_and_result_requests_force_is_one() {
         let call = tool_call_requests(vec![ToolCallRequest {
-            agent_id: Arc::new("a1".into()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            tool_name: Arc::new("get_date".into()),
+            tool_name: ArcStr::from("get_date"),
             tool_params: Arc::new(serde_json::json!({})),
-            key: Arc::new(String::new()),
-            time: Arc::new("2026-08-03 10:00:00".into()),
+            key: ArcStr::new(),
+            time: ArcStr::from("2026-08-03 10:00:00"),
         }]);
         assert_eq!(call.force, 1);
         assert_eq!(call.requests[0].tool_name.as_str(), "get_date");
 
         let result = tool_result_requests(vec![ToolResultRequest {
-            agent_id: Arc::new("a1".into()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
             tool_result: Arc::new(serde_json::json!({ "ok": true })),
             tool_error: Arc::new(serde_json::Value::Null),
-            key: Arc::new(String::new()),
-            time: Arc::new("2026-08-03 10:00:00".into()),
+            key: ArcStr::new(),
+            time: ArcStr::from("2026-08-03 10:00:00"),
         }]);
         assert_eq!(result.force, 1);
         assert_eq!(result.requests[0].tool_result["ok"], true);
@@ -423,8 +424,8 @@ mod tests {
     async fn send_store_request_skips_empty_base_url() {
         let config = StoreHttpConfig {
             client: Client::new(),
-            base_url: String::new(),
-            api_key: Arc::new("k".into()),
+            base_url: ArcStr::new(),
+            api_key: ArcStr::from("k"),
         };
         // base_url 空 → 直接 Ok（不联网）
         let rst = config.send_store_request("/store/think", &serde_json::json!({})).await;
@@ -447,8 +448,8 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let config = StoreHttpConfig {
             client: Client::new(),
-            base_url: format!("http://{}", addr),
-            api_key: Arc::new("k".into()),
+            base_url: ArcStr::from(format!("http://{}", addr)),
+            api_key: ArcStr::from("k"),
         };
         // 成功：响应体反序列化（含鉴权头由 mock 忽略）
         let v: serde_json::Value = config.send_store_query("/ok", &json!({})).await.unwrap();
@@ -463,8 +464,8 @@ mod tests {
         // base_url 空 → 相对路径请求 → reqwest 报错（读路径无 store 配置不可静默跳过，与写路径 Ok 跳过语义不同）
         let config = StoreHttpConfig {
             client: Client::new(),
-            base_url: String::new(),
-            api_key: Arc::new("k".into()),
+            base_url: ArcStr::new(),
+            api_key: ArcStr::from("k"),
         };
         let rst = config.send_store_query::<serde_json::Value>("/x", &serde_json::json!({})).await;
         assert!(rst.is_err(), "base_url 空应报错");
@@ -565,8 +566,8 @@ mod tests {
     fn client_at(url: &str) -> MemoryStoreClient {
         MemoryStoreClient::with_config(Arc::new(StoreHttpConfig {
             client: Client::new(),
-            base_url: url.to_string(),
-            api_key: Arc::new("k".into()),
+            base_url: ArcStr::from(url),
+            api_key: ArcStr::from("k"),
         }))
     }
 
@@ -581,8 +582,8 @@ mod tests {
         // cutoff=now-7200 早于 ln=now-600 → M = cutoff
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 30, "窗口覆盖 ln 时结果 = 窗口内全部记录");
-        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
-        assert_eq!(out[29].content, vec![Arc::new("m29".to_string())]);
+        assert_eq!(out[0].content, vec![ArcStr::from("m0")]);
+        assert_eq!(out[29].content, vec![ArcStr::from("m29")]);
     }
 
     #[tokio::test]
@@ -596,7 +597,7 @@ mod tests {
         // 窗口起点 now-60s 晚于全部记录 → M = ln
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 60, 10).await.unwrap();
         assert_eq!(out.len(), 10, "稀疏场景结果 = 最后 10 条（跨更早时间）");
-        assert_eq!(out[0].content, vec![Arc::new("m5".to_string())], "起点 = 第 6 条（最后 10 条最旧一条）");
+        assert_eq!(out[0].content, vec![ArcStr::from("m5")], "起点 = 第 6 条（最后 10 条最旧一条）");
     }
 
     #[tokio::test]
@@ -641,7 +642,7 @@ mod tests {
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 250, 10).await.unwrap();
         assert_eq!(out.len(), 11, "ln 同时间组完整保留（含 start_idx 之前同时间记录）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m4 被取回，不断言其在组内的具体位置
-        assert!(out.iter().any(|m| m.content == vec![Arc::new("m4".to_string())]), "start_idx 之前的同时间记录被并集取回");
+        assert!(out.iter().any(|m| m.content == vec![ArcStr::from("m4")]), "start_idx 之前的同时间记录被并集取回");
     }
 
     #[tokio::test]
@@ -662,7 +663,7 @@ mod tests {
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 150, 10).await.unwrap();
         assert_eq!(out.len(), 11, "cutoff > ln 时 [ln, ln] 取回边界前同时间记录（m2）");
         // 同时间组内部顺序 = BTreeMap 键 (time, sn) 升序 → 只断言 m2 被取回
-        assert!(out.iter().any(|m| m.content == vec![Arc::new("m2".to_string())]), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
+        assert!(out.iter().any(|m| m.content == vec![ArcStr::from("m2")]), "m2 在最后 N 边界之前、与 ln 同时间 → 被 [ln, ln] 取回");
     }
 
     #[tokio::test]
@@ -681,8 +682,8 @@ mod tests {
         let url = start_mock_store(data).await;
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "非文本记录保留在结果中（空 content）");
-        assert_eq!(out[0].content, vec![Arc::new("你好".to_string())]);
-        assert_eq!(out[1].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())], "Multi 内容取 Text 子项拼接");
+        assert_eq!(out[0].content, vec![ArcStr::from("你好")]);
+        assert_eq!(out[1].content, vec![ArcStr::from("a"), ArcStr::from("b")], "Multi 内容取 Text 子项拼接");
         assert!(out[2].content.is_empty(), "ToolCall 记录 content 为空 Vec");
         // pack 时跳过空 content 记录 → 2 条 User 合并为 1 条 + 末尾空 Assistant
         assert_eq!(pack_memory_messages(&out).len(), 2, "pack 跳过空 content 记录");
@@ -703,7 +704,7 @@ mod tests {
         // 不足 N 条（4 → count=10）：直接返回 msgs，重复记录也不得泄漏
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 3, "同 (time, sn) 重复只保留一条，不同 sn 的同内容记录保留");
-        assert_eq!(out.iter().filter(|m| m.content == vec![Arc::new("hello".to_string())]).count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
+        assert_eq!(out.iter().filter(|m| m.content == vec![ArcStr::from("hello")]).count(), 2, "同秒同内容但 sn 不同 → 两条都保留");
     }
 
     #[tokio::test]
@@ -718,8 +719,8 @@ mod tests {
         // cutoff=now-1800 ≤ ln → M = cutoff → Query2 补 m0,m1
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "并集去重后 = 全部 12 条（m2 只保留一条）");
-        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
-        assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
+        assert_eq!(out[0].content, vec![ArcStr::from("m0")]);
+        assert_eq!(out[11].content, vec![ArcStr::from("m11")]);
     }
 
     #[tokio::test]
@@ -742,8 +743,8 @@ mod tests {
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 1800, 10).await.unwrap();
         assert_eq!(out.len(), 12, "map.len()=10=count 不早退，Query2 补 m0,m1 → 12 条（含空 content 的 m5）");
         assert!(out.iter().any(|m| m.content.is_empty()), "非文本 m5 以空 content 保留在结果中");
-        assert_eq!(out[0].content, vec![Arc::new("m0".to_string())]);
-        assert_eq!(out[11].content, vec![Arc::new("m11".to_string())]);
+        assert_eq!(out[0].content, vec![ArcStr::from("m0")]);
+        assert_eq!(out[11].content, vec![ArcStr::from("m11")]);
     }
 
     #[tokio::test]
@@ -764,7 +765,7 @@ mod tests {
         let url = start_mock_store(data).await;
         let out = client_at(&url).read_recent_for_context("agent", &RoleEvent::new("role"), 7200, 10).await.unwrap();
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].content, vec![Arc::new("a".to_string()), Arc::new("b".to_string()), Arc::new("c".to_string()), Arc::new("d".to_string())], "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
+        assert_eq!(out[0].content, vec![ArcStr::from("a"), ArcStr::from("b"), ArcStr::from("c"), ArcStr::from("d")], "嵌套 Multi 递归收集全部 Text 段，非文本子项跳过");
     }
 
     #[tokio::test]

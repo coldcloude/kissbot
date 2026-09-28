@@ -10,13 +10,14 @@ pub use channel_api::*;
 mod tests {
     use std::sync::Arc;
 
+    use arcstr::ArcStr;
     use kissbot_api::RoleEvent;
 
     use super::*;
 
     fn key(agent_id: &str, role: &str, event: Option<&str>) -> SessionKey {
         SessionKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: Arc::new(match event {
                 Some(event) => RoleEvent::with_event(role, event),
                 None => RoleEvent::new(role),
@@ -38,7 +39,7 @@ mod tests {
 
     #[test]
     fn arc_session_key_works_as_set_key() {
-        // 内部字段用 Arc<String> / Arc<RoleEvent>，结构体实现 PartialEq + Hash，
+        // 内部字段用 ArcStr / Arc<RoleEvent>，结构体实现 PartialEq + Hash，
         // 因此 Arc<SessionKey> 可直接作 Set / Map 键
         use std::collections::HashSet;
         let a = Arc::new(key("a1", "r1", None));

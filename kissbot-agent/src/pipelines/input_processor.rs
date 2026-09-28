@@ -190,29 +190,30 @@ impl Drop for BatchAgentInputProcessor {
 mod tests {
     use super::*;
 
+    use arcstr::ArcStr;
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
     use kissbot_api::RoleEvent;
 
     fn ev(name: &str, text: &str) -> Arc<IncomingMessageEvent> {
         Arc::new(IncomingMessageEvent {
-            recipient_user_id: Arc::new("self".into()),
+            recipient_user_id: ArcStr::from("self"),
             incoming_message: Arc::new(IncomingMessage {
-                msg_id: Arc::new("m".into()),
-                messenger_id: Arc::new("web".into()),
-                user_id: Arc::new("u".into()),
-                group_id: Arc::new("g".into()),
-                messenger_name: Arc::new("".into()),
-                user_name: Arc::new(name.into()),
-                group_name: Arc::new("".into()),
-                content: Content::Text(Arc::new(text.into())),
-                time: Arc::new("2026-08-07 10:00:00".into()),
+                msg_id: ArcStr::from("m"),
+                messenger_id: ArcStr::from("web"),
+                user_id: ArcStr::from("u"),
+                group_id: ArcStr::from("g"),
+                messenger_name: ArcStr::from(""),
+                user_name: ArcStr::from(name),
+                group_name: ArcStr::from(""),
+                content: Content::Text(ArcStr::from(text)),
+                time: ArcStr::from("2026-08-07 10:00:00"),
             }),
         })
     }
 
     fn test_key() -> Arc<SessionKey> {
-        Arc::new(SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::new("r1")) })
+        Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new("r1")) })
     }
 
     /// 测试 producer/consumer 对（未 spawn；与 BatchAgentInputProcessor::new 的依赖序构造同构：

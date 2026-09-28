@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use axum::{
     Json, Router,
     extract::State,
@@ -32,7 +33,7 @@ fn ok<T>(data: T) -> ApiResult<T> {
     (StatusCode::OK, Json(ApiResponse::success(data)))
 }
 
-fn err<T>(message: String) -> ApiResult<T> {
+fn err<T>(message: impl Into<ArcStr>) -> ApiResult<T> {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(message)))
 }
 

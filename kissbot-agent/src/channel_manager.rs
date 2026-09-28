@@ -5,8 +5,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -27,8 +28,8 @@ const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(60);
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话标识」：写 config + 运行态事件 + 会话重定位
 struct ApplyChannelSessionKey {
-    channel_id: String,
-    agent_id: Option<Arc<String>>,
+    channel_id: ArcStr,
+    agent_id: Option<ArcStr>,
     role_event: Arc<RoleEvent>,
     done: oneshot::Sender<Result<()>>
 }
@@ -36,17 +37,17 @@ struct ApplyChannelSessionKey {
 /// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ApplyChannelSessionKey 同一消费者串行，写-写无竞态）
 struct ChannelTask {
     cmd: ChannelCommand,
-    done: oneshot::Sender<Result<String>>,
+    done: oneshot::Sender<Result<ArcStr>>,
 }
 
 /// 每 channel 运行时上下文：维护「已发出但尚未收到回显」的 msg_id 集合；
 /// client 为运行时绑定（ArcSwapOption 无锁读写，未绑定为 None）
 pub struct Channel {
     /// 已发出未回显的 msg_id -> 记录时间（DashMap 无锁并发访问）
-    pending_outgoing: DashMap<String, Instant>,
-    /// 运行态事件（ArcSwapOption 无锁读写；None = 角色模式，Some(id) = 事件模式；
+    pending_outgoing: DashMap<ArcStr, Instant>,
+    /// 运行态事件（ArcSwap 无锁读写；None = 角色模式，Some(id) = 事件模式；
     /// /mode 切换不回写，重启回角色模式）
-    event: ArcSwapOption<String>,
+    event: ArcSwap<Option<ArcStr>>,
     /// 本 channel 的 ChannelClient（connect_channel 时绑定；消息/回复路径从本字段取 client，
     /// ArcSwapOption 无锁读写——连接与回调并发访问安全）
     client: ArcSwapOption<ChannelClient>,
@@ -59,7 +60,7 @@ impl Channel {
     fn new() -> Self {
         Self {
             pending_outgoing: DashMap::new(),
-            event: ArcSwapOption::new(None),
+            event: ArcSwap::from_pointee(None),
             client: ArcSwapOption::new(None),
             disconnect_notify: ArcSwapOption::new(None),
         }
@@ -74,7 +75,7 @@ impl Channel {
         let response = client.send_message(msg).await?;
         // 记录已发出未回显的 msg_id（入站回显命中时 consume_pending 消费丢弃）
         self.evict(CHANNEL_CONTEXT_TTL);
-        self.pending_outgoing.insert(response.msg_id.as_str().to_string(), Instant::now());
+        self.pending_outgoing.insert(response.msg_id.clone(), Instant::now());
         Ok(response)
     }
 
@@ -89,18 +90,18 @@ impl Channel {
     }
 
     /// 设置运行态事件（/mode 切换，不回写，重启回角色模式）；None = 角色模式
-    fn set_event(&self, event: Option<Arc<String>>) {
-        self.event.store(event);
+    fn set_event(&self, event: Option<ArcStr>) {
+        self.event.store(Arc::new(event));
     }
 
     /// 取运行态事件（未绑定/缺失回退角色模式，即 None）
-    fn event(&self) -> Option<Arc<String>> {
-        self.event.load_full()
+    fn event(&self) -> Option<ArcStr> {
+        (*self.event.load_full()).clone()
     }
 
     /// TTL 懒清理：先遍历收集过期条目，再逐个删除（DashMap 迭代期间不可修改，两步防死锁）
     fn evict(&self, ttl: Duration) {
-        let expired: Vec<String> = self.pending_outgoing.iter()
+        let expired: Vec<ArcStr> = self.pending_outgoing.iter()
             .filter(|e| e.value().elapsed() >= ttl)
             .map(|e| e.key().clone())
             .collect();
@@ -117,7 +118,7 @@ impl Channel {
 /// （change_channel_key / channel_command → apply_channel_key / apply_channel_command），
 /// 其中会话重定位部分经 Nexus（prune_sessions / session_key / ensure_session）
 pub struct ChannelManager {
-    channels: DashMap<String, Arc<Channel>>,
+    channels: DashMap<ArcStr, Arc<Channel>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
     apply_channel_session_key_tx: mpsc::UnboundedSender<ApplyChannelSessionKey>,
     /// channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelSessionKey 同一消费者 select! 等待）
@@ -176,25 +177,25 @@ impl ChannelManager {
     pub async fn change_channel_key(
         &self,
         channel_id: &str,
-        agent_id: Option<Arc<String>>,
+        agent_id: Option<ArcStr>,
         role_event: Arc<RoleEvent>,
     ) -> Result<()> {
         let (done_tx, done_rx) = oneshot::channel();
         self.apply_channel_session_key_tx.send(ApplyChannelSessionKey {
-            channel_id: channel_id.to_string(),
+            channel_id: ArcStr::from(channel_id),
             agent_id,
             role_event,
             done: done_tx,
-        }).map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+        }).map_err(|_| Error::InternalError("变更队列已关闭".into()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".into()))?
     }
 
     /// channel 配置变更统一入口（/bind、/unbind）：排队串行执行，返回时已生效
-    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<String> {
+    pub async fn channel_command(&self, cmd: ChannelCommand) -> Result<ArcStr> {
         let (done_tx, done_rx) = oneshot::channel();
         self.channel_task_tx.send(ChannelTask { cmd, done: done_tx })
-            .map_err(|_| Error::InternalError("变更队列已关闭".to_string()))?;
-        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".to_string()))?
+            .map_err(|_| Error::InternalError("变更队列已关闭".into()))?;
+        done_rx.await.map_err(|_| Error::InternalError("变更处理中断".into()))?
     }
 
     // ---- 变更执行体（队列消费者内串行调用，不对外） ----
@@ -205,7 +206,7 @@ impl ChannelManager {
     async fn apply_channel_key(
         &self,
         channel_id: &str,
-        agent_id: Option<Arc<String>>,
+        agent_id: Option<ArcStr>,
         role_event: Arc<RoleEvent>,
     ) -> Result<()> {
         let role_name = role_event.role_name.clone();
@@ -229,15 +230,15 @@ impl ChannelManager {
     }
 
     /// channel 配置变更执行：/bind、/unbind 回写 bind_users，并生成回复文本
-    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<String> {
+    async fn apply_channel_command(&self, cmd: ChannelCommand) -> Result<ArcStr> {
         match cmd {
             ChannelCommand::BindUser { channel_id, user } => {
-                self.bind_user(&channel_id, &user).await?;
-                Ok(format!("✅ 已绑定 channel 用户: {} / {}", user.messenger_id, user.user_id))
+                self.bind_user(channel_id.as_str(), &user).await?;
+                Ok(ArcStr::from(format!("✅ 已绑定 channel 用户: {} / {}", user.messenger_id, user.user_id)))
             },
             ChannelCommand::UnbindUser { channel_id, user } => {
-                self.unbind_user(&channel_id, &user).await?;
-                Ok(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id))
+                self.unbind_user(channel_id.as_str(), &user).await?;
+                Ok(ArcStr::from(format!("✅ 已移除 channel 用户: {} / {}", user.messenger_id, user.user_id)))
             },
         }
     }
@@ -245,18 +246,18 @@ impl ChannelManager {
     /// 取 channel 运行态，不存在则懒建（全部访问入口统一经此，缺省态一致）
     pub fn get_or_create(&self, channel_id: &str) -> Arc<Channel> {
         self.channels
-            .entry(channel_id.to_string())
+            .entry(ArcStr::from(channel_id))
             .or_insert_with(|| Arc::new(Channel::new()))
             .clone()
     }
 
     /// 设置 channel 运行态事件（/mode 切换，不回写，重启回角色模式）；None = 角色模式
-    pub fn set_event(&self, channel_id: &str, event: Option<Arc<String>>) {
+    pub fn set_event(&self, channel_id: &str, event: Option<ArcStr>) {
         self.get_or_create(channel_id).set_event(event);
     }
 
     /// 取 channel 运行态事件（未绑定/缺失回退角色模式，即 None）
-    pub fn event(&self, channel_id: &str) -> Option<Arc<String>> {
+    pub fn event(&self, channel_id: &str) -> Option<ArcStr> {
         match self.channels.get(channel_id) {
             Some(c) => c.event(),
             None => None,
@@ -289,8 +290,8 @@ impl ChannelManager {
         // Terminal 即 ChannelManager 自身（全局唯一）：循环外建一次 Terminal 视图，
         // 所有 channel client 的 Weak<dyn Terminal> 指向同一目标；强引用由 Nexus 的 Arc<ChannelManager> 保活
         let terminal: Arc<dyn Terminal> = self.clone();
-        let channel_id = ch.channel_id.to_string();
-        let ws_url = ch.ws_url.to_string();
+        let channel_id = ch.channel_id.clone();
+        let ws_url = ch.ws_url.clone();
 
         let client = ChannelClient::new(channel_id.clone(), Arc::downgrade(&terminal));
 
@@ -398,7 +399,7 @@ mod tests {
     fn channel_msg_id_consume() {
         let ctx = Channel::new();
         // 直接写 pending 集合，构造「已发出未回显」状态
-        ctx.pending_outgoing.insert("msg1".to_string(), Instant::now());
+        ctx.pending_outgoing.insert(ArcStr::from("msg1"), Instant::now());
         // 加入后命中且消费移除
         assert!(ctx.consume_pending("msg1"));
         // 已消费，再次查询为 false
@@ -411,11 +412,11 @@ mod tests {
     fn channel_ttl_evict() {
         let ctx = Channel::new();
         // TTL=0：插入即过期，下次操作即被淘汰
-        ctx.pending_outgoing.insert("expired".to_string(), Instant::now());
+        ctx.pending_outgoing.insert(ArcStr::from("expired"), Instant::now());
         ctx.evict(Duration::from_secs(0));
         assert!(!ctx.consume_pending("expired"), "TTL=0 插入即过期，应被淘汰");
         // 正常 TTL：未过期条目保留
-        ctx.pending_outgoing.insert("fresh".to_string(), Instant::now());
+        ctx.pending_outgoing.insert(ArcStr::from("fresh"), Instant::now());
         ctx.evict(CHANNEL_CONTEXT_TTL);
         assert!(ctx.consume_pending("fresh"));
     }
@@ -425,8 +426,8 @@ mod tests {
         let ctx = Channel::new();
         // 运行态事件默认 None（角色模式），设置后读回
         assert_eq!(ctx.event(), None);
-        ctx.set_event(Some(Arc::new("e1".to_string())));
-        assert_eq!(ctx.event().as_deref().map(|e| e.as_str()), Some("e1"));
+        ctx.set_event(Some(ArcStr::from("e1")));
+        assert_eq!(ctx.event().as_deref(), Some("e1"));
         ctx.set_event(None);
         assert_eq!(ctx.event(), None, "清空事件回角色模式");
     }

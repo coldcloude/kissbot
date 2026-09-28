@@ -205,14 +205,16 @@ impl WsCloseProcessor for NotifyClientCloseProcessor {
 
 #[cfg(test)]
 mod tests {
+    use arcstr::ArcStr;
+
     use super::*;
     use kissbot_api::RoleEvent;
 
     fn key() -> RecordKey {
         RecordKey {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new("dev"),
-            date: Arc::new("2026-09-22".into()),
+            date: ArcStr::from("2026-09-22"),
         }
     }
 
@@ -220,9 +222,9 @@ mod tests {
     fn test_publish_without_server_is_noop() {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
         publish(RecordKind::Think, RecordNotification {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new("dev"),
-            time: Arc::new("2026-09-22 13:48:37".into()),
+            time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: None,
             channel: None,
         });
@@ -230,17 +232,17 @@ mod tests {
 
     fn record(user: &str, self_user: &str, group: &str, is_self: usize, time: &str, sn: u64) -> ChannelRecord {
         ChannelRecord {
-            user_id: Arc::new(user.into()),
-            self_user_id: Arc::new(self_user.into()),
-            messenger_id: Arc::new("web".into()),
-            group_id: Arc::new(group.into()),
+            user_id: ArcStr::from(user),
+            self_user_id: ArcStr::from(self_user),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from(group),
             is_self,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: kissbot_api::Content::Text(Arc::new("内容".into())),
-            time: Arc::new(time.into()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: kissbot_api::Content::Text(ArcStr::from("内容")),
+            time: ArcStr::from(time),
             sn,
         }
     }

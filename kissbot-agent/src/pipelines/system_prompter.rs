@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 
 use kissbot_llm::Session;
@@ -10,21 +11,21 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "你是一个通用智能体。使用可
 
 pub struct DefaultSystemPrompter {
     session: Arc<Session>,
-    prompt: Arc<String>,
+    prompt: ArcStr,
 }
 
 impl DefaultSystemPrompter {
     pub fn new(session: Arc<Session>) -> Self {
         Self {
             session,
-            prompt: Arc::new(DEFAULT_SYSTEM_PROMPT.to_string()),
+            prompt: ArcStr::from(DEFAULT_SYSTEM_PROMPT),
         }
     }
 
-    fn from(session: Arc<Session>, value: &str) -> Self {
+    fn from(session: Arc<Session>, value: impl Into<ArcStr>) -> Self {
         Self {
             session,
-            prompt: Arc::new(value.to_string()),
+            prompt: value.into(),
         }
     }
 }
@@ -34,7 +35,7 @@ impl AgentTrigger for DefaultSystemPrompter {}
 #[async_trait]
 impl AgentSystemPrompter for DefaultSystemPrompter {
     async fn reset_system_prompt(&self) {
-        self.session.set_system_message(self.prompt.as_str().to_string()).await;
+        self.session.set_system_message(self.prompt.clone()).await;
     }
 }
 
@@ -61,7 +62,7 @@ impl AgentSystemPrompter for MemoryEgoSystemPrompter {
         let prompt = if let Some(prompt) = nexus.system_prompt_for_agent(self.session_key.agent_id.as_str(), self.session_key.role_event.role_name.as_str()).await {
             prompt
         } else {
-            DEFAULT_SYSTEM_PROMPT.to_string()
+            ArcStr::from(DEFAULT_SYSTEM_PROMPT)
         };
         self.session.set_system_message(prompt).await;
     }

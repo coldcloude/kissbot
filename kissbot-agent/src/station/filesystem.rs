@@ -75,7 +75,7 @@ impl ReadTool {
         let canon_cwd = std::fs::canonicalize(&self.cwd)
             .unwrap_or_else(|_| self.cwd.clone());
         if !canon.starts_with(&canon_cwd) {
-            return Err(Error::InternalError(format!("路径越界: {}", raw)));
+            return Err(Error::InternalError(format!("路径越界: {}", raw).into()));
         }
         Ok(canon)
     }

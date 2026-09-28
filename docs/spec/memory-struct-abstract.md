@@ -424,14 +424,14 @@
 
 ```rust
 enum Error {
-    NotifyError(String),        // 通知连接与帧解析
-    StoreReadError(String),     // 原始记录读取
-    ModelApiError(String),      // 模型调用（含映射自 kissbot-llm 的错误）
-    StateError(String),         // case 树、水位、指针的读写与一致性
+    NotifyError(ArcStr),        // 通知连接与帧解析
+    StoreReadError(ArcStr),     // 原始记录读取
+    ModelApiError(ArcStr),      // 模型调用（含映射自 kissbot-llm 的错误）
+    StateError(ArcStr),         // case 树、水位、指针的读写与一致性
     IoError(std::io::Error),
     JsonError(serde_json::Error),
     FileError(kai_file::Error),
-    InternalError(String),
+    InternalError(ArcStr),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 ```

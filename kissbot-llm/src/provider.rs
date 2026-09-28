@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,7 @@ pub trait Provider: Send + Sync {
     async fn send_request(&self, request: &Self::Request, timeout: u64) -> Result<Value>;
     fn parse_response(&self, data: Value) -> ModelResponse;
     /// 从服务商 API 获取全部可用模型名（GET /models）
-    async fn list_models(&self) -> Result<Vec<String>>;
+    async fn list_models(&self) -> Result<Vec<ArcStr>>;
 }
 
 /// 按 provider 配置构造 OpenAI 兼容实现（调用方按 provider_type 分派）
@@ -66,15 +67,15 @@ pub async fn call_with_retry<P: Provider>(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| Error::ModelApiError("模型调用失败".to_string())))
+    Err(last_error.unwrap_or_else(|| Error::ModelApiError("模型调用失败".into())))
 }
 
 // ========== OpenAI 兼容协议（/chat/completions） ==========
 
 pub struct OpenAiProvider {
     client: Arc<Client>,
-    base_url: Arc<String>,
-    api_key: Arc<String>,
+    base_url: ArcStr,
+    api_key: ArcStr,
 }
 
 /// OpenAI 兼容上下文消息：type 即枚举变体（内部标签序列化，type 与其他字段平级）
@@ -95,7 +96,7 @@ enum OpenAiRequestThinking {
 /// OpenAI 兼容请求体（`Provider::Request`，字段私有：调用方不直接构造）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAiRequest {
-    model: Arc<String>,
+    model: ArcStr,
     messages: Vec<Message>,
     stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,21 +108,21 @@ pub struct OpenAiRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thinking: Option<OpenAiRequestThinking>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<Arc<String>>,
+    reasoning_effort: Option<ArcStr>,
 }
 
 /// 匹配 content 开头的 <think>...</think>（允许前导空白），剥离并返回 (剥离后内容, Option<思考内容>)
 /// 标签不在开头或未闭合时原样返回
-fn strip_think_tag(content: &str) -> (Option<Arc<String>>, Option<Arc<String>>) {
+fn strip_think_tag(content: &str) -> (Option<ArcStr>, Option<ArcStr>) {
     let trimmed = content.trim_start();
     if let Some(rest) = trimmed.strip_prefix("<think>") {
         if let Some(end) = rest.find("</think>") {
-            let thinking = rest[..end].to_string();
-            let stripped = rest[end + "</think>".len()..].to_string();
-            return (Some(Arc::new(stripped)), Some(Arc::new(thinking)));
+            let thinking = ArcStr::from(&rest[..end]);
+            let stripped = ArcStr::from(&rest[end + "</think>".len()..]);
+            return (Some(stripped), Some(thinking));
         }
     }
-    (Some(Arc::new(content.to_string())), None)
+    (Some(ArcStr::from(content)), None)
 }
 
 #[async_trait]
@@ -170,11 +171,11 @@ impl Provider for OpenAiProvider {
         let raw_content = message["content"].take();
         let raw_reasoning_content = message["reasoning_content"].take();
         let raw_tool_calls = message["tool_calls"].take();
-        let finish_reason = if let Value::String(str) = choice["finish_reason"].take() { Some(Arc::new(str)) } else { None };
+        let finish_reason = if let Value::String(str) = choice["finish_reason"].take() { Some(ArcStr::from(str)) } else { None };
         // <think> 标签总剥离；thinking 独立取标签内容（无标签 → None；空标签 → Some("")）；
         // reasoning_content 独立取 API 字段（字段缺失/非字符串 → None；空串 → Some("")）
         let (content, thinking) = if let Some(c_str) = raw_content.as_str() { strip_think_tag(c_str) } else { (None, None) };
-        let reasoning_content = if let Some(rc_str) = raw_reasoning_content.as_str() { Some(Arc::new(rc_str.to_string())) } else { None };
+        let reasoning_content = if let Some(rc_str) = raw_reasoning_content.as_str() { Some(ArcStr::from(rc_str)) } else { None };
         // tool_calls：OpenAI function call 数组（含 thinking 模式下多轮工具调用）
         let mut tool_calls = None;
         if let Some(calls) = raw_tool_calls.as_array() {
@@ -183,8 +184,8 @@ impl Provider for OpenAiProvider {
                 if let Some(id) = v["id"].as_str() {
                     if let Some(name) = v["function"]["name"].as_str() {
                         tcs.push(ToolCall {
-                            id: Arc::new(id.to_string()),
-                            name: Arc::new(name.to_string()),
+                            id: ArcStr::from(id),
+                            name: ArcStr::from(name),
                             data: ToolData {
                                 arguments: v["function"]["arguments"].clone(),
                                 result: Value::Null,
@@ -220,13 +221,13 @@ impl Provider for OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::ModelApiError(format!("OpenAI API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("OpenAI API {}: {}", status, text).into()));
         }
         let data: Value = resp.json().await?;
         Ok(data)
     }
 
-    async fn list_models(&self) -> Result<Vec<String>> {
+    async fn list_models(&self) -> Result<Vec<ArcStr>> {
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
         let resp = self.client.get(&url)
             .timeout(Duration::from_secs(30))
@@ -236,11 +237,11 @@ impl Provider for OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::ModelApiError(format!("OpenAI models API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("OpenAI models API {}: {}", status, text).into()));
         }
         let data: serde_json::Value = resp.json().await?;
-        let models: Vec<String> = data["data"].as_array()
-        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+        let models: Vec<ArcStr> = data["data"].as_array()
+        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(ArcStr::from)).collect())
         .unwrap_or_default();
         Ok(models)
     }
@@ -252,8 +253,8 @@ const DEFFAULT_ANTTHROPIC_MAX_TOKENS: u32 = 65535;
 
 pub struct AnthropicProvider {
     client: Arc<Client>,
-    base_url: Arc<String>,
-    api_key: Arc<String>,
+    base_url: ArcStr,
+    api_key: ArcStr,
 }
 
 #[async_trait]
@@ -262,9 +263,9 @@ impl Provider for AnthropicProvider {
 
     fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, _tools: &Vec<Arc<ToolConfig>>) -> Value {
         // 分离 system 消息
-        let system_parts: Vec<String> = messages.iter()
+        let system_parts: Vec<ArcStr> = messages.iter()
             .filter_map(|m| match m {
-                Message::System { content } => Some(content.to_string()),
+                Message::System { content } => Some(content.clone()),
                 _ => None,
             })
             .collect();
@@ -308,12 +309,12 @@ impl Provider for AnthropicProvider {
                 match block["type"].as_str() {
                     Some("thinking") if reasoning_content.is_none() => {
                         if let Some(rc) = block["thinking"].as_str() {
-                            reasoning_content = Some(Arc::new(rc.to_string()));
+                            reasoning_content = Some(ArcStr::from(rc));
                         }
                     }
                     Some("text") if content.is_none() => {
                         if let Some(c) = block["text"].as_str() {
-                            content = Some(Arc::new(c.to_string()));
+                            content = Some(ArcStr::from(c));
                         }
                     }
                     _ => {}
@@ -322,7 +323,7 @@ impl Provider for AnthropicProvider {
         }
         let mut finish_reason = None;
         if let Some(sr) = data["stop_reason"].as_str() {
-            finish_reason = Some(Arc::new(sr.to_string()));
+            finish_reason = Some(ArcStr::from(sr));
         }
         // <think> 标签总剥离；thinking 独立取标签内容
         let (content, thinking) = if let Some(c) = content {
@@ -355,13 +356,13 @@ impl Provider for AnthropicProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::ModelApiError(format!("Anthropic API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("Anthropic API {}: {}", status, text).into()));
         }
         let data: Value = resp.json().await?;
         Ok(data)
     }
 
-    async fn list_models(&self) -> Result<Vec<String>> {
+    async fn list_models(&self) -> Result<Vec<ArcStr>> {
         let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
         let resp = self.client.get(&url)
             .timeout(Duration::from_secs(30))
@@ -372,11 +373,11 @@ impl Provider for AnthropicProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::ModelApiError(format!("Anthropic models API {}: {}", status, text)));
+            return Err(Error::ModelApiError(format!("Anthropic models API {}: {}", status, text).into()));
         }
         let data: serde_json::Value = resp.json().await?;
         let models = data["data"].as_array()
-        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+        .map(|arr| arr.iter().filter_map(|m| m["id"].as_str().map(ArcStr::from)).collect())
         .unwrap_or_default();
         Ok(models)
     }
@@ -394,8 +395,8 @@ mod tests {
     fn openai() -> OpenAiProvider {
         OpenAiProvider {
             client: Arc::new(Client::new()),
-            base_url: Arc::new("https://api.deepseek.com".into()),
-            api_key: Arc::new("sk-test".into()),
+            base_url: ArcStr::from("https://api.deepseek.com"),
+            api_key: ArcStr::from("sk-test"),
         }
     }
 
@@ -403,16 +404,16 @@ mod tests {
     fn anthropic() -> AnthropicProvider {
         AnthropicProvider {
             client: Arc::new(Client::new()),
-            base_url: Arc::new("https://api.anthropic.com".into()),
-            api_key: Arc::new("sk-test".into()),
+            base_url: ArcStr::from("https://api.anthropic.com"),
+            api_key: ArcStr::from("sk-test"),
         }
     }
 
     /// 有效 LLM 参数：provider 与 model 为独立字段
     fn sample_llm_cfg() -> EffectiveLLMConfig {
         EffectiveLLMConfig {
-            provider: Arc::new("deepseek".into()),
-            model: Arc::new("deepseek-4-flash".into()),
+            provider: ArcStr::from("deepseek"),
+            model: ArcStr::from("deepseek-4-flash"),
             max_tokens: Some(2048),
             temperature: Some(0.3),
             thinking: None,
@@ -424,9 +425,9 @@ mod tests {
     fn sample_pm_cfg() -> EffectiveModelConfig {
         EffectiveModelConfig {
             provider_config: Arc::new(ProviderConfig {
-                provider_type: Arc::new("openai".into()),
-                base_url: Arc::new("https://api.deepseek.com".into()),
-                api_key: Arc::new("sk-test".into()),
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from("https://api.deepseek.com"),
+                api_key: ArcStr::from("sk-test"),
             }),
             max_tokens_usage: 128000,
             timeout_secs: 5,
@@ -434,13 +435,13 @@ mod tests {
         }
     }
 
-    // Message 构造测试助手（字段为 Arc<String>，集中构造减少噪音）
+    // Message 构造测试助手（字段为 ArcStr，集中构造减少噪音）
     fn sys(content: &str) -> Message {
-        Message::System { content: Arc::new(content.into()) }
+        Message::System { content: ArcStr::from(content) }
     }
 
     fn usr(content: &str) -> Message {
-        Message::User { content: Arc::new(content.into()) }
+        Message::User { content: ArcStr::from(content) }
     }
 
     /// Assistant 消息：content/reasoning_content/tool_calls 均为 Value（Null 由 skip_serializing_if 省略），
@@ -451,14 +452,14 @@ mod tests {
 
     /// Tool 消息（无 name 字段：工具名由 assistant.tool_calls 承载）
     fn tool_msg(id: &str, content: &str) -> Message {
-        Message::Tool { tool_call_id: Arc::new(id.into()), content: Arc::new(content.into()) }
+        Message::Tool { tool_call_id: ArcStr::from(id), content: ArcStr::from(content) }
     }
 
     /// 工具定义（parameters 为 Arc<Value>）
     fn read_tool() -> Arc<ToolConfig> {
         Arc::new(ToolConfig {
-            name: Arc::new("read".into()),
-            description: Arc::new("读取文本文件".into()),
+            name: ArcStr::from("read"),
+            description: ArcStr::from("读取文本文件"),
             parameters: Arc::new(json!({ "type": "object" })),
         })
     }
@@ -468,9 +469,9 @@ mod tests {
         json!([{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"/a\"}" } }])
     }
 
-    /// Option<Arc<String>> → Option<&str>（断言助手）
-    fn text(value: &Option<Arc<String>>) -> Option<&str> {
-        value.as_deref().map(|s| s.as_str())
+    /// Option<ArcStr> → Option<&str>（断言助手）
+    fn text(value: &Option<ArcStr>) -> Option<&str> {
+        value.as_deref()
     }
 
     /// strip_think_tag 结果转 String（便于断言）
@@ -486,9 +487,9 @@ mod tests {
     fn create_providers_wire_config() {
         // create_* 从 provider 配置取连接信息（调用方按 provider_type 分派）
         let cfg = ProviderConfig {
-            provider_type: Arc::new("openai".into()),
-            base_url: Arc::new("https://api.example.com".into()),
-            api_key: Arc::new("sk-abc".into()),
+            provider_type: ArcStr::from("openai"),
+            base_url: ArcStr::from("https://api.example.com"),
+            api_key: ArcStr::from("sk-abc"),
         };
         let oa = create_openai_provider(&cfg);
         assert_eq!(oa.base_url.as_str(), "https://api.example.com");
@@ -517,9 +518,9 @@ mod tests {
             let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
             if attempt < self.fail_times {
                 return if self.permanent {
-                    Err(Error::ModelProviderNotSupported("未知 provider_type: typo".to_string()))
+                    Err(Error::ModelProviderNotSupported("未知 provider_type: typo".into()))
                 } else {
-                    Err(Error::ModelApiError("boom".to_string()))
+                    Err(Error::ModelApiError("boom".into()))
                 };
             }
             Ok(json!({ "choices": [{ "message": { "content": "答案" }, "finish_reason": "stop" }] }))
@@ -529,7 +530,7 @@ mod tests {
             openai().parse_response(data)
         }
 
-        async fn list_models(&self) -> Result<Vec<String>> {
+        async fn list_models(&self) -> Result<Vec<ArcStr>> {
             Ok(vec![])
         }
     }
@@ -605,8 +606,8 @@ mod tests {
     #[test]
     fn openai_build_request_maps_thinking_and_reasoning_effort() {
         let mut llm_cfg = sample_llm_cfg();
-        llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
-        llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
+        llm_cfg.thinking = Some(ArcStr::from("enabled"));
+        llm_cfg.reasoning_effort = Some(ArcStr::from("high"));
         let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
         let body = serde_json::to_value(&body).unwrap();
         // thinking 由字符串映射为协议枚举（内部标签 type）
@@ -618,7 +619,7 @@ mod tests {
     #[test]
     fn openai_build_request_maps_disabled_thinking() {
         let mut llm_cfg = sample_llm_cfg();
-        llm_cfg.thinking = Some(Arc::new("disabled".to_string()));
+        llm_cfg.thinking = Some(ArcStr::from("disabled"));
         let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
         let body = serde_json::to_value(&body).unwrap();
         assert_eq!(body["thinking"]["type"], "disabled");
@@ -628,7 +629,7 @@ mod tests {
     fn openai_build_request_drops_unknown_thinking_value() {
         // 非 enabled/disabled 的取值无法映射到协议枚举 → 不发送 thinking 字段（而非原样透传）
         let mut llm_cfg = sample_llm_cfg();
-        llm_cfg.thinking = Some(Arc::new("bogus".to_string()));
+        llm_cfg.thinking = Some(ArcStr::from("bogus"));
         let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
         assert!(body.thinking.is_none(), "未知取值不构造 thinking");
         let body = serde_json::to_value(&body).unwrap();
@@ -830,8 +831,8 @@ mod tests {
     #[test]
     fn anthropic_build_request_passes_thinking_and_output_config() {
         let mut llm_cfg = sample_llm_cfg();
-        llm_cfg.thinking = Some(Arc::new("enabled".to_string()));
-        llm_cfg.reasoning_effort = Some(Arc::new("high".to_string()));
+        llm_cfg.thinking = Some(ArcStr::from("enabled"));
+        llm_cfg.reasoning_effort = Some(ArcStr::from("high"));
         let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
         assert_eq!(body["thinking"]["type"], "enabled", "thinking 原样作为 type");
         assert_eq!(body["output_config"]["effort"], "high", "reasoning_effort 映射为 output_config.effort");

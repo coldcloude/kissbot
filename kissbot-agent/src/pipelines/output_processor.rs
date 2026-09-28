@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde_json::Value;
 
 use kissbot_llm::{Message, ModelResponse};
@@ -77,7 +78,7 @@ impl AgentOutputProcessor for ChannelOutputProcessor {
                     let content = tool_message_body(&tool_call.data.result, &tool_call.data.error);
                     new_messages.push(Message::Tool {
                         tool_call_id: tool_call.id,
-                        content: Arc::new(content),
+                        content: ArcStr::from(content),
                     });
                     next = true;
                 }

@@ -1,15 +1,17 @@
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use arcstr::ArcStr;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    pub messenger_id: String,
-    pub admin_name: String,
-    pub messenger_repo: String,
-    pub attachment_dir: String,
-    pub message_dir: String,
-    pub ws_listen_addr: String,
-    pub http_listen_addr: String,
+    pub messenger_id: ArcStr,
+    pub admin_name: ArcStr,
+    pub messenger_repo: ArcStr,
+    pub attachment_dir: ArcStr,
+    pub message_dir: ArcStr,
+    pub ws_listen_addr: ArcStr,
+    pub http_listen_addr: ArcStr,
 }
 
 impl Config {

@@ -1,7 +1,6 @@
 //! `server/discover`：查询服务端支持的协议版本、能力与身份
 
-use std::sync::Arc;
-
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use crate::with_response_meta;
@@ -56,12 +55,12 @@ pub struct DiscoverResult {
     pub result_type: ResultType,
 
     #[serde(rename = "supportedVersions")]
-    pub supported_versions: Vec<String>,
+    pub supported_versions: Vec<ArcStr>,
 
     pub capabilities: ServerCapabilities,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<Arc<String>>,
+    pub instructions: Option<ArcStr>,
 
     #[serde(
         rename = "_meta",
@@ -74,15 +73,15 @@ pub struct DiscoverResult {
 impl DiscoverResult {
     /// 以给定服务端身份构造发现结果：本实现默认声明 tools 与 kissbot 级联扩展能力。
     /// 读取方向仍兼容不带 kissbot 能力段的第三方服务端（`capabilities.kissbot` 为 `Option`）
-    pub fn new(server_info: Implementation, instructions: Option<String>) -> Self {
+    pub fn new(server_info: Implementation, instructions: Option<ArcStr>) -> Self {
         Self {
             result_type: ResultType::Complete,
-            supported_versions: vec![super::PROTOCOL_VERSION.to_string()],
+            supported_versions: vec![ArcStr::from(super::PROTOCOL_VERSION)],
             capabilities: ServerCapabilities {
                 tools: Some(ToolsCapability { list_changed: false }),
                 kissbot: Some(KissbotCapability::full()),
             },
-            instructions: instructions.map(Arc::new),
+            instructions,
             meta: Some(ResponseMeta {
                 server_info: Some(server_info),
             }),

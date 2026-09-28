@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::AsyncCacheFactory;
 use kissbot_llm::{
     AnthropicProvider, EffectiveLLMConfig, EffectiveModelConfig, Message, ModelResponse,
@@ -56,15 +57,15 @@ impl ProviderManager {
                 let result = call_with_retry(provider.as_ref(), llm_cfg, &pm_cfg, messages, tools).await?;
                 Ok(result)
             },
-            other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other))),
+            other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other).into())),
         }
     }
 
     /// 从服务商 API 获取全部模型名
     /// 返回 Err 表示 provider 未配置 / provider_type 无法映射 / API 调用失败（网络、鉴权）
-    pub async fn list_models(&self, provider_name: &str) -> Result<Vec<String>> {
+    pub async fn list_models(&self, provider_name: &str) -> Result<Vec<ArcStr>> {
         let provider_config = ConfigManager::get().provider_config(provider_name).await
-            .ok_or_else(|| Error::ModelProviderNotFound(provider_name.to_string(), String::new()))?;
+            .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider_name), ArcStr::new()))?;
         // 按 provider_type 分派实现（"openai" | "anthropic"）
         match provider_config.provider_type.as_str() {
             "openai" => {
@@ -77,14 +78,14 @@ impl ProviderManager {
                 let result = provider.list_models().await?;
                 Ok(result)
             },
-            other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other))),
+            other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other).into())),
         }
     }
 
     /// 按 (provider, model) 取有效模型配置（provider 未配置返回 Err）
     async fn model_config(&self, provider: &str, model: &str) -> Result<EffectiveModelConfig> {
         ConfigManager::get().provider_model_config(provider, model).await
-            .ok_or_else(|| Error::ModelProviderNotFound(provider.to_string(), model.to_string()))
+            .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider), ArcStr::from(model)))
     }
 }
 
@@ -100,9 +101,9 @@ mod tests {
 
     fn sample_provider_config() -> ProviderConfig {
         ProviderConfig {
-            provider_type: Arc::new("openai".into()),
-            base_url: Arc::new("https://api.example.com".into()),
-            api_key: Arc::new("sk-test".into()),
+            provider_type: ArcStr::from("openai"),
+            base_url: ArcStr::from("https://api.example.com"),
+            api_key: ArcStr::from("sk-test"),
         }
     }
 
@@ -144,8 +145,8 @@ mod tests {
         ensure_config_manager().await;
         // provider 未配置 → 取有效模型配置失败，返回 ModelProviderNotFound（不触网）
         let mut llm_cfg = EffectiveLLMConfig::new();
-        llm_cfg.provider = Arc::new("no-such-provider".into());
-        llm_cfg.model = Arc::new("m".into());
+        llm_cfg.provider = ArcStr::from("no-such-provider");
+        llm_cfg.model = ArcStr::from("m");
         let err = ProviderManager::new().call(&llm_cfg, vec![], &vec![]).await.err().expect("provider 不存在应返回 Err");
         assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider 应返回 ModelProviderNotFound");
     }
@@ -157,9 +158,9 @@ mod tests {
         // 该分支在构造 Provider 前返回，不触网）
         let _ = ConfigManager::get().add_provider("typo-provider", ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
-                provider_type: Arc::new("typo".into()),
-                base_url: Arc::new("https://api.example.com".into()),
-                api_key: Arc::new("sk-test".into()),
+                provider_type: ArcStr::from("typo"),
+                base_url: ArcStr::from("https://api.example.com"),
+                api_key: ArcStr::from("sk-test"),
             }),
             default_model_config: ModelConfig {
                 max_tokens_usage: 128000,

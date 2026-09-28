@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::channel::IncomingMessageEvent;
 use kissbot_api::message::Content;
 use serde_json::Value;
@@ -9,25 +10,25 @@ use kissbot_llm::Message;
 /// 消息内容（channel record 的最小视图：name + 文本段 + is_self；id 类不保留；时间由排序键承担，不保留）
 #[derive(Debug, Clone)]
 pub struct MessageContent {
-    pub user_name: Arc<String>,
-    /// 文本段列表：每个元素为 Content::Text 的 Arc 克隆（Multi 拆多个元素；打包时以 \n 拼接）
-    pub content: Vec<Arc<String>>,
+    pub user_name: ArcStr,
+    /// 文本段列表：每个元素为 Content::Text 的 ArcStr 克隆（Multi 拆多个元素；打包时以 \n 拼接）
+    pub content: Vec<ArcStr>,
     /// 是否 agent 自身消息（is_self：1=self，0=他人）
     pub is_self: bool,
 }
 
 /// parse_channel_groups 与 pack_batch 共用的 MessageContent 构造：
-/// user_name 克隆 Arc；content 递归提取 Text 段（collect_text_parts）；is_self 按 >0 转 bool
-pub fn extract_content(user_name: Arc<String>, content: &Content, is_self: usize) -> MessageContent {
+/// user_name 克隆 ArcStr；content 递归提取 Text 段（collect_text_parts）；is_self 按 >0 转 bool
+pub fn extract_content(user_name: ArcStr, content: &Content, is_self: usize) -> MessageContent {
     let mut parts = Vec::new();
     collect_text_parts(content, &mut parts);
     MessageContent { user_name: user_name.clone(), content: parts, is_self: is_self > 0 }
 }
 
-/// 递归收集 Content 中的全部 Text 段到 parts：Text 直接 clone 其 Arc<String>；Multi 递归遍历（可嵌套任意深度），
+/// 递归收集 Content 中的全部 Text 段到 parts：Text 直接 clone 其 ArcStr；Multi 递归遍历（可嵌套任意深度），
 /// 各 Text 子项各占一个元素；其余变体（附件/系统通知/Think/ToolCall/ToolResult 等）不产生段（调用方跳过空结果）
 /// 注意：Content 用 #[serde(tag="msg_type", content="data")] 序列化，反序列化后为类型化枚举，直接匹配即可
-fn collect_text_parts(content: &Content, parts: &mut Vec<Arc<String>>) {
+fn collect_text_parts(content: &Content, parts: &mut Vec<ArcStr>) {
     match content {
         Content::Text(text) => parts.push(text.clone()),
         Content::Multi(items) => {
@@ -78,7 +79,7 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
             if is_asst {
                 out.push(Message::Assistant { content: Value::String(asst_buf.join("\n")), reasoning_content: Value::Null, tool_calls: Value::Null });
             } else {
-                out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
+                out.push(Message::User { content: ArcStr::from(user_buf.join("\n")) });
             }
             user_buf.clear();
             asst_buf.clear();
@@ -97,7 +98,7 @@ pub fn pack_memory_messages(msgs: &[MessageContent]) -> Vec<Message> {
         if is_asst {
             out.push(Message::Assistant { content: Value::String(asst_buf.join("\n")), reasoning_content: Value::Null, tool_calls: Value::Null });
         } else {
-            out.push(Message::User { content: Arc::new(user_buf.join("\n")) });
+            out.push(Message::User { content: ArcStr::from(user_buf.join("\n")) });
             // 以 User 结尾：补一条空 Assistant（模型对话需以待回答的 Assistant 结尾）
             out.push(Message::Assistant { content: Value::String(String::new()), reasoning_content: Value::Null, tool_calls: Value::Null });
         }
@@ -118,7 +119,7 @@ pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
         let text = mc.content.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
         lines.push(user_line(mc.user_name.as_str(), &text));
     }
-    Message::User { content: Arc::new(lines.join("\n")) }
+    Message::User { content: ArcStr::from(lines.join("\n")) }
 }
 
 #[cfg(test)]
@@ -129,7 +130,7 @@ mod tests {
 
     // 构造测试用 MessageContent
     fn msg(name: &str, content: &str, is_self: bool) -> MessageContent {
-        MessageContent { user_name: Arc::new(name.to_string()), content: vec![Arc::new(content.to_string())], is_self }
+        MessageContent { user_name: ArcStr::from(name), content: vec![ArcStr::from(content)], is_self }
     }
 
     #[test]
@@ -162,7 +163,7 @@ mod tests {
     #[test]
     fn pack_memory_messages_skips_empty_content_records() {
         // 非文本记录（content 为空 Vec）→ 跳过：不产生消息、不触发段切换、不阻止后续合并
-        let empty = || MessageContent { user_name: Arc::new("agent".to_string()), content: vec![], is_self: true };
+        let empty = || MessageContent { user_name: ArcStr::from("agent"), content: vec![], is_self: true };
         let msgs = vec![
             msg("u1", "hi", false),
             empty(),                       // 空 content → 跳过（夹在两条 User 之间也不切段）
@@ -189,37 +190,37 @@ mod tests {
     #[test]
     fn extract_content_collects_text_parts_and_is_self_flag() {
         // Text → 单段；is_self > 0 → true
-        let mc = extract_content(Arc::new("u".to_string()), &Content::Text(Arc::new("hi".into())), 1);
-        assert_eq!(mc.content, vec![Arc::new("hi".to_string())]);
+        let mc = extract_content(ArcStr::from("u"), &Content::Text(ArcStr::from("hi")), 1);
+        assert_eq!(mc.content, vec![ArcStr::from("hi")]);
         assert!(mc.is_self, "is_self>0 → true");
         // Multi 递归收集 Text 段；非文本子项跳过
         let multi = Content::Multi(vec![
-            Content::Text(Arc::new("a".into())),
-            Content::ToolCall(Arc::new("k".into())),
-            Content::Multi(vec![Content::Text(Arc::new("b".into()))]),
+            Content::Text(ArcStr::from("a")),
+            Content::ToolCall(ArcStr::from("k")),
+            Content::Multi(vec![Content::Text(ArcStr::from("b"))]),
         ]);
-        let mc2 = extract_content(Arc::new("u".to_string()), &multi, 0);
-        assert_eq!(mc2.content, vec![Arc::new("a".to_string()), Arc::new("b".to_string())]);
+        let mc2 = extract_content(ArcStr::from("u"), &multi, 0);
+        assert_eq!(mc2.content, vec![ArcStr::from("a"), ArcStr::from("b")]);
         assert!(!mc2.is_self, "is_self=0 → false");
         // 非文本 → 空 content
-        let mc3 = extract_content(Arc::new("u".to_string()), &Content::ToolCall(Arc::new("k".into())), 0);
+        let mc3 = extract_content(ArcStr::from("u"), &Content::ToolCall(ArcStr::from("k")), 0);
         assert!(mc3.content.is_empty());
     }
 
     // 构造测试用 IncomingMessageEvent（content 由调用方指定）
     fn ev(name: &str, content: Content) -> Arc<IncomingMessageEvent> {
         Arc::new(IncomingMessageEvent {
-            recipient_user_id: Arc::new("self".into()),
+            recipient_user_id: ArcStr::from("self"),
             incoming_message: Arc::new(IncomingMessage {
-                msg_id: Arc::new("m".into()),
-                messenger_id: Arc::new("web".into()),
-                user_id: Arc::new("u".into()),
-                group_id: Arc::new("g".into()),
-                messenger_name: Arc::new("".into()),
-                user_name: Arc::new(name.into()),
-                group_name: Arc::new("".into()),
+                msg_id: ArcStr::from("m"),
+                messenger_id: ArcStr::from("web"),
+                user_id: ArcStr::from("u"),
+                group_id: ArcStr::from("g"),
+                messenger_name: ArcStr::from(""),
+                user_name: ArcStr::from(name),
+                group_name: ArcStr::from(""),
                 content,
-                time: Arc::new("2026-08-07 10:00:00".into()),
+                time: ArcStr::from("2026-08-07 10:00:00"),
             }),
         })
     }
@@ -227,16 +228,16 @@ mod tests {
     #[test]
     fn pack_batch_joins_user_lines_and_skips_non_text() {
         let events = vec![
-            ev("u1", Content::Text(Arc::new("a".into()))),
-            ev("", Content::Text(Arc::new("b".into()))),
-            ev("u3", Content::ToolCall(Arc::new("k".into()))),  // 非文本 → 跳过
-            ev("u4", Content::Text(Arc::new("c".into()))),
+            ev("u1", Content::Text(ArcStr::from("a"))),
+            ev("", Content::Text(ArcStr::from("b"))),
+            ev("u3", Content::ToolCall(ArcStr::from("k"))),  // 非文本 → 跳过
+            ev("u4", Content::Text(ArcStr::from("c"))),
         ];
         let msg = pack_batch(&events);
         assert!(matches!(&msg, Message::User { content } if content.as_str() == "u1: a\nb\nu4: c"), "非文本事件跳过，空 name 只留 text");
 
         // 全非文本 → 空 content 的 User
-        let all_empty = vec![ev("u", Content::ToolCall(Arc::new("k".into())))];
+        let all_empty = vec![ev("u", Content::ToolCall(ArcStr::from("k")))];
         let msg2 = pack_batch(&all_empty);
         assert!(matches!(&msg2, Message::User { content } if content.is_empty()));
     }

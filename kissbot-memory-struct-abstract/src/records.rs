@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::{
     CaseCursor, CaseRecord, ChannelKey, ChannelRecord, Content, RecordKind, ThinkRecord,
     ToolCallRecord, ToolResultRecord, Watermark,
@@ -23,7 +24,7 @@ use crate::error::Result;
 #[derive(Debug, Clone)]
 pub struct RecordEntry {
     pub kind: RecordKind,
-    pub time: Arc<String>,
+    pub time: ArcStr,
     pub sn: u64,
     pub body: RecordBody,
 }
@@ -155,7 +156,7 @@ pub async fn list_store_files(
 /// 枚举某角色在记忆存储中出现过的记忆后缀（`{year}-{后缀}` 的后缀段）。
 ///
 /// 服务启动恢复时用：磁盘上的原始记录与水位的关系未知，这些后缀全部按待处理处理。
-pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Result<BTreeSet<String>> {
+pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Result<BTreeSet<ArcStr>> {
     let store_root = root.join(agent_id).join("memory-store");
     let mut year_dirs = match tokio::fs::read_dir(&store_root).await {
         Ok(entries) => entries,
@@ -175,7 +176,7 @@ pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Res
         let suffix = &dir_name[5..];
         // 目录名形如 `{角色名}` 或 `{角色名}-{事件标识}`：已知角色名做前缀匹配，不还原 RoleEvent
         if suffix == role || suffix.strip_prefix(role).is_some_and(|rest| rest.starts_with('-')) {
-            suffixes.insert(suffix.to_string());
+            suffixes.insert(ArcStr::from(suffix));
         }
     }
     Ok(suffixes)
@@ -271,8 +272,7 @@ pub fn attribute_channels(records: &[RecordEntry]) -> Vec<Option<ChannelKey>> {
         .collect()
 }
 
-fn parse_entry(kind: RecordKind, time: String, sn: u64, value: &Value) -> Result<RecordEntry> {
-    let time = Arc::new(time);
+fn parse_entry(kind: RecordKind, time: ArcStr, sn: u64, value: &Value) -> Result<RecordEntry> {
     let body = match kind {
         RecordKind::Channel => RecordBody::Channel(Arc::new(serde_json::from_value::<ChannelRecord>(value.clone())?)),
         RecordKind::Think => RecordBody::Think(Arc::new(serde_json::from_value::<ThinkRecord>(value.clone())?)),
@@ -283,8 +283,8 @@ fn parse_entry(kind: RecordKind, time: String, sn: u64, value: &Value) -> Result
 }
 
 /// 从记录 JSON 取 (time, sn)
-pub fn value_time_sn(value: &Value) -> Option<(String, u64)> {
-    let time = value.get("time")?.as_str()?.to_string();
+pub fn value_time_sn(value: &Value) -> Option<(ArcStr, u64)> {
+    let time = ArcStr::from(value.get("time")?.as_str()?);
     let sn = value.get("sn")?.as_u64()?;
     Some((time, sn))
 }
@@ -438,20 +438,20 @@ mod tests {
     fn channel_entry(time: &str, sn: u64, is_self: usize) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Channel,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("u1".into()),
-                self_user_id: Arc::new("self".into()),
-                messenger_id: Arc::new("web".into()),
-                group_id: Arc::new("g1".into()),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self"),
+                messenger_id: ArcStr::from("web"),
+                group_id: ArcStr::from("g1"),
                 is_self,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("alice".into()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("你好".into())),
-                time: Arc::new(time.to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("alice"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("你好")),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -460,13 +460,13 @@ mod tests {
     fn think_entry(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Think,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Think(Arc::new(ThinkRecord {
-                reasoning_content: Some(Arc::new("推理".into())),
+                reasoning_content: Some(ArcStr::from("推理")),
                 thinking: None,
-                key: Arc::new("k1".into()),
-                time: Arc::new(time.to_string()),
+                key: ArcStr::from("k1"),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -476,20 +476,20 @@ mod tests {
     fn placeholder_entry(time: &str, sn: u64, key: &str, self_user: &str, group: &str) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Channel,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new(self_user.to_string()),
-                self_user_id: Arc::new(self_user.to_string()),
-                messenger_id: Arc::new("web".into()),
-                group_id: Arc::new(group.to_string()),
+                user_id: ArcStr::from(self_user),
+                self_user_id: ArcStr::from(self_user),
+                messenger_id: ArcStr::from("web"),
+                group_id: ArcStr::from(group),
                 is_self: 1,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Think(Arc::new(key.to_string())),
-                time: Arc::new(time.to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Think(ArcStr::from(key)),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -499,13 +499,13 @@ mod tests {
     fn attribute_channels_links_think_tool_by_placeholder_key() {
         let think = |time: &str, sn: u64, key: &str| RecordEntry {
             kind: RecordKind::Think,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Think(Arc::new(ThinkRecord {
                 reasoning_content: None,
-                thinking: Some(Arc::new("思考".into())),
-                key: Arc::new(key.to_string()),
-                time: Arc::new(time.to_string()),
+                thinking: Some(ArcStr::from("思考")),
+                key: ArcStr::from(key),
+                time: ArcStr::from(time),
                 sn,
             })),
         };
@@ -534,13 +534,13 @@ mod tests {
     fn store_view_pending_filters_by_channel_and_watermark() {
         let think = |time: &str, sn: u64, key: &str| RecordEntry {
             kind: RecordKind::Think,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Think(Arc::new(ThinkRecord {
                 reasoning_content: None,
-                thinking: Some(Arc::new("思考".into())),
-                key: Arc::new(key.to_string()),
-                time: Arc::new(time.to_string()),
+                thinking: Some(ArcStr::from("思考")),
+                key: ArcStr::from(key),
+                time: ArcStr::from(time),
                 sn,
             })),
         };
@@ -564,15 +564,15 @@ mod tests {
 
         // 通道水位推进过首条记录、思考水位未动：占位记录与其后的思考记录仍在
         let mut partial = Watermark::default();
-        partial.channel.time = Arc::new("2026-09-22 10:00:01".into());
+        partial.channel.time = ArcStr::from("2026-09-22 10:00:01");
         partial.channel.sn = 1;
         assert_eq!(view.pending_for(&web_g1, &partial).len(), 2);
 
         // 两类水位都推进到末尾：该通道清空；另一通道不受影响
         let mut watermark = Watermark::default();
-        watermark.channel.time = Arc::new("2026-09-22 10:00:01".into());
+        watermark.channel.time = ArcStr::from("2026-09-22 10:00:01");
         watermark.channel.sn = 2;
-        watermark.think.time = Arc::new("2026-09-22 10:00:01".into());
+        watermark.think.time = ArcStr::from("2026-09-22 10:00:01");
         watermark.think.sn = 2;
         assert!(view.pending_for(&web_g1, &watermark).is_empty());
         assert_eq!(view.pending_for(&web_g2, &Watermark::default()).len(), 2);
@@ -585,13 +585,13 @@ mod tests {
 
         let result = RecordEntry {
             kind: RecordKind::ToolResult,
-            time: Arc::new("2026-09-22 13:48:40".into()),
+            time: ArcStr::from("2026-09-22 13:48:40"),
             sn: 1,
             body: RecordBody::ToolResult(Arc::new(ToolResultRecord {
                 tool_result: Arc::new(serde_json::json!({"v": 1})),
                 tool_error: Arc::new(Value::Null),
-                key: Arc::new("k1".into()),
-                time: Arc::new("2026-09-22 13:48:40".into()),
+                key: ArcStr::from("k1"),
+                time: ArcStr::from("2026-09-22 13:48:40"),
                 sn: 1,
             })),
         };
@@ -608,27 +608,27 @@ mod tests {
     fn case_records_fixture() -> Vec<CaseRecord> {
         vec![
             CaseRecord::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("u1".into()), self_user_id: Arc::new("self".into()),
-                messenger_id: Arc::new("web".into()), group_id: Arc::new("g1".into()),
-                is_self: 0, msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("alice".into()), group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("问".into())),
-                time: Arc::new("2026-09-22 10:00:00".into()), sn: 1,
+                user_id: ArcStr::from("u1"), self_user_id: ArcStr::from("self"),
+                messenger_id: ArcStr::from("web"), group_id: ArcStr::from("g1"),
+                is_self: 0, msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("alice"), group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("问")),
+                time: ArcStr::from("2026-09-22 10:00:00"), sn: 1,
             })),
             CaseRecord::Think(Arc::new(ThinkRecord {
-                reasoning_content: Some(Arc::new("推理".into())), thinking: None,
-                key: Arc::new("k1".into()),
-                time: Arc::new("2026-09-22 10:00:00".into()), sn: 1,
+                reasoning_content: Some(ArcStr::from("推理")), thinking: None,
+                key: ArcStr::from("k1"),
+                time: ArcStr::from("2026-09-22 10:00:00"), sn: 1,
             })),
             CaseRecord::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("self".into()), self_user_id: Arc::new("self".into()),
-                messenger_id: Arc::new("web".into()), group_id: Arc::new("g1".into()),
-                is_self: 1, msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("bot".into()), group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("答".into())),
-                time: Arc::new("2026-09-22 10:01:00".into()), sn: 2,
+                user_id: ArcStr::from("self"), self_user_id: ArcStr::from("self"),
+                messenger_id: ArcStr::from("web"), group_id: ArcStr::from("g1"),
+                is_self: 1, msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("bot"), group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("答")),
+                time: ArcStr::from("2026-09-22 10:01:00"), sn: 2,
             })),
         ]
     }
@@ -654,7 +654,7 @@ mod tests {
         // 游标为最后一条：之后为空
         assert!(records_after(&records, &CaseCursor::of(&records[2])).is_empty());
         // 游标晚于全部记录：之后为空
-        let cursor = CaseCursor { time: Arc::new("2099-01-01 00:00:00".into()), sn: 1, record_type: RecordKind::Channel };
+        let cursor = CaseCursor { time: ArcStr::from("2099-01-01 00:00:00"), sn: 1, record_type: RecordKind::Channel };
         assert!(records_after(&records, &cursor).is_empty());
     }
 
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(value["is_self"], 1);
         assert_eq!(value["sn"], 7);
         assert_eq!(value["content"]["msg_type"], "Text");
-        assert_eq!(value_time_sn(&value), Some(("2026-09-22 13:48:37".to_string(), 7)));
+        assert_eq!(value_time_sn(&value), Some((ArcStr::from("2026-09-22 13:48:37"), 7)));
     }
 
     #[test]
@@ -778,7 +778,7 @@ mod tests {
         let suffixes = list_store_suffixes(root, "0", "dev").await.unwrap();
         assert_eq!(
             suffixes,
-            ["dev", "dev-3f2a-c3d4", "dev-e1"].into_iter().map(String::from).collect(),
+            ["dev", "dev-3f2a-c3d4", "dev-e1"].into_iter().map(ArcStr::from).collect(),
             "同角色的全部后缀（含事件模式），dev2 / other 不属于本角色"
         );
         assert!(list_store_suffixes(root, "0", "none").await.unwrap().is_empty());

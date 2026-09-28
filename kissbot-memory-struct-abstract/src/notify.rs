@@ -6,6 +6,7 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kai_ws::{
     TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage,
@@ -122,7 +123,7 @@ impl WsJsonProcessor for RecordNotificationProcessor {
 }
 
 /// 订阅器入场点：未配置通知地址时不订阅（仅手动触发/重建可用）
-pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<String>, reconnect_interval_secs: u64) -> Result<()> {
+pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<ArcStr>, reconnect_interval_secs: u64) -> Result<()> {
     let Some(url) = notify_url else {
         warn!("[abstract] notify_url not configured, notification subscription disabled");
         return Ok(());
@@ -149,8 +150,8 @@ mod tests {
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
-            role_name: Arc::new(role_name.to_string()),
-            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+            role_name: ArcStr::from(role_name),
+            event_id: event_id.map(ArcStr::from),
         }
     }
 

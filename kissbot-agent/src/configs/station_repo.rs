@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::ArcSwapHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -9,21 +10,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StationRepo {
     /// 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环）
-    pub station_id: Arc<String>,
+    pub station_id: ArcStr,
     /// 本级加载哪些 group（只声明 group 名；工具元数据与实现由内置注册表按 group 名填充）
     /// serde(default)：旧 station.json 缺省 groups 时反序列化为空列表
     #[serde(default)]
-    pub groups: Vec<String>,
+    pub groups: Vec<ArcStr>,
     /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
     /// serde(default)：旧 station.json 缺省 sub_stations 时反序列化为空 map
     #[serde(default)]
-    pub sub_stations: Arc<ArcSwapHashMap<String, SubStationConfig>>,
+    pub sub_stations: Arc<ArcSwapHashMap<ArcStr, SubStationConfig>>,
 }
 
 impl Default for StationRepo {
     fn default() -> Self {
         Self {
-            station_id: Arc::new(String::new()),
+            station_id: ArcStr::new(),
             groups: Vec::new(),
             sub_stations: Arc::new(ArcSwapHashMap::new()),
         }
@@ -34,10 +35,10 @@ impl Default for StationRepo {
 /// 只存直接子连接信息；子 Station 内部结构由子进程自己管理，父通过 MCP 查询
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubStationConfig {
-    pub station_id: Arc<String>,
+    pub station_id: ArcStr,
     /// 子 Station 基地址（MCP 端点为 base_url + /mcp）
-    pub base_url: Arc<String>,
+    pub base_url: ArcStr,
     pub timeout_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prefix: Option<Arc<String>>,
+    pub prefix: Option<ArcStr>,
 }

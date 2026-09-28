@@ -1,10 +1,9 @@
-use std::sync::Arc;
-
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStructConfig {
-    pub name: Arc<String>,
-    pub url: Arc<String>,
+    pub name: ArcStr,
+    pub url: ArcStr,
 }

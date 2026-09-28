@@ -64,6 +64,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "arg_enum_proc_macro"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1220,6 +1229,7 @@ name = "kissbot-api"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "arcstr",
  "async-trait",
  "bytes",
  "dashmap",
@@ -1237,6 +1247,7 @@ dependencies = [
 name = "kissbot-channel"
 version = "0.1.0"
 dependencies = [
+ "arcstr",
  "async-trait",
  "base64",
  "bytes",
@@ -1260,6 +1271,7 @@ name = "kissbot-channel-web"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "arcstr",
  "async-trait",
  "axum",
  "bytes",
@@ -1303,6 +1315,7 @@ dependencies = [
 name = "kissbot-security"
 version = "0.1.0"
 dependencies = [
+ "arcstr",
  "axum",
  "http",
  "kai-ws",

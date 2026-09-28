@@ -71,7 +71,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 - 顺序确定性：结果按工具名排序（同一集合多次请求返回相同顺序，便于客户端缓存与提示词缓存）
 - 聚合为空 → 返回空工具列表；LLM 请求不携带 tools 字段（兼容无工具场景）
 
-`Station::list_tools_local(groups)` 是 nexus 直连入口：`groups: Option<&HashSet<String>>` 为会话启用的 group 白名单，在 `list_tools` 的结果上按各工具的 `group()` 本地过滤（`None` = 不过滤，`Some(空集)` = 空结果）。
+`Station::list_tools_local(groups)` 是 nexus 直连入口：`groups: Option<&HashSet<ArcStr>>` 为会话启用的 group 白名单，在 `list_tools` 的结果上按各工具的 `group()` 本地过滤（`None` = 不过滤，`Some(空集)` = 空结果）。
 
 ## 第三方 MCP 服务端
 
@@ -92,7 +92,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 
 ## 工具路由（tool_routes）
 
-- **路由表位置**：`Station.tool_routes: ArcSwap<HashMap<String, Arc<String>>>`（工具名 → 直接子 station_id）；仅用于 `call_tool` 路由，不用于元数据查询；本级工具不进路由表（`call_tool` 先查本级实现表）
+- **路由表位置**：`Station.tool_routes: ArcSwap<HashMap<ArcStr, ArcStr>>`（工具名 → 直接子 station_id）；仅用于 `call_tool` 路由，不用于元数据查询；本级工具不进路由表（`call_tool` 先查本级实现表）
 - **更新时机**：每次 `list_tools` 用当次成功拉取到的子工具重建整张表并整体替换（快照语义）；某子本次拉取失败时其工具不在新表中，该子上一次的路由记录随快照一并失效
 - **冲突处理**：合并时工具名已存在（与本级或先到子重名）→ warn 日志，保留先到者，后到者不进路由表、不进返回列表
 - **路由查询**：`call_tool` 本级未命中时按工具名查路由表，命中即调该子；不遍历全部子、不远程获取列表；路由未命中返回「工具不存在」
@@ -141,7 +141,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 
 ## group 白名单与会话对应关系
 
-- **会话 group 白名单（GroupSetConfig.group_set）**：`Arc<HashSet<String>>`，会话启用的 group 名集合；默认空集 = 无工具
+- **会话 group 白名单（GroupSetConfig.group_set）**：`Arc<HashSet<ArcStr>>`，会话启用的 group 名集合；默认空集 = 无工具
 - 三层继承合并（默认 ← agent 级 ← role 级）后的 `group_set` 即为会话 group 白名单（与其它会话配置一样按 agent → role → session 逐层合成）
 - `Nexus::tools_for_session(session_key)`：读会话的 group 白名单 → 为空直接返回空 → `Station::list_tools_local(Some(&group_set))` 平铺查询并按 group 本地过滤；结果由 `From<&kissbot_mcp::Tool> for ToolConfig` 转为 LLM 侧工具定义（`parameters` 取 `inputSchema`），随 LLM 请求的 tools 字段发送
 - 工具执行：`AgentPipeline::call_tool`（记忆写入 + 调用）→ `StationToolCaller` 适配层 → `Station::call_tool_local(name, arguments)`；`CallToolResult` 还原为 `ToolData`——只承载 MCP `content` 字段转成的 `Value`（内容块数组，完整保留 text / image / audio / resource_link / resource 各类型）：成功进 `result`，失败进 `error`（`result` 留空）；`structuredContent` 不进入 Nexus

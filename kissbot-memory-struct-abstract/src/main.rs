@@ -82,7 +82,7 @@ async fn main() {
     let app = api::create_router(service)
         .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(security.api_key.clone()))));
     let addr = config.listen_addr();
-    let listener = TcpListener::bind(&addr).await.unwrap();
+    let listener = TcpListener::bind(addr.as_str()).await.unwrap();
     info!("kissbot-memory-struct-abstract listening on {}", addr);
     axum::serve(listener, app).await.unwrap();
 }

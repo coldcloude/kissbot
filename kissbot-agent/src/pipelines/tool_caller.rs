@@ -48,6 +48,7 @@ impl AgentToolCaller for StationToolCaller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arcstr::ArcStr;
     use crate::station::TERR_TOOL_NOT_FOUND;
     use serde_json::json;
 
@@ -108,8 +109,8 @@ mod tests {
             content: vec![
                 kissbot_mcp::Content::text("失败说明"),
                 kissbot_mcp::Content::Image {
-                    data: std::sync::Arc::new("eHl6".to_string()),
-                    mime_type: std::sync::Arc::new("image/png".to_string()),
+                    data: ArcStr::from("eHl6"),
+                    mime_type: ArcStr::from("image/png"),
                     annotations: None,
                     meta: None,
                 },

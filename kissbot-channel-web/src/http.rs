@@ -4,6 +4,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use axum::{
     extract::{Query, State},
     http::{StatusCode, HeaderMap},
@@ -28,58 +29,58 @@ use kissbot_api::channel::{OutgoingMessage, OutgoingMessageResponse};
 
 #[derive(Debug, Serialize)]
 pub struct MessengerAdminInfo {
-    pub messenger_id: String,
-    pub admin_name: String,
-    pub users: HashMap<String, Arc<UserConfig>>,
-    pub groups: HashMap<String, Arc<GroupConfig>>,
+    pub messenger_id: ArcStr,
+    pub admin_name: ArcStr,
+    pub users: HashMap<ArcStr, Arc<UserConfig>>,
+    pub groups: HashMap<ArcStr, Arc<GroupConfig>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateGroupRequest {
-    pub group_name: Arc<String>,
+    pub group_name: ArcStr,
     #[serde(default)]
-    pub member_ids: Vec<Arc<String>>,
+    pub member_ids: Vec<ArcStr>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameGroupRequest {
-    pub group_id: Arc<String>,
-    pub group_name: Arc<String>,
+    pub group_id: ArcStr,
+    pub group_name: ArcStr,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ManageMembersRequest {
-    pub group_id: Arc<String>,
+    pub group_id: ArcStr,
     #[serde(default)]
-    pub add_ids: Vec<Arc<String>>,
+    pub add_ids: Vec<ArcStr>,
     #[serde(default)]
-    pub remove_ids: Vec<Arc<String>>,
+    pub remove_ids: Vec<ArcStr>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteGroupRequest {
-    pub group_id: Arc<String>,
+    pub group_id: ArcStr,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
-    pub user_name: Arc<String>,
+    pub user_name: ArcStr,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteUserRequest {
-    pub user_id: Arc<String>,
+    pub user_id: ArcStr,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameUserRequest {
-    pub user_id: Arc<String>,
-    pub user_name: Arc<String>,
+    pub user_id: ArcStr,
+    pub user_name: ArcStr,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RenameAdminRequest {
-    pub admin_name: Arc<String>,
+    pub admin_name: ArcStr,
 }
 
 // ========== Router ==========
@@ -114,8 +115,8 @@ pub fn create_router(messenger: Arc<WebMessenger>) -> Router {
 async fn handle_info(
     State(messenger): State<Arc<WebMessenger>>,
 ) -> impl IntoResponse {
-    let messenger_id = messenger.messenger_id.to_string();
-    let admin_name = messenger.admin_name().await.to_string();
+    let messenger_id = messenger.messenger_id.clone();
+    let admin_name = messenger.admin_name().await;
     let users = messenger.config_users().await;
     let groups = messenger.config_groups().await;
     Json(ApiResponse::success(MessengerAdminInfo {
@@ -140,7 +141,7 @@ async fn handle_send_message(
 /// GET /api/messages/recent?group_id=xxx&n=20
 async fn handle_messages_recent(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id,
@@ -156,7 +157,7 @@ async fn handle_messages_recent(
 /// GET /api/messages/before?group_id=xxx&key=2026-07-20&line=42&n=10
 async fn handle_messages_before(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id.clone(),
@@ -180,7 +181,7 @@ async fn handle_messages_before(
 /// GET /api/messages/after?group_id=xxx&key=2026-07-20&line=42&n=10
 async fn handle_messages_after(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id.clone(),
@@ -204,18 +205,18 @@ async fn handle_messages_after(
 /// GET /api/messages/range?group_id=xxx&start=2026-07-20T00:00:00Z&end=2026-07-20T23:59:59Z
 async fn handle_messages_range(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
-        Some(id) => Arc::new(id.clone()),
+        Some(id) => id.clone(),
         None => return Json(ApiResponse::error("Missing group_id".to_string())),
     };
     let start = match params.get("start") {
-        Some(s) => Arc::new(s.clone()),
+        Some(s) => s.clone(),
         None => return Json(ApiResponse::error("Missing start".to_string())),
     };
     let end = match params.get("end") {
-        Some(e) => Arc::new(e.clone()),
+        Some(e) => e.clone(),
         None => return Json(ApiResponse::error("Missing end".to_string())),
     };
     match messenger.message_store.get_range(TimeRangeQuery { group_id, start, end }).await {
@@ -229,7 +230,7 @@ async fn handle_create_group(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
-    let member_ids: Vec<String> = req.member_ids.iter().map(|m| m.to_string()).collect();
+    let member_ids: Vec<ArcStr> = req.member_ids.clone();
 
     match messenger.add_group(req.group_name.as_str(), member_ids).await {
         Ok(group_id) => Json(ApiResponse::success(serde_json::json!({
@@ -255,8 +256,8 @@ async fn handle_manage_members(
     State(messenger): State<Arc<WebMessenger>>,
     Json(req): Json<ManageMembersRequest>,
 ) -> impl IntoResponse {
-    let add_ids: Vec<String> = req.add_ids.iter().map(|a| a.to_string()).collect();
-    let remove_ids: Vec<String> = req.remove_ids.iter().map(|r| r.to_string()).collect();
+    let add_ids: Vec<ArcStr> = req.add_ids.clone();
+    let remove_ids: Vec<ArcStr> = req.remove_ids.clone();
     match messenger.manage_members(req.group_id.as_str(), &add_ids, &remove_ids).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
         Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
@@ -361,7 +362,7 @@ async fn handle_upload_attachment(
 /// GET /api/attachment/download — 支持 Range 断点续传
 async fn handle_download_attachment(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
     headers: HeaderMap,
 ) -> Response {
     let key = match params.get("key") {
@@ -426,7 +427,7 @@ fn parse_range(range_str: &str, file_len: u64) -> Option<(u64, u64)> {
 /// GET /api/attachment/thumbnail
 async fn handle_thumbnail(
     State(messenger): State<Arc<WebMessenger>>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<HashMap<ArcStr, ArcStr>>,
 ) -> Response {
     let key = match params.get("key") {
         Some(k) => k,

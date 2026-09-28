@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use axum::Router;
 use kissbot_mcp::{Implementation, McpHttpConfig, McpServer};
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
@@ -12,7 +13,7 @@ use crate::types::Result;
 
 /// station 对外 MCP 服务：单端点 `POST /mcp`，供其他 station 作为 sub 调用
 pub struct StationHttpServer {
-    api_key: Arc<String>,
+    api_key: ArcStr,
 }
 
 impl StationHttpServer {

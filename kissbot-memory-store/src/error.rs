@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,7 +19,7 @@ pub enum Error {
     Utf8(#[from] std::string::FromUtf8Error),
 
     #[error("Record not in order: key='{0}' latest='{1}' new='{2}'")]
-    RecordNotInOrder(String, String, String),
+    RecordNotInOrder(ArcStr, ArcStr, ArcStr),
 
     #[error("WS error: {0}")]
     Ws(#[from] kai_ws::Error),

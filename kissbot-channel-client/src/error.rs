@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -12,22 +13,22 @@ pub enum Error {
     IoError(#[from] std::io::Error),
 
     #[error("Request error: {0}")]
-    RequestError(String),
+    RequestError(ArcStr),
 
     #[error("Response error: status_code {0}")]
     ResponseError(u32),
 
     #[error("Invalid message: {0}")]
-    InvalidMessage(String),
+    InvalidMessage(ArcStr),
 
     #[error("Timeout: {0}")]
-    Timeout(String),
+    Timeout(ArcStr),
 
     #[error("Not connected")]
     NotConnected,
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    InternalError(ArcStr),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

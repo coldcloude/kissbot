@@ -1,3 +1,5 @@
+use arcstr::ArcStr;
+
 use crate::error::{Error, Result};
 
 /// 校验代号：仅字母/数字/下划线，且非空（等价于 `^[A-Za-z0-9_]+$`）。
@@ -7,7 +9,7 @@ pub fn validate_code(code: &str) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(Error::InvalidCode(code.to_string()))
+        Err(Error::InvalidCode(ArcStr::from(code)))
     }
 }
 

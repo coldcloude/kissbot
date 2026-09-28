@@ -19,6 +19,7 @@ pub use system_prompter::*;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_llm::{Message, Session, ToolConfig};
 
 use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Result, SessionKey}};
@@ -40,7 +41,7 @@ pub fn create_input_processor(session_key: Arc<SessionKey>, session: Arc<Session
     match name {
         PP_IN_BATCH => Ok(Arc::new(BatchAgentInputProcessor::new(session_key))),
         PP_IN_ABSTRACT => Ok(Arc::new(AbstractAgentInputProcessor::new(session_key, session))),
-        _ => Err(Error::PipelineNotFound("input processor".to_string(), name.to_string(), session_key.as_ref().clone())),
+        _ => Err(Error::PipelineNotFound(ArcStr::from("input processor"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
@@ -48,7 +49,7 @@ pub fn create_system_prompter(session_key: Arc<SessionKey>, session: Arc<Session
     match name {
         PP_SYS_DEFAULT => Ok(Arc::new(DefaultSystemPrompter::new(session))),
         PP_SYS_MEMORY_EGO => Ok(Arc::new(MemoryEgoSystemPrompter::new(session_key, session))),
-        _ => Err(Error::PipelineNotFound("system_prompter".to_string(), name.to_string(), session_key.as_ref().clone())),
+        _ => Err(Error::PipelineNotFound(ArcStr::from("system_prompter"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
@@ -57,27 +58,27 @@ pub fn create_message_sender(session_key: Arc<SessionKey>, session: Arc<Session>
         PP_MSG_RAW => Ok(Arc::new(RawMessagerSender { session_key, session })),
         PP_MSG_COMPRESS => Ok(Arc::new(TokenLimitMessageSender::new_compress(session_key, session))),
         PP_MSG_MEMORY_RECOVER => Ok(Arc::new(TokenLimitMessageSender::new_memory_recover(session_key, session))),
-        _ => Err(Error::PipelineNotFound("message sender".to_string(), name.to_string(), session_key.as_ref().clone())),
+        _ => Err(Error::PipelineNotFound(ArcStr::from("message sender"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 pub fn create_tool_caller(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentToolCaller>> {
     match name {
         PP_TOOL_STATION => Ok(Arc::new(StationToolCaller)),
-        _ => Err(Error::PipelineNotFound("tool caller".to_string(), name.to_string(), session_key.as_ref().clone())),
+        _ => Err(Error::PipelineNotFound(ArcStr::from("tool caller"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
 pub fn create_output_processor(session_key: Arc<SessionKey>, name: &str) -> Result<Arc<dyn AgentOutputProcessor>> {
     match name {
         PP_OUT_CHANNEL => Ok(Arc::new(ChannelOutputProcessor::new(session_key))),
-        _ => Err(Error::PipelineNotFound("output processor".to_string(), name.to_string(), session_key.as_ref().clone())),
+        _ => Err(Error::PipelineNotFound(ArcStr::from("output processor"), ArcStr::from(name), session_key.as_ref().clone())),
     }
 }
 
 pub struct SessionPipeline {
-    pub input_processors: DashMap<String, Arc<dyn AgentInputProcessor>>,
-    pub system_prompters: DashMap<String, Arc<dyn AgentSystemPrompter>>,
-    pub triggers: DashMap<String, Arc<dyn AgentTrigger>>,
+    pub input_processors: DashMap<ArcStr, Arc<dyn AgentInputProcessor>>,
+    pub system_prompters: DashMap<ArcStr, Arc<dyn AgentSystemPrompter>>,
+    pub triggers: DashMap<ArcStr, Arc<dyn AgentTrigger>>,
     pub pipeline: RwLock<AgentPipeline>,
 }
 
@@ -118,17 +119,17 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Se
     let message_sender: Arc<dyn AgentMessageSender> = if let Some(name) = message_sender_cfg {
         create_message_sender(session_key.clone(), session.clone(), name)?
     } else {
-        return Err(Error::PipelineNotFound("message sender".to_string(), "NULL".to_string(), session_key.as_ref().clone()))
+        return Err(Error::PipelineNotFound(ArcStr::from("message sender"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
     let tool_caller: Arc<dyn AgentToolCaller> = if let Some(name) = tool_caller_cfg {
         create_tool_caller(session_key.clone(), name)?
     } else {
-        return Err(Error::PipelineNotFound("ttool caller".to_string(), "NULL".to_string(), session_key.as_ref().clone()))
+        return Err(Error::PipelineNotFound(ArcStr::from("ttool caller"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
     let output_processor: Arc<dyn AgentOutputProcessor> = if let Some(name) = output_processor_cfg {
         create_output_processor(session_key.clone(), name)?
     } else {
-        return Err(Error::PipelineNotFound("out channel".to_string(), "NULL".to_string(), session_key.as_ref().clone()))
+        return Err(Error::PipelineNotFound(ArcStr::from("out channel"), ArcStr::from("NULL"), session_key.as_ref().clone()))
     };
     Ok(AgentPipeline {
         session_key,
@@ -139,7 +140,7 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Se
     })
 }
 
-pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<String, Arc<dyn AgentInputProcessor>>> {
+pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<ArcStr, Arc<dyn AgentInputProcessor>>> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
@@ -150,10 +151,10 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session
         };
         match preset {
             PP_PRESET_ROLE => {
-                names.push(PP_IN_BATCH.to_string());
+                names.push(ArcStr::from(PP_IN_BATCH));
             },
             PP_PRESET_EVENT => {
-                names.push(PP_IN_BATCH.to_string());
+                names.push(ArcStr::from(PP_IN_BATCH));
             },
             _ => {},
         };
@@ -169,7 +170,7 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session
     Ok(input_processors)
 }
 
-pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<String, Arc<dyn AgentSystemPrompter>>> {
+pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<ArcStr, Arc<dyn AgentSystemPrompter>>> {
     let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
@@ -180,10 +181,10 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session
         };
         match preset {
             PP_PRESET_ROLE => {
-                names.push(PP_SYS_MEMORY_EGO.to_string());
+                names.push(ArcStr::from(PP_SYS_MEMORY_EGO));
             },
             PP_PRESET_EVENT => {
-                names.push(PP_SYS_MEMORY_EGO.to_string());
+                names.push(ArcStr::from(PP_SYS_MEMORY_EGO));
             },
             _ => {},
         };
@@ -241,7 +242,7 @@ impl PipelineManager {
             }
             rs
         } else {
-            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+            return Err(Error::PipelineNotFound(ArcStr::from("any pipeline"), ArcStr::from("CURRENT"), session_key.clone()))
         };
         let mut futs = Vec::new();
         for input_processor in input_processors.iter() {
@@ -260,7 +261,7 @@ impl PipelineManager {
             }
             rs
         } else {
-            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+            return Err(Error::PipelineNotFound(ArcStr::from("any pipeline"), ArcStr::from("CURRENT"), session_key.clone()))
         };
         let mut futs = Vec::new();
         for system_prompter in system_prompters.iter() {
@@ -275,7 +276,7 @@ impl PipelineManager {
         let pipeline = if let Some(pipeline) = self.pipeline_map.get(session_key) {
             pipeline.clone()
         } else {
-            return Err(Error::PipelineNotFound("any pipeline".to_string(), "CURRENT".to_string(), session_key.clone()))
+            return Err(Error::PipelineNotFound(ArcStr::from("any pipeline"), ArcStr::from("CURRENT"), session_key.clone()))
         };
         let guard = pipeline.pipeline.read().await;
         guard.run(message, tools).await;

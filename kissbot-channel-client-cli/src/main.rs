@@ -1,4 +1,6 @@
 use std::sync::{Arc, Weak};
+
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::Bytes;
 use kissbot_api::channel::*;
@@ -10,44 +12,44 @@ use tokio::sync::RwLock;
 
 #[derive(Deserialize)]
 struct CliConfig {
-    channel_ws_url: String,
+    channel_ws_url: ArcStr,
 }
 
 const UPLOAD_CHUNK_SIZE: usize = 64 * 1024;
 
 struct CliTerminal {
-    messenger_id: String,
-    user_id: String,
-    current_group: RwLock<Arc<String>>,
-    download_dir: String,
+    messenger_id: ArcStr,
+    user_id: ArcStr,
+    current_group: RwLock<ArcStr>,
+    download_dir: ArcStr,
     client: RwLock<Option<Arc<ChannelClient>>>,
 }
 
 impl CliTerminal {
-    async fn current_group(&self) -> Arc<String> {
+    async fn current_group(&self) -> ArcStr {
         self.current_group.read().await.clone()
     }
 
     async fn get_client(&self) -> Result<Arc<ChannelClient>> {
         self.client.read().await.as_ref().cloned()
-            .ok_or_else(|| Error::InternalError("client not connected".to_string()))
+            .ok_or_else(|| Error::InternalError("client not connected".into()))
     }
 
     async fn bind(&self) -> Result<()> {
         let client = self.get_client().await?;
         client.bind(BindRequest {
-            messenger_id: Arc::new(self.messenger_id.clone()),
-            user_id: Arc::new(self.user_id.clone()),
+            messenger_id: self.messenger_id.clone(),
+            user_id: self.user_id.clone(),
         }).await
     }
 
     async fn send_text(&self, text: &str) -> Result<()> {
         let client = self.get_client().await?;
         let response = client.send_message(OutgoingMessage {
-            messenger_id: Arc::new(self.messenger_id.clone()),
-            user_id: Arc::new(self.user_id.clone()),
+            messenger_id: self.messenger_id.clone(),
+            user_id: self.user_id.clone(),
             group_id: self.current_group().await,
-            content: Content::Text(Arc::new(text.to_string())),
+            content: Content::Text(ArcStr::from(text)),
         }).await?;
         println!(">> sent msg_id={}", response.msg_id);
         Ok(())
@@ -56,10 +58,10 @@ impl CliTerminal {
     async fn download(&self, key: &str) -> Result<()> {
         let client = self.get_client().await?;
         let info = client.request_download(AttachmentDownloadRequest {
-            messenger_id: Arc::new(self.messenger_id.clone()),
-            user_id: Arc::new(self.user_id.clone()),
+            messenger_id: self.messenger_id.clone(),
+            user_id: self.user_id.clone(),
             group_id: self.current_group().await,
-            key: Arc::new(key.to_string()),
+            key: ArcStr::from(key),
         }).await?;
         // 重新下载时先删除旧文件，避免 append 叠加
         let path = format!("{}/{}", self.download_dir, info.info.file_name);
@@ -76,12 +78,12 @@ impl CliTerminal {
             .unwrap_or_else(|| "upload.bin".to_string());
         let client = self.get_client().await?;
         let response = client.send_message(OutgoingMessage {
-            messenger_id: Arc::new(self.messenger_id.clone()),
-            user_id: Arc::new(self.user_id.clone()),
+            messenger_id: self.messenger_id.clone(),
+            user_id: self.user_id.clone(),
             group_id: self.current_group().await,
             content: Content::AttachmentInfo(Arc::new(AttachmentInfo {
-                file_name: Arc::new(file_name.clone()),
-                mime_type: Arc::new("application/octet-stream".to_string()),
+                file_name: ArcStr::from(file_name.as_str()),
+                mime_type: ArcStr::from("application/octet-stream"),
                 size_bytes: data.len() as u64,
             })),
         }).await?;
@@ -128,7 +130,7 @@ impl Terminal for CliTerminal {
 
     async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()> {
         use std::io::Write;
-        std::fs::create_dir_all(&self.download_dir)?;
+        std::fs::create_dir_all(self.download_dir.as_str())?;
         let path = format!("{}/{}", self.download_dir, info.info.file_name);
         let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
         file.write_all(&data)?;
@@ -151,23 +153,23 @@ async fn main() {
         eprintln!("usage: {} <messenger_id> <user_id> <group_id> [download_dir]", args[0]);
         std::process::exit(1);
     }
-    let messenger_id = args[1].clone();
-    let user_id = args[2].clone();
-    let group_id = args[3].clone();
-    let download_dir = args.get(4).cloned().unwrap_or_else(|| "./downloads".to_string());
+    let messenger_id = ArcStr::from(args[1].as_str());
+    let user_id = ArcStr::from(args[2].as_str());
+    let group_id = ArcStr::from(args[3].as_str());
+    let download_dir = args.get(4).map(|d| ArcStr::from(d.as_str())).unwrap_or_else(|| ArcStr::from("./downloads"));
 
     let config: CliConfig = kissbot_config::Config::get().get_section("channel-client");
     let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
 
     let cli_terminal = Arc::new(CliTerminal {
-        messenger_id: messenger_id.clone(),
-        user_id: user_id.clone(),
-        current_group: RwLock::new(Arc::new(group_id.clone())),
+        messenger_id,
+        user_id,
+        current_group: RwLock::new(group_id),
         download_dir,
         client: RwLock::new(None),
     });
 
-    let client = ChannelClient::new("cli".to_string(), Arc::downgrade(&cli_terminal) as Weak<dyn Terminal>);
+    let client = ChannelClient::new("cli", Arc::downgrade(&cli_terminal) as Weak<dyn Terminal>);
     *cli_terminal.client.write().await = Some(client.clone());
     client.connect(&config.channel_ws_url, &api_key).await.expect("connect failed");
     cli_terminal.bind().await.expect("bind failed");
@@ -192,7 +194,7 @@ async fn main() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("/group ") {
-            *cli_terminal.current_group.write().await = Arc::new(rest.trim().to_string());
+            *cli_terminal.current_group.write().await = ArcStr::from(rest.trim());
             println!(">> current group: {}", rest.trim());
         } else if let Some(rest) = line.strip_prefix("/download ") {
             if let Err(e) = cli_terminal.download(rest.trim()).await {

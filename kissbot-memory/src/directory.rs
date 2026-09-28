@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use arcstr::ArcStr;
+
 use crate::error::Result;
 use crate::{Config, Error};
 
@@ -35,7 +37,7 @@ async fn ensure_dir_exists(path: impl AsRef<Path>) -> Result<PathBuf> {
         let _ = tokio::fs::create_dir_all(p).await;
     }
     if !p.exists() {
-        return Err(Error::PathNotExist(p.to_string_lossy().to_string()));
+        return Err(Error::PathNotExist(ArcStr::from(p.to_string_lossy().as_ref())));
     }
     Ok(p.to_path_buf())
 }
@@ -64,7 +66,7 @@ impl DirectoryManager {
         &self.root_dir
     }
 
-    pub async fn list_agents(&self) -> Result<Vec<String>> {
+    pub async fn list_agents(&self) -> Result<Vec<ArcStr>> {
         ensure_dir_exists(&self.root_dir).await?;
 
         let mut agents = Vec::new();
@@ -77,7 +79,7 @@ impl DirectoryManager {
                 if let Some(agent_id) = agent_dir.file_name().and_then(|n| n.to_str()) {
                     let uuid_file = agent_uuid_file(&agent_dir, agent_id);
                     if uuid_file.exists() {
-                        agents.push(agent_id.to_string());
+                        agents.push(ArcStr::from(agent_id));
                     }
                 }
             }
@@ -94,7 +96,7 @@ impl DirectoryManager {
             let _ = tokio::fs::File::create(&uuid_file).await;
         }
         if !uuid_file.exists() {
-            return Err(Error::PathNotExist(uuid_file.to_string_lossy().to_string()));
+            return Err(Error::PathNotExist(ArcStr::from(uuid_file.to_string_lossy().as_ref())));
         }
         Ok(path)
     }

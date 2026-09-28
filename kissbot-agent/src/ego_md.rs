@@ -1,17 +1,18 @@
 use std::collections::HashSet;
 
+use arcstr::ArcStr;
 use kissbot_api::{AgentMetadata, ChannelUser, IndividualRecognition, RolePlay};
 
 /// 由 AgentMetadata 生成系统提示词 markdown（身份）
-pub fn build_ego_identity_md(metadata: &AgentMetadata) -> String {
-    format!(
+pub fn build_ego_identity_md(metadata: &AgentMetadata) -> ArcStr {
+    ArcStr::from(format!(
         "# Agent Identity\n\n- **Name**\n {}\n- **Description**\n {}\n",
         metadata.agent_id, metadata.description
-    )
+    ))
 }
 
 /// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
-pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<ChannelUser>>) -> String {
+pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<ChannelUser>>) -> ArcStr {
     let mut content = String::from("# Individual Recognition\n\n");
     for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
         let individual = individual_arcswap.load();
@@ -43,11 +44,11 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
 
         content.push('\n');
     }
-    content
+    ArcStr::from(content)
 }
 
 /// 由 RolePlay 生成系统提示词 markdown（角色设定，按 individual_names 过滤展示的其他角色）
-pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<String>>) -> String {
+pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<ArcStr>>) -> ArcStr {
     let mut content = String::from("# Role Play\n\n");
     content.push_str(&format!("- **Self Role**: {}\n\n", role.role.role_name));
     content.push_str(&format!("- **Self Description**: {}\n", role.role.description));
@@ -72,5 +73,5 @@ pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<Str
         }
     }
 
-    content
+    ArcStr::from(content)
 }

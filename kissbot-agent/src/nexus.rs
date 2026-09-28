@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use chrono::Local;
 use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
 use kissbot_llm::{
@@ -92,7 +93,7 @@ impl Nexus {
         if self.memory_ego_client.get_agent(agent_id).await?.is_some() {
             Ok(())
         } else {
-            Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id)))
+            Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id).into()))
         }
     }
 
@@ -105,7 +106,7 @@ impl Nexus {
         if self.memory_ego_client.get_role(agent_id, role_name).await?.is_some() {
             Ok(())
         } else {
-            Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name)))
+            Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name).into()))
         }
     }
 
@@ -113,7 +114,7 @@ impl Nexus {
     /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
     pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
         let Some(ch) = ConfigManager::get().channel(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
         };
         self.verify_role_exists(ch.agent_id.as_str(), role_name).await
     }
@@ -170,7 +171,7 @@ impl Nexus {
     /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
     /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
     /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
-    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Option<String> {
+    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Option<ArcStr> {
         if agent_id == RESERVED_AGENT_ID {
             return None;
         }
@@ -196,7 +197,7 @@ impl Nexus {
             return None;
         }
 
-        Some(system_parts.join("\n"))
+        Some(ArcStr::from(system_parts.join("\n")))
     }
 
     // ==================== 运行状态修改（管理命令入口） ====================
@@ -210,10 +211,10 @@ impl Nexus {
     /// Err 表示校验失败（API 调用失败 / 模型不在列表），调用方决定如何处理。
     async fn verify_model(&self, provider: &str, model: &str) -> Result<()> {
         let models = self.provider_manager.list_models(provider).await
-            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e)))?;
+            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e).into()))?;
         if !models.iter().any(|m| m.as_str() == model) {
             return Err(Error::ModelProviderNotSupported(format!(
-                "模型 {} 不在 {} 的 API 模型列表", model, provider)));
+                "模型 {} 不在 {} 的 API 模型列表", model, provider).into()));
         }
         Ok(())
     }
@@ -221,13 +222,13 @@ impl Nexus {
     /// 设置来源 channel 所属会话的模型（每次切换都从 API 拉模型列表校验）
     pub async fn set_session_model(&self, channel_id: &str, provider: &str, model: &str) -> Result<()> {
         let Some(key) = self.session_key(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id)));
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
         };
         // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
         self.verify_model(provider, model).await?;
         let mut config = LLMConfig::default();
-        config.provider = Some(Arc::new(provider.to_string()));
-        config.model = Some(Arc::new(model.to_string()));
+        config.provider = Some(ArcStr::from(provider));
+        config.model = Some(ArcStr::from(model));
         ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &config).await
     }
 
@@ -278,10 +279,10 @@ impl Nexus {
                     match CommandRouter::execute(text.as_str(), channel_id).await {
                         Ok(reply) => self.send_admin_reply(channel_id, event, reply).await,
                         Err(Error::InvalidCommand(msg)) => {
-                            self.send_admin_reply(channel_id, event, format!("⚠️ {}", msg)).await;
+                            self.send_admin_reply(channel_id, event, ArcStr::from(format!("⚠️ {}", msg))).await;
                         }
                         Err(e) => {
-                            self.send_admin_reply(channel_id, event, format!("❌ 命令执行失败: {}", e)).await;
+                            self.send_admin_reply(channel_id, event, ArcStr::from(format!("❌ 命令执行失败: {}", e))).await;
                         }
                     }
                 }
@@ -331,12 +332,12 @@ impl Nexus {
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 命令与命令回复不入记忆（管理命令不产生会话上下文）：不找 session_key、不推 ChannelRecord
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
-    async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: String) {
+    async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: ArcStr) {
         let msg = OutgoingMessage {
             messenger_id: event.incoming_message.messenger_id.clone(),
             user_id: event.recipient_user_id.clone(),
             group_id: event.incoming_message.group_id.clone(),
-            content: Content::Text(Arc::new(content.clone())),
+            content: Content::Text(content),
         };
 
         // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
@@ -355,8 +356,8 @@ impl Nexus {
         self.pipeline_manager.run_pipeline(session_key, message, &tools).await
     }
 
-    pub async fn send_memory_think(&self, session_key: &SessionKey, key: Arc<String>, reasoning_content: Option<Arc<String>>, thinking: Option<Arc<String>>) {
-        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+    pub async fn send_memory_think(&self, session_key: &SessionKey, key: ArcStr, reasoning_content: Option<ArcStr>, thinking: Option<ArcStr>) {
+        let now = ArcStr::from(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = session_key.agent_id.clone();
         let role_event = session_key.role_event.clone();
         let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_event.role_name.as_str()).await;
@@ -381,8 +382,8 @@ impl Nexus {
         self.memory_store_client.push_think(request).await;
     }
 
-    pub async fn send_memory_tool_call(&self, session_key: &SessionKey, key: Arc<String>, tool_call: &ToolCall) {
-        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+    pub async fn send_memory_tool_call(&self, session_key: &SessionKey, key: ArcStr, tool_call: &ToolCall) {
+        let now = ArcStr::from(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = session_key.agent_id.clone();
         let role_event = session_key.role_event.clone();
         let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_event.role_name.as_str()).await;
@@ -407,8 +408,8 @@ impl Nexus {
         self.memory_store_client.push_tool_call(request).await;
     }
 
-    pub async fn send_memory_tool_result(&self, session_key: &SessionKey, key: Arc<String>, tool_call: &ToolCall) {
-        let now = Arc::new(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+    pub async fn send_memory_tool_result(&self, session_key: &SessionKey, key: ArcStr, tool_call: &ToolCall) {
+        let now = ArcStr::from(Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let agent_id = session_key.agent_id.clone();
         let role_event = session_key.role_event.clone();
         let oc_cfg = ConfigManager::get().out_channel_config(session_key.agent_id.as_str(), session_key.role_event.role_name.as_str()).await;
@@ -455,7 +456,7 @@ impl Nexus {
     /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
     /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
     /// role_event 由会话标识携带（记忆编码）；role_name 用于清理定位（roles key 是原始 role）
-    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_event: &RoleEvent, out_channel: &OutChannel, content: Arc<String>) {
+    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_event: &RoleEvent, out_channel: &OutChannel, content: ArcStr) {
         // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
         let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
             .map(|c| c.bind_users.contains(&out_channel.user))
@@ -478,7 +479,7 @@ impl Nexus {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
                 self.memory_store_client.push_channel_record(ChannelRequest {
-                    agent_id: Arc::new(agent_id.to_string()),
+                    agent_id: ArcStr::from(agent_id),
                     role_event: role_event.clone(),
                     messenger_id: out_channel.user.messenger_id.clone(),
                     user_id: out_channel.user.user_id.clone(),
@@ -502,24 +503,24 @@ impl Nexus {
 
 /// 从 Content 枚举中提取文本（普通消息路径使用，当前无消费方）
 #[allow(dead_code)]
-pub(crate) fn extract_text(content: &Content) -> String {
+pub(crate) fn extract_text(content: &Content) -> ArcStr {
     match content {
-        Content::Text(t) => t.as_str().to_string(),
-        Content::Multi(items) => items.iter()
-            .filter_map(|c| match c { Content::Text(t) => Some(t.as_str().to_string()), _ => None })
-            .collect::<Vec<_>>().join("\n"),
-        _ => String::new(),
+        Content::Text(t) => t.clone(),
+        Content::Multi(items) => ArcStr::from(items.iter()
+            .filter_map(|c| match c { Content::Text(t) => Some(t.as_str()), _ => None })
+            .collect::<Vec<_>>().join("\n")),
+        _ => ArcStr::new(),
     }
 }
 
 fn placeholder_request(
-    agent_id: Arc<String>,
+    agent_id: ArcStr,
     role_event: Arc<RoleEvent>,
     content: Content,
-    time: Arc<String>,
+    time: ArcStr,
     out_channel: &OutChannel,
 ) -> ChannelRequest {
-    let empty = Arc::new(String::new());
+    let empty = ArcStr::new();
     let messenger_id = out_channel.user.messenger_id.clone();
     let user_id = out_channel.user.user_id.clone();
     ChannelRequest {
@@ -530,7 +531,7 @@ fn placeholder_request(
         self_user_id: user_id.clone(),
         group_id: out_channel.group_id.clone(),
         is_self: 1,
-        msg_id: Arc::new(String::new()),
+        msg_id: ArcStr::new(),
         messenger_name: empty.clone(),
         user_name: empty.clone(),
         group_name: empty.clone(),
@@ -627,17 +628,17 @@ mod tests {
         let cm = ConfigManager::get();
         let agent_id = "a1";
         let channel_id = "nexus-chain-test";
-        let key = SessionKey { agent_id: Arc::new(agent_id.to_string()), role_event: Arc::new(RoleEvent::new("")) };
+        let key = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new("")) };
 
         // 1. agent 级（role 空串）pipeline：显式指定全部组件（不依赖 preset 映射），必须在会话首次合成
         //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
         //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![PP_IN_BATCH.to_string()]);
-        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.to_string()]);
-        pipeline.message_sender = Some(PP_MSG_RAW.to_string());
-        pipeline.tool_caller = Some(PP_TOOL_STATION.to_string());
-        pipeline.output_processor = Some(PP_OUT_CHANNEL.to_string());
+        pipeline.input_processor = Some(vec![ArcStr::from(PP_IN_BATCH)]);
+        pipeline.system_prompter = Some(vec![ArcStr::from(PP_SYS_DEFAULT)]);
+        pipeline.message_sender = Some(ArcStr::from(PP_MSG_RAW));
+        pipeline.tool_caller = Some(ArcStr::from(PP_TOOL_STATION));
+        pipeline.output_processor = Some(ArcStr::from(PP_OUT_CHANNEL));
         cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(agent_id, "", Arc::new(pipeline)).await.unwrap();
         // 合批间隔缩到 1 秒，让 flush 尽快发生
         cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
@@ -645,29 +646,29 @@ mod tests {
 
         // 2. channel 绑定 (a1, "")；channel_id 用本用例专用名，避免与其他测试互相干扰
         let _ = cm.add_channel(ChannelConfig {
-            channel_id: Arc::new(channel_id.into()),
-            ws_url: Arc::new("ws://127.0.0.1:8399".into()),
+            channel_id: ArcStr::from(channel_id),
+            ws_url: ArcStr::from("ws://127.0.0.1:8399"),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::new()),
-            agent_id: Arc::new(agent_id.into()),
-            role_name: Arc::new("".into()),
+            agent_id: ArcStr::from(agent_id),
+            role_name: ArcStr::from(""),
             enabled: true,
         }).await;
 
         // 3. 消息入口（非命令消息，直接进 pipeline）：ensure_session 新建会话时会同步 pipeline
         //    并初始化系统提示词，随后消息分发到合批输入处理器
         Nexus::get().incoming_message(channel_id, Arc::new(IncomingMessageEvent {
-            recipient_user_id: Arc::new("self".into()),
+            recipient_user_id: ArcStr::from("self"),
             incoming_message: Arc::new(IncomingMessage {
-                msg_id: Arc::new("m1".into()),
-                messenger_id: Arc::new("web".into()),
-                user_id: Arc::new("u1".into()),
-                group_id: Arc::new("g1".into()),
-                messenger_name: Arc::new("".into()),
-                user_name: Arc::new("u1".into()),
-                group_name: Arc::new("".into()),
-                content: Content::Text(Arc::new("链路测试消息".into())),
-                time: Arc::new("2026-08-07 10:00:00".into()),
+                msg_id: ArcStr::from("m1"),
+                messenger_id: ArcStr::from("web"),
+                user_id: ArcStr::from("u1"),
+                group_id: ArcStr::from("g1"),
+                messenger_name: ArcStr::from(""),
+                user_name: ArcStr::from("u1"),
+                group_name: ArcStr::from(""),
+                content: Content::Text(ArcStr::from("链路测试消息")),
+                time: ArcStr::from("2026-08-07 10:00:00"),
             }),
         })).await;
 
@@ -699,25 +700,25 @@ mod tests {
         let channel_manager = ChannelManager::new();
         let channel_id = "nexus-queue-test";
         let _ = cm.add_channel(ChannelConfig {
-            channel_id: Arc::new(channel_id.into()),
-            ws_url: Arc::new("ws://127.0.0.1:8398".into()),
+            channel_id: ArcStr::from(channel_id),
+            ws_url: ArcStr::from("ws://127.0.0.1:8398"),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::new()),
-            agent_id: Arc::new("a1".into()),
-            role_name: Arc::new("".into()),
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from(""),
             enabled: true,
         }).await;
 
-        let user = ChannelUser { messenger_id: Arc::new("web".into()), user_id: Arc::new("u-queue".into()) };
+        let user = ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u-queue") };
         let reply = channel_manager.channel_command(ChannelCommand::BindUser {
-            channel_id: channel_id.to_string(), user: user.clone(),
+            channel_id: ArcStr::from(channel_id), user: user.clone(),
         }).await.expect("绑定命令应执行成功");
         assert!(reply.contains("已绑定"), "回复文案应说明已绑定: {}", reply);
         let ch = cm.channel(channel_id).await.expect("channel 应存在");
         assert!(ch.bind_users.contains(&user), "绑定应落库");
 
         let reply = channel_manager.channel_command(ChannelCommand::UnbindUser {
-            channel_id: channel_id.to_string(), user: user.clone(),
+            channel_id: ArcStr::from(channel_id), user: user.clone(),
         }).await.expect("解绑命令应执行成功");
         assert!(reply.contains("已移除"), "回复文案应说明已移除: {}", reply);
         let ch = cm.channel(channel_id).await.expect("channel 应存在");
@@ -730,15 +731,15 @@ mod tests {
         // 用本地 PipelineManager 实例验证 retain 语义，避免动到全局单例的 pipeline 表
         ensure_test_globals().await;
         let agent_id = "prune-agent";
-        let k1 = SessionKey { agent_id: Arc::new(agent_id.to_string()), role_event: Arc::new(RoleEvent::new("")) };
-        let k2 = SessionKey { agent_id: Arc::new(agent_id.to_string()), role_event: Arc::new(RoleEvent::with_event("", "e1")) };
+        let k1 = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new("")) };
+        let k2 = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event("", "e1")) };
         // agent 级 pipeline：显式指定组件，使两个 key 都能注册
         let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![PP_IN_BATCH.to_string()]);
-        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.to_string()]);
-        pipeline.message_sender = Some(PP_MSG_RAW.to_string());
-        pipeline.tool_caller = Some(PP_TOOL_STATION.to_string());
-        pipeline.output_processor = Some(PP_OUT_CHANNEL.to_string());
+        pipeline.input_processor = Some(vec![ArcStr::from(PP_IN_BATCH)]);
+        pipeline.system_prompter = Some(vec![ArcStr::from(PP_SYS_DEFAULT)]);
+        pipeline.message_sender = Some(ArcStr::from(PP_MSG_RAW));
+        pipeline.tool_caller = Some(ArcStr::from(PP_TOOL_STATION));
+        pipeline.output_processor = Some(ArcStr::from(PP_OUT_CHANNEL));
         ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
             agent_id, "", Arc::new(pipeline)).await.unwrap();
 
@@ -757,7 +758,7 @@ mod tests {
         // 只保留 k1：k2 的 trigger 与 pipeline 都被丢弃
         pm.retain(&HashSet::from([k1.clone()]));
         assert!(pm.reset_system_prompt(&k1).await.is_ok(), "保留的 key 仍在");
-        let msg = Message::User { content: Arc::new("x".into()) };
+        let msg = Message::User { content: ArcStr::from("x") };
         assert!(matches!(pm.reset_system_prompt(&k2).await, Err(Error::PipelineNotFound(_,_,_))),
             "被清理的 key 的 trigger 应移除");
         assert!(matches!(pm.run_pipeline(&k2, msg, &vec![]).await, Err(Error::PipelineNotFound(_,_,_))),
@@ -772,8 +773,8 @@ mod tests {
         ensure_test_globals().await;
         // provider 未配置 → ProviderManager 解析有效模型配置失败 → ModelProviderNotFound（不触网）
         let mut llm_cfg = EffectiveLLMConfig::new();
-        llm_cfg.provider = Arc::new("no-such-provider".into());
-        llm_cfg.model = Arc::new("m".into());
+        llm_cfg.provider = ArcStr::from("no-such-provider");
+        llm_cfg.model = ArcStr::from("m");
         let err = Nexus::get().call_provider_model(&llm_cfg, vec![], &vec![]).await
             .err().expect("未配置的 provider 应返回 Err");
         assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider: {:?}", err);
@@ -800,16 +801,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sm = SessionManager::new(dir.path().to_str().unwrap());
         let pm = PipelineManager::new();
-        let msg = || Message::User { content: Arc::new("x".into()) };
+        let msg = || Message::User { content: ArcStr::from("x") };
 
         for (preset, is_event) in [(PP_PRESET_ROLE, false), (PP_PRESET_EVENT, true)] {
             let mut pipeline = PipelineConfig::default();
-            pipeline.preset = Some(preset.to_string());
+            pipeline.preset = Some(ArcStr::from(preset));
             ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
                 agent_id, "", Arc::new(pipeline)).await.unwrap();
 
             let role_event = if is_event { RoleEvent::with_event("", "e1") } else { RoleEvent::new("") };
-            let key = SessionKey { agent_id: Arc::new(agent_id.to_string()), role_event: Arc::new(role_event) };
+            let key = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(role_event) };
             let (session, _) = sm.get_or_create(&key).await;
             pm.sync_pipeline(Arc::new(key.clone()), session).await
                 .unwrap_or_else(|e| panic!("preset {} 应能装配 pipeline: {:?}", preset, e));

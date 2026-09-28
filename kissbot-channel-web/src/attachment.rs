@@ -3,6 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -28,7 +29,7 @@ type UploadChannel = flume::Sender<UploadCommand>;
 /// 附件元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentMeta {
-    pub key: Arc<String>,
+    pub key: ArcStr,
     pub info: Arc<AttachmentInfo>,
     pub has_thumbnail: bool,
 }
@@ -40,11 +41,11 @@ pub struct AttachmentMeta {
 /// metadata 缓存：LRU 策略
 pub struct AttachmentStore {
     base_path: PathBuf,
-    meta_cache: Mutex<LruCache<String, Arc<AttachmentMeta>>>,
+    meta_cache: Mutex<LruCache<ArcStr, Arc<AttachmentMeta>>>,
     /// 上传队列：transfer_id → UploadChannel
     upload_channels: DashMap<u32, UploadChannel>,
     /// transfer_id → key 映射（上传和下载通用）
-    transfer_key_map: DashMap<u32, Arc<String>>,
+    transfer_key_map: DashMap<u32, ArcStr>,
     transfer_id_seq: AtomicU32,
 }
 
@@ -64,7 +65,7 @@ impl AttachmentStore {
     }
 
     /// 生成 transfer_id 并存储 transfer_id → key 映射
-    pub fn next_transfer_id_for(&self, key: Arc<String>) -> u32 {
+    pub fn next_transfer_id_for(&self, key: ArcStr) -> u32 {
         let id = self.next_transfer_id();
         self.transfer_key_map.insert(id, key);
         id
@@ -74,7 +75,7 @@ impl AttachmentStore {
     pub(crate) fn parse_key(key: &str) -> Result<(&str, &str)> {
         let parts: Vec<&str> = key.splitn(2, '/').collect();
         if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
-            return Err(Error::AttachmentNotFound(key.to_string()));
+            return Err(Error::AttachmentNotFound(ArcStr::from(key)));
         }
         Ok((parts[0], parts[1]))
     }
@@ -94,7 +95,7 @@ impl AttachmentStore {
         // 从 metadata 文件读取
         let meta_path = self.base_path.join(group_id).join(format!("{}.metadata", uuid));
         if !meta_path.exists() {
-            return Err(Error::AttachmentNotFound(key.to_string()));
+            return Err(Error::AttachmentNotFound(ArcStr::from(key)));
         }
         let content = std::fs::read_to_string(&meta_path)?;
         let meta: AttachmentMeta = serde_json::from_str(&content)?;
@@ -103,7 +104,7 @@ impl AttachmentStore {
         // 插入 LRU 缓存
         {
             let mut cache = self.meta_cache.lock().unwrap();
-            cache.put(uuid.to_string(), Arc::clone(&meta));
+            cache.put(ArcStr::from(uuid), Arc::clone(&meta));
         }
 
         Ok(meta)
@@ -123,7 +124,7 @@ impl AttachmentStore {
         // 按需生成缩略图
         let file_path = dir.join(uuid);
         if !file_path.exists() {
-            return Err(Error::AttachmentNotFound(key.to_string()));
+            return Err(Error::AttachmentNotFound(ArcStr::from(key)));
         }
 
         // 尝试直接解码图片生成缩略图（meta 的 mime_type 已保证为图片；
@@ -137,7 +138,7 @@ impl AttachmentStore {
             }
         }
 
-        Err(Error::InternalError("not an image or failed to generate thumbnail".to_string()))
+        Err(Error::InternalError(ArcStr::from("not an image or failed to generate thumbnail")))
     }
 
     // ===== 上传队列 =====
@@ -145,7 +146,7 @@ impl AttachmentStore {
     /// 异步写入 chunk（通过 flume 队列串行处理）
     pub async fn write_chunk(&self, transfer_id: u32, pos: u64, size: u32, data: Bytes) -> Result<AttachmentPayloadResponse> {
         let sender = self.upload_channels.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
+            .ok_or_else(|| Error::AttachmentNotFound(ArcStr::from(transfer_id.to_string())))?;
         let (res_tx, res_rx) = oneshot::channel();
 
         sender.send(UploadCommand {
@@ -171,11 +172,11 @@ impl AttachmentStore {
             return Ok(current_pos); // 已写入，幂等
         }
         if pos > current_pos {
-            return Err(Error::AttachmentPositionOutOfOrder(key.to_string(), current_pos, pos));
+            return Err(Error::AttachmentPositionOutOfOrder(ArcStr::from(key), current_pos, pos));
         }
         let clamp_data = if data.len() != size as usize {
             data.get(0..size as usize)
-            .ok_or_else(|| Error::InvalidMessage(format!("data length = {}, size = {}",data.len(),size).to_string()))?
+            .ok_or_else(|| Error::InvalidMessage(ArcStr::from(format!("data length = {}, size = {}",data.len(),size))))?
         }
         else {
             data
@@ -201,7 +202,7 @@ impl AttachmentStore {
     // ===== 下载 =====
 
     /// 根据 transfer_id 获取附件 key
-    pub fn get_transfer_key(&self, transfer_id: u32) -> Option<Arc<String>> {
+    pub fn get_transfer_key(&self, transfer_id: u32) -> Option<ArcStr> {
         self.transfer_key_map.get(&transfer_id).map(|r| r.clone())
     }
 
@@ -229,8 +230,8 @@ impl AttachmentStore {
 #[async_trait]
 impl kissbot_channel::AttachmentRegistry for AttachmentStore {
     async fn register(&self, _messenger_id: &str, _user_id: &str, group_id: &str, info: Arc<AttachmentInfo>) -> std::result::Result<Arc<AttachmentInfoResponse>, kissbot_channel::Error> {
-        let uuid = Arc::new(uuid::Uuid::new_v4().to_string());
-        let key = Arc::new(format!("{}/{}", group_id, uuid));
+        let uuid = ArcStr::from(uuid::Uuid::new_v4().to_string());
+        let key = ArcStr::from(format!("{}/{}", group_id, uuid));
         let transfer_id = self.next_transfer_id();
 
         // 创建 group 目录
@@ -254,7 +255,7 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
         // 插入 LRU 缓存
         {
             let mut cache = self.meta_cache.lock().unwrap();
-            cache.put(key.as_str().to_string(), meta.clone());
+            cache.put(key.clone(), meta.clone());
         }
 
         // 创建上传队列并注册到 upload_channels
@@ -290,7 +291,7 @@ impl kissbot_channel::AttachmentRegistry for AttachmentStore {
                                 Ok(AttachmentPayloadResponse {
                                     current_pos,
                                     error_code: PAYLOAD_ERRCODE_POSITION_OUT_OF_ORDER,
-                                    error_msg: Some(Arc::new(e.to_string())),
+                                    error_msg: Some(ArcStr::from(e.to_string())),
                                 })
                             },
                             _ => {

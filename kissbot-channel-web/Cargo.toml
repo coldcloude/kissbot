@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 arc-swap = { version = "1.9", features = ["serde"] }
+arcstr = { version = "1.2", features = ["serde"] }
 tokio = { version = "1.0", features = ["full"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"

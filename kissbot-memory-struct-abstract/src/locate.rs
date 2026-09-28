@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::{ChannelKey, LocateMessage, LocateResponse, LocatedCaseRef, LocatedGroup};
 
 use crate::records::render_content;
@@ -16,7 +17,7 @@ use crate::records::render_content;
 /// 分组按各组首条消息下标升序，case 按首次出现顺序去重。
 pub(crate) fn merge_located(
     mut located: Vec<(usize, ChannelKey, LocatedGroup)>,
-    current_cases: &BTreeMap<ChannelKey, String>,
+    current_cases: &BTreeMap<ChannelKey, ArcStr>,
 ) -> LocateResponse {
     located.sort_by_key(|(first, _, _)| *first);
 
@@ -68,28 +69,28 @@ mod tests {
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
-            role_name: Arc::new(role_name.to_string()),
-            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+            role_name: ArcStr::from(role_name),
+            event_id: event_id.map(ArcStr::from),
         }
     }
 
     fn record_entry(time: &str, sn: u64, text: &str) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Channel,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("u1".into()),
-                self_user_id: Arc::new("self1".into()),
-                messenger_id: Arc::new("web".into()),
-                group_id: Arc::new("g1".into()),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                messenger_id: ArcStr::from("web"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("alice".into()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new(text.to_string())),
-                time: Arc::new(time.to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("alice"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from(text)),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -114,14 +115,14 @@ mod tests {
 
     fn message(text: &str) -> LocateMessage {
         LocateMessage {
-            time: Arc::new("2099-01-01 14:00:00".into()),
-            user_name: Arc::new("alice".into()),
+            time: ArcStr::from("2099-01-01 14:00:00"),
+            user_name: ArcStr::from("alice"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_id: Arc::new("web".into()),
-            self_user_id: Arc::new("self1".into()),
-            group_id: Arc::new("g1".into()),
-            content: Content::Text(Arc::new(text.to_string())),
+            msg_id: ArcStr::new(),
+            messenger_id: ArcStr::from("web"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
+            content: Content::Text(ArcStr::from(text)),
         }
     }
 
@@ -166,7 +167,7 @@ mod tests {
                 located.push((
                     first,
                     channel.clone(),
-                    LocatedGroup { messages: global, case_name: Arc::new(group.case_name), is_current: false },
+                    LocatedGroup { messages: global, case_name: group.case_name, is_current: false },
                 ));
             }
         }

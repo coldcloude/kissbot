@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -24,16 +25,16 @@ pub const META_ANCESTORS: &str = "kissbot/ancestors";
 /// 实现身份（客户端/服务端自报，协议不校验）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Implementation {
-    pub name: Arc<String>,
+    pub name: ArcStr,
     #[serde(default)]
-    pub version: Arc<String>,
+    pub version: ArcStr,
 }
 
 impl Implementation {
-    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<ArcStr>, version: impl Into<ArcStr>) -> Self {
         Self {
-            name: Arc::new(name.into()),
-            version: Arc::new(version.into()),
+            name: name.into(),
+            version: version.into(),
         }
     }
 }
@@ -43,7 +44,7 @@ impl Implementation {
 pub struct RequestMeta {
 
     #[serde(rename = "io.modelcontextprotocol/protocolVersion")]
-    pub protocol_version: Arc<String>,
+    pub protocol_version: ArcStr,
 
     #[serde(
         rename = "io.modelcontextprotocol/clientInfo",
@@ -61,14 +62,14 @@ pub struct RequestMeta {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub ancestors: Option<Arc<Vec<String>>>,
+    pub ancestors: Option<Arc<Vec<ArcStr>>>,
 }
 
 impl RequestMeta {
     /// 构造客户端请求 `_meta`（协议版本固定为本实现版本，能力为空对象）
     pub fn new(client_info: Implementation) -> Self {
         Self {
-            protocol_version: Arc::new(super::PROTOCOL_VERSION.to_string()),
+            protocol_version: ArcStr::from(super::PROTOCOL_VERSION),
             client_info: Some(client_info),
             client_capabilities: serde_json::json!({}),
             ancestors: None,
@@ -76,7 +77,7 @@ impl RequestMeta {
     }
 
     /// 设置级联祖先链
-    pub fn with_ancestors(mut self, ancestors: Arc<Vec<String>>) -> Self {
+    pub fn with_ancestors(mut self, ancestors: Arc<Vec<ArcStr>>) -> Self {
         self.ancestors = Some(ancestors);
         self
     }
@@ -115,7 +116,7 @@ pub struct ToolResponseMeta {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub group: Option<String>,
+    pub group: Option<ArcStr>,
 }
 
 #[cfg(test)]

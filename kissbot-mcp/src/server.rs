@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -32,8 +33,8 @@ pub trait McpHandler: Send + Sync + 'static {
 pub struct McpServer<H: McpHandler> {
     handler: Arc<H>,
     server_info: Implementation,
-    instructions: Option<Arc<String>>,
-    supported_versions: Vec<String>,
+    instructions: Option<ArcStr>,
+    supported_versions: Vec<ArcStr>,
 }
 
 impl<H: McpHandler> McpServer<H> {
@@ -42,13 +43,13 @@ impl<H: McpHandler> McpServer<H> {
             handler,
             server_info,
             instructions: None,
-            supported_versions: vec![PROTOCOL_VERSION.to_string()],
+            supported_versions: vec![ArcStr::from(PROTOCOL_VERSION)],
         }
     }
 
     /// 设置 `server/discover` 返回的自然语言说明
-    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.instructions = Some(Arc::new(instructions.into()));
+    pub fn with_instructions(mut self, instructions: impl Into<ArcStr>) -> Self {
+        self.instructions = Some(instructions.into());
         self
     }
 
@@ -56,7 +57,7 @@ impl<H: McpHandler> McpServer<H> {
         &self.server_info
     }
 
-    pub fn supported_versions(&self) -> &[String] {
+    pub fn supported_versions(&self) -> &[ArcStr] {
         &self.supported_versions
     }
 
@@ -110,7 +111,7 @@ impl<H: McpHandler> McpServer<H> {
         if self
             .supported_versions
             .iter()
-            .any(|v| v == meta.protocol_version.as_str())
+            .any(|v| v.as_str() == meta.protocol_version.as_str())
         {
             return Ok(());
         }

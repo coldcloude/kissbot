@@ -1,35 +1,37 @@
 // ========== 错误类型 ==========
 
+use arcstr::ArcStr;
+
 use crate::types::SessionKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Config not found: {0}")]
-    ConfigNotFound(String),
+    ConfigNotFound(ArcStr),
 
     #[error("Model API error: {0}")]
-    ModelApiError(String),
+    ModelApiError(ArcStr),
 
     #[error("Model provider not found: {0} {0}")]
-    ModelProviderNotFound(String, String),
+    ModelProviderNotFound(ArcStr, ArcStr),
 
     #[error("Model provider not supported: {0}")]
-    ModelProviderNotSupported(String),
+    ModelProviderNotSupported(ArcStr),
 
     #[error("Memory store error: {0}")]
-    MemoryStoreError(String),
+    MemoryStoreError(ArcStr),
 
     #[error("Memory time window error: {0}")]
-    MemoryTimeWindow(String),
+    MemoryTimeWindow(ArcStr),
 
     #[error("Memory ego error: {0}")]
-    MemoryEgoError(String),
+    MemoryEgoError(ArcStr),
 
     #[error("Abstract memory error: {0}")]
-    AbstractError(String),
+    AbstractError(ArcStr),
 
     #[error("Invalid command: {0}")]
-    InvalidCommand(String),
+    InvalidCommand(ArcStr),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -50,10 +52,10 @@ pub enum Error {
     McpError(#[from] kissbot_mcp::McpError),
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    InternalError(ArcStr),
 
     #[error("Pipeline {0}: {1} not found for session {2:?}")]
-    PipelineNotFound(String, String, SessionKey)
+    PipelineNotFound(ArcStr, ArcStr, SessionKey)
 }
 
 /// kissbot-llm 错误逐变体映射到 agent 错误（保持本枚举的对外错误表面不变）

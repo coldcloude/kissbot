@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -19,46 +20,46 @@ use crate::types::Result;
 
 /// 管理 REST API 服务器（axum，X-Api-Key 鉴权 layer，security.admin_api_key）
 pub struct HttpServer {
-    admin_api_key: String,
+    admin_api_key: ArcStr,
 }
 
 // ========== 请求 DTO ==========
 
 #[derive(Deserialize)]
 struct ProviderRequest {
-    name: String,
+    name: ArcStr,
     config: ProviderModelConfig,
 }
 
 #[derive(Deserialize)]
 struct NameRequest {
-    name: String,
+    name: ArcStr,
 }
 
 #[derive(Deserialize)]
 struct ChannelIdRequest {
-    channel_id: String,
+    channel_id: ArcStr,
 }
 
 #[derive(Deserialize)]
 struct AddAdminRequest {
-    channel_id: String,
-    messenger_id: String,
-    user_id: String,
+    channel_id: ArcStr,
+    messenger_id: ArcStr,
+    user_id: ArcStr,
 }
 
 #[derive(Deserialize)]
 struct RemoveAdminRequest {
-    channel_id: String,
-    messenger_id: String,
-    user_id: String,
+    channel_id: ArcStr,
+    messenger_id: ArcStr,
+    user_id: ArcStr,
 }
 
 impl HttpServer {
     /// 从 kissbot_security 全局配置读取 admin_api_key（与 channel-web / memory-ego 一致）；
     /// 监听地址取 ConfigManager 单例的 mgmt_host / mgmt_port
     pub fn new() -> Self {
-        let admin_api_key = kissbot_security::SecurityConfig::get().admin_api_key.to_string();
+        let admin_api_key = kissbot_security::SecurityConfig::get().admin_api_key.clone();
         Self { admin_api_key }
     }
 
@@ -75,7 +76,7 @@ impl HttpServer {
             .route("/config/admins", post(add_admin))
             .route("/config/admins/remove", post(remove_admin))
             .with_state(AppState { config })
-            .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(Arc::new(admin_api_key)))))
+            .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(admin_api_key))))
     }
 
     /// 启动 HTTP 服务器（阻塞，在协程中运行）
@@ -138,8 +139,8 @@ async fn remove_channel(State(state): State<AppState>, Json(req): Json<ChannelId
 
 async fn add_admin(State(state): State<AppState>, Json(req): Json<AddAdminRequest>) -> impl IntoResponse {
     let admin = ChannelUser {
-        messenger_id: Arc::new(req.messenger_id),
-        user_id: Arc::new(req.user_id),
+        messenger_id: req.messenger_id,
+        user_id: req.user_id,
     };
     match state.config.add_admin(&req.channel_id, &admin).await {
         Ok(()) => ok(json!({})),
@@ -169,9 +170,9 @@ mod tests {
     fn test_provider() -> ProviderModelConfig {
         ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
-                provider_type: Arc::new("openai".into()),
-                base_url: Arc::new("https://api.example.com".into()),
-                api_key: Arc::new("sk-test".into()),
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from("https://api.example.com"),
+                api_key: ArcStr::from("sk-test"),
             }),
             default_model_config: ModelConfig {
                 max_tokens_usage: 128000,

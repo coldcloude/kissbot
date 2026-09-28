@@ -2,6 +2,8 @@ mod mock;
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+
+use arcstr::ArcStr;
 use bytes::Bytes;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
@@ -17,18 +19,18 @@ async fn test_attachment_upload_download() {
 
     let terminal = MockTerminal::new();
     let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
-    client.connect("ws://127.0.0.1:19102", "test-key").await.expect("connect failed");
+    client.clone().connect("ws://127.0.0.1:19102", "test-key").await.expect("connect failed");
     client.bind(make_bind_request("m1", "u1")).await.expect("bind failed");
 
     // ===== 上传 =====
     let upload_data = b"0123456789";
     let response = client.send_message(OutgoingMessage {
-        messenger_id: Arc::new("m1".to_string()),
-        user_id: Arc::new("u1".to_string()),
-        group_id: Arc::new("g1".to_string()),
+        messenger_id: ArcStr::from("m1"),
+        user_id: ArcStr::from("u1"),
+        group_id: ArcStr::from("g1"),
         content: Content::AttachmentInfo(Arc::new(AttachmentInfo {
-            file_name: Arc::new("upload.bin".to_string()),
-            mime_type: Arc::new("application/octet-stream".to_string()),
+            file_name: ArcStr::from("upload.bin"),
+            mime_type: ArcStr::from("application/octet-stream"),
             size_bytes: upload_data.len() as u64,
         })),
     }).await.expect("send attachment message failed");
@@ -37,7 +39,7 @@ async fn test_attachment_upload_download() {
     let Content::AttachmentInfoResponse(att) = &response.content else {
         panic!("expected AttachmentInfoResponse, got {:?}", response.content);
     };
-    assert_eq!(*att.key, "key-upload.bin");
+    assert_eq!(att.key, "key-upload.bin");
 
     // 分两块上传
     let r1 = client.send_upload_chunk(att.transfer_id, 0, Bytes::copy_from_slice(&upload_data[..5]))
@@ -55,13 +57,13 @@ async fn test_attachment_upload_download() {
 
     // ===== 下载 =====
     let header = client.request_download(AttachmentDownloadRequest {
-        messenger_id: Arc::new("m1".to_string()),
-        user_id: Arc::new("u1".to_string()),
-        group_id: Arc::new("g1".to_string()),
-        key: Arc::new("download-key".to_string()),
+        messenger_id: ArcStr::from("m1"),
+        user_id: ArcStr::from("u1"),
+        group_id: ArcStr::from("g1"),
+        key: ArcStr::from("download-key"),
     }).await.expect("request_download failed");
     assert_eq!(header.info.size_bytes, download_data.len() as u64);
-    assert_eq!(*header.info.file_name, "download.bin");
+    assert_eq!(header.info.file_name, "download.bin");
 
     // 收 3 块并重组
     let mut received = Vec::new();

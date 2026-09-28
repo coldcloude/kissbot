@@ -11,6 +11,8 @@ use kissbot_api::message::{AttachmentInfo, AttachmentInfoResponse, Content};
 use tokio::sync::oneshot::Sender;
 use tracing::{Level, error, info, span};
 use std::sync::{Arc, Weak, atomic::{AtomicU32, Ordering}};
+
+use arcstr::ArcStr;
 use tokio::{net::TcpListener, time::{Duration}};
 
 const MSG_QUEUE_SIZE: usize = 100;
@@ -20,7 +22,7 @@ static INTERVAL: Duration = Duration::from_secs(5);
 struct MessengerContext {
     pub messenger: Arc<dyn Messenger>,
     // user_id → connect_id
-    pub bound_map: DashMap<String, u32>,
+    pub bound_map: DashMap<ArcStr, u32>,
 }
 
 struct ConnectContext {
@@ -41,7 +43,7 @@ struct AttachmentSenderContext {
 pub struct ChannelServer {
     global_connect_id: AtomicU32,
     connect_map: DashMap<u32, Arc<ConnectContext>>,
-    messenger_map: DashMap<String, Arc<MessengerContext>>,
+    messenger_map: DashMap<ArcStr, Arc<MessengerContext>>,
     // 上传方向：transfer_id → AttachmentReceiverContext
     attachment_receiver_map: DashMap<u32, AttachmentReceiverContext>,
     // 下载方向：transfer_id → AttachmentSenderContext
@@ -56,7 +58,7 @@ struct ConnectCloseProcessor {
 impl ConnectCloseProcessor {
     pub fn close_connect(&self) -> Result<()> {
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         //移除连接记录
         let (_,connect_context) = manager.connect_map.remove(&self.connect_id)
         .ok_or_else(|| Error::ConnectNotFound(self.connect_id))?;
@@ -158,15 +160,15 @@ struct MessengerInfoRequestProcessor {
 impl JsonProcessorWrapper for MessengerInfoRequestProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".into()))?;
         
         let messenger_info_request = serde_json::from_value::<MessengerInfoRequest>(payload)?;
         
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         
         let messenger_context = manager.messenger_map.get(messenger_info_request.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(messenger_info_request.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(messenger_info_request.messenger_id.clone()))?;
         
         let messenger_info = messenger_context.messenger.get_info().await?;
 
@@ -193,29 +195,29 @@ struct BindAgentUserProcessor {
 impl JsonProcessorWrapper for BindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".into()))?;
         
         let bind_request = serde_json::from_value::<BindRequest>(payload)?;
         
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         let connect_context = self.connect_context.upgrade()
-        .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("connect_context is None".into()))?;
 
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.clone()))?;
         
         let messenger_info = messenger_context.messenger.get_info().await?;
 
         if !messenger_info.user_map.contains_key(bind_request.user_id.as_str()) {
-            return Err(Error::UserNotFound(bind_request.user_id.to_string()));
+            return Err(Error::UserNotFound(bind_request.user_id.clone()));
         }
 
         //绑定用户
-        let bound_info = messenger_context.bound_map.entry(bind_request.user_id.to_string()).or_insert(connect_context.connect_id);
+        let bound_info = messenger_context.bound_map.entry(bind_request.user_id.clone()).or_insert(connect_context.connect_id);
         
         if *bound_info != connect_context.connect_id {
-            return Err(Error::UserAlreadyBound(bound_info.to_string()));
+            return Err(Error::UserAlreadyBound(bound_info.to_string().into()));
         }
 
         Ok(None)
@@ -240,27 +242,27 @@ struct UnbindAgentUserProcessor {
 impl JsonProcessorWrapper for UnbindAgentUserProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".into()))?;
         
         let bind_request = serde_json::from_value::<BindRequest>(payload)?;
         
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         let connect_context = self.connect_context.upgrade()
-        .ok_or_else(|| Error::InternalError("connect_context is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("connect_context is None".into()))?;
 
         //解除绑定
         let messenger_context = manager.messenger_map.get(bind_request.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(bind_request.messenger_id.clone()))?;
 
         //检查是否为本连接绑定（先取出 connect_id 再释放 Ref，后续 remove 避免 DashMap 死锁）
         let bound_connect_id = {
             let bound_info = messenger_context.bound_map.get(bind_request.user_id.as_str())
-                .ok_or_else(|| Error::UserNotBound(bind_request.user_id.to_string()))?;
+                .ok_or_else(|| Error::UserNotBound(bind_request.user_id.clone()))?;
             *bound_info
         };
         if bound_connect_id != connect_context.connect_id {
-            return Err(Error::UserAlreadyBound(bound_connect_id.to_string()));
+            return Err(Error::UserAlreadyBound(bound_connect_id.to_string().into()));
         }
 
         //解除绑定
@@ -310,21 +312,21 @@ fn register_attachment_receivers(
 impl JsonProcessorWrapper for OutgoingMessageProcessor {
     async fn raw_process_json(&self, data: WsMessage) -> Result<Option<serde_json::Value>> {
         let payload = data.payload
-        .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("payload is None".into()))?;
 
         let outgoing_message = serde_json::from_value::<OutgoingMessage>(payload)?;
         
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
 
         let messenger_context = manager.messenger_map.get(outgoing_message.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(outgoing_message.messenger_id.clone()))?;
 
         let bound_connect_id = *messenger_context.bound_map.get(outgoing_message.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.to_string()))?;
+        .ok_or_else(|| Error::UserNotFound(outgoing_message.user_id.clone()))?;
 
         if bound_connect_id != self.connect_id {
-            return Err(Error::UserNotBound(outgoing_message.user_id.to_string()));
+            return Err(Error::UserNotBound(outgoing_message.user_id.clone()));
         }
 
         let response = messenger_context.messenger.send_message(outgoing_message).await?;
@@ -357,13 +359,13 @@ impl BinaryProcessorWrapper for AttachmentPayloadProcessor {
         let header = parse_attachment_payload_header(data.as_ref())?;
 
         let manager = self.manager.upgrade()
-        .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+        .ok_or_else(|| Error::InternalError("manager is None".into()))?;
 
         // 通过 transfer_id 找到 messenger 和 info
         let receiver = manager.attachment_receiver_map.get(&header.id)
-            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string()))?;
+            .ok_or_else(|| Error::AttachmentNotFound(header.id.to_string().into()))?;
         let messenger = receiver.messenger.upgrade()
-            .ok_or_else(|| Error::InternalError("messenger is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("messenger is None".into()))?;
         let file_size = receiver.info.size_bytes;
         drop(receiver);
 
@@ -407,7 +409,7 @@ struct DownloadResponseHandler {
 impl DownloadResponseHandler {
     fn parse_response(&self, data: WsMessage) -> Result<AttachmentPayloadResponse> {
         let payload = data.payload
-        .ok_or_else(|| Error::ReponseError("download response payload is None".to_string()))?;
+        .ok_or_else(|| Error::ReponseError("download response payload is None".into()))?;
         let response = serde_json::from_value::<AttachmentPayloadResponse>(payload)?;
         Ok(response)
     }
@@ -429,21 +431,21 @@ struct AttachmentDownloadRequestProcessor {
 impl AttachmentDownloadRequestProcessor {
     async fn process_download_request_header(&self, data: WsMessage) -> Result<(Arc<AttachmentInfoResponse>, Arc<dyn Messenger>)> {
         let payload = data.payload
-            .ok_or_else(|| Error::InvalidMessage("payload is None".to_string()))?;
+            .ok_or_else(|| Error::InvalidMessage("payload is None".into()))?;
         let request = serde_json::from_value::<AttachmentDownloadRequest>(payload)?;
 
         let manager = self.manager.upgrade()
-            .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         let connect_context = self.connect_context.upgrade()
-            .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("connect context is None".into()))?;
 
         let messenger_context = manager.messenger_map.get(request.messenger_id.as_str())
-            .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.to_string()))?;
+            .ok_or_else(|| Error::MessengerNotFound(request.messenger_id.clone()))?;
 
         let bound_connect_id = *messenger_context.bound_map.get(request.user_id.as_str())
-            .ok_or_else(|| Error::UserNotFound(request.user_id.to_string()))?;
+            .ok_or_else(|| Error::UserNotFound(request.user_id.clone()))?;
         if bound_connect_id != connect_context.connect_id {
-            return Err(Error::UserNotBound(request.user_id.to_string()));
+            return Err(Error::UserNotBound(request.user_id.clone()));
         }
         let messenger = messenger_context.messenger.clone();
 
@@ -459,7 +461,7 @@ impl AttachmentDownloadRequestProcessor {
 
     fn stop_download(&self, transfer_id: u32) -> Result<()> {
         let manager = self.manager.upgrade()
-            .ok_or_else(|| Error::InternalError("manager is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("manager is None".into()))?;
         manager.attachment_sender_map.remove(&transfer_id);
         Ok(())
     }
@@ -611,7 +613,7 @@ impl ChannelServer {
         M: Messenger,
         MC: MessengerCreator<M>
     {
-        match self.messenger_map.entry(messenger_id.to_string()) {
+        match self.messenger_map.entry(ArcStr::from(messenger_id)) {
             Entry::Vacant(entry) => {
                 let messenger = messenger_creator.create(Arc::downgrade(&self)).await?;
                 let messenger_context = Arc::new(MessengerContext {
@@ -622,7 +624,7 @@ impl ChannelServer {
                 Ok(messenger)
             }
             Entry::Occupied(entry) => {
-                Err(Error::MessengerAlreadyRegistered(entry.key().to_string()))
+                Err(Error::MessengerAlreadyRegistered(entry.key().clone()))
             }
         }
     }
@@ -630,10 +632,10 @@ impl ChannelServer {
     async fn process_group_change(&self, event: Arc<GroupChangeEvent>) -> Result<()>{
         //找到对应的group
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.clone()))?;
 
         let bound_connect_id = *messenger_context.bound_map.get(event.notification.user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
+        .ok_or_else(|| Error::UserNotFound(event.notification.user_id.clone()))?;
 
         let connect_context = self.connect_map.get(&bound_connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
@@ -677,10 +679,10 @@ impl ChannelServer {
     async fn process_incoming_message(&self, event: Arc<IncomingMessageEvent>) -> Result<()>{
         //找到对应的connect（通过接收者 user_id）
         let messenger_context = self.messenger_map.get(event.incoming_message.messenger_id.as_str())
-        .ok_or_else(|| Error::MessengerNotFound(event.incoming_message.messenger_id.to_string()))?;
+        .ok_or_else(|| Error::MessengerNotFound(event.incoming_message.messenger_id.clone()))?;
 
         let bound_connect_id = *messenger_context.bound_map.get(event.recipient_user_id.as_str())
-        .ok_or_else(|| Error::UserNotFound(event.recipient_user_id.to_string()))?;
+        .ok_or_else(|| Error::UserNotFound(event.recipient_user_id.clone()))?;
 
         let connect_context = self.connect_map.get(&bound_connect_id)
         .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
@@ -699,10 +701,10 @@ impl ChannelServer {
 
     async fn process_user_remove(&self, event: Arc<UserRemoveEvent>) -> Result<()> {
         let messenger_context = self.messenger_map.get(event.notification.messenger_id.as_str())
-            .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.to_string()))?;
+            .ok_or_else(|| Error::MessengerNotFound(event.notification.messenger_id.clone()))?;
 
         let (_,bound_connect_id) = messenger_context.bound_map.remove(event.notification.user_id.as_str())
-            .ok_or_else(|| Error::UserNotFound(event.notification.user_id.to_string()))?;
+            .ok_or_else(|| Error::UserNotFound(event.notification.user_id.clone()))?;
 
         let connect_context = self.connect_map.get(&bound_connect_id)
             .ok_or_else(|| Error::ConnectNotFound(bound_connect_id))?;
@@ -760,9 +762,9 @@ impl ChannelServer {
 
     pub fn prepare_download_payload(&self, transfer_id: u32, size: u32, pos: u64) -> Result<(u32, BytesMut)> {
         let sender_info = self.attachment_sender_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string().into()))?;
         let connect_context = sender_info.connect_context.upgrade()
-            .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("connect context is None".into()))?;
         drop(sender_info);
 
         let sn = connect_context.ws_context.next_request_sn();
@@ -779,9 +781,9 @@ impl ChannelServer {
 
     pub async fn send_download_payload(&self, sn: u32, transfer_id: u32, size: u32, pos: u64, buf: BytesMut) -> Result<AttachmentPayloadResponse> {
         let sender_info = self.attachment_sender_map.get(&transfer_id)
-            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string()))?;
+            .ok_or_else(|| Error::AttachmentNotFound(transfer_id.to_string().into()))?;
         let connect_context = sender_info.connect_context.upgrade()
-            .ok_or_else(|| Error::InternalError("connect context is None".to_string()))?;
+            .ok_or_else(|| Error::InternalError("connect context is None".into()))?;
         let file_size = sender_info.info.size_bytes;
         drop(sender_info);
 

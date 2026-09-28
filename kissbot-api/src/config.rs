@@ -1,13 +1,15 @@
-use serde::Deserialize;
 use std::sync::OnceLock;
+
+use arcstr::ArcStr;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiConfig {
-    pub memory_store_url: String,
-    pub memory_ego_url: String,
+    pub memory_store_url: ArcStr,
+    pub memory_ego_url: ArcStr,
     /// 摘要记忆（memory-struct-abstract）服务地址；缺省为空 = 未部署（输入处理器降级为普通合批）
     #[serde(default)]
-    pub memory_struct_abstract_url: String,
+    pub memory_struct_abstract_url: ArcStr,
 }
 
 impl ApiConfig {

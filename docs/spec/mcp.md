@@ -291,7 +291,7 @@
   - `supported_versions()`：支持列表（本实现为 `["2026-07-28"]`）
   - `handle(request: JsonRpcRequest) -> JsonRpcResponse`：校验 JSON-RPC 版本 → 按 `method` 分发 → 解析参数 → 校验协议版本在支持列表内 → 调用处理器 → 统一填充 `resultType = complete` 与响应 `serverInfo`；未知方法返回 `-32601`
 - `router(server, config) -> Router`：构建单端点 Router，不含认证（认证由调用方以 Layer 叠加）
-  - `McpHttpConfig { endpoint_path: Arc<String>, allowed_origins: Vec<String> }`，默认 `endpoint_path = "/mcp"`、`allowed_origins` 为空
+  - `McpHttpConfig { endpoint_path: ArcStr, allowed_origins: Vec<ArcStr> }`，默认 `endpoint_path = "/mcp"`、`allowed_origins` 为空
   - `allowed_origins` 为空时只放行无 `Origin` 或本机回环来源（127.0.0.1 / localhost / [::1] 的 http/https）
 
 ## 客户端 API
@@ -299,8 +299,8 @@
 - `McpClient::new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>)`：`endpoint` 为 MCP 端点完整 URL；`api_key` 非空时以 `X-Api-Key` 头发送
 - `with_client_info(implementation)`：覆盖自报身份（默认 `name = "kissbot-mcp-client"`，`version` 取包版本）
 - `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_ancestors()` / `supports_kissbot()` 用于判定对端声明的 kissbot 级联扩展能力
-- `list_tools(ancestors: Arc<Vec<String>>) -> ToolsListResult`：祖先链写入请求 `_meta["kissbot/ancestors"]`
-- `call_tool(name: &str, arguments: Value, ancestors: Arc<Vec<String>>) -> CallToolResult`
+- `list_tools(ancestors: Arc<Vec<ArcStr>>) -> ToolsListResult`：祖先链写入请求 `_meta["kissbot/ancestors"]`
+- `call_tool(name: &str, arguments: Value, ancestors: Arc<Vec<ArcStr>>) -> CallToolResult`
 - 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、`kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增
 - 错误类型 `McpClientError`：
 

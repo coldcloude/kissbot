@@ -8,6 +8,8 @@ use futures_util::future;
 use kissbot_memory::DirectoryManager;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
+
 use crate::agent::AgentManager;
 use kissbot_api::AgentMetadata;
 use crate::search::SearchManager;
@@ -143,7 +145,7 @@ async fn agent_name_completion(Json(req): Json<ego::NameCompletionRequest>) -> i
 
 async fn search_role_by_description(Json(req): Json<ego::SearchRoleRequest>) -> impl IntoResponse {
     let ego_manager = SearchManager::get().await;
-    let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref().map(|s| s.as_str())).await;
+    let roles = ego_manager.search_role_by_description(&req.keyword, req.agent_id.as_deref()).await;
     (StatusCode::OK, Json(ApiResponse::success(roles)))
 }
 
@@ -155,7 +157,7 @@ async fn retrieve_roles(Json(req): Json<ego::RetrieveRolesRequest>) -> impl Into
 
 async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -> impl IntoResponse {
     let ego_manager = SearchManager::get().await;
-    let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref().map(|s| s.as_str())).await;
+    let results = ego_manager.role_name_completion(&req.prefix, req.agent_id.as_deref()).await;
     (StatusCode::OK, Json(ApiResponse::success(results)))
 }
 
@@ -221,8 +223,8 @@ async fn replace_individual_relations(Json(req): Json<ego::ReplaceIndividualRela
 async fn list_roles(Json(req): Json<ego::ListRolesRequest>) -> impl IntoResponse {
     match RolePlayManager::get().list_roles(&req.agent_id).await {
         Ok(roles) => (StatusCode::OK, Json(ApiResponse::success(roles))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Vec<String>>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<String>>::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Vec<ArcStr>>::error(format!("Agent {} not found", req.agent_id)))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ArcStr>>::error(e.to_string()))),
     }
 }
 

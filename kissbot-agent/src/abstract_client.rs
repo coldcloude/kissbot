@@ -2,8 +2,7 @@
 //! 共享 reqwest client + 组件地址（api.memory_struct_abstract_url）+ api_key（security.api_key）。
 //! 接口约定见 [memory-struct-abstract 技术规格](../../docs/spec/memory-struct-abstract.md)。
 
-use std::sync::Arc;
-
+use arcstr::ArcStr;
 use kissbot_api::{
     ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
     CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
@@ -16,8 +15,8 @@ use crate::types::{Error, Result};
 /// 所有调用在发请求前返回 Err（调用方降级为普通合批）
 pub struct AbstractClient {
     client: reqwest::Client,
-    base_url: String,
-    api_key: String,
+    base_url: ArcStr,
+    api_key: ArcStr,
 }
 
 impl AbstractClient {
@@ -25,16 +24,16 @@ impl AbstractClient {
     pub fn new() -> Self {
         Self::with_url(
             kissbot_api::ApiConfig::get().memory_struct_abstract_url.clone(),
-            kissbot_security::SecurityConfig::get().api_key.to_string(),
+            kissbot_security::SecurityConfig::get().api_key.clone(),
         )
     }
 
     /// 显式地址构造（单测用；不依赖进程级配置单例）
-    pub fn with_url(base_url: String, api_key: String) -> Self {
+    pub fn with_url(base_url: impl Into<ArcStr>, api_key: impl Into<ArcStr>) -> Self {
         Self {
             client: reqwest::Client::new(),
-            base_url,
-            api_key,
+            base_url: base_url.into(),
+            api_key: api_key.into(),
         }
     }
 
@@ -43,7 +42,7 @@ impl AbstractClient {
         self.post(
             "/abstract/locate",
             &LocateRequest {
-                agent_id: Arc::new(agent_id.to_string()),
+                agent_id: ArcStr::from(agent_id),
                 role_event: role_event.clone(),
                 messages,
             },
@@ -57,9 +56,9 @@ impl AbstractClient {
             .post(
                 "/abstract/case/summary",
                 &CaseSummaryRequest {
-                    agent_id: Arc::new(agent_id.to_string()),
+                    agent_id: ArcStr::from(agent_id),
                     role_event: role_event.clone(),
-                    case_name: Arc::new(case_name.to_string()),
+                    case_name: ArcStr::from(case_name),
                 },
             )
             .await?;
@@ -71,9 +70,9 @@ impl AbstractClient {
         self.post(
             "/abstract/case/records-tail",
             &CaseRecordsTailRequest {
-                agent_id: Arc::new(agent_id.to_string()),
+                agent_id: ArcStr::from(agent_id),
                 role_event: role_event.clone(),
-                case_name: Arc::new(case_name.to_string()),
+                case_name: ArcStr::from(case_name),
                 count,
             },
         )
@@ -88,7 +87,7 @@ impl AbstractClient {
     {
         if self.base_url.is_empty() {
             return Err(Error::AbstractError(
-                "摘要记忆未配置（api.memory_struct_abstract_url 为空）".to_string(),
+                "摘要记忆未配置（api.memory_struct_abstract_url 为空）".into(),
             ));
         }
         let resp = self
@@ -98,13 +97,13 @@ impl AbstractClient {
             .json(request)
             .send()
             .await
-            .map_err(|e| Error::AbstractError(format!("{} 请求失败: {}", path, e)))?;
+            .map_err(|e| Error::AbstractError(format!("{} 请求失败: {}", path, e).into()))?;
         let envelope = resp
             .json::<ApiResponse<Resp>>()
             .await
-            .map_err(|e| Error::AbstractError(format!("{} 响应解析失败: {}", path, e)))?;
+            .map_err(|e| Error::AbstractError(format!("{} 响应解析失败: {}", path, e).into()))?;
         envelope.data.ok_or_else(|| {
-            Error::AbstractError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()))
+            Error::AbstractError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()).into())
         })
     }
 }

@@ -10,6 +10,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use dashmap::DashMap;
 use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, RoleEvent, Watermark};
 #[cfg(test)]
@@ -25,18 +26,18 @@ use crate::tree::{CaseTree, EVENT_CASE_PREFIX};
 /// 角色：作用域标识（agent + 角色名，**不含 event**）。同一角色共用一棵 case 树。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AgentRole {
-    pub agent_id: String,
-    pub role: String,
+    pub agent_id: ArcStr,
+    pub role: ArcStr,
 }
 
 impl AgentRole {
-    pub fn new(agent_id: impl Into<String>, role: impl Into<String>) -> Self {
+    pub fn new(agent_id: impl Into<ArcStr>, role: impl Into<ArcStr>) -> Self {
         Self { agent_id: agent_id.into(), role: role.into() }
     }
 
     /// DashMap 键（`agent/role`）
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.agent_id, self.role)
+    pub fn key(&self) -> ArcStr {
+        ArcStr::from(format!("{}/{}", self.agent_id, self.role))
     }
 }
 
@@ -48,8 +49,8 @@ impl fmt::Display for AgentRole {
 
 /// 事件模式固定的顶层叶子 case 名：`event-{事件标识}`（前缀与角色模式的 `role-` 不同，天然不重名）；
 /// 角色模式为 `None`。
-pub fn event_case_name(role_event: &RoleEvent) -> Option<String> {
-    role_event.event_id.as_ref().map(|event_id| format!("{}{}", EVENT_CASE_PREFIX, event_id))
+pub fn event_case_name(role_event: &RoleEvent) -> Option<ArcStr> {
+    role_event.event_id.as_ref().map(|event_id| ArcStr::from(format!("{}{}", EVENT_CASE_PREFIX, event_id)))
 }
 
 /// 记忆后缀所属角色（case 树的作用域）：事件模式与角色模式共用同一个角色。
@@ -65,10 +66,10 @@ pub fn case_mode(role_event: &RoleEvent) -> CaseMode {
 
 /// LLM 会话标识（文件名安全；空后缀用 `_default`）：基于 kissbot-memory 的记忆后缀做字符替换。
 pub fn session_id(role_event: &RoleEvent) -> String {
-    let mut id: String = kissbot_memory::role_event_suffix(role_event)
+    let mut id = kissbot_memory::role_event_suffix(role_event)
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
-        .collect();
+        .collect::<String>();
     if id.is_empty() {
         id = "_default".to_string();
     }
@@ -81,7 +82,7 @@ pub type SuffixChannel = (RoleEvent, ChannelKey);
 /// 判定作用域：agent + 记忆后缀。模型会话按它隔离（同一记忆后缀的连续判定共享上下文）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelScope {
-    pub agent_id: String,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
 }
 
@@ -96,7 +97,7 @@ impl ModelScope {
 pub struct ScopeState {
     pub tree: CaseTree,
     /// 各 `(记忆后缀, 通道)` 的当前 case 指针
-    pub current_cases: BTreeMap<SuffixChannel, String>,
+    pub current_cases: BTreeMap<SuffixChannel, ArcStr>,
     /// 各 `(记忆后缀, 通道)` 的已处理水位
     pub watermarks: BTreeMap<SuffixChannel, Watermark>,
     /// 已从磁盘加载过状态文件的后缀（避免重复读盘）
@@ -104,7 +105,7 @@ pub struct ScopeState {
     /// 待处理标记：通知只登记「哪个后缀哪个通道变了」，不计算。
     /// `dirty_roles` 表示某后缀的**全部通道**（思考/工具通知、后缀未知通道、首次加载、通知重连），
     /// 按记忆后缀字符串登记（拼接见 [`kissbot_memory::role_event_suffix`]），因此磁盘扫描出的目录名可直接登记。
-    pub dirty_roles: BTreeSet<String>,
+    pub dirty_roles: BTreeSet<ArcStr>,
     pub dirty_channels: BTreeSet<SuffixChannel>,
 }
 
@@ -147,7 +148,7 @@ impl ScopeState {
     }
 
     /// 某后缀的当前 case 指针（按通道）
-    pub fn current_of(&self, role_event: &RoleEvent) -> BTreeMap<ChannelKey, String> {
+    pub fn current_of(&self, role_event: &RoleEvent) -> BTreeMap<ChannelKey, ArcStr> {
         self.current_cases
             .iter()
             .filter(|((suffix, _), _)| suffix == role_event)
@@ -165,7 +166,7 @@ impl ScopeState {
     }
 
     /// 某后缀某通道的当前 case
-    pub fn current_case(&self, role_event: &RoleEvent, channel: &ChannelKey) -> Option<&String> {
+    pub fn current_case(&self, role_event: &RoleEvent, channel: &ChannelKey) -> Option<&ArcStr> {
         self.current_cases.get(&(role_event.clone(), channel.clone()))
     }
 
@@ -214,7 +215,7 @@ impl ScopeHandle {
     /// 角色模式下后缀即角色名，与角色目录相同。
     pub fn suffix_dir(&self, role_event: &RoleEvent) -> PathBuf {
         let suffix = kissbot_memory::role_event_suffix(role_event);
-        self.dir.parent().map(|parent| parent.join(&suffix)).unwrap_or_else(|| self.dir.join(&suffix))
+        self.dir.parent().map(|parent| parent.join(suffix.as_str())).unwrap_or_else(|| self.dir.join(suffix.as_str()))
     }
 
     pub fn current_path(&self, role_event: &RoleEvent) -> PathBuf {
@@ -237,16 +238,16 @@ impl ScopeHandle {
 
     /// 持久化 case 树
     pub async fn save_tree(&self, tree: &CaseTree) -> Result<()> {
-        let nodes: BTreeMap<String, CaseNode> = tree
+        let nodes: BTreeMap<ArcStr, CaseNode> = tree
             .nodes()
             .into_iter()
-            .map(|n| (n.case_name.as_str().to_string(), n.clone()))
+            .map(|n| (n.case_name.clone(), n.clone()))
             .collect();
         write_json(&self.tree_path(), &serde_json::json!({ "nodes": nodes })).await
     }
 
     /// 持久化某后缀各通道的当前 case 指针（无通道时删除文件）
-    pub async fn save_current(&self, role_event: &RoleEvent, current: &BTreeMap<ChannelKey, String>) -> Result<()> {
+    pub async fn save_current(&self, role_event: &RoleEvent, current: &BTreeMap<ChannelKey, ArcStr>) -> Result<()> {
         if current.is_empty() {
             return remove_file(&self.current_path(role_event)).await;
         }
@@ -254,7 +255,7 @@ impl ScopeHandle {
             .iter()
             .map(|(channel, case_name)| ChannelCasePointer {
                 channel: channel.clone(),
-                case_name: Arc::new(case_name.clone()),
+                case_name: case_name.clone(),
             })
             .collect();
         write_json(&self.current_path(role_event), &serde_json::json!({ "channels": channels })).await
@@ -287,16 +288,16 @@ impl ScopeHandle {
         let dir = self.suffix_dir(role_event);
         let current = match read_json(&dir.join("current.json")).await? {
             Some(value) => serde_json::from_value::<CurrentFile>(value)
-                .map_err(|e| Error::StateError(format!("当前 case 指针文件损坏: {}", e)))?
+                .map_err(|e| Error::StateError(format!("当前 case 指针文件损坏: {}", e).into()))?
                 .channels,
             None => Vec::new(),
         };
         for pointer in current {
-            state.current_cases.insert((role_event.clone(), pointer.channel), pointer.case_name.as_str().to_string());
+            state.current_cases.insert((role_event.clone(), pointer.channel), pointer.case_name.clone());
         }
         let watermarks = match read_json(&dir.join("watermark.json")).await? {
             Some(value) => serde_json::from_value::<WatermarkFile>(value)
-                .map_err(|e| Error::StateError(format!("水位文件损坏: {}", e)))?
+                .map_err(|e| Error::StateError(format!("水位文件损坏: {}", e).into()))?
                 .channels,
             None => Vec::new(),
         };
@@ -339,7 +340,7 @@ async fn remove_file(path: &Path) -> Result<()> {
 /// 角色集合：按需加载、缓存句柄
 pub struct ScopeManager {
     root: PathBuf,
-    scopes: DashMap<String, Arc<ScopeHandle>>,
+    scopes: DashMap<ArcStr, Arc<ScopeHandle>>,
 }
 
 impl ScopeManager {
@@ -353,7 +354,7 @@ impl ScopeManager {
 
     /// 角色目录：`{root}/{agent}/memory-struct-abstract/{role}`
     pub fn scope_dir(&self, id: &AgentRole) -> PathBuf {
-        self.root.join(&id.agent_id).join(STRUCT_DIR_NAME).join(&id.role)
+        self.root.join(id.agent_id.as_str()).join(STRUCT_DIR_NAME).join(id.role.as_str())
     }
 
     pub fn get(&self, id: &AgentRole) -> Option<Arc<ScopeHandle>> {
@@ -447,7 +448,7 @@ async fn read_json(path: &Path) -> Result<Option<Value>> {
     match tokio::fs::read(path).await {
         Ok(bytes) => {
             let value = serde_json::from_slice(&bytes)
-                .map_err(|e| Error::StateError(format!("状态文件损坏 {}: {}", path.display(), e)))?;
+                .map_err(|e| Error::StateError(format!("状态文件损坏 {}: {}", path.display(), e).into()))?;
             Ok(Some(value))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -464,20 +465,20 @@ mod tests {
     fn channel(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Channel,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("u1".into()),
-                self_user_id: Arc::new("self".into()),
-                messenger_id: Arc::new("web".into()),
-                group_id: Arc::new("g1".into()),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self"),
+                messenger_id: ArcStr::from("web"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("alice".into()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("hi".into())),
-                time: Arc::new(time.to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("alice"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("hi")),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -485,8 +486,8 @@ mod tests {
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
-            role_name: Arc::new(role_name.to_string()),
-            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+            role_name: ArcStr::from(role_name),
+            event_id: event_id.map(ArcStr::from),
         }
     }
 
@@ -506,7 +507,7 @@ mod tests {
         assert_eq!(session_id(&event), "dev-e12");
 
         // 事件标识本身可以含 '-'（UUID）：RoleEvent 显式区分角色名与事件标识，后缀拼接不做拆分
-        assert_eq!(role_event("dev", Some("3f2a-c3d4")).event_id.as_deref().map(String::as_str), Some("3f2a-c3d4"));
+        assert_eq!(role_event("dev", Some("3f2a-c3d4")).event_id.as_deref(), Some("3f2a-c3d4"));
 
         let empty = role_event("", None);
         assert_eq!(session_id(&empty), "_default");
@@ -532,7 +533,7 @@ mod tests {
             state.tree.set_summary("role-1", "聊了天气", "2026-09-22 10:06:00");
             state.current_cases.insert((role_event.clone(), key.clone()), "role-1".into());
             let watermark = state.watermarks.entry((role_event.clone(), key.clone())).or_default();
-            watermark.channel.time = Arc::new("2026-09-22 10:00:00".into());
+            watermark.channel.time = ArcStr::from("2026-09-22 10:00:00");
             watermark.channel.sn = 1;
             handle.save_state(&role_event, &state).await.unwrap();
         }
@@ -601,8 +602,8 @@ mod tests {
 
         let fresh = ScopeManager::new(temp.path());
         let handles = fresh.load_all().await.unwrap();
-        let keys: Vec<String> = handles.iter().map(|h| h.id.key()).collect();
-        assert_eq!(keys, vec!["0/dev".to_string()], "dev 与 dev-e1 是同一个角色");
+        let keys: Vec<ArcStr> = handles.iter().map(|h| h.id.key()).collect();
+        assert_eq!(keys, vec![ArcStr::from("0/dev")], "dev 与 dev-e1 是同一个角色");
     }
 
     #[tokio::test]
@@ -631,7 +632,7 @@ mod tests {
         let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
         let role_event = role_event("dev", None);
         let mut current = BTreeMap::new();
-        current.insert(ChannelKey::new("web", "self1", "g1"), "role-1".to_string());
+        current.insert(ChannelKey::new("web", "self1", "g1"), ArcStr::from("role-1"));
         handle.save_current(&role_event, &current).await.unwrap();
         assert!(handle.current_path(&role_event).exists());
         handle.save_current(&role_event, &BTreeMap::new()).await.unwrap();

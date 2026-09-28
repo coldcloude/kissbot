@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use thiserror::Error;
 
 use crate::attachment::UploadCommand;
@@ -5,22 +6,22 @@ use crate::attachment::UploadCommand;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Config error: {0}")]
-    ConfigError(String),
+    ConfigError(ArcStr),
 
     #[error("Group not found: {0}")]
-    GroupNotFound(String),
+    GroupNotFound(ArcStr),
 
     #[error("User not found: {0}")]
-    UserNotFound(String),
+    UserNotFound(ArcStr),
 
     #[error("Attachment not found: {0}")]
-    AttachmentNotFound(String),
+    AttachmentNotFound(ArcStr),
 
     #[error("Attachment position out of order: {0} {1} {2}")]
-    AttachmentPositionOutOfOrder(String, u64, u64),
+    AttachmentPositionOutOfOrder(ArcStr, u64, u64),
 
     #[error("Invalid message: {0}")]
-    InvalidMessage(String),
+    InvalidMessage(ArcStr),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -41,7 +42,7 @@ pub enum Error {
     OneshotRecvError(#[from] tokio::sync::oneshot::error::RecvError),
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    InternalError(ArcStr),
 
     #[error("Channel error: {0}")]
     ChannelError(#[from] kissbot_channel::Error),
@@ -55,7 +56,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl From<Error> for kissbot_channel::Error {
     fn from(e: Error) -> Self {
         match e {
-            Error::ConfigError(msg) => kissbot_channel::Error::InternalError(format!("config: {}", msg)),
+            Error::ConfigError(msg) => kissbot_channel::Error::InternalError(format!("config: {}", msg).into()),
             Error::GroupNotFound(msg) => kissbot_channel::Error::GroupNotFound(msg),
             Error::UserNotFound(msg) => kissbot_channel::Error::UserNotFound(msg),
             Error::AttachmentNotFound(msg) => kissbot_channel::Error::AttachmentNotFound(msg),

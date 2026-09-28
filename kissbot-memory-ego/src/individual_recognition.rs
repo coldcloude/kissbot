@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use arc_swap::ArcSwap;
+use arcstr::ArcStr;
 use kissbot_api::ArcSwapHashMap;
 use kissbot_api::IndividualEntry;
 use kissbot_api::IndividualRelationEntry;
@@ -23,7 +24,7 @@ pub fn ego_individual_recognition_path(ego_dir: impl AsRef<std::path::Path>) -> 
 type IndividualRecognitionLock = Arc<RwLock<Option<Arc<IndividualRecognition>>>>;
 
 pub struct IndividualRecognitionManager {
-    manager_lock: dashmap::DashMap<String, IndividualRecognitionLock>,
+    manager_lock: dashmap::DashMap<ArcStr, IndividualRecognitionLock>,
 }
 
 static INDIVIDUAL_RECOGNITION_MANAGER_INSTANCE: OnceLock<IndividualRecognitionManager> = OnceLock::new();
@@ -43,7 +44,7 @@ impl IndividualRecognitionManager {
 
     async fn get_or_create_lock(&self, agent_id: &str) -> IndividualRecognitionLock {
         self.manager_lock
-            .entry(agent_id.to_string())
+            .entry(ArcStr::from(agent_id))
             .or_insert_with(|| Arc::new(RwLock::new(None)))
             .clone()
     }
@@ -70,7 +71,7 @@ impl IndividualRecognitionManager {
 
             if !json_path.exists() {
                 let individuals = IndividualRecognition {
-                    agent_id: Arc::new(agent_id.to_string()),
+                    agent_id: ArcStr::from(agent_id),
                     individual_map: Arc::new(ArcSwapHashMap::new()),
                 };
                 let content = serde_json::to_string_pretty(&individuals)?;
@@ -78,7 +79,7 @@ impl IndividualRecognitionManager {
             }
 
             if !json_path.exists() {
-                return Err(Error::AgentNotFound(agent_id.to_string()));
+                return Err(Error::AgentNotFound(ArcStr::from(agent_id)));
             }
 
             let content = tokio::fs::read_to_string(json_path).await?;
@@ -89,7 +90,7 @@ impl IndividualRecognitionManager {
         let guard = lock.read().await;
         match guard.as_ref() {
             Some(individuals) => Ok(individuals.clone()),
-            None => Err(Error::AgentNotFound(agent_id.to_string())),
+            None => Err(Error::AgentNotFound(ArcStr::from(agent_id))),
         }
     }
 
@@ -127,7 +128,7 @@ impl IndividualRecognitionManager {
                 Ok(())
             }
             None => {
-                Err(Error::AgentNotFound(agent_id.to_string()))
+                Err(Error::AgentNotFound(ArcStr::from(agent_id)))
             }
         }
     }
@@ -144,10 +145,10 @@ impl IndividualRecognitionManager {
                     entry.store(updated);
                     Ok(individuals)
                 } else {
-                    Err(Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))
+                    Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
                 }
             } else {
-                Err(Error::AgentNotFound(agent_id.to_string()))
+                Err(Error::AgentNotFound(ArcStr::from(agent_id)))
             }
         }).await
     }
@@ -159,11 +160,11 @@ impl IndividualRecognitionManager {
     pub async fn get_individual(&self, agent_id: &str, individual_name: &str) -> Result<Arc<Individual>> {
         let individuals = self.read_individual_recognition(agent_id).await?;
         let entry = individuals.individual_map.get(individual_name)
-        .ok_or_else(|| Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))?;
+        .ok_or_else(|| Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))?;
         Ok(entry.load().clone())
     }
 
-    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<String>, mut insert_individuals: Vec<IndividualEntry>) -> Result<()> {
+    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<ArcStr>, mut insert_individuals: Vec<IndividualEntry>) -> Result<()> {
         for entry in insert_individuals.iter() {
             validate_code(entry.name.as_str())?;
         }
@@ -181,7 +182,7 @@ impl IndividualRecognitionManager {
                 Ok(individuals_new_arc)
             }
             else {
-                Err(Error::AgentNotFound(agent_id.to_string()))
+                Err(Error::AgentNotFound(ArcStr::from(agent_id)))
             }
         }).await
     }
@@ -191,22 +192,22 @@ impl IndividualRecognitionManager {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
                 if individuals.individual_map.contains_key(new_name) {
-                    Err(Error::AgentIndividualAlreadyExists(agent_id.to_string(), new_name.to_string()))
+                    Err(Error::AgentIndividualAlreadyExists(ArcStr::from(agent_id), ArcStr::from(new_name)))
                 } else {
                     if let Some(individual) = individuals.individual_map.get(individual_name) {
                         let mut individuals_new_arc = individuals.clone();
                         let individuals_new = Arc::make_mut(&mut individuals_new_arc);
                         let individual_map = Arc::make_mut(&mut individuals_new.individual_map);
                         individual_map.remove(individual_name);
-                        individual_map.insert(new_name.to_string(), ArcSwap::new(individual.load_full()));
+                        individual_map.insert(ArcStr::from(new_name), ArcSwap::new(individual.load_full()));
                         Ok(individuals_new_arc)
                     } else {
-                        Err(Error::AgentIndividualNotFound(agent_id.to_string(), individual_name.to_string()))
+                        Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
                     }
                 }
             }
             else {
-                Err(Error::AgentNotFound(agent_id.to_string()))
+                Err(Error::AgentNotFound(ArcStr::from(agent_id)))
             }
         }).await
     }
@@ -225,7 +226,7 @@ impl IndividualRecognitionManager {
         }).await
     }
 
-    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<String>, mut insert_relations: Vec<IndividualRelationEntry>) -> Result<()> {
+    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<ArcStr>, mut insert_relations: Vec<IndividualRelationEntry>) -> Result<()> {
         // 校验新增 other_relations 的 key（individual_name 代号）
         for entry in insert_relations.iter() {
             validate_code(&entry.individual_name)?;
@@ -270,8 +271,9 @@ use super::*;
     #[tokio::test]
     async fn test_get_individuals_new_agent() {
         setup().await;
-        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent1").await.unwrap();
-        let result = IndividualRecognitionManager::get().get_individuals("agent1").await.unwrap();
+        // 用独立 agent 标识：各测试并行共享全局 manager，与其它用例共用 agent 会互相污染
+        kissbot_memory::DirectoryManager::get().ensure_agent_dir("agent-empty").await.unwrap();
+        let result = IndividualRecognitionManager::get().get_individuals("agent-empty").await.unwrap();
         assert!(result.individual_map.is_empty());
     }
 
@@ -295,18 +297,18 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         manager.replace_individuals(
             "agent1",
             vec![],
-            vec![IndividualEntry { name: "Alice".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         ).await.unwrap();
         let alice = manager.get_individual("agent1", "Alice").await.unwrap();
-        assert_eq!(*alice.relation.relation, "friend");
+        assert_eq!(alice.relation.relation, "friend");
     }
 
     #[tokio::test]
@@ -319,19 +321,19 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         manager.replace_individuals(
             "agent-remove",
             vec![],
-            vec![IndividualEntry { name: "Alice".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         ).await.unwrap();
         manager.replace_individuals(
             "agent-remove",
-            vec!["Alice".to_string()],
+            vec![ArcStr::from("Alice")],
             vec![],
         ).await.unwrap();
         let result = manager.get_individual("agent-remove", "Alice").await;
@@ -348,19 +350,19 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         manager.replace_individuals(
             "agent-rename",
             vec![],
-            vec![IndividualEntry { name: "Alice".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         ).await.unwrap();
         manager.rename_individual("agent-rename", "Alice", "Bob").await.unwrap();
         let bob = manager.get_individual("agent-rename", "Bob").await.unwrap();
-        assert_eq!(*bob.relation.relation, "friend");
+        assert_eq!(bob.relation.relation, "friend");
         let result = manager.get_individual("agent-rename", "Alice").await;
         assert!(matches!(result, Err(Error::AgentIndividualNotFound(_, _))));
     }
@@ -375,16 +377,16 @@ use super::*;
         let alice = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from(""),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         let bob = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("colleague".to_string()),
-                description: Arc::new("".to_string()),
+                relation: ArcStr::from("colleague"),
+                description: ArcStr::from(""),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
@@ -392,8 +394,8 @@ use super::*;
             "agent-rename-exists",
             vec![],
             vec![
-                IndividualEntry { name: "Alice".to_string(), individual: alice },
-                IndividualEntry { name: "Bob".to_string(), individual: bob },
+                IndividualEntry { name: ArcStr::from("Alice"), individual: alice },
+                IndividualEntry { name: ArcStr::from("Bob"), individual: bob },
             ],
         ).await.unwrap();
         let result = manager.rename_individual("agent-rename-exists", "Alice", "Bob").await;
@@ -409,15 +411,15 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         let result = manager.replace_individuals(
             "agent-invalid-ind",
             vec![],
-            vec![IndividualEntry { name: "a b".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("a b"), individual }],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
     }
@@ -431,19 +433,19 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         manager.replace_individuals(
             "agent-invalid-rel",
             vec![],
-            vec![IndividualEntry { name: "Alice".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         ).await.unwrap();
         let relation = Arc::new(IndividualRelation {
-            relation: Arc::new("friend".to_string()),
-            description: Arc::new("".to_string()),
+            relation: ArcStr::from("friend"),
+            description: ArcStr::from(""),
         });
         // 非法 key 的 other_relations 插入应被拒
         let result = manager.replace_individual_other_relations(
@@ -451,22 +453,22 @@ use super::*;
             "Alice",
             vec![],
             vec![IndividualRelationEntry {
-                individual_name: "a b".to_string(),
+                individual_name: ArcStr::from("a b"),
                 relation,
             }],
         ).await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));
         // 合法 key 仍成功
         let relation_ok = Arc::new(IndividualRelation {
-            relation: Arc::new("colleague".to_string()),
-            description: Arc::new("".to_string()),
+            relation: ArcStr::from("colleague"),
+            description: ArcStr::from(""),
         });
         manager.replace_individual_other_relations(
             "agent-invalid-rel",
             "Alice",
             vec![],
             vec![IndividualRelationEntry {
-                individual_name: "Bob".to_string(),
+                individual_name: ArcStr::from("Bob"),
                 relation: relation_ok,
             }],
         ).await.unwrap();
@@ -483,15 +485,15 @@ use super::*;
         let individual = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
             relation: Arc::new(IndividualRelation {
-                relation: Arc::new("friend".to_string()),
-                description: Arc::new("best friend".to_string()),
+                relation: ArcStr::from("friend"),
+                description: ArcStr::from("best friend"),
             }),
             other_relations: Arc::new(ArcSwapHashMap::new()),
         });
         manager.replace_individuals(
             "agent-empty-rename",
             vec![],
-            vec![IndividualEntry { name: "Alice".to_string(), individual }],
+            vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         ).await.unwrap();
         let result = manager.rename_individual("agent-empty-rename", "Alice", "").await;
         assert!(matches!(result, Err(Error::InvalidCode(_))));

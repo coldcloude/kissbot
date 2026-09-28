@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -71,19 +72,19 @@ pub enum CaseMode {
 /// Case 节点（tree.json 的节点形状）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseNode {
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<Arc<String>>,
+    pub parent_id: Option<ArcStr>,
     #[serde(default)]
-    pub children: Vec<Arc<String>>,
+    pub children: Vec<ArcStr>,
     pub mode: CaseMode,
-    pub summary: Arc<String>,
+    pub summary: ArcStr,
     /// 本 case 直接持有的原文副本条数（不含子 case）
     pub record_count: u64,
-    pub start_time: Arc<String>,
-    pub end_time: Arc<String>,
-    pub created_at: Arc<String>,
-    pub updated_at: Arc<String>,
+    pub start_time: ArcStr,
+    pub end_time: ArcStr,
+    pub created_at: ArcStr,
+    pub updated_at: ArcStr,
 }
 
 impl CaseNode {
@@ -95,8 +96,8 @@ impl CaseNode {
 /// Case 摘要（分层归并/上下文装配用的最小 case 描述）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaseBrief {
-    pub case_name: Arc<String>,
-    pub summary: Arc<String>,
+    pub case_name: ArcStr,
+    pub summary: ArcStr,
 }
 
 impl From<&CaseNode> for CaseBrief {
@@ -112,7 +113,7 @@ impl From<&CaseNode> for CaseBrief {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     /// 记忆后缀：角色模式（无事件）或事件模式（角色 + 事件标识）
     pub role_event: RoleEvent,
     /// 待定位消息（可多条、可跨通道）：每条自带通道三元组，按通道分别与各自的当前 case 比对
@@ -124,14 +125,14 @@ pub struct LocateRequest {
 pub struct LocateMessage {
     /// 消息标识：与已存记录去重只按「通道三元组 + msg_id」判定；为空则不参与去重
     #[serde(default)]
-    pub msg_id: Arc<String>,
-    pub time: Arc<String>,
-    pub user_name: Arc<String>,
+    pub msg_id: ArcStr,
+    pub time: ArcStr,
+    pub user_name: ArcStr,
     pub is_self: usize,
     /// 通道三元组：决定用哪个通道的当前 case 指针做比对
-    pub messenger_id: Arc<String>,
-    pub self_user_id: Arc<String>,
-    pub group_id: Arc<String>,
+    pub messenger_id: ArcStr,
+    pub self_user_id: ArcStr,
+    pub group_id: ArcStr,
     pub content: Content,
 }
 
@@ -149,7 +150,7 @@ impl LocateMessage {
 /// 消息涉及的 case
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocatedCaseRef {
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
     /// 是否是涉及该 case 的通道的当前 case
     #[serde(default)]
     pub is_current: bool,
@@ -161,7 +162,7 @@ pub struct LocatedGroup {
     /// 消息在请求 `messages` 中的下标（升序）
     pub messages: Vec<usize>,
     /// 该组所属 case：命中已有 case 即该 case；新话题会在本次定位中建出 case（记忆条数为 0）
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
     #[serde(default)]
     pub is_current: bool,
 }
@@ -187,11 +188,11 @@ impl LocateResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseListRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
     /// 父 case id；缺省或 null 表示查询顶层 case
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<Arc<String>>,
+    pub parent_id: Option<ArcStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,9 +202,9 @@ pub struct CaseListResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseSummaryRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
 }
 
 /// Case 摘要：节点本身即摘要侧表示（摘要文本 + 层级 + 记录数 + 起止时间）
@@ -216,7 +217,7 @@ pub struct CaseSummaryResponse {
 /// 调用方把上一条记录的 `time` / `sn` / `record_type` 原样回传
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaseCursor {
-    pub time: Arc<String>,
+    pub time: ArcStr,
     pub sn: u64,
     /// 记录类型（`channel` / `think` / `tool-call` / `tool-result`）：
     /// 各类型文件的 `sn` 相互独立，同一时刻的先后只在同类型内可比
@@ -226,7 +227,7 @@ pub struct CaseCursor {
 impl CaseCursor {
     pub fn of(record: &CaseRecord) -> Self {
         Self {
-            time: Arc::new(record.time().to_string()),
+            time: ArcStr::from(record.time()),
             sn: record.sn(),
             record_type: record.kind(),
         }
@@ -235,25 +236,25 @@ impl CaseCursor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsAfterRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
     /// 只返回该位置之后的原文副本
     pub after: CaseCursor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsTailRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
     /// 只返回结尾若干条原文副本
     pub count: u64,
 }
@@ -266,7 +267,7 @@ pub struct CaseRecordsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeGetRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
 }
 
@@ -283,14 +284,14 @@ pub struct TreeGetResponse {
 /// 各记录类型的已处理位置（时间 + 序号）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WatermarkPoint {
-    pub time: Arc<String>,
+    pub time: ArcStr,
     pub sn: u64,
 }
 
 impl Default for WatermarkPoint {
     fn default() -> Self {
         Self {
-            time: Arc::new(WATERMARK_ZERO_TIME.to_string()),
+            time: ArcStr::from(WATERMARK_ZERO_TIME),
             sn: 0,
         }
     }
@@ -344,7 +345,7 @@ impl Watermark {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCasePointer {
     pub channel: ChannelKey,
-    pub case_name: Arc<String>,
+    pub case_name: ArcStr,
 }
 
 /// 通道水位（watermark.json 的一条）
@@ -356,7 +357,7 @@ pub struct ChannelWatermark {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuildRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
     /// false：手动触发一次归档（等同通知触发的判定）；true：清空本次记忆后缀所属模式的子树后按共享记忆文件重建
     #[serde(default)]
@@ -380,14 +381,14 @@ mod tests {
 
     fn message() -> LocateMessage {
         LocateMessage {
-            time: Arc::new("2026-09-22 13:48:37".into()),
-            user_name: Arc::new("alice".into()),
+            time: ArcStr::from("2026-09-22 13:48:37"),
+            user_name: ArcStr::from("alice"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_id: Arc::new("web".into()),
-            self_user_id: Arc::new("self1".into()),
-            group_id: Arc::new("g1".into()),
-            content: Content::Text(Arc::new("你好".into())),
+            msg_id: ArcStr::new(),
+            messenger_id: ArcStr::from("web"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
+            content: Content::Text(ArcStr::from("你好")),
         }
     }
 
@@ -422,7 +423,7 @@ mod tests {
     #[test]
     fn test_locate_request_response_serde() {
         let req = LocateRequest {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new("dev"),
             messages: vec![message(), message()],
         };
@@ -444,13 +445,13 @@ mod tests {
         // 命中：涉及的 case + 分组（每个组都命中或建出 case，case_name 必填）
         let hit = LocateResponse {
             cases: vec![
-                Arc::new(LocatedCaseRef { case_name: Arc::new("e12".into()), is_current: true }),
-                Arc::new(LocatedCaseRef { case_name: Arc::new("e13".into()), is_current: false }),
+                Arc::new(LocatedCaseRef { case_name: ArcStr::from("e12"), is_current: true }),
+                Arc::new(LocatedCaseRef { case_name: ArcStr::from("e13"), is_current: false }),
             ],
             groups: vec![
-                Arc::new(LocatedGroup { messages: vec![0, 1], case_name: Arc::new("e12".into()), is_current: true }),
-                Arc::new(LocatedGroup { messages: vec![2], case_name: Arc::new("e13".into()), is_current: false }),
-                Arc::new(LocatedGroup { messages: vec![3], case_name: Arc::new("e14".into()), is_current: true }),
+                Arc::new(LocatedGroup { messages: vec![0, 1], case_name: ArcStr::from("e12"), is_current: true }),
+                Arc::new(LocatedGroup { messages: vec![2], case_name: ArcStr::from("e13"), is_current: false }),
+                Arc::new(LocatedGroup { messages: vec![3], case_name: ArcStr::from("e14"), is_current: true }),
             ],
         };
         let v = serde_json::to_value(&hit).unwrap();
@@ -466,10 +467,10 @@ mod tests {
     #[test]
     fn test_case_cursor_and_records_requests_serde() {
         let cursor = CaseCursor::of(&CaseRecord::Think(Arc::new(ThinkRecord {
-            reasoning_content: Some(Arc::new("推理".into())),
+            reasoning_content: Some(ArcStr::from("推理")),
             thinking: None,
-            key: Arc::new("k1".into()),
-            time: Arc::new("2026-09-22 13:48:37".into()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-09-22 13:48:37"),
             sn: 7,
         })));
         assert_eq!(cursor.time.as_str(), "2026-09-22 13:48:37");
@@ -496,32 +497,32 @@ mod tests {
 
     fn node() -> CaseNode {
         CaseNode {
-            case_name: Arc::new("e12".into()),
+            case_name: ArcStr::from("e12"),
             parent_id: None,
-            children: vec![Arc::new("e13".into())],
+            children: vec![ArcStr::from("e13")],
             mode: CaseMode::Role,
-            summary: Arc::new("摘要".into()),
+            summary: ArcStr::from("摘要"),
             record_count: 42,
-            start_time: Arc::new("2026-09-22 10:00:00".into()),
-            end_time: Arc::new("2026-09-22 13:48:37".into()),
-            created_at: Arc::new("2026-09-22 10:05:00".into()),
-            updated_at: Arc::new("2026-09-22 13:49:00".into()),
+            start_time: ArcStr::from("2026-09-22 10:00:00"),
+            end_time: ArcStr::from("2026-09-22 13:48:37"),
+            created_at: ArcStr::from("2026-09-22 10:05:00"),
+            updated_at: ArcStr::from("2026-09-22 13:49:00"),
         }
     }
 
     #[test]
     fn test_case_node_serde_and_leaf() {
         let node = CaseNode {
-            case_name: Arc::new("e12".into()),
+            case_name: ArcStr::from("e12"),
             parent_id: None,
-            children: vec![Arc::new("e13".into())],
+            children: vec![ArcStr::from("e13")],
             mode: CaseMode::Role,
-            summary: Arc::new("摘要".into()),
+            summary: ArcStr::from("摘要"),
             record_count: 42,
-            start_time: Arc::new("2026-09-22 10:00:00".into()),
-            end_time: Arc::new("2026-09-22 13:48:37".into()),
-            created_at: Arc::new("2026-09-22 10:05:00".into()),
-            updated_at: Arc::new("2026-09-22 13:49:00".into()),
+            start_time: ArcStr::from("2026-09-22 10:00:00"),
+            end_time: ArcStr::from("2026-09-22 13:48:37"),
+            created_at: ArcStr::from("2026-09-22 10:05:00"),
+            updated_at: ArcStr::from("2026-09-22 13:49:00"),
         };
         let v = serde_json::to_value(&node).unwrap();
         assert_eq!(v["mode"], "role");
@@ -557,17 +558,17 @@ mod tests {
     #[test]
     fn test_case_record_tagged_shape() {
         let record = CaseRecord::Channel(Arc::new(ChannelRecord {
-            user_id: Arc::new("u1".into()),
-            self_user_id: Arc::new("self".into()),
-            messenger_id: Arc::new("web".into()),
-            group_id: Arc::new("g1".into()),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
             is_self: 1,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new("alice".into()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("你好".into())),
-            time: Arc::new("2026-09-22 10:00:00".into()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("你好")),
+            time: ArcStr::from("2026-09-22 10:00:00"),
             sn: 3,
         }));
         let value = serde_json::to_value(&record).unwrap();
@@ -590,25 +591,25 @@ mod tests {
         ] {
             let record = match kind {
                 RecordKind::Channel => CaseRecord::Channel(Arc::new(ChannelRecord {
-                    user_id: Arc::new("u".into()), self_user_id: Arc::new("s".into()),
-                    messenger_id: Arc::new("m".into()), group_id: Arc::new("g".into()),
-                    is_self: 0, msg_id: Arc::new(String::new()),
-                    messenger_name: Arc::new(String::new()),
-                    user_name: Arc::new("u".into()), group_name: Arc::new(String::new()),
-                    content: Content::Text(Arc::new("t".into())),
-                    time: Arc::new("t".into()), sn: 1,
+                    user_id: ArcStr::from("u"), self_user_id: ArcStr::from("s"),
+                    messenger_id: ArcStr::from("m"), group_id: ArcStr::from("g"),
+                    is_self: 0, msg_id: ArcStr::new(),
+                    messenger_name: ArcStr::new(),
+                    user_name: ArcStr::from("u"), group_name: ArcStr::new(),
+                    content: Content::Text(ArcStr::from("t")),
+                    time: ArcStr::from("t"), sn: 1,
                 })),
                 RecordKind::Think => CaseRecord::Think(Arc::new(ThinkRecord {
                     reasoning_content: None, thinking: None,
-                    key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
+                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
                 })),
                 RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(ToolCallRecord {
-                    tool_name: Arc::new("read".into()), tool_params: Arc::new(Value::Null),
-                    key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
+                    tool_name: ArcStr::from("read"), tool_params: Arc::new(Value::Null),
+                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
                 })),
                 RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(ToolResultRecord {
                     tool_result: Arc::new(Value::Null), tool_error: Arc::new(Value::Null),
-                    key: Arc::new("k".into()), time: Arc::new("t".into()), sn: 1,
+                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
                 })),
             };
             assert_eq!(serde_json::to_value(&record).unwrap()["record_type"], label);
@@ -620,7 +621,7 @@ mod tests {
     fn test_channel_event_pointer_serde() {
         let p = ChannelCasePointer {
             channel: ChannelKey::new("web", "self1", "g1"),
-            case_name: Arc::new("e13".into()),
+            case_name: ArcStr::from("e13"),
         };
         assert_eq!(serde_json::to_value(&p).unwrap(), json!({
             "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},

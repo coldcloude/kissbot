@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::{
     CaseCursor, CaseListResponse, CaseMode, CaseNode, CaseRecordsResponse, CaseSummaryResponse,
     ChannelCasePointer, ChannelKey, LocateMessage, LocateRequest, LocateResponse, LocatedGroup,
@@ -102,7 +103,7 @@ impl AbstractService {
         if !records.is_empty() || result.new_messages > 0 {
             let archived: u64 = result.outcomes.iter().map(|outcome| outcome.archived).sum();
             let case_names: Vec<&str> =
-                result.outcomes.iter().flat_map(|outcome| outcome.case_names.iter().map(String::as_str)).collect();
+                result.outcomes.iter().flat_map(|outcome| outcome.case_names.iter().map(|name| name.as_str())).collect();
             info!(
                 "[abstract] process {:?} [{}]: archived {} records into {:?} (+{} new messages)",
                 role_event,
@@ -177,7 +178,7 @@ impl AbstractService {
         let handle = self.open(agent_id, role_event).await?;
         let mut state = handle.state.lock().await;
         handle.ensure_suffix(&mut state, role_event).await?;
-        let cleared: BTreeSet<String> = match event_case_name(role_event) {
+        let cleared: BTreeSet<ArcStr> = match event_case_name(role_event) {
             Some(case_name) if state.tree.contains(&case_name) => [case_name].into_iter().collect(),
             Some(_) => BTreeSet::new(),
             None => state.tree.ids_of_mode(CaseMode::Role),
@@ -243,7 +244,7 @@ impl AbstractService {
             .tree
             .get(case_name)
             .cloned()
-            .ok_or_else(|| Error::StateError(format!("case 不存在: {}/{}", handle.id, case_name)))?;
+            .ok_or_else(|| Error::StateError(format!("case 不存在: {}/{}", handle.id, case_name).into()))?;
         Ok(CaseSummaryResponse { case: Arc::new(node) })
     }
 
@@ -282,7 +283,7 @@ impl AbstractService {
         {
             let state = handle.state.lock().await;
             if !state.tree.contains(case_name) {
-                return Err(Error::StateError(format!("case 不存在: {}/{}", handle.id, case_name)));
+                return Err(Error::StateError(format!("case 不存在: {}/{}", handle.id, case_name).into()));
             }
         }
         read_case_records(&handle.case_dir(case_name)).await
@@ -301,7 +302,7 @@ impl AbstractService {
             .map(|(channel, case_name)| {
                 Arc::new(ChannelCasePointer {
                     channel: channel.clone(),
-                    case_name: Arc::new(case_name.clone()),
+                    case_name: case_name.clone(),
                 })
             })
             .collect();
@@ -343,7 +344,7 @@ fn place_groups(channel: &ChannelKey, indices: &[usize], groups: Vec<PlaceGroup>
             Some((
                 first,
                 channel.clone(),
-                LocatedGroup { messages, case_name: Arc::new(group.case_name), is_current: false },
+                LocatedGroup { messages, case_name: group.case_name, is_current: false },
             ))
         })
         .collect()
@@ -375,8 +376,8 @@ mod tests {
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
-            role_name: Arc::new(role_name.to_string()),
-            event_id: event_id.map(|event_id| Arc::new(event_id.to_string())),
+            role_name: ArcStr::from(role_name),
+            event_id: event_id.map(ArcStr::from),
         }
     }
 
@@ -503,9 +504,9 @@ mod tests {
     /// 通道消息通知（懒处理：只登记，不计算）
     fn channel_notification(role_event: &RoleEvent, channel: &ChannelKey, is_self: usize) -> RecordNotification {
         RecordNotification {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: role_event.clone(),
-            time: Arc::new("2026-09-22 00:00:00".into()),
+            time: ArcStr::from("2026-09-22 00:00:00"),
             is_self: Some(is_self),
             channel: Some(channel.clone()),
         }
@@ -523,9 +524,9 @@ mod tests {
     async fn notify_scope(f: &Fixture, role_event: &RoleEvent) {
         f.service
             .on_notification(RecordKind::Think, &RecordNotification {
-                agent_id: Arc::new("0".into()),
+                agent_id: ArcStr::from("0"),
                 role_event: role_event.clone(),
-                time: Arc::new("2026-09-22 00:00:00".into()),
+                time: ArcStr::from("2026-09-22 00:00:00"),
                 is_self: None,
                 channel: None,
             })
@@ -575,7 +576,7 @@ mod tests {
     }
 
     /// 某通道的当前 case id
-    async fn current_case(f: &Fixture, role_event: &RoleEvent, channel: &ChannelKey) -> Option<String> {
+    async fn current_case(f: &Fixture, role_event: &RoleEvent, channel: &ChannelKey) -> Option<ArcStr> {
         let handle = f.service.manager().get(&agent_role(role_event)).expect("作用域已加载");
         handle.state.lock().await.current_case(role_event, channel).cloned()
     }
@@ -947,24 +948,24 @@ mod tests {
     /// 定位用消息（指定通道、时间、is_self）
     fn locate_message_at(channel: &ChannelKey, time: &str, is_self: usize, text: &str, msg_id: &str) -> LocateMessage {
         LocateMessage {
-            msg_id: Arc::new(msg_id.to_string()),
-            time: Arc::new(time.to_string()),
-            user_name: Arc::new("alice".into()),
+            msg_id: ArcStr::from(msg_id),
+            time: ArcStr::from(time),
+            user_name: ArcStr::from("alice"),
             is_self,
             messenger_id: channel.messenger_id.clone(),
             self_user_id: channel.self_user_id.clone(),
             group_id: channel.group_id.clone(),
-            content: Content::Text(Arc::new(text.to_string())),
+            content: Content::Text(ArcStr::from(text)),
         }
     }
 
     /// 定位请求
     fn locate_request(role_event: &RoleEvent, messages: Vec<LocateMessage>) -> LocateRequest {
-        LocateRequest { agent_id: Arc::new("0".into()), role_event: role_event.clone(), messages }
+        LocateRequest { agent_id: ArcStr::from("0"), role_event: role_event.clone(), messages }
     }
 
     /// 第 1 轮（分组轮）提示词
-    fn group_prompts(f: &Fixture) -> Vec<String> {
+    fn group_prompts(f: &Fixture) -> Vec<ArcStr> {
         f.model.prompts().into_iter().filter(|prompt| prompt.contains("\"groups\"")).collect()
     }
 
@@ -1110,7 +1111,7 @@ mod tests {
             .await
             .unwrap();
 
-        let prompts: Vec<String> = f.model.prompts().into_iter().skip(before).collect();
+        let prompts: Vec<ArcStr> = f.model.prompts().into_iter().skip(before).collect();
         assert_eq!(
             prompts.iter().filter(|prompt| prompt.contains("\"groups\"")).count(),
             1,
@@ -1260,15 +1261,15 @@ mod tests {
         notify(&f, &role_event("dev", None), &a).await;
         let tree = query(&f, &role_event("dev", None)).await;
 
-        let current = |channel: &ChannelKey| -> String {
-            current_pointer(&tree, channel).map(|pointer| pointer.case_name.as_str().to_string()).expect("通道应有当前 case")
+        let current = |channel: &ChannelKey| -> ArcStr {
+            current_pointer(&tree, channel).map(|pointer| pointer.case_name.clone()).expect("通道应有当前 case")
         };
         let (current_a, current_b) = (current(&a), current(&b));
         assert_ne!(current_a, current_b, "两个通道各有自己的当前 case");
 
         let locate = |channel: &ChannelKey, text: &str| {
             let request = LocateRequest {
-                agent_id: Arc::new("0".into()),
+                agent_id: ArcStr::from("0"),
                 role_event: role_event("dev", None),
                 messages: vec![locate_message(channel, text)],
             };
@@ -1354,7 +1355,7 @@ mod tests {
         // 手动触发：忽略待处理标记，把水位之后全部记录处理一次（桩模型：整批一组）
         let first = f.service.manual_trigger("0", &role_event("dev", None)).await.unwrap();
         assert_eq!(first.archived, 4, "手动触发处理全部待处理记录");
-        assert_eq!(first.case_names, vec!["role-case".to_string()]);
+        assert_eq!(first.case_names, vec![ArcStr::from("role-case")]);
         let second = f.service.manual_trigger("0", &role_event("dev", None)).await.unwrap();
         assert_eq!(second.archived, 0, "水位已推进，无剩余记录");
 

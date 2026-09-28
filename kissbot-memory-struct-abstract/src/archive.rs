@@ -17,6 +17,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::{CaseBrief, CaseMode, ChannelKey, LocateMessage, RecordKind, RoleEvent};
 
 use crate::error::{Error, Result};
@@ -35,7 +36,7 @@ pub struct ArchiveOutcome {
     /// 本次归档的记录条数
     pub archived: u64,
     /// 内容落入的 case（按落位顺序）
-    pub case_names: Vec<String>,
+    pub case_names: Vec<ArcStr>,
 }
 
 /// 一次归档调用的结果（记录 + 只用于定位的新消息）
@@ -104,16 +105,16 @@ pub struct PlaceGroup {
     /// 组内新消息在请求中的下标（升序；只含待归档记录的组为空）
     pub messages: Vec<usize>,
     /// 该组所属 case：命中已有 case 即该 case，新话题即本次新建的 case（记忆条数为 0）
-    pub case_name: String,
+    pub case_name: ArcStr,
 }
 
 /// 一个组的落点判定（只读结论，尚未落地）
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GroupVerdict {
     /// 组里的内容归入该已有 case
-    Case(String),
+    Case(ArcStr),
     /// 角色模式新建叶子 case：名称与摘要同一次判定就由模型给出（id 为 `role-{名称}`）
-    NewRole { parent: Option<String>, name: String, summary: String },
+    NewRole { parent: Option<ArcStr>, name: ArcStr, summary: ArcStr },
     /// 事件模式新建：id 由记忆后缀固定（`event-{事件标识}`），摘要按内容生成
     NewEvent,
 }
@@ -271,14 +272,14 @@ impl Archiver {
             Some(case_name) => {
                 // 事件标识部分必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
                 let Some(event_id) = case_name.strip_prefix(crate::tree::EVENT_CASE_PREFIX) else {
-                    return Err(Error::StateError(format!("事件模式 case 名缺少前缀: {}", case_name)));
+                    return Err(Error::StateError(format!("事件模式 case 名缺少前缀: {}", case_name).into()));
                 };
                 if !crate::model::valid_case_name(event_id) {
                     return Err(Error::StateError(format!(
                         "事件标识不能用于 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
                         crate::model::MAX_CASE_NAME_LEN,
                         event_id
-                    )));
+                    ).into()));
                 }
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let records = stored_records(items, &indices);
@@ -298,10 +299,10 @@ impl Archiver {
         //    有记录的组再聚合记录；随后摘要重算、追加原文副本、应用内存状态、推进水位。
         //    新建的 case 在落盘阶段就带上名称与摘要（角色模式来自模型判定，事件模式按内容生成），
         //    不留到后续查询再去调用模型；这些 case 不再参与第 3 步的摘要重算（祖先仍会级联）。
-        let mut new_records: HashMap<String, Vec<RecordEntry>> = HashMap::new();
-        let mut touched: BTreeSet<String> = BTreeSet::new();
-        let mut created: BTreeSet<String> = BTreeSet::new();
-        let mut case_names: Vec<String> = Vec::new();
+        let mut new_records: HashMap<ArcStr, Vec<RecordEntry>> = HashMap::new();
+        let mut touched: BTreeSet<ArcStr> = BTreeSet::new();
+        let mut created: BTreeSet<ArcStr> = BTreeSet::new();
+        let mut case_names: Vec<ArcStr> = Vec::new();
         let mut groups: Vec<PlaceGroup> = Vec::with_capacity(placements.len());
         for placement in &placements {
             let mut messages: Vec<usize> =
@@ -320,7 +321,7 @@ impl Archiver {
                 GroupVerdict::NewEvent => {
                     // id 由记忆后缀固定，可能已被建出（并发/重复请求）
                     let case_name = event_case_name(role_event)
-                        .ok_or_else(|| Error::StateError(format!("事件模式缺少事件标识: {:?}", role_event)))?;
+                        .ok_or_else(|| Error::StateError(format!("事件模式缺少事件标识: {:?}", role_event).into()))?;
                     if !state.tree.contains(&case_name) {
                         state.tree.create_node(&case_name, None, CaseMode::Event, &now);
                         // 只有消息、还没有记录：立刻按本组内容生成摘要（有记录时交给第 3 步按记录生成）
@@ -349,7 +350,7 @@ impl Archiver {
 
         // 3. 摘要重算：叶子在前（自底向上），父 case 摘要涵盖自身记录与子 case 摘要；全部成功后落盘。
         //    本批新建的 case 已有摘要（见上一步），只重算它们的祖先。
-        let mut summaries: HashMap<String, String> = HashMap::new();
+        let mut summaries: HashMap<ArcStr, ArcStr> = HashMap::new();
         for id in self.recompute_order(&state.tree, &touched) {
             if created.contains(&id) {
                 continue;
@@ -410,7 +411,7 @@ impl Archiver {
                         return Err(Error::ModelApiError(format!(
                             "第 1 轮把分组标记为当前 case，但通道 {} 没有当前 case（记忆后缀 {:?}）",
                             channel.messenger_id, scope
-                        )))
+                        ).into()))
                     }
                 }
             } else {
@@ -435,7 +436,7 @@ impl Archiver {
         scope: &ModelScope,
         tree: &CaseTree,
         text: &str,
-        parent: Option<String>,
+        parent: Option<ArcStr>,
     ) -> Result<GroupVerdict> {
         let mut parent = parent;
         let mut level = match &parent {
@@ -452,7 +453,7 @@ impl Archiver {
                         return Err(Error::ModelApiError(format!(
                             "当层判定给出的 case {} 不在当层候选里（记忆后缀 {:?}，候选 {:?}）",
                             case_name, scope, level
-                        )));
+                        ).into()));
                     }
                     if tree.is_leaf(&case_name) {
                         return Ok(GroupVerdict::Case(case_name));
@@ -466,15 +467,15 @@ impl Archiver {
     }
 
     /// 摘要重算顺序：受影响的叶子在前、祖先在后
-    fn recompute_order(&self, tree: &CaseTree, touched: &BTreeSet<String>) -> Vec<String> {
-        let mut all: BTreeSet<String> = BTreeSet::new();
+    fn recompute_order(&self, tree: &CaseTree, touched: &BTreeSet<ArcStr>) -> Vec<ArcStr> {
+        let mut all: BTreeSet<ArcStr> = BTreeSet::new();
         for case_name in touched {
             all.insert(case_name.clone());
             for ancestor in tree.ancestors(case_name) {
                 all.insert(ancestor);
             }
         }
-        let mut ordered: Vec<(usize, String)> = all
+        let mut ordered: Vec<(usize, ArcStr)> = all
             .into_iter()
             .filter(|id| tree.contains(id))
             .map(|id| (tree.ancestors(&id).len(), id))
@@ -493,9 +494,9 @@ impl Archiver {
         state: &ScopeState,
         scope: &ModelScope,
         case_name: &str,
-        new_records: &HashMap<String, Vec<RecordEntry>>,
-        computed: &HashMap<String, String>,
-    ) -> Result<Option<String>> {
+        new_records: &HashMap<ArcStr, Vec<RecordEntry>>,
+        computed: &HashMap<ArcStr, ArcStr>,
+    ) -> Result<Option<ArcStr>> {
         let Some(node) = state.tree.get(case_name) else {
             return Ok(None);
         };
@@ -524,7 +525,7 @@ impl Archiver {
                 let summary = computed
                     .get(&child)
                     .cloned()
-                    .or_else(|| state.tree.brief(&child).map(|b| b.summary.as_str().to_string()))
+                    .or_else(|| state.tree.brief(&child).map(|b| b.summary.clone()))
                     .unwrap_or_default();
                 content.push_str(&format!("- {}: {}\n", child, summary));
             }
@@ -560,7 +561,7 @@ pub fn advance_watermark(watermark: &mut kissbot_api::Watermark, batch: &[Record
         let point = watermark.point_mut(kind);
         for entry in batch.iter().filter(|e| e.kind == kind) {
             if (entry.time.as_str(), entry.sn) > (point.time.as_str(), point.sn) {
-                point.time = Arc::new(entry.time.as_str().to_string());
+                point.time = entry.time.clone();
                 point.sn = entry.sn;
             }
         }
@@ -581,20 +582,20 @@ mod tests {
     fn channel_with_id(time: &str, sn: u64, is_self: usize, text: &str, msg_id: &str) -> RecordEntry {
         RecordEntry {
             kind: RecordKind::Channel,
-            time: Arc::new(time.to_string()),
+            time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
-                user_id: Arc::new("u1".into()),
-                self_user_id: Arc::new("self".into()),
-                messenger_id: Arc::new("web".into()),
-                group_id: Arc::new("g1".into()),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self"),
+                messenger_id: ArcStr::from("web"),
+                group_id: ArcStr::from("g1"),
                 is_self,
-                msg_id: Arc::new(msg_id.to_string()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new("alice".into()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new(text.to_string())),
-                time: Arc::new(time.to_string()),
+                msg_id: ArcStr::from(msg_id),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("alice"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from(text)),
+                time: ArcStr::from(time),
                 sn,
             })),
         }
@@ -612,14 +613,14 @@ mod tests {
     /// 带 msg_id 的定位消息（msg_id 为空时按不可去重处理）
     fn message_with_id(time: &str, msg_id: &str, text: &str) -> LocateMessage {
         LocateMessage {
-            msg_id: Arc::new(msg_id.to_string()),
-            time: Arc::new(time.to_string()),
-            user_name: Arc::new("alice".into()),
+            msg_id: ArcStr::from(msg_id),
+            time: ArcStr::from(time),
+            user_name: ArcStr::from("alice"),
             is_self: 0,
-            messenger_id: Arc::new("web".into()),
-            self_user_id: Arc::new("self".into()),
-            group_id: Arc::new("g1".into()),
-            content: Content::Text(Arc::new(text.to_string())),
+            messenger_id: ArcStr::from("web"),
+            self_user_id: ArcStr::from("self"),
+            group_id: ArcStr::from("g1"),
+            content: Content::Text(ArcStr::from(text)),
         }
     }
 
@@ -678,7 +679,7 @@ mod tests {
         match &items[2] {
             BatchItem::New { index, message } => {
                 assert_eq!(*index, 1, "新消息保留请求下标");
-                assert_eq!(message.content, Content::Text(Arc::new("B".into())));
+                assert_eq!(message.content, Content::Text(ArcStr::from("B")));
             }
             other => panic!("应为新消息: {:?}", other),
         }
@@ -702,15 +703,15 @@ mod tests {
         assert_eq!(merge_batch(&channel_key(), &legacy, &[&same]).len(), 2, "已存记录 msg_id 为空时不参与去重");
 
         // 思考/工具记录不参与新消息去重（body 不是通道记录）
-        let time = Arc::new("2099-01-01 10:00:00".to_string());
+        let time = ArcStr::from("2099-01-01 10:00:00");
         let think = RecordEntry {
             kind: RecordKind::Think,
             time: time.clone(),
             sn: 1,
             body: RecordBody::Think(Arc::new(kissbot_api::ThinkRecord {
-                reasoning_content: Some(Arc::new("A".into())),
+                reasoning_content: Some(ArcStr::from("A")),
                 thinking: None,
-                key: Arc::new("k1".into()),
+                key: ArcStr::from("k1"),
                 time,
                 sn: 1,
             })),
@@ -725,7 +726,7 @@ mod tests {
     fn merge_batch_rejects_mixed_channels() {
         let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
         let mut foreign = message_with_id("2099-01-01 10:00:00", "m1", "A");
-        foreign.self_user_id = Arc::new("self2".into());
+        foreign.self_user_id = ArcStr::from("self2");
         merge_batch(&channel_key(), &records, &[&foreign]);
     }
 
@@ -767,10 +768,10 @@ mod tests {
         tree.create_node("role-1", None, CaseMode::Role, "t");
         tree.create_node("role-2", Some("role-1"), CaseMode::Role, "t");
         tree.create_node("role-3", Some("role-2"), CaseMode::Role, "t");
-        let touched: BTreeSet<String> = ["role-3".to_string()].into_iter().collect();
+        let touched: BTreeSet<ArcStr> = [ArcStr::from("role-3")].into_iter().collect();
         let archiver = Archiver::new(Arc::new(crate::stub::StubModel::new()), 200);
         let order = archiver.recompute_order(&tree, &touched);
-        assert_eq!(order, vec!["role-3".to_string(), "role-2".to_string(), "role-1".to_string()]);
+        assert_eq!(order, vec![ArcStr::from("role-3"), ArcStr::from("role-2"), ArcStr::from("role-1")]);
     }
 
 }

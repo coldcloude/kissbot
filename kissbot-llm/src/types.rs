@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,8 +15,8 @@ pub struct ToolData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
-    pub id: Arc<String>,
-    pub name: Arc<String>,
+    pub id: ArcStr,
+    pub name: ArcStr,
     pub data: ToolData,
 }
 
@@ -24,8 +25,8 @@ pub struct ToolCall {
 /// 与 MCP 的转换留在调用方（本组件不依赖 MCP）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
-    pub name: Arc<String>,
-    pub description: Arc<String>,
+    pub name: ArcStr,
+    pub description: ArcStr,
     pub parameters: Arc<Value>,
 }
 
@@ -35,26 +36,26 @@ pub struct ToolConfig {
 pub struct ModelResponse {
     /// 返回内容
     pub raw_content: Value,
-    pub content: Option<Arc<String>>,
-    pub thinking: Option<Arc<String>>, // <think> 标签解析（去标签）
+    pub content: Option<ArcStr>,
+    pub thinking: Option<ArcStr>, // <think> 标签解析（去标签）
     /// 思考内容：API 字段（DeepSeek reasoning_content / anthropic thinking block）
     pub raw_reasoning_content: Value,
-    pub reasoning_content: Option<Arc<String>>,
+    pub reasoning_content: Option<ArcStr>,
     /// 工具调用内容
     pub raw_tool_calls: Value,
     pub tool_calls: Option<Vec<ToolCall>>,
     /// 其他信息
-    pub finish_reason: Option<Arc<String>>,
+    pub finish_reason: Option<ArcStr>,
     pub total_tokens: u64,
 }
 
 /// OpenAI 兼容上下文消息：role 即枚举变体（内部标签序列化，role 与其他字段平级）
-/// 字段按编码规范用 Arc<String>（Option 内同样 Arc 包裹）；tool_calls 为 Vec 不包裹
+/// 字段按编码规范用 ArcStr（Option 内同样用 ArcStr）；tool_calls 为 Vec 不包裹
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
-    System { content: Arc<String> },
-    User { content: Arc<String> },
+    System { content: ArcStr },
+    User { content: ArcStr },
     Assistant {
         #[serde(default, skip_serializing_if = "Value::is_null")]
         content: Value,
@@ -64,9 +65,9 @@ pub enum Message {
         tool_calls: Value,
     },
     Tool {
-        tool_call_id: Arc<String>,
+        tool_call_id: ArcStr,
         /// 调用结果
-        content: Arc<String>,
+        content: ArcStr,
     },
 }
 
@@ -74,6 +75,7 @@ pub enum Message {
 mod tests {
     use std::sync::Arc;
 
+    use arcstr::ArcStr;
     use serde_json::{Value, json};
 
     use super::*;
@@ -82,8 +84,8 @@ mod tests {
     fn message_serialization_role_tag_same_level() {
         // 序列化：role 为平级标签字段（内部标签 tag=role + lowercase；键序为 serde 派生插入序，文本为探针确认结果）
         let cases: Vec<(Message, &str)> = vec![
-            (Message::System { content: Arc::new("你是助手".into()) }, r#"{"role":"system","content":"你是助手"}"#),
-            (Message::User { content: Arc::new("你好".into()) }, r#"{"role":"user","content":"你好"}"#),
+            (Message::System { content: ArcStr::from("你是助手") }, r#"{"role":"system","content":"你是助手"}"#),
+            (Message::User { content: ArcStr::from("你好") }, r#"{"role":"user","content":"你好"}"#),
             (Message::Assistant {
                 content: Value::String(String::new()),
                 reasoning_content: Value::String("思考".into()),
@@ -95,7 +97,7 @@ mod tests {
                 tool_calls: Value::Null,
             }, r#"{"role":"assistant","content":""}"#),
             // Tool 消息已无 name 字段（工具名由 assistant.tool_calls 承载）
-            (Message::Tool { tool_call_id: Arc::new("call_1".into()), content: Arc::new("内容".into()) }, r#"{"role":"tool","tool_call_id":"call_1","content":"内容"}"#),
+            (Message::Tool { tool_call_id: ArcStr::from("call_1"), content: ArcStr::from("内容") }, r#"{"role":"tool","tool_call_id":"call_1","content":"内容"}"#),
         ];
         for (m, expected) in cases {
             assert_eq!(serde_json::to_string(&m).unwrap(), expected);
@@ -148,8 +150,8 @@ mod tests {
     fn tool_call_derived_serde_roundtrip() {
         // ToolCall 为派生序列化（{id, name, data}），wire 形状由 raw_tool_calls 透传承担（见上）
         let tc = ToolCall {
-            id: Arc::new("call_1".into()),
-            name: Arc::new("read".into()),
+            id: ArcStr::from("call_1"),
+            name: ArcStr::from("read"),
             data: ToolData {
                 arguments: json!({ "path": "/tmp/a.txt" }),
                 result: json!("内容"),
@@ -177,8 +179,8 @@ mod tests {
     fn tool_config_serializes_openai_function_shape() {
         // LLM 侧工具定义契约：OpenAI tools[].function 形状（name / description / parameters）
         let tc = ToolConfig {
-            name: Arc::new("read".into()),
-            description: Arc::new("读取文本文件".into()),
+            name: ArcStr::from("read"),
+            description: ArcStr::from("读取文本文件"),
             parameters: Arc::new(json!({ "type": "object", "properties": { "path": { "type": "string" } } })),
         };
         let tj = serde_json::to_value(&tc).unwrap();

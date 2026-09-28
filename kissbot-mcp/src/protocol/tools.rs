@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -13,13 +14,13 @@ use super::ResultType;
 /// 工具定义（名称/描述/输入 JSON Schema/工具元数据）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
-    pub name: Arc<String>,
+    pub name: ArcStr,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<Arc<String>>,
+    pub title: Option<ArcStr>,
 
     #[serde(default)]
-    pub description: Arc<String>,
+    pub description: ArcStr,
 
     #[serde(rename = "inputSchema")]
     pub input_schema: Arc<Value>,
@@ -45,14 +46,14 @@ pub struct Tool {
 
 impl Tool {
     pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
+        name: impl Into<ArcStr>,
+        description: impl Into<ArcStr>,
         input_schema: Value,
     ) -> Self {
         Self {
-            name: Arc::new(name.into()),
+            name: name.into(),
             title: None,
-            description: Arc::new(description.into()),
+            description: description.into(),
             input_schema: Arc::new(input_schema),
             output_schema: None,
             annotations: None,
@@ -66,7 +67,7 @@ impl Tool {
     }
 
     /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
-    pub fn set_group(&mut self, group: impl Into<String>) {
+    pub fn set_group(&mut self, group: impl Into<ArcStr>) {
         let mut meta = self.meta.take().unwrap_or_default();
         meta.group = Some(group.into());
         self.meta = Some(meta);
@@ -77,7 +78,7 @@ impl Tool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<Arc<String>>,
+    pub cursor: Option<ArcStr>,
     #[serde(rename = "_meta")]
     pub meta: RequestMeta,
 }
@@ -95,7 +96,7 @@ pub struct ToolsListResult {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub next_cursor: Option<Arc<String>>,
+    pub next_cursor: Option<ArcStr>,
 
     #[serde(
         rename = "_meta",
@@ -121,7 +122,7 @@ with_response_meta!(ToolsListResult);
 /// `tools/call` 请求参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsCallParams {
-    pub name: Arc<String>,
+    pub name: ArcStr,
     #[serde(default)]
     pub arguments: Value,
     #[serde(rename = "_meta")]
@@ -138,7 +139,7 @@ pub struct Annotations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<f64>,
     #[serde(rename = "lastModified", default, skip_serializing_if = "Option::is_none")]
-    pub last_modified: Option<Arc<String>>,
+    pub last_modified: Option<ArcStr>,
 }
 
 /// 注解的受众角色
@@ -152,11 +153,11 @@ pub enum Role {
 /// 图标（ResourceLink 可选携带）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Icon {
-    pub src: Arc<String>,
+    pub src: ArcStr,
     #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-    pub mime_type: Option<Arc<String>>,
+    pub mime_type: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sizes: Option<Vec<String>>,
+    pub sizes: Option<Vec<ArcStr>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<IconTheme>,
 }
@@ -174,18 +175,18 @@ pub enum IconTheme {
 #[serde(untagged)]
 pub enum ResourceContents {
     Text {
-        uri: Arc<String>,
+        uri: ArcStr,
         #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-        mime_type: Option<Arc<String>>,
-        text: Arc<String>,
+        mime_type: Option<ArcStr>,
+        text: ArcStr,
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
         meta: Option<Arc<Value>>,
     },
     Blob {
-        uri: Arc<String>,
+        uri: ArcStr,
         #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-        mime_type: Option<Arc<String>>,
-        blob: Arc<String>,
+        mime_type: Option<ArcStr>,
+        blob: ArcStr,
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
         meta: Option<Arc<Value>>,
     },
@@ -197,7 +198,7 @@ pub enum ResourceContents {
 pub enum Content {
     /// 文本块
     Text {
-        text: Arc<String>,
+        text: ArcStr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         annotations: Option<Arc<Annotations>>,
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
@@ -205,9 +206,9 @@ pub enum Content {
     },
     /// 图片块（`data` 为 base64）
     Image {
-        data: Arc<String>,
+        data: ArcStr,
         #[serde(rename = "mimeType")]
-        mime_type: Arc<String>,
+        mime_type: ArcStr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         annotations: Option<Arc<Annotations>>,
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
@@ -215,9 +216,9 @@ pub enum Content {
     },
     /// 音频块（`data` 为 base64）
     Audio {
-        data: Arc<String>,
+        data: ArcStr,
         #[serde(rename = "mimeType")]
-        mime_type: Arc<String>,
+        mime_type: ArcStr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         annotations: Option<Arc<Annotations>>,
         #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
@@ -225,14 +226,14 @@ pub enum Content {
     },
     /// 资源链接
     ResourceLink {
-        uri: Arc<String>,
-        name: Arc<String>,
+        uri: ArcStr,
+        name: ArcStr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<Arc<String>>,
+        title: Option<ArcStr>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<Arc<String>>,
+        description: Option<ArcStr>,
         #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
-        mime_type: Option<Arc<String>>,
+        mime_type: Option<ArcStr>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icons: Option<Vec<Arc<Icon>>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,9 +253,9 @@ pub enum Content {
 
 impl Content {
     /// 文本块快捷构造
-    pub fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<ArcStr>) -> Self {
         Content::Text {
-            text: Arc::new(text.into()),
+            text: text.into(),
             annotations: None,
             meta: None,
         }
@@ -290,17 +291,17 @@ pub const ERROR_SOURCE_KISSBOT: &str = "kissbot";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorDetail {
     pub code: u32,
-    pub message: Arc<String>,
-    pub source: Arc<String>,
+    pub message: ArcStr,
+    pub source: ArcStr,
 }
 
 impl ErrorDetail {
     /// kissbot 来源的错误
-    pub fn kissbot(code: u32, message: impl Into<String>) -> Self {
+    pub fn kissbot(code: u32, message: impl Into<ArcStr>) -> Self {
         Self {
             code,
-            message: Arc::new(message.into()),
-            source: Arc::new(ERROR_SOURCE_KISSBOT.to_string()),
+            message: message.into(),
+            source: ArcStr::from(ERROR_SOURCE_KISSBOT),
         }
     }
 
@@ -342,7 +343,7 @@ pub struct CallToolResult {
 
 impl CallToolResult {
     /// 成功结果：单个文本块（文本结果的便捷构造）
-    pub fn text(text: impl Into<String>) -> Self {
+    pub fn text(text: impl Into<ArcStr>) -> Self {
         Self {
             content: vec![Content::text(text)],
             ..Default::default()
@@ -350,10 +351,10 @@ impl CallToolResult {
     }
 
     /// 工具执行失败结果：`isError=true`，固定错误结构落在 `structuredContent`
-    pub fn error(code: u32, message: impl Into<String>) -> Self {
+    pub fn error(code: u32, message: impl Into<ArcStr>) -> Self {
         let detail = ErrorDetail::kissbot(code, message);
         Self {
-            content: vec![Content::text(detail.message.to_string())],
+            content: vec![Content::text(detail.message.clone())],
             structured_content: serde_json::to_value(&detail).unwrap_or(Value::Null),
             is_error: true,
             ..Default::default()

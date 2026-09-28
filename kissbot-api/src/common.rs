@@ -1,10 +1,11 @@
 use std::collections::hash_map::Entry;
+use std::hash::Hash;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::{collections::HashMap, ops::Deref};
-use std::hash::Hash;
 
 use arc_swap::ArcSwap;
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::RwLock;
 
@@ -12,7 +13,7 @@ use tokio::sync::RwLock;
 pub struct ApiResponse<T> {
     pub success: bool,
     pub data: Option<T>,
-    pub error: Option<String>,
+    pub error: Option<ArcStr>,
 }
 
 impl<T> ApiResponse<T> {
@@ -24,11 +25,11 @@ impl<T> ApiResponse<T> {
         }
     }
 
-    pub fn error(message: String) -> Self {
+    pub fn error(message: impl Into<ArcStr>) -> Self {
         Self {
             success: false,
             data: None,
-            error: Some(message),
+            error: Some(message.into()),
         }
     }
 }
@@ -131,7 +132,7 @@ where
 }
 
 pub struct AsyncCacheFactory<V> {
-    map: RwLock<HashMap<String,Arc<V>>>,
+    map: RwLock<HashMap<ArcStr,Arc<V>>>,
 }
 
 impl<V> AsyncCacheFactory<V> {
@@ -141,20 +142,21 @@ impl<V> AsyncCacheFactory<V> {
         }
     }
 
-    pub async fn get_or_create<F>(&self, name: &str, creator: F) -> Arc<V>
+    pub async fn get_or_create<F>(&self, name: impl Into<ArcStr>, creator: F) -> Arc<V>
     where
         F: FnOnce() -> V
     {
+        let name = name.into();
         // 先尝试读
         {
             let map = self.map.read().await;
-            if let Some(provider) = map.get(name) {
+            if let Some(provider) = map.get(name.as_str()) {
                 return provider.clone();
             }
         }
 
         let mut map = self.map.write().await;
-        map.entry(name.to_string()).or_insert_with(|| {
+        map.entry(name).or_insert_with(|| {
             Arc::new(creator())
         }).clone()
     }

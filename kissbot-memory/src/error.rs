@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,7 +16,7 @@ pub enum Error {
     File(#[from] kai_file::Error),
 
     #[error("Path not exist: {0}")]
-    PathNotExist(String),
+    PathNotExist(ArcStr),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

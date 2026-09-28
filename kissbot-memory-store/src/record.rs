@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+use arcstr::ArcStr;
 use tokio::io::{AsyncBufReadExt};
 use tokio::sync::Mutex;
 use tracing::*;
@@ -22,13 +24,13 @@ use kai_file::{FileAppendWriter, FileAppendWriterContext, ErrorHandler, FileObje
 
 struct FileState {
     pub sn: u64,
-    pub time: Arc<String>,
+    pub time: ArcStr,
 }
 
 async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     let mut result = FileState {
         sn: 0,
-        time: Arc::new(String::from("2000-01-01 00:00:00")),
+        time: ArcStr::from("2000-01-01 00:00:00"),
     };
 
     if !file_path.exists() {
@@ -45,7 +47,7 @@ async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
                 if let Some(sn) = sn_opt {
                     if let Some(time) = time_opt {
                         result.sn = sn;
-                        result.time = Arc::new(time.to_string());
+                        result.time = ArcStr::from(time);
                     }
                 }
             }
@@ -317,9 +319,9 @@ where
 
         if time.as_str() > min_time && !force {
             return Err(Error::RecordNotInOrder(
-                format!("{:?}", key),
-                time.as_str().to_string(),
-                records[0].time().to_string(),
+                ArcStr::from(format!("{:?}", key)),
+                ArcStr::from(time.as_str()),
+                ArcStr::from(records[0].time()),
             ));
         }
     }
@@ -452,7 +454,7 @@ mod tests {
     async fn test_load_state_file_not_exists() {
         let state = load_existing_file_state(&PathBuf::from("/tmp/nonexistent_file_xyz.jsonl")).await.unwrap();
         assert_eq!(state.sn, 0);
-        assert_eq!(*state.time, "2000-01-01 00:00:00");
+        assert_eq!(state.time, "2000-01-01 00:00:00");
     }
 
     #[tokio::test]
@@ -463,7 +465,7 @@ mod tests {
 
         let state = load_existing_file_state(&file_path).await.unwrap();
         assert_eq!(state.sn, 0);
-        assert_eq!(*state.time, "2000-01-01 00:00:00");
+        assert_eq!(state.time, "2000-01-01 00:00:00");
     }
 
     #[tokio::test]
@@ -482,7 +484,7 @@ mod tests {
 
         let state = load_existing_file_state(&file_path).await.unwrap();
         assert_eq!(state.sn, 3);
-        assert_eq!(*state.time, "2026-06-25 10:02:00");
+        assert_eq!(state.time, "2026-06-25 10:02:00");
     }
 
     use std::collections::HashMap;
@@ -523,19 +525,19 @@ mod tests {
 
         let requests = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_append_new".to_string()),
+                agent_id: ArcStr::from("test_append_new"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("hello".to_string())),
-                time: Arc::new("2026-06-25 10:00:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("hello")),
+                time: ArcStr::from("2026-06-25 10:00:00"),
             },
         ];
 
@@ -581,49 +583,49 @@ mod tests {
 
         let requests = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_append_multi".to_string()),
+                agent_id: ArcStr::from("test_append_multi"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("msg1".to_string())),
-                time: Arc::new("2026-06-25 10:00:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("msg1")),
+                time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_append_multi".to_string()),
+                agent_id: ArcStr::from("test_append_multi"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("msg2".to_string())),
-                time: Arc::new("2026-06-25 10:01:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("msg2")),
+                time: ArcStr::from("2026-06-25 10:01:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_append_multi".to_string()),
+                agent_id: ArcStr::from("test_append_multi"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("msg3".to_string())),
-                time: Arc::new("2026-06-25 10:02:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("msg3")),
+                time: ArcStr::from("2026-06-25 10:02:00"),
             },
         ];
 
@@ -670,19 +672,19 @@ mod tests {
 
         // 第一次写入
         let req1 = vec![ChannelRequest {
-            agent_id: Arc::new("test_append_seq".to_string()),
+            agent_id: ArcStr::from("test_append_seq"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("first".to_string())),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("first")),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
         let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in req1 {
@@ -698,19 +700,19 @@ mod tests {
 
         // 第二次写入
         let req2 = vec![ChannelRequest {
-            agent_id: Arc::new("test_append_seq".to_string()),
+            agent_id: ArcStr::from("test_append_seq"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("second".to_string())),
-            time: Arc::new("2026-06-25 10:01:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("second")),
+            time: ArcStr::from("2026-06-25 10:01:00"),
         }];
         let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
         for request in req2 {
@@ -756,12 +758,12 @@ mod tests {
         );
 
         let requests = vec![ThinkRequest {
-            agent_id: Arc::new("test_think".to_string()),
+            agent_id: ArcStr::from("test_think"),
             role_event: RoleEvent::new(""),
-            reasoning_content: Some(Arc::new("I think...".to_string())),
+            reasoning_content: Some(ArcStr::from("I think...")),
             thinking: None,
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
         let mut records_map: HashMap<RecordKey, Vec<ThinkRecord>> = HashMap::new();
@@ -786,7 +788,7 @@ mod tests {
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let record: ThinkRecord = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(record.sn(), 1);
-        assert_eq!(*record.reasoning_content.unwrap(), "I think...");
+        assert_eq!(record.reasoning_content.unwrap(), "I think...");
     }
 
     #[tokio::test]
@@ -803,12 +805,12 @@ mod tests {
         );
 
         let requests = vec![ToolCallRequest {
-            agent_id: Arc::new("test_tool_call".to_string()),
+            agent_id: ArcStr::from("test_tool_call"),
             role_event: RoleEvent::new(""),
-            tool_name: Arc::new("get_weather".to_string()),
+            tool_name: ArcStr::from("get_weather"),
             tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
         let mut records_map: HashMap<RecordKey, Vec<ToolCallRecord>> = HashMap::new();
@@ -849,12 +851,12 @@ mod tests {
         );
 
         let requests = vec![ToolResultRequest {
-            agent_id: Arc::new("test_tool_result".to_string()),
+            agent_id: ArcStr::from("test_tool_result"),
             role_event: RoleEvent::new(""),
             tool_result: Arc::new(serde_json::json!({"temp": 25})),
             tool_error: Arc::new(serde_json::Value::Null),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
         let mut records_map: HashMap<RecordKey, Vec<ToolResultRecord>> = HashMap::new();
@@ -889,38 +891,38 @@ mod tests {
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
-            agent_id: Arc::new("test_ooor".to_string()),
+            agent_id: ArcStr::from("test_ooor"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("later".to_string())),
-            time: Arc::new("2026-06-25 10:02:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("later")),
+            time: ArcStr::from("2026-06-25 10:02:00"),
         }];
         rm.append_channel_record(req1, false).await.unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // 再写入一条 time=10:00:00 — 早于已有记录，应该被拒绝
         let req2 = vec![ChannelRequest {
-            agent_id: Arc::new("test_ooor".to_string()),
+            agent_id: ArcStr::from("test_ooor"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("earlier".to_string())),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("earlier")),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
         let result = rm.append_channel_record(req2, false).await;
         assert!(result.is_err());
@@ -942,38 +944,38 @@ mod tests {
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
-            agent_id: Arc::new("test_force_ooo".to_string()),
+            agent_id: ArcStr::from("test_force_ooo"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("later".to_string())),
-            time: Arc::new("2026-06-25 10:02:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("later")),
+            time: ArcStr::from("2026-06-25 10:02:00"),
         }];
         rm.append_channel_record(req1, false).await.unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
 
         // force=true 写入一条 time=10:00:00 — 强制重排序
         let req2 = vec![ChannelRequest {
-            agent_id: Arc::new("test_force_ooo".to_string()),
+            agent_id: ArcStr::from("test_force_ooo"),
             role_event: RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("earlier".to_string())),
-            time: Arc::new("2026-06-25 10:00:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("earlier")),
+            time: ArcStr::from("2026-06-25 10:00:00"),
         }];
         rm.append_channel_record(req2, true).await.unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1009,49 +1011,49 @@ mod tests {
         // 先写入 3 条，time 分别是 10:01, 10:02, 10:03
         let req1 = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_force_existing".to_string()),
+                agent_id: ArcStr::from("test_force_existing"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("second".to_string())),
-                time: Arc::new("2026-06-25 10:01:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("second")),
+                time: ArcStr::from("2026-06-25 10:01:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_force_existing".to_string()),
+                agent_id: ArcStr::from("test_force_existing"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("third".to_string())),
-                time: Arc::new("2026-06-25 10:02:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("third")),
+                time: ArcStr::from("2026-06-25 10:02:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_force_existing".to_string()),
+                agent_id: ArcStr::from("test_force_existing"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("fourth".to_string())),
-                time: Arc::new("2026-06-25 10:03:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("fourth")),
+                time: ArcStr::from("2026-06-25 10:03:00"),
             },
         ];
         rm.append_channel_record(req1, false).await.unwrap();
@@ -1060,34 +1062,34 @@ mod tests {
         // force 写入 2 条更早的记录：09:59, 10:00
         let req2 = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_force_existing".to_string()),
+                agent_id: ArcStr::from("test_force_existing"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("first".to_string())),
-                time: Arc::new("2026-06-25 09:59:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("first")),
+                time: ArcStr::from("2026-06-25 09:59:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_force_existing".to_string()),
+                agent_id: ArcStr::from("test_force_existing"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("first-half".to_string())),
-                time: Arc::new("2026-06-25 10:00:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("first-half")),
+                time: ArcStr::from("2026-06-25 10:00:00"),
             },
         ];
         rm.append_channel_record(req2, true).await.unwrap();
@@ -1127,34 +1129,34 @@ mod tests {
         // 两个不同 key 的请求（不同 agent_id）
         let requests = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_mk_a".to_string()),
+                agent_id: ArcStr::from("test_mk_a"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self_a".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self_a"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("agent1-msg".to_string())),
-                time: Arc::new("2026-06-25 10:00:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("agent1-msg")),
+                time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_mk_b".to_string()),
+                agent_id: ArcStr::from("test_mk_b"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u2".to_string()),
-                self_user_id: Arc::new("self_b".to_string()),
-                group_id: Arc::new("g2".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u2"),
+                self_user_id: ArcStr::from("self_b"),
+                group_id: ArcStr::from("g2"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("agent2-msg".to_string())),
-                time: Arc::new("2026-06-25 10:01:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("agent2-msg")),
+                time: ArcStr::from("2026-06-25 10:01:00"),
             },
         ];
 
@@ -1203,34 +1205,34 @@ mod tests {
         // 两个请求：同一 agent/role/date、不同 messenger/user/self_user/group → 合并到同一文件、sn 连续
         let reqs = vec![
             ChannelRequest {
-                agent_id: Arc::new("test_merged_ids".to_string()),
+                agent_id: ArcStr::from("test_merged_ids"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("telegram".to_string()),
-                user_id: Arc::new("u1".to_string()),
-                self_user_id: Arc::new("self1".to_string()),
-                group_id: Arc::new("g1".to_string()),
+                messenger_id: ArcStr::from("telegram"),
+                user_id: ArcStr::from("u1"),
+                self_user_id: ArcStr::from("self1"),
+                group_id: ArcStr::from("g1"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("msg1".to_string())),
-                time: Arc::new("2026-06-25 10:00:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("msg1")),
+                time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
-                agent_id: Arc::new("test_merged_ids".to_string()),
+                agent_id: ArcStr::from("test_merged_ids"),
                 role_event: RoleEvent::new("default"),
-                messenger_id: Arc::new("web".to_string()),
-                user_id: Arc::new("u2".to_string()),
-                self_user_id: Arc::new("self2".to_string()),
-                group_id: Arc::new("g2".to_string()),
+                messenger_id: ArcStr::from("web"),
+                user_id: ArcStr::from("u2"),
+                self_user_id: ArcStr::from("self2"),
+                group_id: ArcStr::from("g2"),
                 is_self: 0,
-                msg_id: Arc::new(String::new()),
-                messenger_name: Arc::new(String::new()),
-                user_name: Arc::new(String::new()),
-                group_name: Arc::new(String::new()),
-                content: Content::Text(Arc::new("msg2".to_string())),
-                time: Arc::new("2026-06-25 10:01:00".to_string()),
+                msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::new(),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("msg2")),
+                time: ArcStr::from("2026-06-25 10:01:00"),
             },
         ];
         rm.append_channel_record(reqs, false).await.unwrap();
@@ -1255,13 +1257,13 @@ mod tests {
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "msg1"));
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "msg2"));
         // 各记录保留自身身份字段
-        assert_eq!(*r1.messenger_id, "telegram");
-        assert_eq!(*r1.user_id, "u1");
-        assert_eq!(*r1.self_user_id, "self1");
-        assert_eq!(*r1.group_id, "g1");
-        assert_eq!(*r2.messenger_id, "web");
-        assert_eq!(*r2.user_id, "u2");
-        assert_eq!(*r2.self_user_id, "self2");
-        assert_eq!(*r2.group_id, "g2");
+        assert_eq!(r1.messenger_id, "telegram");
+        assert_eq!(r1.user_id, "u1");
+        assert_eq!(r1.self_user_id, "self1");
+        assert_eq!(r1.group_id, "g1");
+        assert_eq!(r2.messenger_id, "web");
+        assert_eq!(r2.user_id, "u2");
+        assert_eq!(r2.self_user_id, "self2");
+        assert_eq!(r2.group_id, "g2");
     }
 }

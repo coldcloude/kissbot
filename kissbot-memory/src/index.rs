@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
+use arcstr::ArcStr;
 use dashmap::DashMap;
 use kissbot_api::{QueryRequest, RoleEvent};
 use tokio::sync::OnceCell;
@@ -19,7 +20,7 @@ pub struct MemoryIndexer {
     tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallParser>,
     tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultParser>,
     /// channel 文件日期缓存：(agent_id, 记忆后缀) → 已存在的日期（懒加载扫描 + append 钩子增量维护）
-    channel_date_sets: DashMap<(String, String), BTreeSet<String>>,
+    channel_date_sets: DashMap<(ArcStr, ArcStr), BTreeSet<ArcStr>>,
     /// date_sets 懒加载守卫（首次 recent 查询前扫描一次存量文件）
     channel_dates_loaded: OnceCell<()>,
 }
@@ -45,15 +46,15 @@ impl MemoryIndexer {
     pub fn mark_channel_obsolete(&self, key: &RecordKey) {
         self.channel_indices.mark_obsolete(key);
         // date_sets 增量维护：append 后该日期的 channel 文件必然存在（与懒加载扫描幂等）
-        self.channel_date_sets.entry((key.agent_id.as_str().to_string(), role_event_suffix(&key.role_event)))
-            .or_default().insert(key.date.as_str().to_string());
+        self.channel_date_sets.entry((key.agent_id.clone(), role_event_suffix(&key.role_event)))
+            .or_default().insert(key.date.clone());
     }
 
     pub fn mark_channel_all_obsolete(&self, key: &RecordKey) {
         self.channel_indices.mark_all_obsolete(key);
         // 全量重写后文件仍存在（日期不变），同样补入 date_sets
-        self.channel_date_sets.entry((key.agent_id.as_str().to_string(), role_event_suffix(&key.role_event)))
-            .or_default().insert(key.date.as_str().to_string());
+        self.channel_date_sets.entry((key.agent_id.clone(), role_event_suffix(&key.role_event)))
+            .or_default().insert(key.date.clone());
     }
 
     pub fn mark_think_obsolete(&self, key: &RecordKey) {
@@ -98,13 +99,13 @@ impl MemoryIndexer {
 
         let mut remaining = count;
         let mut results: Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)> = Vec::new();
-        if let Some(dates) = self.channel_date_sets.get(&(agent_id.to_string(), role_event_suffix(role_event))) {
+        if let Some(dates) = self.channel_date_sets.get(&(ArcStr::from(agent_id), role_event_suffix(role_event))) {
             for date in dates.iter().rev() {  // 最新日期在前
                 if remaining == 0 { break; }
                 let key = RecordKey {
-                    agent_id: Arc::new(agent_id.to_string()),
+                    agent_id: ArcStr::from(agent_id),
                     role_event: role_event.clone(),
-                    date: Arc::new(date.clone()),
+                    date: date.clone(),
                 };
                 let msgs = self.channel_indices.query_last(&key, remaining).await?;
                 if !msgs.is_empty() {
@@ -123,7 +124,7 @@ impl MemoryIndexer {
         let mut agent_entries = tokio::fs::read_dir(&root).await?;
         while let Some(agent_entry) = agent_entries.next_entry().await? {
             if !agent_entry.path().is_dir() { continue; }
-            let Some(agent_id) = agent_entry.file_name().to_str().map(String::from) else { continue; };
+            let Some(agent_id) = agent_entry.file_name().to_str().map(ArcStr::from) else { continue; };
             // 真实 agent 判断：有 memory-store 子目录（store 写路径只建 memory-store，不建 uuid 文件，
             // 故不能照抄 list_agents 的 uuid 过滤；read_dir 失败（无 store 目录）自然跳过）
             let store_dir = agent_entry.path().join("memory-store");
@@ -135,13 +136,13 @@ impl MemoryIndexer {
                 if !year_entry.path().is_dir() { continue; }
                 // year-role 目录形如 "2026-default"；记忆后缀 = 去掉 "YYYY-" 前缀
                 let year_name = year_entry.file_name().to_string_lossy().to_string();
-                let Some(suffix) = year_name.get(5..).map(String::from) else { continue; };
+                let Some(suffix) = year_name.get(5..).map(ArcStr::from) else { continue; };
                 let mut file_entries = tokio::fs::read_dir(year_entry.path()).await?;
                 while let Some(file_entry) = file_entries.next_entry().await? {
                     let name = file_entry.file_name().to_string_lossy().to_string();
                     if let Some(date) = name.strip_prefix("channel-records-").and_then(|n| n.strip_suffix(".jsonl")) {
                         self.channel_date_sets.entry((agent_id.clone(), suffix.clone()))
-                            .or_default().insert(date.to_string());
+                            .or_default().insert(ArcStr::from(date));
                     }
                 }
             }
@@ -216,15 +217,15 @@ use tokio;
         let filename = format!("channel-records-{}.jsonl", date);
 
         let key = RecordKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            date: Arc::new(date.to_string()),
+            date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            start_time: Arc::new(format!("{} {}", date, s)),
-            end_time: Arc::new(format!("{} {}", date, e)),
+            start_time: ArcStr::from(format!("{} {}", date, s)),
+            end_time: ArcStr::from(format!("{} {}", date, e)),
         };
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
@@ -276,15 +277,15 @@ use tokio;
         let filename = format!("think-records-{}.jsonl", date);
 
         let key = RecordKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            date: Arc::new(date.to_string()),
+            date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            start_time: Arc::new(format!("{} {}", date, s)),
-            end_time: Arc::new(format!("{} {}", date, e)),
+            start_time: ArcStr::from(format!("{} {}", date, s)),
+            end_time: ArcStr::from(format!("{} {}", date, e)),
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -295,15 +296,15 @@ use tokio;
         let indexer = MemoryIndexer::new();
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "B");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "B");
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"reasoning_content":"C","thinking":"","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_think_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "B");
-        assert_eq!(results[0].1[1].1.reasoning_content.as_deref().unwrap().as_str(), "C");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "B");
+        assert_eq!(results[0].1[1].1.reasoning_content.as_deref().unwrap(), "C");
 
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
@@ -318,7 +319,7 @@ use tokio;
         indexer.mark_think_all_obsolete(&key);
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap().as_str(), "E");
+        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "E");
     }
 
     #[tokio::test]
@@ -329,15 +330,15 @@ use tokio;
         let filename = format!("tool-call-records-{}.jsonl", date);
 
         let key = RecordKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            date: Arc::new(date.to_string()),
+            date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            start_time: Arc::new(format!("{} {}", date, s)),
-            end_time: Arc::new(format!("{} {}", date, e)),
+            start_time: ArcStr::from(format!("{} {}", date, s)),
+            end_time: ArcStr::from(format!("{} {}", date, e)),
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -382,15 +383,15 @@ use tokio;
         let filename = format!("tool-result-records-{}.jsonl", date);
 
         let key = RecordKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            date: Arc::new(date.to_string()),
+            date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            start_time: Arc::new(format!("{} {}", date, s)),
-            end_time: Arc::new(format!("{} {}", date, e)),
+            start_time: ArcStr::from(format!("{} {}", date, s)),
+            end_time: ArcStr::from(format!("{} {}", date, e)),
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
@@ -424,10 +425,10 @@ use tokio;
     }
 
     // 提取 ChannelRecord 的 Text 内容（测试断言用）
-    fn text_of(r: Arc<ChannelRecord>) -> String {
+    fn text_of(r: Arc<ChannelRecord>) -> ArcStr {
         match &r.content {
-            Content::Text(t) => t.as_str().to_string(),
-            _ => String::new(),
+            Content::Text(t) => t.clone(),
+            _ => ArcStr::new(),
         }
     }
 
@@ -449,12 +450,12 @@ use tokio;
         let indexer = MemoryIndexer::new();
         // 懒加载扫描 → 跨文件取最近 3 条（c, d, e），按时间升序
         let results = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 3).await.unwrap();
-        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
+        let flat: Vec<ArcStr> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["c", "d", "e"], "跨日期文件取最近 3 条");
 
         // count 超总量 → 全部（按时间升序）
         let results = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 100).await.unwrap();
-        let flat: Vec<String> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
+        let flat: Vec<ArcStr> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b", "c", "d", "e"], "count 超总量返回全部");
 
         // count == 0 → 空
@@ -478,13 +479,13 @@ use tokio;
         // 新日期文件 + mark_channel_obsolete（append 钩子路径）→ date_sets 增量补入
         append_jsonl(agent_id, role_name, "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "b")).await;
         let key = RecordKey {
-            agent_id: Arc::new(agent_id.to_string()),
+            agent_id: ArcStr::from(agent_id),
             role_event: RoleEvent::new(role_name),
-            date: Arc::new("2026-08-02".to_string()),
+            date: ArcStr::from("2026-08-02"),
         };
         indexer.mark_channel_obsolete(&key);
         let out = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 10).await.unwrap();
-        let flat: Vec<String> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
+        let flat: Vec<ArcStr> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b"], "mark_channel_obsolete 后新日期可查");
     }
 }

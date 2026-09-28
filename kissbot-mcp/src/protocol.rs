@@ -1,5 +1,6 @@
 //! MCP 协议类型与常量（2026-07-28 规范 + kissbot 扩展）
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 pub mod discover;
@@ -32,7 +33,7 @@ pub enum ResultType {
     Complete,
     InputRequired,
     /// 客户端不认识的 resultType（规范要求视为非法，此处保留原文以便上层判错）
-    Unknown(String),
+    Unknown(ArcStr),
 }
 
 impl ResultType {
@@ -53,11 +54,11 @@ impl Serialize for ResultType {
 
 impl<'de> Deserialize<'de> for ResultType {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = String::deserialize(deserializer)?;
+        let raw = ArcStr::deserialize(deserializer)?;
         Ok(match raw.as_str() {
             "complete" => ResultType::Complete,
             "input_required" => ResultType::InputRequired,
-            _ => ResultType::Unknown(raw),
+            _ => ResultType::Unknown(raw.clone()),
         })
     }
 }

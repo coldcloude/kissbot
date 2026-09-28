@@ -3,8 +3,7 @@
 //! 与基础 JSON-RPC 的差异（MCP 规范要求）：请求 id 不得为 null；结果响应必须携带
 //! `resultType` 字段。响应构造由 `JsonRpcResponse` 承担。
 
-use std::sync::Arc;
-
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -37,7 +36,7 @@ pub const STATION_CYCLE: i64 = 1001;
 #[serde(untagged)]
 pub enum RequestId {
     Number(i64),
-    String(String),
+    String(ArcStr),
 }
 
 impl std::fmt::Display for RequestId {
@@ -55,34 +54,34 @@ impl From<i64> for RequestId {
     }
 }
 
-impl From<String> for RequestId {
-    fn from(value: String) -> Self {
+impl From<ArcStr> for RequestId {
+    fn from(value: ArcStr) -> Self {
         RequestId::String(value)
     }
 }
 
 impl From<&str> for RequestId {
     fn from(value: &str) -> Self {
-        RequestId::String(value.to_string())
+        RequestId::String(ArcStr::from(value))
     }
 }
 
 /// JSON-RPC 请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
-    pub jsonrpc: Arc<String>,
+    pub jsonrpc: ArcStr,
     pub id: RequestId,
-    pub method: Arc<String>,
+    pub method: ArcStr,
     #[serde(default)]
     pub params: Value,
 }
 
 impl JsonRpcRequest {
-    pub fn new(id: impl Into<RequestId>, method: impl Into<String>, params: Value) -> Self {
+    pub fn new(id: impl Into<RequestId>, method: impl Into<ArcStr>, params: Value) -> Self {
         Self {
-            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
+            jsonrpc: ArcStr::from(JSONRPC_VERSION),
             id: id.into(),
-            method: Arc::new(method.into()),
+            method: method.into(),
             params,
         }
     }
@@ -103,24 +102,24 @@ impl JsonRpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcError {
     pub code: i64,
-    pub message: Arc<String>,
+    pub message: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub data: Value,
 }
 
 impl JsonRpcError {
-    pub fn new(code: i64, message: impl Into<String>) -> Self {
+    pub fn new(code: i64, message: impl Into<ArcStr>) -> Self {
         Self {
             code,
-            message: Arc::new(message.into()),
+            message: message.into(),
             data: Value::Null,
         }
     }
 
-    pub fn with_data(code: i64, message: impl Into<String>, data: Value) -> Self {
+    pub fn with_data(code: i64, message: impl Into<ArcStr>, data: Value) -> Self {
         Self {
             code,
-            message: Arc::new(message.into()),
+            message: message.into(),
             data,
         }
     }
@@ -129,7 +128,7 @@ impl JsonRpcError {
 /// JSON-RPC 响应（result / error 二者之一）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
-    pub jsonrpc: Arc<String>,
+    pub jsonrpc: ArcStr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<RequestId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,7 +141,7 @@ impl JsonRpcResponse {
     /// 成功响应：result 必须携带 resultType（由上层结果类型保证）
     pub fn success(id: RequestId, result: Value) -> Self {
         Self {
-            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
+            jsonrpc: ArcStr::from(JSONRPC_VERSION),
             id: Some(id),
             result: Some(result),
             error: None,
@@ -152,12 +151,12 @@ impl JsonRpcResponse {
     /// 错误响应；id 未知（如解析失败）时为 None
     pub fn error(id: Option<RequestId>, error: McpError) -> Self {
         Self {
-            jsonrpc: Arc::new(JSONRPC_VERSION.to_string()),
+            jsonrpc: ArcStr::from(JSONRPC_VERSION),
             id,
             result: None,
             error: Some(JsonRpcError {
                 code: error.code,
-                message: Arc::new(error.message),
+                message: error.message,
                 data: error.data,
             }),
         }
@@ -169,7 +168,7 @@ impl JsonRpcResponse {
             (Some(result), _) => Ok(result),
             (None, Some(error)) => Err(McpError {
                 code: error.code,
-                message: error.message.to_string(),
+                message: error.message,
                 data: error.data,
             }),
             (None, None) => Err(McpError::internal("响应既无 result 也无 error")),
@@ -182,12 +181,12 @@ impl JsonRpcResponse {
 #[error("{message}")]
 pub struct McpError {
     pub code: i64,
-    pub message: String,
+    pub message: ArcStr,
     pub data: Value,
 }
 
 impl McpError {
-    pub fn new(code: i64, message: impl Into<String>) -> Self {
+    pub fn new(code: i64, message: impl Into<ArcStr>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -195,7 +194,7 @@ impl McpError {
         }
     }
 
-    pub fn with_data(code: i64, message: impl Into<String>, data: Value) -> Self {
+    pub fn with_data(code: i64, message: impl Into<ArcStr>, data: Value) -> Self {
         Self {
             code,
             message: message.into(),
@@ -203,15 +202,15 @@ impl McpError {
         }
     }
 
-    pub fn parse_error(message: impl Into<String>) -> Self {
+    pub fn parse_error(message: impl Into<ArcStr>) -> Self {
         Self::new(PARSE_ERROR, message)
     }
 
-    pub fn invalid_request(message: impl Into<String>) -> Self {
+    pub fn invalid_request(message: impl Into<ArcStr>) -> Self {
         Self::new(INVALID_REQUEST, message)
     }
 
-    pub fn invalid_params(message: impl Into<String>) -> Self {
+    pub fn invalid_params(message: impl Into<ArcStr>) -> Self {
         Self::new(INVALID_PARAMS, message)
     }
 
@@ -219,15 +218,15 @@ impl McpError {
         Self::new(METHOD_NOT_FOUND, format!("方法不存在: {}", method))
     }
 
-    pub fn internal(message: impl Into<String>) -> Self {
+    pub fn internal(message: impl Into<ArcStr>) -> Self {
         Self::new(INTERNAL_ERROR, message)
     }
 
-    pub fn header_mismatch(message: impl Into<String>) -> Self {
+    pub fn header_mismatch(message: impl Into<ArcStr>) -> Self {
         Self::new(HEADER_MISMATCH, message)
     }
 
-    pub fn unsupported_protocol_version(requested: &str, supported: &[String]) -> Self {
+    pub fn unsupported_protocol_version(requested: &str, supported: &[ArcStr]) -> Self {
         Self::with_data(
             UNSUPPORTED_PROTOCOL_VERSION,
             format!("不支持的协议版本: {}", requested),
@@ -271,9 +270,9 @@ mod tests {
     #[test]
     fn request_validate_rejects_wrong_jsonrpc() {
         let req = JsonRpcRequest {
-            jsonrpc: Arc::new("1.0".to_string()),
+            jsonrpc: ArcStr::from("1.0"),
             id: RequestId::Number(1),
-            method: Arc::new("tools/list".to_string()),
+            method: ArcStr::from("tools/list"),
             params: Value::Null,
         };
         assert_eq!(req.validate().unwrap_err().code, INVALID_REQUEST);

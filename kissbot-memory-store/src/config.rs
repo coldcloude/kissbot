@@ -1,13 +1,15 @@
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use arcstr::ArcStr;
+
 /// 通知服务默认监听地址（与 HTTP 服务分开监听，连接方式见 communication.md）
 pub const DEFAULT_NOTIFY_LISTEN_ADDR: &str = "127.0.0.1";
 /// 通知服务默认监听端口（HTTP 8082 之外的独立端口）
 pub const DEFAULT_NOTIFY_LISTEN_PORT: u16 = 8182;
 
-fn default_notify_listen_addr() -> String {
-    DEFAULT_NOTIFY_LISTEN_ADDR.to_string()
+fn default_notify_listen_addr() -> ArcStr {
+    ArcStr::from(DEFAULT_NOTIFY_LISTEN_ADDR)
 }
 
 fn default_notify_listen_port() -> u16 {
@@ -16,11 +18,11 @@ fn default_notify_listen_port() -> u16 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    pub listen_addr: String,
+    pub listen_addr: ArcStr,
     pub listen_port: u16,
     /// 新数据通知 WS 服务监听地址
     #[serde(default = "default_notify_listen_addr")]
-    pub notify_listen_addr: String,
+    pub notify_listen_addr: ArcStr,
     /// 新数据通知 WS 服务监听端口
     #[serde(default = "default_notify_listen_port")]
     pub notify_listen_port: u16,
@@ -34,8 +36,8 @@ impl Config {
         })
     }
 
-    pub fn notify_addr(&self) -> String {
-        format!("{}:{}", self.notify_listen_addr, self.notify_listen_port)
+    pub fn notify_addr(&self) -> ArcStr {
+        ArcStr::from(format!("{}:{}", self.notify_listen_addr, self.notify_listen_port))
     }
 }
 

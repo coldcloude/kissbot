@@ -1,11 +1,12 @@
-use serde::Deserialize;
-use std::sync::Arc;
 use std::sync::OnceLock;
+
+use arcstr::ArcStr;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
-    pub api_key: Arc<String>,
-    pub admin_api_key: Arc<String>,
+    pub api_key: ArcStr,
+    pub admin_api_key: ArcStr,
 }
 
 impl SecurityConfig {

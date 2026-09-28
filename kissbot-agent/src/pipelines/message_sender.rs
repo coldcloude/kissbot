@@ -1,5 +1,6 @@
 use std::sync::{Arc, atomic::{AtomicU64, Ordering::Relaxed}};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolConfig};
 
@@ -41,7 +42,7 @@ impl AgentMessageSender for TokenLimitMessageSender {
         let provider = llm_cfg.provider.as_str();
         let model = llm_cfg.model.as_str();
         let model_cfg = cfg_mngr.provider_model_config(provider, model).await
-        .ok_or_else(|| Error::ModelProviderNotFound(provider.to_string(), model.to_string()))?;
+        .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider), ArcStr::from(model)))?;
 
         // 1. 检查上下文 token 占用超限
         //    阈值来自会话模型的 max_tokens_usage

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arcstr::ArcStr;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -20,17 +21,17 @@ pub enum McpClientError {
     #[error("MCP 传输失败: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("MCP 服务端 HTTP {status}: {message}")]
-    Http { status: u16, message: String },
+    Http { status: u16, message: ArcStr },
     #[error("MCP 远程错误 [{code}]: {message}")]
-    Remote { code: i64, message: String },
+    Remote { code: i64, message: ArcStr },
     #[error("MCP 响应解析失败: {0}")]
     Decode(#[from] serde_json::Error),
 }
 
 /// MCP 客户端：请求-响应模式，每个请求一个 HTTP POST
 pub struct McpClient {
-    endpoint: Arc<String>,
-    api_key: Option<Arc<String>>,
+    endpoint: ArcStr,
+    api_key: Option<ArcStr>,
     client_info: Implementation,
     next_id: AtomicI64,
     client: reqwest::Client,
@@ -40,8 +41,8 @@ impl McpClient {
     /// `endpoint` 为 MCP 端点完整 URL；`api_key` 非空时作为 `X-Api-Key` 请求头发送
     pub fn new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>) -> Self {
         Self {
-            endpoint: Arc::new(endpoint.to_string()),
-            api_key: api_key.map(|k| Arc::new(k.to_string())),
+            endpoint: ArcStr::from(endpoint),
+            api_key: api_key.map(ArcStr::from),
             client_info: Implementation::new("kissbot-mcp-client", env!("CARGO_PKG_VERSION")),
             next_id: AtomicI64::new(1),
             client: reqwest::Client::builder()
@@ -66,7 +67,7 @@ impl McpClient {
     /// `tools/list`：按可选组白名单查询工具
     pub async fn list_tools(
         &self,
-        ancestors: Arc<Vec<String>>,
+        ancestors: Arc<Vec<ArcStr>>,
     ) -> Result<ToolsListResult, McpClientError> {
         let meta = RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors);
         let params = ToolsListParams { cursor: None, meta };
@@ -79,10 +80,10 @@ impl McpClient {
         &self,
         name: &str,
         arguments: Value,
-        ancestors: Arc<Vec<String>>,
+        ancestors: Arc<Vec<ArcStr>>,
     ) -> Result<CallToolResult, McpClientError> {
         let params = ToolsCallParams {
-            name: Arc::new(name.to_string()),
+            name: ArcStr::from(name),
             arguments,
             meta: RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
         };
@@ -125,7 +126,7 @@ impl McpClient {
             },
             Err(_) => Err(McpClientError::Http {
                 status: status.as_u16(),
-                message: String::from_utf8_lossy(&bytes).to_string(),
+                message: ArcStr::from(String::from_utf8_lossy(&bytes).as_ref()),
             }),
         }
     }
@@ -145,7 +146,7 @@ mod tests {
     /// 服务端观测到的请求内容（验证请求侧字段确实发出）
     #[derive(Default)]
     struct Observed {
-        ancestors: Mutex<Option<Vec<String>>>,
+        ancestors: Mutex<Option<Vec<ArcStr>>>,
     }
 
     struct TestHandler {
@@ -183,7 +184,7 @@ mod tests {
     }
 
     /// 起一个真实 HTTP MCP 服务端，返回（端点 URL, 停止句柄, 观测记录）
-    async fn spawn_server() -> (String, tokio::task::JoinHandle<()>, Arc<Observed>) {
+    async fn spawn_server() -> (ArcStr, tokio::task::JoinHandle<()>, Arc<Observed>) {
         let observed = Arc::new(Observed::default());
         let app = router(
             McpServer::new(
@@ -197,7 +198,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (format!("http://{}/mcp", addr), handle, observed)
+        (ArcStr::from(format!("http://{}/mcp", addr)), handle, observed)
     }
 
     #[tokio::test]
@@ -216,7 +217,7 @@ mod tests {
     async fn client_list_tools_sends_ancestors() {
         let (endpoint, _h, observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, None);
-        let ancestors = vec!["root".to_string()];
+        let ancestors = vec![ArcStr::from("root")];
         let result = client.list_tools(Arc::new(ancestors.clone())).await.unwrap();
         assert_eq!(result.tools[0].name.as_str(), "read");
         assert_eq!(result.tools[0].group(), Some("filesystem"), "group 随工具携带");

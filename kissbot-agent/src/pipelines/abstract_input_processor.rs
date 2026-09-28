@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Local};
 use dashmap::DashMap;
@@ -82,14 +83,14 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
 }
 
 /// 一条消息的去重键：通道三元组 + msg_id（同一条消息在两个来源里等价）
-type MessageKey = (String, String, String, String);
+type MessageKey = (ArcStr, ArcStr, ArcStr, ArcStr);
 
 /// 去重键：msg_id 为空（思考/工具记录、旧记录）时返回 None，不参与去重、原样保留
 fn message_key(messenger_id: &str, self_user_id: &str, group_id: &str, msg_id: &str) -> Option<MessageKey> {
     if msg_id.is_empty() {
         return None;
     }
-    Some((messenger_id.to_string(), self_user_id.to_string(), group_id.to_string(), msg_id.to_string()))
+    Some((ArcStr::from(messenger_id), ArcStr::from(self_user_id), ArcStr::from(group_id), ArcStr::from(msg_id)))
 }
 
 /// 新消息的去重键
@@ -117,10 +118,10 @@ fn record_message_key(record: &ChannelRecord) -> Option<MessageKey> {
 fn merge_tail_records(tails: &[Vec<Arc<CaseRecord>>]) -> Vec<Arc<ChannelRecord>> {
     let mut records = Vec::new();
     for tail in tails {
-        let mut seen: HashSet<(String, u64)> = HashSet::new();
+        let mut seen: HashSet<(ArcStr, u64)> = HashSet::new();
         for record in tail {
             if let CaseRecord::Channel(channel_record) = record.as_ref() {
-                if seen.insert((channel_record.time.as_str().to_string(), channel_record.sn)) {
+                if seen.insert((channel_record.time.clone(), channel_record.sn)) {
                     records.push(channel_record.clone());
                 }
             }
@@ -156,7 +157,7 @@ fn filter_history(
 }
 
 /// 组装重置用的上下文：摘要块置首（并入首条 User，避免连续两条 User），其后为历史消息
-fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Message> {
+fn compose_context(summaries: &[ArcStr], history: &[MessageContent]) -> Vec<Message> {
     let mut messages = pack_memory_messages(history);
     if summaries.is_empty() {
         return messages;
@@ -167,10 +168,10 @@ fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Mess
     );
     if matches!(messages.first(), Some(Message::User { .. })) {
         if let Some(Message::User { content }) = messages.first_mut() {
-            *content = Arc::new(format!("{}\n\n{}", block, content.as_str()));
+            *content = ArcStr::from(format!("{}\n\n{}", block, content.as_str()));
         }
     } else {
-        messages.insert(0, Message::User { content: Arc::new(block) });
+        messages.insert(0, Message::User { content: ArcStr::from(block) });
     }
     messages
 }
@@ -292,7 +293,7 @@ async fn build_context(
         if node.summary.as_str().is_empty() {
             continue;
         }
-        summaries.push(node.summary.as_str().to_string());
+        summaries.push(node.summary.clone());
         let tail = client
             .case_records_tail(agent_id, role_event, case.case_name.as_str(), cfg.memory_count as u64)
             .await?;
@@ -344,17 +345,17 @@ mod tests {
 
     fn ev_with_id(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str, msg_id: &str) -> Arc<IncomingMessageEvent> {
         Arc::new(IncomingMessageEvent {
-            recipient_user_id: Arc::new(self_user.into()),
+            recipient_user_id: ArcStr::from(self_user),
             incoming_message: Arc::new(IncomingMessage {
-                msg_id: Arc::new(msg_id.into()),
-                messenger_id: Arc::new(messenger.into()),
-                user_id: Arc::new("u".into()),
-                group_id: Arc::new(group.into()),
-                messenger_name: Arc::new("".into()),
-                user_name: Arc::new(name.into()),
-                group_name: Arc::new("".into()),
-                content: Content::Text(Arc::new(text.into())),
-                time: Arc::new(time.into()),
+                msg_id: ArcStr::from(msg_id),
+                messenger_id: ArcStr::from(messenger),
+                user_id: ArcStr::from("u"),
+                group_id: ArcStr::from(group),
+                messenger_name: ArcStr::from(""),
+                user_name: ArcStr::from(name),
+                group_name: ArcStr::from(""),
+                content: Content::Text(ArcStr::from(text)),
+                time: ArcStr::from(time),
             }),
         })
     }
@@ -374,25 +375,25 @@ mod tests {
 
     fn rec_with_id(user: &str, text: &str, is_self: usize, time: &str, sn: u64, msg_id: &str) -> Arc<ChannelRecord> {
         Arc::new(ChannelRecord {
-            user_id: Arc::new(user.into()),
-            self_user_id: Arc::new("self".into()),
-            messenger_id: Arc::new("web".into()),
-            group_id: Arc::new("g1".into()),
+            user_id: ArcStr::from(user),
+            self_user_id: ArcStr::from("self"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
             is_self,
-            msg_id: Arc::new(msg_id.into()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(user.into()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new(text.into())),
-            time: Arc::new(time.into()),
+            msg_id: ArcStr::from(msg_id),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from(user),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from(text)),
+            time: ArcStr::from(time),
             sn,
         })
     }
 
     fn mc(user_name: &str, text: &str, is_self: bool) -> MessageContent {
         MessageContent {
-            user_name: Arc::new(user_name.into()),
-            content: vec![Arc::new(text.into())],
+            user_name: ArcStr::from(user_name),
+            content: vec![ArcStr::from(text)],
             is_self,
         }
     }
@@ -480,10 +481,10 @@ mod tests {
             Arc::new(CaseRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))),
             Arc::new(CaseRecord::Channel(rec("u1", "a", 0, "2026-09-23 10:00:00", 1))), // 同 case 内重复
             Arc::new(CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
-                reasoning_content: Some(Arc::new("推理".into())),
+                reasoning_content: Some(ArcStr::from("推理")),
                 thinking: None,
-                key: Arc::new("k1".into()),
-                time: Arc::new("2026-09-23 10:00:01".into()),
+                key: ArcStr::from("k1"),
+                time: ArcStr::from("2026-09-23 10:00:01"),
                 sn: 1,
             }))),
         ];
@@ -497,7 +498,7 @@ mod tests {
     #[test]
     fn compose_context_puts_summary_first_and_keeps_history() {
         let history = vec![mc("u1", "hi", false), mc("agent", "yo", true)];
-        let messages = compose_context(&["专案A".to_string(), "专案B".to_string()], &history);
+        let messages = compose_context(&[ArcStr::from("专案A"), ArcStr::from("专案B")], &history);
         assert_eq!(messages.len(), 2, "摘要并入首条 User，不新增消息");
         match &messages[0] {
             Message::User { content } => {
@@ -515,7 +516,7 @@ mod tests {
         // 无摘要无历史 → 空上下文
         assert!(compose_context(&[], &[]).is_empty());
         // 只有摘要 → 单条 User
-        let only_summary = compose_context(&["专案A".to_string()], &[]);
+        let only_summary = compose_context(&[ArcStr::from("专案A")], &[]);
         assert_eq!(only_summary.len(), 1);
         assert!(matches!(&only_summary[0], Message::User { content } if content.contains("专案A")));
     }
@@ -546,7 +547,7 @@ mod tests {
 
     fn test_processor() -> AbstractAgentInputProcessor {
         AbstractAgentInputProcessor::assemble(
-            Arc::new(SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::new("r1")) }),
+            Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new("r1")) }),
             Arc::new(Session::new("", "test-session")),
             Arc::new(AbstractClient::with_url(String::new(), String::new())),
         )

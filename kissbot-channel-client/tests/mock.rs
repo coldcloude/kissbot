@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, RwLock, Weak, atomic::{AtomicU32, Ordering}};
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -33,21 +34,21 @@ pub fn test_config_setup() {
 
 pub fn make_messenger_info(messenger_id: &str, user_id: &str, group_id: &str) -> MessengerInfo {
     let group = Arc::new(GroupInfo {
-        group_id: Arc::new(group_id.to_string()),
-        group_name: Arc::new("test-group".to_string()),
+        group_id: ArcStr::from(group_id),
+        group_name: ArcStr::from("test-group"),
     });
     let group_map = Arc::new(DashMap::new());
-    group_map.insert(group_id.to_string(), group);
+    group_map.insert(ArcStr::from(group_id), group);
     let user = Arc::new(UserInfo {
-        user_id: Arc::new(user_id.to_string()),
-        user_name: Arc::new("test-user".to_string()),
+        user_id: ArcStr::from(user_id),
+        user_name: ArcStr::from("test-user"),
         group_map,
     });
     let user_map = Arc::new(DashMap::new());
-    user_map.insert(user_id.to_string(), user);
+    user_map.insert(ArcStr::from(user_id), user);
     MessengerInfo {
-        messenger_id: Arc::new(messenger_id.to_string()),
-        messenger_name: Arc::new("test-messenger".to_string()),
+        messenger_id: ArcStr::from(messenger_id),
+        messenger_name: ArcStr::from("test-messenger"),
         user_map,
     }
 }
@@ -112,17 +113,17 @@ impl MockMessenger {
         if let Some(manager) = handler {
             let messenger_id = self.info.messenger_id.clone();
             let event = Arc::new(GroupChangeEvent {
-                msg_id: Arc::new("gc-1".to_string()),
+                msg_id: ArcStr::from("gc-1"),
                 notification: Arc::new(GroupChangeNotification {
                     messenger_id,
-                    group_id: Arc::new(group_id.to_string()),
-                    user_id: Arc::new(user_id.to_string()),
-                    messenger_name: Arc::new(String::new()),
-                    user_name: Arc::new(String::new()),
-                    group_name: Arc::new(String::new()),
+                    group_id: ArcStr::from(group_id),
+                    user_id: ArcStr::from(user_id),
+                    messenger_name: ArcStr::new(),
+                    user_name: ArcStr::new(),
+                    group_name: ArcStr::new(),
                 }),
                 change_type,
-                time: Arc::new(TEST_TIME.to_string()),
+                time: ArcStr::from(TEST_TIME),
             });
             tokio::spawn(async move {
                 manager.handle_group_change(event).await;
@@ -136,14 +137,14 @@ impl MockMessenger {
         if let Some(manager) = handler {
             let messenger_id = self.info.messenger_id.clone();
             let event = Arc::new(UserRemoveEvent {
-                msg_id: Arc::new("ur-1".to_string()),
+                msg_id: ArcStr::from("ur-1"),
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id,
-                    user_id: Arc::new(user_id.to_string()),
-                    messenger_name: Arc::new(String::new()),
-                    user_name: Arc::new(String::new()),
+                    user_id: ArcStr::from(user_id),
+                    messenger_name: ArcStr::new(),
+                    user_name: ArcStr::new(),
                 }),
-                time: Arc::new(TEST_TIME.to_string()),
+                time: ArcStr::from(TEST_TIME),
             });
             tokio::spawn(async move {
                 manager.handle_user_remove(event).await;
@@ -162,7 +163,7 @@ impl Messenger for MockMessenger {
         // 附件消息转换为 AttachmentInfoResponse（嵌入 key 与 transfer_id），其他消息原样返回
         let content = match &message.content {
             Content::AttachmentInfo(info) => Content::AttachmentInfoResponse(Arc::new(AttachmentInfoResponse {
-                key: Arc::new(format!("key-{}", info.file_name)),
+                key: ArcStr::from(format!("key-{}", info.file_name)),
                 info: info.clone(),
                 transfer_id: self.next_transfer_id.fetch_add(1, Ordering::Relaxed),
             })),
@@ -170,12 +171,12 @@ impl Messenger for MockMessenger {
         };
         let _ = self.sent_messages.send(message);
         Ok(Arc::new(OutgoingMessageResponse {
-            msg_id: Arc::new(format!("msg-{}", self.next_msg_id.fetch_add(1, Ordering::Relaxed))),
-            time: Arc::new(TEST_TIME.to_string()),
+            msg_id: ArcStr::from(format!("msg-{}", self.next_msg_id.fetch_add(1, Ordering::Relaxed))),
+            time: ArcStr::from(TEST_TIME),
             content,
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
         }))
     }
 
@@ -190,10 +191,10 @@ impl Messenger for MockMessenger {
 
     async fn download_attachment_header(&self, _request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>, ChannelError> {
         Ok(Arc::new(AttachmentInfoResponse {
-            key: Arc::new("download-key".to_string()),
+            key: ArcStr::from("download-key"),
             info: Arc::new(AttachmentInfo {
-                file_name: Arc::new("download.bin".to_string()),
-                mime_type: Arc::new("application/octet-stream".to_string()),
+                file_name: ArcStr::from("download.bin"),
+                mime_type: ArcStr::from("application/octet-stream"),
                 size_bytes: self.download_data.len() as u64,
             }),
             transfer_id: self.next_transfer_id.fetch_add(1, Ordering::Relaxed),
@@ -203,7 +204,7 @@ impl Messenger for MockMessenger {
     async fn start_send_download_attachment_payload(&self, transfer_id: u32) -> Result<(), ChannelError> {
         let manager = self.manager.read().unwrap().clone()
             .and_then(|w| w.upgrade())
-            .ok_or_else(|| ChannelError::InternalError("manager is None".to_string()))?;
+            .ok_or_else(|| ChannelError::InternalError("manager is None".into()))?;
         let data = self.download_data.clone();
         tokio::spawn(async move {
             let mut pos = 0u64;
@@ -325,7 +326,7 @@ impl Terminal for MockTerminal {
 pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<kissbot_channel::ChannelServer> {
     let manager = Arc::new(kissbot_channel::ChannelServer::new());
     let messenger_id = messenger.info.messenger_id.to_string();
-    manager.register_messenger(&messenger_id, MockMessengerCreator { messenger }).await.unwrap();
+    manager.clone().register_messenger(&messenger_id, MockMessengerCreator { messenger }).await.unwrap();
     let m = manager.clone();
     tokio::spawn(async move {
         m.start(&format!("127.0.0.1:{}", port)).await.unwrap();
@@ -337,21 +338,21 @@ pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<
 
 pub fn make_bind_request(messenger_id: &str, user_id: &str) -> BindRequest {
     BindRequest {
-        messenger_id: Arc::new(messenger_id.to_string()),
-        user_id: Arc::new(user_id.to_string()),
+        messenger_id: ArcStr::from(messenger_id),
+        user_id: ArcStr::from(user_id),
     }
 }
 
 pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, text: &str) -> IncomingMessage {
     IncomingMessage {
-        msg_id: Arc::new("in-1".to_string()),
-        messenger_id: Arc::new(messenger_id.to_string()),
-        user_id: Arc::new(user_id.to_string()),
-        group_id: Arc::new(group_id.to_string()),
-        messenger_name: Arc::new(String::new()),
-        user_name: Arc::new(String::new()),
-        group_name: Arc::new(String::new()),
-        content: Content::Text(Arc::new(text.to_string())),
-        time: Arc::new(TEST_TIME.to_string()),
+        msg_id: ArcStr::from("in-1"),
+        messenger_id: ArcStr::from(messenger_id),
+        user_id: ArcStr::from(user_id),
+        group_id: ArcStr::from(group_id),
+        messenger_name: ArcStr::new(),
+        user_name: ArcStr::new(),
+        group_name: ArcStr::new(),
+        content: Content::Text(ArcStr::from(text)),
+        time: ArcStr::from(TEST_TIME),
     }
 }

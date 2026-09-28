@@ -255,10 +255,10 @@ provider 实现（OpenAI 兼容 / Anthropic）的构造（`create_*_provider`）
 
 // 会话标识：agent_id + RoleEvent（所有绑定 channel 的信息按此去重）
 // 内部字段用 Arc，结构体实现 PartialEq / Hash，因此 Arc<SessionKey> 可直接作 Set / Map 键
-struct SessionKey { agent_id: Arc<String>, role_event: Arc<RoleEvent> }
+struct SessionKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 
 // 会话标识 → kissbot-llm 会话标识（缓存/归档文件名段）：{agent_id}-{role}[-{event}]
-impl SessionKey { fn encode(&self) -> String; }
+impl SessionKey { fn encode(&self) -> ArcStr; }
 ```
 
 ## 错误类型
@@ -267,29 +267,23 @@ impl SessionKey { fn encode(&self) -> String; }
 
 ```rust
 enum Error {
-    ConfigNotFound(String),
-    ConfigParseError(String),
-    ModelApiError(String),
-    ModelProviderNotFound(String, String),
-    ModelProviderNotSupported(String),
-    MemoryStoreError(String),
-    MemoryTimeWindow(String),
-    MemoryEgoError(String),          // 预留
-    AbstractError(String),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
-    WsConnectionError(String),       // 预留
-    WsBindError(String),             // 预留
-    StationConnectionError(String),  // 预留
-    InvalidCommand(String),
-    PermissionDenied,                // 预留
-    ModeConflict(String),            // 预留
-    ContextOverflow,                 // 预留
-    SerializationError(String),      // 预留
-    IoError(String),
+    ConfigNotFound(ArcStr),
+    ModelApiError(ArcStr),
+    ModelProviderNotFound(ArcStr, ArcStr),
+    ModelProviderNotSupported(ArcStr),
+    MemoryStoreError(ArcStr),
+    MemoryTimeWindow(ArcStr),
+    MemoryEgoError(ArcStr),          // 预留
+    AbstractError(ArcStr),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
+    InvalidCommand(ArcStr),
+    IoError(std::io::Error),
     ReqwestError(reqwest::Error),
     JsonError(serde_json::Error),
+    FileError(kai_file::Error),
     WsError(kai_ws::Error),
-    InternalError(String),           // 预留
-    PipelineNotFound(String, String, SessionKey),  // (组件类别, 配置名, 会话 key)
+    McpError(kissbot_mcp::McpError),
+    InternalError(ArcStr),           // 预留
+    PipelineNotFound(ArcStr, ArcStr, SessionKey),  // (组件类别, 配置名, 会话 key)
 }
 ```
 

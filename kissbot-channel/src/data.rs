@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use serde::{Deserialize, Serialize};
@@ -13,10 +14,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupChangeEvent {
-    pub msg_id: Arc<String>,
+    pub msg_id: ArcStr,
     pub notification: Arc<GroupChangeNotification>,
     pub change_type: GroupChangeType,
-    pub time: Arc<String>,
+    pub time: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,9 +30,9 @@ pub enum GroupChangeType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRemoveEvent {
-    pub msg_id: Arc<String>,
+    pub msg_id: ArcStr,
     pub notification: Arc<UserRemoveNotification>,
-    pub time: Arc<String>,
+    pub time: ArcStr,
 }
 
 /// 统一的 GroupChange → IncomingMessageEvent 转换。
@@ -65,18 +66,18 @@ mod tests {
     #[test]
     fn test_group_change_to_incoming_passes_names() {
         let notification = Arc::new(GroupChangeNotification {
-            messenger_id: Arc::new("web".to_string()),
-            group_id: Arc::new("g1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            messenger_name: Arc::new("Web Chat".to_string()),
-            user_name: Arc::new("用户1".to_string()),
-            group_name: Arc::new("群组1".to_string()),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
+            user_id: ArcStr::from("u1"),
+            messenger_name: ArcStr::from("Web Chat"),
+            user_name: ArcStr::from("用户1"),
+            group_name: ArcStr::from("群组1"),
         });
         let event = Arc::new(GroupChangeEvent {
-            msg_id: Arc::new("msg1".to_string()),
+            msg_id: ArcStr::from("msg1"),
             notification: notification.clone(),
             change_type: GroupChangeType::Joined,
-            time: Arc::new("2026-08-02 10:00:00".to_string()),
+            time: ArcStr::from("2026-08-02 10:00:00"),
         });
 
         let event_msg = group_change_to_incoming_message_event(event);

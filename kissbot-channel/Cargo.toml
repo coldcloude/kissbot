@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arcstr = { version = "1.2", features = ["serde"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = "0.26"
 serde = { version = "1.0", features = ["derive"] }

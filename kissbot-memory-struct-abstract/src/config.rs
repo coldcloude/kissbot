@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use arcstr::ArcStr;
 use kissbot_api::ArcSwapHashMap;
 use kissbot_api::MergeEffectiveConfig;
 use kissbot_llm::{
@@ -21,8 +22,8 @@ pub const DEFAULT_MAX_BATCH_RECORDS: usize = 200;
 pub const DEFAULT_WS_RECONNECT_INTERVAL_SECS: u64 = 5;
 /// 模型会话上下文保留的消息条数上限
 pub const DEFAULT_SESSION_MAX_MESSAGES: usize = 20;
-fn default_listen_addr() -> String {
-    DEFAULT_LISTEN_ADDR.to_string()
+fn default_listen_addr() -> ArcStr {
+    ArcStr::from(DEFAULT_LISTEN_ADDR)
 }
 
 fn default_listen_port() -> u16 {
@@ -45,12 +46,12 @@ fn default_session_max_messages() -> usize {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default = "default_listen_addr")]
-    pub listen_addr: String,
+    pub listen_addr: ArcStr,
     #[serde(default = "default_listen_port")]
     pub listen_port: u16,
     /// memory-store 通知服务地址（ws://…）；缺省则不订阅通知（仅手动触发/重建）
     #[serde(default)]
-    pub notify_url: Option<String>,
+    pub notify_url: Option<ArcStr>,
     /// 通知断线重连间隔（秒）
     #[serde(default = "default_ws_reconnect_interval_secs")]
     pub ws_reconnect_interval_secs: u64,
@@ -67,7 +68,7 @@ pub struct Config {
     pub default_model_config: ModelConfig,
     /// 单模型覆盖
     #[serde(default)]
-    pub model_configs: Arc<ArcSwapHashMap<String, ModelConfig>>,
+    pub model_configs: Arc<ArcSwapHashMap<ArcStr, ModelConfig>>,
     /// LLM 请求参数（provider / model / 生成参数）
     pub llm: LLMConfig,
 }
@@ -85,8 +86,8 @@ impl Config {
         kissbot_memory::Config::get().root_dir.clone()
     }
 
-    pub fn listen_addr(&self) -> String {
-        format!("{}:{}", self.listen_addr, self.listen_port)
+    pub fn listen_addr(&self) -> ArcStr {
+        ArcStr::from(format!("{}:{}", self.listen_addr, self.listen_port))
     }
 
     /// 合成 kissbot-llm 的 provider + 模型参数结构
@@ -144,7 +145,7 @@ mod tests {
         
         assert!(cfg.notify_url.is_none());
         assert_eq!(cfg.provider_config.provider_type.as_str(), "openai");
-        assert_eq!(cfg.llm.model.as_deref().map(String::as_str), Some("deepseek-flash"));
+        assert_eq!(cfg.llm.model.as_deref(), Some("deepseek-flash"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_llm::ToolConfig;
@@ -34,7 +35,8 @@ pub const TERR_TOOL_INTERNAL_ERROR: u32 = 0x0001_0000;
 pub const TERR_TOOL_EXTERNAL_ERROR: u32 = 0x0002_0000;
 
 /// 构造工具错误 JSON（Nexus 侧 ToolData.error 的形状）
-pub fn tool_error(code: u32, message: String) -> Value {
+pub fn tool_error(code: u32, message: impl Into<ArcStr>) -> Value {
+    let message: ArcStr = message.into();
     serde_json::json!({
         "code": code,
         "message": message
@@ -59,14 +61,14 @@ pub struct SubStation {
 
 impl SubStation {
     /// 生效的默认 group（根据 station_id 构造）
-    fn default_group(&self) -> String {
-        format!("[{}]", self.config.station_id)
+    fn default_group(&self) -> ArcStr {
+        ArcStr::from(format!("[{}]", self.config.station_id))
     }
 
     /// 唯一性前缀
-    fn global_name(&self, name: Arc<String>) -> Arc<String> {
+    fn global_name(&self, name: ArcStr) -> ArcStr {
         if let Some(prefix) = self.config.prefix.as_ref() {
-            Arc::new(format!("{}{}", prefix.as_str(), name.as_str()))
+            ArcStr::from(format!("{}{}", prefix.as_str(), name.as_str()))
         } else {
             name
         }
@@ -91,15 +93,15 @@ static SINGLETON: OnceLock<Arc<Station>> = OnceLock::new();
 
 pub struct Station {
     /// 本站点 station_id（来自 station.json；祖先链防环用）
-    station_id: String,
+    station_id: ArcStr,
     /// 本级工具索引：工具名 → 条目。工具名在 group 内唯一；跨 group 重名时保留先并入的 group
     /// 的工具并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
-    tools: DashMap<String, Arc<NativeTool>>,
-    sub_stations: DashMap<String, Arc<SubStation>>,
+    tools: DashMap<ArcStr, Arc<NativeTool>>,
+    sub_stations: DashMap<ArcStr, Arc<SubStation>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
     /// list_tools 拉取子 Station 成功时更新；
     /// 与本级/先到子重名时保留先到者（后到者剔除 + warn）
-    tool_routes: ArcSwap<HashMap<String, Arc<String>>>,
+    tool_routes: ArcSwap<HashMap<ArcStr, ArcStr>>,
 }
 
 impl Station {
@@ -116,8 +118,8 @@ impl Station {
     /// 从 ConfigManager 读 station.json 构建全局 Station 并注册单例
     pub async fn new() {
         let repo = ConfigManager::get().station_repo_snapshot().await;
-        let api_key = kissbot_security::SecurityConfig::get().api_key.to_string();
-        let station = Self::from_repo(&repo, &api_key);
+        let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
+        let station = Self::from_repo(&repo, api_key.as_str());
         let _ = SINGLETON.set(Arc::new(station));
     }
 
@@ -125,18 +127,18 @@ impl Station {
     /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对给出
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Self {
         let result = Self {
-            station_id: repo.station_id.to_string(),
+            station_id: repo.station_id.clone(),
             tools: DashMap::new(),
             sub_stations: DashMap::new(),
             tool_routes: ArcSwap::from_pointee(HashMap::new()),
         };
         for name in repo.groups.iter() {
             // 未内置的 group 只有名字、没有工具，注册为空
-            if let Some(group) = native_group(name) {
+            if let Some(group) = native_group(name.as_str()) {
                 for tool in group.tools {
                     let tool_name = tool.config.name.as_str();
                     if !result.tools.contains_key(tool_name) {
-                        result.tools.insert(tool_name.to_string(), Arc::new(tool));
+                        result.tools.insert(ArcStr::from(tool_name), Arc::new(tool));
                     }
                 }
             }
@@ -155,7 +157,7 @@ impl Station {
     }
 
     /// 直接向本地 nexus 提供工具列表：`groups` 为会话启用的 group 白名单（None = 不过滤）
-    pub async fn list_tools_local(&self, groups: Option<&HashSet<String>>) -> Result<Vec<Arc<Tool>>> {
+    pub async fn list_tools_local(&self, groups: Option<&HashSet<ArcStr>>) -> Result<Vec<Arc<Tool>>> {
         let tools = self.list_tools(Arc::new(Vec::new())).await?;
         match groups {
             Some(groups) => Ok(tools
@@ -178,13 +180,13 @@ impl Station {
     /// 返回的工具都保证带上 group：本级工具用其所属 group；子站工具优先用对端回带的 group，
     /// 缺省回落该子站的默认 group。本方法返回全量工具，不做 group 白名单过滤
     /// （会话级白名单由 list_tools_local 在 nexus 入口处本地过滤）。
-    pub async fn list_tools(&self, mut ancestors: Arc<Vec<String>>) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
+    pub async fn list_tools(&self, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
         }
         let mut tools = Vec::new();
         // 本级工具名集合（冲突校验用：本级优先，子工具与本级重名剔除）
-        let mut local_names: HashSet<String> = HashSet::new();
+        let mut local_names: HashSet<ArcStr> = HashSet::new();
         for entry in self.tools.iter() {
             local_names.insert(entry.key().clone());
             tools.push(entry.value().config.clone());
@@ -223,7 +225,7 @@ impl Station {
                                 }
                             }
                             tools.push(tool);
-                            tool_routes.insert(name.as_str().to_string(), sub.config.station_id.clone());
+                            tool_routes.insert(name.clone(), sub.config.station_id.clone());
                         }
                     }
                 }
@@ -240,7 +242,7 @@ impl Station {
     /// 执行工具：本级原生实现命中执行；未命中 → 查远程路由表（工具名 → 直接子 station_id）
     /// 经 MCP `tools/call` 路由到对应子；路由未命中 → 工具不存在
     /// ancestors 为根到当前父节点的 station_id 链；自身在链中 → 级联自环（协议级错误）
-    pub async fn call_tool(&self, name: &str, arguments: Value, mut ancestors: Arc<Vec<String>>) -> std::result::Result<CallToolResult, McpError> {
+    pub async fn call_tool(&self, name: &str, arguments: Value, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<CallToolResult, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
             return Err(McpError::station_cycle(&self.station_id));
         }
@@ -297,7 +299,7 @@ impl McpHandler for Station {
         // 默认声明 kissbot 级联扩展能力（理解祖先链），供对端判定
         DiscoverResult::new(
             Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION")),
-            Some(STATION_INSTRUCTIONS.to_string()),
+            Some(ArcStr::from(STATION_INSTRUCTIONS)),
         )
     }
 
@@ -322,26 +324,26 @@ mod tests {
 
     fn repo_with_filesystem() -> StationRepo {
         let mut repo = StationRepo::default();
-        repo.station_id = Arc::new("station-self".into());
-        repo.groups = vec!["filesystem".to_string()];
+        repo.station_id = ArcStr::from("station-self");
+        repo.groups = vec![ArcStr::from("filesystem")];
         repo
     }
 
     fn repo_with_sub() -> StationRepo {
         let mut repo = StationRepo::default();
-        repo.station_id = Arc::new("station-self".into());
+        repo.station_id = ArcStr::from("station-self");
         let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert("station-a".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
-            station_id: Arc::new("station-a".into()),
-            base_url: Arc::new("http://127.0.0.1:9001".into()),
+        map.insert(ArcStr::from("station-a"), ArcSwap::new(Arc::new(SubStationConfig {
+            station_id: ArcStr::from("station-a"),
+            base_url: ArcStr::from("http://127.0.0.1:9001"),
             timeout_secs: 5,
             prefix: None,
         })));
         repo
     }
 
-    fn ancestors(list: &[&str]) -> Arc<Vec<String>> {
-        Arc::new(list.iter().map(|s| s.to_string()).collect())
+    fn ancestors(list: &[&str]) -> Arc<Vec<ArcStr>> {
+        Arc::new(list.iter().map(|s| ArcStr::from(*s)).collect())
     }
 
     fn first_text(result: &CallToolResult) -> Option<&str> {
@@ -352,7 +354,7 @@ mod tests {
     fn set_routes(station: &Station, routes: &[(&str, &str)]) {
         let mut map = HashMap::new();
         for (name, station_id) in routes {
-            map.insert(name.to_string(), Arc::new(station_id.to_string()));
+            map.insert(ArcStr::from(*name), ArcStr::from(*station_id));
         }
         station.tool_routes.store(Arc::new(map));
     }
@@ -371,8 +373,8 @@ mod tests {
     async fn list_tools_local_filters_by_group() {
         // 本地直连 nexus 的入口：按会话启用的 group 白名单过滤（None = 全部）
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
-        let hit: HashSet<String> = ["filesystem".to_string()].into_iter().collect();
-        let miss: HashSet<String> = ["other".to_string()].into_iter().collect();
+        let hit: HashSet<ArcStr> = [ArcStr::from("filesystem")].into_iter().collect();
+        let miss: HashSet<ArcStr> = [ArcStr::from("other")].into_iter().collect();
         assert_eq!(station.list_tools_local(Some(&hit)).await.unwrap().len(), 1);
         assert!(station.list_tools_local(Some(&miss)).await.unwrap().is_empty());
         assert_eq!(station.list_tools_local(None).await.unwrap().len(), 1);
@@ -452,7 +454,7 @@ mod tests {
         assert_eq!(listing.tools[0].group(), Some("filesystem"), "group 随工具携带");
 
         let called = McpHandler::call_tool(&station, ToolsCallParams {
-            name: Arc::new("read".to_string()),
+            name: ArcStr::from("read"),
             arguments: json!({ "path": "Cargo.toml" }),
             meta,
         })
@@ -464,11 +466,11 @@ mod tests {
     // ========== 对接第三方 MCP 服务端（非 Station） ==========
 
     /// tools/list 观测记录：服务端收到的祖先链
-    type ListObservation = Arc<tokio::sync::Mutex<Option<Vec<String>>>>;
+    type ListObservation = Arc<tokio::sync::Mutex<Option<Vec<ArcStr>>>>;
 
     /// 测试用 Mock MCP 服务端：可切换工具名与是否在工具定义里携带 group
     struct MockMcpHandler {
-        tool_name: String,
+        tool_name: ArcStr,
         echo_group: bool,
         observed: ListObservation,
     }
@@ -514,7 +516,7 @@ mod tests {
     async fn spawn_mock_mcp_named(tool_name: &str, echo_group: bool) -> (String, ListObservation) {
         let observed: ListObservation = Arc::new(tokio::sync::Mutex::new(None));
         let handler = Arc::new(MockMcpHandler {
-            tool_name: tool_name.to_string(),
+            tool_name: ArcStr::from(tool_name),
             echo_group,
             observed: observed.clone(),
         });
@@ -533,13 +535,13 @@ mod tests {
     /// 构造只挂一个远程子 Station 的仓库（可选名字前缀）
     fn repo_with_remote_sub(base_url: &str, prefix: Option<&str>) -> StationRepo {
         let mut repo = StationRepo::default();
-        repo.station_id = Arc::new("station-self".into());
+        repo.station_id = ArcStr::from("station-self");
         let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert("remote".to_string(), ArcSwap::new(Arc::new(SubStationConfig {
-            station_id: Arc::new("remote".into()),
-            base_url: Arc::new(base_url.into()),
+        map.insert(ArcStr::from("remote"), ArcSwap::new(Arc::new(SubStationConfig {
+            station_id: ArcStr::from("remote"),
+            base_url: ArcStr::from(base_url),
             timeout_secs: 5,
-            prefix: prefix.map(|p| Arc::new(p.to_string())),
+            prefix: prefix.map(ArcStr::from),
         })));
         repo
     }
@@ -554,7 +556,7 @@ mod tests {
         assert_eq!(all.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
         assert_eq!(all[0].group(), Some("[remote]"), "对端不带 group → 归入子站默认 group");
         // 祖先链始终附带（纯提示），值为本级 station_id
-        assert_eq!(observed.lock().await.clone(), Some(vec!["station-self".to_string()]));
+        assert_eq!(observed.lock().await.clone(), Some(vec![ArcStr::from("station-self")]));
     }
 
     #[tokio::test]
@@ -588,7 +590,7 @@ mod tests {
         // 远端工具与本级同名 → 本级优先，远端被剔除且不进路由表
         let (base, _observed) = spawn_mock_mcp_named("read", false).await;
         let mut repo = repo_with_remote_sub(&base, None);
-        repo.groups = vec!["filesystem".to_string()];
+        repo.groups = vec![ArcStr::from("filesystem")];
         let station = Station::from_repo(&repo, "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();

@@ -1,4 +1,6 @@
 use std::sync::{Arc, Weak};
+
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -19,7 +21,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ChannelClient {
-    id: String,
+    id: ArcStr,
     terminal: Weak<dyn Terminal>,
     ws_context: RwLock<Option<Arc<WsContext>>>,
     // 下载方向：transfer_id → 下载头信息
@@ -41,9 +43,9 @@ impl WsJsonProcessorMut for JsonResponseHandler {
 }
 
 impl ChannelClient {
-    pub fn new(id: String, terminal: Weak<dyn Terminal>) -> Arc<Self> {
+    pub fn new(id: impl Into<ArcStr>, terminal: Weak<dyn Terminal>) -> Arc<Self> {
         Arc::new(Self {
-            id,
+            id: id.into(),
             terminal,
             ws_context: RwLock::new(None),
             download_transfer_map: DashMap::new(),
@@ -87,8 +89,8 @@ impl ChannelClient {
         };
         context.send_json_with_json_response(msg, Box::new(JsonResponseHandler { tx: Some(tx) })).await?;
         let response = tokio::time::timeout(REQUEST_TIMEOUT, rx).await
-            .map_err(|_| Error::Timeout(format!("request type {:#x} timeout", payload_type)))?
-            .map_err(|_| Error::InternalError("response channel closed".to_string()))?
+            .map_err(|_| Error::Timeout(format!("request type {:#x} timeout", payload_type).into()))?
+            .map_err(|_| Error::InternalError("response channel closed".into()))?
             .map_err(|e| Error::WsError(e))?;
         if response.status_code != CODE_SUCCESS {
             return Err(Error::ResponseError(response.status_code));
@@ -106,18 +108,18 @@ impl ChannelClient {
         Ok(())
     }
 
-    pub async fn get_info(&self, messenger_id: Arc<String>) -> Result<Arc<MessengerInfo>> {
+    pub async fn get_info(&self, messenger_id: ArcStr) -> Result<Arc<MessengerInfo>> {
         let payload = self.request_json(
             TYPE_MESSENGER_INFO_REQUEST,
             serde_json::to_value(MessengerInfoRequest { messenger_id })?,
         ).await?
-        .ok_or_else(|| Error::InvalidMessage("messenger info response payload is None".to_string()))?;
+        .ok_or_else(|| Error::InvalidMessage("messenger info response payload is None".into()))?;
         Ok(Arc::new(serde_json::from_value(payload)?))
     }
 
     pub async fn send_message(&self, message: OutgoingMessage) -> Result<Arc<OutgoingMessageResponse>> {
         let payload = self.request_json(TYPE_OUTGOING_MESSAGE, serde_json::to_value(message)?).await?
-            .ok_or_else(|| Error::InvalidMessage("outgoing message response payload is None".to_string()))?;
+            .ok_or_else(|| Error::InvalidMessage("outgoing message response payload is None".into()))?;
         Ok(Arc::new(serde_json::from_value(payload)?))
     }
 
@@ -136,20 +138,20 @@ impl ChannelClient {
         let (tx, rx) = oneshot::channel();
         context.send_bin_with_json_response(sn, buf.freeze(), Box::new(JsonResponseHandler { tx: Some(tx) })).await?;
         let response = tokio::time::timeout(REQUEST_TIMEOUT, rx).await
-            .map_err(|_| Error::Timeout("upload chunk timeout".to_string()))?
-            .map_err(|_| Error::InternalError("response channel closed".to_string()))?
+            .map_err(|_| Error::Timeout("upload chunk timeout".into()))?
+            .map_err(|_| Error::InternalError("response channel closed".into()))?
             .map_err(|e| Error::WsError(e))?;
         if response.status_code != CODE_SUCCESS {
             return Err(Error::ResponseError(response.status_code));
         }
         let payload = response.payload
-            .ok_or_else(|| Error::InvalidMessage("upload chunk response payload is None".to_string()))?;
+            .ok_or_else(|| Error::InvalidMessage("upload chunk response payload is None".into()))?;
         Ok(serde_json::from_value(payload)?)
     }
 
     pub async fn request_download(&self, request: AttachmentDownloadRequest) -> Result<Arc<AttachmentInfoResponse>> {
         let payload = self.request_json(TYPE_ATTACHMENT_DOWNLOAD_REQUEST, serde_json::to_value(request)?).await?
-            .ok_or_else(|| Error::InvalidMessage("download response payload is None".to_string()))?;
+            .ok_or_else(|| Error::InvalidMessage("download response payload is None".into()))?;
         let info = Arc::new(serde_json::from_value::<AttachmentInfoResponse>(payload)?);
         // 注册 transfer 映射，之后服务端推送的分块按 transfer_id 找到下载头
         self.download_transfer_map.insert(info.transfer_id, info.clone());
@@ -256,9 +258,9 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
         let result = match &info {
             Some(info) => match client.get_terminal() {
                 Some(terminal) => terminal.download_chunk(client.id(), info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
-                None => Err(Error::InternalError("terminal is None".to_string())),
+                None => Err(Error::InternalError("terminal is None".into())),
             },
-            None => Err(Error::InvalidMessage(format!("unknown transfer_id {}", header.id))),
+            None => Err(Error::InvalidMessage(format!("unknown transfer_id {}", header.id).into())),
         };
         let response = match &result {
             Ok(()) => AttachmentPayloadResponse {
@@ -269,7 +271,7 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
             Err(e) => AttachmentPayloadResponse {
                 current_pos: header.pos,
                 error_code: 1,
-                error_msg: Some(Arc::new(e.to_string())),
+                error_msg: Some(e.to_string().into()),
             },
         };
         // 最后一块或出错时清理映射

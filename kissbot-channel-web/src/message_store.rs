@@ -3,6 +3,7 @@ use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
@@ -34,17 +35,17 @@ pub struct GroupedMessages {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MsgKey {
-    pub group_id: String,
-    pub date: String,
+    pub group_id: ArcStr,
+    pub date: ArcStr,
 }
 
 // ========== Query types ==========
 
 #[derive(Debug, Clone)]
 pub struct TimeRangeQuery {
-    pub group_id: Arc<String>,
-    pub start: Arc<String>,
-    pub end: Arc<String>,
+    pub group_id: ArcStr,
+    pub start: ArcStr,
+    pub end: ArcStr,
 }
 
 type GroupIndex = FileIndexContext<TimeRangeQuery, MsgKey, IncomingMessage, MessageParser>;
@@ -65,7 +66,7 @@ impl MessageParser {
 impl FilePathGenerator<MsgKey> for MessageParser {
     async fn get_path(&self, key: &MsgKey) -> std::result::Result<PathBuf, kai_file::Error> {
         Ok(self.base_dir
-            .join(&key.group_id)
+            .join(key.group_id.as_str())
             .join(format!("{}.jsonl", key.date)))
     }
 }
@@ -75,9 +76,9 @@ impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
         let mut keys = Vec::new();
         if let Ok(mut ranges) = get_date_time_segments(&query.start, &query.end) {
             for range in ranges.drain(..) {
-                let date = as_date(range.0.as_str()).to_string();
+                let date = ArcStr::from(as_date(range.0.as_str()));
                 keys.push((MsgKey {
-                    group_id: query.group_id.as_str().to_string(),
+                    group_id: query.group_id.clone(),
                     date,
                 }, range));
             }
@@ -91,16 +92,16 @@ impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
 pub struct MessageFileWriterContext {
     path: PathBuf,
     index: Weak<GroupIndex>,
-    date_sets: Weak<DashMap<String, BTreeSet<String>>>,
+    date_sets: Weak<DashMap<ArcStr, BTreeSet<ArcStr>>>,
     stored_sender: Sender<Vec<IncomingMessage>>,
 }
 
 #[async_trait]
 impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterContext {
     async fn write(&mut self, key: &MsgKey, mut records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
-        let mut time = Arc::new(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        let mut time = ArcStr::from(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         if key.date.as_str() != as_date(time.as_str()) {
-            time = Arc::new(format!("{} 23:59:59", key.date.as_str()));
+            time = ArcStr::from(format!("{} 23:59:59", key.date.as_str()));
         }
         for record in records.iter_mut() {
             record.time = time.clone();
@@ -145,7 +146,7 @@ impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterConte
 pub struct MessageStore {
     base_dir: PathBuf,
     index: Arc<GroupIndex>,
-    date_sets: Arc<DashMap<String, BTreeSet<String>>>,
+    date_sets: Arc<DashMap<ArcStr, BTreeSet<ArcStr>>>,
     stored_sender: Sender<Vec<IncomingMessage>>,
     map: Arc<Mutex<HashMap<MsgKey, Weak<Mutex<MessageFileWriterContext>>>>>,
 }
@@ -153,7 +154,7 @@ pub struct MessageStore {
 impl MessageStore {
     fn create_context(&self, key: &MsgKey) -> MessageFileWriterContext {
         let path = self.base_dir
-            .join(&key.group_id)
+            .join(key.group_id.as_str())
             .join(format!("{}.jsonl", key.date));
         MessageFileWriterContext {
             path,
@@ -206,7 +207,7 @@ impl MessageStore {
         let base_dir = PathBuf::from(base_dir);
         let parser = MessageParser::new(base_dir.clone());
         let index: Arc<GroupIndex> = Arc::new(FileIndexContext::new(parser));
-        let date_sets: Arc<DashMap<String, BTreeSet<String>>> = Arc::new(DashMap::new());
+        let date_sets: Arc<DashMap<ArcStr, BTreeSet<ArcStr>>> = Arc::new(DashMap::new());
         Self {
             base_dir,
             index,
@@ -226,7 +227,7 @@ impl MessageStore {
             for date in dates.iter().rev() {
                 if remaining == 0 { break; }
                 let key = MsgKey {
-                    group_id: group_id.to_string(),
+                    group_id: ArcStr::from(group_id),
                     date: date.clone(),
                 };
                 let msgs = self.index.query_last(&key, remaining).await?;
@@ -264,7 +265,7 @@ impl MessageStore {
 
         if remaining > 0 {
             if let Some(dates) = self.date_sets.get(key.group_id.as_str()) {
-                let mut cursor = key.date.to_string();
+                let mut cursor = key.date.clone();
                 loop {
                     if remaining == 0 { break; }
                     let prev = dates.range::<str, _>((Bound::Unbounded, Bound::Excluded(cursor.as_str()))).next_back();

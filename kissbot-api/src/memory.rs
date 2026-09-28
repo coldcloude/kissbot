@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, sync::Arc};
 
+use arcstr::ArcStr;
 use kai_file::index::Record;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,25 +17,25 @@ use crate::Content;
 /// 拼成文件/目录名（`{role_name}` 或 `{role_name}-{event_id}`）只在 memory 内部构造路径时进行。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RoleEvent {
-    pub role_name: Arc<String>,
+    pub role_name: ArcStr,
     /// 事件标识；角色模式为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<Arc<String>>,
+    pub event_id: Option<ArcStr>,
 }
 
 impl RoleEvent {
     /// 角色模式（无事件）
-    pub fn new(role_name: impl Into<String>) -> Self {
-        Self { role_name: Arc::new(role_name.into()), event_id: None }
+    pub fn new(role_name: impl Into<ArcStr>) -> Self {
+        Self { role_name: role_name.into(), event_id: None }
     }
 
     /// 事件模式（角色 + 事件标识）
-    pub fn with_event(role_name: impl Into<String>, event_id: impl Into<String>) -> Self {
-        Self { role_name: Arc::new(role_name.into()), event_id: Some(Arc::new(event_id.into())) }
+    pub fn with_event(role_name: impl Into<ArcStr>, event_id: impl Into<ArcStr>) -> Self {
+        Self { role_name: role_name.into(), event_id: Some(event_id.into()) }
     }
 
     /// 直接由字段构造（两者都是 Arc 时避免二次分配）
-    pub fn from_parts(role_name: Arc<String>, event_id: Option<Arc<String>>) -> Self {
+    pub fn from_parts(role_name: ArcStr, event_id: Option<ArcStr>) -> Self {
         Self { role_name, event_id }
     }
 }
@@ -45,20 +46,20 @@ impl RoleEvent {
 pub struct ChannelRequest {
     /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具记录为空
     #[serde(default)]
-    pub msg_id: Arc<String>,
-    pub agent_id: Arc<String>,
+    pub msg_id: ArcStr,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub messenger_id: Arc<String>,
-    pub user_id: Arc<String>,
+    pub messenger_id: ArcStr,
+    pub user_id: ArcStr,
     /// 接收方身份（= channel 绑定的 user_id，即 agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
-    pub self_user_id: Arc<String>,
-    pub group_id: Arc<String>,
+    pub self_user_id: ArcStr,
+    pub group_id: ArcStr,
     pub is_self: usize,
-    pub messenger_name: Arc<String>,
-    pub user_name: Arc<String>,
-    pub group_name: Arc<String>,
+    pub messenger_name: ArcStr,
+    pub user_name: ArcStr,
+    pub group_name: ArcStr,
     pub content: Content,
-    pub time: Arc<String>,
+    pub time: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,14 +70,14 @@ pub struct ChannelRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<Arc<String>>,   // API 字段解析的内容
+    pub reasoning_content: Option<ArcStr>,   // API 字段解析的内容
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Arc<String>>,            // <think> 标签解析的内容（去标签）
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub thinking: Option<ArcStr>,            // <think> 标签解析的内容（去标签）
+    pub key: ArcStr,
+    pub time: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,13 +88,13 @@ pub struct ThinkRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub tool_name: Arc<String>,
+    pub tool_name: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_params: Arc<Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub key: ArcStr,
+    pub time: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,14 +105,14 @@ pub struct ToolCallRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_result: Arc<Value>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_error: Arc<Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub key: ArcStr,
+    pub time: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,16 +125,16 @@ pub struct ToolResultRequests {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRequest {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub start_time: Arc<String>,
-    pub end_time: Arc<String>,
+    pub start_time: ArcStr,
+    pub end_time: ArcStr,
 }
 
 /// 最近 N 条 channel 记录查询（无时间参数：取该 agent+role 最近 count 条，跨日期文件）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentQuery {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
     pub count: u32,
 }
@@ -145,41 +146,41 @@ pub struct ChannelRecord {
     /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具占位记录为空。
     /// 消息与记录去重只按「通道三元组 + msg_id」判定，不比较内容。
     #[serde(default)]
-    pub msg_id: Arc<String>,
+    pub msg_id: ArcStr,
     /// 发送者身份（区分对话方向）
-    pub user_id: Arc<String>,
+    pub user_id: ArcStr,
     /// agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self）；
     /// 注意与 is_self 不同：其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0
-    pub self_user_id: Arc<String>,
-    pub messenger_id: Arc<String>,
-    pub group_id: Arc<String>,
+    pub self_user_id: ArcStr,
+    pub messenger_id: ArcStr,
+    pub group_id: ArcStr,
     pub is_self: usize,
-    pub messenger_name: Arc<String>,
-    pub user_name: Arc<String>,
-    pub group_name: Arc<String>,
+    pub messenger_name: ArcStr,
+    pub user_name: ArcStr,
+    pub group_name: ArcStr,
     pub content: Content,
-    pub time: Arc<String>,
+    pub time: ArcStr,
     pub sn: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<Arc<String>>,
+    pub reasoning_content: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Arc<String>>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub thinking: Option<ArcStr>,
+    pub key: ArcStr,
+    pub time: ArcStr,
     pub sn: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRecord {
-    pub tool_name: Arc<String>,
+    pub tool_name: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_params: Arc<Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub key: ArcStr,
+    pub time: ArcStr,
     pub sn: u64,
 }
 
@@ -189,15 +190,15 @@ pub struct ToolResultRecord {
     pub tool_result: Arc<Value>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_error: Arc<Value>,
-    pub key: Arc<String>,
-    pub time: Arc<String>,
+    pub key: ArcStr,
+    pub time: ArcStr,
     pub sn: u64,
 }
 
 pub trait MemoryRecord: Record {
     fn sn(&self) -> u64;
     fn set_sn(&mut self, sn: u64);
-    fn time_string(&self) -> Arc<String>;
+    fn time_string(&self) -> ArcStr;
     fn cmp(&self, other: &Self) -> Ordering {
         let sign = self.time().cmp(other.time());
         if sign == Ordering::Equal {
@@ -222,7 +223,7 @@ macro_rules! impl_record {
             fn set_sn(&mut self, sn: u64) {
                 self.sn = sn;
             }
-            fn time_string(&self) -> Arc<String> {
+            fn time_string(&self) -> ArcStr {
                 self.time.clone()
             }
         })*
@@ -240,9 +241,9 @@ impl_record!(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct RecordKey {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     pub role_event: RoleEvent,
-    pub date: Arc<String>,
+    pub date: ArcStr,
 }
 
 //===================== Channel identity ======================
@@ -254,17 +255,17 @@ pub struct RecordKey {
 /// 发送者 `user_id` 不参与：self 记录的 `user_id` 是绑定的用户身份，与对话对方的 `user_id` 不同。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChannelKey {
-    pub messenger_id: Arc<String>,
-    pub self_user_id: Arc<String>,
-    pub group_id: Arc<String>,
+    pub messenger_id: ArcStr,
+    pub self_user_id: ArcStr,
+    pub group_id: ArcStr,
 }
 
 impl ChannelKey {
-    pub fn new(messenger_id: impl Into<String>, self_user_id: impl Into<String>, group_id: impl Into<String>) -> Self {
+    pub fn new(messenger_id: impl Into<ArcStr>, self_user_id: impl Into<ArcStr>, group_id: impl Into<ArcStr>) -> Self {
         Self {
-            messenger_id: Arc::new(messenger_id.into()),
-            self_user_id: Arc::new(self_user_id.into()),
-            group_id: Arc::new(group_id.into()),
+            messenger_id: messenger_id.into(),
+            self_user_id: self_user_id.into(),
+            group_id: group_id.into(),
         }
     }
 }
@@ -339,10 +340,10 @@ pub const TYPE_NOTIFY_TOOL_RESULT: u32 = 0x3001_0004;
 /// 新数据通知 payload：写入完成后广播的位置信息（记录类型见 payload_type，统一走 kai-ws 信封）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordNotification {
-    pub agent_id: Arc<String>,
+    pub agent_id: ArcStr,
     /// 记忆后缀（角色模式 = 角色名；事件模式 = 角色名 + 事件标识）
     pub role_event: RoleEvent,
-    pub time: Arc<String>,
+    pub time: ArcStr,
     /// 仅通道消息携带：是否 agent 实际发送
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_self: Option<usize>,
@@ -371,7 +372,7 @@ mod tests {
 
         // 事件模式
         let event = RoleEvent::with_event("dev", "e1");
-        assert_eq!(event.event_id.as_deref().map(String::as_str), Some("e1"));
+        assert_eq!(event.event_id.as_deref(), Some("e1"));
         assert_eq!(serde_json::to_value(&event).unwrap(), json!({"role_name": "dev", "event_id": "e1"}));
         let back: RoleEvent = serde_json::from_value(json!({"role_name": "dev", "event_id": "e1"})).unwrap();
         assert_eq!(back, event);
@@ -386,17 +387,17 @@ mod tests {
     #[test]
     fn test_channel_key_serde_and_from_record() {
         let record = ChannelRecord {
-            user_id: Arc::new("alice".into()),
-            self_user_id: Arc::new("self1".into()),
-            messenger_id: Arc::new("web".into()),
-            group_id: Arc::new("g1".into()),
+            user_id: ArcStr::from("alice"),
+            self_user_id: ArcStr::from("self1"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new("alice".into()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("你好".into())),
-            time: Arc::new("2026-09-22 10:00:00".into()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("你好")),
+            time: ArcStr::from("2026-09-22 10:00:00"),
             sn: 1,
         };
         let key = ChannelKey::from(&record);
@@ -405,7 +406,7 @@ mod tests {
         }));
         // 发送者身份不参与通道键：同一会话的 self 与非 self 记录同属一个通道
         let mut self_record = record.clone();
-        self_record.user_id = Arc::new("self1".into());
+        self_record.user_id = ArcStr::from("self1");
         self_record.is_self = 1;
         assert_eq!(ChannelKey::from(&self_record), key);
         assert!(key < ChannelKey::new("web", "self1", "g2"), "通道键可排序（BTreeMap 用）");
@@ -414,28 +415,28 @@ mod tests {
     #[test]
     fn test_serde_channel_request() {
         let obj = ChannelRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: RoleEvent::new("admin"),
-            messenger_id: Arc::new("m1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("m1"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new("m-1".to_string()),
-            messenger_name: Arc::new("M1Name".to_string()),
-            user_name: Arc::new("U1Name".to_string()),
-            group_name: Arc::new("G1Name".to_string()),
-            content: Content::Text(Arc::new("Hello".to_string())),
-            time: Arc::new("2026-01-01 00:00:00".to_string()),
+            msg_id: ArcStr::from("m-1"),
+            messenger_name: ArcStr::from("M1Name"),
+            user_name: ArcStr::from("U1Name"),
+            group_name: ArcStr::from("G1Name"),
+            content: Content::Text(ArcStr::from("Hello")),
+            time: ArcStr::from("2026-01-01 00:00:00"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRequest = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
-        assert_eq!(*deserialized.msg_id, "m-1");
-        assert_eq!(*deserialized.self_user_id, "self1");
-        assert_eq!(*deserialized.messenger_name, "M1Name");
-        assert_eq!(*deserialized.user_name, "U1Name");
-        assert_eq!(*deserialized.group_name, "G1Name");
+        assert_eq!(deserialized.agent_id, "agent1");
+        assert_eq!(deserialized.msg_id, "m-1");
+        assert_eq!(deserialized.self_user_id, "self1");
+        assert_eq!(deserialized.messenger_name, "M1Name");
+        assert_eq!(deserialized.user_name, "U1Name");
+        assert_eq!(deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(s) if s.as_str() == "Hello"));
         // 旧调用方不带 msg_id：反序列化为空串（不参与去重）
         let mut legacy = json;
@@ -447,7 +448,7 @@ mod tests {
     #[test]
     fn test_serde_recent_query() {
         let obj = RecentQuery {
-            agent_id: Arc::new("a".into()),
+            agent_id: ArcStr::from("a"),
             role_event: RoleEvent::new("r"),
             count: 5,
         };
@@ -460,19 +461,19 @@ mod tests {
     #[test]
     fn test_serde_channel_requests() {
         let req = ChannelRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            messenger_id: Arc::new("m1".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("m1"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new("M1Name".to_string()),
-            user_name: Arc::new("U1Name".to_string()),
-            group_name: Arc::new("G1Name".to_string()),
-            content: Content::Text(Arc::new("Hello".to_string())),
-            time: Arc::new("t1".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::from("M1Name"),
+            user_name: ArcStr::from("U1Name"),
+            group_name: ArcStr::from("G1Name"),
+            content: Content::Text(ArcStr::from("Hello")),
+            time: ArcStr::from("t1"),
         };
         let obj = ChannelRequests { requests: vec![req], force: 1 };
         let json = serde_json::to_value(&obj).unwrap();
@@ -484,61 +485,61 @@ mod tests {
     #[test]
     fn test_serde_think_request_dual_fields() {
         let obj = ThinkRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            reasoning_content: Some(Arc::new("推理".to_string())),
-            thinking: Some(Arc::new("思考".to_string())),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-01-01 00:00:00".to_string()),
+            reasoning_content: Some(ArcStr::from("推理")),
+            thinking: Some(ArcStr::from("思考")),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-01-01 00:00:00"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let back: ThinkRequest = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(*back.reasoning_content.unwrap(), "推理");
-        assert_eq!(*back.thinking.unwrap(), "思考");
+        assert_eq!(back.reasoning_content.unwrap(), "推理");
+        assert_eq!(back.thinking.unwrap(), "思考");
         assert!(json.get("content").is_none(), "content 字段已拆分");
     }
 
     #[test]
     fn test_serde_think_record_dual_fields() {
         let obj = ThinkRecord {
-            reasoning_content: Some(Arc::new("推理".to_string())),
-            thinking: Some(Arc::new("思考".to_string())),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-01-01 00:00:00".to_string()),
+            reasoning_content: Some(ArcStr::from("推理")),
+            thinking: Some(ArcStr::from("思考")),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-01-01 00:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let back: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*back.reasoning_content.unwrap(), "推理");
-        assert_eq!(*back.thinking.unwrap(), "思考");
+        assert_eq!(back.reasoning_content.unwrap(), "推理");
+        assert_eq!(back.thinking.unwrap(), "思考");
         assert_eq!(back.sn, 1);
     }
 
     #[test]
     fn test_serde_think_request() {
         let obj = ThinkRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: RoleEvent::new("admin"),
-            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
-            key: Arc::new("key1".to_string()),
-            time: Arc::new("2026-01-01 00:00:00".to_string()),
+            key: ArcStr::from("key1"),
+            time: ArcStr::from("2026-01-01 00:00:00"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ThinkRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.reasoning_content.unwrap(), "thinking...");
+        assert_eq!(deserialized.reasoning_content.unwrap(), "thinking...");
         assert_eq!(deserialized.thinking, None);
     }
 
     #[test]
     fn test_serde_think_requests() {
         let req = ThinkRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("t1"),
         };
         let obj = ThinkRequests { requests: vec![req], force: 0 };
         let json = serde_json::to_value(&obj).unwrap();
@@ -550,15 +551,16 @@ mod tests {
     #[test]
     fn test_serde_tool_call_request() {
         let obj = ToolCallRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            tool_name: Arc::new("get_weather".to_string()),            tool_params: Arc::new(json!({"city": "Beijing"})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
+            tool_name: ArcStr::from("get_weather"),
+            tool_params: Arc::new(json!({"city": "Beijing"})),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolCallRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.tool_name, "get_weather");
+        assert_eq!(deserialized.tool_name, "get_weather");
     }
 
     #[test]
@@ -573,16 +575,16 @@ mod tests {
     #[test]
     fn test_serde_tool_result_request() {
         let obj = ToolResultRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
             tool_result: Arc::new(json!({"temp": 25})),
             tool_error: Arc::new(Value::Null),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("t1".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolResultRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.key, "k1");
+        assert_eq!(deserialized.key, "k1");
     }
 
     #[test]
@@ -596,14 +598,14 @@ mod tests {
     #[test]
     fn test_serde_query_request() {
         let obj = QueryRequest {
-            agent_id: Arc::new("a1".to_string()),
+            agent_id: ArcStr::from("a1"),
             role_event: RoleEvent::new("r1"),
-            start_time: Arc::new("2026-01-01".to_string()),
-            end_time: Arc::new("2026-06-01".to_string()),
+            start_time: ArcStr::from("2026-01-01"),
+            end_time: ArcStr::from("2026-06-01"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: QueryRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "a1");
+        assert_eq!(deserialized.agent_id, "a1");
     }
 
     // ========== Record trait ==========
@@ -611,17 +613,17 @@ mod tests {
     #[test]
     fn test_record_impl() {
         let mut channel = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            messenger_id: ArcStr::from("telegram"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("hello".to_string())),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("hello")),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 5,
         };
         assert_eq!(channel.sn(), 5);
@@ -630,10 +632,10 @@ mod tests {
         assert_eq!(channel.sn(), 10);
 
         let think = ThinkRecord {
-            reasoning_content: Some(Arc::new("think".to_string())),
+            reasoning_content: Some(ArcStr::from("think")),
             thinking: None,
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:01"),
             sn: 1,
         };
         assert_eq!(think.sn(), 1);
@@ -643,38 +645,38 @@ mod tests {
     #[test]
     fn test_record_cmp_time() {
         let r1 = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            messenger_id: ArcStr::from("telegram"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("hello".to_string())),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("hello")),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let r2 = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            messenger_id: ArcStr::from("telegram"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new(String::new()),
-            messenger_name: Arc::new(String::new()),
-            user_name: Arc::new(String::new()),
-            group_name: Arc::new(String::new()),
-            content: Content::Text(Arc::new("world".to_string())),
-            time: Arc::new("2026-06-24 10:00:01".to_string()),
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::new(),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("world")),
+            time: ArcStr::from("2026-06-24 10:00:01"),
             sn: 1,
         };
         assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
 
         // same time, different sn
         let r3 = ChannelRecord {
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 2,
             ..r1.clone()
         };
@@ -686,29 +688,29 @@ mod tests {
     #[test]
     fn test_serde_channel_record() {
         let obj = ChannelRecord {
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            messenger_id: Arc::new("telegram".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            messenger_id: ArcStr::from("telegram"),
+            group_id: ArcStr::from("g1"),
             is_self: 0,
-            msg_id: Arc::new("m-1".to_string()),
-            messenger_name: Arc::new("M1Name".to_string()),
-            user_name: Arc::new("U1Name".to_string()),
-            group_name: Arc::new("G1Name".to_string()),
-            content: Content::Text(Arc::new("hello".to_string())),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            msg_id: ArcStr::from("m-1"),
+            messenger_name: ArcStr::from("M1Name"),
+            user_name: ArcStr::from("U1Name"),
+            group_name: ArcStr::from("G1Name"),
+            content: Content::Text(ArcStr::from("hello")),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ChannelRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.user_id, "u1");
-        assert_eq!(*deserialized.msg_id, "m-1");
-        assert_eq!(*deserialized.self_user_id, "self1");
-        assert_eq!(*deserialized.messenger_id, "telegram");
-        assert_eq!(*deserialized.group_id, "g1");
-        assert_eq!(*deserialized.messenger_name, "M1Name");
-        assert_eq!(*deserialized.user_name, "U1Name");
-        assert_eq!(*deserialized.group_name, "G1Name");
+        assert_eq!(deserialized.user_id, "u1");
+        assert_eq!(deserialized.msg_id, "m-1");
+        assert_eq!(deserialized.self_user_id, "self1");
+        assert_eq!(deserialized.messenger_id, "telegram");
+        assert_eq!(deserialized.group_id, "g1");
+        assert_eq!(deserialized.messenger_name, "M1Name");
+        assert_eq!(deserialized.user_name, "U1Name");
+        assert_eq!(deserialized.group_name, "G1Name");
         assert!(matches!(deserialized.content, Content::Text(val) if val.as_str() == "hello"));
         assert_eq!(deserialized.sn, 1);
     }
@@ -716,30 +718,30 @@ mod tests {
     #[test]
     fn test_serde_think_record() {
         let obj = ThinkRecord {
-            reasoning_content: Some(Arc::new("think content".to_string())),
+            reasoning_content: Some(ArcStr::from("think content")),
             thinking: None,
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.reasoning_content.unwrap(), "think content");
-        assert_eq!(*deserialized.key, "k1");
+        assert_eq!(deserialized.reasoning_content.unwrap(), "think content");
+        assert_eq!(deserialized.key, "k1");
     }
 
     #[test]
     fn test_serde_tool_call_record() {
         let obj = ToolCallRecord {
-            tool_name: Arc::new("get_weather".to_string()),
+            tool_name: ArcStr::from("get_weather"),
             tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolCallRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.tool_name, "get_weather");
+        assert_eq!(deserialized.tool_name, "get_weather");
         assert_eq!(deserialized.tool_params["city"], "Beijing");
     }
 
@@ -748,8 +750,8 @@ mod tests {
         let obj = ToolResultRecord {
             tool_result: Arc::new(serde_json::json!({"temp": 25})),
             tool_error: Arc::new(serde_json::Value::Null),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
@@ -762,13 +764,13 @@ mod tests {
     #[test]
     fn test_serde_record_key() {
         let obj = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: RoleEvent::new("default"),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: RecordKey = serde_json::from_value(json).unwrap();
-        assert_eq!(*deserialized.agent_id, "agent1");
+        assert_eq!(deserialized.agent_id, "agent1");
         assert_eq!(deserialized.role_event, RoleEvent::new("default"));
     }
 
@@ -799,9 +801,9 @@ mod tests {
     fn test_serde_record_notification_channel_and_think() {
         // 通道消息通知带 is_self 与通道三元组（平铺在 payload 顶层）
         let channel = RecordNotification {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new("dev"),
-            time: Arc::new("2026-09-22 13:48:37".into()),
+            time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: Some(0),
             channel: Some(ChannelKey::new("web", "self1", "g1")),
         };
@@ -814,9 +816,9 @@ mod tests {
 
         // 其余类型不带 is_self 与通道（缺省为 None，可省略）
         let think = RecordNotification {
-            agent_id: Arc::new("0".into()),
+            agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new("dev"),
-            time: Arc::new("2026-09-22 13:48:37".into()),
+            time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: None,
             channel: None,
         };

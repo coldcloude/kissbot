@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use dashmap::DashMap;
 use kissbot_llm::Session;
 
@@ -13,14 +14,14 @@ use crate::types::SessionKey;
 pub struct SessionManager {
     sessions: DashMap<SessionKey, Arc<Session>>,
     /// 数据目录（作为会话上下文缓存/历史归档的路径基准，随 session_id 传给 Session）
-    data_dir: String,
+    data_dir: ArcStr,
 }
 
 impl SessionManager {
     pub fn new(data_dir: &str) -> Arc<Self> {
         Arc::new(Self {
             sessions: DashMap::new(),
-            data_dir: data_dir.to_string(),
+            data_dir: ArcStr::from(data_dir),
         })
     }
 
@@ -36,7 +37,7 @@ impl SessionManager {
             },
             dashmap::mapref::entry::Entry::Vacant(e) => {
                 // session_id 编码（决定 context/<session_id>.jsonl 文件名）由会话标识提供
-                let session = Arc::new(Session::new(&self.data_dir, &key.encode()));
+                let session = Arc::new(Session::new(self.data_dir.as_str(), &key.encode()));
                 // 新建会话初始化：从本地缓存恢复上下文（文件不存在视为空上下文）
                 let _ = session.recover_from_cache().await;
                 // 保存 session
@@ -60,7 +61,7 @@ mod tests {
     use kissbot_api::RoleEvent;
 
     fn key(agent: &str, role: &str) -> SessionKey {
-        SessionKey { agent_id: Arc::new(agent.into()), role_event: Arc::new(RoleEvent::new(role)) }
+        SessionKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(role)) }
     }
 
     /// 测试用 SessionManager（data_dir 指向临时目录；会话持久化路径仅构造不落盘）
@@ -80,7 +81,7 @@ mod tests {
         assert!(!new2, "已存在不应报告新建");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同事件是不同会话
-        let k_event = SessionKey { agent_id: Arc::new("a1".into()), role_event: Arc::new(RoleEvent::with_event("r1", "e1")) };
+        let k_event = SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::with_event("r1", "e1")) };
         let (s3, _) = mgr.get_or_create(&k_event).await;
         assert!(!Arc::ptr_eq(&s1, &s3), "不同事件应返回不同 Session");
     }

@@ -1,5 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kai_date::{as_date, as_year, get_date_time_segments};
 use kai_file::index::{FilePathGenerator, QueryParser};
@@ -9,10 +10,10 @@ use kissbot_api::memory::*;
 
 
 /// 拼记忆后缀：角色模式为角色名，事件模式为 `角色名-事件标识`（只在构造文件/目录名时拼接）。
-pub fn role_event_suffix(role_event: &RoleEvent) -> String {
+pub fn role_event_suffix(role_event: &RoleEvent) -> ArcStr {
     match &role_event.event_id {
-        Some(event_id) => format!("{}-{}", role_event.role_name, event_id),
-        None => role_event.role_name.as_str().to_string(),
+        Some(event_id) => ArcStr::from(format!("{}-{}", role_event.role_name, event_id)),
+        None => role_event.role_name.clone(),
     }
 }
 
@@ -58,7 +59,7 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
             results.push((RecordKey {
                 agent_id: query.agent_id.clone(),
                 role_event: query.role_event.clone(),
-                date: Arc::new(date.to_string()),
+                date: ArcStr::from(date),
             }, time));
         }
     }
@@ -84,7 +85,7 @@ impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
-            date: Arc::new(as_date(&request.time).to_string()),
+            date: ArcStr::from(as_date(&request.time)),
         };
         let record = ChannelRecord {
             user_id: request.user_id.clone(),
@@ -127,7 +128,7 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
-            date: Arc::new(as_date(&request.time).to_string()),
+            date: ArcStr::from(as_date(&request.time)),
         };
         let record = ThinkRecord {
             reasoning_content: request.reasoning_content.clone(),
@@ -163,7 +164,7 @@ impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParse
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
-            date: Arc::new(as_date(&request.time).to_string()),
+            date: ArcStr::from(as_date(&request.time)),
         };
         let record = ToolCallRecord {
             tool_name: request.tool_name.clone(),
@@ -199,7 +200,7 @@ impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResul
         let key = RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
-            date: Arc::new(as_date(&request.time).to_string()),
+            date: ArcStr::from(as_date(&request.time)),
         };
         let record = ToolResultRecord {
             tool_result: request.tool_result,
@@ -220,6 +221,8 @@ impl QueryParser<QueryRequest, RecordKey> for ToolResultParser {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use kissbot_api::Content;
 
 use super::*;
@@ -257,9 +260,9 @@ use super::*;
     async fn test_channel_file_name() {
         init_test_config();
         let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let parser = ChannelParser;
         let path = parser.get_path(&key).await.unwrap();
@@ -272,9 +275,9 @@ use super::*;
         // 空记忆后缀目录应为 `2026-`（非 `2026`）
         init_test_config();
         let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new(""),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let parser = ChannelParser;
         let path = parser.get_path(&key).await.unwrap();
@@ -285,9 +288,9 @@ use super::*;
     #[tokio::test]
     async fn test_think_file_name() {
         let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let parser = ThinkParser;
         let path = parser.get_path(&key).await.unwrap();
@@ -298,9 +301,9 @@ use super::*;
     #[tokio::test]
     async fn test_tool_call_file_name() {
         let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let parser = ToolCallParser;
         let path = parser.get_path(&key).await.unwrap();
@@ -311,9 +314,9 @@ use super::*;
     #[tokio::test]
     async fn test_tool_result_file_name() {
         let key = RecordKey {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            date: Arc::new("2026-06-24".to_string()),
+            date: ArcStr::from("2026-06-24"),
         };
         let parser = ToolResultParser;
         let path = parser.get_path(&key).await.unwrap();
@@ -326,33 +329,33 @@ use super::*;
     #[test]
     fn test_channel_request_parser() {
         let request = ChannelRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            messenger_id: Arc::new("telegram".to_string()),
-            user_id: Arc::new("u1".to_string()),
-            self_user_id: Arc::new("self1".to_string()),
-            group_id: Arc::new("g1".to_string()),
+            messenger_id: ArcStr::from("telegram"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
             is_self: 1,
-            msg_id: Arc::new("m-1001".to_string()),
-            messenger_name: Arc::new("TelegramName".to_string()),
-            user_name: Arc::new("U1Name".to_string()),
-            group_name: Arc::new("G1Name".to_string()),
-            content: Content::Text(Arc::new("hello".to_string())),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            msg_id: ArcStr::from("m-1001"),
+            messenger_name: ArcStr::from("TelegramName"),
+            user_name: ArcStr::from("U1Name"),
+            group_name: ArcStr::from("G1Name"),
+            content: Content::Text(ArcStr::from("hello")),
+            time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ChannelParser;
         let (key, record) = parser.parse_request(request);
         // key 为公共 RecordKey（无 messenger/user/group 字段）
-        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(key.agent_id, "agent1");
         assert_eq!(key.role_event, kissbot_api::RoleEvent::new("default"));
-        assert_eq!(*key.date, "2026-06-24");
+        assert_eq!(key.date, "2026-06-24");
         // record 保存完整身份：user_id=发送者、self_user_id=绑定用户、messenger_id/group_id
-        assert_eq!(*record.user_id, "u1");
-        assert_eq!(*record.self_user_id, "self1");
-        assert_eq!(*record.messenger_id, "telegram");
-        assert_eq!(*record.group_id, "g1");
+        assert_eq!(record.user_id, "u1");
+        assert_eq!(record.self_user_id, "self1");
+        assert_eq!(record.messenger_id, "telegram");
+        assert_eq!(record.group_id, "g1");
         assert_eq!(record.is_self, 1);
-        assert_eq!(*record.msg_id, "m-1001", "消息标识原样带入记录（消息与记录去重用）");
+        assert_eq!(record.msg_id, "m-1001", "消息标识原样带入记录（消息与记录去重用）");
         assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
         assert_eq!(record.sn, 0);
     }
@@ -360,36 +363,36 @@ use super::*;
     #[test]
     fn test_think_request_parser() {
         let request = ThinkRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            reasoning_content: Some(Arc::new("thinking...".to_string())),
+            reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ThinkParser;
         let (key, record) = parser.parse_request(request);
-        assert_eq!(*key.agent_id, "agent1");
-        assert_eq!(*key.date, "2026-06-24");
-        assert_eq!(*record.reasoning_content.unwrap(), "thinking...");
-        assert_eq!(*record.key, "k1");
+        assert_eq!(key.agent_id, "agent1");
+        assert_eq!(key.date, "2026-06-24");
+        assert_eq!(record.reasoning_content.unwrap(), "thinking...");
+        assert_eq!(record.key, "k1");
         assert_eq!(record.sn, 0);
     }
 
     #[test]
     fn test_tool_call_request_parser() {
         let request = ToolCallRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
-            tool_name: Arc::new("get_weather".to_string()),
+            tool_name: ArcStr::from("get_weather"),
             tool_params: serde_json::json!({"city": "Beijing"}).into(),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ToolCallParser;
         let (key, record) = parser.parse_request(request);
-        assert_eq!(*key.agent_id, "agent1");
-        assert_eq!(*record.tool_name, "get_weather");
+        assert_eq!(key.agent_id, "agent1");
+        assert_eq!(record.tool_name, "get_weather");
         assert_eq!(record.tool_params["city"], "Beijing");
         assert_eq!(record.sn, 0);
     }
@@ -397,18 +400,18 @@ use super::*;
     #[test]
     fn test_tool_result_request_parser() {
         let request = ToolResultRequest {
-            agent_id: Arc::new("agent1".to_string()),
+            agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
             tool_result: Arc::new(serde_json::json!({"temp": 25}).into()),
             tool_error: Arc::new(serde_json::Value::Null),
-            key: Arc::new("k1".to_string()),
-            time: Arc::new("2026-06-24 10:00:00".to_string()),
+            key: ArcStr::from("k1"),
+            time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ToolResultParser;
         let (key, record) = parser.parse_request(request);
-        assert_eq!(*key.agent_id, "agent1");
+        assert_eq!(key.agent_id, "agent1");
         assert_eq!(record.tool_result["temp"], 25);
-        assert_eq!(*record.key, "k1");
+        assert_eq!(record.key, "k1");
         assert_eq!(record.sn, 0);
     }
 }

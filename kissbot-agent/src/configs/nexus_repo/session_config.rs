@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use kissbot_api::{
@@ -77,7 +78,7 @@ impl AgentRoleConfigMap {
 pub struct AgentRoleConfig {
     config_map: Arc<AgentRoleConfigMap>,
     /// key = role_name（role 覆盖 agent 默认）
-    roles: Arc<HashMap<String, Arc<AgentRoleConfigMap>>>,
+    roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfigMap>>>,
 }
 
 
@@ -119,7 +120,7 @@ macro_rules! impl_agent_role_config_field {
                         role_config_map.insert::<$ty>(config);
                         Arc::new(role_config_map)
                     };
-                    role_map.insert(role_name.to_string(), role_config_map);
+                    role_map.insert(ArcStr::from(role_name), role_config_map);
                 }
             }
         }
@@ -204,13 +205,13 @@ impl SessionConfigMap {
 }
 
 pub trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
-    fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
+    fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
 }
 
 macro_rules! impl_agent_role_session_config_map_field {
     ($ct:ty, $et:ty) => {
         impl AgentRoleSessionConfigMapField<$ct, $et> for SessionConfigMap {
-            fn create(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> $et {
+            fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> $et {
                 let merge_config = if let Some(agent_role_config) = agents.get(session_key.agent_id.as_str()) {
                     agent_role_config.build::<$ct>(session_key.role_event.role_name.as_str())
                 } else {
@@ -231,7 +232,7 @@ impl_agent_role_session_config_map_field!(GroupSetConfig, GroupSetConfig);
 impl_agent_role_session_config_map_field!(PipelineConfig, PipelineConfig);
 
 impl SessionConfigMap {
-    pub fn create<C, E>(agents: &HashMap<String, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E
+    pub fn create<C, E>(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         Self: AgentRoleSessionConfigMapField<C, E>,

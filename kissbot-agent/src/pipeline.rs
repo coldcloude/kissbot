@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
@@ -47,7 +48,7 @@ impl AgentPipeline {
     async fn call_tool(&self, tool_call: ToolCall) -> ToolCall {
         let coordinator = Nexus::get();
         // 1. 工具调用 key：UUID（ToolCall/ToolResult 详情与 channel 占位同 key 关联）
-        let tool_key = Arc::new(uuid::Uuid::new_v4().to_string());
+        let tool_key = ArcStr::from(uuid::Uuid::new_v4().to_string());
         // 2. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
         coordinator.send_memory_tool_call(self.session_key.as_ref(), tool_key.clone(), &tool_call).await;
         // 3. 执行工具
@@ -64,7 +65,7 @@ impl AgentPipeline {
                 // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
                 // 任一有值才写，都 None 跳过
                 if res.reasoning_content.is_some() || res.thinking.is_some() {
-                    let key = Arc::new(uuid::Uuid::new_v4().to_string());
+                    let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
                     Nexus::get().send_memory_think(self.session_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone()).await;
                 }
                 // 遍历执行 tool call

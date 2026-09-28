@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::CaseBrief;
@@ -35,18 +36,18 @@ pub enum LevelDecision {
     /// 在本层新增叶子 case：模型同一次调用就给出 case 名称与摘要（不等到后续再调用模型）
     New {
         /// case 名称：只能由英文字母、数字与 `-` 组成
-        name: String,
+        name: ArcStr,
         /// case 摘要
-        summary: String,
+        summary: ArcStr,
     },
     /// 并入当层某 case（非叶子时继续下潜）
-    Merge(String),
+    Merge(ArcStr),
 }
 
 impl LevelDecision {
     /// 便捷构造：新建名为 `name`、摘要为 `summary` 的 case（测试与桩模型用）
     pub fn new_case(name: &str, summary: &str) -> Self {
-        Self::New { name: name.to_string(), summary: summary.to_string() }
+        Self::New { name: ArcStr::from(name), summary: ArcStr::from(summary) }
     }
 }
 
@@ -71,7 +72,7 @@ pub trait DecisionModel: Send + Sync {
     async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision>;
 
     /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
-    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<String>;
+    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<ArcStr>;
 }
 
 // ========== 提示词 ==========
@@ -151,13 +152,13 @@ pub fn extract_json(text: &str) -> Result<Value> {
     } else {
         trimmed
     };
-    let start = body.find('{').ok_or_else(|| Error::ModelApiError(format!("模型输出不含 JSON 对象: {}", text)))?;
-    let end = body.rfind('}').ok_or_else(|| Error::ModelApiError(format!("模型输出 JSON 不完整: {}", text)))?;
+    let start = body.find('{').ok_or_else(|| Error::ModelApiError(format!("模型输出不含 JSON 对象: {}", text).into()))?;
+    let end = body.rfind('}').ok_or_else(|| Error::ModelApiError(format!("模型输出 JSON 不完整: {}", text).into()))?;
     if end < start {
-        return Err(Error::ModelApiError(format!("模型输出 JSON 不完整: {}", text)));
+        return Err(Error::ModelApiError(format!("模型输出 JSON 不完整: {}", text).into()));
     }
     serde_json::from_str(&body[start..=end])
-        .map_err(|e| Error::ModelApiError(format!("模型输出 JSON 解析失败: {} ({})", e, text)))
+        .map_err(|e| Error::ModelApiError(format!("模型输出 JSON 解析失败: {} ({})", e, text).into()))
 }
 
 /// 第 1 轮输出：按 case 分组的结果。
@@ -168,7 +169,7 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
     let groups = value
         .get("groups")
         .and_then(|g| g.as_array())
-        .ok_or_else(|| Error::ModelApiError(format!("分组输出缺少 groups: {}", value)))?;
+        .ok_or_else(|| Error::ModelApiError(format!("分组输出缺少 groups: {}", value).into()))?;
     if groups.is_empty() {
         return Err(Error::ModelApiError("分组输出 groups 为空".into()));
     }
@@ -179,33 +180,33 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
         let messages = group
             .get("messages")
             .and_then(|m| m.as_array())
-            .ok_or_else(|| Error::ModelApiError(format!("第 {} 组缺少 messages: {}", index, group)))?;
+            .ok_or_else(|| Error::ModelApiError(format!("第 {} 组缺少 messages: {}", index, group).into()))?;
         let mut indices = Vec::with_capacity(messages.len());
         for message in messages {
             let value = message
                 .as_u64()
-                .ok_or_else(|| Error::ModelApiError(format!("第 {} 组的 messages 含非整数下标: {}", index, message)))?;
+                .ok_or_else(|| Error::ModelApiError(format!("第 {} 组的 messages 含非整数下标: {}", index, message).into()))?;
             let value = value as usize;
             if value >= total {
                 return Err(Error::ModelApiError(format!(
                     "第 {} 组下标 {} 超出批次范围（共 {} 条）",
                     index, value, total
-                )));
+                ).into()));
             }
             if indices.last().map(|last| value <= *last).unwrap_or(false) {
-                return Err(Error::ModelApiError(format!("第 {} 组下标未严格升序: {:?}", index, messages)));
+                return Err(Error::ModelApiError(format!("第 {} 组下标未严格升序: {:?}", index, messages).into()));
             }
             indices.push(value);
         }
         if indices.is_empty() {
-            return Err(Error::ModelApiError(format!("第 {} 组没有消息", index)));
+            return Err(Error::ModelApiError(format!("第 {} 组没有消息", index).into()));
         }
         // 各组按顺序首尾相接：不漏、不重、不交叉
         if indices[0] != next_expected {
             return Err(Error::ModelApiError(format!(
                 "分组未覆盖全部消息：期望第 {} 组从下标 {} 开始，实际为 {:?}",
                 index, next_expected, indices
-            )));
+            ).into()));
         }
         next_expected = indices[indices.len() - 1] + 1;
         let is_current = group.get("current").and_then(|c| c.as_bool()).unwrap_or(false);
@@ -215,7 +216,7 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
         return Err(Error::ModelApiError(format!(
             "分组未覆盖全部消息：覆盖到下标 {}，批次共 {} 条",
             next_expected, total
-        )));
+        ).into()));
     }
     Ok(parsed)
 }
@@ -233,21 +234,21 @@ pub fn parse_level_decision(value: &Value) -> Result<LevelDecision> {
                     Error::ModelApiError(format!(
                         "新增 case 的 name 非法（只能含英文字母、数字与 '-'，且不超过 {} 字符）: {}",
                         MAX_CASE_NAME_LEN, value
-                    ))
+                    ).into())
                 })?;
             let summary = parse_summary(value)?;
-            Ok(LevelDecision::New { name: name.to_string(), summary })
+            Ok(LevelDecision::New { name: ArcStr::from(name), summary })
         }
-        Some(id) if !id.is_empty() => Ok(LevelDecision::Merge(id.to_string())),
-        other => Err(Error::ModelApiError(format!("分层归并 target 非法: {:?}", other))),
+        Some(id) if !id.is_empty() => Ok(LevelDecision::Merge(ArcStr::from(id))),
+        other => Err(Error::ModelApiError(format!("分层归并 target 非法: {:?}", other).into())),
     }
 }
 
-pub fn parse_summary(value: &Value) -> Result<String> {
+pub fn parse_summary(value: &Value) -> Result<ArcStr> {
     value
         .get("summary")
         .and_then(|s| s.as_str())
-        .map(|s| s.trim().to_string())
+        .map(|s| ArcStr::from(s.trim()))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::ModelApiError("摘要输出缺少 summary".into()))
 }
@@ -281,7 +282,7 @@ impl LlmModel {
             "openai" => ProviderKind::OpenAi(create_openai_provider(provider_config)),
             "anthropic" => ProviderKind::Anthropic(create_anthropic_provider(provider_config)),
             other => {
-                return Err(Error::ModelApiError(format!("未知 provider_type: {}", other)));
+                return Err(Error::ModelApiError(format!("未知 provider_type: {}", other).into()));
             }
         };
         Ok(Self {
@@ -305,14 +306,14 @@ impl LlmModel {
         }
         let data_dir = self
             .root
-            .join(&scope.agent_id)
+            .join(scope.agent_id.as_str())
             .join(crate::config::STRUCT_DIR_NAME)
             .join("llm")
             .to_string_lossy()
             .to_string();
         let session = Arc::new(Session::new(&data_dir, &crate::scope::session_id(&scope.role_event)));
         session.recover_from_cache().await?;
-        session.set_system_message(SYSTEM_PROMPT.to_string()).await;
+        session.set_system_message(SYSTEM_PROMPT).await;
         self.sessions.insert(scope.clone(), session.clone());
         Ok(session)
     }
@@ -321,7 +322,7 @@ impl LlmModel {
     async fn call(&self, scope: &ModelScope, prompt: &str) -> Result<Value> {
         let session = self.session(scope).await?;
         let mut messages = session.build_context().await;
-        messages.push(Message::User { content: Arc::new(prompt.to_string()) });
+        messages.push(Message::User { content: ArcStr::from(prompt) });
 
         let tools = Vec::new();
         let response = match &self.provider {
@@ -337,7 +338,7 @@ impl LlmModel {
         // 共享上下文：把本次提示与回答追加回会话，超限时只保留最近的消息
         session
             .context_append(vec![
-                Message::User { content: Arc::new(prompt.to_string()) },
+                Message::User { content: ArcStr::from(prompt) },
                 Message::Assistant {
                     content: response.raw_content.clone(),
                     reasoning_content: response.raw_reasoning_content.clone(),
@@ -395,7 +396,7 @@ impl DecisionModel for LlmModel {
         parse_level_decision(&value)
     }
 
-    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<String> {
+    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<ArcStr> {
         let value = self.call(scope, &summary_prompt(content)).await?;
         parse_summary(&value)
     }
@@ -408,7 +409,7 @@ mod tests {
     use super::*;
 
     fn brief(id: &str, summary: &str) -> CaseBrief {
-        CaseBrief { case_name: Arc::new(id.into()), summary: Arc::new(summary.into()) }
+        CaseBrief { case_name: ArcStr::from(id), summary: ArcStr::from(summary) }
     }
 
     #[test]

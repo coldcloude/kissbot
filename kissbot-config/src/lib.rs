@@ -51,6 +51,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arcstr::ArcStr;
     use serde::Deserialize;
 
     #[test]
@@ -75,7 +76,7 @@ mod tests {
 
         #[derive(Deserialize)]
         struct MemCfg {
-            root_dir: String,
+            root_dir: ArcStr,
         }
         let mem: MemCfg = cfg.get_section("memory");
         assert_eq!(mem.root_dir, "data");
@@ -90,7 +91,7 @@ mod tests {
         #[derive(Deserialize)]
         struct StoreCfg {
             port: u16,
-            host: String,
+            host: ArcStr,
         }
         let store: StoreCfg = cfg.get_section("memory.store");
         assert_eq!(store.port, 8082);

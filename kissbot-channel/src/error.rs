@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use thiserror::Error;
 
 
@@ -8,31 +9,31 @@ pub enum Error {
     ConnectNotFound(u32),
 
     #[error("Messenger not found: {0}")]
-    MessengerNotFound(String),
+    MessengerNotFound(ArcStr),
 
     #[error("Messenger already registered: {0}")]
-    MessengerAlreadyRegistered(String),
+    MessengerAlreadyRegistered(ArcStr),
 
     #[error("Group not found: {0}")]
-    GroupNotFound(String),
+    GroupNotFound(ArcStr),
     
     #[error("User not found: {0}")]
-    UserNotFound(String),
+    UserNotFound(ArcStr),
 
     #[error("User already bound to : {0}")]
-    UserAlreadyBound(String),
+    UserAlreadyBound(ArcStr),
 
     #[error("User not bound: {0}")]
-    UserNotBound(String),
+    UserNotBound(ArcStr),
     
     #[error("Attachment not found: {0}")]
-    AttachmentNotFound(String),
+    AttachmentNotFound(ArcStr),
     
     #[error("Attachment not found: {0} {1} {2}")]
-    AttachmentPositionOutOfOrder(String, u64, u64),
+    AttachmentPositionOutOfOrder(ArcStr, u64, u64),
     
     #[error("Invalid message: {0}")]
-    InvalidMessage(String),
+    InvalidMessage(ArcStr),
     
     #[error("Tungstenite error: {0}")]
     TungsteniteError(#[from] tokio_tungstenite::tungstenite::Error),
@@ -55,13 +56,13 @@ pub enum Error {
     TryFromSliceError(#[from] std::array::TryFromSliceError),
 
     #[error("Request error: {0}")]
-    RequestError(String),
+    RequestError(ArcStr),
 
     #[error("Request error: {0}")]
-    ReponseError(String),
+    ReponseError(ArcStr),
 
     #[error("Internal error: {0}")]
-    InternalError(String),
+    InternalError(ArcStr),
 
     /// 接收任意 `Box<dyn std::error::Error>` 作为 cause 的外部错误
     #[error("External error: {0}")]

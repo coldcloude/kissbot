@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use kissbot_api::{ArcSwapHashMap, MergeBy, MergeEffectiveConfig, MergeSelf};
 use serde::{Deserialize, Serialize};
 
@@ -12,9 +13,9 @@ pub const DEFAULT_RETRY_COUNT: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    pub provider_type: Arc<String>,      // "openai" | "anthropic"，决定 Provider 实现
-    pub base_url: Arc<String>,           // URL 前缀，如 https://api.deepseek.com
-    pub api_key: Arc<String>,            // provider 级密钥
+    pub provider_type: ArcStr,      // "openai" | "anthropic"，决定 Provider 实现
+    pub base_url: ArcStr,           // URL 前缀，如 https://api.deepseek.com
+    pub api_key: ArcStr,            // provider 级密钥
 }
 
 /// provider 级配置：provider 连接信息 + 默认模型参数 + 单模型覆盖
@@ -23,7 +24,7 @@ pub struct ProviderConfig {
 pub struct ProviderModelConfig {
     pub provider_config: Arc<ProviderConfig>,
     pub default_model_config: ModelConfig,
-    pub model_configs: Arc<ArcSwapHashMap<String, ModelConfig>>,  // key = model 标识
+    pub model_configs: Arc<ArcSwapHashMap<ArcStr, ModelConfig>>,  // key = model 标识
 }
 
 /// 可继承模型参数（Option 覆盖字段；未配字段回落上一级：model → provider 默认 → 全局常量）
@@ -105,9 +106,9 @@ impl ProviderModelConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LLMConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<Arc<String>>,
+    pub provider: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<Arc<String>>,
+    pub model: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -117,11 +118,11 @@ pub struct LLMConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_temperature: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Arc<String>>,
+    pub thinking: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_thinking: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<Arc<String>>,
+    pub reasoning_effort: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_reasoning_effort: bool,
 }
@@ -143,7 +144,7 @@ impl LLMConfig {
         self.temperature = None;
         self.has_temperature = false;
     }
-    pub fn set_thinking(&mut self, thinking: Option<Arc<String>>) {
+    pub fn set_thinking(&mut self, thinking: Option<ArcStr>) {
         self.thinking = thinking;
         self.has_thinking = true;
     }
@@ -151,7 +152,7 @@ impl LLMConfig {
         self.thinking = None;
         self.has_thinking = false;
     }
-    pub fn set_reasoning_effort(&mut self, reasoning_effort: Option<Arc<String>>) {
+    pub fn set_reasoning_effort(&mut self, reasoning_effort: Option<ArcStr>) {
         self.reasoning_effort = reasoning_effort;
         self.has_reasoning_effort = true;
     }
@@ -189,19 +190,19 @@ impl MergeSelf for LLMConfig {}
 /// 合成后的 LLM 请求参数（provider / model 必填，生成参数可选），运行时合成、不持久化
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectiveLLMConfig {
-    pub provider: Arc<String>,
-    pub model: Arc<String>,
+    pub provider: ArcStr,
+    pub model: ArcStr,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
-    pub thinking: Option<Arc<String>>,
-    pub reasoning_effort: Option<Arc<String>>,
+    pub thinking: Option<ArcStr>,
+    pub reasoning_effort: Option<ArcStr>,
 }
 
 impl EffectiveLLMConfig {
     pub fn new() -> Self {
         Self {
-            provider: Arc::new(String::new()),
-            model: Arc::new(String::new()),
+            provider: ArcStr::new(),
+            model: ArcStr::new(),
             max_tokens: None,
             temperature: None,
             thinking: None,
@@ -251,9 +252,9 @@ mod tests {
     fn sample_provider() -> ProviderModelConfig {
         ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
-                provider_type: Arc::new("openai".into()),
-                base_url: Arc::new("https://api.deepseek.com".into()),
-                api_key: Arc::new("sk-test".into()),
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from("https://api.deepseek.com"),
+                api_key: ArcStr::from("sk-test"),
             }),
             default_model_config: ModelConfig {
                 max_tokens_usage: 128000,
@@ -267,15 +268,15 @@ mod tests {
     /// 往 provider 的 model_configs 写入一条 model 覆盖（ArcSwapHashMap 写时复制）
     fn with_model(mut provider: ProviderModelConfig, model: &str, config: ModelConfig) -> ProviderModelConfig {
         let map = Arc::make_mut(&mut provider.model_configs);
-        map.insert(model.to_string(), arc_swap::ArcSwap::new(Arc::new(config)));
+        map.insert(ArcStr::from(model), arc_swap::ArcSwap::new(Arc::new(config)));
         provider
     }
 
     /// LLM 配置助手：provider/model 已配，其余字段按需覆盖
     fn llm_config(provider: &str, model: &str) -> LLMConfig {
         LLMConfig {
-            provider: Some(Arc::new(provider.into())),
-            model: Some(Arc::new(model.into())),
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
             ..LLMConfig::default()
         }
     }
@@ -385,11 +386,11 @@ mod tests {
         base.set_max_tokens(Some(1024));
 
         let mut other = LLMConfig::default();
-        other.model = Some(Arc::new("deepseek-reasoner".into()));
+        other.model = Some(ArcStr::from("deepseek-reasoner"));
         base.merge(&other);
 
-        assert_eq!(base.provider.as_deref().map(String::as_str), Some("deepseek"), "未配字段保留");
-        assert_eq!(base.model.as_deref().map(String::as_str), Some("deepseek-reasoner"), "已配字段覆盖");
+        assert_eq!(base.provider.as_deref(), Some("deepseek"), "未配字段保留");
+        assert_eq!(base.model.as_deref(), Some("deepseek-reasoner"), "已配字段覆盖");
         assert_eq!(base.max_tokens, Some(1024), "has_* 为 false 不覆盖");
     }
 
@@ -414,13 +415,13 @@ mod tests {
     #[test]
     fn llm_config_effective_config_merges_into_default() {
         let mut cfg = llm_config("deepseek", "deepseek-chat");
-        cfg.set_thinking(Some(Arc::new("enabled".into())));
-        cfg.set_reasoning_effort(Some(Arc::new("high".into())));
+        cfg.set_thinking(Some(ArcStr::from("enabled")));
+        cfg.set_reasoning_effort(Some(ArcStr::from("high")));
         let eff = cfg.get_effective_config();
         assert_eq!(eff.provider.as_str(), "deepseek");
         assert_eq!(eff.model.as_str(), "deepseek-chat");
-        assert_eq!(eff.thinking.as_deref().map(String::as_str), Some("enabled"));
-        assert_eq!(eff.reasoning_effort.as_deref().map(String::as_str), Some("high"));
+        assert_eq!(eff.thinking.as_deref(), Some("enabled"));
+        assert_eq!(eff.reasoning_effort.as_deref(), Some("high"));
         assert!(eff.max_tokens.is_none() && eff.temperature.is_none(), "未配置生成参数为空");
 
         // 空配置 → 全默认（provider/model 为空串）

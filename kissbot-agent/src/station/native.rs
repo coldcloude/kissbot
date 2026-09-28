@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_mcp::{CallToolResult, Tool};
 use serde::Serialize;
@@ -27,16 +28,16 @@ pub struct NativeTool {
 /// 参数中单个属性的 JSON Schema
 #[derive(Debug, Serialize)]
 pub struct PropertySchema {
-    pub r#type: String,
-    pub description: String,
+    pub r#type: ArcStr,
+    pub description: ArcStr,
 }
 
 /// 内置工具的参数 JSON Schema（固定结构，不做手拼 JSON）
 #[derive(Debug, Serialize)]
 pub struct ObjectSchema {
-    pub r#type: String,
-    pub properties: BTreeMap<String, PropertySchema>,
-    pub required: Vec<String>,
+    pub r#type: ArcStr,
+    pub properties: BTreeMap<ArcStr, PropertySchema>,
+    pub required: Vec<ArcStr>,
 }
 
 impl ObjectSchema {
@@ -47,12 +48,12 @@ impl ObjectSchema {
 
 /// 分组管理工具类
 pub struct Group {
-    pub name: String,
+    pub name: ArcStr,
     pub tools: Vec<NativeTool>,
 }
 
 impl Group {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<ArcStr>) -> Self {
         Self {
             name: name.into(),
             tools: Vec::new(),
