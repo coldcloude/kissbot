@@ -15,6 +15,7 @@ use kissbot_api::channel::{
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+use kissbot_api::write;
 use kissbot_channel::{
     ChannelServer, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
     Messenger, MessengerCreator,
@@ -205,10 +206,8 @@ impl WebMessenger {
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
             let users = Arc::make_mut(&mut repo.users);
-            let mut user_arc = users.remove(user_id)
+            write(users, user_id, |user: &mut UserConfig| user.user_name = ArcStr::from(new_name))
                 .ok_or_else(|| Error::UserNotFound(ArcStr::from(user_id)))?;
-            Arc::make_mut(&mut user_arc).user_name = ArcStr::from(new_name);
-            users.insert(ArcStr::from(user_id), user_arc);
             Ok(())
         }).await
     }
@@ -291,10 +290,8 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            let mut g_arc = groups.remove(group_id)
+            write(groups, group_id, |group: &mut GroupConfig| group.group_name = ArcStr::from(new_name))
                 .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
-            Arc::make_mut(&mut g_arc).group_name = ArcStr::from(new_name);
-            groups.insert(ArcStr::from(group_id), g_arc);
             Ok(())
         }).await
     }
@@ -304,17 +301,15 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            let mut group_new_arc = groups.remove(group_id)
-                .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
-            let group_new = Arc::make_mut(&mut group_new_arc);
-            let members = Arc::make_mut(&mut group_new.members);
-            for id in add_ids {
-                members.insert(id.clone());
-            }
-            for id in remove_ids {
-                members.remove(id);
-            }
-            groups.insert(ArcStr::from(group_id), group_new_arc);
+            write(groups, group_id, |group: &mut GroupConfig| {
+                let members = Arc::make_mut(&mut group.members);
+                for id in add_ids {
+                    members.insert(id.clone());
+                }
+                for id in remove_ids {
+                    members.remove(id);
+                }
+            }).ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
             Ok(())
         }).await?;
         // 通知成员变更

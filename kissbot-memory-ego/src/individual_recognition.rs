@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use arcstr::ArcStr;
 use kissbot_api::IndividualEntry;
 use kissbot_api::IndividualRelationEntry;
+use kissbot_api::write;
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
 
@@ -134,24 +135,17 @@ impl IndividualRecognitionManager {
 
     async fn write_individual_ref<F>(&self, agent_id: &str, individual_name: &str, op: F) -> Result<()>
     where
-        F: FnOnce(Arc<Individual>) -> Result<Arc<Individual>>,
+        F: FnOnce(&mut Individual) -> Result<()>,
     {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
-            if let Some(individuals) = individuals_or_none {
-                if !individuals.individual_map.contains_key(individual_name) {
-                    return Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)));
-                }
-                // 外部已持有 agent 写锁：先写时复制出可变的 individual_map，再 remove → 修改 → insert 回去
-                let mut individuals_arc = individuals;
-                let individuals_mut = Arc::make_mut(&mut individuals_arc);
-                let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
-                let current = individual_map.remove(individual_name).expect("已确认 individual 存在");
-                let updated = op(current)?;
-                individual_map.insert(ArcStr::from(individual_name), updated);
-                Ok(individuals_arc)
-            } else {
-                Err(Error::AgentNotFound(ArcStr::from(agent_id)))
-            }
+            let individuals = individuals_or_none.ok_or_else(|| Error::AgentNotFound(ArcStr::from(agent_id)))?;
+            // 外部已持有 agent 写锁：先写时复制出可变的 individual_map，再交给 write 做 remove → 修改 → insert
+            let mut individuals_arc = individuals;
+            let individuals_mut = Arc::make_mut(&mut individuals_arc);
+            let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
+            write(individual_map, individual_name, op)
+                .ok_or_else(|| Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))??;
+            Ok(individuals_arc)
         }).await
     }
 
@@ -195,17 +189,16 @@ impl IndividualRecognitionManager {
             if let Some(individuals) = individuals_or_none {
                 if individuals.individual_map.contains_key(new_name) {
                     Err(Error::AgentIndividualAlreadyExists(ArcStr::from(agent_id), ArcStr::from(new_name)))
+                } else if individuals.individual_map.contains_key(individual_name) {
+                    // 仅换 key：直接 remove_entry 移动原值 Arc 到新 key，不 clone
+                    let mut individuals_new_arc = individuals;
+                    let individuals_new = Arc::make_mut(&mut individuals_new_arc);
+                    let individual_map = Arc::make_mut(&mut individuals_new.individual_map);
+                    let (_, individual) = individual_map.remove_entry(individual_name).expect("已确认 individual 存在");
+                    individual_map.insert(ArcStr::from(new_name), individual);
+                    Ok(individuals_new_arc)
                 } else {
-                    if let Some(individual) = individuals.individual_map.get(individual_name) {
-                        let mut individuals_new_arc = individuals.clone();
-                        let individuals_new = Arc::make_mut(&mut individuals_new_arc);
-                        let individual_map = Arc::make_mut(&mut individuals_new.individual_map);
-                        individual_map.remove(individual_name);
-                        individual_map.insert(ArcStr::from(new_name), individual.clone());
-                        Ok(individuals_new_arc)
-                    } else {
-                        Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
-                    }
+                    Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
                 }
             }
             else {
@@ -215,8 +208,7 @@ impl IndividualRecognitionManager {
     }
 
     pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<ChannelUser>, mut insert_identifiers: Vec<ChannelUser>) -> Result<()> {
-        self.write_individual_ref(agent_id, individual_name, |mut individual_arc| {
-            let individual = Arc::make_mut(&mut individual_arc);
+        self.write_individual_ref(agent_id, individual_name, |individual| {
             let identifiers = Arc::make_mut(&mut individual.identifiers);
             for identifier in remove_identifiers.drain(..) {
                 identifiers.remove(&identifier);
@@ -224,7 +216,7 @@ impl IndividualRecognitionManager {
             for identifier in insert_identifiers.drain(..) {
                 identifiers.insert(identifier);
             }
-            Ok(individual_arc)
+            Ok(())
         }).await
     }
 
@@ -233,8 +225,7 @@ impl IndividualRecognitionManager {
         for entry in insert_relations.iter() {
             validate_code(&entry.individual_name)?;
         }
-        self.write_individual_ref(agent_id, individual_name, |mut individual_arc| {
-            let individual = Arc::make_mut(&mut individual_arc);
+        self.write_individual_ref(agent_id, individual_name, |individual| {
             let other_relations = Arc::make_mut(&mut individual.other_relations);
             for name in remove_relations.drain(..) {
                 other_relations.remove(name.as_str());
@@ -242,7 +233,7 @@ impl IndividualRecognitionManager {
             for entry in insert_relations.drain(..) {
                 other_relations.insert(entry.individual_name, entry.relation);
             }
-            Ok(individual_arc)
+            Ok(())
         }).await
     }
 }

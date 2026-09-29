@@ -1,4 +1,6 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
@@ -28,6 +30,25 @@ impl<T> ApiResponse<T> {
             error: Some(message.into()),
         }
     }
+}
+
+/// 对 map 中已存在键做「写时复制修改」：remove 取回该键的值（独占 `Arc<T>`），
+/// 用 `op` 原地修改其指向的内容，再把原键放回。键不存在返回 None。
+///
+/// remove_entry 保留原键，避免键的克隆；remove 得到的 `Arc<T>` 已独占所有权，
+/// 只要没有其它持有者，`Arc::make_mut` 就原地返回 `&mut T`，不会发生复制。
+/// 仅替换 map 的值 Arc（不修改其指向内容）时不要用本函数，直接 remove/insert 或 insert。
+pub fn write<K, Q, T, F, R>(map: &mut HashMap<K, Arc<T>>, key: &Q, op: F) -> Option<R>
+where
+    K: Borrow<Q> + Eq + Hash,
+    Q: Eq + Hash + ?Sized,
+    T: Clone,
+    F: FnOnce(&mut T) -> R,
+{
+    let (key, mut value) = map.remove_entry(key)?;
+    let result = op(Arc::make_mut(&mut value));
+    map.insert(key, value);
+    Some(result)
 }
 
 pub struct AsyncCacheFactory<V> {

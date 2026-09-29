@@ -7,6 +7,7 @@ use arcstr::ArcStr;
 use kissbot_api::OtherRoleEntry;
 use kissbot_api::RoleKey;
 use kissbot_api::RoleRelationEntry;
+use kissbot_api::write;
 use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation};
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
@@ -139,24 +140,17 @@ impl RolePlayManager {
 
     async fn write_role_play_other_role_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, op: F) -> Result<()>
     where
-        F: FnOnce(Arc<OtherRole>) -> Result<Arc<OtherRole>>,
+        F: FnOnce(&mut OtherRole) -> Result<()>,
     {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
-            if let Some(role) = role_or_none {
-                if !role.other_roles.contains_key(other_role_name) {
-                    return Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)));
-                }
-                // 外部已持有 role 写锁：先写时复制出可变的 other_roles，再 remove → 修改 → insert 回去
-                let mut role_arc = role;
-                let role_mut = Arc::make_mut(&mut role_arc);
-                let other_roles = Arc::make_mut(&mut role_mut.other_roles);
-                let current = other_roles.remove(other_role_name).expect("已确认 other role 存在");
-                let updated = op(current)?;
-                other_roles.insert(ArcStr::from(other_role_name), updated);
-                Ok(role_arc)
-            } else {
-                Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
-            }
+            let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
+            // 外部已持有 role 写锁：先写时复制出可变的 other_roles，再交给 write 做 remove → 修改 → insert
+            let mut role_arc = role;
+            let role_mut = Arc::make_mut(&mut role_arc);
+            let other_roles = Arc::make_mut(&mut role_mut.other_roles);
+            write(other_roles, other_role_name, op)
+                .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))??;
+            Ok(role_arc)
         }).await
     }
 
@@ -299,17 +293,16 @@ impl RolePlayManager {
             if let Some(role) = role_or_none {
                 if role.other_roles.contains_key(new_name) {
                     Err(Error::AgentRoleOtherRoleAlreadyExists(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(new_name)))
+                } else if role.other_roles.contains_key(other_role_name) {
+                    // 仅换 key：直接 remove_entry 移动原值 Arc 到新 key，不 clone
+                    let mut role_new_arc = role;
+                    let role_new = Arc::make_mut(&mut role_new_arc);
+                    let other_roles = Arc::make_mut(&mut role_new.other_roles);
+                    let (_, other_role) = other_roles.remove_entry(other_role_name).expect("已确认 other role 存在");
+                    other_roles.insert(ArcStr::from(new_name), other_role);
+                    Ok(role_new_arc)
                 } else {
-                    if let Some(other_role) = role.other_roles.get(other_role_name) {
-                        let mut role_new_arc = role.clone();
-                        let role_new = Arc::make_mut(&mut role_new_arc);
-                        let other_roles = Arc::make_mut(&mut role_new.other_roles);
-                        other_roles.remove(other_role_name);
-                        other_roles.insert(ArcStr::from(new_name), other_role.clone());
-                        Ok(role_new_arc)
-                    } else {
-                        Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
-                    }
+                    Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
                 }
             }
             else {
@@ -320,35 +313,59 @@ impl RolePlayManager {
 
     pub async fn update_other_role_individual_name(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_individual_name: ArcStr) -> Result<()> {
         validate_code(new_individual_name.as_str())?;
-        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
-            Ok(Arc::new(OtherRole {
+        self.write_role_play_ref(agent_id, role_name, |role_or_none| {
+            let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
+            let mut role_arc = role;
+            let role_mut = Arc::make_mut(&mut role_arc);
+            let other_roles = Arc::make_mut(&mut role_mut.other_roles);
+            // 仅替换 map 的值 Arc（不修改其指向内容）：直接 remove + insert
+            let old = other_roles.remove(other_role_name)
+                .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))?;
+            other_roles.insert(ArcStr::from(other_role_name), Arc::new(OtherRole {
                 individual_name: new_individual_name,
-                description: other_role.description.clone(),
-                role_relation: other_role.role_relation.clone(),
-                other_role_relations: other_role.other_role_relations.clone(),
-            }))
+                description: old.description.clone(),
+                role_relation: old.role_relation.clone(),
+                other_role_relations: old.other_role_relations.clone(),
+            }));
+            Ok(role_arc)
         }).await
     }
 
     pub async fn update_other_role_description(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_description: ArcStr) -> Result<()> {
-        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
-            Ok(Arc::new(OtherRole {
-                individual_name: other_role.individual_name.clone(),
+        self.write_role_play_ref(agent_id, role_name, |role_or_none| {
+            let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
+            let mut role_arc = role;
+            let role_mut = Arc::make_mut(&mut role_arc);
+            let other_roles = Arc::make_mut(&mut role_mut.other_roles);
+            // 仅替换 map 的值 Arc（不修改其指向内容）：直接 remove + insert
+            let old = other_roles.remove(other_role_name)
+                .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))?;
+            other_roles.insert(ArcStr::from(other_role_name), Arc::new(OtherRole {
+                individual_name: old.individual_name.clone(),
                 description: new_description,
-                role_relation: other_role.role_relation.clone(),
-                other_role_relations: other_role.other_role_relations.clone(),
-            }))
+                role_relation: old.role_relation.clone(),
+                other_role_relations: old.other_role_relations.clone(),
+            }));
+            Ok(role_arc)
         }).await
     }
 
     pub async fn update_other_role_relation(&self, agent_id: &str, role_name: &str, other_role_name: &str, new_relation: Arc<RoleRelation>) -> Result<()> {
-        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
-            Ok(Arc::new(OtherRole {
-                individual_name: other_role.individual_name.clone(),
-                description: other_role.description.clone(),
+        self.write_role_play_ref(agent_id, role_name, |role_or_none| {
+            let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
+            let mut role_arc = role;
+            let role_mut = Arc::make_mut(&mut role_arc);
+            let other_roles = Arc::make_mut(&mut role_mut.other_roles);
+            // 仅替换 map 的值 Arc（不修改其指向内容）：直接 remove + insert
+            let old = other_roles.remove(other_role_name)
+                .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))?;
+            other_roles.insert(ArcStr::from(other_role_name), Arc::new(OtherRole {
+                individual_name: old.individual_name.clone(),
+                description: old.description.clone(),
                 role_relation: new_relation,
-                other_role_relations: other_role.other_role_relations.clone(),
-            }))
+                other_role_relations: old.other_role_relations.clone(),
+            }));
+            Ok(role_arc)
         }).await
     }
 
@@ -356,8 +373,7 @@ impl RolePlayManager {
         for entry in insert_relations.iter() {
             validate_code(&entry.role_name)?;
         }
-        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |mut other_role_arc| {
-            let other_role = Arc::make_mut(&mut other_role_arc);
+        self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             let other_role_relations = Arc::make_mut(&mut other_role.other_role_relations);
             for name in remove_relations.drain(..) {
                 other_role_relations.remove(name.as_str());
@@ -365,7 +381,7 @@ impl RolePlayManager {
             for entry in insert_relations.drain(..) {
                 other_role_relations.insert(entry.role_name, entry.relation);
             }
-            Ok(other_role_arc)
+            Ok(())
         }).await
     }
 }

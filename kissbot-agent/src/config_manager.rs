@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use kissbot_api::ChannelUser;
+use kissbot_api::{ChannelUser, write};
 use tokio::sync::RwLock;
 
 use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
@@ -289,10 +289,8 @@ impl ConfigManager {
     {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            let mut ch = channels.remove(channel_id)
+            write(channels, channel_id, f)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            f(Arc::make_mut(&mut ch));
-            channels.insert(ArcStr::from(channel_id), ch);
             Ok(())
         }).await
     }
@@ -417,11 +415,9 @@ impl ConfigManager {
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            let mut ch = channels.remove(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            let ch_mut = Arc::make_mut(&mut ch);
-            Arc::make_mut(&mut ch_mut.admins).insert(admin.clone());
-            channels.insert(ArcStr::from(channel_id), ch);
+            write(channels, channel_id, |ch: &mut ChannelConfig| {
+                Arc::make_mut(&mut ch.admins).insert(admin.clone());
+            }).ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
             Ok(())
         }).await
     }
@@ -430,12 +426,10 @@ impl ConfigManager {
     pub async fn remove_admin(&self, channel_id: &str, messenger_id: &str, user_id: &str) -> Result<()> {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            let mut ch = channels.remove(channel_id)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            let ch_mut = Arc::make_mut(&mut ch);
             let target = ChannelUser { messenger_id: ArcStr::from(messenger_id), user_id: ArcStr::from(user_id) };
-            Arc::make_mut(&mut ch_mut.admins).remove(&target);
-            channels.insert(ArcStr::from(channel_id), ch);
+            write(channels, channel_id, |ch: &mut ChannelConfig| {
+                Arc::make_mut(&mut ch.admins).remove(&target);
+            }).ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
             Ok(())
         }).await
     }
