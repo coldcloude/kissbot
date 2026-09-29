@@ -2,7 +2,6 @@ use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use arc_swap::ArcSwap;
 use kissbot_api::ChannelUser;
 use tokio::sync::RwLock;
 
@@ -249,7 +248,7 @@ impl ConfigManager {
     /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
     pub async fn channels(&self) -> Vec<(ArcStr, Arc<ChannelConfig>)> {
         let repo = self.nexus_repo.read().await;
-        repo.channels.iter().map(|(k, v)| (k.clone(), v.load().clone())).collect()
+        repo.channels.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
     /// 返回 StationRepo 快照（Station 单例构建使用）
     pub async fn station_repo_snapshot(&self) -> StationRepo {
@@ -258,18 +257,18 @@ impl ConfigManager {
     /// 按 channel_id 直接查找单个 channel 配置（map O(1) get，不克隆整个 map 再遍历）
     pub async fn channel(&self, channel_id: &str) -> Option<Arc<ChannelConfig>> {
         let repo = self.nexus_repo.read().await;
-        repo.channels.get(channel_id).map(|s| s.load().clone())
+        repo.channels.get(channel_id).map(|s| s.clone())
     }
     #[allow(dead_code)]
     pub async fn channel_ws_url(&self, channel_id: &str) -> Option<ArcStr> {
         let repo = self.nexus_repo.read().await;
-        repo.channels.get(channel_id).map(|s| s.load().ws_url.clone())
+        repo.channels.get(channel_id).map(|s| s.ws_url.clone())
     }
     #[allow(dead_code)]
     pub async fn add_channel(&self, ch: ChannelConfig) -> Result<()> {
         self.write_nexus_config(|repo| {
             let map = Arc::make_mut(&mut repo.channels);
-            map.insert(ch.channel_id.clone(), ArcSwap::new(Arc::new(ch)));
+            map.insert(ch.channel_id.clone(), Arc::new(ch));
             Ok(())
         }).await
     }
@@ -289,12 +288,11 @@ impl ConfigManager {
         F: FnOnce(&mut ChannelConfig) + Send,
     {
         self.write_nexus_config(|repo| {
-            let swap = repo.channels.get(channel_id)
+            let channels = Arc::make_mut(&mut repo.channels);
+            let mut ch = channels.remove(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            let mut ch = swap.load_full();
-            let ch_mut = Arc::make_mut(&mut ch);
-            f(ch_mut);
-            swap.store(ch);
+            f(Arc::make_mut(&mut ch));
+            channels.insert(ArcStr::from(channel_id), ch);
             Ok(())
         }).await
     }
@@ -305,7 +303,7 @@ impl ConfigManager {
     pub async fn provider_model_config(&self, provider: &str, model: &str) -> Option<EffectiveModelConfig> {
         let repo = self.nexus_repo.read().await;
         let provider = repo.providers.get(provider)?;
-        Some(provider.load().get_effective_config(model))
+        Some(provider.get_effective_config(model))
     }
 
     /// 按名取 provider 配置（Arc 快照），供 provider 构造（kissbot-llm 的 create_*_provider / list_models 使用）
@@ -314,7 +312,7 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         let provider_model_config = repo.providers.get(name);
         if let Some(config) = provider_model_config {
-            let provider_config = config.load().provider_config.clone();
+            let provider_config = config.provider_config.clone();
             Some(provider_config)
         } else {
             None
@@ -377,7 +375,7 @@ impl ConfigManager {
             if map.contains_key(name) {
                 return Err(Error::ConfigNotFound(format!("provider 已存在: {}", name.to_string()).into()));
             }
-            map.insert(ArcStr::from(name), ArcSwap::new(Arc::new(cfg)));
+            map.insert(ArcStr::from(name), Arc::new(cfg));
             Ok(())
         }).await
     }
@@ -401,7 +399,7 @@ impl ConfigManager {
     #[allow(dead_code)] // memory-struct 功能未实现，待后续接入时使用
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
-        repo.memory_structs.iter().map(|(_, v)| (*v.load_full()).clone()).collect()
+        repo.memory_structs.iter().map(|(_, v)| v.as_ref().clone()).collect()
     }
 
     // ===== admins（永久操作：聚合 + NexusRepo 回写，check_admin 使用）=====
@@ -411,20 +409,19 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter()
             .flat_map(|(_, v)| {
-                let c = v.load();
-                c.admins.iter().cloned().collect::<Vec<ChannelUser>>()
+                v.admins.iter().cloned().collect::<Vec<ChannelUser>>()
             })
             .collect()
     }
     /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {
-            let swap = repo.channels.get(channel_id)
+            let channels = Arc::make_mut(&mut repo.channels);
+            let mut ch = channels.remove(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
             Arc::make_mut(&mut ch_mut.admins).insert(admin.clone());
-            swap.store(ch);
+            channels.insert(ArcStr::from(channel_id), ch);
             Ok(())
         }).await
     }
@@ -432,13 +429,13 @@ impl ConfigManager {
     /// channel_id 定位 channel，messenger_id 为消息层身份（admin 条目的匹配键）
     pub async fn remove_admin(&self, channel_id: &str, messenger_id: &str, user_id: &str) -> Result<()> {
         self.write_nexus_config(|repo| {
-            let swap = repo.channels.get(channel_id)
+            let channels = Arc::make_mut(&mut repo.channels);
+            let mut ch = channels.remove(channel_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
-            let mut ch = swap.load().clone();
             let ch_mut = Arc::make_mut(&mut ch);
             let target = ChannelUser { messenger_id: ArcStr::from(messenger_id), user_id: ArcStr::from(user_id) };
             Arc::make_mut(&mut ch_mut.admins).remove(&target);
-            swap.store(ch);
+            channels.insert(ArcStr::from(channel_id), ch);
             Ok(())
         }).await
     }
@@ -446,10 +443,10 @@ impl ConfigManager {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use kissbot_api::{ArcSwapHashMap, RoleEvent};
+    use kissbot_api::RoleEvent;
     use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, ModelConfig};
     use tempfile::tempdir;
 
@@ -509,7 +506,7 @@ mod tests {
         // 手工写入一个 provider 后落盘（模拟人工编辑/管理 API 写入）
         {
             let providers = Arc::make_mut(&mut repo.providers);
-            providers.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
+            providers.insert(ArcStr::from("deepseek"), Arc::new(sample_provider()));
         }
         std::fs::write(&path, serde_json::to_string_pretty(&repo).unwrap()).unwrap();
         // 第二次加载：文件已存在为权威（内容不变，不重新种子）
@@ -524,13 +521,13 @@ mod tests {
         let mut repo = ConfigManager::load_or_create_nexus(path.to_str().unwrap()).await.unwrap();
         {
             let map = Arc::make_mut(&mut repo.providers);
-            map.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
+            map.insert(ArcStr::from("deepseek"), Arc::new(sample_provider()));
         }
         // 模拟写回再读
         let json = serde_json::to_string_pretty(&repo).unwrap();
         std::fs::write(&path, json).unwrap();
         let back: NexusRepo = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let provider = back.providers.get("deepseek").expect("provider 应回读").load_full();
+        let provider = back.providers.get("deepseek").expect("provider 应回读").clone();
         assert_eq!(provider.provider_config.base_url.as_str(), "https://api.deepseek.com");
         assert_eq!(provider.default_model_config.max_tokens_usage, 128000);
     }
@@ -692,7 +689,7 @@ mod tests {
         let mut repo = NexusRepo::default();
         {
             let map = Arc::make_mut(&mut repo.providers);
-            map.insert(ArcStr::from("deepseek"), ArcSwap::new(Arc::new(sample_provider())));
+            map.insert(ArcStr::from("deepseek"), Arc::new(sample_provider()));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"providers\""), "应序列化 providers");
@@ -700,7 +697,7 @@ mod tests {
         assert!(!json.contains("\"default_model\""), "NexusRepo 无 default_model 字段");
         assert!(!json.contains("\"default_system_prompt\""), "NexusRepo 无 default_system_prompt 字段");
         let back: NexusRepo = serde_json::from_str(&json).unwrap();
-        let provider = back.providers.get("deepseek").expect("provider 应回读").load_full();
+        let provider = back.providers.get("deepseek").expect("provider 应回读").clone();
         assert_eq!(provider.provider_config.provider_type.as_str(), "openai");
         assert_eq!(provider.default_model_config.max_tokens_usage, 128000);
     }
@@ -784,15 +781,15 @@ mod tests {
                 timeout_secs: Some(60),
                 retry_count: Some(3),
             },
-            model_configs: Arc::new(ArcSwapHashMap::new()),
+            model_configs: Arc::new(HashMap::new()),
         }
     }
 
-    /// 往 provider 的 model_configs 写入一条 model 覆盖（ArcSwapHashMap 写时复制）
+    /// 往 provider 的 model_configs 写入一条 model 覆盖（写时复制）
     fn with_model(mut provider: ProviderModelConfig, model: &str, config: ModelConfig) -> ProviderModelConfig {
         {
             let map = Arc::make_mut(&mut provider.model_configs);
-            map.insert(ArcStr::from(model), ArcSwap::new(Arc::new(config)));
+            map.insert(ArcStr::from(model), Arc::new(config));
         }
         provider
     }
@@ -844,7 +841,7 @@ mod tests {
         assert_eq!(back.default_model_config.max_tokens_usage, 128000);
         assert_eq!(back.default_model_config.timeout_secs, Some(60));
         assert_eq!(back.default_model_config.retry_count, Some(3));
-        let model = back.model_configs.get("deepseek-4-flash").expect("model 覆盖应回读").load_full();
+        let model = back.model_configs.get("deepseek-4-flash").expect("model 覆盖应回读").clone();
         assert_eq!(model.max_tokens_usage, 131072);
         assert_eq!(model.timeout_secs, Some(30));
     }
@@ -999,19 +996,19 @@ mod tests {
         repo.groups = vec![ArcStr::from("filesystem")];
         {
             let map = Arc::make_mut(&mut repo.sub_stations);
-            map.insert(ArcStr::from("station-a"), ArcSwap::new(Arc::new(SubStationConfig {
+            map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
                 station_id: ArcStr::from("station-a"),
                 base_url: ArcStr::from("http://127.0.0.1:9001"),
                 timeout_secs: 30,
                 prefix: Some(ArcStr::from("a/")),
-            })));
+            }));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"station_id\"") && json.contains("\"groups\"") && json.contains("\"sub_stations\""), "形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
         assert_eq!(back.groups, vec![ArcStr::from("filesystem")], "group 列表回读");
-        let sub = back.sub_stations.get("station-a").unwrap().load_full();
+        let sub = back.sub_stations.get("station-a").unwrap().clone();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
         assert_eq!(sub.prefix.as_deref(), Some("a/"), "前缀回读");
         // 前缀可缺省

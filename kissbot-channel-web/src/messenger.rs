@@ -6,7 +6,6 @@ use std::time::Duration;
 use arcstr::ArcStr;
 use flume::{Receiver, unbounded};
 use kai_file::{FileObjectAppender, NoopErrorHandler};
-use kissbot_api::ArcSwapHashMap;
 use uuid::Uuid;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -22,7 +21,6 @@ use kissbot_channel::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use arc_swap::ArcSwap;
 use crate::attachment::AttachmentStore;
 use crate::error::{Error, Result};
 use crate::message_store::{MessageFileWriterContext, MessageStore, MsgKey};
@@ -55,8 +53,8 @@ const GROUP_ID_PREFIX: ArcStr = arcstr::literal!("g");
 pub struct WebMessengerRepo {
     pub messenger_id: ArcStr,
     pub admin_name: ArcStr,
-    pub users: Arc<ArcSwapHashMap<ArcStr, UserConfig>>,
-    pub groups: Arc<ArcSwapHashMap<ArcStr, GroupConfig>>,
+    pub users: Arc<HashMap<ArcStr, Arc<UserConfig>>>,
+    pub groups: Arc<HashMap<ArcStr, Arc<GroupConfig>>>,
     pub next_user_seq: u32,
     pub next_group_seq: u32,
 }
@@ -148,12 +146,12 @@ impl WebMessenger {
     }
     pub async fn config_users(&self) -> HashMap<ArcStr, Arc<UserConfig>> {
         self.config.read().await.users.as_ref().iter().map(|(k, v)| {
-            (k.clone(), v.load().clone())
+            (k.clone(), v.clone())
         }).collect()
     }
     pub async fn config_groups(&self) -> HashMap<ArcStr, Arc<GroupConfig>> {
         self.config.read().await.groups.as_ref().iter().map(|(k, v)| {
-            (k.clone(), v.load().clone())
+            (k.clone(), v.clone())
         }).collect()
     }
     /// 判断 group_id 是否为 user_id 的 admin-user 单聊组（a_{user_id}）。
@@ -180,20 +178,20 @@ impl WebMessenger {
             cfg.admin_name.clone()
         } else {
             cfg.users.get(user_id)
-                .map(|s| s.load().user_name.clone())
+                .map(|s| s.user_name.clone())
                 .unwrap_or_else(|| ArcStr::new())
         };
         let group_name = if group_id.starts_with(ADMIN_USER_GROUP_PREFIX.as_str()) {
             // admin-user 单聊组：group_name = 对端 user 的 user_name
             match Self::parse_admin_user_group_ref(cfg, group_id) {
                 Some(uid) => cfg.users.get(uid.as_str())
-                    .map(|s| s.load().user_name.clone())
+                    .map(|s| s.user_name.clone())
                     .unwrap_or_else(|| ArcStr::new()),
                 None => ArcStr::new(),
             }
         } else {
             cfg.groups.get(group_id)
-                .map(|s| s.load().group_name.clone())
+                .map(|s| s.group_name.clone())
                 .unwrap_or_else(|| ArcStr::new())
         };
         (messenger_name, user_name, group_name)
@@ -206,11 +204,11 @@ impl WebMessenger {
     }
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
-            let user_swap = repo.users.get(user_id)
+            let users = Arc::make_mut(&mut repo.users);
+            let mut user_arc = users.remove(user_id)
                 .ok_or_else(|| Error::UserNotFound(ArcStr::from(user_id)))?;
-            let mut user_arc = user_swap.load().clone();
             Arc::make_mut(&mut user_arc).user_name = ArcStr::from(new_name);
-            user_swap.store(user_arc);
+            users.insert(ArcStr::from(user_id), user_arc);
             Ok(())
         }).await
     }
@@ -220,10 +218,10 @@ impl WebMessenger {
             repo.next_user_seq += 1;
             let user_id = ArcStr::from(format!("{}{}", USER_ID_PREFIX, n));
             let users = Arc::make_mut(&mut repo.users);
-            users.insert(user_id.clone(), ArcSwap::new(Arc::new(UserConfig {
+            users.insert(user_id.clone(), Arc::new(UserConfig {
                 user_id: user_id.clone(),
                 user_name: ArcStr::from(user_name),
-            })));
+            }));
             Ok(user_id)
         }).await?;
         Ok(user_id)
@@ -233,19 +231,15 @@ impl WebMessenger {
             if repo.users.contains_key(user_id) {
                 // 移除前先取 user_name（移除后即丢失）
                 let user_name = repo.users.get(user_id)
-                    .map(|s| s.load().user_name.clone())
+                    .map(|s| s.user_name.clone())
                     .unwrap_or_else(|| ArcStr::new());
-                let users = Arc::make_mut(&mut repo.users);
-                users.remove(user_id);
+                Arc::make_mut(&mut repo.users).remove(user_id);
                 // 从所有群组中移除该成员
-                for group_swap in repo.groups.values() {
-                    let group = group_swap.load();
-                    if group.members.contains(user_id) {
-                        let mut group_new_arc = group.clone();
-                        let group_new = Arc::make_mut(&mut group_new_arc);
-                        let members = Arc::make_mut(&mut group_new.members);
-                        members.remove(user_id);
-                        group_swap.store(group_new_arc);
+                let groups = Arc::make_mut(&mut repo.groups);
+                for group_arc in groups.values_mut() {
+                    if group_arc.members.contains(user_id) {
+                        let group = Arc::make_mut(group_arc);
+                        Arc::make_mut(&mut group.members).remove(user_id);
                     }
                 }
                 Ok(user_name)
@@ -275,11 +269,11 @@ impl WebMessenger {
             repo.next_group_seq += 1;
             let group_id = ArcStr::from(format!("{}{}", GROUP_ID_PREFIX, n));
             let groups = Arc::make_mut(&mut repo.groups);
-            groups.insert(group_id.clone(), ArcSwap::new(Arc::new(GroupConfig {
+            groups.insert(group_id.clone(), Arc::new(GroupConfig {
                 group_id: group_id.clone(),
                 group_name: ArcStr::from(group_name),
                 members: Arc::new(member_ids.iter().cloned().collect()),
-            })));
+            }));
             Ok(group_id)
         }).await?;
         // 通知新成员
@@ -296,11 +290,11 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(ArcStr::from(group_id)));
         }
         self.write_config(|repo| {
-            let group_swap = repo.groups.get(group_id)
+            let groups = Arc::make_mut(&mut repo.groups);
+            let mut g_arc = groups.remove(group_id)
                 .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
-            let mut g_arc = group_swap.load().clone();
             Arc::make_mut(&mut g_arc).group_name = ArcStr::from(new_name);
-            group_swap.store(g_arc);
+            groups.insert(ArcStr::from(group_id), g_arc);
             Ok(())
         }).await
     }
@@ -309,9 +303,9 @@ impl WebMessenger {
             return Err(Error::GroupNotFound(ArcStr::from(group_id)));
         }
         self.write_config(|repo| {
-            let group_swap = repo.groups.get(group_id)
+            let groups = Arc::make_mut(&mut repo.groups);
+            let mut group_new_arc = groups.remove(group_id)
                 .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
-            let mut group_new_arc = group_swap.load_full();
             let group_new = Arc::make_mut(&mut group_new_arc);
             let members = Arc::make_mut(&mut group_new.members);
             for id in add_ids {
@@ -320,7 +314,7 @@ impl WebMessenger {
             for id in remove_ids {
                 members.remove(id);
             }
-            group_swap.store(group_new_arc);
+            groups.insert(ArcStr::from(group_id), group_new_arc);
             Ok(())
         }).await?;
         // 通知成员变更
@@ -341,7 +335,7 @@ impl WebMessenger {
             if repo.groups.contains_key(group_id) {
                 let groups = Arc::make_mut(&mut repo.groups);
                 let group = groups.remove(group_id).ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
-                Ok(group.load().members.clone())
+                Ok(group.members.clone())
             } else {
                 Err(Error::GroupNotFound(ArcStr::from(group_id)))
             }
@@ -384,9 +378,8 @@ impl WebMessenger {
             }
         } else {
             // 普通群组：admin 和普通用户逻辑相同——检查群组存在且发送者在成员中
-            let group_swap = cfg.groups.get(outgoing.group_id.as_str())
+            let group = cfg.groups.get(outgoing.group_id.as_str())
                 .ok_or_else(|| Error::GroupNotFound(outgoing.group_id.clone()))?;
-            let group = group_swap.load();
             if !group.members.contains(outgoing.user_id.as_str()) {
                 return Err(Error::GroupNotFound(outgoing.group_id.clone()));
             }
@@ -461,8 +454,7 @@ impl WebMessenger {
                 }
             } else {
                 // 普通群组：admin 和普通用户逻辑相同——检查群组存在且发送者在成员中
-                if let Some(group_swap) = cfg.groups.get(admin_msg.group_id.as_str()) {
-                    let group = group_swap.load();
+                if let Some(group) = cfg.groups.get(admin_msg.group_id.as_str()) {
                     if group.members.contains(admin_msg.user_id.as_str()) {
                         // admin不推送
                         group.members.iter()
@@ -527,11 +519,9 @@ impl WebMessenger {
     pub async fn build_messenger_info(&self) -> MessengerInfo {
         let cfg = self.config.read().await;
         let full_user_map = dashmap::DashMap::new();
-        for (uid, user_swap) in cfg.users.iter() {
-            let user = user_swap.load();
+        for (uid, user) in cfg.users.iter() {
             let ug_map = dashmap::DashMap::new();
-            for (gid, group_swap) in cfg.groups.iter() {
-                let group = group_swap.load();
+            for (gid, group) in cfg.groups.iter() {
                 if group.members.contains(uid) {
                     ug_map.insert(gid.clone(), Arc::new(GroupInfo {
                         group_id: gid.clone(),
@@ -579,8 +569,8 @@ impl WebMessengerCreator {
             WebMessengerRepo {
                 messenger_id: messenger_id.into(),
                 admin_name: admin_name.into(),
-                users: Arc::new(ArcSwapHashMap::new()),
-                groups: Arc::new(ArcSwapHashMap::new()),
+                users: Arc::new(HashMap::new()),
+                groups: Arc::new(HashMap::new()),
                 next_user_seq: 0,
                 next_group_seq: 0,
             }
@@ -701,18 +691,18 @@ mod tests {
     use kissbot_api::Content;
 
     fn test_repo(admin_name: &str, users: &[(&str, &str)]) -> Arc<RwLock<WebMessengerRepo>> {
-        let mut user_map = ArcSwapHashMap::new();
+        let mut user_map = HashMap::new();
         for (uid, uname) in users {
-            user_map.insert(ArcStr::from(*uid), ArcSwap::new(Arc::new(UserConfig {
+            user_map.insert(ArcStr::from(*uid), Arc::new(UserConfig {
                 user_id: ArcStr::from(*uid),
                 user_name: ArcStr::from(*uname),
-            })));
+            }));
         }
         Arc::new(RwLock::new(WebMessengerRepo {
             messenger_id: ArcStr::from("web"),
             admin_name: ArcStr::from(admin_name),
             users: Arc::new(user_map),
-            groups: Arc::new(ArcSwapHashMap::new()),
+            groups: Arc::new(HashMap::new()),
             next_user_seq: 0,
             next_group_seq: 0,
         }))
@@ -752,12 +742,12 @@ mod tests {
     async fn test_resolve_names() {
         let config = test_repo("管理员", &[("u1", "用户1")]);
         // 注入一个普通群组 g1
-        let mut groups = ArcSwapHashMap::new();
-        groups.insert(ArcStr::from("g1"), ArcSwap::new(Arc::new(GroupConfig {
+        let mut groups = HashMap::new();
+        groups.insert(ArcStr::from("g1"), Arc::new(GroupConfig {
             group_id: ArcStr::from("g1"),
             group_name: ArcStr::from("研发群"),
             members: Arc::new(HashSet::new()),
-        })));
+        }));
         config.write().await.groups = Arc::new(groups);
 
         let (messenger, _dir) = make_messenger(config.clone());

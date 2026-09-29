@@ -9,7 +9,7 @@
 
 | 依赖 | 用途 |
 |------|------|
-| kissbot-api | 配置继承 merge 约定（`MergeBy` / `MergeSelf` / `MergeEffectiveConfig`）、`ArcSwapHashMap` |
+| kissbot-api | 配置继承 merge 约定（`MergeBy` / `MergeSelf` / `MergeEffectiveConfig`） |
 | kai-file | 会话缓存回读（`LineReader`） |
 | tokio / serde / serde_json / reqwest / chrono / thiserror / async-trait | 异步运行时、序列化、HTTP、时间戳、错误、异步 trait |
 

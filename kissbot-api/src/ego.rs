@@ -1,10 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
-use crate::ArcSwapHashMap;
 use crate::channel::ChannelUser;
 
 /// 保留 agent 的 memory-store/ego agent_id（"0"）
@@ -40,13 +39,13 @@ pub struct IndividualRelation {
 pub struct Individual {
     pub identifiers: Arc<HashSet<ChannelUser>>,
     pub relation: Arc<IndividualRelation>,
-    pub other_relations: Arc<ArcSwapHashMap<ArcStr, IndividualRelation>>,
+    pub other_relations: Arc<HashMap<ArcStr, Arc<IndividualRelation>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndividualRecognition {
     pub agent_id: ArcStr,
-    pub individual_map: Arc<ArcSwapHashMap<ArcStr, Individual>>,
+    pub individual_map: Arc<HashMap<ArcStr, Arc<Individual>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,14 +73,14 @@ pub struct Role {
 pub struct OtherRole {
     pub individual_name: ArcStr,
     pub role_relation: Arc<RoleRelation>,
-    pub other_role_relations: Arc<ArcSwapHashMap<ArcStr, RoleRelation>>,
+    pub other_role_relations: Arc<HashMap<ArcStr, Arc<RoleRelation>>>,
     pub description: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolePlay {
     pub role: Arc<Role>,
-    pub other_roles: Arc<ArcSwapHashMap<ArcStr, OtherRole>>,
+    pub other_roles: Arc<HashMap<ArcStr, Arc<OtherRole>>>,
 }
 
 // ========== Request Structures ==========
@@ -465,7 +464,7 @@ mod tests {
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         let obj = ReplaceIndividualsRequest {
             agent_id: ArcStr::from("a1"),
@@ -615,7 +614,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from("works together"),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from("A colleague"),
         });
         let obj = ReplaceOtherRolesRequest {

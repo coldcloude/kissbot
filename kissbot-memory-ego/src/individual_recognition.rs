@@ -1,10 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use arc_swap::ArcSwap;
 use arcstr::ArcStr;
-use kissbot_api::ArcSwapHashMap;
 use kissbot_api::IndividualEntry;
 use kissbot_api::IndividualRelationEntry;
 use kissbot_memory::DirectoryManager;
@@ -72,7 +71,7 @@ impl IndividualRecognitionManager {
             if !json_path.exists() {
                 let individuals = IndividualRecognition {
                     agent_id: ArcStr::from(agent_id),
-                    individual_map: Arc::new(ArcSwapHashMap::new()),
+                    individual_map: Arc::new(HashMap::new()),
                 };
                 let content = serde_json::to_string_pretty(&individuals)?;
                 tokio::fs::write(&json_path, content).await?;
@@ -139,14 +138,17 @@ impl IndividualRecognitionManager {
     {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             if let Some(individuals) = individuals_or_none {
-                if let Some(entry) = individuals.individual_map.get(individual_name) {
-                    let current = entry.load_full();
-                    let updated = op(current)?;
-                    entry.store(updated);
-                    Ok(individuals)
-                } else {
-                    Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
+                if !individuals.individual_map.contains_key(individual_name) {
+                    return Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)));
                 }
+                // 外部已持有 agent 写锁：先写时复制出可变的 individual_map，再 remove → 修改 → insert 回去
+                let mut individuals_arc = individuals;
+                let individuals_mut = Arc::make_mut(&mut individuals_arc);
+                let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
+                let current = individual_map.remove(individual_name).expect("已确认 individual 存在");
+                let updated = op(current)?;
+                individual_map.insert(ArcStr::from(individual_name), updated);
+                Ok(individuals_arc)
             } else {
                 Err(Error::AgentNotFound(ArcStr::from(agent_id)))
             }
@@ -161,7 +163,7 @@ impl IndividualRecognitionManager {
         let individuals = self.read_individual_recognition(agent_id).await?;
         let entry = individuals.individual_map.get(individual_name)
         .ok_or_else(|| Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))?;
-        Ok(entry.load().clone())
+        Ok(entry.clone())
     }
 
     pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<ArcStr>, mut insert_individuals: Vec<IndividualEntry>) -> Result<()> {
@@ -177,7 +179,7 @@ impl IndividualRecognitionManager {
                     individual_map.remove(name.as_str());
                 }
                 for entry in insert_individuals.drain(..) {
-                    individual_map.insert(entry.name, ArcSwap::new(entry.individual));
+                    individual_map.insert(entry.name, entry.individual);
                 }
                 Ok(individuals_new_arc)
             }
@@ -199,7 +201,7 @@ impl IndividualRecognitionManager {
                         let individuals_new = Arc::make_mut(&mut individuals_new_arc);
                         let individual_map = Arc::make_mut(&mut individuals_new.individual_map);
                         individual_map.remove(individual_name);
-                        individual_map.insert(ArcStr::from(new_name), ArcSwap::new(individual.load_full()));
+                        individual_map.insert(ArcStr::from(new_name), individual.clone());
                         Ok(individuals_new_arc)
                     } else {
                         Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))
@@ -238,7 +240,7 @@ impl IndividualRecognitionManager {
                 other_relations.remove(name.as_str());
             }
             for entry in insert_relations.drain(..) {
-                other_relations.insert(entry.individual_name, ArcSwap::new(entry.relation));
+                other_relations.insert(entry.individual_name, entry.relation);
             }
             Ok(individual_arc)
         }).await
@@ -300,7 +302,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent1",
@@ -324,7 +326,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-remove",
@@ -353,7 +355,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-rename",
@@ -380,7 +382,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from(""),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         let bob = Arc::new(Individual {
             identifiers: Arc::new(HashSet::new()),
@@ -388,7 +390,7 @@ use super::*;
                 relation: ArcStr::from("colleague"),
                 description: ArcStr::from(""),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-rename-exists",
@@ -414,7 +416,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         let result = manager.replace_individuals(
             "agent-invalid-ind",
@@ -436,7 +438,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-invalid-rel",
@@ -488,7 +490,7 @@ use super::*;
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
             }),
-            other_relations: Arc::new(ArcSwapHashMap::new()),
+            other_relations: Arc::new(HashMap::new()),
         });
         manager.replace_individuals(
             "agent-empty-rename",

@@ -10,7 +10,7 @@
 
 | 依赖 | 用途 |
 |------|------|
-| kissbot-api | `ApiResponse`、网络地址配置（memory-store 地址）、本组件的请求/响应类型、`ArcSwapHashMap` |
+| kissbot-api | `ApiResponse`、网络地址配置（memory-store 地址）、本组件的请求/响应类型 |
 | kissbot-config | 公共配置读取（本组件配置段） |
 | kissbot-security | API 认证（`X-Api-Key`） |
 | kissbot-memory-struct | 记忆结构框架接口 |

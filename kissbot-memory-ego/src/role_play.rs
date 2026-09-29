@@ -1,10 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use arc_swap::ArcSwap;
 use arcstr::ArcStr;
-use kissbot_api::ArcSwapHashMap;
 use kissbot_api::OtherRoleEntry;
 use kissbot_api::RoleKey;
 use kissbot_api::RoleRelationEntry;
@@ -96,7 +95,7 @@ impl RolePlayManager {
     async fn read_role_play_other_role(&self, agent_id: &str, role_name: &str, other_role_name: &str) -> Result<Arc<OtherRole>> {
         let role = self.read_role_play(agent_id, role_name).await?;
         let entry = role.other_roles.get(other_role_name).ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
-        Ok(entry.load().clone())
+        Ok(entry.clone())
     }
 
     async fn write_role_play_ref<F>(&self, agent_id: &str, role_name: &str, op: F) -> Result<()>
@@ -144,14 +143,17 @@ impl RolePlayManager {
     {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             if let Some(role) = role_or_none {
-                if let Some(entry) = role.other_roles.get(other_role_name) {
-                    let current = entry.load_full();
-                    let updated = op(current)?;
-                    entry.store(updated);
-                    Ok(role)
-                } else {
-                    Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
+                if !role.other_roles.contains_key(other_role_name) {
+                    return Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)));
                 }
+                // 外部已持有 role 写锁：先写时复制出可变的 other_roles，再 remove → 修改 → insert 回去
+                let mut role_arc = role;
+                let role_mut = Arc::make_mut(&mut role_arc);
+                let other_roles = Arc::make_mut(&mut role_mut.other_roles);
+                let current = other_roles.remove(other_role_name).expect("已确认 other role 存在");
+                let updated = op(current)?;
+                other_roles.insert(ArcStr::from(other_role_name), updated);
+                Ok(role_arc)
             } else {
                 Err(Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))
             }
@@ -204,7 +206,7 @@ impl RolePlayManager {
                             full_name: ArcStr::new(),
                             description,
                         }),
-                        other_roles: Arc::new(ArcSwapHashMap::new()),
+                        other_roles: Arc::new(HashMap::new()),
                     }))
                 }
             }
@@ -280,7 +282,7 @@ impl RolePlayManager {
                     other_roles.remove(name.as_str());
                 }
                 for entry in insert_other_roles.drain(..) {
-                    other_roles.insert(entry.role_name, ArcSwap::new(entry.other_role));
+                    other_roles.insert(entry.role_name, entry.other_role);
                 }
                 Ok(role_new_arc)
             }
@@ -303,7 +305,7 @@ impl RolePlayManager {
                         let role_new = Arc::make_mut(&mut role_new_arc);
                         let other_roles = Arc::make_mut(&mut role_new.other_roles);
                         other_roles.remove(other_role_name);
-                        other_roles.insert(ArcStr::from(new_name), ArcSwap::new(other_role.load_full()));
+                        other_roles.insert(ArcStr::from(new_name), other_role.clone());
                         Ok(role_new_arc)
                     } else {
                         Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))
@@ -361,7 +363,7 @@ impl RolePlayManager {
                 other_role_relations.remove(name.as_str());
             }
             for entry in insert_relations.drain(..) {
-                other_role_relations.insert(entry.role_name, ArcSwap::new(entry.relation));
+                other_role_relations.insert(entry.role_name, entry.relation);
             }
             Ok(other_role_arc)
         }).await
@@ -493,7 +495,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from("Works together"),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from("A colleague"),
         });
         manager.replace_other_roles(
@@ -520,7 +522,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         manager.replace_other_roles(
@@ -550,7 +552,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         manager.replace_other_roles(
@@ -582,7 +584,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         manager.replace_other_roles(
@@ -602,7 +604,7 @@ mod tests {
         ).await.unwrap();
         let bob = manager.get_other_role("agent-other-rel", "admin", "Bob").await.unwrap();
         let entry = bob.other_role_relations.get("enemy").unwrap();
-        let rel = entry.load();
+        let rel = entry;
         assert_eq!(rel.relation, "friend");
     }
 
@@ -647,7 +649,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         let result = manager.replace_other_roles(
@@ -673,7 +675,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         manager.replace_other_roles(
@@ -703,7 +705,7 @@ mod tests {
                 full_name: ArcStr::new(),
                 description: ArcStr::from(""),
             }),
-            other_role_relations: Arc::new(ArcSwapHashMap::new()),
+            other_role_relations: Arc::new(HashMap::new()),
             description: ArcStr::from(""),
         });
         manager.replace_other_roles(

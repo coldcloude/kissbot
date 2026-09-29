@@ -91,10 +91,10 @@ impl ProviderManager {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, OnceLock};
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use kissbot_api::ArcSwapHashMap;
     use kissbot_llm::{ModelConfig, ProviderModelConfig};
 
     use super::*;
@@ -167,7 +167,7 @@ mod tests {
                 timeout_secs: None,
                 retry_count: None,
             },
-            model_configs: Arc::new(ArcSwapHashMap::new()),
+            model_configs: Arc::new(HashMap::new()),
         }).await;
         let manager = ProviderManager::new();
         let err = manager.list_models("typo-provider").await.err().expect("未知 provider_type 应返回 Err");

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_api::{ArcSwapHashMap, MergeBy, MergeEffectiveConfig, MergeSelf};
+use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
 use serde::{Deserialize, Serialize};
 
 /// 模型默认请求超时（秒）
@@ -24,7 +25,7 @@ pub struct ProviderConfig {
 pub struct ProviderModelConfig {
     pub provider_config: Arc<ProviderConfig>,
     pub default_model_config: ModelConfig,
-    pub model_configs: Arc<ArcSwapHashMap<ArcStr, ModelConfig>>,  // key = model 标识
+    pub model_configs: Arc<HashMap<ArcStr, Arc<ModelConfig>>>,  // key = model 标识
 }
 
 /// 可继承模型参数（Option 覆盖字段；未配字段回落上一级：model → provider 默认 → 全局常量）
@@ -90,7 +91,7 @@ impl ProviderModelConfig {
     pub fn get_effective_config(&self, model_name: &str) -> EffectiveModelConfig {
         let mut config = self.default_model_config.clone();
         if let Some(model_config) = self.model_configs.get(model_name) {
-            config.merge(model_config.load().as_ref());
+            config.merge(model_config.as_ref());
         }
         let mut effective_config = EffectiveModelConfig::new(self.provider_config.clone());
         effective_config.merge(&config);
@@ -261,14 +262,14 @@ mod tests {
                 timeout_secs: Some(60),
                 retry_count: Some(3),
             },
-            model_configs: Arc::new(ArcSwapHashMap::new()),
+            model_configs: Arc::new(HashMap::new()),
         }
     }
 
-    /// 往 provider 的 model_configs 写入一条 model 覆盖（ArcSwapHashMap 写时复制）
+    /// 往 provider 的 model_configs 写入一条 model 覆盖（写时复制）
     fn with_model(mut provider: ProviderModelConfig, model: &str, config: ModelConfig) -> ProviderModelConfig {
         let map = Arc::make_mut(&mut provider.model_configs);
-        map.insert(ArcStr::from(model), arc_swap::ArcSwap::new(Arc::new(config)));
+        map.insert(ArcStr::from(model), Arc::new(config));
         provider
     }
 
@@ -328,7 +329,7 @@ mod tests {
         assert_eq!(back.default_model_config.max_tokens_usage, 128000);
         assert_eq!(back.default_model_config.timeout_secs, Some(60));
         assert_eq!(back.default_model_config.retry_count, Some(3));
-        let model = back.model_configs.get("deepseek-4-flash").expect("model 覆盖应回读").load_full();
+        let model = back.model_configs.get("deepseek-4-flash").expect("model 覆盖应回读").clone();
         assert_eq!(model.max_tokens_usage, 131072);
         assert_eq!(model.timeout_secs, Some(30));
     }

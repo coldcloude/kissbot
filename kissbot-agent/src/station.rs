@@ -145,10 +145,9 @@ impl Station {
         }
         // 子 Station：只存连接信息 + MCP 客户端（MCP 端点为 base_url + /mcp）
         for (id, scfg) in repo.sub_stations.iter() {
-            let scfg = scfg.load_full();
             let endpoint = format!("{}/mcp", scfg.base_url.trim_end_matches('/'));
             let sub = SubStation {
-                config: Arc::new((*scfg).clone()),
+                config: scfg.clone(),
                 client: McpClient::new(&endpoint, scfg.timeout_secs, Some(api_key)),
             };
             result.sub_stations.insert(id.clone(), Arc::new(sub));
@@ -318,7 +317,6 @@ impl McpHandler for Station {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arc_swap::ArcSwap;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
     use serde_json::json;
 
@@ -333,12 +331,12 @@ mod tests {
         let mut repo = StationRepo::default();
         repo.station_id = ArcStr::from("station-self");
         let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert(ArcStr::from("station-a"), ArcSwap::new(Arc::new(SubStationConfig {
+        map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
             station_id: ArcStr::from("station-a"),
             base_url: ArcStr::from("http://127.0.0.1:9001"),
             timeout_secs: 5,
             prefix: None,
-        })));
+        }));
         repo
     }
 
@@ -537,12 +535,12 @@ mod tests {
         let mut repo = StationRepo::default();
         repo.station_id = ArcStr::from("station-self");
         let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert(ArcStr::from("remote"), ArcSwap::new(Arc::new(SubStationConfig {
+        map.insert(ArcStr::from("remote"), Arc::new(SubStationConfig {
             station_id: ArcStr::from("remote"),
             base_url: ArcStr::from(base_url),
             timeout_secs: 5,
             prefix: prefix.map(ArcStr::from),
-        })));
+        }));
         repo
     }
 

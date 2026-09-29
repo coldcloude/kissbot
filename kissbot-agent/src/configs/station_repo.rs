@@ -1,7 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_api::ArcSwapHashMap;
 use serde::{Deserialize, Serialize};
 
 /// station 可改配置，持久化到 <data_dir>/station.json
@@ -18,7 +18,7 @@ pub struct StationRepo {
     /// 直接子 Station 集合（key = station_id；孙子由子进程自己递归，父不管）
     /// serde(default)：旧 station.json 缺省 sub_stations 时反序列化为空 map
     #[serde(default)]
-    pub sub_stations: Arc<ArcSwapHashMap<ArcStr, SubStationConfig>>,
+    pub sub_stations: Arc<HashMap<ArcStr, Arc<SubStationConfig>>>,
 }
 
 impl Default for StationRepo {
@@ -26,7 +26,7 @@ impl Default for StationRepo {
         Self {
             station_id: ArcStr::new(),
             groups: Vec::new(),
-            sub_stations: Arc::new(ArcSwapHashMap::new()),
+            sub_stations: Arc::new(HashMap::new()),
         }
     }
 }

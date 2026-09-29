@@ -14,9 +14,7 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> ArcStr {
 /// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
 pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<ChannelUser>>) -> ArcStr {
     let mut content = String::from("# Individual Recognition\n\n");
-    for (individual_name, individual_arcswap) in individuals.individual_map.iter() {
-        let individual = individual_arcswap.load();
-
+    for (individual_name, individual) in individuals.individual_map.iter() {
         let mut identifiers = String::new();
         for id in individual.identifiers.iter() {
             let matched = if let Some(ids) = ids { ids.contains(id) } else { true };
@@ -34,8 +32,7 @@ pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, 
             content.push_str(&identifiers);
 
             content.push_str("### Relations with Others\n");
-            for (rel_name, rel_arcswap) in individual.other_relations.iter() {
-                let rel = rel_arcswap.load();
+            for (rel_name, rel) in individual.other_relations.iter() {
                 content.push_str(&format!("#### {}\n", rel_name));
                 content.push_str(&format!("- **Relation**: {}\n", rel.relation));
                 content.push_str(&format!("- **Description**: {}\n", rel.description));
@@ -53,8 +50,7 @@ pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<Arc
     content.push_str(&format!("- **Self Role**: {}\n\n", role.role.role_name));
     content.push_str(&format!("- **Self Description**: {}\n", role.role.description));
 
-    for (other_role_name, other_role_arcswap) in role.other_roles.iter() {
-        let other_role = other_role_arcswap.load();
+    for (other_role_name, other_role) in role.other_roles.iter() {
         let matched = if let Some(ns) = individual_names { ns.contains(other_role.individual_name.as_str()) } else { true };
         if matched {
             content.push_str(&format!("## Known role: {}\n\n", other_role_name));
@@ -64,8 +60,7 @@ pub fn build_role_play_md(role: &RolePlay, individual_names: Option<&HashSet<Arc
             content.push_str(&format!("- **Relation with {} Description**: {}\n", role.role.role_name, other_role.role_relation.description));
 
             content.push_str(&format!("### {}'s relation with Others\n", other_role_name));
-            for (rel_name, rel_arcswap) in other_role.other_role_relations.iter() {
-                let rel = rel_arcswap.load();
+            for (rel_name, rel) in other_role.other_role_relations.iter() {
                 content.push_str(&format!("#### With {}\n\n", rel_name));
                 content.push_str(&format!("- **Relation**: {}\n", rel.relation));
                 content.push_str(&format!("- **Relation Description**: {}\n", rel.description));

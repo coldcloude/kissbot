@@ -160,10 +160,10 @@ mod tests {
     use kissbot_llm::{ModelConfig, ProviderConfig};
 
     use super::*;
+    use std::collections::HashMap;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use kissbot_api::ArcSwapHashMap;
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
@@ -179,7 +179,7 @@ mod tests {
                 timeout_secs: Some(60),
                 retry_count: Some(3),
             },
-            model_configs: Arc::new(ArcSwapHashMap::new()),
+            model_configs: Arc::new(HashMap::new()),
         }
     }
 

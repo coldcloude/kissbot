@@ -848,7 +848,6 @@ dependencies = [
 name = "kissbot-api"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "arcstr",
  "async-trait",
  "bytes",

@@ -1,10 +1,6 @@
-use std::collections::hash_map::Entry;
-use std::hash::Hash;
-use std::ops::DerefMut;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, ops::Deref};
 
-use arc_swap::ArcSwap;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::sync::RwLock;
@@ -30,103 +26,6 @@ impl<T> ApiResponse<T> {
             success: false,
             data: None,
             error: Some(message.into()),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    base: HashMap<K, ArcSwap<T>>
-}
-
-impl<K, T> ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    pub fn new() -> Self {
-        Self {
-            base: HashMap::new(),
-        }
-    }
-}
-
-impl<K, T> Default for ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<K, T> From<HashMap<K, ArcSwap<T>>> for ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    fn from(base: HashMap<K, ArcSwap<T>>) -> Self {
-        ArcSwapHashMap { base }
-    }
-}
-
-// 实现 Clone
-impl<K, T> Clone for ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    fn clone(&self) -> Self {
-        let mut new_map = HashMap::new();
-        for (k, arc_swap) in self.base.iter() {
-            let inner = arc_swap.load_full();
-            new_map.insert(k.clone(), ArcSwap::new(inner));
-        }
-        ArcSwapHashMap::from(new_map)
-    }
-}
-
-impl<K, T> Deref for ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    type Target = HashMap<K, ArcSwap<T>>;
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
-impl<K, T> DerefMut for ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.base
-    }
-}
-
-impl<K, T> ArcSwapHashMap<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-{
-    pub fn replace_exist(&self, key: &K, value: Arc<T>) -> Result<(),()> {
-        if let Some(arc_swap) = self.base.get(key) {
-            arc_swap.store(value);
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-
-    pub fn replace(&mut self, key: &K, value: Arc<T>) {
-        match self.base.entry(key.clone()) {
-            Entry::Occupied(entry) => {
-                entry.get().store(value);
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(ArcSwap::new(value));
-            }
         }
     }
 }

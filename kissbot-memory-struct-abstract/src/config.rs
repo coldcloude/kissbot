@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
-use kissbot_api::ArcSwapHashMap;
 use kissbot_api::MergeEffectiveConfig;
 use kissbot_llm::{
     EffectiveLLMConfig, EffectiveModelConfig, LLMConfig, ModelConfig, ProviderConfig,
@@ -68,7 +68,7 @@ pub struct Config {
     pub default_model_config: ModelConfig,
     /// 单模型覆盖
     #[serde(default)]
-    pub model_configs: Arc<ArcSwapHashMap<ArcStr, ModelConfig>>,
+    pub model_configs: Arc<HashMap<ArcStr, Arc<ModelConfig>>>,
     /// LLM 请求参数（provider / model / 生成参数）
     pub llm: LLMConfig,
 }

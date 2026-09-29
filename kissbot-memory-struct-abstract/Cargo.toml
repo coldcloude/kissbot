@@ -9,7 +9,6 @@ serde = { version = "1.0", features = ["derive","rc"] }
 serde_json = "1.0"
 futures-util = "0.3"
 arcstr = { version = "1.2", features = ["serde"] }
-arc-swap = { version = "1.9", features = ["serde"] }
 dashmap = { version = "6.1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["macros"] }
