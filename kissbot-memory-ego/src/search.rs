@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use dashmap::{DashMap, DashSet};
 use futures_util::future;
-use kai_index::document::{to_document, AsStr};
+use kai_index::document::to_document;
 use kai_index::prefix_completion::{SimplePrefixCompletion, CompletionResult, PrefixCompletion};
 use kai_index::{Document, SubstringIndex};
 use kissbot_api::RoleKey;
@@ -15,32 +15,21 @@ use kissbot_api::AgentMetadata;
 use crate::role_play::RolePlayManager;
 use kissbot_api::Role;
 
-/// 索引文档内容：kai-index 的 `Document<S>` 要求内容类型实现 `AsStr`，而 `ArcStr` 未实现该 trait，
-/// 此薄包装在 `ArcStr` 上补出该实现，克隆仅增加引用计数。
-#[derive(Clone)]
-struct IndexContent(ArcStr);
-
-impl AsStr for IndexContent {
-    fn as_string(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
 /// 全文索引文档：内容由 `ArcStr` 组成。
 struct IndexDocument {
-    value: Vec<IndexContent>,
+    value: Vec<ArcStr>,
 }
 
 impl IndexDocument {
     fn new(contents: &[ArcStr]) -> Self {
         Self {
-            value: contents.iter().cloned().map(IndexContent).collect(),
+            value: contents.to_vec(),
         }
     }
 }
 
-impl Document<IndexContent> for IndexDocument {
-    fn contents(&self) -> &Vec<IndexContent> {
+impl Document<ArcStr> for IndexDocument {
+    fn contents(&self) -> &Vec<ArcStr> {
         &self.value
     }
 }

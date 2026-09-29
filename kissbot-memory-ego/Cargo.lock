@@ -691,6 +691,7 @@ dependencies = [
 name = "kai-index"
 version = "0.1.0"
 dependencies = [
+ "arcstr",
  "dashmap",
  "parking_lot",
  "serde",
