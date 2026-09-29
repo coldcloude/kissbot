@@ -206,8 +206,9 @@ impl WebMessenger {
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
             let users = Arc::make_mut(&mut repo.users);
-            write(users, user_id, |user: &mut UserConfig| user.user_name = ArcStr::from(new_name))
-                .ok_or_else(|| Error::UserNotFound(ArcStr::from(user_id)))?;
+            if !write(users, user_id, |user: &mut UserConfig| user.user_name = ArcStr::from(new_name)) {
+                return Err(Error::UserNotFound(ArcStr::from(user_id)));
+            }
             Ok(())
         }).await
     }
@@ -290,8 +291,9 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            write(groups, group_id, |group: &mut GroupConfig| group.group_name = ArcStr::from(new_name))
-                .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
+            if !write(groups, group_id, |group: &mut GroupConfig| group.group_name = ArcStr::from(new_name)) {
+                return Err(Error::GroupNotFound(ArcStr::from(group_id)));
+            }
             Ok(())
         }).await
     }
@@ -301,7 +303,7 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            write(groups, group_id, |group: &mut GroupConfig| {
+            let written = write(groups, group_id, |group: &mut GroupConfig| {
                 let members = Arc::make_mut(&mut group.members);
                 for id in add_ids {
                     members.insert(id.clone());
@@ -309,7 +311,10 @@ impl WebMessenger {
                 for id in remove_ids {
                     members.remove(id);
                 }
-            }).ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
+            });
+            if !written {
+                return Err(Error::GroupNotFound(ArcStr::from(group_id)));
+            }
             Ok(())
         }).await?;
         // 通知成员变更

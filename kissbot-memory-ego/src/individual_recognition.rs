@@ -135,7 +135,7 @@ impl IndividualRecognitionManager {
 
     async fn write_individual_ref<F>(&self, agent_id: &str, individual_name: &str, op: F) -> Result<()>
     where
-        F: FnOnce(&mut Individual) -> Result<()>,
+        F: FnOnce(&mut Individual),
     {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
             let individuals = individuals_or_none.ok_or_else(|| Error::AgentNotFound(ArcStr::from(agent_id)))?;
@@ -143,8 +143,9 @@ impl IndividualRecognitionManager {
             let mut individuals_arc = individuals;
             let individuals_mut = Arc::make_mut(&mut individuals_arc);
             let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
-            write(individual_map, individual_name, op)
-                .ok_or_else(|| Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))??;
+            if !write(individual_map, individual_name, op) {
+                return Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)));
+            }
             Ok(individuals_arc)
         }).await
     }
@@ -216,7 +217,6 @@ impl IndividualRecognitionManager {
             for identifier in insert_identifiers.drain(..) {
                 identifiers.insert(identifier);
             }
-            Ok(())
         }).await
     }
 
@@ -233,7 +233,6 @@ impl IndividualRecognitionManager {
             for entry in insert_relations.drain(..) {
                 other_relations.insert(entry.individual_name, entry.relation);
             }
-            Ok(())
         }).await
     }
 }

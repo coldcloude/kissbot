@@ -140,7 +140,7 @@ impl RolePlayManager {
 
     async fn write_role_play_other_role_ref<F>(&self, agent_id: &str, role_name: &str, other_role_name: &str, op: F) -> Result<()>
     where
-        F: FnOnce(&mut OtherRole) -> Result<()>,
+        F: FnOnce(&mut OtherRole),
     {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
             let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
@@ -148,8 +148,9 @@ impl RolePlayManager {
             let mut role_arc = role;
             let role_mut = Arc::make_mut(&mut role_arc);
             let other_roles = Arc::make_mut(&mut role_mut.other_roles);
-            write(other_roles, other_role_name, op)
-                .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))??;
+            if !write(other_roles, other_role_name, op) {
+                return Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)));
+            }
             Ok(role_arc)
         }).await
     }
@@ -381,7 +382,6 @@ impl RolePlayManager {
             for entry in insert_relations.drain(..) {
                 other_role_relations.insert(entry.role_name, entry.relation);
             }
-            Ok(())
         }).await
     }
 }

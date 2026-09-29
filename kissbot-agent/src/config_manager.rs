@@ -289,8 +289,9 @@ impl ConfigManager {
     {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            write(channels, channel_id, f)
-                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
+            if !write(channels, channel_id, f) {
+                return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+            }
             Ok(())
         }).await
     }
@@ -415,9 +416,12 @@ impl ConfigManager {
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            write(channels, channel_id, |ch: &mut ChannelConfig| {
+            let written = write(channels, channel_id, |ch: &mut ChannelConfig| {
                 Arc::make_mut(&mut ch.admins).insert(admin.clone());
-            }).ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
+            });
+            if !written {
+                return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+            }
             Ok(())
         }).await
     }
@@ -427,9 +431,12 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
             let target = ChannelUser { messenger_id: ArcStr::from(messenger_id), user_id: ArcStr::from(user_id) };
-            write(channels, channel_id, |ch: &mut ChannelConfig| {
+            let written = write(channels, channel_id, |ch: &mut ChannelConfig| {
                 Arc::make_mut(&mut ch.admins).remove(&target);
-            }).ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
+            });
+            if !written {
+                return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+            }
             Ok(())
         }).await
     }
