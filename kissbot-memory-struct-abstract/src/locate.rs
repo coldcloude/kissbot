@@ -17,7 +17,7 @@ use crate::records::render_content;
 /// 分组按各组首条消息下标升序，case 按首次出现顺序去重。
 pub(crate) fn merge_located(
     mut located: Vec<(usize, ChannelKey, LocatedGroup)>,
-    current_cases: &BTreeMap<ChannelKey, ArcStr>,
+    current_cases: &BTreeMap<Arc<ChannelKey>, ArcStr>,
 ) -> LocateResponse {
     located.sort_by_key(|(first, _, _)| *first);
 
@@ -43,10 +43,10 @@ pub(crate) fn merge_located(
 }
 
 /// 按通道分组消息下标（通道按三元组升序，组内下标升序）
-pub(crate) fn group_indices_by_channel(messages: &[LocateMessage]) -> Vec<(ChannelKey, Vec<usize>)> {
-    let mut by_channel: BTreeMap<ChannelKey, Vec<usize>> = BTreeMap::new();
+pub(crate) fn group_indices_by_channel(messages: &[LocateMessage]) -> Vec<(Arc<ChannelKey>, Vec<usize>)> {
+    let mut by_channel: BTreeMap<Arc<ChannelKey>, Vec<usize>> = BTreeMap::new();
     for (index, message) in messages.iter().enumerate() {
-        by_channel.entry(message.channel()).or_default().push(index);
+        by_channel.entry(Arc::new(message.channel())).or_default().push(index);
     }
     by_channel.into_iter().collect()
 }
@@ -166,7 +166,7 @@ mod tests {
                 let first = *global.first().expect("分组非空（parse_groups 保证）");
                 located.push((
                     first,
-                    channel.clone(),
+                    channel.as_ref().clone(),
                     LocatedGroup { messages: global, case_name: group.case_name, is_current: false },
                 ));
             }

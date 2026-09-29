@@ -62,19 +62,13 @@ trait AsRoleKey {
     fn as_role_key(&self) -> &RoleKey;
 }
 
-impl AsRoleKey for RoleKey {
+impl AsRoleKey for Arc<RoleKey> {
     fn as_role_key(&self) -> &RoleKey {
         self
     }
 }
 
-impl AsRoleKey for &RoleKey {
-    fn as_role_key(&self) -> &RoleKey {
-        self
-    }
-}
-
-impl AsRoleKey for CompletionResult<RoleKey> {
+impl AsRoleKey for CompletionResult<Arc<RoleKey>> {
     fn as_role_key(&self) -> &RoleKey {
         &self.key
     }
@@ -100,10 +94,10 @@ pub struct SearchManager {
     name_descr_index: Arc<RwLock<SubstringIndex<ArcStr>>>,
     name_completion: SimplePrefixCompletion<ArcStr>,
     search_metadata: DashMap<ArcStr, SearchMetadata>,
-    role_dirty: DashSet<RoleKey>,
-    role_name_descr_index: Arc<RwLock<SubstringIndex<RoleKey>>>,
-    role_name_completion: SimplePrefixCompletion<RoleKey>,
-    role_search_metadata: DashMap<RoleKey, RoleSearchMetadata>,
+    role_dirty: DashSet<Arc<RoleKey>>,
+    role_name_descr_index: Arc<RwLock<SubstringIndex<Arc<RoleKey>>>>,
+    role_name_completion: SimplePrefixCompletion<Arc<RoleKey>>,
+    role_search_metadata: DashMap<Arc<RoleKey>, RoleSearchMetadata>,
 }
 
 static SEARCH_MANAGER_INSTANCE: OnceCell<SearchManager> = OnceCell::const_new();
@@ -234,12 +228,12 @@ impl SearchManager {
     }
 
     pub async fn force_sync_role(&self, agent_id: &str, role_name: &str) {
-        let role_key = RoleKey {
+        let role_key = Arc::new(RoleKey {
             agent_id: ArcStr::from(agent_id),
             role_name: ArcStr::from(role_name),
-        };
+        });
         //取得旧索引值
-        let old_search_metadata_or_none = self.role_search_metadata.remove(&role_key);
+        let old_search_metadata_or_none = self.role_search_metadata.remove(role_key.as_ref());
         let old_name_or_none = match old_search_metadata_or_none.as_ref() {
             Some((_, old_search_metadata)) => Some(old_search_metadata.value[0].clone()),
             None => None,
@@ -295,7 +289,7 @@ impl SearchManager {
                 guard.insert(&role_key, &IndexDocument::new(&new_search_metadata.value));
             }
             //保存search_metadata
-            self.role_search_metadata.insert(role_key, new_search_metadata);
+            self.role_search_metadata.insert(role_key.clone(), new_search_metadata);
         }
         else {
             //移除旧名称补全索引
@@ -312,18 +306,18 @@ impl SearchManager {
     }
 
     pub async fn sync_role(&self, agent_id: &str, role_name: &str) {
-        let role_key = RoleKey {
+        let role_key = Arc::new(RoleKey {
             agent_id: ArcStr::from(agent_id),
             role_name: ArcStr::from(role_name),
-        };
-        if self.role_dirty.remove(&role_key).is_some() {
+        });
+        if self.role_dirty.remove(role_key.as_ref()).is_some() {
             self.force_sync_role(agent_id, role_name).await;
         }
     }
 
     pub async fn sync_all_roles(&self) {
         while !self.role_dirty.is_empty() {
-            let keys: Vec<RoleKey> = self.role_dirty.iter().map(|r| r.clone()).collect();
+            let keys: Vec<Arc<RoleKey>> = self.role_dirty.iter().map(|r| r.clone()).collect();
             for role_key in keys {
                 self.sync_role(&role_key.agent_id, &role_key.role_name).await;
             }
@@ -346,14 +340,14 @@ impl SearchManager {
     }
 
     pub fn mark_role_dirty(&self, agent_id: &str, role_name: &str) {
-        let role_key = RoleKey {
+        let role_key = Arc::new(RoleKey {
             agent_id: ArcStr::from(agent_id),
             role_name: ArcStr::from(role_name),
-        };
+        });
         self.role_dirty.insert(role_key);
     }
 
-    pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<RoleKey> {
+    pub async fn search_role_by_description(&self, query: &str, agent_id: Option<&str>) -> Vec<Arc<RoleKey>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索
@@ -362,7 +356,7 @@ impl SearchManager {
         filter_results(results, agent_id)
     }
 
-    pub async fn role_name_completion(&self, query: &str, agent_id: Option<&str>) -> Vec<CompletionResult<RoleKey>> {
+    pub async fn role_name_completion(&self, query: &str, agent_id: Option<&str>) -> Vec<CompletionResult<Arc<RoleKey>>> {
         //先同步脏数据
         self.sync_all_roles().await;
         //搜索

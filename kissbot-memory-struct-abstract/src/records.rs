@@ -193,8 +193,8 @@ pub struct StoreView {
 
 impl StoreView {
     /// 记录中出现过的全部通道（按三元组升序）
-    pub fn known_channels(&self) -> BTreeSet<ChannelKey> {
-        self.channels.iter().flatten().cloned().collect()
+    pub fn known_channels(&self) -> BTreeSet<Arc<ChannelKey>> {
+        self.channels.iter().flatten().cloned().map(Arc::new).collect()
     }
 
     /// 某通道水位之后的待归档记录（按 (time, sn) 升序）
@@ -555,7 +555,10 @@ mod tests {
         let view = StoreView { records, channels };
         let web_g1 = ChannelKey::new("web", "self", "g1");
         let web_g2 = ChannelKey::new("web", "self2", "g2");
-        assert_eq!(view.known_channels().iter().cloned().collect::<Vec<_>>(), vec![web_g1.clone(), web_g2.clone()]);
+        assert_eq!(
+            view.known_channels().iter().map(|channel| channel.as_ref().clone()).collect::<Vec<_>>(),
+            vec![web_g1.clone(), web_g2.clone()]
+        );
 
         // 无水位：该通道的全部记录（含按 key 认领的思考记录）
         let all = view.pending_for(&web_g1, &Watermark::default());

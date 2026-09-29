@@ -271,4 +271,59 @@ mod tests {
         assert!(!deserialized.success);
         assert_eq!(deserialized.error.unwrap(), "something went wrong");
     }
+
+    /// Map key / Set 元素用 `Arc<K>` 时，std 已经提供了内容语义的比较与 `Borrow<K>`：
+    /// - `PartialEq` / `Eq` / `Hash` / `Ord` 都转发到 `K`，因此两把内容相同的 `Arc<K>`
+    ///   是同一个 key（不是按指针区分）；
+    /// - `Borrow<K> for Arc<K>` 使 `get` / `contains` / `remove` 可以直接传 `&K`，
+    ///   只有 `insert` / `entry` 需要传 `Arc<K>`。
+    /// 因此无需为 `Arc<K>` 自定义这些 trait。`ArcStr` 同理（`Borrow<str>` + 内容比较）。
+    #[test]
+    fn arc_key_is_content_keyed_and_borrow_queryable() {
+        use std::collections::{BTreeMap, HashMap, HashSet};
+
+        use crate::{ChannelKey, ChannelUser, RoleKey};
+
+        let make_key = || Arc::new(RoleKey {
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from("dev"),
+        });
+        let a = make_key();
+        let b = make_key();
+        assert!(!Arc::ptr_eq(&a, &b), "两次构造是不同分配");
+        assert_eq!(a, b, "Arc<K> 按内容比较而非指针");
+
+        // 内容相同的两把 Arc<K> 命中同一个 key
+        let mut map: HashMap<Arc<RoleKey>, u32> = HashMap::new();
+        map.insert(a, 1);
+        map.insert(b, 2);
+        assert_eq!(map.len(), 1, "内容相同的 key 覆盖同一项");
+
+        // 查询只需 &RoleKey（Borrow<K> for Arc<K>）
+        let probe = RoleKey { agent_id: ArcStr::from("a1"), role_name: ArcStr::from("dev") };
+        assert_eq!(map.get(&probe), Some(&2));
+        assert!(map.contains_key(&probe));
+        map.remove(&probe);
+        assert!(map.is_empty());
+
+        // BTreeMap 的 Ord 同样按内容
+        let ck = |g: &str| Arc::new(ChannelKey::new("web", "self1", g));
+        let mut tree: BTreeMap<Arc<ChannelKey>, u32> = BTreeMap::new();
+        tree.insert(ck("g1"), 7);
+        tree.insert(ck("g0"), 8);
+        assert_eq!(tree.get(&ChannelKey::new("web", "self1", "g1")), Some(&7));
+        assert_eq!(tree.first_key_value().unwrap().0.as_ref(), &ChannelKey::new("web", "self1", "g0"));
+
+        // Set 元素：contains 传 &K
+        let user = ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") };
+        let mut set: HashSet<Arc<ChannelUser>> = HashSet::new();
+        set.insert(Arc::new(user.clone()));
+        assert!(set.contains(&user));
+        assert!(set.remove(&user));
+
+        // ArcStr 作为 key：get 直接传 &str
+        let mut smap: HashMap<ArcStr, u32> = HashMap::new();
+        smap.insert(ArcStr::from("k"), 1);
+        assert_eq!(smap.get("k"), Some(&1));
+    }
 }

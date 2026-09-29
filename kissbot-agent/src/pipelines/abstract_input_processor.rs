@@ -45,7 +45,7 @@ pub struct AbstractAgentInputProcessor {
     /// 摘要记忆客户端（装配时注入；单测可传空地址实例）
     client: Arc<AbstractClient>,
     /// 各 channel 的待处理批次（accept 写入，tick 任务取走）
-    batches: Arc<DashMap<ChannelKey, PendingBatch>>,
+    batches: Arc<DashMap<Arc<ChannelKey>, PendingBatch>>,
     /// 会话销毁通知（Drop 时 notify_one → tick 任务退出）
     notify: Arc<Notify>,
 }
@@ -60,7 +60,7 @@ fn event_channel(event: &IncomingMessageEvent) -> ChannelKey {
 }
 
 /// 已超时的 channel 列表：最后一条消息到达时间距现在已超过 timeout
-fn due_channels(batches: &DashMap<ChannelKey, PendingBatch>, timeout: Duration) -> Vec<ChannelKey> {
+fn due_channels(batches: &DashMap<Arc<ChannelKey>, PendingBatch>, timeout: Duration) -> Vec<Arc<ChannelKey>> {
     batches
         .iter()
         .filter(|entry| entry.value().last_at.elapsed() >= timeout)
@@ -212,7 +212,7 @@ impl AbstractAgentInputProcessor {
         let now = Instant::now();
         let mut batch = self
             .batches
-            .entry(key)
+            .entry(Arc::new(key))
             .or_insert_with(|| PendingBatch { cases: Vec::new(), last_at: now });
         batch.cases.push(event);
         batch.last_at = now;
@@ -225,7 +225,7 @@ async fn tick_loop(
     session_key: Arc<SessionKey>,
     session: Arc<Session>,
     client: Arc<AbstractClient>,
-    batches: Arc<DashMap<ChannelKey, PendingBatch>>,
+    batches: Arc<DashMap<Arc<ChannelKey>, PendingBatch>>,
     notify: Arc<Notify>,
 ) {
     let mut ticker = tokio::time::interval(Duration::from_secs(TICK_INTERVAL_SECS));
@@ -241,13 +241,13 @@ async fn tick_loop(
         // 超时阈值取会话配置（与普通合批同一项配置）
         let timeout = Duration::from_secs(
             ConfigManager::get()
-                .session_config::<ChannelBatchConfig, ChannelBatchConfig>(&session_key)
+                .session_config::<ChannelBatchConfig, ChannelBatchConfig>(session_key.clone())
                 .await
                 .channel_batch_interval_secs,
         );
         for channel in due_channels(&batches, timeout) {
-            let Some((_, batch)) = batches.remove(&channel) else { continue };
-            flush_batch(&session_key, &session, &client, &channel, batch.cases).await;
+            let Some((_, batch)) = batches.remove(channel.as_ref()) else { continue };
+            flush_batch(&session_key, &session, &client, channel.as_ref(), batch.cases).await;
         }
     }
 }
@@ -260,19 +260,19 @@ async fn flush_batch(
     channel: &ChannelKey,
     events: Vec<Arc<IncomingMessageEvent>>,
 ) {
-    match build_context(session_key, client, &events).await {
+    match build_context(Arc::clone(session_key), client, &events).await {
         Ok(messages) => session.context_archive_and_clear_cache_and_reset_messages(messages).await,
         Err(e) => warn!(
             "摘要记忆重建上下文失败，降级为普通合批（channel={}:{}:{}）: {:?}",
             channel.messenger_id, channel.self_user_id, channel.group_id, e
         ),
     }
-    let _ = Nexus::get().run_pipeline(session_key.as_ref(), pack_batch(&events)).await;
+    let _ = Nexus::get().run_pipeline(Arc::clone(session_key), pack_batch(&events)).await;
 }
 
 /// 用摘要记忆重建上下文：定位 case → 各 case 摘要 + case 结尾原文副本 → 时间窗与去重 → 组装消息
 async fn build_context(
-    session_key: &SessionKey,
+    session_key: Arc<SessionKey>,
     client: &Arc<AbstractClient>,
     events: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
@@ -282,7 +282,7 @@ async fn build_context(
     let messages: Vec<LocateMessage> = events.iter().map(|e| locate_message(e.as_ref())).collect();
     let located = client.locate(agent_id, role_event, messages).await?;
     let cfg = ConfigManager::get()
-        .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key)
+        .session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_key.clone())
         .await;
     // 2. 逐个取 case 摘要与结尾若干条原文副本（都按 case 名查询，读取摘要不会重算摘要）；
     //    摘要为空的 case（历史遗留数据）跳过，不进上下文
@@ -433,15 +433,15 @@ mod tests {
     fn due_channels_only_returns_timed_out() {
         let batches = DashMap::new();
         batches.insert(
-            ChannelKey::new("web", "self", "g1"),
+            Arc::new(ChannelKey::new("web", "self", "g1")),
             PendingBatch { cases: vec![], last_at: Instant::now() },
         );
         batches.insert(
-            ChannelKey::new("web", "self", "g2"),
+            Arc::new(ChannelKey::new("web", "self", "g2")),
             PendingBatch { cases: vec![], last_at: Instant::now() - Duration::from_secs(10) },
         );
         let due = due_channels(&batches, Duration::from_secs(3));
-        assert_eq!(due, vec![ChannelKey::new("web", "self", "g2")], "只有超时 channel 被触发");
+        assert_eq!(due, vec![Arc::new(ChannelKey::new("web", "self", "g2"))], "只有超时 channel 被触发");
     }
 
     #[tokio::test]
@@ -536,7 +536,7 @@ mod tests {
         // 摘要记忆未配置：build_context 返回 Err（调用方据此降级为普通合批）
         let processor = test_processor();
         let err = build_context(
-            &processor.session_key,
+            processor.session_key.clone(),
             &processor.client,
             &[ev("u1", "a", "2026-09-23 10:00:00")],
         )

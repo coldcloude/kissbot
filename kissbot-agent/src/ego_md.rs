@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use arcstr::ArcStr;
 use kissbot_api::{AgentMetadata, ChannelUser, IndividualRecognition, RolePlay};
@@ -12,7 +12,7 @@ pub fn build_ego_identity_md(metadata: &AgentMetadata) -> ArcStr {
 }
 
 /// 由 IndividualRecognition 生成系统提示词 markdown（个体识别，按 ids 过滤展示的标识）
-pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<ChannelUser>>) -> ArcStr {
+pub fn build_ego_individual_recognition_md(individuals: &IndividualRecognition, ids: Option<&HashSet<Arc<ChannelUser>>>) -> ArcStr {
     let mut content = String::from("# Individual Recognition\n\n");
     for (individual_name, individual) in individuals.individual_map.iter() {
         let mut identifiers = String::new();

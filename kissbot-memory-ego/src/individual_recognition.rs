@@ -215,7 +215,7 @@ impl IndividualRecognitionManager {
                 identifiers.remove(&identifier);
             }
             for identifier in insert_identifiers.drain(..) {
-                identifiers.insert(identifier);
+                identifiers.insert(Arc::new(identifier));
             }
         }).await
     }

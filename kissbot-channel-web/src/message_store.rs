@@ -29,7 +29,7 @@ pub struct LineMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupedMessages {
-    pub key: MsgKey,
+    pub key: Arc<MsgKey>,
     pub messages: Vec<LineMessage>,
 }
 
@@ -48,7 +48,8 @@ pub struct TimeRangeQuery {
     pub end: ArcStr,
 }
 
-type GroupIndex = FileIndexContext<TimeRangeQuery, MsgKey, IncomingMessage, MessageParser>;
+// 索引 key 为 Arc<MsgKey>：普通 MsgKey 只在边界处包一次 Arc，容器内一律复用同一把 Arc
+type GroupIndex = FileIndexContext<TimeRangeQuery, Arc<MsgKey>, IncomingMessage, MessageParser>;
 
 // ========== FilePathGenerator / QueryParser ==========
 
@@ -63,24 +64,24 @@ impl MessageParser {
 }
 
 #[async_trait::async_trait]
-impl FilePathGenerator<MsgKey> for MessageParser {
-    async fn get_path(&self, key: &MsgKey) -> std::result::Result<PathBuf, kai_file::Error> {
+impl FilePathGenerator<Arc<MsgKey>> for MessageParser {
+    async fn get_path(&self, key: &Arc<MsgKey>) -> std::result::Result<PathBuf, kai_file::Error> {
         Ok(self.base_dir
             .join(key.group_id.as_str())
             .join(format!("{}.jsonl", key.date)))
     }
 }
 
-impl QueryParser<TimeRangeQuery, MsgKey> for MessageParser {
-    fn parse_query(&self, query: TimeRangeQuery) -> Vec<(MsgKey, (String, String))> {
+impl QueryParser<TimeRangeQuery, Arc<MsgKey>> for MessageParser {
+    fn parse_query(&self, query: TimeRangeQuery) -> Vec<(Arc<MsgKey>, (String, String))> {
         let mut keys = Vec::new();
         if let Ok(mut ranges) = get_date_time_segments(&query.start, &query.end) {
             for range in ranges.drain(..) {
                 let date = ArcStr::from(as_date(range.0.as_str()));
-                keys.push((MsgKey {
+                keys.push((Arc::new(MsgKey {
                     group_id: query.group_id.clone(),
                     date,
-                }, range));
+                }), range));
             }
         }
         keys
@@ -97,8 +98,8 @@ pub struct MessageFileWriterContext {
 }
 
 #[async_trait]
-impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterContext {
-    async fn write(&mut self, key: &MsgKey, mut records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<Arc<MsgKey>, IncomingMessage> for MessageFileWriterContext {
+    async fn write(&mut self, key: &Arc<MsgKey>, mut records: Vec<IncomingMessage>) -> std::result::Result<(), kai_file::Error> {
         let mut time = ArcStr::from(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         if key.date.as_str() != as_date(time.as_str()) {
             time = ArcStr::from(format!("{} 23:59:59", key.date.as_str()));
@@ -131,6 +132,7 @@ impl FileAppendWriterContext<MsgKey, IncomingMessage> for MessageFileWriterConte
         }
 
         if let Some(index) = self.index.upgrade() {
+            // 索引 key 为 Arc<MsgKey>：在 key 边界从普通 MsgKey 包一次 Arc
             index.mark_obsolete(key);
         }
 
@@ -148,7 +150,7 @@ pub struct MessageStore {
     index: Arc<GroupIndex>,
     date_sets: Arc<DashMap<ArcStr, BTreeSet<ArcStr>>>,
     stored_sender: Sender<Vec<IncomingMessage>>,
-    map: Arc<Mutex<HashMap<MsgKey, Weak<Mutex<MessageFileWriterContext>>>>>,
+    map: Arc<Mutex<HashMap<Arc<MsgKey>, Weak<Mutex<MessageFileWriterContext>>>>>,
 }
 
 impl MessageStore {
@@ -166,37 +168,25 @@ impl MessageStore {
 }
 
 #[async_trait]
-impl FileAppendWriter<MsgKey, IncomingMessage, MessageFileWriterContext> for MessageStore {
-    async fn get_lock(&self, key: &MsgKey) -> Arc<Mutex<MessageFileWriterContext>> {
+impl FileAppendWriter<Arc<MsgKey>, IncomingMessage, MessageFileWriterContext> for MessageStore {
+    async fn get_lock(&self, key: &Arc<MsgKey>) -> Arc<Mutex<MessageFileWriterContext>> {
         let mut guard = self.map.lock().await;
-        match guard.entry(key.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                match entry.get().upgrade() {
-                    Some(lock) => {
-                        lock
-                    }
-                    None => {
-                        let ctx = self.create_context(&key);
-                        let lock = Arc::new(Mutex::new(ctx));
-                        entry.insert(Arc::downgrade(&lock));
-                        lock
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let ctx = self.create_context(&key);
-                let lock = Arc::new(Mutex::new(ctx));
-                entry.insert(Arc::downgrade(&lock));
-                lock
-            }
+        // 只读查询传 &MsgKey（Arc<MsgKey>: Borrow<MsgKey>），存活则复用既有写入锁
+        if let Some(lock) = guard.get(key.as_ref()).and_then(|entry| entry.upgrade()) {
+            return lock;
         }
+        // 插入边界：调用方已持有 Arc<MsgKey>，clone 只增加引用计数
+        let ctx = self.create_context(key.as_ref());
+        let lock = Arc::new(Mutex::new(ctx));
+        guard.insert(key.clone(), Arc::downgrade(&lock));
+        lock
     }
 
-    async fn remove_lock(&self, key: &MsgKey) {
+    async fn remove_lock(&self, key: &Arc<MsgKey>) {
         let mut guard = self.map.lock().await;
-        if let Some(entry) = guard.get(key) {
+        if let Some(entry) = guard.get(key.as_ref()) {
             if entry.strong_count() == 0 {
-                guard.remove(key);
+                guard.remove(key.as_ref());
             }
         }
     }
@@ -226,10 +216,11 @@ impl MessageStore {
         if let Some(dates) = self.date_sets.get(group_id) {
             for date in dates.iter().rev() {
                 if remaining == 0 { break; }
-                let key = MsgKey {
+                // key 边界：同一把 Arc<MsgKey> 既用于查询，也作为结果的分组 key
+                let key = Arc::new(MsgKey {
                     group_id: ArcStr::from(group_id),
                     date: date.clone(),
-                };
+                });
                 let msgs = self.index.query_last(&key, remaining).await?;
                 if !msgs.is_empty() {
                     let count = msgs.len() as u32;
@@ -250,6 +241,8 @@ impl MessageStore {
         let mut remaining = n;
         let mut results: Vec<GroupedMessages> = Vec::new();
 
+        // key 边界：普通 MsgKey 包一次 Arc，查询与结果分组复用同一把 Arc
+        let key = Arc::new(key);
         let query_line = line.saturating_sub(1);
         if query_line > 0 {
             let msgs = self.index.query_before(&key, query_line, remaining).await?;
@@ -271,10 +264,10 @@ impl MessageStore {
                     let prev = dates.range::<str, _>((Bound::Unbounded, Bound::Excluded(cursor.as_str()))).next_back();
                     match prev {
                         Some(prev_date) => {
-                            let prev_key = MsgKey {
+                            let prev_key = Arc::new(MsgKey {
                                 group_id: key.group_id.clone(),
                                 date: prev_date.clone(),
-                            };
+                            });
                             let msgs = self.index.query_last(&prev_key, remaining).await?;
                             if !msgs.is_empty() {
                                 let count = msgs.len() as u32;
@@ -282,10 +275,7 @@ impl MessageStore {
                                     .map(|(l, msg)| LineMessage { line: l, message: msg })
                                     .collect();
                                 results.push(GroupedMessages {
-                                    key: MsgKey {
-                                        group_id: key.group_id.clone(),
-                                        date: prev_date.clone(),
-                                    },
+                                    key: prev_key,
                                     messages
                                 });
                                 remaining = remaining.saturating_sub(count);
@@ -306,6 +296,8 @@ impl MessageStore {
         let mut remaining = n;
         let mut results: Vec<GroupedMessages> = Vec::new();
 
+        // key 边界：普通 MsgKey 包一次 Arc，查询与结果分组复用同一把 Arc
+        let key = Arc::new(key);
         let msgs = self.index.query_after(&key, line + 1, remaining).await?;
         let count = msgs.len() as u32;
         if count > 0 {
@@ -324,10 +316,10 @@ impl MessageStore {
                     let next = dates.range::<str, _>((Bound::Excluded(cursor.as_str()), Bound::Unbounded)).next();
                     match next {
                         Some(next_date) => {
-                            let next_key = MsgKey {
+                            let next_key = Arc::new(MsgKey {
                                 group_id: key.group_id.clone(),
                                 date: next_date.clone(),
-                            };
+                            });
                             let msgs = self.index.query_first(&next_key, remaining).await?;
                             if !msgs.is_empty() {
                                 let count = msgs.len() as u32;
@@ -335,10 +327,7 @@ impl MessageStore {
                                     .map(|(l, msg)| LineMessage { line: l, message: msg })
                                     .collect();
                                 results.push(GroupedMessages {
-                                    key: MsgKey {
-                                        group_id: key.group_id.clone(),
-                                        date: next_date.clone()
-                                    }, messages });
+                                    key: next_key, messages });
                                 remaining = remaining.saturating_sub(count);
                             }
                             cursor = next_date.clone();

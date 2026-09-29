@@ -101,7 +101,7 @@ pub struct ScopeState {
     /// 各 `(记忆后缀, 通道)` 的已处理水位
     pub watermarks: BTreeMap<SuffixChannel, Watermark>,
     /// 已从磁盘加载过状态文件的后缀（避免重复读盘）
-    loaded_suffixes: BTreeSet<RoleEvent>,
+    loaded_suffixes: BTreeSet<Arc<RoleEvent>>,
     /// 待处理标记：通知只登记「哪个后缀哪个通道变了」，不计算。
     /// `dirty_roles` 表示某后缀的**全部通道**（思考/工具通知、后缀未知通道、首次加载、通知重连），
     /// 按记忆后缀字符串登记（拼接见 [`kissbot_memory::role_event_suffix`]），因此磁盘扫描出的目录名可直接登记。
@@ -127,16 +127,16 @@ impl ScopeState {
     }
 
     /// 某后缀被显式标记过待处理的通道
-    pub fn dirty_channels_of(&self, role_event: &RoleEvent) -> BTreeSet<ChannelKey> {
+    pub fn dirty_channels_of(&self, role_event: &RoleEvent) -> BTreeSet<Arc<ChannelKey>> {
         self.dirty_channels
             .iter()
             .filter(|(suffix, _)| suffix == role_event)
-            .map(|(_, channel)| channel.clone())
+            .map(|(_, channel)| Arc::new(channel.clone()))
             .collect()
     }
 
     /// 处理成功后清除该后缀的本轮标记
-    pub fn clear_dirty(&mut self, role_event: &RoleEvent, processed: &BTreeSet<ChannelKey>) {
+    pub fn clear_dirty(&mut self, role_event: &RoleEvent, processed: &BTreeSet<Arc<ChannelKey>>) {
         self.dirty_roles.remove(&kissbot_memory::role_event_suffix(role_event));
         self.dirty_channels
             .retain(|(suffix, channel)| suffix != role_event || !processed.contains(channel));
@@ -144,24 +144,24 @@ impl ScopeState {
 
     /// 某后缀在磁盘上的状态是否已加载（返回 true 表示本次需要加载）
     fn take_unloaded(&mut self, role_event: &RoleEvent) -> bool {
-        self.loaded_suffixes.insert(role_event.clone())
+        self.loaded_suffixes.insert(Arc::new(role_event.clone()))
     }
 
     /// 某后缀的当前 case 指针（按通道）
-    pub fn current_of(&self, role_event: &RoleEvent) -> BTreeMap<ChannelKey, ArcStr> {
+    pub fn current_of(&self, role_event: &RoleEvent) -> BTreeMap<Arc<ChannelKey>, ArcStr> {
         self.current_cases
             .iter()
             .filter(|((suffix, _), _)| suffix == role_event)
-            .map(|((_, channel), case_name)| (channel.clone(), case_name.clone()))
+            .map(|((_, channel), case_name)| (Arc::new(channel.clone()), case_name.clone()))
             .collect()
     }
 
     /// 某后缀的水位（按通道）
-    pub fn watermarks_of(&self, role_event: &RoleEvent) -> BTreeMap<ChannelKey, Watermark> {
+    pub fn watermarks_of(&self, role_event: &RoleEvent) -> BTreeMap<Arc<ChannelKey>, Watermark> {
         self.watermarks
             .iter()
             .filter(|((suffix, _), _)| suffix == role_event)
-            .map(|((_, channel), watermark)| (channel.clone(), watermark.clone()))
+            .map(|((_, channel), watermark)| (Arc::new(channel.clone()), watermark.clone()))
             .collect()
     }
 
@@ -247,14 +247,14 @@ impl ScopeHandle {
     }
 
     /// 持久化某后缀各通道的当前 case 指针（无通道时删除文件）
-    pub async fn save_current(&self, role_event: &RoleEvent, current: &BTreeMap<ChannelKey, ArcStr>) -> Result<()> {
+    pub async fn save_current(&self, role_event: &RoleEvent, current: &BTreeMap<Arc<ChannelKey>, ArcStr>) -> Result<()> {
         if current.is_empty() {
             return remove_file(&self.current_path(role_event)).await;
         }
         let channels: Vec<ChannelCasePointer> = current
             .iter()
             .map(|(channel, case_name)| ChannelCasePointer {
-                channel: channel.clone(),
+                channel: channel.as_ref().clone(),
                 case_name: case_name.clone(),
             })
             .collect();
@@ -262,11 +262,11 @@ impl ScopeHandle {
     }
 
     /// 持久化某后缀各通道水位
-    pub async fn save_watermark(&self, role_event: &RoleEvent, watermarks: &BTreeMap<ChannelKey, Watermark>) -> Result<()> {
+    pub async fn save_watermark(&self, role_event: &RoleEvent, watermarks: &BTreeMap<Arc<ChannelKey>, Watermark>) -> Result<()> {
         let channels: Vec<ChannelWatermark> = watermarks
             .iter()
             .map(|(channel, watermark)| ChannelWatermark {
-                channel: channel.clone(),
+                channel: channel.as_ref().clone(),
                 watermark: Arc::new(watermark.clone()),
             })
             .collect();
@@ -632,7 +632,7 @@ mod tests {
         let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
         let role_event = role_event("dev", None);
         let mut current = BTreeMap::new();
-        current.insert(ChannelKey::new("web", "self1", "g1"), ArcStr::from("role-1"));
+        current.insert(Arc::new(ChannelKey::new("web", "self1", "g1")), ArcStr::from("role-1"));
         handle.save_current(&role_event, &current).await.unwrap();
         assert!(handle.current_path(&role_event).exists());
         handle.save_current(&role_event, &BTreeMap::new()).await.unwrap();
@@ -664,10 +664,10 @@ mod tests {
         state.mark_channel(&first, &channel);
         assert!(state.is_dirty(&first));
         assert!(!state.is_dirty(&other), "标记按后缀隔离");
-        assert_eq!(state.dirty_channels_of(&first), [channel.clone()].into_iter().collect());
+        assert_eq!(state.dirty_channels_of(&first), [Arc::new(channel.clone())].into_iter().collect());
 
         state.mark_role(&other);
-        state.clear_dirty(&first, &[channel].into_iter().collect());
+        state.clear_dirty(&first, &[Arc::new(channel.clone())].into_iter().collect());
         assert!(!state.is_dirty(&first));
         assert!(state.is_dirty(&other), "清除只影响本后缀");
     }

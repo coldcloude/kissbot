@@ -224,7 +224,7 @@ impl ChannelManager {
         nexus.prune_sessions().await;
         // 2. 新会话标识对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
         if let Some(key) = nexus.session_key(channel_id).await {
-            nexus.ensure_session(&key).await;
+            nexus.ensure_session(Arc::new(key)).await;
         }
         Ok(())
     }
@@ -267,7 +267,7 @@ impl ChannelManager {
     /// 绑定 channel 用户（/bind：bind_users 追加，HashSet 天然去重幂等）
     pub async fn bind_user(&self, channel_id: &str, user: &ChannelUser) -> Result<()> {
         ConfigManager::get().update_channel(channel_id, |c| {
-            Arc::make_mut(&mut c.bind_users).insert(user.clone());
+            Arc::make_mut(&mut c.bind_users).insert(Arc::new(user.clone()));
         }).await
     }
 

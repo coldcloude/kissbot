@@ -114,7 +114,7 @@ impl BatchConsumer {
                             // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
                             let content = pack_batch(&items);
                             // 在对应session启动流水线
-                            let _ = Nexus::get().run_pipeline(self.session_key.as_ref(), content).await;
+                            let _ = Nexus::get().run_pipeline(self.session_key.clone(), content).await;
                         },
                         None => break, // 仅防御（队列非空时 poll_next 不返回 None）
                     }
@@ -174,7 +174,7 @@ impl AgentTrigger for BatchAgentInputProcessor {}
 #[async_trait]
 impl AgentInputProcessor for BatchAgentInputProcessor {
     async fn accept(&self, event: Arc<IncomingMessageEvent>) {
-        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig,ChannelBatchConfig>(&self.session_key).await;
+        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig,ChannelBatchConfig>(self.session_key.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }

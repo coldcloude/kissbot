@@ -83,7 +83,7 @@ pub struct SessionPipeline {
 }
 
 pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<AgentPipeline> {
-    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
+    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.clone()).await;
     let mut message_sender_cfg: Option<ArcStr> = None;
     let mut tool_caller_cfg: Option<ArcStr> = None;
     let mut output_processor_cfg: Option<ArcStr> = None;
@@ -141,7 +141,7 @@ pub async fn create_agent_pipeline(session_key: Arc<SessionKey>, session: Arc<Se
 }
 
 pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<ArcStr, Arc<dyn AgentInputProcessor>>> {
-    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
+    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.clone()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
         let preset: ArcStr = if preset.as_str().is_empty() {
@@ -171,7 +171,7 @@ pub async fn create_agent_input_processors(session_key: Arc<SessionKey>, session
 }
 
 pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session: Arc<Session>) -> Result<DashMap<ArcStr, Arc<dyn AgentSystemPrompter>>> {
-    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.as_ref()).await;
+    let config = ConfigManager::get().session_config::<PipelineConfig,PipelineConfig>(session_key.clone()).await;
     let mut names = Vec::new();
     if let Some(preset) = config.preset.as_ref() {
         let preset: ArcStr = if preset.as_str().is_empty() {
@@ -204,7 +204,7 @@ pub async fn create_agent_system_prompters(session_key: Arc<SessionKey>, session
 /// 用 DashMap 而非 ArcSwap<HashMap>：并发 sync 同一 key 时按 key 原子替换，
 /// 不会出现「读-改-写整张 map」丢失其它 key 刚插入条目的问题
 pub struct PipelineManager {
-    pipeline_map: DashMap<SessionKey, Arc<SessionPipeline>>,
+    pipeline_map: DashMap<Arc<SessionKey>, Arc<SessionPipeline>>,
 }
 
 impl PipelineManager {
@@ -224,13 +224,13 @@ impl PipelineManager {
             triggers: DashMap::new(),
             pipeline: RwLock::new(pipeline),
         };
-        self.pipeline_map.insert(session_key.as_ref().clone(), Arc::new(session_pipeline));
+        self.pipeline_map.insert(session_key, Arc::new(session_pipeline));
         Ok(())
     }
 
     /// 只保留仍在绑定集合中的会话的 trigger/pipeline（与 SessionManager::retain 成对调用，
     /// 会话被清理后其 trigger/pipeline 一并丢弃；trigger 丢弃会触发输入处理器的 Drop → 合批任务退出）
-    pub fn retain(&self, keys: &HashSet<SessionKey>) {
+    pub fn retain(&self, keys: &HashSet<Arc<SessionKey>>) {
         self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 

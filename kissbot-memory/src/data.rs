@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
@@ -51,16 +52,16 @@ where
     fn parse_request(&self, request: Q) -> (K, R);
 }
 
-pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+pub fn parse_query(query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
     let mut results = Vec::new();
     if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
         for time in date_times {
             let date = as_date(&time.0);
-            results.push((RecordKey {
+            results.push((Arc::new(RecordKey {
                 agent_id: query.agent_id.clone(),
                 role_event: query.role_event.clone(),
                 date: ArcStr::from(date),
-            }, time));
+            }), time));
         }
     }
     results
@@ -70,23 +71,23 @@ pub fn parse_query(query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
 pub struct ChannelParser;
 
 #[async_trait]
-impl FilePathGenerator<RecordKey> for ChannelParser {
-    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+impl FilePathGenerator<Arc<RecordKey>> for ChannelParser {
+    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
         let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("channel-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
 }
 
-impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
-    fn parse_request(&self, request: ChannelRequest) -> (RecordKey, ChannelRecord) {
+impl RequestParser<ChannelRequest, Arc<RecordKey>, ChannelRecord> for ChannelParser {
+    fn parse_request(&self, request: ChannelRequest) -> (Arc<RecordKey>, ChannelRecord) {
         // 所有 channel 记录归入同一文件（每 agent+role+date）；
         // record 保存完整身份：user_id=发送者、self_user_id=agent 绑定用户（接收方）、messenger_id/group_id
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
             date: ArcStr::from(as_date(&request.time)),
-        };
+        });
         let record = ChannelRecord {
             user_id: request.user_id.clone(),
             self_user_id: request.self_user_id.clone(),
@@ -105,8 +106,8 @@ impl RequestParser<ChannelRequest, RecordKey, ChannelRecord> for ChannelParser {
     }
 }
 
-impl QueryParser<QueryRequest, RecordKey> for ChannelParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+impl QueryParser<QueryRequest, Arc<RecordKey>> for ChannelParser {
+    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
         parse_query(query)
     }
 }
@@ -115,21 +116,21 @@ impl QueryParser<QueryRequest, RecordKey> for ChannelParser {
 pub struct ThinkParser;
 
 #[async_trait]
-impl FilePathGenerator<RecordKey> for ThinkParser {
-    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+impl FilePathGenerator<Arc<RecordKey>> for ThinkParser {
+    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
         let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("think-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
 }
 
-impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
-    fn parse_request(&self, request: ThinkRequest) -> (RecordKey, ThinkRecord) {
-        let key = RecordKey {
+impl RequestParser<ThinkRequest, Arc<RecordKey>, ThinkRecord> for ThinkParser {
+    fn parse_request(&self, request: ThinkRequest) -> (Arc<RecordKey>, ThinkRecord) {
+        let key = Arc::new(RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
             date: ArcStr::from(as_date(&request.time)),
-        };
+        });
         let record = ThinkRecord {
             reasoning_content: request.reasoning_content.clone(),
             thinking: request.thinking.clone(),
@@ -141,8 +142,8 @@ impl RequestParser<ThinkRequest, RecordKey, ThinkRecord> for ThinkParser {
     }
 }
 
-impl QueryParser<QueryRequest, RecordKey> for ThinkParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+impl QueryParser<QueryRequest, Arc<RecordKey>> for ThinkParser {
+    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
         parse_query(query)
     }
 }
@@ -151,21 +152,21 @@ impl QueryParser<QueryRequest, RecordKey> for ThinkParser {
 pub struct ToolCallParser;
 
 #[async_trait]
-impl FilePathGenerator<RecordKey> for ToolCallParser {
-    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+impl FilePathGenerator<Arc<RecordKey>> for ToolCallParser {
+    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
         let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("tool-call-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
 }
 
-impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParser {
-    fn parse_request(&self, request: ToolCallRequest) -> (RecordKey, ToolCallRecord) {
-        let key = RecordKey {
+impl RequestParser<ToolCallRequest, Arc<RecordKey>, ToolCallRecord> for ToolCallParser {
+    fn parse_request(&self, request: ToolCallRequest) -> (Arc<RecordKey>, ToolCallRecord) {
+        let key = Arc::new(RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
             date: ArcStr::from(as_date(&request.time)),
-        };
+        });
         let record = ToolCallRecord {
             tool_name: request.tool_name.clone(),
             tool_params: request.tool_params,
@@ -177,8 +178,8 @@ impl RequestParser<ToolCallRequest, RecordKey, ToolCallRecord> for ToolCallParse
     }
 }
 
-impl QueryParser<QueryRequest, RecordKey> for ToolCallParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+impl QueryParser<QueryRequest, Arc<RecordKey>> for ToolCallParser {
+    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
         parse_query(query)
     }
 }
@@ -187,21 +188,21 @@ impl QueryParser<QueryRequest, RecordKey> for ToolCallParser {
 pub struct ToolResultParser;
 
 #[async_trait]
-impl FilePathGenerator<RecordKey> for ToolResultParser {
-    async fn get_path(&self, key: &RecordKey) -> std::result::Result<PathBuf,kai_file::Error> {
+impl FilePathGenerator<Arc<RecordKey>> for ToolResultParser {
+    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
         let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
         let file_name = format!("tool-result-records-{}.jsonl", key.date);
         Ok(year_role_dir.join(file_name))
     }
 }
 
-impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResultParser {
-    fn parse_request(&self, request: ToolResultRequest) -> (RecordKey, ToolResultRecord) {
-        let key = RecordKey {
+impl RequestParser<ToolResultRequest, Arc<RecordKey>, ToolResultRecord> for ToolResultParser {
+    fn parse_request(&self, request: ToolResultRequest) -> (Arc<RecordKey>, ToolResultRecord) {
+        let key = Arc::new(RecordKey {
             agent_id: request.agent_id.clone(),
             role_event: request.role_event.clone(),
             date: ArcStr::from(as_date(&request.time)),
-        };
+        });
         let record = ToolResultRecord {
             tool_result: request.tool_result,
             tool_error: request.tool_error,
@@ -213,8 +214,8 @@ impl RequestParser<ToolResultRequest, RecordKey, ToolResultRecord> for ToolResul
     }
 }
 
-impl QueryParser<QueryRequest, RecordKey> for ToolResultParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(RecordKey, (String, String))> {
+impl QueryParser<QueryRequest, Arc<RecordKey>> for ToolResultParser {
+    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
         parse_query(query)
     }
 }
@@ -259,11 +260,11 @@ use super::*;
     #[tokio::test]
     async fn test_channel_file_name() {
         init_test_config();
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
             date: ArcStr::from("2026-06-24"),
-        };
+        });
         let parser = ChannelParser;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();
@@ -274,11 +275,11 @@ use super::*;
     async fn test_channel_file_dir_empty_role() {
         // 空记忆后缀目录应为 `2026-`（非 `2026`）
         init_test_config();
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new(""),
             date: ArcStr::from("2026-06-24"),
-        };
+        });
         let parser = ChannelParser;
         let path = parser.get_path(&key).await.unwrap();
         let dir_name = path.parent().unwrap().file_name().unwrap().to_str().unwrap();
@@ -287,11 +288,11 @@ use super::*;
 
     #[tokio::test]
     async fn test_think_file_name() {
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
             date: ArcStr::from("2026-06-24"),
-        };
+        });
         let parser = ThinkParser;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();
@@ -300,11 +301,11 @@ use super::*;
 
     #[tokio::test]
     async fn test_tool_call_file_name() {
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
             date: ArcStr::from("2026-06-24"),
-        };
+        });
         let parser = ToolCallParser;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();
@@ -313,11 +314,11 @@ use super::*;
 
     #[tokio::test]
     async fn test_tool_result_file_name() {
-        let key = RecordKey {
+        let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
             role_event: kissbot_api::RoleEvent::new("default"),
             date: ArcStr::from("2026-06-24"),
-        };
+        });
         let parser = ToolResultParser;
         let path = parser.get_path(&key).await.unwrap();
         let file_name = path.file_name().unwrap().to_str().unwrap();

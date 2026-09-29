@@ -138,11 +138,11 @@ impl AbstractService {
 
         let view = self.store_view(handle, role_event).await?;
         // 统一按通道分组：本批消息所在的通道 ∪ 存储里出现过的通道（pending / 消息都可以为空）
-        let mut grouped: BTreeMap<ChannelKey, Vec<usize>> = group_indices_by_channel(messages).into_iter().collect();
+        let mut grouped: BTreeMap<Arc<ChannelKey>, Vec<usize>> = group_indices_by_channel(messages).into_iter().collect();
         for channel in view.known_channels() {
             grouped.entry(channel).or_default();
         }
-        let mut processed: BTreeSet<ChannelKey> = state.dirty_channels_of(role_event);
+        let mut processed: BTreeSet<Arc<ChannelKey>> = state.dirty_channels_of(role_event);
         let mut outcomes = Vec::new();
         let mut located = Vec::new();
         for (channel, indices) in grouped {
@@ -301,7 +301,7 @@ impl AbstractService {
             .iter()
             .map(|(channel, case_name)| {
                 Arc::new(ChannelCasePointer {
-                    channel: channel.clone(),
+                    channel: channel.as_ref().clone(),
                     case_name: case_name.clone(),
                 })
             })

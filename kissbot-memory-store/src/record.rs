@@ -209,14 +209,14 @@ where
 #[derive(Clone)]
 struct ChannelFileIndexHook;
 
-impl FileHook<RecordKey, ChannelRecord> for ChannelFileIndexHook {
-    fn on_append(&self, key: &RecordKey, records: &[ChannelRecord]) {
-        MemoryIndexer::get().mark_channel_obsolete(key);
+impl FileHook<Arc<RecordKey>, ChannelRecord> for ChannelFileIndexHook {
+    fn on_append(&self, key: &Arc<RecordKey>, records: &[ChannelRecord]) {
+        MemoryIndexer::get().mark_channel_obsolete(key.clone());
         crate::notify::publish_channel(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey, records: &[ChannelRecord]) {
-        MemoryIndexer::get().mark_channel_all_obsolete(key);
+    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ChannelRecord]) {
+        MemoryIndexer::get().mark_channel_all_obsolete(key.clone());
         crate::notify::publish_channel(key, records);
     }
 }
@@ -224,14 +224,14 @@ impl FileHook<RecordKey, ChannelRecord> for ChannelFileIndexHook {
 #[derive(Clone)]
 struct ThinkFileIndexHook;
 
-impl FileHook<RecordKey, ThinkRecord> for ThinkFileIndexHook {
-    fn on_append(&self, key: &RecordKey, records: &[ThinkRecord]) {
-        MemoryIndexer::get().mark_think_obsolete(key);
+impl FileHook<Arc<RecordKey>, ThinkRecord> for ThinkFileIndexHook {
+    fn on_append(&self, key: &Arc<RecordKey>, records: &[ThinkRecord]) {
+        MemoryIndexer::get().mark_think_obsolete(key.clone());
         crate::notify::publish_think(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey, records: &[ThinkRecord]) {
-        MemoryIndexer::get().mark_think_all_obsolete(key);
+    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ThinkRecord]) {
+        MemoryIndexer::get().mark_think_all_obsolete(key.clone());
         crate::notify::publish_think(key, records);
     }
 }
@@ -239,14 +239,14 @@ impl FileHook<RecordKey, ThinkRecord> for ThinkFileIndexHook {
 #[derive(Clone)]
 struct ToolCallFileIndexHook;
 
-impl FileHook<RecordKey, ToolCallRecord> for ToolCallFileIndexHook {
-    fn on_append(&self, key: &RecordKey, records: &[ToolCallRecord]) {
-        MemoryIndexer::get().mark_tool_call_obsolete(key);
+impl FileHook<Arc<RecordKey>, ToolCallRecord> for ToolCallFileIndexHook {
+    fn on_append(&self, key: &Arc<RecordKey>, records: &[ToolCallRecord]) {
+        MemoryIndexer::get().mark_tool_call_obsolete(key.clone());
         crate::notify::publish_tool_call(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey, records: &[ToolCallRecord]) {
-        MemoryIndexer::get().mark_tool_call_all_obsolete(key);
+    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ToolCallRecord]) {
+        MemoryIndexer::get().mark_tool_call_all_obsolete(key.clone());
         crate::notify::publish_tool_call(key, records);
     }
 }
@@ -254,14 +254,14 @@ impl FileHook<RecordKey, ToolCallRecord> for ToolCallFileIndexHook {
 #[derive(Clone)]
 struct ToolResultFileIndexHook;
 
-impl FileHook<RecordKey, ToolResultRecord> for ToolResultFileIndexHook {
-    fn on_append(&self, key: &RecordKey, records: &[ToolResultRecord]) {
-        MemoryIndexer::get().mark_tool_result_obsolete(key);
+impl FileHook<Arc<RecordKey>, ToolResultRecord> for ToolResultFileIndexHook {
+    fn on_append(&self, key: &Arc<RecordKey>, records: &[ToolResultRecord]) {
+        MemoryIndexer::get().mark_tool_result_obsolete(key.clone());
         crate::notify::publish_tool_result(key, records);
     }
 
-    fn on_force_append(&self, key: &RecordKey, records: &[ToolResultRecord]) {
-        MemoryIndexer::get().mark_tool_result_all_obsolete(key);
+    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ToolResultRecord]) {
+        MemoryIndexer::get().mark_tool_result_all_obsolete(key.clone());
         crate::notify::publish_tool_result(key, records);
     }
 }
@@ -336,13 +336,13 @@ where
     Ok(())
 }
 
-type ChannelAppender = RecordAppender<RecordKey, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
+type ChannelAppender = RecordAppender<Arc<RecordKey>, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
 
-type ThinkAppender = RecordAppender<RecordKey, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
+type ThinkAppender = RecordAppender<Arc<RecordKey>, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
 
-type ToolCallAppender = RecordAppender<RecordKey, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
+type ToolCallAppender = RecordAppender<Arc<RecordKey>, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
 
-type ToolResultAppender = RecordAppender<RecordKey, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
+type ToolResultAppender = RecordAppender<Arc<RecordKey>, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
 
 pub struct RecordManager {
     channel_parser: Arc<ChannelParser>,
@@ -541,7 +541,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -629,7 +629,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -686,7 +686,7 @@ mod tests {
             content: Content::Text(ArcStr::from("first")),
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];
-        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
         for request in req1 {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -714,7 +714,7 @@ mod tests {
             content: Content::Text(ArcStr::from("second")),
             time: ArcStr::from("2026-06-25 10:01:00"),
         }];
-        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
         for request in req2 {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -766,7 +766,7 @@ mod tests {
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
-        let mut records_map: HashMap<RecordKey, Vec<ThinkRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ThinkRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ThinkParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -813,7 +813,7 @@ mod tests {
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
-        let mut records_map: HashMap<RecordKey, Vec<ToolCallRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ToolCallRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ToolCallParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -859,7 +859,7 @@ mod tests {
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];
 
-        let mut records_map: HashMap<RecordKey, Vec<ToolResultRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ToolResultRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ToolResultParser.parse_request(request);
             records_map.entry(key).or_default().push(record);
@@ -1160,7 +1160,7 @@ mod tests {
             },
         ];
 
-        let mut records_map: HashMap<RecordKey, Vec<ChannelRecord>> = HashMap::new();
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
         for request in requests {
             let (key, record) = ChannelParser.parse_request(request);
             records_map.entry(key).or_default().push(record);

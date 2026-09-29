@@ -37,7 +37,7 @@ pub struct IndividualRelation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Individual {
-    pub identifiers: Arc<HashSet<ChannelUser>>,
+    pub identifiers: Arc<HashSet<Arc<ChannelUser>>>,
     pub relation: Arc<IndividualRelation>,
     pub other_relations: Arc<HashMap<ArcStr, Arc<IndividualRelation>>>,
 }
@@ -458,8 +458,12 @@ mod tests {
 
     #[test]
     fn test_serde_replace_individuals_request() {
+        let identifier = Arc::new(ChannelUser {
+            messenger_id: ArcStr::from("m1"),
+            user_id: ArcStr::from("u1"),
+        });
         let individual = Arc::new(Individual {
-            identifiers: Arc::new(HashSet::new()),
+            identifiers: Arc::new(HashSet::from([identifier])),
             relation: Arc::new(IndividualRelation {
                 relation: ArcStr::from("friend"),
                 description: ArcStr::from("best friend"),
@@ -472,9 +476,14 @@ mod tests {
             insert_individuals: vec![IndividualEntry { name: ArcStr::from("Alice"), individual }],
         };
         let json = serde_json::to_value(&obj).unwrap();
+        // Set 元素是 Arc<ChannelUser>，serde 表示仍是数组
+        assert_eq!(json["insert_individuals"][0]["individual"]["identifiers"][0]["user_id"], "u1");
         let deserialized: ReplaceIndividualsRequest = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.remove_individual_names.len(), 1);
         assert_eq!(deserialized.insert_individuals.len(), 1);
+        assert!(deserialized.insert_individuals[0].individual.identifiers.contains(
+            &ChannelUser { messenger_id: ArcStr::from("m1"), user_id: ArcStr::from("u1") }
+        ));
     }
 
     #[test]

@@ -22,9 +22,9 @@ where
 pub struct ChannelConfig {
     pub channel_id: ArcStr,         // agent 内部唯一标识，与消息方 messenger 无关
     pub ws_url: ArcStr,
-    pub admins: Arc<HashSet<ChannelUser>>,
+    pub admins: Arc<HashSet<Arc<ChannelUser>>>,
     /// 多绑定身份（bind 追加去重，unbind 带 ChannelUser 移除；HashSet 天然去重 + O(1) contains）
-    pub bind_users: Arc<HashSet<ChannelUser>>,
+    pub bind_users: Arc<HashSet<Arc<ChannelUser>>>,
     /// 绑定的 agent_id（UUID；缺省/空 = 保留 agent = "0"，建会话用默认系统提示词，不调 memory-ego）
     #[serde(default = "default_agent_id", deserialize_with = "deserialize_agent_id")]
     pub agent_id: ArcStr,

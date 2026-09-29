@@ -84,7 +84,7 @@ pub struct WebMessenger {
     pub sse: Arc<SseDispatcher>,
     pub attachment_store: Arc<AttachmentStore>,
     pub message_store: Arc<MessageStore>,
-    appender: FileObjectAppender<MsgKey, IncomingMessage, MessageStore, MessageFileWriterContext>,
+    appender: FileObjectAppender<Arc<MsgKey>, IncomingMessage, MessageStore, MessageFileWriterContext>,
     stored_receiver: Receiver<Vec<IncomingMessage>>,
 }
 impl WebMessenger {
@@ -412,7 +412,7 @@ impl WebMessenger {
             group_id: admin_msg.group_id.clone(),
             date,
         };
-        self.appender.append(key, vec![admin_msg]).await;
+        self.appender.append(Arc::new(key), vec![admin_msg]).await;
         // 发送完成即返回，写入后再推送
         Ok(Arc::new(OutgoingMessageResponse {
             msg_id,

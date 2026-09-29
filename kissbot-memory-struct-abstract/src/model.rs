@@ -268,7 +268,7 @@ pub struct LlmModel {
     /// 记忆根目录（会话上下文按 `{root}/{agent}/memory-struct-abstract/llm` 落盘）
     root: PathBuf,
     session_max_messages: usize,
-    sessions: DashMap<ModelScope, Arc<Session>>,
+    sessions: DashMap<Arc<ModelScope>, Arc<Session>>,
     session_lock: Mutex<()>,
 }
 
@@ -314,7 +314,7 @@ impl LlmModel {
         let session = Arc::new(Session::new(&data_dir, &crate::scope::session_id(&scope.role_event)));
         session.recover_from_cache().await?;
         session.set_system_message(SYSTEM_PROMPT).await;
-        self.sessions.insert(scope.clone(), session.clone());
+        self.sessions.insert(Arc::new(scope.clone()), session.clone());
         Ok(session)
     }
 

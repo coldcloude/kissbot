@@ -27,9 +27,9 @@ pub struct ConfigManager {
 
 #[async_trait]
 pub trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
-    async fn session_config(&self, session_key: &SessionKey) -> Arc<E>;
+    async fn session_config(&self, session_key: Arc<SessionKey>) -> Arc<E>;
     async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>;
-    async fn set_session_config(&self, session_key: &SessionKey, config: &C) -> Result<()>;
+    async fn set_session_config(&self, session_key: Arc<SessionKey>, config: &C) -> Result<()>;
 }
 
 macro_rules! impl_session_config_field {
@@ -37,11 +37,11 @@ macro_rules! impl_session_config_field {
         #[async_trait]
         impl SessionConfigField<$ct, $et> for ConfigManager {
             /// 按 SessionKey 取 session 运行配置，无运行配置回退到 agent role 配置
-            async fn session_config(&self, session_key: &SessionKey) -> Arc<$et> {
+            async fn session_config(&self, session_key: Arc<SessionKey>) -> Arc<$et> {
                 // 先尝试获取 session 配置，只读repo
                 {
                     let repo = self.nexus_repo.read().await;
-                    if let Some(session_config_map) = repo.sessions.get(session_key) {
+                    if let Some(session_config_map) = repo.sessions.get(session_key.as_ref()) {
                         if let Some(session_config) = session_config_map.as_ref().get::<$et>() {
                             return session_config;
                         }
@@ -51,10 +51,10 @@ macro_rules! impl_session_config_field {
                 // 需要新建 session 配置，需要写权限
                 let mut repo = self.nexus_repo.write().await;
                 // 新建 session 配置
-                let config = Arc::new(SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key));
+                let config = Arc::new(SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key.as_ref()));
                 // 保存 session config
                 let sessions = Arc::make_mut(&mut repo.sessions);
-                let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
+                let config_map = if let Some(mut config_map) = sessions.remove(session_key.as_ref()) {
                     let config_map_mut = Arc::make_mut(&mut config_map);
                     config_map_mut.insert::<$et>(config.clone());
                     config_map
@@ -63,7 +63,7 @@ macro_rules! impl_session_config_field {
                     config_map.insert::<$et>(config.clone());
                     Arc::new(config_map)
                 };
-                sessions.insert(session_key.clone(), config_map);
+                sessions.insert(session_key, config_map);
                 config
             }
 
@@ -87,10 +87,10 @@ macro_rules! impl_session_config_field {
             }
 
             /// 设置 session 配置
-            async fn set_session_config(&self, session_key: &SessionKey, config: &$ct) -> Result<()> {
+            async fn set_session_config(&self, session_key: Arc<SessionKey>, config: &$ct) -> Result<()> {
                 self.write_nexus_config(|repo| {
                     let sessions = Arc::make_mut(&mut repo.sessions);
-                    let config_map = if let Some(mut config_map) = sessions.remove(session_key) {
+                    let config_map = if let Some(mut config_map) = sessions.remove(session_key.as_ref()) {
                         let config_map_mut = Arc::make_mut(&mut config_map);
                         let eff_config = if let Some(mut eff_config) = config_map_mut.take::<$et>() {
                             let eff_config_mut = Arc::make_mut(&mut eff_config);
@@ -98,7 +98,7 @@ macro_rules! impl_session_config_field {
                             eff_config
                         } else {
                             // 新建 session 配置
-                            let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key);
+                            let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key.as_ref());
                             eff_config.merge(config);
                             Arc::new(eff_config)
                         };
@@ -106,14 +106,14 @@ macro_rules! impl_session_config_field {
                         config_map
                     } else {
                         // 新建 session 配置
-                        let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key);
+                        let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agents.as_ref(), session_key.as_ref());
                         eff_config.merge(config);
                         // 新建 session map
                         let mut config_map = SessionConfigMap::default();
                         config_map.insert::<$et>(Arc::new(eff_config));
                         Arc::new(config_map)
                     };
-                    sessions.insert(session_key.clone(), config_map);
+                    sessions.insert(session_key, config_map);
                     Ok(())
                 }).await
             }
@@ -318,7 +318,7 @@ impl ConfigManager {
         }
     }
 
-    pub async fn session_config<C,E>(&self, session_key: &SessionKey) -> Arc<E>
+    pub async fn session_config<C,E>(&self, session_key: Arc<SessionKey>) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
@@ -336,7 +336,7 @@ impl ConfigManager {
         <Self as SessionConfigField<C,E>>::set_agent_role_config(self, agent_id, role_name, config).await
     }
 
-    pub async fn set_session_config<C,E>(&self, session_key: &SessionKey, config: &C) -> Result<()>
+    pub async fn set_session_config<C,E>(&self, session_key: Arc<SessionKey>, config: &C) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
@@ -408,7 +408,7 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         repo.channels.iter()
             .flat_map(|(_, v)| {
-                v.admins.iter().cloned().collect::<Vec<ChannelUser>>()
+                v.admins.iter().map(|u| u.as_ref().clone()).collect::<Vec<ChannelUser>>()
             })
             .collect()
     }
@@ -417,7 +417,7 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
             let written = write_key_value(channels, channel_id, |_, ch: &mut ChannelConfig| {
-                Arc::make_mut(&mut ch.admins).insert(admin.clone());
+                Arc::make_mut(&mut ch.admins).insert(Arc::new(admin.clone()));
             });
             if !written {
                 return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
@@ -570,7 +570,7 @@ mod tests {
             channel_id: ArcStr::from(id),
             ws_url: ArcStr::from("ws://127.0.0.1:8201"),
             admins: Arc::new(HashSet::new()),
-            bind_users: Arc::new(HashSet::from([ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }])),
+            bind_users: Arc::new(HashSet::from([Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") })])),
             agent_id: ArcStr::from("0"),
             role_name: ArcStr::from(""),
             enabled: true,
@@ -584,8 +584,8 @@ mod tests {
             ws_url: ArcStr::from("ws://127.0.0.1:8201"),
             admins: Arc::new(HashSet::new()),
             bind_users: Arc::new(HashSet::from([
-                ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") },
-                ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") },
+                Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }),
+                Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") }),
             ])),
             agent_id: ArcStr::from("a1"),
             role_name: ArcStr::from("r1"),
@@ -656,7 +656,7 @@ mod tests {
             c.agent_id = ArcStr::from("a1");
             c.role_name = ArcStr::from("r1");
             // HashSet 追加（Arc::make_mut 写时复制）
-            Arc::make_mut(&mut c.bind_users).insert(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") });
+            Arc::make_mut(&mut c.bind_users).insert(Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") }));
         }).await.unwrap();
 
         // 内存可见
@@ -1159,15 +1159,15 @@ mod tests {
         manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "r1", Arc::new(role_llm)).await.unwrap();
 
         // 无 session 配置 → 现场按 agent + role 合成（三层继承的最后一级）
-        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&session_key("a1", "r1")).await;
+        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(session_key("a1", "r1"))).await;
         assert_eq!(eff.provider.as_str(), "deepseek", "继承 agent 默认");
         assert_eq!(eff.model.as_str(), "deepseek-chat", "继承 agent 默认");
         assert_eq!(eff.max_tokens, Some(4096), "role 覆盖 agent");
         // 第二次取到同一份（读路径缓存命中，不重复合成）
-        let again = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&session_key("a1", "r1")).await;
+        let again = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(session_key("a1", "r1"))).await;
         assert!(Arc::ptr_eq(&eff, &again), "同 key 返回缓存的同一份配置");
         // 未配置的 agent → 全默认
-        let none = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&session_key("nope", "r1")).await;
+        let none = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(session_key("nope", "r1"))).await;
         assert!(none.provider.is_empty() && none.model.is_empty(), "未知 agent 用默认值");
     }
 
@@ -1176,7 +1176,7 @@ mod tests {
         // 三层都未配 → 回落全局默认常量
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(&session_key("a1", "r1")).await;
+        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(Arc::new(session_key("a1", "r1"))).await;
         assert_eq!(eff.compress_threshold, DEFAULT_COMPRESS_THRESHOLD);
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT);
 
@@ -1184,7 +1184,7 @@ mod tests {
         let mut cfg = CompressConfig::default();
         cfg.compress_threshold = Some(0.5);
         manager.set_agent_role_config::<CompressConfig, EffectiveCompressConfig>("a2", "", Arc::new(cfg)).await.unwrap();
-        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(&session_key("a2", "r1")).await;
+        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(Arc::new(session_key("a2", "r1"))).await;
         assert_eq!(eff.compress_threshold, 0.5, "agent 级覆盖生效");
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT, "未配字段保留默认");
     }
@@ -1194,7 +1194,7 @@ mod tests {
         // ChannelBatchConfig::default() 为零值 0，get_effective_config 回落 new() 的默认间隔
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        let eff = manager.session_config::<ChannelBatchConfig, ChannelBatchConfig>(&session_key("a1", "r1")).await;
+        let eff = manager.session_config::<ChannelBatchConfig, ChannelBatchConfig>(Arc::new(session_key("a1", "r1"))).await;
         assert_eq!(eff.channel_batch_interval_secs, DEFAULT_CHANNEL_BATCH_INTERVAL_SECS, "未配回落默认间隔");
     }
 
@@ -1202,7 +1202,7 @@ mod tests {
     async fn session_config_memory_recover_uses_defaults() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        let eff = manager.session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&session_key("a1", "r1")).await;
+        let eff = manager.session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(Arc::new(session_key("a1", "r1"))).await;
         assert_eq!(eff.memory_time_secs, DEFAULT_MEMORY_TIME_SECS);
         assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT);
     }
@@ -1213,15 +1213,15 @@ mod tests {
         let manager = test_manager(&dir);
         manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "r1", Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let key = session_key("a1", "r1");
-        let before = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&key).await;
+        let before = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(before.model.as_str(), "deepseek-chat");
 
         // session 级覆盖 model（provider 未配 → 保留原值）
         let mut session_llm = LLMConfig::default();
         session_llm.model = Some(ArcStr::from("deepseek-reasoner"));
-        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &session_llm).await.unwrap();
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone()), &session_llm).await.unwrap();
 
-        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&key).await;
+        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(after.model.as_str(), "deepseek-reasoner", "session 覆盖生效");
         assert_eq!(after.provider.as_str(), "deepseek", "未配字段保留原值");
     }
@@ -1232,8 +1232,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let key = session_key("a1", "r1");
-        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(&key, &llm_config("openai", "gpt-4o")).await.unwrap();
-        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(&key).await;
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone()), &llm_config("openai", "gpt-4o")).await.unwrap();
+        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(eff.provider.as_str(), "openai");
         assert_eq!(eff.model.as_str(), "gpt-4o");
         // sessions 落盘形状：SessionKey 是结构体，不能作 JSON map 键，故用 [[key, value], ...] 数组对

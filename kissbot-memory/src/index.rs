@@ -15,10 +15,10 @@ use kai_file::FileIndexContext;
 use kissbot_api::memory::*;
 
 pub struct MemoryIndexer {
-    channel_indices: FileIndexContext<QueryRequest, RecordKey, ChannelRecord, ChannelParser>,
-    think_indices: FileIndexContext<QueryRequest, RecordKey, ThinkRecord, ThinkParser>,
-    tool_call_indices: FileIndexContext<QueryRequest, RecordKey, ToolCallRecord, ToolCallParser>,
-    tool_result_indices: FileIndexContext<QueryRequest, RecordKey, ToolResultRecord, ToolResultParser>,
+    channel_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ChannelRecord, ChannelParser>,
+    think_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ThinkRecord, ThinkParser>,
+    tool_call_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ToolCallRecord, ToolCallParser>,
+    tool_result_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ToolResultRecord, ToolResultParser>,
     /// channel 文件日期缓存：(agent_id, 记忆后缀) → 已存在的日期（懒加载扫描 + append 钩子增量维护）
     channel_date_sets: DashMap<(ArcStr, ArcStr), BTreeSet<ArcStr>>,
     /// date_sets 懒加载守卫（首次 recent 查询前扫描一次存量文件）
@@ -43,51 +43,53 @@ impl MemoryIndexer {
         MEMORY_INDEXER.get_or_init(|| MemoryIndexer::new())
     }
 
-    pub fn mark_channel_obsolete(&self, key: &RecordKey) {
-        self.channel_indices.mark_obsolete(key);
+    pub fn mark_channel_obsolete(&self, key: Arc<RecordKey>) {
+        // 插入路径直接复用调用方已有的 Arc<RecordKey>，不再复制
+        self.channel_indices.mark_obsolete(&key);
         // date_sets 增量维护：append 后该日期的 channel 文件必然存在（与懒加载扫描幂等）
         self.channel_date_sets.entry((key.agent_id.clone(), role_event_suffix(&key.role_event)))
             .or_default().insert(key.date.clone());
     }
 
-    pub fn mark_channel_all_obsolete(&self, key: &RecordKey) {
-        self.channel_indices.mark_all_obsolete(key);
+    pub fn mark_channel_all_obsolete(&self, key: Arc<RecordKey>) {
+        // 插入路径直接复用调用方已有的 Arc<RecordKey>，不再复制
+        self.channel_indices.mark_all_obsolete(&key);
         // 全量重写后文件仍存在（日期不变），同样补入 date_sets
         self.channel_date_sets.entry((key.agent_id.clone(), role_event_suffix(&key.role_event)))
             .or_default().insert(key.date.clone());
     }
 
-    pub fn mark_think_obsolete(&self, key: &RecordKey) {
-        self.think_indices.mark_obsolete(key);
+    pub fn mark_think_obsolete(&self, key: Arc<RecordKey>) {
+        self.think_indices.mark_obsolete(&key);
     }
 
-    pub fn mark_think_all_obsolete(&self, key: &RecordKey) {
-        self.think_indices.mark_all_obsolete(key);
+    pub fn mark_think_all_obsolete(&self, key: Arc<RecordKey>) {
+        self.think_indices.mark_all_obsolete(&key);
     }
 
-    pub fn mark_tool_call_obsolete(&self, key: &RecordKey) {
-        self.tool_call_indices.mark_obsolete(key);
+    pub fn mark_tool_call_obsolete(&self, key: Arc<RecordKey>) {
+        self.tool_call_indices.mark_obsolete(&key);
     }
 
-    pub fn mark_tool_call_all_obsolete(&self, key: &RecordKey) {
-        self.tool_call_indices.mark_all_obsolete(key);
+    pub fn mark_tool_call_all_obsolete(&self, key: Arc<RecordKey>) {
+        self.tool_call_indices.mark_all_obsolete(&key);
     }
 
-    pub fn mark_tool_result_obsolete(&self, key: &RecordKey) {
-        self.tool_result_indices.mark_obsolete(key);
+    pub fn mark_tool_result_obsolete(&self, key: Arc<RecordKey>) {
+        self.tool_result_indices.mark_obsolete(&key);
     }
 
-    pub fn mark_tool_result_all_obsolete(&self, key: &RecordKey) {
-        self.tool_result_indices.mark_all_obsolete(key);
+    pub fn mark_tool_result_all_obsolete(&self, key: Arc<RecordKey>) {
+        self.tool_result_indices.mark_all_obsolete(&key);
     }
 
-    pub async fn query_channel_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
+    pub async fn query_channel_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)>> {
         Ok(self.channel_indices.query_all(query).await?)
     }
 
     /// 最近 N 条 channel 记录（跨日期文件，参考 channel-web message_store::get_recent）：
     /// date_sets 日期倒序逐个 query_last(remaining)，取满即停；组按日期升序返回、组内升序；无时间过滤
-    pub async fn query_channel_recent(&self, agent_id: &str, role_event: &RoleEvent, count: u32) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)>> {
+    pub async fn query_channel_recent(&self, agent_id: &str, role_event: &RoleEvent, count: u32) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)>> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -98,15 +100,16 @@ impl MemoryIndexer {
         }).await;
 
         let mut remaining = count;
-        let mut results: Vec<(RecordKey, Vec<(u32, Arc<ChannelRecord>)>)> = Vec::new();
+        let mut results: Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)> = Vec::new();
         if let Some(dates) = self.channel_date_sets.get(&(ArcStr::from(agent_id), role_event_suffix(role_event))) {
             for date in dates.iter().rev() {  // 最新日期在前
                 if remaining == 0 { break; }
-                let key = RecordKey {
+                // 索引 key 为 Arc<RecordKey>：查询传 &Arc<RecordKey>，返回时复用同一把 Arc
+                let key = Arc::new(RecordKey {
                     agent_id: ArcStr::from(agent_id),
                     role_event: role_event.clone(),
                     date: date.clone(),
-                };
+                });
                 let msgs = self.channel_indices.query_last(&key, remaining).await?;
                 if !msgs.is_empty() {
                     remaining -= msgs.len() as u32;
@@ -150,15 +153,15 @@ impl MemoryIndexer {
         Ok(())
     }
 
-    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ThinkRecord>)>)>> {
+    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ThinkRecord>)>)>> {
         Ok(self.think_indices.query_all(query).await?)
     }
 
-    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolCallRecord>)>)>> {
+    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ToolCallRecord>)>)>> {
         Ok(self.tool_call_indices.query_all(query).await?)
     }
 
-    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(RecordKey, Vec<(u32, Arc<ToolResultRecord>)>)>> {
+    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ToolResultRecord>)>)>> {
         Ok(self.tool_result_indices.query_all(query).await?)
     }
 }
@@ -245,7 +248,7 @@ use tokio;
             r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"C"},"time":"2026-06-24 11:00:00","sn":3}"#).await;
 
         // mark + query — incremental load picks up C
-        indexer.mark_channel_obsolete(&key);
+        indexer.mark_channel_obsolete(Arc::new(key.clone()));
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
         assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "B"));
@@ -263,7 +266,7 @@ use tokio;
             r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"F"},"time":"2026-06-24 14:00:00","sn":6}"#).await;
 
         // mark_all — full rebuild, only E in range
-        indexer.mark_channel_all_obsolete(&key);
+        indexer.mark_channel_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
         assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "E"));
@@ -300,7 +303,7 @@ use tokio;
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"reasoning_content":"C","thinking":"","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_think_obsolete(&key);
+        indexer.mark_think_obsolete(Arc::new(key.clone()));
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
         assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "B");
@@ -316,7 +319,7 @@ use tokio;
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"reasoning_content":"F","thinking":"","key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
 
-        indexer.mark_think_all_obsolete(&key);
+        indexer.mark_think_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
         assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "E");
@@ -353,7 +356,7 @@ use tokio;
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_name":"C","tool_params":{},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_tool_call_obsolete(&key);
+        indexer.mark_tool_call_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
         assert_eq!(results[0].1[0].1.tool_name.as_str(), "B");
@@ -369,7 +372,7 @@ use tokio;
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_name":"F","tool_params":{},"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
 
-        indexer.mark_tool_call_all_obsolete(&key);
+        indexer.mark_tool_call_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
         assert_eq!(results[0].1[0].1.tool_name.as_str(), "E");
@@ -405,7 +408,7 @@ use tokio;
 
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_result":{"v":"C"},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_tool_result_obsolete(&key);
+        indexer.mark_tool_result_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
 
@@ -419,7 +422,7 @@ use tokio;
         append_jsonl(agent_id, role_name, &filename, date,
             r#"{"tool_result":{"v":"F"},"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
 
-        indexer.mark_tool_result_all_obsolete(&key);
+        indexer.mark_tool_result_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
     }
@@ -483,7 +486,7 @@ use tokio;
             role_event: RoleEvent::new(role_name),
             date: ArcStr::from("2026-08-02"),
         };
-        indexer.mark_channel_obsolete(&key);
+        indexer.mark_channel_obsolete(Arc::new(key.clone()));
         let out = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 10).await.unwrap();
         let flat: Vec<ArcStr> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b"], "mark_channel_obsolete 后新日期可查");

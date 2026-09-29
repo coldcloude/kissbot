@@ -55,9 +55,9 @@ pub fn publish_channel(key: &RecordKey, records: &[ChannelRecord]) {
 /// 生成通道消息通知：同一个文件按 agent+role+日期共用，一批写入可能混合多个通道，
 /// 因此按通道分组，每通道取该通道在本批中的最后一条记录（时间 + 发送者身份）。
 pub fn channel_notifications(key: &RecordKey, records: &[ChannelRecord]) -> Vec<RecordNotification> {
-    let mut last_by_channel: BTreeMap<ChannelKey, &ChannelRecord> = BTreeMap::new();
+    let mut last_by_channel: BTreeMap<Arc<ChannelKey>, &ChannelRecord> = BTreeMap::new();
     for record in records {
-        last_by_channel.insert(ChannelKey::from(record), record);
+        last_by_channel.insert(Arc::new(ChannelKey::from(record)), record);
     }
     last_by_channel
         .into_iter()
@@ -66,7 +66,7 @@ pub fn channel_notifications(key: &RecordKey, records: &[ChannelRecord]) -> Vec<
             role_event: key.role_event.clone(),
             time: last.time.clone(),
             is_self: Some(last.is_self),
-            channel: Some(channel),
+            channel: Some((*channel).clone()),
         })
         .collect()
 }

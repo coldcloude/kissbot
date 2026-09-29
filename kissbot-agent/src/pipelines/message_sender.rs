@@ -16,7 +16,7 @@ impl AgentMessageSender for RawMessagerSender {
     async fn send_messages(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
         self.session.context_append(messages).await;
         let full_messages = self.session.build_context().await;
-        let llm_cfg = ConfigManager::get().session_config::<LLMConfig,EffectiveLLMConfig>(&self.session_key).await;
+        let llm_cfg = ConfigManager::get().session_config::<LLMConfig,EffectiveLLMConfig>(self.session_key.clone()).await;
         Nexus::get().call_provider_model(&llm_cfg, full_messages, tools).await
     }
 }
@@ -37,8 +37,8 @@ pub struct TokenLimitMessageSender {
 impl AgentMessageSender for TokenLimitMessageSender {
     async fn send_messages(&self, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
         let cfg_mngr = ConfigManager::get();
-        let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(&self.session_key).await;
-        let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(&self.session_key).await;
+        let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(self.session_key.clone()).await;
+        let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(self.session_key.clone()).await;
         let provider = llm_cfg.provider.as_str();
         let model = llm_cfg.model.as_str();
         let model_cfg = cfg_mngr.provider_model_config(provider, model).await
@@ -78,8 +78,8 @@ struct CompressTokenReducer {
 impl TokenReducer for CompressTokenReducer {
     async fn reduce(&self, messages: Vec<Message>) -> (u64, Vec<Message>) {
         let cfg_mngr = ConfigManager::get();
-        let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(&self.session_key).await;
-        let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(&self.session_key).await;
+        let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(self.session_key.clone()).await;
+        let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(self.session_key.clone()).await;
         let c_msg = Message::User { content: compress_cfg.compress_prompt.clone() };
         self.session.context_append(vec![c_msg.clone()]).await;
         let compress_messages = self.session.build_context().await;
@@ -108,7 +108,7 @@ impl TokenReducer for MemoryRecoverTokenReducer {
     async fn reduce(&self, messages: Vec<Message>) -> (u64, Vec<Message>) {
         // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
         // 按 is_self 合并为交替的 User/Assistant 消息（结尾为 User 时已补空 Assistant）；生成 OK 时直接使用打包结果
-        let new_messages = Nexus::get().build_context_from_memory_store(self.session_key.as_ref()).await;
+        let new_messages = Nexus::get().build_context_from_memory_store(self.session_key.clone()).await;
         // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
         self.session.context_archive_and_clear_cache_and_reset_messages(new_messages).await;
         (0 as u64, messages)
