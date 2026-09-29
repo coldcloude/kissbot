@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use kissbot_api::OtherRoleEntry;
 use kissbot_api::RoleKey;
 use kissbot_api::RoleRelationEntry;
-use kissbot_api::write;
+use kissbot_api::write_key_value;
 use kissbot_api::{OtherRole, Role, RolePlay, RoleRelation};
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
@@ -148,7 +148,7 @@ impl RolePlayManager {
             let mut role_arc = role;
             let role_mut = Arc::make_mut(&mut role_arc);
             let other_roles = Arc::make_mut(&mut role_mut.other_roles);
-            if !write(other_roles, other_role_name, op) {
+            if !write_key_value(other_roles, other_role_name, |_, other_role| op(other_role)) {
                 return Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)));
             }
             Ok(role_arc)

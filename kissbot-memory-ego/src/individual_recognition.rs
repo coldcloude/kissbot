@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use arcstr::ArcStr;
 use kissbot_api::IndividualEntry;
 use kissbot_api::IndividualRelationEntry;
-use kissbot_api::write;
+use kissbot_api::write_key_value;
 use kissbot_memory::DirectoryManager;
 use tokio::sync::RwLock;
 
@@ -143,7 +143,7 @@ impl IndividualRecognitionManager {
             let mut individuals_arc = individuals;
             let individuals_mut = Arc::make_mut(&mut individuals_arc);
             let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
-            if !write(individual_map, individual_name, op) {
+            if !write_key_value(individual_map, individual_name, |_, individual| op(individual)) {
                 return Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)));
             }
             Ok(individuals_arc)

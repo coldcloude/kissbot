@@ -15,7 +15,7 @@ use kissbot_api::channel::{
     UserInfo,
 };
 use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
-use kissbot_api::write;
+use kissbot_api::write_key_value;
 use kissbot_channel::{
     ChannelServer, GroupChangeEvent, GroupChangeType, UserRemoveEvent,
     Messenger, MessengerCreator,
@@ -206,7 +206,7 @@ impl WebMessenger {
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
             let users = Arc::make_mut(&mut repo.users);
-            if !write(users, user_id, |user: &mut UserConfig| user.user_name = ArcStr::from(new_name)) {
+            if !write_key_value(users, user_id, |_, user: &mut UserConfig| user.user_name = ArcStr::from(new_name)) {
                 return Err(Error::UserNotFound(ArcStr::from(user_id)));
             }
             Ok(())
@@ -291,7 +291,7 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            if !write(groups, group_id, |group: &mut GroupConfig| group.group_name = ArcStr::from(new_name)) {
+            if !write_key_value(groups, group_id, |_, group: &mut GroupConfig| group.group_name = ArcStr::from(new_name)) {
                 return Err(Error::GroupNotFound(ArcStr::from(group_id)));
             }
             Ok(())
@@ -303,7 +303,7 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            let written = write(groups, group_id, |group: &mut GroupConfig| {
+            let written = write_key_value(groups, group_id, |_, group: &mut GroupConfig| {
                 let members = Arc::make_mut(&mut group.members);
                 for id in add_ids {
                     members.insert(id.clone());

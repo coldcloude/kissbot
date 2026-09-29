@@ -32,23 +32,24 @@ impl<T> ApiResponse<T> {
     }
 }
 
-/// 对 map 中已存在键做「写时复制修改」：remove 取回该键的值（独占 `Arc<T>`），
-/// 用 `op` 原地修改其指向的内容，再把原键放回。
+/// 对 map 中已存在键做「写时复制修改」：remove 取回该键的键值对（独占 `Arc<T>`），
+/// 用 `op(&key, &mut value)` 原地修改其指向的内容，再把原键（含被修改的键）放回。
 /// 键存在、完成修改返回 true；键不存在返回 false（不插入）。
 ///
-/// remove_entry 保留原键，避免键的克隆；remove 得到的 `Arc<T>` 已独占所有权，
-/// 只要没有其它持有者，`Arc::make_mut` 就原地返回 `&mut T`，不会发生复制。
+/// remove_entry 保留原键对象（op 可直接读取、甚至修改 key），避免键的克隆；
+/// remove 得到的 `Arc<T>` 已独占所有权，只要没有其它持有者，
+/// `Arc::make_mut` 就原地返回 `&mut T`，不会发生复制。
 /// 仅替换 map 的值 Arc（不修改其指向内容）时不要用本函数，直接 remove/insert 或 insert。
-pub fn write<K, Q, T, F>(map: &mut HashMap<K, Arc<T>>, key: &Q, op: F) -> bool
+pub fn write_key_value<K, Q, T, F>(map: &mut HashMap<K, Arc<T>>, key: &Q, op: F) -> bool
 where
     K: Borrow<Q> + Eq + Hash,
     Q: Eq + Hash + ?Sized,
     T: Clone,
-    F: FnOnce(&mut T),
+    F: FnOnce(&K, &mut T),
 {
     match map.remove_entry(key) {
         Some((key, mut value)) => {
-            op(Arc::make_mut(&mut value));
+            op(&key, Arc::make_mut(&mut value));
             map.insert(key, value);
             true
         }

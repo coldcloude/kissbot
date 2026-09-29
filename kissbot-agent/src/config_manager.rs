@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use kissbot_api::{ChannelUser, write};
+use kissbot_api::{ChannelUser, write_key_value};
 use tokio::sync::RwLock;
 
 use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
@@ -289,7 +289,7 @@ impl ConfigManager {
     {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            if !write(channels, channel_id, f) {
+            if !write_key_value(channels, channel_id, |_, ch| f(ch)) {
                 return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
             }
             Ok(())
@@ -416,7 +416,7 @@ impl ConfigManager {
     pub async fn add_admin(&self, channel_id: &str, admin: &ChannelUser) -> Result<()> {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
-            let written = write(channels, channel_id, |ch: &mut ChannelConfig| {
+            let written = write_key_value(channels, channel_id, |_, ch: &mut ChannelConfig| {
                 Arc::make_mut(&mut ch.admins).insert(admin.clone());
             });
             if !written {
@@ -431,7 +431,7 @@ impl ConfigManager {
         self.write_nexus_config(|repo| {
             let channels = Arc::make_mut(&mut repo.channels);
             let target = ChannelUser { messenger_id: ArcStr::from(messenger_id), user_id: ArcStr::from(user_id) };
-            let written = write(channels, channel_id, |ch: &mut ChannelConfig| {
+            let written = write_key_value(channels, channel_id, |_, ch: &mut ChannelConfig| {
                 Arc::make_mut(&mut ch.admins).remove(&target);
             });
             if !written {
