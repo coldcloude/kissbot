@@ -32,7 +32,7 @@ fn collect_text_parts(content: &Content, parts: &mut Vec<ArcStr>) {
     match content {
         Content::Text(text) => parts.push(text.clone()),
         Content::Multi(items) => {
-            for item in items {
+            for item in items.iter() {
                 collect_text_parts(item, parts);
             }
         }
@@ -194,11 +194,11 @@ mod tests {
         assert_eq!(mc.content, vec![ArcStr::from("hi")]);
         assert!(mc.is_self, "is_self>0 → true");
         // Multi 递归收集 Text 段；非文本子项跳过
-        let multi = Content::Multi(vec![
+        let multi = Content::Multi(Arc::new(vec![
             Content::Text(ArcStr::from("a")),
             Content::ToolCall(ArcStr::from("k")),
-            Content::Multi(vec![Content::Text(ArcStr::from("b"))]),
-        ]);
+            Content::Multi(Arc::new(vec![Content::Text(ArcStr::from("b"))])),
+        ]));
         let mc2 = extract_content(ArcStr::from("u"), &multi, 0);
         assert_eq!(mc2.content, vec![ArcStr::from("a"), ArcStr::from("b")]);
         assert!(!mc2.is_self, "is_self=0 → false");

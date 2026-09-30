@@ -63,7 +63,7 @@ async fn process_content(
                 )).await?;
                 new_items.push(new_content);
             }
-            Ok(Content::Multi(new_items))
+            Ok(Content::Multi(Arc::new(new_items)))
         }
         // 其他类型（text、group_change、user_remove、AttachmentInfoResponse），不做处理
         _ => Ok(content.clone()),

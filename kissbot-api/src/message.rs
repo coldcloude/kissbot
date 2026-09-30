@@ -34,7 +34,7 @@ pub struct UserRemoveNotification {
 #[serde(tag = "msg_type", content = "data")]
 pub enum Content {
     Text(ArcStr),
-    Multi(Vec<Content>),
+    Multi(Arc<Vec<Content>>),
     AttachmentInfo(Arc<AttachmentInfo>),
     AttachmentInfoResponse(Arc<AttachmentInfoResponse>),
     GroupJoin(Arc<GroupChangeNotification>),
@@ -152,9 +152,9 @@ mod tests {
 
     #[test]
     fn test_serde_content_multi() {
-        let content = Content::Multi(vec![
+        let content = Content::Multi(Arc::new(vec![
             Content::Text(ArcStr::from("hello")),
-        ]);
+        ]));
         let json = serde_json::to_value(&content).unwrap();
         let deserialized: Content = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized, content);
@@ -211,9 +211,9 @@ mod tests {
                 messenger_name: ArcStr::from("M1Name"),
                 user_name: ArcStr::from("U1Name"),
             })),
-            Content::Multi(vec![
+            Content::Multi(Arc::new(vec![
                 Content::Text(ArcStr::from("nested")),
-            ]),
+            ])),
         ];
         for content in variants {
             let json = serde_json::to_value(&content).unwrap();
