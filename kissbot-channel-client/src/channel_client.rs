@@ -21,7 +21,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ChannelClient {
-    id: ArcStr,
+    pub id: ArcStr,
     terminal: Weak<dyn Terminal>,
     ws_context: RwLock<Option<Arc<WsContext>>>,
     // 下载方向：transfer_id → 下载头信息
@@ -50,10 +50,6 @@ impl ChannelClient {
             ws_context: RwLock::new(None),
             download_transfer_map: DashMap::new(),
         })
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
     }
 
     async fn get_ws_context(&self) -> Result<Arc<WsContext>> {
@@ -175,19 +171,19 @@ impl WsJsonProcessor for TerminalJsonProcessor {
         };
         match data.payload_type {
             TYPE_INCOMING_MESSAGE => match serde_json::from_value::<IncomingMessageEvent>(payload) {
-                Ok(ev) => terminal.incoming_message(client.id(), Arc::new(ev)).await,
+                Ok(ev) => terminal.incoming_message(client.id.clone(), Arc::new(ev)).await,
                 Err(e) => error!("parse incoming message event error: {:?}", e),
             },
             TYPE_JOIN_GROUP => match serde_json::from_value::<GroupChangeNotification>(payload) {
-                Ok(n) => terminal.join_group(client.id(), Arc::new(n)).await,
+                Ok(n) => terminal.join_group(client.id.clone(), Arc::new(n)).await,
                 Err(e) => error!("parse join group error: {:?}", e),
             },
             TYPE_LEAVE_GROUP => match serde_json::from_value::<GroupChangeNotification>(payload) {
-                Ok(n) => terminal.leave_group(client.id(), Arc::new(n)).await,
+                Ok(n) => terminal.leave_group(client.id.clone(), Arc::new(n)).await,
                 Err(e) => error!("parse leave group error: {:?}", e),
             },
             TYPE_USER_REMOVED => match serde_json::from_value::<UserRemoveNotification>(payload) {
-                Ok(n) => terminal.user_removed(client.id(), Arc::new(n)).await,
+                Ok(n) => terminal.user_removed(client.id.clone(), Arc::new(n)).await,
                 Err(e) => error!("parse user removed error: {:?}", e),
             },
             _ => {}
@@ -205,7 +201,7 @@ impl WsCloseProcessor for TerminalCloseProcessor {
     async fn process_close(&self, _context: Arc<WsContext>) {
         let Some(client) = self.client.upgrade() else { return };
         if let Some(terminal) = client.get_terminal() {
-            terminal.closed(client.id()).await;
+            terminal.closed(client.id.clone()).await;
         }
     }
 }
@@ -257,7 +253,7 @@ impl WsBinaryProcessor for DownloadChunkProcessor {
         let info = Self::wait_transfer_info(&client, header.id).await;
         let result = match &info {
             Some(info) => match client.get_terminal() {
-                Some(terminal) => terminal.download_chunk(client.id(), info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
+                Some(terminal) => terminal.download_chunk(client.id.clone(), info.clone(), header.pos, data.slice(OFFSET_ATT_DATA..)).await,
                 None => Err(Error::InternalError("terminal is None".into())),
             },
             None => Err(Error::InvalidMessage(format!("unknown transfer_id {}", header.id).into())),

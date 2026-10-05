@@ -80,7 +80,7 @@ async fn query_channel_records(Json(req): Json<memory::QueryRequest>) -> impl In
 }
 
 async fn query_channel_recent_records(Json(req): Json<memory::RecentQuery>) -> impl IntoResponse {
-    let records = MemoryIndexer::get().query_channel_recent(&req.agent_id, &req.role_event, req.count).await;
+    let records = MemoryIndexer::get().query_channel_recent(req.agent_id, req.role_event, req.count).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),

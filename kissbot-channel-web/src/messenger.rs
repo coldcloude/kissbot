@@ -206,9 +206,8 @@ impl WebMessenger {
     pub async fn rename_user(&self, user_id: &str, new_name: &str) -> Result<()> {
         self.write_config(|repo| {
             let users = Arc::make_mut(&mut repo.users);
-            if !write_key_value(users, user_id, |_, user: &mut UserConfig| user.user_name = ArcStr::from(new_name)) {
-                return Err(Error::UserNotFound(ArcStr::from(user_id)));
-            }
+            write_key_value(users, user_id, |_, user: &mut UserConfig| user.user_name = ArcStr::from(new_name))
+            .ok_or_else(|| Error::UserNotFound(ArcStr::from(user_id)))?;
             Ok(())
         }).await
     }
@@ -291,9 +290,8 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            if !write_key_value(groups, group_id, |_, group: &mut GroupConfig| group.group_name = ArcStr::from(new_name)) {
-                return Err(Error::GroupNotFound(ArcStr::from(group_id)));
-            }
+            write_key_value(groups, group_id, |_, group: &mut GroupConfig| group.group_name = ArcStr::from(new_name))
+            .ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
             Ok(())
         }).await
     }
@@ -303,7 +301,7 @@ impl WebMessenger {
         }
         self.write_config(|repo| {
             let groups = Arc::make_mut(&mut repo.groups);
-            let written = write_key_value(groups, group_id, |_, group: &mut GroupConfig| {
+            write_key_value(groups, group_id, |_, group: &mut GroupConfig| {
                 let members = Arc::make_mut(&mut group.members);
                 for id in add_ids {
                     members.insert(id.clone());
@@ -311,10 +309,7 @@ impl WebMessenger {
                 for id in remove_ids {
                     members.remove(id);
                 }
-            });
-            if !written {
-                return Err(Error::GroupNotFound(ArcStr::from(group_id)));
-            }
+            }).ok_or_else(|| Error::GroupNotFound(ArcStr::from(group_id)))?;
             Ok(())
         }).await?;
         // 通知成员变更

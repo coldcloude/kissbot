@@ -138,18 +138,22 @@ async fn remove_channel(State(state): State<AppState>, Json(req): Json<ChannelId
 }
 
 async fn add_admin(State(state): State<AppState>, Json(req): Json<AddAdminRequest>) -> impl IntoResponse {
-    let admin = ChannelUser {
+    let admin = Arc::new(ChannelUser {
         messenger_id: req.messenger_id,
         user_id: req.user_id,
-    };
-    match state.config.add_admin(&req.channel_id, &admin).await {
+    });
+    match state.config.add_admin(req.channel_id.as_str(), admin).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }
 }
 
 async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdminRequest>) -> impl IntoResponse {
-    match state.config.remove_admin(&req.channel_id, &req.messenger_id, &req.user_id).await {
+    let admin = ChannelUser {
+        messenger_id: req.messenger_id,
+        user_id: req.user_id,
+    };
+    match state.config.remove_admin(req.channel_id.as_str(), &admin).await {
         Ok(()) => ok(json!({})),
         Err(e) => fail(e),
     }

@@ -32,22 +32,22 @@ pub fn test_config_setup() {
     });
 }
 
-pub fn make_messenger_info(messenger_id: &str, user_id: &str, group_id: &str) -> MessengerInfo {
+pub fn make_messenger_info(messenger_id: ArcStr, user_id: ArcStr, group_id: ArcStr) -> MessengerInfo {
     let group = Arc::new(GroupInfo {
-        group_id: ArcStr::from(group_id),
+        group_id: group_id.clone(),
         group_name: ArcStr::from("test-group"),
     });
     let group_map = Arc::new(DashMap::new());
-    group_map.insert(ArcStr::from(group_id), group);
+    group_map.insert(group_id, group);
     let user = Arc::new(UserInfo {
-        user_id: ArcStr::from(user_id),
+        user_id: user_id.clone(),
         user_name: ArcStr::from("test-user"),
         group_map,
     });
     let user_map = Arc::new(DashMap::new());
-    user_map.insert(ArcStr::from(user_id), user);
+    user_map.insert(user_id, user);
     MessengerInfo {
-        messenger_id: ArcStr::from(messenger_id),
+        messenger_id,
         messenger_name: ArcStr::from("test-messenger"),
         user_map,
     }
@@ -108,7 +108,7 @@ impl MockMessenger {
     }
 
     /// 模拟群组变化
-    pub fn push_group_change(&self, change_type: GroupChangeType, user_id: &str, group_id: &str) {
+    pub fn push_group_change(&self, change_type: GroupChangeType, user_id: ArcStr, group_id: ArcStr) {
         let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
         if let Some(manager) = handler {
             let messenger_id = self.info.messenger_id.clone();
@@ -116,8 +116,8 @@ impl MockMessenger {
                 msg_id: ArcStr::from("gc-1"),
                 notification: Arc::new(GroupChangeNotification {
                     messenger_id,
-                    group_id: ArcStr::from(group_id),
-                    user_id: ArcStr::from(user_id),
+                    group_id,
+                    user_id,
                     messenger_name: ArcStr::new(),
                     user_name: ArcStr::new(),
                     group_name: ArcStr::new(),
@@ -132,7 +132,7 @@ impl MockMessenger {
     }
 
     /// 模拟用户被删除
-    pub fn push_user_remove(&self, user_id: &str) {
+    pub fn push_user_remove(&self, user_id: ArcStr) {
         let handler = self.manager.read().unwrap().clone().and_then(|w| w.upgrade());
         if let Some(manager) = handler {
             let messenger_id = self.info.messenger_id.clone();
@@ -140,7 +140,7 @@ impl MockMessenger {
                 msg_id: ArcStr::from("ur-1"),
                 notification: Arc::new(UserRemoveNotification {
                     messenger_id,
-                    user_id: ArcStr::from(user_id),
+                    user_id,
                     messenger_name: ArcStr::new(),
                     user_name: ArcStr::new(),
                 }),
@@ -294,28 +294,28 @@ impl MockTerminal {
 
 #[async_trait]
 impl Terminal for MockTerminal {
-    async fn incoming_message(&self, _id: &str, message: Arc<IncomingMessageEvent>) {
+    async fn incoming_message(&self, _id: ArcStr, message: Arc<IncomingMessageEvent>) {
         let _ = self.incoming.send(message);
     }
 
-    async fn join_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn join_group(&self, _id: ArcStr, notification: Arc<GroupChangeNotification>) {
         let _ = self.joins.send(notification);
     }
 
-    async fn leave_group(&self, _id: &str, notification: Arc<GroupChangeNotification>) {
+    async fn leave_group(&self, _id: ArcStr, notification: Arc<GroupChangeNotification>) {
         let _ = self.leaves.send(notification);
     }
 
-    async fn user_removed(&self, _id: &str, notification: Arc<UserRemoveNotification>) {
+    async fn user_removed(&self, _id: ArcStr, notification: Arc<UserRemoveNotification>) {
         let _ = self.removals.send(notification);
     }
 
-    async fn download_chunk(&self, _id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
+    async fn download_chunk(&self, _id: ArcStr, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> ClientResult<()> {
         let _ = self.chunks.send((info, pos, data));
         Ok(())
     }
 
-    async fn closed(&self, _id: &str) {
+    async fn closed(&self, _id: ArcStr) {
         let _ = self.closed_tx.send(());
     }
 }
@@ -336,19 +336,19 @@ pub async fn start_test_server(port: u16, messenger: Arc<MockMessenger>) -> Arc<
     manager
 }
 
-pub fn make_bind_request(messenger_id: &str, user_id: &str) -> BindRequest {
+pub fn make_bind_request(messenger_id: ArcStr, user_id: ArcStr) -> BindRequest {
     BindRequest {
-        messenger_id: ArcStr::from(messenger_id),
-        user_id: ArcStr::from(user_id),
+        messenger_id,
+        user_id,
     }
 }
 
-pub fn make_text_incoming(messenger_id: &str, user_id: &str, group_id: &str, text: &str) -> IncomingMessage {
+pub fn make_text_incoming(messenger_id: ArcStr, user_id: ArcStr, group_id: ArcStr, text: &str) -> IncomingMessage {
     IncomingMessage {
         msg_id: ArcStr::from("in-1"),
-        messenger_id: ArcStr::from(messenger_id),
-        user_id: ArcStr::from(user_id),
-        group_id: ArcStr::from(group_id),
+        messenger_id,
+        user_id,
+        group_id,
         messenger_name: ArcStr::new(),
         user_name: ArcStr::new(),
         group_name: ArcStr::new(),

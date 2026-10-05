@@ -502,7 +502,7 @@ mod tests {
     }
 
     /// 通道消息通知（懒处理：只登记，不计算）
-    fn channel_notification(role_event: &RoleEvent, channel: &ChannelKey, is_self: usize) -> RecordNotification {
+    fn channel_notification(role_event: Arc<RoleEvent>, channel: &ChannelKey, is_self: usize) -> RecordNotification {
         RecordNotification {
             agent_id: ArcStr::from("0"),
             role_event: role_event.clone(),
@@ -513,7 +513,7 @@ mod tests {
     }
 
     /// 登记某通道有新数据
-    async fn notify(f: &Fixture, role_event: &RoleEvent, channel: &ChannelKey) {
+    async fn notify(f: &Fixture, role_event: Arc<RoleEvent>, channel: &ChannelKey) {
         f.service
             .on_notification(RecordKind::Channel, &channel_notification(role_event, channel, 0))
             .await
@@ -521,7 +521,7 @@ mod tests {
     }
 
     /// 登记整个作用域有新数据（思考/工具通知的形态）
-    async fn notify_scope(f: &Fixture, role_event: &RoleEvent) {
+    async fn notify_scope(f: &Fixture, role_event: Arc<RoleEvent>) {
         f.service
             .on_notification(RecordKind::Think, &RecordNotification {
                 agent_id: ArcStr::from("0"),
@@ -614,7 +614,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "答").await;
 
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         assert!(is_dirty(&f, &role_event("dev", None)).await, "通知只登记待处理标记");
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 0, "登记本身不做任何计算");
         assert_eq!(f.model.prompts().len(), 0, "登记不调用模型");
@@ -647,7 +647,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         process(&f, &role_event("dev", None)).await;
 
         // 重启：同一根目录上新建 manager 与 service（内存态为空，只剩磁盘状态）
@@ -668,7 +668,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
         let prompts = f.model.prompts().len();
@@ -688,7 +688,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "A 答").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "B 问").await;
         // 只登记 A：查询时按作用域把全部通道各算一次
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批、各得一个 case");
@@ -710,7 +710,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 的消息").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息").await;
         // 思考/工具通知无法确定通道 → 标记整个作用域
-        notify_scope(&f, &role_event("dev", None)).await;
+        notify_scope(&f, Arc::new(role_event("dev", None))).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "作用域级标记会处理全部通道");
@@ -725,7 +725,7 @@ mod tests {
         let a = channel_a();
         // 先归档出 e1，并把它变成 e1（父）/ e2（子）的结构，当前 case 指向父 case e1
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧内容").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
         {
             let handle = f.service.manager().get(&agent_role(&role_event("dev", None))).unwrap();
@@ -744,7 +744,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "当前话题的延续").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:01:00", 3, 0, "新话题").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:02:00", 4, 1, "新话题的回应").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
         let parent = node(&f, &role_event("dev", None), "role-case").await.unwrap();
@@ -768,7 +768,7 @@ mod tests {
             crate::model::MessageGroup { messages: vec![0, 1], is_current: false },
             crate::model::MessageGroup { messages: vec![2], is_current: false },
         ]);
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "一批消息按分组落成两个 case");
@@ -786,7 +786,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
         // 模型错误地把分组标记为当前 case，但该通道还没有当前 case → 按失败处理
         f.model.push_group(&[0], true);
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         assert!(f.service.manual_trigger("0", &role_event("dev", None)).await.is_err(), "非法分组按失败处理");
         assert!(is_dirty(&f, &role_event("dev", None)).await, "失败后保留待处理标记，等待下次处理重试");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 1, "水位不动");
@@ -804,7 +804,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 1, "回答").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         // 分组调用失败（桩模型的输出没有覆盖整批）：归档整体失败，状态与磁盘保持不变
         f.model.push_groups(Vec::new());
@@ -834,7 +834,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "内容").await;
-        notify(&f, &role_event("dev", Some("e1")), &a).await;
+        notify(&f, Arc::new(role_event("dev", Some("e1"))), &a).await;
 
         f.model.push_summarize_failure();
         assert!(f.service.manual_trigger("0", &role_event("dev", Some("e1"))).await.is_err(), "摘要失败应向上报错");
@@ -866,7 +866,7 @@ mod tests {
             let root = f.service.root();
             let a = channel_a();
             append_store_channel(&root, "0", suffix, &a, "2099-01-01 10:00:00", 1, 0, "内容").await;
-            notify(&f, &role_event, &a).await;
+            notify(&f, Arc::new(role_event.clone()), &a).await;
 
             let result = f.service.manual_trigger("0", &role_event).await;
             assert!(result.is_err(), "非法事件标识 {} 应报错", suffix);
@@ -887,7 +887,7 @@ mod tests {
         for i in 1..=5u64 {
             append_store_channel(&root, "0", "dev", &a, &format!("2099-01-01 10:0{}:00", i), i, (i % 2) as usize, "内容").await;
         }
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let tree = query(&f, &role_event("dev", None)).await;
 
         let group_calls = f.model.prompts().iter().filter(|prompt| prompt.contains("\"groups\"")).count();
@@ -907,7 +907,7 @@ mod tests {
         append_store_think(&root, "0", "dev", &a, "keyA", "2099-01-01 10:01:00", 2, "A 的思考").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "另一个通道").await;
         append_store_think(&root, "0", "dev", &b, "keyB", "2099-01-01 11:01:00", 4, "B 的思考").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批");
@@ -936,7 +936,7 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问一").await;
         append_store_orphan_think(&root, "0", "dev", "2099-01-01 10:01:00", 2, "孤儿").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:02:00", 3, 1, "答").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "该通道记录已处理完");
@@ -976,7 +976,7 @@ mod tests {
         let a = channel_a();
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         // 定位请求：第一条与已存记录同 msg_id（内容 / 时间 / 发送者都可以不同），第二条是新消息
         let response = f
@@ -1013,7 +1013,7 @@ mod tests {
         let a = channel_a();
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         // 请求的两条消息都与已存记录重复：批次只剩已存记录，仍只做一次分组
         let response = f
@@ -1071,7 +1071,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "父内容").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
         // 手工构造 case（顶层父）/ role-2（子）结构
         {
@@ -1095,11 +1095,11 @@ mod tests {
         let a = channel_a();
         // A 已归档过：存储里存在该通道，但水位之后没有待归档记录
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "m1").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
         let before = f.model.prompts().len();
 
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         f.model.push_group(&[0, 1], false);
         f.model.push_level(LevelDecision::new_case("two", "第二摘要"));
         let response = f
@@ -1131,7 +1131,7 @@ mod tests {
         let root = f.service.root();
         let (a, b) = (channel_a(), channel_b());
         append_store_channel_with_id(&root, "0", "dev", &b, "2099-01-01 10:00:00", 1, 0, "B 的记录", "m1").await;
-        notify(&f, &role_event("dev", None), &b).await;
+        notify(&f, Arc::new(role_event("dev", None)), &b).await;
 
         let response = f
             .service
@@ -1164,8 +1164,8 @@ mod tests {
         // 两个通道的记录用同一个 msg_id：去重只看本通道的记录
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 自己的记录", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1").await;
-        notify(&f, &role_event("dev", None), &a).await;
-        notify(&f, &role_event("dev", None), &b).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &b).await;
 
         // 消息属于 B 通道：与 B 通道同 msg_id 的记录去重（不能命中 A 通道的同 msg_id 记录）
         let response = f
@@ -1191,13 +1191,13 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧话题").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
         assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("role-case"));
 
         // 待归档记录 C 与新消息 B 分属两组：两组都走同一套逐层判定，只有有记录的 C 会落地
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         f.model.push_groups(vec![
             crate::model::MessageGroup { messages: vec![0], is_current: false },
             crate::model::MessageGroup { messages: vec![1], is_current: false },
@@ -1236,7 +1236,7 @@ mod tests {
         for i in 1..=3u64 {
             append_store_channel(&root, "0", "dev", &a, &format!("2099-01-01 10:0{}:00", i), i, 0, &format!("记录{}", i)).await;
         }
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let response = f
             .service
             .locate(&locate_request(&role_event("dev", None), vec![locate_message_at(&a, "2099-01-01 12:00:00", 0, "新消息", "")]))
@@ -1258,7 +1258,7 @@ mod tests {
         let (a, b) = (channel_a(), channel_b());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 的消息").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let tree = query(&f, &role_event("dev", None)).await;
 
         let current = |channel: &ChannelKey| -> ArcStr {
@@ -1303,7 +1303,7 @@ mod tests {
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问一").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "答一").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         process(&f, &role_event("dev", None)).await;
 
         // 摘要：只有节点（摘要文本 + 记录数），不带原文；新建 case 的摘要来自逐层判定
@@ -1373,7 +1373,7 @@ mod tests {
         let a = channel_a();
         append_store_channel(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 1, "事件模式").await;
         append_store_channel(&root, "0", "dev-e1", &a, "2099-01-01 10:01:00", 2, 0, "继续").await;
-        notify(&f, &role_event("dev", Some("e1")), &a).await;
+        notify(&f, Arc::new(role_event("dev", Some("e1"))), &a).await;
         let tree = query(&f, &role_event("dev", Some("e1"))).await;
 
         assert_eq!(tree.nodes.len(), 1, "事件模式整体一个 case");
@@ -1398,7 +1398,7 @@ mod tests {
             ("dev-e2", role_event("dev", Some("e2"))),
         ] {
             append_store_channel(&root, "0", suffix, &a, "2099-01-01 10:00:00", 1, 0, "内容").await;
-            notify(&f, &role_event, &a).await;
+            notify(&f, Arc::new(role_event.clone()), &a).await;
             process(&f, &role_event).await;
         }
         // 三个后缀落到同一棵角色树：角色子树 + 两个事件 case
@@ -1434,7 +1434,7 @@ mod tests {
         let root = f.service.root();
         let a = channel_a();
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 1, "父内容").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
         // 模拟后续「合并为大 case」程序的产物：case 成为父 case，子 case role-2 承载内容
@@ -1447,7 +1447,7 @@ mod tests {
 
         // 下一批标记为当前 case 组 → 直接并入 role-2 → role-2 摘要重算后级联重算父 case case
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "子内容").await;
-        notify(&f, &role_event("dev", None), &a).await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
         assert_eq!(node(&f, &role_event("dev", None), "role-2").await.unwrap().record_count, 1, "本批只有一条记录");

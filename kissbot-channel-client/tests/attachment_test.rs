@@ -14,13 +14,13 @@ use mock::*;
 async fn test_attachment_upload_download() {
     test_config_setup();
     let download_data = b"abcdefghij"; // 10 字节，mock 按 4 字节分块 → 3 块
-    let messenger = MockMessenger::new(make_messenger_info("m1", "u1", "g1"), download_data);
+    let messenger = MockMessenger::new(make_messenger_info(ArcStr::from("m1"), ArcStr::from("u1"), ArcStr::from("g1")), download_data);
     let _manager = start_test_server(19102, messenger.clone()).await;
 
     let terminal = MockTerminal::new();
     let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
     client.clone().connect("ws://127.0.0.1:19102", "test-key").await.expect("connect failed");
-    client.bind(make_bind_request("m1", "u1")).await.expect("bind failed");
+    client.bind(make_bind_request(ArcStr::from("m1"), ArcStr::from("u1"))).await.expect("bind failed");
 
     // ===== 上传 =====
     let upload_data = b"0123456789";

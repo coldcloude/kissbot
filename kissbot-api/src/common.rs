@@ -40,7 +40,7 @@ impl<T> ApiResponse<T> {
 /// remove 得到的 `Arc<T>` 已独占所有权，只要没有其它持有者，
 /// `Arc::make_mut` 就原地返回 `&mut T`，不会发生复制。
 /// 仅替换 map 的值 Arc（不修改其指向内容）时不要用本函数，直接 remove/insert 或 insert。
-pub fn write_key_value<K, Q, T, F>(map: &mut HashMap<K, Arc<T>>, key: &Q, op: F) -> bool
+pub fn write_key_value<K, Q, T, F>(map: &mut HashMap<K, Arc<T>>, key: &Q, op: F) -> Option<Arc<T>>
 where
     K: Borrow<Q> + Eq + Hash,
     Q: Eq + Hash + ?Sized,
@@ -50,10 +50,10 @@ where
     match map.remove_entry(key) {
         Some((key, mut value)) => {
             op(&key, Arc::make_mut(&mut value));
-            map.insert(key, value);
-            true
+            map.insert(key, value.clone());
+            Some(value)
         }
-        None => false,
+        None => None,
     }
 }
 

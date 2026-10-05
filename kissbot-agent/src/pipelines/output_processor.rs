@@ -88,7 +88,7 @@ impl AgentOutputProcessor for ChannelOutputProcessor {
                 if let Some(out_channel) = oc_cfg.out_channel.as_ref() {
                     let agent_id = self.session_key.agent_id.as_str();
                     let role_name = self.session_key.role_event.role_name.as_str();
-                    Nexus::get().send_outgoing(agent_id, role_name, self.session_key.role_event.as_ref(), out_channel.as_ref(), content.clone()).await;
+                    Nexus::get().send_outgoing(agent_id, role_name, self.session_key.role_event.clone(), out_channel.as_ref(), content.clone()).await;
                 }
             }
             if round >= MAX_TOOL_ROUNDS {

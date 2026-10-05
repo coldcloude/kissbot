@@ -89,7 +89,7 @@ impl MemoryIndexer {
 
     /// 最近 N 条 channel 记录（跨日期文件，参考 channel-web message_store::get_recent）：
     /// date_sets 日期倒序逐个 query_last(remaining)，取满即停；组按日期升序返回、组内升序；无时间过滤
-    pub async fn query_channel_recent(&self, agent_id: &str, role_event: &RoleEvent, count: u32) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)>> {
+    pub async fn query_channel_recent(&self, agent_id: ArcStr, role_event: Arc<RoleEvent>, count: u32) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)>> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -101,12 +101,12 @@ impl MemoryIndexer {
 
         let mut remaining = count;
         let mut results: Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)> = Vec::new();
-        if let Some(dates) = self.channel_date_sets.get(&(ArcStr::from(agent_id), role_event_suffix(role_event))) {
+        if let Some(dates) = self.channel_date_sets.get(&(agent_id.clone(), role_event_suffix(role_event.as_ref()))) {
             for date in dates.iter().rev() {  // 最新日期在前
                 if remaining == 0 { break; }
                 // 索引 key 为 Arc<RecordKey>：查询传 &Arc<RecordKey>，返回时复用同一把 Arc
                 let key = Arc::new(RecordKey {
-                    agent_id: ArcStr::from(agent_id),
+                    agent_id: agent_id.clone(),
                     role_event: role_event.clone(),
                     date: date.clone(),
                 });
@@ -221,12 +221,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -281,12 +281,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -334,12 +334,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -387,12 +387,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            role_event: Arc::new(RoleEvent::new(role_name)),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -439,55 +439,55 @@ use tokio;
     async fn test_query_channel_recent_cross_files() {
         init_test_config();
         // 用独立 agent id 避免与其他测试共享全局 temp root 时相互污染
-        let agent_id = "recent_agent";
-        let role_name = "r1";
+        let agent_id = ArcStr::from("recent_agent");
+        let role_name = ArcStr::from("r1");
         let rec = |time: &str, text: &str| format!(
             r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
             text, time);
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 10:00:00", "b")).await;
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "c")).await;
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 09:00:00", "d")).await;
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 10:00:00", "e")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 10:00:00", "b")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "c")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 09:00:00", "d")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-03.jsonl", "2026-08-03", &rec("2026-08-03 10:00:00", "e")).await;
 
         let indexer = MemoryIndexer::new();
         // 懒加载扫描 → 跨文件取最近 3 条（c, d, e），按时间升序
-        let results = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 3).await.unwrap();
+        let results = indexer.query_channel_recent(agent_id.clone(), Arc::new(RoleEvent::new(role_name.clone())), 3).await.unwrap();
         let flat: Vec<ArcStr> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["c", "d", "e"], "跨日期文件取最近 3 条");
 
         // count 超总量 → 全部（按时间升序）
-        let results = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 100).await.unwrap();
+        let results = indexer.query_channel_recent(agent_id.clone(), Arc::new(RoleEvent::new(role_name.clone())), 100).await.unwrap();
         let flat: Vec<ArcStr> = results.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b", "c", "d", "e"], "count 超总量返回全部");
 
         // count == 0 → 空
-        assert!(indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 0).await.unwrap().is_empty(), "count=0 返回空");
+        assert!(indexer.query_channel_recent(agent_id.clone(), Arc::new(RoleEvent::new(role_name.clone())), 0).await.unwrap().is_empty(), "count=0 返回空");
     }
 
     #[tokio::test]
     async fn test_query_channel_recent_incremental_after_obsolete() {
         init_test_config();
-        let agent_id = "recent_agent2";
-        let role_name = "r1";
+        let agent_id = ArcStr::from("recent_agent2");
+        let role_name = ArcStr::from("r1");
         let rec = |time: &str, text: &str| format!(
             r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
             text, time);
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
 
         let indexer = MemoryIndexer::new();
-        let out = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 10).await.unwrap();
+        let out = indexer.query_channel_recent(agent_id.clone(), Arc::new(RoleEvent::new(role_name.clone())), 10).await.unwrap();
         assert_eq!(out.iter().map(|(_, v)| v.len()).sum::<usize>(), 1);
 
         // 新日期文件 + mark_channel_obsolete（append 钩子路径）→ date_sets 增量补入
-        append_jsonl(agent_id, role_name, "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "b")).await;
+        append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "b")).await;
         let key = RecordKey {
-            agent_id: ArcStr::from(agent_id),
-            role_event: RoleEvent::new(role_name),
+            agent_id: agent_id.clone(),
+            role_event: Arc::new(RoleEvent::new(role_name.clone())),
             date: ArcStr::from("2026-08-02"),
         };
         indexer.mark_channel_obsolete(Arc::new(key.clone()));
-        let out = indexer.query_channel_recent(agent_id, &RoleEvent::new(role_name), 10).await.unwrap();
+        let out = indexer.query_channel_recent(agent_id.clone(), Arc::new(RoleEvent::new(role_name)), 10).await.unwrap();
         let flat: Vec<ArcStr> = out.iter().flat_map(|(_, v)| v.iter()).map(|(_, r)| text_of(r.clone())).collect();
         assert_eq!(flat, vec!["a", "b"], "mark_channel_obsolete 后新日期可查");
     }

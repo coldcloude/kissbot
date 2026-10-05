@@ -171,39 +171,6 @@ impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
 
-pub trait SessionConfigMapField<C, E: MergeBy<C>> {
-    fn set(&mut self, config: &C);
-}
-
-macro_rules! impl_session_config_map_field {
-    ($ct:ty, $et:ty) => {
-        impl SessionConfigMapField<$ct, $et> for SessionConfigMap {
-            fn set(&mut self, config: &$ct) {
-                if let Some(eff_config) = self.get_deref_mut::<$et>() {
-                    eff_config.merge(config);
-                }
-            }
-        }
-    };
-}
-
-impl_session_config_map_field!(LLMConfig, EffectiveLLMConfig);
-impl_session_config_map_field!(CompressConfig, EffectiveCompressConfig);
-impl_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
-impl_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
-impl_session_config_map_field!(OutChannelConfig, OutChannelConfig);
-impl_session_config_map_field!(GroupSetConfig, GroupSetConfig);
-impl_session_config_map_field!(PipelineConfig, PipelineConfig);
-
-impl SessionConfigMap {
-    pub fn set<C, E: MergeBy<C>>(&mut self, config: &C)
-    where
-        Self: SessionConfigMapField<C, E>,
-    {
-        <Self as SessionConfigMapField<C, E>>::set(self, config)
-    }
-}
-
 pub trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
     fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
 }

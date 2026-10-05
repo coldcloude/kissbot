@@ -138,15 +138,13 @@ impl IndividualRecognitionManager {
         F: FnOnce(&mut Individual),
     {
         self.write_individual_recognition_ref(agent_id, |individuals_or_none| {
-            let individuals = individuals_or_none.ok_or_else(|| Error::AgentNotFound(ArcStr::from(agent_id)))?;
+            let mut individuals = individuals_or_none.ok_or_else(|| Error::AgentNotFound(ArcStr::from(agent_id)))?;
             // 外部已持有 agent 写锁：先写时复制出可变的 individual_map，再交给 write 做 remove → 修改 → insert
-            let mut individuals_arc = individuals;
-            let individuals_mut = Arc::make_mut(&mut individuals_arc);
+            let individuals_mut = Arc::make_mut(&mut individuals);
             let individual_map = Arc::make_mut(&mut individuals_mut.individual_map);
-            if !write_key_value(individual_map, individual_name, |_, individual| op(individual)) {
-                return Err(Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)));
-            }
-            Ok(individuals_arc)
+            write_key_value(individual_map, individual_name, |_, individual| op(individual))
+            .ok_or_else(|| Error::AgentIndividualNotFound(ArcStr::from(agent_id), ArcStr::from(individual_name)))?;
+            Ok(individuals)
         }).await
     }
 

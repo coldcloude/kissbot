@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::Bytes;
 use kissbot_api::channel::*;
@@ -11,15 +12,15 @@ use crate::error::Result;
 #[async_trait]
 pub trait Terminal: Send + Sync + 'static {
     /// 收到上行消息（含接收方 recipient_user_id）
-    async fn incoming_message(&self, id: &str, message: Arc<IncomingMessageEvent>);
+    async fn incoming_message(&self, id: ArcStr, message: Arc<IncomingMessageEvent>);
     /// 用户加入群组
-    async fn join_group(&self, id: &str, notification: Arc<GroupChangeNotification>);
+    async fn join_group(&self, id: ArcStr, notification: Arc<GroupChangeNotification>);
     /// 用户离开群组
-    async fn leave_group(&self, id: &str, notification: Arc<GroupChangeNotification>);
+    async fn leave_group(&self, id: ArcStr, notification: Arc<GroupChangeNotification>);
     /// 用户被删除
-    async fn user_removed(&self, id: &str, notification: Arc<UserRemoveNotification>);
+    async fn user_removed(&self, id: ArcStr, notification: Arc<UserRemoveNotification>);
     /// 下载分块到达（Ok/Err 即该块的确认结果）
-    async fn download_chunk(&self, id: &str, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()>;
+    async fn download_chunk(&self, id: ArcStr, info: Arc<AttachmentInfoResponse>, pos: u64, data: Bytes) -> Result<()>;
     /// 连接关闭（不做自动重连）
-    async fn closed(&self, id: &str);
+    async fn closed(&self, id: ArcStr);
 }

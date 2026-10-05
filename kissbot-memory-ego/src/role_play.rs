@@ -143,15 +143,13 @@ impl RolePlayManager {
         F: FnOnce(&mut OtherRole),
     {
         self.write_role_play_ref(agent_id, role_name, |role_or_none| {
-            let role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
+            let mut role = role_or_none.ok_or_else(|| Error::AgentRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name)))?;
             // 外部已持有 role 写锁：先写时复制出可变的 other_roles，再交给 write 做 remove → 修改 → insert
-            let mut role_arc = role;
-            let role_mut = Arc::make_mut(&mut role_arc);
+            let role_mut = Arc::make_mut(&mut role);
             let other_roles = Arc::make_mut(&mut role_mut.other_roles);
-            if !write_key_value(other_roles, other_role_name, |_, other_role| op(other_role)) {
-                return Err(Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)));
-            }
-            Ok(role_arc)
+            write_key_value(other_roles, other_role_name, |_, other_role| op(other_role))
+            .ok_or_else(|| Error::AgentRoleOtherRoleNotFound(ArcStr::from(agent_id), ArcStr::from(role_name), ArcStr::from(other_role_name)))?;
+            Ok(role)
         }).await
     }
 

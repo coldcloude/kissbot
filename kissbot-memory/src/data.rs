@@ -262,7 +262,7 @@ use super::*;
         init_test_config();
         let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             date: ArcStr::from("2026-06-24"),
         });
         let parser = ChannelParser;
@@ -277,7 +277,7 @@ use super::*;
         init_test_config();
         let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new(""),
+            role_event: Arc::new(RoleEvent::new("")),
             date: ArcStr::from("2026-06-24"),
         });
         let parser = ChannelParser;
@@ -290,7 +290,7 @@ use super::*;
     async fn test_think_file_name() {
         let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             date: ArcStr::from("2026-06-24"),
         });
         let parser = ThinkParser;
@@ -303,7 +303,7 @@ use super::*;
     async fn test_tool_call_file_name() {
         let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             date: ArcStr::from("2026-06-24"),
         });
         let parser = ToolCallParser;
@@ -316,7 +316,7 @@ use super::*;
     async fn test_tool_result_file_name() {
         let key = Arc::new(RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             date: ArcStr::from("2026-06-24"),
         });
         let parser = ToolResultParser;
@@ -331,7 +331,7 @@ use super::*;
     fn test_channel_request_parser() {
         let request = ChannelRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -348,7 +348,7 @@ use super::*;
         let (key, record) = parser.parse_request(request);
         // key 为公共 RecordKey（无 messenger/user/group 字段）
         assert_eq!(key.agent_id, "agent1");
-        assert_eq!(key.role_event, kissbot_api::RoleEvent::new("default"));
+        assert_eq!(key.role_event.as_ref(), &RoleEvent::new("default"));
         assert_eq!(key.date, "2026-06-24");
         // record 保存完整身份：user_id=发送者、self_user_id=绑定用户、messenger_id/group_id
         assert_eq!(record.user_id, "u1");
@@ -365,7 +365,7 @@ use super::*;
     fn test_think_request_parser() {
         let request = ThinkRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
             key: ArcStr::from("k1"),
@@ -384,7 +384,7 @@ use super::*;
     fn test_tool_call_request_parser() {
         let request = ToolCallRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             tool_name: ArcStr::from("get_weather"),
             tool_params: serde_json::json!({"city": "Beijing"}).into(),
             key: ArcStr::from("k1"),
@@ -402,7 +402,7 @@ use super::*;
     fn test_tool_result_request_parser() {
         let request = ToolResultRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: kissbot_api::RoleEvent::new("default"),
+            role_event: Arc::new(RoleEvent::new("default")),
             tool_result: Arc::new(serde_json::json!({"temp": 25}).into()),
             tool_error: Arc::new(serde_json::Value::Null),
             key: ArcStr::from("k1"),
