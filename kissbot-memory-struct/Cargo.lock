@@ -371,7 +371,6 @@ dependencies = [
  "arcstr",
  "async-trait",
  "bytes",
- "dashmap",
  "kai-file",
  "kai-ws",
  "kissbot-config",

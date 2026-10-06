@@ -25,9 +25,9 @@ impl std::fmt::Display for RoleKey {
     }
 }
 
-// ========== Simple enums / structs (no Arc needed, for JSON) ==========
+// ========== Simple enums / structs ==========
 
-// ========== Internal storage types (use Arc / DashMap / DashSet) ==========
+// ========== Internal storage types ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndividualRelation {

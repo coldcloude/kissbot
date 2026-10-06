@@ -513,9 +513,9 @@ impl WebMessenger {
     }
     pub async fn build_messenger_info(&self) -> MessengerInfo {
         let cfg = self.config.read().await;
-        let full_user_map = dashmap::DashMap::new();
+        let mut full_user_map = HashMap::new();
         for (uid, user) in cfg.users.iter() {
-            let ug_map = dashmap::DashMap::new();
+            let mut ug_map = HashMap::new();
             for (gid, group) in cfg.groups.iter() {
                 if group.members.contains(uid) {
                     ug_map.insert(gid.clone(), Arc::new(GroupInfo {

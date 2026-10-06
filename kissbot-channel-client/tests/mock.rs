@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak, atomic::{AtomicU32, Ordering}};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use bytes::Bytes;
-use dashmap::DashMap;
 use kissbot_api::channel::*;
 use kissbot_api::message::*;
 use kissbot_channel::{Messenger, MessengerCreator, Error as ChannelError, ChannelServer};
@@ -37,19 +37,19 @@ pub fn make_messenger_info(messenger_id: ArcStr, user_id: ArcStr, group_id: ArcS
         group_id: group_id.clone(),
         group_name: ArcStr::from("test-group"),
     });
-    let group_map = Arc::new(DashMap::new());
+    let mut group_map = HashMap::new();
     group_map.insert(group_id, group);
     let user = Arc::new(UserInfo {
         user_id: user_id.clone(),
         user_name: ArcStr::from("test-user"),
-        group_map,
+        group_map: Arc::new(group_map),
     });
-    let user_map = Arc::new(DashMap::new());
+    let mut user_map = HashMap::new();
     user_map.insert(user_id, user);
     MessengerInfo {
         messenger_id,
         messenger_name: ArcStr::from("test-messenger"),
-        user_map,
+        user_map: Arc::new(user_map),
     }
 }
 

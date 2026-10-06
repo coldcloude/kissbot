@@ -1,7 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use dashmap::DashMap;
 use kai_file::index::Record;
 use kai_ws::{LEN_STATUS_CODE, OFFSET_STATUS_CODE};
 use serde::{Deserialize, Serialize};
@@ -27,14 +27,14 @@ pub struct GroupInfo {
 pub struct UserInfo {
     pub user_id: ArcStr,
     pub user_name: ArcStr,
-    pub group_map: Arc<DashMap<ArcStr, Arc<GroupInfo>>>,
+    pub group_map: Arc<HashMap<ArcStr, Arc<GroupInfo>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessengerInfo {
     pub messenger_id: ArcStr,
     pub messenger_name: ArcStr,
-    pub user_map: Arc<DashMap<ArcStr, Arc<UserInfo>>>,
+    pub user_map: Arc<HashMap<ArcStr, Arc<UserInfo>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,13 +260,14 @@ mod tests {
             user_id: ArcStr::from("u1"),
             user_name: ArcStr::from("Alice"),
             group_map: {
-                let gm = Arc::new(DashMap::new());
+                let mut gm = HashMap::new();
                 gm.insert(ArcStr::from("g1"), group_info);
-                gm
+                Arc::new(gm)
             },
         });
-        let user_map = Arc::new(DashMap::new());
+        let mut user_map = HashMap::new();
         user_map.insert(ArcStr::from("u1"), user_info);
+        let user_map = Arc::new(user_map);
 
         let obj = MessengerInfo {
             messenger_id: ArcStr::from("m1"),
