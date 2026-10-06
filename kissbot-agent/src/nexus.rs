@@ -444,7 +444,7 @@ impl Nexus {
     /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
     /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
     /// role_event 由会话标识携带（记忆编码）；role_name 用于清理定位（roles key 是原始 role）
-    pub async fn send_outgoing(&self, agent_id: &str, role_name: &str, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: ArcStr) {
+    pub async fn send_outgoing(&self, agent_id: ArcStr, role_name: ArcStr, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: ArcStr) {
         // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
         let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
             .map(|c| c.bind_users.contains(&out_channel.user))
@@ -467,7 +467,7 @@ impl Nexus {
             Ok(response) => {
                 // 下行成功后：推记忆（is_self=1）
                 self.memory_store_client.push_channel_record(ChannelRequest {
-                    agent_id: ArcStr::from(agent_id),
+                    agent_id,
                     role_event,
                     messenger_id: out_channel.user.messenger_id.clone(),
                     user_id: out_channel.user.user_id.clone(),
@@ -615,10 +615,10 @@ mod tests {
         pipeline.message_sender = Some(PP_MSG_RAW.clone());
         pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
         pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
-        cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(agent_id, "", Arc::new(pipeline)).await.unwrap();
+        cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
         // 合批间隔缩到 1 秒，让 flush 尽快发生
         cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
-            agent_id, "", Arc::new(ChannelBatchConfig { channel_batch_interval_secs: 1 })).await.unwrap();
+            ArcStr::from(agent_id), ArcStr::from(""), Arc::new(ChannelBatchConfig { channel_batch_interval_secs: 1 })).await.unwrap();
 
         // 2. channel 绑定 (a1, "")；channel_id 用本用例专用名，避免与其他测试互相干扰
         let _ = cm.add_channel(ChannelConfig {
@@ -719,7 +719,7 @@ mod tests {
         pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
         pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
         ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
-            agent_id, "", Arc::new(pipeline)).await.unwrap();
+            ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
 
         // 会话实例由本地 SessionManager 创建、pipeline 直接持有，用本地管线表与会话表避免影响全局单例
         let dir = tempfile::tempdir().unwrap();
@@ -785,7 +785,7 @@ mod tests {
             let mut pipeline = PipelineConfig::default();
             pipeline.preset = Some(preset.clone());
             ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
-                agent_id, "", Arc::new(pipeline)).await.unwrap();
+                ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
 
             let role_event = if is_event { RoleEvent::with_event("", "e1") } else { RoleEvent::new("") };
             let key = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(role_event) });

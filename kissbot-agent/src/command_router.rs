@@ -134,12 +134,11 @@ impl CommandRouter {
                         "ChannelUser 未绑定: {} / {}", parts[1].clone(), parts[2].clone()).into()));
                 }
                 // 设 (agent, role) 的 out_channel（channel_id = 来源 channel）
-                cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(),
-                    Some(Arc::new(OutChannel {
-                        channel_id: channel_id,
-                        user: Arc::new(cu),
-                        group_id: parts[3].clone(),
-                    }))).await?;
+                cm.set_out_channel(ch.agent_id.clone(), ch.role_name.clone(), Some(Arc::new(OutChannel {
+                    channel_id: channel_id,
+                    user: Arc::new(cu),
+                    group_id: parts[3].clone(),
+                }))).await?;
                 Ok(ArcStr::from(format!("✅ 已设发送通道: {} / {} -> {}", parts[1].clone(), parts[2].clone(), parts[3].clone())))
             }
             "/unbind-outgoing" => {
@@ -153,7 +152,7 @@ impl CommandRouter {
                 let Some(ch) = cm.channel(channel_id.as_str()).await else {
                     return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
                 };
-                cm.set_out_channel(ch.agent_id.as_str(), ch.role_name.as_str(), None).await?;
+                cm.set_out_channel(ch.agent_id.clone(), ch.role_name.clone(), None).await?;
                 Ok(ArcStr::from("✅ 已取消发送通道（只存不回复）"))
             }
             "/model" => {

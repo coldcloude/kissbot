@@ -84,7 +84,7 @@ pub struct AgentRoleConfig {
 
 pub trait AgentRoleConfigField<C: MergeSelf> {
     fn build(&self, role_name: &str) -> C;
-    fn set(&mut self, role_name: &str, config: Arc<C>);
+    fn set(&mut self, role_name: ArcStr, config: Arc<C>);
 }
 
 macro_rules! impl_agent_role_config_field {
@@ -102,7 +102,7 @@ macro_rules! impl_agent_role_config_field {
                 }
                 config
             }
-            fn set(&mut self, role_name: &str, config: Arc<$ty>) {
+            fn set(&mut self, role_name: ArcStr, config: Arc<$ty>) {
                 if role_name.is_empty() {
                     // 设置 agent 级配置
                     let config_map = Arc::make_mut(&mut self.config_map);
@@ -111,7 +111,7 @@ macro_rules! impl_agent_role_config_field {
                 else {
                     let role_map = Arc::make_mut(&mut self.roles);
                     // role 条目不存在则新建
-                    let role_config_map = if let Some(mut role_config_map) = role_map.remove(role_name) {
+                    let role_config_map = if let Some(mut role_config_map) = role_map.remove(&role_name) {
                         let role_config_map_mut = Arc::make_mut(&mut role_config_map);
                         role_config_map_mut.set::<$ty>(config);
                         role_config_map
@@ -120,7 +120,7 @@ macro_rules! impl_agent_role_config_field {
                         role_config_map.insert::<$ty>(config);
                         Arc::new(role_config_map)
                     };
-                    role_map.insert(ArcStr::from(role_name), role_config_map);
+                    role_map.insert(role_name, role_config_map);
                 }
             }
         }
@@ -142,7 +142,7 @@ impl AgentRoleConfig {
     {
         <Self as AgentRoleConfigField<C>>::build(self, role_name)
     }
-    pub fn set<C: MergeSelf>(&mut self, role_name: &str, config: Arc<C>)
+    pub fn set<C: MergeSelf>(&mut self, role_name: ArcStr, config: Arc<C>)
     where
         Self: AgentRoleConfigField<C>,
     {

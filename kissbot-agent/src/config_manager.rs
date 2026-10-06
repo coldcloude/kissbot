@@ -28,7 +28,7 @@ pub struct ConfigManager {
 #[async_trait]
 pub trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
     async fn session_config(&self, session_key: Arc<SessionKey>) -> Arc<E>;
-    async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>;
+    async fn set_agent_role_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>;
     async fn set_session_config(&self, session_key: Arc<SessionKey>, config: &C) -> Result<()>;
 }
 
@@ -68,11 +68,11 @@ macro_rules! impl_session_config_field {
             }
 
             /// 设置 role 配置，role_name 为空时设置 agent配置
-            async fn set_agent_role_config(&self, agent_id: &str, role_name: &str, config: Arc<$ct>) -> Result<()> {
+            async fn set_agent_role_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<$ct>) -> Result<()> {
                 self.write_nexus_config(|repo| {
                     let agents = Arc::make_mut(&mut repo.agents);
                     // agent 条目不存在则懒建
-                    let agent_role_config = if let Some(mut agent_role_config) = agents.remove(agent_id) {
+                    let agent_role_config = if let Some(mut agent_role_config) = agents.remove(&agent_id) {
                         let agent_role_config_mut = Arc::make_mut(&mut agent_role_config);
                         agent_role_config_mut.set::<$ct>(role_name, config);
                         agent_role_config
@@ -81,7 +81,7 @@ macro_rules! impl_session_config_field {
                         agent_role_config.set::<$ct>(role_name, config);
                         Arc::new(agent_role_config)
                     };
-                    agents.insert(ArcStr::from(agent_id), agent_role_config);
+                    agents.insert(agent_id, agent_role_config);
                     Ok(())
                 }).await
             }
@@ -320,7 +320,7 @@ impl ConfigManager {
         <Self as SessionConfigField<C,E>>::session_config(self, session_key).await
     }
 
-    pub async fn set_agent_role_config<C,E>(&self, agent_id: &str, role_name: &str, config: Arc<C>) -> Result<()>
+    pub async fn set_agent_role_config<C,E>(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
@@ -340,7 +340,7 @@ impl ConfigManager {
 
     /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
     /// 非空写 role 覆盖；None 清除；write_nexus_config 单次原子，无需串行队列；agent 条目懒建）
-    pub async fn set_out_channel(&self, agent_id: &str, role_name: &str, out: Option<Arc<OutChannel>>) -> Result<()> {
+    pub async fn set_out_channel(&self, agent_id: ArcStr, role_name: ArcStr, out: Option<Arc<OutChannel>>) -> Result<()> {
         let config = OutChannelConfig {
             out_channel: out,
         };
@@ -1028,11 +1028,11 @@ mod tests {
         let mut agent = AgentRoleConfig::default();
         let mut agent_llm = llm_config("deepseek", "deepseek-chat");
         agent_llm.set_max_tokens(Some(1024));
-        agent.set::<LLMConfig>("", Arc::new(agent_llm));
+        agent.set::<LLMConfig>(ArcStr::from(""), Arc::new(agent_llm));
         // role 只配 model：其余继承 agent
         let mut role_llm = LLMConfig::default();
         role_llm.model = Some(ArcStr::from("deepseek-reasoner"));
-        agent.set::<LLMConfig>("r1", Arc::new(role_llm));
+        agent.set::<LLMConfig>(ArcStr::from("r1"), Arc::new(role_llm));
 
         let llm: LLMConfig = agent.build("r1");
         assert_eq!(llm.provider.as_deref(), Some("deepseek"), "provider 继承 agent");
@@ -1051,12 +1051,12 @@ mod tests {
         let mut agent = AgentRoleConfig::default();
         let mut agent_llm = LLMConfig::default();
         agent_llm.set_temperature(Some(0.7));
-        agent.set::<LLMConfig>("", Arc::new(agent_llm));
+        agent.set::<LLMConfig>(ArcStr::from(""), Arc::new(agent_llm));
 
         // role 显式置空：has_* 为 true → 覆盖 agent 的取值
         let mut role_clear = LLMConfig::default();
         role_clear.set_temperature(None);
-        agent.set::<LLMConfig>("r1", Arc::new(role_clear));
+        agent.set::<LLMConfig>(ArcStr::from("r1"), Arc::new(role_clear));
         let llm: LLMConfig = agent.build("r1");
         assert!(llm.has_temperature, "显式 set（取值可为 None）");
         assert_eq!(llm.temperature, None, "显式置空覆盖 agent 取值");
@@ -1064,7 +1064,7 @@ mod tests {
         // role 撤销配置：has_* 为 false → 该字段回落继承 agent
         let mut role_unset = LLMConfig::default();
         role_unset.unset_temperature();
-        agent.set::<LLMConfig>("r2", Arc::new(role_unset));
+        agent.set::<LLMConfig>(ArcStr::from("r2"), Arc::new(role_unset));
         let llm: LLMConfig = agent.build("r2");
         assert_eq!(llm.temperature, Some(0.7), "unset 视为未配置 → 回落继承 agent");
     }
@@ -1075,10 +1075,10 @@ mod tests {
         let mut agent = AgentRoleConfig::default();
         let mut agent_tk = GroupSetConfig::default();
         agent_tk.group_set = Arc::new(HashSet::from([ArcStr::from("filesystem")]));
-        agent.set::<GroupSetConfig>("", Arc::new(agent_tk));
+        agent.set::<GroupSetConfig>(ArcStr::from(""), Arc::new(agent_tk));
         let mut role_tk = GroupSetConfig::default();
         role_tk.group_set = Arc::new(HashSet::from([ArcStr::from("web")]));
-        agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
+        agent.set::<GroupSetConfig>(ArcStr::from("r1"), Arc::new(role_tk));
 
         let tk: GroupSetConfig = agent.build("r1");
         assert!(tk.group_set.contains("filesystem") && tk.group_set.contains("web"), "agent + role 并集");
@@ -1089,10 +1089,10 @@ mod tests {
         let mut agent = AgentRoleConfig::default();
         let mut agent_llm = llm_config("deepseek", "deepseek-chat");
         agent_llm.set_max_tokens(Some(2048));
-        agent.set::<LLMConfig>("", Arc::new(agent_llm));
+        agent.set::<LLMConfig>(ArcStr::from(""), Arc::new(agent_llm));
         let mut role_tk = GroupSetConfig::default();
         role_tk.group_set = Arc::new(HashSet::from([ArcStr::from("filesystem")]));
-        agent.set::<GroupSetConfig>("r1", Arc::new(role_tk));
+        agent.set::<GroupSetConfig>(ArcStr::from("r1"), Arc::new(role_tk));
 
         let json = serde_json::to_string(&agent).unwrap();
         let back: AgentRoleConfig = serde_json::from_str(&json).unwrap();
@@ -1107,11 +1107,11 @@ mod tests {
     async fn set_agent_role_config_merges_into_existing() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "", Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         // 第二次只配 max_tokens：应合并进同一条 agent 配置（不丢 provider/model）
         let mut more = LLMConfig::default();
         more.set_max_tokens(Some(4096));
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "", Arc::new(more)).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(more)).await.unwrap();
 
         let snap = manager.nexus_snapshot().await;
         let agent = snap.agents.get("a1").expect("agent 条目应懒建");
@@ -1128,10 +1128,10 @@ mod tests {
     async fn session_config_falls_back_to_agent_role_config() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "", Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let mut role_llm = LLMConfig::default();
         role_llm.set_max_tokens(Some(4096));
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "r1", Arc::new(role_llm)).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(role_llm)).await.unwrap();
 
         // 无 session 配置 → 现场按 agent + role 合成（三层继承的最后一级）
         let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(session_key("a1", "r1"))).await;
@@ -1158,7 +1158,7 @@ mod tests {
         // agent 级覆盖阈值 → 生效；未配的 prompt 保留默认
         let mut cfg = CompressConfig::default();
         cfg.compress_threshold = Some(0.5);
-        manager.set_agent_role_config::<CompressConfig, EffectiveCompressConfig>("a2", "", Arc::new(cfg)).await.unwrap();
+        manager.set_agent_role_config::<CompressConfig, EffectiveCompressConfig>(ArcStr::from("a2"), ArcStr::from(""), Arc::new(cfg)).await.unwrap();
         let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(Arc::new(session_key("a2", "r1"))).await;
         assert_eq!(eff.compress_threshold, 0.5, "agent 级覆盖生效");
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT, "未配字段保留默认");
@@ -1186,7 +1186,7 @@ mod tests {
     async fn set_session_config_overrides_agent_role_config() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>("a1", "r1", Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let key = session_key("a1", "r1");
         let before = manager.session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(before.model.as_str(), "deepseek-chat");
@@ -1232,7 +1232,7 @@ mod tests {
             group_id: ArcStr::from("g1"),
         });
         // role 级设置：role out1 命中，同 agent 的其他 role 不受影响
-        manager.set_out_channel("a1", "out1", Some(out)).await.unwrap();
+        manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), Some(out)).await.unwrap();
         let got = manager.out_channel_config("a1", "out1").await;
         let got = got.out_channel.as_ref().expect("role 级 out_channel 应生效");
         assert_eq!(got.channel_id.as_str(), "web-main");
@@ -1242,7 +1242,7 @@ mod tests {
         assert!(manager.out_channel_config("nobody", "").await.out_channel.is_none());
 
         // 清除同一条 (agent, role)：无需换 session key，下一次读取即为空
-        manager.set_out_channel("a1", "out1", None).await.unwrap();
+        manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), None).await.unwrap();
         assert!(manager.out_channel_config("a1", "out1").await.out_channel.is_none(), "清除后立即为空");
     }
 }
