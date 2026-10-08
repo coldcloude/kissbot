@@ -43,8 +43,8 @@ pub async fn call_with_retry<P: Provider>(
 // ===== session =====
 pub struct SessionContext { /* 私有 */ }
 impl SessionContext {
-    pub fn new(data_dir: &str, session_id: impl Into<ArcStr>) -> Self;
-    pub fn set_system_message(&mut self, content: impl Into<ArcStr>);
+    pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
+    pub fn set_system_message(&mut self, content: ArcStr);
     pub async fn apply_pending_system(&mut self) -> Result<()>;
     pub async fn append(&mut self, messages: Vec<Message>) -> Result<()>;
     pub async fn recover_from_cache(&mut self) -> Result<()>;
@@ -54,12 +54,12 @@ impl SessionContext {
 
 pub struct Session { pub context: Mutex<SessionContext> }
 impl Session {
-    pub fn new(data_dir: &str, session_id: &str) -> Self;
+    pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
     pub async fn recover_from_cache(&self) -> Result<()>;
     pub async fn build_context(&self) -> Vec<Message>;
     pub async fn context_append(&self, messages: Vec<Message>);
     pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>);
-    pub async fn set_system_message(&self, content: impl Into<ArcStr>);
+    pub async fn set_system_message(&self, content: ArcStr);
 }
 ```
 

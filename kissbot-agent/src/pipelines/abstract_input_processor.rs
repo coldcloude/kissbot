@@ -402,7 +402,7 @@ mod tests {
     fn event_channel_uses_recipient_user_and_group() {
         // 通道三元组 = messenger + 接收方用户（self_user_id）+ 群组；发送者 user_id 不参与
         let e = ev("u1", "a", "2026-09-23 10:00:00");
-        assert_eq!(event_channel(&e), ChannelKey::new("web", "self", "g1"));
+        assert_eq!(event_channel(&e), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
     }
 
     #[test]
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(lm.user_name.as_str(), "u1");
         assert_eq!(lm.is_self, 0, "输入处理器只处理上行消息");
         assert_eq!(lm.msg_id.as_str(), "m7", "定位消息携带 msg_id 供与已存记录去重");
-        assert_eq!(lm.channel(), ChannelKey::new("web", "self", "g1"));
+        assert_eq!(lm.channel(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
     }
 
     #[test]
@@ -433,15 +433,15 @@ mod tests {
     fn due_channels_only_returns_timed_out() {
         let batches = DashMap::new();
         batches.insert(
-            Arc::new(ChannelKey::new("web", "self", "g1")),
+            Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"))),
             PendingBatch { cases: vec![], last_at: Instant::now() },
         );
         batches.insert(
-            Arc::new(ChannelKey::new("web", "self", "g2")),
+            Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g2"))),
             PendingBatch { cases: vec![], last_at: Instant::now() - Duration::from_secs(10) },
         );
         let due = due_channels(&batches, Duration::from_secs(3));
-        assert_eq!(due, vec![Arc::new(ChannelKey::new("web", "self", "g2"))], "只有超时 channel 被触发");
+        assert_eq!(due, vec![Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g2")))], "只有超时 channel 被触发");
     }
 
     #[tokio::test]
@@ -450,8 +450,8 @@ mod tests {
         processor.enqueue(ev("u1", "a", "2026-09-23 10:00:00"));
         processor.enqueue(ev("u2", "b", "2026-09-23 10:00:01"));
         processor.enqueue(ev_in("web", "self", "g2", "u3", "c", "2026-09-23 10:00:02"));
-        let g1 = ChannelKey::new("web", "self", "g1");
-        let g2 = ChannelKey::new("web", "self", "g2");
+        let g1 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
+        let g2 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g2"));
         assert_eq!(processor.batches.get(&g1).unwrap().cases.len(), 2, "同 channel 合入一批");
         assert_eq!(processor.batches.get(&g2).unwrap().cases.len(), 1, "不同 channel 分开攒");
     }
@@ -527,7 +527,7 @@ mod tests {
         let processor = test_processor();
         processor.accept(ev("u1", "a", "2026-09-23 10:00:00")).await;
         processor.accept(ev("u2", "b", "2026-09-23 10:00:01")).await;
-        let g1 = ChannelKey::new("web", "self", "g1");
+        let g1 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
         assert_eq!(processor.batches.get(&g1).unwrap().cases.len(), 2);
     }
 
@@ -547,9 +547,9 @@ mod tests {
 
     fn test_processor() -> AbstractAgentInputProcessor {
         AbstractAgentInputProcessor::assemble(
-            Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new("r1")) }),
-            Arc::new(Session::new("", "test-session")),
-            Arc::new(AbstractClient::with_url(String::new(), String::new())),
+            Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))) }),
+            Arc::new(Session::new("", ArcStr::from("test-session"))),
+            Arc::new(AbstractClient::with_url(ArcStr::new(), ArcStr::new())),
         )
     }
 }

@@ -46,14 +46,14 @@ pub struct Tool {
 
 impl Tool {
     pub fn new(
-        name: impl Into<ArcStr>,
-        description: impl Into<ArcStr>,
+        name: ArcStr,
+        description: ArcStr,
         input_schema: Value,
     ) -> Self {
         Self {
-            name: name.into(),
+            name,
             title: None,
-            description: description.into(),
+            description,
             input_schema: Arc::new(input_schema),
             output_schema: None,
             annotations: None,
@@ -67,9 +67,9 @@ impl Tool {
     }
 
     /// 设置该工具所属的 kissbot 分组（写 `_meta["kissbot/group"]`，保留其余元数据）
-    pub fn set_group(&mut self, group: impl Into<ArcStr>) {
+    pub fn set_group(&mut self, group: ArcStr) {
         let mut meta = self.meta.take().unwrap_or_default();
-        meta.group = Some(group.into());
+        meta.group = Some(group);
         self.meta = Some(meta);
     }
 }
@@ -253,9 +253,9 @@ pub enum Content {
 
 impl Content {
     /// 文本块快捷构造
-    pub fn text(text: impl Into<ArcStr>) -> Self {
+    pub fn text(text: ArcStr) -> Self {
         Content::Text {
-            text: text.into(),
+            text,
             annotations: None,
             meta: None,
         }
@@ -297,10 +297,10 @@ pub struct ErrorDetail {
 
 impl ErrorDetail {
     /// kissbot 来源的错误
-    pub fn kissbot(code: u32, message: impl Into<ArcStr>) -> Self {
+    pub fn kissbot(code: u32, message: ArcStr) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
             source: ERROR_SOURCE_KISSBOT.clone(),
         }
     }
@@ -343,7 +343,7 @@ pub struct CallToolResult {
 
 impl CallToolResult {
     /// 成功结果：单个文本块（文本结果的便捷构造）
-    pub fn text(text: impl Into<ArcStr>) -> Self {
+    pub fn text(text: ArcStr) -> Self {
         Self {
             content: vec![Content::text(text)],
             ..Default::default()
@@ -351,7 +351,7 @@ impl CallToolResult {
     }
 
     /// 工具执行失败结果：`isError=true`，固定错误结构落在 `structuredContent`
-    pub fn error(code: u32, message: impl Into<ArcStr>) -> Self {
+    pub fn error(code: u32, message: ArcStr) -> Self {
         let detail = ErrorDetail::kissbot(code, message);
         Self {
             content: vec![Content::text(detail.message.clone())],
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn tool_serializes_input_schema_camel_case() {
-        let tool = Tool::new("read", "读取文件", json!({ "type": "object" }));
+        let tool = Tool::new(ArcStr::from("read"), ArcStr::from("读取文件"), json!({ "type": "object" }));
         let v = serde_json::to_value(&tool).unwrap();
         assert_eq!(v["name"], "read");
         assert_eq!(v["inputSchema"]["type"], "object");
@@ -412,10 +412,10 @@ mod tests {
     #[test]
     fn tool_group_travels_in_meta() {
         // group 是工具的固有属性，随工具定义的 `_meta` 携带
-        let mut tool = Tool::new("read", "读取文件", json!({ "type": "object" }));
+        let mut tool = Tool::new(ArcStr::from("read"), ArcStr::from("读取文件"), json!({ "type": "object" }));
         // 无元数据时没有分组
         assert!(tool.group().is_none());
-        tool.set_group("filesystem");
+        tool.set_group(ArcStr::from("filesystem"));
         assert_eq!(tool.group(), Some("filesystem"));
         let v = serde_json::to_value(&tool).unwrap();
         assert_eq!(v["_meta"][super::super::meta::META_GROUP.as_str()], "filesystem");
@@ -423,8 +423,8 @@ mod tests {
         assert_eq!(back.group(), Some("filesystem"));
 
         // 重复设置覆盖为新值
-        let mut plain = Tool::new("t", "d", json!({}));
-        plain.set_group("g1");
+        let mut plain = Tool::new(ArcStr::from("t"), ArcStr::from("d"), json!({}));
+        plain.set_group(ArcStr::from("g1"));
         assert_eq!(plain.group(), Some("g1"));
         assert_eq!(
             serde_json::to_value(&plain).unwrap()["_meta"][super::super::meta::META_GROUP.as_str()],
@@ -467,7 +467,7 @@ mod tests {
         // MCP 服务只原样序列化，不做任何合成
         let value = json!({ "path": "a.txt" });
         let r = CallToolResult {
-            content: vec![Content::text(value.to_string())],
+            content: vec![Content::text(ArcStr::from(value.to_string()))],
             structured_content: value.clone(),
             ..Default::default()
         };
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn text_result_carries_no_structured_content() {
-        let r = CallToolResult::text("文件内容");
+        let r = CallToolResult::text(ArcStr::from("文件内容"));
         assert_eq!(first_text(&r).unwrap(), "文件内容");
         assert!(r.structured_content.is_null());
         assert_eq!(serde_json::to_value(&r).unwrap()["content"], json!([{ "type": "text", "text": "文件内容" }]));
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn call_result_error_uses_fixed_error_struct_with_kissbot_source() {
-        let r = CallToolResult::error(1002, "工具不存在: nope");
+        let r = CallToolResult::error(1002, ArcStr::from("工具不存在: nope"));
         assert!(r.is_error);
         // 固定错误结构：code / message / source
         assert_eq!(r.structured_content["code"], 1002);
@@ -520,7 +520,7 @@ mod tests {
         ];
         for structured in cases {
             let r = CallToolResult {
-                content: vec![Content::text("boom")],
+                content: vec![Content::text(ArcStr::from("boom"))],
                 structured_content: structured.clone(),
                 is_error: true,
                 ..Default::default()
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn kissbot_error_ignores_non_error_results() {
-        let ok = CallToolResult::text("正常结果");
+        let ok = CallToolResult::text(ArcStr::from("正常结果"));
         assert!(ok.kissbot_error().is_none());
         assert!(ok.error_message().is_none());
     }
@@ -583,14 +583,14 @@ mod tests {
     #[test]
     fn result_meta_omitted_when_empty() {
         // 响应 `_meta` 可选：为空时不序列化（不再输出 `"_meta": {}`）
-        let call = CallToolResult::text("ok");
+        let call = CallToolResult::text(ArcStr::from("ok"));
         assert!(serde_json::to_value(&call).unwrap().get("_meta").is_none());
         let list = ToolsListResult::new(vec![]);
         assert!(serde_json::to_value(&list).unwrap().get("_meta").is_none());
 
         // 有内容时正常输出
-        let with_info = CallToolResult::text("ok")
-            .with_server_info(crate::protocol::Implementation::new("s", "1"));
+        let with_info = CallToolResult::text(ArcStr::from("ok"))
+            .with_server_info(crate::protocol::Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         assert_eq!(
             serde_json::to_value(&with_info).unwrap()["_meta"]
                 ["io.modelcontextprotocol/serverInfo"]["name"],
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn content_text_serializes_as_text_block() {
-        let r = CallToolResult::text("纯文本");
+        let r = CallToolResult::text(ArcStr::from("纯文本"));
         assert_eq!(
             serde_json::to_value(&r).unwrap()["content"],
             json!([{ "type": "text", "text": "纯文本" }])

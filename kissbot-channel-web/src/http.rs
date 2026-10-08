@@ -134,7 +134,7 @@ async fn handle_send_message(
 ) -> impl IntoResponse {
     match messenger.send(outgoing).await {
         Ok(resp) => Json(ApiResponse::success(resp)),
-        Err(e) => Json(ApiResponse::<Arc<OutgoingMessageResponse>>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<Arc<OutgoingMessageResponse>>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -145,12 +145,12 @@ async fn handle_messages_recent(
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id,
-        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing group_id".to_string()))),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(20);
     match messenger.message_store.get_recent(group_id, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
-        Err(e) => Json(ApiResponse::error(e.to_string())),
+        Err(e) => Json(ApiResponse::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -161,20 +161,20 @@ async fn handle_messages_before(
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id.clone(),
-        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing group_id".to_string()))),
     };
     let date = match params.get("date") {
         Some(k) => k.clone(),
-        None => return Json(ApiResponse::error("Missing key".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing key".to_string()))),
     };
     let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
         Some(l) => l,
-        None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing or invalid line".to_string()))),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
     match messenger.message_store.get_before(MsgKey { group_id, date }, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
-        Err(e) => Json(ApiResponse::error(e.to_string())),
+        Err(e) => Json(ApiResponse::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -185,20 +185,20 @@ async fn handle_messages_after(
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id.clone(),
-        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing group_id".to_string()))),
     };
     let date = match params.get("date") {
         Some(k) => k.clone(),
-        None => return Json(ApiResponse::error("Missing key".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing key".to_string()))),
     };
     let line: u32 = match params.get("line").and_then(|v| v.parse().ok()) {
         Some(l) => l,
-        None => return Json(ApiResponse::error("Missing or invalid line".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing or invalid line".to_string()))),
     };
     let n: u32 = params.get("n").and_then(|v| v.parse().ok()).unwrap_or(10);
     match messenger.message_store.get_after(MsgKey { group_id, date }, line, n).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
-        Err(e) => Json(ApiResponse::error(e.to_string())),
+        Err(e) => Json(ApiResponse::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -209,19 +209,19 @@ async fn handle_messages_range(
 ) -> Json<ApiResponse<Vec<GroupedMessages>>> {
     let group_id = match params.get("group_id") {
         Some(id) => id.clone(),
-        None => return Json(ApiResponse::error("Missing group_id".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing group_id".to_string()))),
     };
     let start = match params.get("start") {
         Some(s) => s.clone(),
-        None => return Json(ApiResponse::error("Missing start".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing start".to_string()))),
     };
     let end = match params.get("end") {
         Some(e) => e.clone(),
-        None => return Json(ApiResponse::error("Missing end".to_string())),
+        None => return Json(ApiResponse::error(ArcStr::from("Missing end".to_string()))),
     };
     match messenger.message_store.get_range(TimeRangeQuery { group_id, start, end }).await {
         Ok(msgs) => Json(ApiResponse::success(msgs)),
-        Err(e) => Json(ApiResponse::error(e.to_string())),
+        Err(e) => Json(ApiResponse::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -236,7 +236,7 @@ async fn handle_create_group(
         Ok(group_id) => Json(ApiResponse::success(serde_json::json!({
             "group_id": group_id,
         }))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -247,7 +247,7 @@ async fn handle_rename_group(
 ) -> impl IntoResponse {
     match messenger.rename_group(req.group_id.as_str(), req.group_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -260,7 +260,7 @@ async fn handle_manage_members(
     let remove_ids: Vec<ArcStr> = req.remove_ids.clone();
     match messenger.manage_members(req.group_id.as_str(), &add_ids, &remove_ids).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -271,7 +271,7 @@ async fn handle_delete_group(
 ) -> impl IntoResponse {
     match messenger.delete_group(req.group_id.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -284,7 +284,7 @@ async fn handle_create_user(
         Ok(ref user_id) => Json(ApiResponse::success(serde_json::json!({
             "user_id": user_id,
         }))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -295,7 +295,7 @@ async fn handle_rename_user(
 ) -> impl IntoResponse {
     match messenger.rename_user(req.user_id.as_str(), req.user_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -306,7 +306,7 @@ async fn handle_rename_admin(
 ) -> impl IntoResponse {
     match messenger.update_admin_name(req.admin_name.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -317,7 +317,7 @@ async fn handle_delete_user(
 ) -> impl IntoResponse {
     match messenger.remove_user(req.user_id.as_str()).await {
         Ok(_) => Json(ApiResponse::success(serde_json::json!({"success": true}))),
-        Err(e) => Json(ApiResponse::<serde_json::Value>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<serde_json::Value>::error(ArcStr::from(e.to_string()))),
     }
 }
 
@@ -344,18 +344,18 @@ async fn handle_upload_attachment(
 
     let attachment_transfer_id = match attachment_transfer_id {
         Some(id) => id,
-        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error("Missing transfer_id".to_string())),
+        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error(ArcStr::from("Missing transfer_id".to_string()))),
     };
 
     let file_data = match file_data {
         Some(d) => d,
-        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error("Missing file data".to_string())),
+        None => return Json(ApiResponse::<AttachmentPayloadResponse>::error(ArcStr::from("Missing file data".to_string()))),
     };
 
     // 通过 AttachmentStore 写入
     match messenger.attachment_store.write_chunk(attachment_transfer_id, 0, file_data.len() as u32, file_data).await {
         Ok(resp) => Json(ApiResponse::success(resp)),
-        Err(e) => Json(ApiResponse::<AttachmentPayloadResponse>::error(e.to_string())),
+        Err(e) => Json(ApiResponse::<AttachmentPayloadResponse>::error(ArcStr::from(e.to_string()))),
     }
 }
 

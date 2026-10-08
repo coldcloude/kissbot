@@ -31,10 +31,10 @@ pub struct Implementation {
 }
 
 impl Implementation {
-    pub fn new(name: impl Into<ArcStr>, version: impl Into<ArcStr>) -> Self {
+    pub fn new(name: ArcStr, version: ArcStr) -> Self {
         Self {
-            name: name.into(),
-            version: version.into(),
+            name,
+            version,
         }
     }
 }
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn request_meta_omits_empty_ancestors() {
-        let meta = RequestMeta::new(Implementation::new("c", "1"));
+        let meta = RequestMeta::new(Implementation::new(ArcStr::from("c"), ArcStr::from("1")));
         let v = serde_json::to_value(&meta).unwrap();
         assert!(v.get(META_ANCESTORS.as_str()).is_none(), "空祖先链不序列化");
         assert_eq!(v[META_PROTOCOL_VERSION.as_str()], "2026-07-28");
@@ -165,7 +165,7 @@ mod tests {
         let empty = ResponseMeta::default();
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
         let filled = ResponseMeta {
-            server_info: Some(Implementation::new("s", "1")),
+            server_info: Some(Implementation::new(ArcStr::from("s"), ArcStr::from("1"))),
         };
         assert_eq!(serde_json::to_value(&filled).unwrap()[META_SERVER_INFO.as_str()]["name"], "s");
     }
@@ -174,7 +174,7 @@ mod tests {
     fn response_meta_carries_server_info_only() {
         // 分组随工具定义携带（Tool._meta），不再放在响应 meta 上
         let meta = ResponseMeta {
-            server_info: Some(Implementation::new("kissbot-station", "0.1.0")),
+            server_info: Some(Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from("0.1.0"))),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert_eq!(v[META_SERVER_INFO.as_str()]["name"], "kissbot-station");

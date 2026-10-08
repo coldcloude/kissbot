@@ -415,7 +415,7 @@ mod tests {
     fn test_locate_request_response_serde() {
         let req = LocateRequest {
             agent_id: ArcStr::from("0"),
-            role_event: RoleEvent::new("dev"),
+            role_event: RoleEvent::new(ArcStr::from("dev")),
             messages: vec![message(), message()],
         };
         let v = serde_json::to_value(&req).unwrap();
@@ -428,7 +428,7 @@ mod tests {
         let back: LocateRequest = serde_json::from_value(v).unwrap();
         assert_eq!(back.messages.len(), 2);
         assert_eq!(back.messages[0].is_self, 0);
-        assert_eq!(back.messages[0].channel(), ChannelKey::new("web", "self1", "g1"));
+        assert_eq!(back.messages[0].channel(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1")));
 
         // 都不涉及已有 case：cases 与 groups 都为空
         assert_eq!(serde_json::to_value(LocateResponse::empty()).unwrap(), json!({}));
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn test_channel_event_pointer_serde() {
         let p = ChannelCasePointer {
-            channel: ChannelKey::new("web", "self1", "g1"),
+            channel: ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1")),
             case_name: ArcStr::from("e13"),
         };
         assert_eq!(serde_json::to_value(&p).unwrap(), json!({

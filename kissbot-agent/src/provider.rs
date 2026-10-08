@@ -32,12 +32,12 @@ impl ProviderManager {
 
     /// 取（或首次构造）指定 provider 名的 OpenAI 兼容实现：同名复用同一实例
     async fn get_openai_provider(&self, name: &str, provider_config: &ProviderConfig) -> Arc<OpenAiProvider> {
-        self.openai_provider_factory.get_or_create(name, || create_openai_provider(provider_config)).await
+        self.openai_provider_factory.get_or_create(ArcStr::from(name), || create_openai_provider(provider_config)).await
     }
 
     /// 取（或首次构造）指定 provider 名的 Anthropic 实现：同名复用同一实例
     async fn get_anthropic_provider(&self, name: &str, provider_config: &ProviderConfig) -> Arc<AnthropicProvider> {
-        self.anthropic_provider_factory.get_or_create(name, || create_anthropic_provider(provider_config)).await
+        self.anthropic_provider_factory.get_or_create(ArcStr::from(name), || create_anthropic_provider(provider_config)).await
     }
 
     /// 调用 LLM：按 (provider, model) 取有效模型配置 → 按 provider_type 取实现 → kissbot-llm 带重试调用

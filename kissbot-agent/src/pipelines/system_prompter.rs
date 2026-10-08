@@ -22,10 +22,10 @@ impl DefaultSystemPrompter {
         }
     }
 
-    fn from(session: Arc<Session>, value: impl Into<ArcStr>) -> Self {
+    fn from(session: Arc<Session>, value: ArcStr) -> Self {
         Self {
             session,
-            prompt: value.into(),
+            prompt: value,
         }
     }
 }

@@ -656,7 +656,7 @@ mod tests {
 
     /// 批次所属通道（与各测试构造的记录/消息一致）
     fn channel_key() -> ChannelKey {
-        ChannelKey::new("web", "self", "g1")
+        ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"))
     }
 
     #[test]

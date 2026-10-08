@@ -190,9 +190,9 @@ mod tests {
         processor.process_json(frame, ws_context).await;
 
         // 懒处理：通知只登记待处理标记，不做任何计算
-        let channel = kissbot_api::ChannelKey::new("web", "self", "g1");
+        let channel = kissbot_api::ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
         let role = role_event("dev", None);
-        let handle = service.manager().get(&AgentRole::new("0", "dev")).unwrap();
+        let handle = service.manager().get(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).unwrap();
         {
             let state = handle.state.lock().await;
             assert!(state.is_dirty(&role), "通知登记待处理标记");
@@ -201,7 +201,7 @@ mod tests {
         }
 
         // 查询只读：不触发归档
-        let tree = service.tree_get(&AgentRole::new("0", "dev"), None).await.unwrap();
+        let tree = service.tree_get(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), None).await.unwrap();
         assert!(tree.nodes.is_empty(), "查询不触发归档");
         {
             let state = handle.state.lock().await;
@@ -209,9 +209,9 @@ mod tests {
         }
 
         // 手动触发归档：该通道水位之后的全部记录落成一个 case
-        let outcome = service.manual_trigger(&AgentRole::new("0", "dev"), None).await.unwrap();
+        let outcome = service.manual_trigger(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), None).await.unwrap();
         assert_eq!(outcome.archived, 2, "手动触发处理该通道全部待处理记录");
-        let tree = service.tree_get(&AgentRole::new("0", "dev"), None).await.unwrap();
+        let tree = service.tree_get(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), None).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
@@ -263,7 +263,7 @@ mod tests {
     fn notification_ids_map_to_agent_role_and_event() {
         // 通知里的 agent/role_event 解析出「角色 + 事件标识」：AgentRole 决定 case 树，event_id 决定模式与事件 case
         let role_event = role_event("dev", Some("e1"));
-        assert_eq!(AgentRole::new("0", role_event.role_name.as_str()), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
+        assert_eq!(AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.role_name.as_str())), AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "dev-e1 属于角色 dev");
         assert_eq!(
             crate::tree::event_case_name(role_event.event_id.as_deref().unwrap()).as_str(),
             "event-e1"

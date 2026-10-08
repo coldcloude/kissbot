@@ -19,8 +19,8 @@ mod tests {
         SessionKey {
             agent_id: ArcStr::from(agent_id),
             role_event: Arc::new(match event {
-                Some(event) => RoleEvent::with_event(role, event),
-                None => RoleEvent::new(role),
+                Some(event) => RoleEvent::with_event(ArcStr::from(role), ArcStr::from(event)),
+                None => RoleEvent::new(ArcStr::from(role)),
             }),
         }
     }

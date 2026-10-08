@@ -604,7 +604,7 @@ mod tests {
         let cm = ConfigManager::get();
         let agent_id = "a1";
         let channel_id = "nexus-chain-test";
-        let key = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new("")) };
+        let key = SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) };
 
         // 1. agent 级（role 空串）pipeline：显式指定全部组件（不依赖 preset 映射），必须在会话首次合成
         //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
@@ -709,8 +709,8 @@ mod tests {
         // 用本地 PipelineManager 实例验证 retain 语义，避免动到全局单例的 pipeline 表
         ensure_test_globals().await;
         let agent_id = "prune-agent";
-        let k1 = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new("")) });
-        let k2 = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event("", "e1")) });
+        let k1 = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
+        let k2 = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1"))) });
         // agent 级 pipeline：显式指定组件，使两个 key 都能注册
         let mut pipeline = PipelineConfig::default();
         pipeline.input_processor = Some(vec![PP_IN_BATCH.clone()]);
@@ -787,7 +787,7 @@ mod tests {
             ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
                 ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
 
-            let role_event = if is_event { RoleEvent::with_event("", "e1") } else { RoleEvent::new("") };
+            let role_event = if is_event { RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1")) } else { RoleEvent::new(ArcStr::from("")) };
             let key = Arc::new(SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(role_event) });
             let (session, _) = sm.get_or_create(key.clone()).await;
             pm.sync_pipeline(key.clone(), session).await

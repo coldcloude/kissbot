@@ -33,13 +33,13 @@ pub struct SessionContext {
 
 impl SessionContext {
     /// session_id 由调用方按自己的会话身份编码（须为文件名安全字符串，如 "{agent}-{role}"）
-    pub fn new(data_dir: &str, session_id: impl Into<ArcStr>) -> Self {
+    pub fn new(data_dir: &str, session_id: ArcStr) -> Self {
         Self {
             messages: Vec::new(),
             system_message: None,
             pending_system: None,
             data_dir: PathBuf::from(data_dir),
-            session_id: session_id.into(),
+            session_id,
         }
     }
 
@@ -55,8 +55,8 @@ impl SessionContext {
 
     /// 设置系统消息（会话创建/重置时，配置或 ego 生成后调用）：只保存待定，
     /// 当前系统消息保留到下次发送前对比应用（多次 set 只保留最近一次）
-    pub fn set_system_message(&mut self, content: impl Into<ArcStr>) {
-        self.pending_system = Some(content.into());
+    pub fn set_system_message(&mut self, content: ArcStr) {
+        self.pending_system = Some(content);
     }
 
     /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
@@ -224,7 +224,7 @@ pub struct Session {
 
 impl Session {
     /// 新建会话（不读缓存；需要恢复上一次上下文时另调 recover_from_cache）
-    pub fn new(data_dir: &str, session_id: &str) -> Self {
+    pub fn new(data_dir: &str, session_id: ArcStr) -> Self {
         Self {
             context: Mutex::new(SessionContext::new(data_dir, session_id)),
         }
@@ -252,7 +252,7 @@ impl Session {
         let _ = ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
     }
 
-    pub async fn set_system_message(&self, content: impl Into<ArcStr>) {
+    pub async fn set_system_message(&self, content: ArcStr) {
         let mut ctx = self.context.lock().await;
         ctx.set_system_message(content);
     }
@@ -290,12 +290,12 @@ mod tests {
     #[tokio::test]
     async fn append_persists_and_recover_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         assert!(ctx.build().is_empty(), "初始为空");
         assert!(!dir.path().join("context").exists(), "未写入前不落盘");
         ctx.append(sample_msgs()).await.unwrap();
         // 同 session_id 新上下文从缓存恢复（内存为空）：append 已同时写内存 + 缓存
-        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         recovered.recover_from_cache().await.unwrap();
         let back = recovered.build();
         assert_eq!(back.len(), 2);
@@ -307,16 +307,16 @@ mod tests {
     #[tokio::test]
     async fn append_twice_accumulates_and_rebuild_clears() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         ctx.append(sample_msgs()).await.unwrap();
         ctx.append(vec![Message::User { content: ArcStr::from("再问") }]).await.unwrap();
-        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         recovered.recover_from_cache().await.unwrap();
         assert_eq!(recovered.build().len(), 3, "追加不截断");
         // 归档 + 重建：清空内存，缓存不残留
         ctx.archive_and_clear_cache_and_reset_messages(Some(vec![])).await.unwrap();
         assert!(ctx.build().is_empty(), "重建后内存为空");
-        let mut after = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut after = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         after.recover_from_cache().await.unwrap();
         assert!(after.build().is_empty(), "重建后缓存为空");
         // 无内容时重复重建幂等
@@ -327,7 +327,7 @@ mod tests {
     async fn append_empty_is_noop() {
         // 空 Vec 不写文件也不改变内存（apply_pending_system / 重建路径复用）
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1-e1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1-e1"));
         ctx.append(vec![]).await.unwrap();
         assert!(ctx.build().is_empty());
         assert!(!dir.path().join("context").exists(), "空追加不建缓存");
@@ -339,14 +339,14 @@ mod tests {
         let base = dir.path().to_str().unwrap();
         // 用例 A：完整轮次 user → assistant(tool_calls) → tool，末尾再追一条悬挂 assistant(tool_calls)
         // （崩溃发生在追加 assistant(tool_calls) 后、Tool 响应写入前）→ 回读丢弃悬挂尾巴，保留完整轮次
-        let mut ctx_a = SessionContext::new(base, "a1-r1-e1");
+        let mut ctx_a = SessionContext::new(base, ArcStr::from("a1-r1-e1"));
         ctx_a.append(vec![
             Message::User { content: ArcStr::from("查一下") },
             assistant(Value::String(String::new()), Value::Null, wire_tool_calls()),
             tool_msg("c1", "内容"),
         ]).await.unwrap();
         ctx_a.append(vec![assistant(Value::String(String::new()), Value::Null, wire_tool_calls())]).await.unwrap();
-        let mut rec_a = SessionContext::new(base, "a1-r1-e1");
+        let mut rec_a = SessionContext::new(base, ArcStr::from("a1-r1-e1"));
         rec_a.recover_from_cache().await.unwrap();
         let back = rec_a.build();
         assert_eq!(back.len(), 3, "悬挂的 assistant(tool_calls) 应被丢弃，保留完整轮次");
@@ -355,19 +355,19 @@ mod tests {
         assert!(matches!(&back[2], Message::Tool { .. }), "tool 响应保留");
 
         // 用例 B：仅一条悬挂 assistant(tool_calls) → 恢复为空
-        let mut ctx_b = SessionContext::new(base, "a1-r2");
+        let mut ctx_b = SessionContext::new(base, ArcStr::from("a1-r2"));
         ctx_b.append(vec![assistant(Value::String(String::new()), Value::Null, wire_tool_calls())]).await.unwrap();
-        let mut rec_b = SessionContext::new(base, "a1-r2");
+        let mut rec_b = SessionContext::new(base, ArcStr::from("a1-r2"));
         rec_b.recover_from_cache().await.unwrap();
         assert!(rec_b.build().is_empty(), "仅悬挂 assistant 时恢复为空");
 
         // 用例 C：开头的 Tool 残留（恢复起点之前的半条轮次）被丢弃
-        let mut ctx_c = SessionContext::new(base, "a1-r3");
+        let mut ctx_c = SessionContext::new(base, ArcStr::from("a1-r3"));
         ctx_c.append(vec![
             tool_msg("c9", "残留"),
             Message::User { content: ArcStr::from("继续") },
         ]).await.unwrap();
-        let mut rec_c = SessionContext::new(base, "a1-r3");
+        let mut rec_c = SessionContext::new(base, ArcStr::from("a1-r3"));
         rec_c.recover_from_cache().await.unwrap();
         let back_c = rec_c.build();
         assert_eq!(back_c.len(), 1, "开头 Tool 残留被丢弃，保留后续完整消息");
@@ -377,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn archive_and_clear_writes_history_and_removes_cache() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         ctx.append(sample_msgs()).await.unwrap();
         let cache_path = dir.path().join("context").join("a1-r1.jsonl");
         assert!(cache_path.exists(), "append 已建缓存");
@@ -407,12 +407,12 @@ mod tests {
     #[tokio::test]
     async fn archive_and_clear_with_empty_memory_is_noop() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         // 内存为空：无归档、无报错、不创建历史目录
         ctx.archive_and_clear_cache_and_reset_messages(None).await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "不创建历史目录");
         // 仅有系统消息同样不归档（历史只记录有消息的上下文）
-        ctx.set_system_message("仅系统");
+        ctx.set_system_message(ArcStr::from("仅系统"));
         ctx.apply_pending_system().await.unwrap();
         ctx.archive_and_clear_cache_and_reset_messages(None).await.unwrap();
         assert!(!dir.path().join("context-history").exists(), "系统消息不产生历史");
@@ -423,10 +423,10 @@ mod tests {
     #[tokio::test]
     async fn set_system_message_is_lazy_and_applies_on_send() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         // set 只保存待定（多次 set 只保留最近一次），build 不立即带 system
-        ctx.set_system_message("旧系统");
-        ctx.set_system_message("新系统");
+        ctx.set_system_message(ArcStr::from("旧系统"));
+        ctx.set_system_message(ArcStr::from("新系统"));
         assert!(ctx.build().iter().all(|m| !matches!(m, Message::System { .. })), "set 不立即生效");
         // 发送前应用：当前系统为空 → 不一致 → 替换（仅有系统消息不落缓存）
         ctx.apply_pending_system().await.unwrap();
@@ -434,14 +434,14 @@ mod tests {
         assert!(!dir.path().join("context").exists(), "仅有系统消息不写缓存");
         // 追加消息后缓存含 System 首行：同 session_id 新上下文恢复得到系统消息
         ctx.append(vec![Message::User { content: ArcStr::from("你好") }]).await.unwrap();
-        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         recovered.recover_from_cache().await.unwrap();
         assert!(matches!(&recovered.build()[0], Message::System { content } if content.as_str() == "新系统"), "缓存读出的系统消息放当前");
         let back = recovered.build();
         assert_eq!(back.len(), 2, "系统 + 消息");
         assert!(matches!(&back[1], Message::User { content } if content.as_str() == "你好"));
         // 再次 set 同值：一致 → 无变更（set 消息清空）
-        ctx.set_system_message("新系统");
+        ctx.set_system_message(ArcStr::from("新系统"));
         ctx.apply_pending_system().await.unwrap();
         assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"));
         assert!(!dir.path().join("context-history").exists(), "一致时不产生归档");
@@ -450,12 +450,12 @@ mod tests {
     #[tokio::test]
     async fn system_change_archives_old_context_with_old_system() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
-        ctx.set_system_message("旧系统");
+        let mut ctx = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
+        ctx.set_system_message(ArcStr::from("旧系统"));
         ctx.apply_pending_system().await.unwrap();
         ctx.append(vec![Message::User { content: ArcStr::from("你好") }]).await.unwrap();
         // 变更系统：不一致 → 旧上下文（含原系统消息）写成历史 → 替换 → 重建缓存
-        ctx.set_system_message("新系统");
+        ctx.set_system_message(ArcStr::from("新系统"));
         ctx.apply_pending_system().await.unwrap();
         assert!(matches!(&ctx.build()[0], Message::System { content } if content.as_str() == "新系统"));
         // 历史：System 旧 + User 你好
@@ -470,7 +470,7 @@ mod tests {
         assert!(dest_text.contains("旧系统"), "历史含原系统消息");
         assert!(dest_text.contains("你好"), "历史含原内存消息");
         // 缓存：System 新 + User 你好（消息保留）
-        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), "a1-r1");
+        let mut recovered = SessionContext::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         recovered.recover_from_cache().await.unwrap();
         assert!(matches!(&recovered.build()[0], Message::System { content } if content.as_str() == "新系统"));
         let back = recovered.build();
@@ -483,9 +483,9 @@ mod tests {
     #[tokio::test]
     async fn session_wrappers_delegate_to_context() {
         let dir = tempfile::tempdir().unwrap();
-        let session = Session::new(dir.path().to_str().unwrap(), "a1-r1");
+        let session = Session::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         // set_system_message 只写待定（SessionContext::build 不立即带 system）
-        session.set_system_message("系统").await;
+        session.set_system_message(ArcStr::from("系统")).await;
         // build_context 是发送前入口：应用待定系统消息（System 首条）
         let ctx = session.build_context().await;
         assert_eq!(ctx.len(), 1, "仅有系统消息");
@@ -509,9 +509,9 @@ mod tests {
         // 新建会话 → 落上下文 → 另一 Session 实例恢复（调用方（如 SessionManager）的重启恢复路径）
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_str().unwrap();
-        let first = Session::new(base, "a1-r1");
+        let first = Session::new(base, ArcStr::from("a1-r1"));
         first.context_append(sample_msgs()).await;
-        let second = Session::new(base, "a1-r1");
+        let second = Session::new(base, ArcStr::from("a1-r1"));
         second.recover_from_cache().await.unwrap();
         assert_eq!(second.build_context().await.len(), 2, "恢复出上一次上下文");
     }

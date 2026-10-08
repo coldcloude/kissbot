@@ -77,11 +77,11 @@ pub struct JsonRpcRequest {
 }
 
 impl JsonRpcRequest {
-    pub fn new(id: impl Into<RequestId>, method: impl Into<ArcStr>, params: Value) -> Self {
+    pub fn new(id: impl Into<RequestId>, method: ArcStr, params: Value) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.clone(),
             id: id.into(),
-            method: method.into(),
+            method,
             params,
         }
     }
@@ -89,10 +89,10 @@ impl JsonRpcRequest {
     /// 校验 JSON-RPC 版本（`JSONRPC_VERSION`）
     pub fn validate(&self) -> Result<(), McpError> {
         if self.jsonrpc.as_str() != JSONRPC_VERSION {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::invalid_request(ArcStr::from(format!(
                 "不支持的 jsonrpc 版本: {}",
                 self.jsonrpc
-            )));
+            ))));
         }
         Ok(())
     }
@@ -108,18 +108,18 @@ pub struct JsonRpcError {
 }
 
 impl JsonRpcError {
-    pub fn new(code: i64, message: impl Into<ArcStr>) -> Self {
+    pub fn new(code: i64, message: ArcStr) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
             data: Value::Null,
         }
     }
 
-    pub fn with_data(code: i64, message: impl Into<ArcStr>, data: Value) -> Self {
+    pub fn with_data(code: i64, message: ArcStr, data: Value) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
             data,
         }
     }
@@ -171,7 +171,7 @@ impl JsonRpcResponse {
                 message: error.message,
                 data: error.data,
             }),
-            (None, None) => Err(McpError::internal("响应既无 result 也无 error")),
+            (None, None) => Err(McpError::internal(ArcStr::from("响应既无 result 也无 error"))),
         }
     }
 }
@@ -186,57 +186,57 @@ pub struct McpError {
 }
 
 impl McpError {
-    pub fn new(code: i64, message: impl Into<ArcStr>) -> Self {
+    pub fn new(code: i64, message: ArcStr) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
             data: Value::Null,
         }
     }
 
-    pub fn with_data(code: i64, message: impl Into<ArcStr>, data: Value) -> Self {
+    pub fn with_data(code: i64, message: ArcStr, data: Value) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
             data,
         }
     }
 
-    pub fn parse_error(message: impl Into<ArcStr>) -> Self {
+    pub fn parse_error(message: ArcStr) -> Self {
         Self::new(PARSE_ERROR, message)
     }
 
-    pub fn invalid_request(message: impl Into<ArcStr>) -> Self {
+    pub fn invalid_request(message: ArcStr) -> Self {
         Self::new(INVALID_REQUEST, message)
     }
 
-    pub fn invalid_params(message: impl Into<ArcStr>) -> Self {
+    pub fn invalid_params(message: ArcStr) -> Self {
         Self::new(INVALID_PARAMS, message)
     }
 
     pub fn method_not_found(method: &str) -> Self {
-        Self::new(METHOD_NOT_FOUND, format!("方法不存在: {}", method))
+        Self::new(METHOD_NOT_FOUND, ArcStr::from(format!("方法不存在: {}", method)))
     }
 
-    pub fn internal(message: impl Into<ArcStr>) -> Self {
+    pub fn internal(message: ArcStr) -> Self {
         Self::new(INTERNAL_ERROR, message)
     }
 
-    pub fn header_mismatch(message: impl Into<ArcStr>) -> Self {
+    pub fn header_mismatch(message: ArcStr) -> Self {
         Self::new(HEADER_MISMATCH, message)
     }
 
     pub fn unsupported_protocol_version(requested: &str, supported: &[ArcStr]) -> Self {
         Self::with_data(
             UNSUPPORTED_PROTOCOL_VERSION,
-            format!("不支持的协议版本: {}", requested),
+            ArcStr::from(format!("不支持的协议版本: {}", requested)),
             serde_json::json!({ "supportedVersions": supported }),
         )
     }
 
     /// station 级联自环
     pub fn station_cycle(station_id: &str) -> Self {
-        Self::new(STATION_CYCLE, format!("station cycle detected: {}", station_id))
+        Self::new(STATION_CYCLE, ArcStr::from(format!("station cycle detected: {}", station_id)))
     }
 }
 
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn response_without_id_serializes_without_id() {
-        let resp = JsonRpcResponse::error(None, McpError::parse_error("bad json"));
+        let resp = JsonRpcResponse::error(None, McpError::parse_error(ArcStr::from("bad json")));
         let v = serde_json::to_value(&resp).unwrap();
         assert!(v.get("id").is_none(), "无法读取 id 时省略 id 字段");
     }

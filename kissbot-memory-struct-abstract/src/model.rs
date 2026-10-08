@@ -329,9 +329,9 @@ impl LlmModel {
             .join("llm")
             .to_string_lossy()
             .to_string();
-        let session = Arc::new(Session::new(&data_dir, &session_id(&role_event_of(agent_role, event_id))));
+        let session = Arc::new(Session::new(&data_dir, ArcStr::from(session_id(&role_event_of(agent_role, event_id)))));
         session.recover_from_cache().await?;
-        session.set_system_message(SYSTEM_PROMPT).await;
+        session.set_system_message(SYSTEM_PROMPT.clone()).await;
         self.sessions.insert(key, session.clone());
         Ok(session)
     }

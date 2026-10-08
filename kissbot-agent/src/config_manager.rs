@@ -1001,7 +1001,7 @@ mod tests {
     // ---- (agent, role) 配置继承与 session 配置 ----
 
     fn session_key(agent_id: &str, role_name: &str) -> SessionKey {
-        SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(role_name)) }
+        SessionKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))) }
     }
 
     /// LLM 配置助手：provider/model 已配，其余字段按需覆盖

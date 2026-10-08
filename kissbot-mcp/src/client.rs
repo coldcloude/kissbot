@@ -43,7 +43,7 @@ impl McpClient {
         Self {
             endpoint: ArcStr::from(endpoint),
             api_key: api_key.map(ArcStr::from),
-            client_info: Implementation::new("kissbot-mcp-client", env!("CARGO_PKG_VERSION")),
+            client_info: Implementation::new(ArcStr::from("kissbot-mcp-client"), ArcStr::from(env!("CARGO_PKG_VERSION"))),
             next_id: AtomicI64::new(1),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(timeout_secs))
@@ -99,7 +99,7 @@ impl McpClient {
         params: Value,
     ) -> Result<R, McpClientError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let request = JsonRpcRequest::new(id, method, params);
+        let request = JsonRpcRequest::new(id, ArcStr::from(method), params);
         let mut builder = self
             .client
             .post(self.endpoint.as_str())
@@ -156,14 +156,14 @@ mod tests {
     #[async_trait]
     impl McpHandler for TestHandler {
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new("test-server", "0.1.0"), None)
+            DiscoverResult::new(Implementation::new(ArcStr::from("test-server"), ArcStr::from("0.1.0")), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             *self.observed.ancestors.lock().unwrap() =
                 params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
-            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            tool.set_group("filesystem");
+            let mut tool = Tool::new(ArcStr::from("read"), ArcStr::from("读"), json!({ "type": "object" }));
+            tool.set_group(ArcStr::from("filesystem"));
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
@@ -176,7 +176,7 @@ mod tests {
                 "ancestors": params.meta.ancestors,
             });
             Ok(CallToolResult {
-                content: vec![crate::protocol::Content::text(value.to_string())],
+                content: vec![crate::protocol::Content::text(ArcStr::from(value.to_string()))],
                 structured_content: value,
                 ..Default::default()
             })
@@ -189,7 +189,7 @@ mod tests {
         let app = router(
             McpServer::new(
                 Arc::new(TestHandler { observed: observed.clone() }),
-                Implementation::new("test-server", "0.1.0"),
+                Implementation::new(ArcStr::from("test-server"), ArcStr::from("0.1.0")),
             ),
             McpHttpConfig::default(),
         );

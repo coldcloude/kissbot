@@ -48,8 +48,8 @@ impl<H: McpHandler> McpServer<H> {
     }
 
     /// 设置 `server/discover` 返回的自然语言说明
-    pub fn with_instructions(mut self, instructions: impl Into<ArcStr>) -> Self {
-        self.instructions = Some(instructions.into());
+    pub fn with_instructions(mut self, instructions: ArcStr) -> Self {
+        self.instructions = Some(instructions);
         self
     }
 
@@ -125,12 +125,12 @@ impl<H: McpHandler> McpServer<H> {
 
 fn parse_params<T: DeserializeOwned>(request: &JsonRpcRequest) -> Result<T, McpError> {
     serde_json::from_value(request.params.clone()).map_err(|e| {
-        McpError::invalid_params(format!("{} 参数非法: {}", request.method.as_str(), e))
+        McpError::invalid_params(ArcStr::from(format!("{} 参数非法: {}", request.method.as_str(), e)))
     })
 }
 
 fn to_value<T: Serialize>(value: T) -> Result<Value, McpError> {
-    serde_json::to_value(value).map_err(|e| McpError::internal(format!("结果序列化失败: {}", e)))
+    serde_json::to_value(value).map_err(|e| McpError::internal(ArcStr::from(format!("结果序列化失败: {}", e))))
 }
 
 #[cfg(test)]
@@ -163,8 +163,8 @@ mod tests {
         }
 
         async fn list_tools(&self, _params: ToolsListParams) -> Result<ToolsListResult, McpError> {
-            let mut tool = Tool::new("echo", "回声", json!({ "type": "object" }));
-            tool.set_group("g1");
+            let mut tool = Tool::new(ArcStr::from("echo"), ArcStr::from("回声"), json!({ "type": "object" }));
+            tool.set_group(ArcStr::from("g1"));
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
@@ -172,7 +172,7 @@ mod tests {
             if params.name.as_str() == "cycle" {
                 return Err(McpError::station_cycle("station-a"));
             }
-            Ok(CallToolResult::text(params.arguments.to_string()))
+            Ok(CallToolResult::text(ArcStr::from(params.arguments.to_string())))
         }
     }
 
@@ -180,9 +180,9 @@ mod tests {
     async fn handle_discover_fills_server_identity_and_versions() {
         let server = McpServer::new(
             Arc::new(EchoHandler),
-            Implementation::new("kissbot-test", "0.1.0"),
+            Implementation::new(ArcStr::from("kissbot-test"), ArcStr::from("0.1.0")),
         )
-        .with_instructions("测试服务端");
+        .with_instructions(ArcStr::from("测试服务端"));
         let req = JsonRpcRequest::new(1, METHOD_DISCOVER, json!({ "_meta": meta_value() }));
         let resp = server.handle(req).await;
         let v = serde_json::to_value(&resp).unwrap();
@@ -197,7 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_tools_list_keeps_group_extension() {
-        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new("s", "1"));
+        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         let req = JsonRpcRequest::new(1, METHOD_TOOLS_LIST, json!({ "_meta": meta_value() }));
         let resp = server.handle(req).await;
         let v = serde_json::to_value(&resp).unwrap();
@@ -207,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_tools_call_maps_handler_error_to_jsonrpc_error() {
-        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new("s", "1"));
+        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         let req = JsonRpcRequest::new(
             2,
             METHOD_TOOLS_CALL,
@@ -220,15 +220,15 @@ mod tests {
 
     #[tokio::test]
     async fn handle_unknown_method_returns_method_not_found() {
-        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new("s", "1"));
-        let req = JsonRpcRequest::new(1, "tools/unknown", json!({ "_meta": meta_value() }));
+        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
+        let req = JsonRpcRequest::new(1, ArcStr::from("tools/unknown"), json!({ "_meta": meta_value() }));
         let v = serde_json::to_value(&server.handle(req).await).unwrap();
         assert_eq!(v["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
     }
 
     #[tokio::test]
     async fn handle_missing_meta_returns_invalid_params() {
-        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new("s", "1"));
+        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         let req = JsonRpcRequest::new(1, METHOD_TOOLS_LIST, json!({}));
         let v = serde_json::to_value(&server.handle(req).await).unwrap();
         assert_eq!(v["error"]["code"], crate::protocol::INVALID_PARAMS);
@@ -236,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_unsupported_version_returns_negotiation_error() {
-        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new("s", "1"));
+        let server = McpServer::new(Arc::new(EchoHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         let req = JsonRpcRequest::new(
             1,
             METHOD_DISCOVER,
@@ -264,7 +264,7 @@ mod tests {
         #[async_trait]
         impl McpHandler for RelayHandler {
             async fn discover(&self) -> DiscoverResult {
-                DiscoverResult::new(Implementation::new("relay", "1"), None)
+                DiscoverResult::new(Implementation::new(ArcStr::from("relay"), ArcStr::from("1")), None)
             }
 
             async fn list_tools(&self, _: ToolsListParams) -> Result<ToolsListResult, McpError> {
@@ -285,7 +285,7 @@ mod tests {
             }
         }
 
-        let server = McpServer::new(Arc::new(RelayHandler), Implementation::new("s", "1"));
+        let server = McpServer::new(Arc::new(RelayHandler), Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
         let req = JsonRpcRequest::new(
             1,
             METHOD_TOOLS_CALL,

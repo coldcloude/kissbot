@@ -520,8 +520,8 @@ mod tests {
             think("2026-09-22 10:06:00", 4, "k3"),
         ];
         let channels = attribute_channels(&records);
-        let web_g1 = ChannelKey::new("web", "self", "g1");
-        let web_g2 = ChannelKey::new("web", "self2", "g2");
+        let web_g1 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
+        let web_g2 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
         assert_eq!(channels[0].as_ref(), Some(&web_g1), "通道记录按自身身份");
         assert_eq!(channels[1].as_ref(), Some(&web_g1), "占位记录自身也是该通道");
         assert_eq!(channels[2].as_ref(), Some(&web_g1), "思考记录按 key 认领");
@@ -553,8 +553,8 @@ mod tests {
         ];
         let channels = attribute_channels(&records);
         let view = StoreView { records, channels };
-        let web_g1 = ChannelKey::new("web", "self", "g1");
-        let web_g2 = ChannelKey::new("web", "self2", "g2");
+        let web_g1 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
+        let web_g2 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
         assert_eq!(
             view.known_channels().iter().map(|channel| channel.as_ref().clone()).collect::<Vec<_>>(),
             vec![web_g1.clone(), web_g2.clone()]

@@ -53,15 +53,15 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new(name: impl Into<ArcStr>) -> Self {
+    pub fn new(name: ArcStr) -> Self {
         Self {
-            name: name.into(),
+            name,
             tools: Vec::new(),
         }
     }
     
     pub fn add_tool(&mut self, mut config: Tool, implement: Arc<dyn ToolImplement>) {
-        config.set_group(self.name.as_str());
+        config.set_group(self.name.clone());
         self.tools.push(NativeTool {
             config: Arc::new(config),
             implement,

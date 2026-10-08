@@ -221,12 +221,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -281,12 +281,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -334,12 +334,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };
@@ -387,12 +387,12 @@ use tokio;
 
         let key = RecordKey {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             date: ArcStr::from(date),
         };
         let query_range = |s: &str, e: &str| QueryRequest {
             agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(role_name)),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
             start_time: ArcStr::from(format!("{} {}", date, s)),
             end_time: ArcStr::from(format!("{} {}", date, e)),
         };

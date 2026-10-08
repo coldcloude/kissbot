@@ -526,7 +526,7 @@ mod tests {
         let requests = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_append_new"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -584,7 +584,7 @@ mod tests {
         let requests = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_append_multi"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -599,7 +599,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_append_multi"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -614,7 +614,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_append_multi"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -673,7 +673,7 @@ mod tests {
         // 第一次写入
         let req1 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_append_seq"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -701,7 +701,7 @@ mod tests {
         // 第二次写入
         let req2 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_append_seq"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -759,7 +759,7 @@ mod tests {
 
         let requests = vec![ThinkRequest {
             agent_id: ArcStr::from("test_think"),
-            role_event: Arc::new(RoleEvent::new("")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
             reasoning_content: Some(ArcStr::from("I think...")),
             thinking: None,
             key: ArcStr::from("k1"),
@@ -806,7 +806,7 @@ mod tests {
 
         let requests = vec![ToolCallRequest {
             agent_id: ArcStr::from("test_tool_call"),
-            role_event: Arc::new(RoleEvent::new("")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
             tool_name: ArcStr::from("get_weather"),
             tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
             key: ArcStr::from("k1"),
@@ -852,7 +852,7 @@ mod tests {
 
         let requests = vec![ToolResultRequest {
             agent_id: ArcStr::from("test_tool_result"),
-            role_event: Arc::new(RoleEvent::new("")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
             tool_result: Arc::new(serde_json::json!({"temp": 25})),
             tool_error: Arc::new(serde_json::Value::Null),
             key: ArcStr::from("k1"),
@@ -892,7 +892,7 @@ mod tests {
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_ooor"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -911,7 +911,7 @@ mod tests {
         // 再写入一条 time=10:00:00 — 早于已有记录，应该被拒绝
         let req2 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_ooor"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -945,7 +945,7 @@ mod tests {
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_force_ooo"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -964,7 +964,7 @@ mod tests {
         // force=true 写入一条 time=10:00:00 — 强制重排序
         let req2 = vec![ChannelRequest {
             agent_id: ArcStr::from("test_force_ooo"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -1012,7 +1012,7 @@ mod tests {
         let req1 = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_force_existing"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1027,7 +1027,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_force_existing"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1042,7 +1042,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_force_existing"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1063,7 +1063,7 @@ mod tests {
         let req2 = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_force_existing"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1078,7 +1078,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_force_existing"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1130,7 +1130,7 @@ mod tests {
         let requests = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_mk_a"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self_a"),
@@ -1145,7 +1145,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_mk_b"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u2"),
                 self_user_id: ArcStr::from("self_b"),
@@ -1206,7 +1206,7 @@ mod tests {
         let reqs = vec![
             ChannelRequest {
                 agent_id: ArcStr::from("test_merged_ids"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
@@ -1221,7 +1221,7 @@ mod tests {
             },
             ChannelRequest {
                 agent_id: ArcStr::from("test_merged_ids"),
-                role_event: Arc::new(RoleEvent::new("default")),
+                role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("web"),
                 user_id: ArcStr::from("u2"),
                 self_user_id: ArcStr::from("self2"),

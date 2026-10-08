@@ -213,7 +213,7 @@ mod tests {
     }
 
     fn test_key() -> Arc<SessionKey> {
-        Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new("r1")) })
+        Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))) })
     }
 
     /// 测试 producer/consumer 对（未 spawn；与 BatchAgentInputProcessor::new 的依赖序构造同构：

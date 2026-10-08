@@ -43,9 +43,9 @@ impl WsJsonProcessorMut for JsonResponseHandler {
 }
 
 impl ChannelClient {
-    pub fn new(id: impl Into<ArcStr>, terminal: Weak<dyn Terminal>) -> Arc<Self> {
+    pub fn new(id: ArcStr, terminal: Weak<dyn Terminal>) -> Arc<Self> {
         Arc::new(Self {
-            id: id.into(),
+            id,
             terminal,
             ws_context: RwLock::new(None),
             download_transfer_map: DashMap::new(),

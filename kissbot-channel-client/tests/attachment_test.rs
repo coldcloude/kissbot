@@ -18,7 +18,7 @@ async fn test_attachment_upload_download() {
     let _manager = start_test_server(19102, messenger.clone()).await;
 
     let terminal = MockTerminal::new();
-    let client = ChannelClient::new("m1".to_string(), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
+    let client = ChannelClient::new(ArcStr::from("m1".to_string()), Arc::downgrade(&terminal) as Weak<dyn Terminal>);
     client.clone().connect("ws://127.0.0.1:19102", "test-key").await.expect("connect failed");
     client.bind(make_bind_request(ArcStr::from("m1"), ArcStr::from("u1"))).await.expect("bind failed");
 

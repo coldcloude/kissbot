@@ -32,8 +32,8 @@ pub struct AgentRole {
 }
 
 impl AgentRole {
-    pub fn new(agent_id: impl Into<ArcStr>, role: impl Into<ArcStr>) -> Self {
-        Self { agent_id: agent_id.into(), role: role.into() }
+    pub fn new(agent_id: ArcStr, role: ArcStr) -> Self {
+        Self { agent_id, role }
     }
 }
 
@@ -398,7 +398,7 @@ impl AgentRoleManager {
                     continue;
                 }
                 let role = role_entry.file_name().to_string_lossy().to_string();
-                let handle = self.open(AgentRole::new(agent_id.clone(), role)).await?;
+                let handle = self.open(AgentRole::new(ArcStr::from(agent_id.clone()), ArcStr::from(role))).await?;
                 if !handles.iter().any(|h: &Arc<AgentRoleHandle>| h.id == handle.id) {
                     handles.push(handle);
                 }
@@ -471,15 +471,15 @@ mod tests {
     #[test]
     fn agent_role_and_role_event_of() {
         // AgentRole 不含 event：由 agent_id + 角色名构成，是 case 树的归属者
-        assert_eq!(AgentRole::new("0", "dev").to_string(), "0/dev");
+        assert_eq!(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")).to_string(), "0/dev");
 
-        let role = role_event_of(&AgentRole::new("0", "dev"), None);
+        let role = role_event_of(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), None);
         assert_eq!(role, role_event("dev", None));
         assert_eq!(kissbot_memory::role_event_suffix(&role), "dev");
         assert_eq!(session_id(&role), "dev");
 
         let event_id = ArcStr::from("e12");
-        let event = role_event_of(&AgentRole::new("0", "dev"), Some(event_id.clone()));
+        let event = role_event_of(&AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), Some(event_id.clone()));
         assert_eq!(event, role_event("dev", Some("e12")));
         assert_eq!(kissbot_memory::role_event_suffix(&event), "dev-e12");
         assert_eq!(session_id(&event), "dev-e12");
@@ -489,7 +489,7 @@ mod tests {
 
         let empty = role_event("", None);
         assert_eq!(session_id(&empty), "_default");
-        let weird = RoleEvent::new("a/b c");
+        let weird = RoleEvent::new(ArcStr::from("a/b c"));
         assert_eq!(session_id(&weird), "a_b_c");
     }
 
@@ -497,8 +497,8 @@ mod tests {
     async fn role_state_roundtrip() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
-        let id = AgentRole::new("0", "dev");
-        let key = ChannelKey::new("web", "self1", "g1");
+        let id = AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"));
+        let key = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"));
         let role_event = role_event("dev", None);
 
         let handle = manager.open(id.clone()).await.unwrap();
@@ -546,9 +546,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
         let event = role_event("dev", Some("e1"));
-        let key = ChannelKey::new("web", "self1", "g1");
+        let key = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"));
 
-        let role = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let role = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         {
             let mut state = role.state.lock().await;
             state.tree.create_node("role-1", None, "t");
@@ -556,7 +556,7 @@ mod tests {
             role.save_state(&role_event("dev", None), &state).await.unwrap();
         }
         // 事件后缀：同一棵树（能看到角色 case），状态文件独立
-        let same = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let same = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let mut state = same.state.lock().await;
         same.ensure_role_event(&mut state, &event).await.unwrap();
         assert!(state.tree.contains("role-1"), "角色与事件后缀共用一棵 case 树");
@@ -569,12 +569,12 @@ mod tests {
     async fn load_all_discovers_roles_from_role_event_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
-        let role = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let role = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         role.save_tree(&CaseTree::new()).await.unwrap();
         let event = role_event("dev", Some("e1"));
         {
             let mut state = role.state.lock().await;
-            state.current_cases.insert((event.clone(), ChannelKey::new("web", "self1", "g1")), "event-e1".into());
+            state.current_cases.insert((event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "event-e1".into());
             role.save_state(&event, &state).await.unwrap();
         }
 
@@ -588,12 +588,12 @@ mod tests {
     async fn reset_role_event_state_clears_state_files() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
-        let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let handle = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let role_event = role_event("dev", None);
         {
             let mut state = handle.state.lock().await;
             state.tree.create_node("role-1", None, "t");
-            state.current_cases.insert((role_event.clone(), ChannelKey::new("web", "self1", "g1")), "role-1".into());
+            state.current_cases.insert((role_event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "role-1".into());
             handle.save_state(&role_event, &state).await.unwrap();
         }
         assert!(handle.current_path(&role_event).exists());
@@ -607,10 +607,10 @@ mod tests {
     async fn save_current_without_channels_removes_pointer() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
-        let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let handle = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let role_event = role_event("dev", None);
         let mut current = BTreeMap::new();
-        current.insert(Arc::new(ChannelKey::new("web", "self1", "g1")), ArcStr::from("role-1"));
+        current.insert(Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), ArcStr::from("role-1"));
         handle.save_current(&role_event, &current).await.unwrap();
         assert!(handle.current_path(&role_event).exists());
         handle.save_current(&role_event, &BTreeMap::new()).await.unwrap();
@@ -621,13 +621,13 @@ mod tests {
     async fn corrupted_watermark_is_state_error() {
         let temp = tempfile::tempdir().unwrap();
         let manager = AgentRoleManager::new(temp.path());
-        let handle = manager.open(AgentRole::new("0", "dev")).await.unwrap();
+        let handle = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let role_event = role_event("dev", None);
         tokio::fs::create_dir_all(handle.role_event_dir(&role_event)).await.unwrap();
         // 旧版按类型平铺的水位文件：形状不再匹配 → 报错而非静默丢水位
         tokio::fs::write(handle.watermark_path(&role_event), b"{\"channel\":{\"time\":\"t\",\"sn\":1}}").await.unwrap();
         let fresh = AgentRoleManager::new(temp.path());
-        let handle = fresh.open(AgentRole::new("0", "dev")).await.unwrap();
+        let handle = fresh.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let mut state = handle.state.lock().await;
         assert!(handle.ensure_role_event(&mut state, &role_event).await.is_err());
     }
@@ -637,7 +637,7 @@ mod tests {
         let mut state = AgentRoleState::default();
         let first = role_event("dev", Some("e1"));
         let other = role_event("dev", Some("e2"));
-        let channel = ChannelKey::new("web", "self1", "g1");
+        let channel = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"));
 
         state.mark_channel(&first, &channel);
         assert!(state.is_dirty(&first));

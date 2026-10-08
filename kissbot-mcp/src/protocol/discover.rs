@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn kissbot_capability_roundtrip() {
         // 本实现构造的发现结果默认声明 kissbot 级联扩展
-        let result = DiscoverResult::new(Implementation::new("s", "1"), None);
+        let result = DiscoverResult::new(Implementation::new(ArcStr::from("s"), ArcStr::from("1")), None);
         let v = serde_json::to_value(&result).unwrap();
         assert_eq!(v["capabilities"]["kissbot"]["ancestors"], true);
         assert!(v["capabilities"]["kissbot"].get("group").is_none(), "分组归因不需要能力声明");

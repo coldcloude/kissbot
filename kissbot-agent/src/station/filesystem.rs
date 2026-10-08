@@ -32,8 +32,8 @@ pub fn group() -> Group {
 /// read 工具定义：元数据 + 参数 schema
 fn read_tool() -> Tool {
     Tool::new(
-        "read",
-        "读取文本文件内容（路径限当前工作目录内，返回限长 64KB）",
+        ArcStr::from("read"),
+        ArcStr::from("读取文本文件内容（路径限当前工作目录内，返回限长 64KB）"),
         ObjectSchema {
             r#type: "object".into(),
             properties: BTreeMap::from([(
@@ -86,23 +86,23 @@ impl ReadTool {
 impl ToolImplement for ReadTool {
     async fn call(&self, arguments: Value) -> CallToolResult {
         let Some(raw) = arguments["path"].as_str() else {
-            return CallToolResult::error(TERR_TOOL_WRONG_ARGUMENTS, "缺少参数 path");
+            return CallToolResult::error(TERR_TOOL_WRONG_ARGUMENTS, ArcStr::from("缺少参数 path"));
         };
         let safe = match self.resolve_safe_path(raw) {
             Ok(safe) => safe,
             Err(e) => {
-                return CallToolResult::error(TERR_TOOL_INTERNAL_ERROR, format!("路径解析失败: {}", e));
+                return CallToolResult::error(TERR_TOOL_INTERNAL_ERROR, ArcStr::from(format!("路径解析失败: {}", e)));
             }
         };
         match tokio::fs::read(&safe).await {
             Ok(content) => {
                 let text = String::from_utf8_lossy(&content[..content.len().min(READ_MAX_BYTES)]).to_string();
                 // 文本结果用文本块直接承载（不加 JSON 转义）
-                CallToolResult::text(text)
+                CallToolResult::text(ArcStr::from(text))
             }
             Err(e) => CallToolResult::error(
                 TERR_TOOL_INTERNAL_ERROR,
-                format!("读取文件失败 {}: {}", safe.display(), e),
+                ArcStr::from(format!("读取文件失败 {}: {}", safe.display(), e)),
             ),
         }
     }

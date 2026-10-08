@@ -64,8 +64,8 @@ async fn create_agent(Json(req): Json<ego::CreateAgentRequest>) -> impl IntoResp
 
     match result {
         Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
-        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Agent {} already exists", agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from(format!("Agent {} already exists", agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -96,8 +96,8 @@ async fn list_agents() -> impl IntoResponse {
 async fn get_agent(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
     match AgentManager::get().get_agent(&req.agent_id).await {
         Ok(agent) => (StatusCode::OK, Json(ApiResponse::success(agent))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<AgentMetadata>>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<AgentMetadata>>::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<AgentMetadata>>::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<AgentMetadata>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -109,8 +109,8 @@ async fn update_agent_description(Json(req): Json<ego::UpdateAgentDescriptionReq
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -119,9 +119,9 @@ async fn copy_agent(Json(req): Json<ego::CopyAgentRequest>) -> impl IntoResponse
 
     match result {
         Ok(agent_id) => (StatusCode::OK, Json(ApiResponse::success(agent_id))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
-        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error("New agent already exists".to_string()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(Error::AgentAlreadyExists(_)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from("New agent already exists".to_string())))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -165,16 +165,16 @@ async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -
 async fn get_individuals(Json(req): Json<ego::GetIndividualsRequest>) -> impl IntoResponse {
     match IndividualRecognitionManager::get().get_individuals(&req.agent_id).await {
         Ok(individuals) => (StatusCode::OK, Json(ApiResponse::success(individuals))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<IndividualRecognition>>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<IndividualRecognition>>::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<IndividualRecognition>>::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<IndividualRecognition>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
 async fn get_individual(Json(req): Json<ego::GetIndividualRequest>) -> impl IntoResponse {
     match IndividualRecognitionManager::get().get_individual(&req.agent_id, &req.individual_name).await {
         Ok(individual) => (StatusCode::OK, Json(ApiResponse::success(individual))),
-        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<Individual>>::error(format!("Individual {} not found", req.individual_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<Individual>>::error(e.to_string()))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<Individual>>::error(ArcStr::from(format!("Individual {} not found", req.individual_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<Individual>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -183,8 +183,8 @@ async fn replace_individuals(Json(req): Json<ego::ReplaceIndividualsRequest>) ->
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -193,9 +193,9 @@ async fn rename_individual(Json(req): Json<ego::RenameIndividualRequest>) -> imp
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
-        Err(Error::AgentIndividualAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Individual {} already exists", req.new_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Individual {} not found", req.individual_name))))),
+        Err(Error::AgentIndividualAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from(format!("Individual {} already exists", req.new_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -204,8 +204,8 @@ async fn replace_individual_identifiers(Json(req): Json<ego::ReplaceIndividualId
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Individual {} not found", req.individual_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -214,8 +214,8 @@ async fn replace_individual_relations(Json(req): Json<ego::ReplaceIndividualRela
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Individual {} not found", req.individual_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentIndividualNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Individual {} not found", req.individual_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -223,25 +223,25 @@ async fn replace_individual_relations(Json(req): Json<ego::ReplaceIndividualRela
 async fn list_roles(Json(req): Json<ego::ListRolesRequest>) -> impl IntoResponse {
     match RolePlayManager::get().list_roles(&req.agent_id).await {
         Ok(roles) => (StatusCode::OK, Json(ApiResponse::success(roles))),
-        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Vec<ArcStr>>::error(format!("Agent {} not found", req.agent_id)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ArcStr>>::error(e.to_string()))),
+        Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Vec<ArcStr>>::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Vec<ArcStr>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
 async fn get_role(Json(req): Json<ego::GetRoleRequest>) -> impl IntoResponse {
     match RolePlayManager::get().get_role(&req.agent_id, &req.role_name).await {
         Ok(role) => (StatusCode::OK, Json(ApiResponse::success(role))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<RolePlay>>::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<RolePlay>>::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<RolePlay>>::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<RolePlay>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
 async fn get_other_role(Json(req): Json<ego::GetOtherRoleRequest>) -> impl IntoResponse {
     match RolePlayManager::get().get_other_role(&req.agent_id, &req.role_name, &req.other_role_name).await {
         Ok(other_role) => (StatusCode::OK, Json(ApiResponse::success(other_role))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<OtherRole>>::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<OtherRole>>::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::<Arc<OtherRole>>::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -251,8 +251,8 @@ async fn create_role(Json(req): Json<ego::CreateRoleRequest>) -> impl IntoRespon
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Role {} already exists", role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from(format!("Role {} already exists", role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -262,9 +262,9 @@ async fn create_role_from(Json(req): Json<ego::CreateRoleFromRequest>) -> impl I
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Role {} already exists", new_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleAlreadyExists(_, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from(format!("Role {} already exists", new_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -273,8 +273,8 @@ async fn update_role_description(Json(req): Json<ego::UpdateRoleDescriptionReque
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -283,8 +283,8 @@ async fn update_role_full_name(Json(req): Json<ego::UpdateRoleFullNameRequest>) 
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -293,8 +293,8 @@ async fn replace_other_roles(Json(req): Json<ego::ReplaceOtherRolesRequest>) -> 
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -303,10 +303,10 @@ async fn rename_other_role(Json(req): Json<ego::RenameOtherRoleRequest>) -> impl
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(Error::AgentRoleOtherRoleAlreadyExists(_, _, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(format!("Other role {} already exists", req.new_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(Error::AgentRoleOtherRoleAlreadyExists(_, _, _)) => (StatusCode::CONFLICT, Json(ApiResponse::error(ArcStr::from(format!("Other role {} already exists", req.new_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -315,9 +315,9 @@ async fn update_other_role_individual_name(Json(req): Json<ego::UpdateOtherRoleI
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -325,9 +325,9 @@ async fn update_other_role_description(Json(req): Json<ego::UpdateOtherRoleDescr
     let result = RolePlayManager::get().update_other_role_description(&req.agent_id, &req.role_name, &req.other_role_name, req.new_description).await;
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -336,9 +336,9 @@ async fn update_other_role_relation(Json(req): Json<ego::UpdateOtherRoleRelation
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -347,9 +347,9 @@ async fn replace_other_role_relations(Json(req): Json<ego::ReplaceOtherRoleRelat
 
     match result {
         Ok(()) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Role {} not found", req.role_name)))),
-        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(format!("Other role {} not found", req.other_role_name)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(Error::AgentRoleNotFound(_, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Role {} not found", req.role_name))))),
+        Err(Error::AgentRoleOtherRoleNotFound(_, _, _)) => (StatusCode::NOT_FOUND, Json(ApiResponse::error(ArcStr::from(format!("Other role {} not found", req.other_role_name))))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 

@@ -35,8 +35,7 @@ pub const TERR_TOOL_INTERNAL_ERROR: u32 = 0x0001_0000;
 pub const TERR_TOOL_EXTERNAL_ERROR: u32 = 0x0002_0000;
 
 /// 构造工具错误 JSON（Nexus 侧 ToolData.error 的形状）
-pub fn tool_error(code: u32, message: impl Into<ArcStr>) -> Value {
-    let message: ArcStr = message.into();
+pub fn tool_error(code: u32, message: ArcStr) -> Value {
     serde_json::json!({
         "code": code,
         "message": message
@@ -279,13 +278,13 @@ impl Station {
                     }
                     Err(e) => Ok(CallToolResult::error(
                         TERR_TOOL_EXTERNAL_ERROR,
-                        format!("调用 sub station 工具失败: {}", e),
+                        ArcStr::from(format!("调用 sub station 工具失败: {}", e)),
                     )),
                 };
             }
         }
         // 工具不存在
-        Ok(CallToolResult::error(TERR_TOOL_NOT_FOUND, format!("工具不存在: {}", name)))
+        Ok(CallToolResult::error(TERR_TOOL_NOT_FOUND, ArcStr::from(format!("工具不存在: {}", name))))
     }
 }
 
@@ -297,7 +296,7 @@ impl McpHandler for Station {
     async fn discover(&self) -> DiscoverResult {
         // 默认声明 kissbot 级联扩展能力（理解祖先链），供对端判定
         DiscoverResult::new(
-            Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION")),
+            Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from(env!("CARGO_PKG_VERSION"))),
             Some(STATION_INSTRUCTIONS.clone()),
         )
     }
@@ -440,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_handler_list_and_call_roundtrip() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
-        let meta = RequestMeta::new(Implementation::new("t", "1"));
+        let meta = RequestMeta::new(Implementation::new(ArcStr::from("t"), ArcStr::from("1")));
         // 显式走 McpHandler 实现（Station 另有同名固有方法）
         let listing = McpHandler::list_tools(&station, ToolsListParams {
             cursor: None,
@@ -476,14 +475,14 @@ mod tests {
     #[async_trait]
     impl McpHandler for MockMcpHandler {
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new("mock-mcp", "1.0.0"), None)
+            DiscoverResult::new(Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
             *self.observed.lock().await = params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
-            let mut tool = Tool::new(self.tool_name.clone(), "第三方工具", json!({ "type": "object" }));
+            let mut tool = Tool::new(self.tool_name.clone(), ArcStr::from("第三方工具"), json!({ "type": "object" }));
             if self.echo_group {
-                tool.set_group("mock-group");
+                tool.set_group(ArcStr::from("mock-group"));
             }
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
@@ -491,9 +490,9 @@ mod tests {
         async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
             // 按工具名模拟三类返回：kissbot 循环错误、非 kissbot 错误、正常结果
             match params.name.as_str() {
-                "cycle-tool" => Ok(CallToolResult::error(TERR_TOOL_CYCLE, "远端检测到自环")),
+                "cycle-tool" => Ok(CallToolResult::error(TERR_TOOL_CYCLE, ArcStr::from("远端检测到自环"))),
                 "foreign-tool" => Ok(CallToolResult {
-                    content: vec![kissbot_mcp::Content::text("boom")],
+                    content: vec![kissbot_mcp::Content::text(ArcStr::from("boom"))],
                     structured_content: json!({ "error": "boom" }),
                     is_error: true,
                     ..Default::default()
@@ -501,7 +500,7 @@ mod tests {
                 _ => {
                     let value = json!({ "mock": params.name.to_string() });
                     Ok(CallToolResult {
-                        content: vec![kissbot_mcp::Content::text(value.to_string())],
+                        content: vec![kissbot_mcp::Content::text(ArcStr::from(value.to_string()))],
                         structured_content: value,
                         ..Default::default()
                     })
@@ -518,7 +517,7 @@ mod tests {
             echo_group,
             observed: observed.clone(),
         });
-        let server = kissbot_mcp::McpServer::new(handler, Implementation::new("mock-mcp", "1.0.0"));
+        let server = kissbot_mcp::McpServer::new(handler, Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")));
         let app = kissbot_mcp::router(server, kissbot_mcp::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

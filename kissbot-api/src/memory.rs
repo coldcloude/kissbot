@@ -25,13 +25,13 @@ pub struct RoleEvent {
 
 impl RoleEvent {
     /// 角色模式（无事件）
-    pub fn new(role_name: impl Into<ArcStr>) -> Self {
-        Self { role_name: role_name.into(), event_id: None }
+    pub fn new(role_name: ArcStr) -> Self {
+        Self { role_name, event_id: None }
     }
 
     /// 事件模式（角色 + 事件标识）
-    pub fn with_event(role_name: impl Into<ArcStr>, event_id: impl Into<ArcStr>) -> Self {
-        Self { role_name: role_name.into(), event_id: Some(event_id.into()) }
+    pub fn with_event(role_name: ArcStr, event_id: ArcStr) -> Self {
+        Self { role_name, event_id: Some(event_id) }
     }
 }
 
@@ -256,12 +256,8 @@ pub struct ChannelKey {
 }
 
 impl ChannelKey {
-    pub fn new(messenger_id: impl Into<ArcStr>, self_user_id: impl Into<ArcStr>, group_id: impl Into<ArcStr>) -> Self {
-        Self {
-            messenger_id: messenger_id.into(),
-            self_user_id: self_user_id.into(),
-            group_id: group_id.into(),
-        }
+    pub fn new(messenger_id: ArcStr, self_user_id: ArcStr, group_id: ArcStr) -> Self {
+        Self { messenger_id, self_user_id, group_id }
     }
 }
 
@@ -358,7 +354,7 @@ mod tests {
         use std::collections::HashSet;
 
         // 角色模式：event_id 缺省即 None，序列化省略
-        let role = RoleEvent::new("dev");
+        let role = RoleEvent::new(ArcStr::from("dev"));
         assert_eq!(role.role_name.as_str(), "dev");
         assert!(role.event_id.is_none());
         assert_eq!(serde_json::to_value(&role).unwrap(), json!({"role_name": "dev"}));
@@ -366,7 +362,7 @@ mod tests {
         assert_eq!(back, role);
 
         // 事件模式
-        let event = RoleEvent::with_event("dev", "e1");
+        let event = RoleEvent::with_event(ArcStr::from("dev"), ArcStr::from("e1"));
         assert_eq!(event.event_id.as_deref(), Some("e1"));
         assert_eq!(serde_json::to_value(&event).unwrap(), json!({"role_name": "dev", "event_id": "e1"}));
         let back: RoleEvent = serde_json::from_value(json!({"role_name": "dev", "event_id": "e1"})).unwrap();
@@ -374,9 +370,9 @@ mod tests {
 
         // 值相等 + 可作 HashSet 键（Arc<RoleEvent> / Arc<SessionKey> 依赖它）
         let mut set = HashSet::new();
-        set.insert(RoleEvent::with_event("dev", "e1"));
-        assert!(set.contains(&RoleEvent::with_event("dev", "e1")));
-        assert!(!set.contains(&RoleEvent::new("dev")));
+        set.insert(RoleEvent::with_event(ArcStr::from("dev"), ArcStr::from("e1")));
+        assert!(set.contains(&RoleEvent::with_event(ArcStr::from("dev"), ArcStr::from("e1"))));
+        assert!(!set.contains(&RoleEvent::new(ArcStr::from("dev"))));
     }
 
     #[test]
@@ -404,14 +400,14 @@ mod tests {
         self_record.user_id = ArcStr::from("self1");
         self_record.is_self = 1;
         assert_eq!(ChannelKey::from(&self_record), key);
-        assert!(key < ChannelKey::new("web", "self1", "g2"), "通道键可排序（BTreeMap 用）");
+        assert!(key < ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g2")), "通道键可排序（BTreeMap 用）");
     }
 
     #[test]
     fn test_serde_channel_request() {
         let obj = ChannelRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new("admin")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("admin"))),
             messenger_id: ArcStr::from("m1"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -444,7 +440,7 @@ mod tests {
     fn test_serde_recent_query() {
         let obj = RecentQuery {
             agent_id: ArcStr::from("a"),
-            role_event: Arc::new(RoleEvent::new("r")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r"))),
             count: 5,
         };
         let s = serde_json::to_string(&obj).unwrap();
@@ -457,7 +453,7 @@ mod tests {
     fn test_serde_channel_requests() {
         let req = ChannelRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             messenger_id: ArcStr::from("m1"),
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -481,7 +477,7 @@ mod tests {
     fn test_serde_think_request_dual_fields() {
         let obj = ThinkRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             reasoning_content: Some(ArcStr::from("推理")),
             thinking: Some(ArcStr::from("思考")),
             key: ArcStr::from("k1"),
@@ -514,7 +510,7 @@ mod tests {
     fn test_serde_think_request() {
         let obj = ThinkRequest {
             agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new("admin")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("admin"))),
             reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
             key: ArcStr::from("key1"),
@@ -530,7 +526,7 @@ mod tests {
     fn test_serde_think_requests() {
         let req = ThinkRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             reasoning_content: Some(ArcStr::from("thinking...")),
             thinking: None,
             key: ArcStr::from("k1"),
@@ -547,7 +543,7 @@ mod tests {
     fn test_serde_tool_call_request() {
         let obj = ToolCallRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             tool_name: ArcStr::from("get_weather"),
             tool_params: Arc::new(json!({"city": "Beijing"})),
             key: ArcStr::from("k1"),
@@ -571,7 +567,7 @@ mod tests {
     fn test_serde_tool_result_request() {
         let obj = ToolResultRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             tool_result: Arc::new(json!({"temp": 25})),
             tool_error: Arc::new(Value::Null),
             key: ArcStr::from("k1"),
@@ -594,7 +590,7 @@ mod tests {
     fn test_serde_query_request() {
         let obj = QueryRequest {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new("r1")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             start_time: ArcStr::from("2026-01-01"),
             end_time: ArcStr::from("2026-06-01"),
         };
@@ -760,13 +756,13 @@ mod tests {
     fn test_serde_record_key() {
         let obj = RecordKey {
             agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new("default")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             date: ArcStr::from("2026-06-24"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: RecordKey = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.agent_id, "agent1");
-        assert_eq!(deserialized.role_event, Arc::new(RoleEvent::new("default")));
+        assert_eq!(deserialized.role_event, Arc::new(RoleEvent::new(ArcStr::from("default"))));
     }
 
     // ========== New data notification ==========
@@ -797,10 +793,10 @@ mod tests {
         // 通道消息通知带 is_self 与通道三元组（平铺在 payload 顶层）
         let channel = RecordNotification {
             agent_id: ArcStr::from("0"),
-            role_event: Arc::new(RoleEvent::new("dev")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: Some(0),
-            channel: Some(ChannelKey::new("web", "self1", "g1")),
+            channel: Some(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))),
         };
         let v = serde_json::to_value(&channel).unwrap();
         assert_eq!(v, json!({
@@ -812,7 +808,7 @@ mod tests {
         // 其余类型不带 is_self 与通道（缺省为 None，可省略）
         let think = RecordNotification {
             agent_id: ArcStr::from("0"),
-            role_event: Arc::new(RoleEvent::new("dev")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: None,
             channel: None,

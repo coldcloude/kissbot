@@ -110,7 +110,7 @@ mod tests {
     }
 
     fn channel_key() -> ChannelKey {
-        ChannelKey::new("web", "self1", "g1")
+        ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))
     }
 
     fn message(text: &str) -> LocateMessage {
@@ -137,7 +137,7 @@ mod tests {
 
     /// 打开某记忆后缀所属的角色句柄（case 树按 AgentRole）
     async fn open(manager: &AgentRoleManager, role_event: &RoleEvent) -> Arc<AgentRoleHandle> {
-        manager.open(AgentRole::new("0", role_event.role_name.as_str())).await.unwrap()
+        manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.role_name.as_str()))).await.unwrap()
     }
 
     /// 归档一批记录（不带新消息 = 原来的归档）
@@ -331,7 +331,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        let other = ChannelKey::new("web", "self2", "g2");
+        let other = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")]).await;
         model.push_group(&[0], false);
         archive(&handle, &model, &role, &other, &[channel_in(&other, "2099-01-01 11:00:00", 2, "通道二")]).await;
@@ -416,7 +416,7 @@ mod tests {
         // dev 与 dev-e1 是同一个角色：同一个句柄、同一棵 case 树
         let shared = open(&manager, &role_event("dev", None)).await;
         assert!(Arc::ptr_eq(&shared, &handle), "角色模式与事件模式共用同一个句柄");
-        assert_eq!(shared.id, AgentRole::new("0", "dev"), "记忆后缀 dev-e1 的角色是 dev");
+        assert_eq!(shared.id, AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "记忆后缀 dev-e1 的角色是 dev");
         assert!(shared.state.lock().await.tree.contains("event-e1"), "case 在角色共享的 case 树上");
     }
 

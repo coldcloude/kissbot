@@ -29,11 +29,11 @@ impl AbstractClient {
     }
 
     /// 显式地址构造（单测用；不依赖进程级配置单例）
-    pub fn with_url(base_url: impl Into<ArcStr>, api_key: impl Into<ArcStr>) -> Self {
+    pub fn with_url(base_url: ArcStr, api_key: ArcStr) -> Self {
         Self {
             client: reqwest::Client::new(),
-            base_url: base_url.into(),
-            api_key: api_key.into(),
+            base_url,
+            api_key,
         }
     }
 
@@ -115,8 +115,8 @@ mod tests {
     #[tokio::test]
     async fn empty_base_url_returns_abstract_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
-        let client = AbstractClient::with_url(String::new(), String::new());
-        let err = client.locate("0", &RoleEvent::new("dev"), vec![]).await.unwrap_err();
+        let client = AbstractClient::with_url(ArcStr::new(), ArcStr::new());
+        let err = client.locate("0", &RoleEvent::new(ArcStr::from("dev")), vec![]).await.unwrap_err();
         assert!(matches!(err, Error::AbstractError(_)), "未配置地址应返回 AbstractError: {:?}", err);
     }
 }

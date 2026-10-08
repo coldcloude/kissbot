@@ -553,8 +553,8 @@ pub struct WebMessengerCreator {
     message_dir: ArcStr,
 }
 impl WebMessengerCreator {
-    pub async fn new(repo_path: &str, attachment_dir: impl Into<ArcStr>, message_dir: impl Into<ArcStr>,
-                     messenger_id: impl Into<ArcStr>, admin_name: impl Into<ArcStr>) -> Result<Self> {
+    pub async fn new(repo_path: &str, attachment_dir: ArcStr, message_dir: ArcStr,
+                     messenger_id: ArcStr, admin_name: ArcStr) -> Result<Self> {
         let path = PathBuf::from(repo_path);
         let config = if path.exists() {
             let content = std::fs::read_to_string(&path)?;
@@ -562,8 +562,8 @@ impl WebMessengerCreator {
         } else {
             // repo 文件不存在时根据 config 创建初始结构
             WebMessengerRepo {
-                messenger_id: messenger_id.into(),
-                admin_name: admin_name.into(),
+                messenger_id,
+                admin_name,
                 users: Arc::new(HashMap::new()),
                 groups: Arc::new(HashMap::new()),
                 next_user_seq: 0,
@@ -573,8 +573,8 @@ impl WebMessengerCreator {
         Ok(Self {
             repo_path: path,
             config: Arc::new(RwLock::new(config)),
-            attachment_dir: attachment_dir.into(),
-            message_dir: message_dir.into(),
+            attachment_dir,
+            message_dir,
         })
     }
     pub async fn messenger_id(&self) -> ArcStr {

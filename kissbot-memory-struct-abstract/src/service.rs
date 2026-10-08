@@ -382,7 +382,7 @@ mod tests {
     /// 记忆后缀所属的角色（case 树按角色共享）
     /// 测试用「角色」：固定 agent 0，由记忆后缀得到 case 树归属（同时接受值与引用）
     fn agent_role(role_event: impl std::borrow::Borrow<RoleEvent>) -> AgentRole {
-        AgentRole::new("0", role_event.borrow().role_name.as_str())
+        AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.borrow().role_name.as_str()))
     }
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
@@ -394,12 +394,12 @@ mod tests {
 
     /// 测试用通道 A：identity 与 append_store_channel 写入的记录一致
     fn channel_a() -> ChannelKey {
-        ChannelKey::new("web", "selfA", "gA")
+        ChannelKey::new(ArcStr::from("web"), ArcStr::from("selfA"), ArcStr::from("gA"))
     }
 
     /// 测试用通道 B：同一角色下的另一个通道
     fn channel_b() -> ChannelKey {
-        ChannelKey::new("web", "selfB", "gB")
+        ChannelKey::new(ArcStr::from("web"), ArcStr::from("selfB"), ArcStr::from("gB"))
     }
 
     /// 往共享记忆文件追加一行记录（模拟 memory-store 的落盘）

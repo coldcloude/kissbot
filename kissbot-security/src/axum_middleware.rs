@@ -18,8 +18,9 @@ use crate::{error::Error, extract_api_key, ApiKeyValidator};
 /// use axum::Router;
 /// use kissbot_security::{AuthLayer, SimpleApiKeyValidator};
 /// use std::sync::Arc;
+/// use arcstr::ArcStr;
 ///
-/// let validator = Arc::new(SimpleApiKeyValidator::new("my-key".into()));
+/// let validator = Arc::new(SimpleApiKeyValidator::new(ArcStr::from("my-key")));
 /// let app = Router::new()
 ///     .route("/api/...", axum::routing::post(handler))
 ///     .layer(AuthLayer::new(validator));

@@ -1,3 +1,4 @@
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use kissbot_mcp::CallToolResult;
 use serde_json::Value;
@@ -38,7 +39,7 @@ impl AgentToolCaller for StationToolCaller {
             Err(e) => ToolData {
                 arguments,
                 result: Value::Null,
-                error: tool_error(TERR_TOOL_INTERNAL_ERROR, e.to_string()),
+                error: tool_error(TERR_TOOL_INTERNAL_ERROR, ArcStr::from(e.to_string())),
             },
         };
         tool_call
@@ -57,7 +58,7 @@ mod tests {
         // 文本结果：文本块原样承载
         let data = call_result_to_tool_data(
             json!({ "path": "a.txt" }),
-            CallToolResult::text("内容"),
+            CallToolResult::text(ArcStr::from("内容")),
         );
         assert_eq!(data.result, json!([{ "type": "text", "text": "内容" }]));
         assert!(data.error.is_null());
@@ -67,7 +68,7 @@ mod tests {
         let structured = call_result_to_tool_data(
             Value::Null,
             CallToolResult {
-                content: vec![kissbot_mcp::Content::text("{\"temp\":25}".to_string())],
+                content: vec![kissbot_mcp::Content::text(ArcStr::from("{\"temp\":25}".to_string()))],
                 structured_content: json!({ "temp": 25 }),
                 ..Default::default()
             },
@@ -82,7 +83,7 @@ mod tests {
     fn kissbot_error_uses_content_as_error_and_drops_structured_content() {
         let data = call_result_to_tool_data(
             Value::Null,
-            CallToolResult::error(TERR_TOOL_NOT_FOUND, "工具不存在: x"),
+            CallToolResult::error(TERR_TOOL_NOT_FOUND, ArcStr::from("工具不存在: x")),
         );
         assert!(data.result.is_null(), "失败时 result 留空");
         // error 取 content（文本块），不回传 structuredContent
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn foreign_error_uses_content_and_drops_structured_content() {
         let result = CallToolResult {
-            content: vec![kissbot_mcp::Content::text("boom")],
+            content: vec![kissbot_mcp::Content::text(ArcStr::from("boom"))],
             structured_content: json!({ "error": "boom", "detail": 42 }),
             is_error: true,
             ..Default::default()
@@ -107,7 +108,7 @@ mod tests {
     fn error_with_content_blocks_keeps_all_blocks() {
         let result = CallToolResult {
             content: vec![
-                kissbot_mcp::Content::text("失败说明"),
+                kissbot_mcp::Content::text(ArcStr::from("失败说明")),
                 kissbot_mcp::Content::Image {
                     data: ArcStr::from("eHl6"),
                     mime_type: ArcStr::from("image/png"),
@@ -126,7 +127,7 @@ mod tests {
 
     #[test]
     fn text_only_success_becomes_content_array() {
-        let data = call_result_to_tool_data(Value::Null, CallToolResult::text("纯文本"));
+        let data = call_result_to_tool_data(Value::Null, CallToolResult::text(ArcStr::from("纯文本")));
         assert_eq!(
             data.result,
             json!([{ "type": "text", "text": "纯文本" }])

@@ -39,14 +39,14 @@ fn ok<T>(data: T) -> ApiResult<T> {
     (StatusCode::OK, Json(ApiResponse::success(data)))
 }
 
-fn err<T>(message: impl Into<ArcStr>) -> ApiResult<T> {
+fn err<T>(message: ArcStr) -> ApiResult<T> {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(message)))
 }
 
 async fn locate(State(service): State<Arc<AbstractService>>, Json(req): Json<LocateRequest>) -> impl IntoResponse {
     match service.locate(&req).await {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -57,7 +57,7 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
         .await
     {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -65,7 +65,7 @@ async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Js
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.case_summary(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -73,7 +73,7 @@ async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Js
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.case_records(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -84,7 +84,7 @@ async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(re
         .await
     {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -95,7 +95,7 @@ async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req
         .await
     {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -103,7 +103,7 @@ async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<T
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.tree_get(&agent_role, req.role_event.event_id.clone()).await {
         Ok(response) => ok(response),
-        Err(e) => err(e.to_string()),
+        Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
@@ -113,7 +113,7 @@ async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<Re
     if req.rebuild {
         match service.rebuild(&agent_role, event_id).await {
             Ok(response) => ok(response),
-            Err(e) => err(e.to_string()),
+            Err(e) => err(ArcStr::from(e.to_string())),
         }
     } else {
         match service.manual_trigger(&agent_role, event_id).await {
@@ -121,7 +121,7 @@ async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<Re
                 let case_count = service.case_count(&agent_role).await.unwrap_or(0);
                 ok(RebuildResponse { archived: outcome.archived, case_count })
             }
-            Err(e) => err(e.to_string()),
+            Err(e) => err(ArcStr::from(e.to_string())),
         }
     }
 }

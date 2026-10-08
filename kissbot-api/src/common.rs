@@ -23,11 +23,11 @@ impl<T> ApiResponse<T> {
         }
     }
 
-    pub fn error(message: impl Into<ArcStr>) -> Self {
+    pub fn error(message: ArcStr) -> Self {
         Self {
             success: false,
             data: None,
-            error: Some(message.into()),
+            error: Some(message),
         }
     }
 }
@@ -68,11 +68,10 @@ impl<V> AsyncCacheFactory<V> {
         }
     }
 
-    pub async fn get_or_create<F>(&self, name: impl Into<ArcStr>, creator: F) -> Arc<V>
+    pub async fn get_or_create<F>(&self, name: ArcStr, creator: F) -> Arc<V>
     where
         F: FnOnce() -> V
     {
-        let name = name.into();
         // 先尝试读
         {
             let map = self.map.read().await;
@@ -261,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_api_response_error() {
-        let resp: ApiResponse<()> = ApiResponse::error("something went wrong".to_string());
+        let resp: ApiResponse<()> = ApiResponse::error(ArcStr::from("something went wrong"));
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["success"], false);
         assert_eq!(json["data"], serde_json::Value::Null);
@@ -307,12 +306,12 @@ mod tests {
         assert!(map.is_empty());
 
         // BTreeMap 的 Ord 同样按内容
-        let ck = |g: &str| Arc::new(ChannelKey::new("web", "self1", g));
+        let ck = |g: &str| Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from(g)));
         let mut tree: BTreeMap<Arc<ChannelKey>, u32> = BTreeMap::new();
         tree.insert(ck("g1"), 7);
         tree.insert(ck("g0"), 8);
-        assert_eq!(tree.get(&ChannelKey::new("web", "self1", "g1")), Some(&7));
-        assert_eq!(tree.first_key_value().unwrap().0.as_ref(), &ChannelKey::new("web", "self1", "g0"));
+        assert_eq!(tree.get(&ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), Some(&7));
+        assert_eq!(tree.first_key_value().unwrap().0.as_ref(), &ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g0")));
 
         // Set 元素：contains 传 &K
         let user = ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") };

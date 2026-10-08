@@ -47,9 +47,9 @@ impl Default for McpHttpConfig {
 }
 
 impl McpHttpConfig {
-    pub fn with_endpoint(endpoint_path: impl Into<ArcStr>) -> Self {
+    pub fn with_endpoint(endpoint_path: ArcStr) -> Self {
         Self {
-            endpoint_path: endpoint_path.into(),
+            endpoint_path,
             ..Default::default()
         }
     }
@@ -79,7 +79,7 @@ async fn handle<H: McpHandler>(
             return error_response(
                 StatusCode::FORBIDDEN,
                 None,
-                McpError::invalid_request(format!("Origin 不被允许: {}", origin)),
+                McpError::invalid_request(ArcStr::from(format!("Origin 不被允许: {}", origin))),
             );
         }
     }
@@ -90,7 +90,7 @@ async fn handle<H: McpHandler>(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 None,
-                McpError::parse_error(format!("请求体不是合法 JSON: {}", e)),
+                McpError::parse_error(ArcStr::from(format!("请求体不是合法 JSON: {}", e))),
             )
         }
     };
@@ -101,14 +101,14 @@ async fn handle<H: McpHandler>(
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
-            McpError::new(INVALID_PARAMS, "缺少 MCP-Protocol-Version 请求头"),
+            McpError::new(INVALID_PARAMS, ArcStr::from("缺少 MCP-Protocol-Version 请求头")),
         );
     };
     let Some(header_method) = header_str(&headers, HEADER_METHOD.as_str()) else {
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
-            McpError::new(INVALID_PARAMS, "缺少 Mcp-Method 请求头"),
+            McpError::new(INVALID_PARAMS, ArcStr::from("缺少 Mcp-Method 请求头")),
         );
     };
     let header_name = header_str(&headers, HEADER_NAME.as_str());
@@ -117,7 +117,7 @@ async fn handle<H: McpHandler>(
         return error_response(
             StatusCode::BAD_REQUEST,
             id,
-            McpError::invalid_request("缺少 method 字段"),
+            McpError::invalid_request(ArcStr::from("缺少 method 字段")),
         );
     };
     // 6. 方法头与请求体一致
@@ -127,7 +127,7 @@ async fn handle<H: McpHandler>(
             id,
             McpError::new(
                 HEADER_MISMATCH,
-                format!("Mcp-Method 头({}) 与请求 method({}) 不一致", header_method, method),
+                ArcStr::from(format!("Mcp-Method 头({}) 与请求 method({}) 不一致", header_method, method)),
             ),
         );
     }
@@ -139,7 +139,7 @@ async fn handle<H: McpHandler>(
             id,
             McpError::new(
                 INVALID_PARAMS,
-                format!("params._meta 缺少 {}", META_PROTOCOL_VERSION),
+                ArcStr::from(format!("params._meta 缺少 {}", META_PROTOCOL_VERSION)),
             ),
         );
     };
@@ -149,7 +149,7 @@ async fn handle<H: McpHandler>(
             id,
             McpError::new(
                 INVALID_PARAMS,
-                format!("params._meta 缺少 {}", META_CLIENT_CAPABILITIES),
+                ArcStr::from(format!("params._meta 缺少 {}", META_CLIENT_CAPABILITIES)),
             ),
         );
     }
@@ -160,10 +160,10 @@ async fn handle<H: McpHandler>(
             id,
             McpError::new(
                 HEADER_MISMATCH,
-                format!(
+                ArcStr::from(format!(
                     "MCP-Protocol-Version 头({}) 与请求体协议版本({}) 不一致",
                     header_version, body_version
-                ),
+                )),
             ),
         );
     }
@@ -188,7 +188,7 @@ async fn handle<H: McpHandler>(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 id,
-                McpError::new(INVALID_PARAMS, "tools/call 缺少 params.name"),
+                McpError::new(INVALID_PARAMS, ArcStr::from("tools/call 缺少 params.name")),
             );
         };
         match header_name {
@@ -196,7 +196,7 @@ async fn handle<H: McpHandler>(
                 return error_response(
                     StatusCode::BAD_REQUEST,
                     id,
-                    McpError::new(INVALID_PARAMS, "tools/call 缺少 Mcp-Name 请求头"),
+                    McpError::new(INVALID_PARAMS, ArcStr::from("tools/call 缺少 Mcp-Name 请求头")),
                 )
             }
             Some(header_name) if header_name != name => {
@@ -205,7 +205,7 @@ async fn handle<H: McpHandler>(
                     id,
                     McpError::new(
                         HEADER_MISMATCH,
-                        format!("Mcp-Name 头({}) 与 params.name({}) 不一致", header_name, name),
+                        ArcStr::from(format!("Mcp-Name 头({}) 与 params.name({}) 不一致", header_name, name)),
                     ),
                 )
             }
@@ -219,7 +219,7 @@ async fn handle<H: McpHandler>(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 id,
-                McpError::invalid_request(format!("JSON-RPC 请求非法: {}", e)),
+                McpError::invalid_request(ArcStr::from(format!("JSON-RPC 请求非法: {}", e))),
             )
         }
     };
@@ -273,24 +273,24 @@ mod tests {
     #[async_trait]
     impl McpHandler for TestHandler {
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new("test", "1"), None)
+            DiscoverResult::new(Implementation::new(ArcStr::from("test"), ArcStr::from("1")), None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
             let _ = params;
-            let mut tool = Tool::new("read", "读", json!({ "type": "object" }));
-            tool.set_group("fs");
+            let mut tool = Tool::new(ArcStr::from("read"), ArcStr::from("读"), json!({ "type": "object" }));
+            tool.set_group(ArcStr::from("fs"));
             Ok(ToolsListResult::new(vec![Arc::new(tool)]))
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {
-            Ok(CallToolResult::text(params.arguments.to_string()))
+            Ok(CallToolResult::text(ArcStr::from(params.arguments.to_string())))
         }
     }
 
     fn app() -> Router {
         router(
-            McpServer::new(Arc::new(TestHandler), Implementation::new("test", "1")),
+            McpServer::new(Arc::new(TestHandler), Implementation::new(ArcStr::from("test"), ArcStr::from("1"))),
             McpHttpConfig::default(),
         )
     }

@@ -16,8 +16,8 @@ pub struct SimpleApiKeyValidator {
 }
 
 impl SimpleApiKeyValidator {
-    pub fn new(configured_key: impl Into<ArcStr>) -> Self {
-        Self { configured_key: configured_key.into() }
+    pub fn new(configured_key: ArcStr) -> Self {
+        Self { configured_key }
     }
 }
 
@@ -37,20 +37,20 @@ mod tests {
 
     #[test]
     fn test_validate_match() {
-        let validator = SimpleApiKeyValidator::new("secret");
+        let validator = SimpleApiKeyValidator::new(ArcStr::from("secret"));
         assert!(validator.validate("secret").is_ok());
     }
 
     #[test]
     fn test_validate_mismatch() {
-        let validator = SimpleApiKeyValidator::new("secret");
+        let validator = SimpleApiKeyValidator::new(ArcStr::from("secret"));
         let result = validator.validate("wrong-key");
         assert!(matches!(result, Err(crate::Error::InvalidKey)));
     }
 
     #[test]
     fn test_validate_empty() {
-        let validator = SimpleApiKeyValidator::new("secret");
+        let validator = SimpleApiKeyValidator::new(ArcStr::from("secret"));
         let result = validator.validate("");
         assert!(matches!(result, Err(crate::Error::InvalidKey)));
     }

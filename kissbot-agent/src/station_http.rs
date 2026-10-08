@@ -42,5 +42,5 @@ impl StationHttpServer {
 }
 
 fn server_info() -> Implementation {
-    Implementation::new("kissbot-station", env!("CARGO_PKG_VERSION"))
+    Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from(env!("CARGO_PKG_VERSION")))
 }

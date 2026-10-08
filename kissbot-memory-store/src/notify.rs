@@ -213,7 +213,7 @@ mod tests {
     fn key() -> RecordKey {
         RecordKey {
             agent_id: ArcStr::from("0"),
-            role_event: Arc::new(RoleEvent::new("dev")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             date: ArcStr::from("2026-09-22"),
         }
     }
@@ -223,7 +223,7 @@ mod tests {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
         publish(RecordKind::Think, RecordNotification {
             agent_id: ArcStr::from("0"),
-            role_event: Arc::new(RoleEvent::new("dev")),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),
             is_self: None,
             channel: None,

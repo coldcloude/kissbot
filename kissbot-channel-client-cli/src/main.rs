@@ -169,7 +169,7 @@ async fn main() {
         client: RwLock::new(None),
     });
 
-    let client = ChannelClient::new("cli", Arc::downgrade(&cli_terminal) as Weak<dyn Terminal>);
+    let client = ChannelClient::new(ArcStr::from("cli"), Arc::downgrade(&cli_terminal) as Weak<dyn Terminal>);
     *cli_terminal.client.write().await = Some(client.clone());
     client.connect(&config.channel_ws_url, &api_key).await.expect("connect failed");
     cli_terminal.bind().await.expect("bind failed");

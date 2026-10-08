@@ -53,7 +53,7 @@ mod tests {
     #[tokio::test]
     async fn stub_is_deterministic() {
         let model = StubModel::new();
-        let agent_role = AgentRole::new("0", "dev");
+        let agent_role = AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"));
         let current = vec![CaseBrief {
             case_name: ArcStr::from("role-1"),
             summary: ArcStr::from("当前 case"),

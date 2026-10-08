@@ -6,6 +6,7 @@
     Router,
 };
 
+use arcstr::ArcStr;
 use kissbot_api::*;
 use crate::record::RecordManager;
 use kissbot_memory::index::MemoryIndexer;
@@ -31,7 +32,7 @@ async fn append_channel_record(Json(req): Json<memory::ChannelRequests>) -> impl
 
     match result {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -43,7 +44,7 @@ async fn append_think_record(Json(req): Json<memory::ThinkRequests>) -> impl Int
 
     match result {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -55,7 +56,7 @@ async fn append_tool_call_record(Json(req): Json<memory::ToolCallRequests>) -> i
 
     match result {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -67,7 +68,7 @@ async fn append_tool_result_record(Json(req): Json<memory::ToolResultRequests>) 
 
     match result {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::success(()))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -75,7 +76,7 @@ async fn query_channel_records(Json(req): Json<memory::QueryRequest>) -> impl In
     let records = MemoryIndexer::get().query_channel_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -83,7 +84,7 @@ async fn query_channel_recent_records(Json(req): Json<memory::RecentQuery>) -> i
     let records = MemoryIndexer::get().query_channel_recent(req.agent_id, req.role_event, req.count).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -91,7 +92,7 @@ async fn query_think_records(Json(req): Json<memory::QueryRequest>) -> impl Into
     let records = MemoryIndexer::get().query_think_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -99,7 +100,7 @@ async fn query_tool_call_records(Json(req): Json<memory::QueryRequest>) -> impl 
     let records = MemoryIndexer::get().query_tool_call_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
@@ -107,7 +108,7 @@ async fn query_tool_result_records(Json(req): Json<memory::QueryRequest>) -> imp
     let records = MemoryIndexer::get().query_tool_result_records(req).await;
     match records {
         Ok(records) => (StatusCode::OK, Json(ApiResponse::success(records))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string()))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(ArcStr::from(e.to_string())))),
     }
 }
 
