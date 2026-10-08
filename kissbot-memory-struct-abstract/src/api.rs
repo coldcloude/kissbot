@@ -101,7 +101,7 @@ async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req
 
 async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<TreeGetRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
-    match service.tree_get(&agent_role, req.role_event.event_id.as_ref()).await {
+    match service.tree_get(&agent_role, req.role_event.event_id.clone()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
@@ -111,12 +111,12 @@ async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<Re
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     let event_id = req.role_event.event_id.clone();
     if req.rebuild {
-        match service.rebuild(&agent_role, event_id.as_ref()).await {
+        match service.rebuild(&agent_role, event_id).await {
             Ok(response) => ok(response),
             Err(e) => err(e.to_string()),
         }
     } else {
-        match service.manual_trigger(&agent_role, event_id.as_ref()).await {
+        match service.manual_trigger(&agent_role, event_id).await {
             Ok(outcome) => {
                 let case_count = service.case_count(&agent_role).await.unwrap_or(0);
                 ok(RebuildResponse { archived: outcome.archived, case_count })

@@ -150,7 +150,7 @@ mod tests {
     ) {
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
-        archiver.archive(handle, &mut state, role_event.event_id.as_ref(), channel, entries, &[]).await.unwrap();
+        archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, entries, &[]).await.unwrap();
     }
 
     /// 定位一批消息：逐通道走归档入口，但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）
@@ -160,7 +160,7 @@ mod tests {
         let mut located = Vec::new();
         for (channel, indices) in group_indices_by_channel(messages) {
             let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-            let result = archiver.archive(handle, &mut state, role_event.event_id.as_ref(), &channel, &[], &channel_messages).await.unwrap();
+            let result = archiver.archive(handle, &mut state, role_event.event_id.clone(), &channel, &[], &channel_messages).await.unwrap();
             for group in result.groups {
                 let global: Vec<usize> = group.messages.iter().map(|local| indices[*local]).collect();
                 let first = *global.first().expect("分组非空（parse_groups 保证）");
@@ -267,7 +267,7 @@ mod tests {
         {
             let state = handle.state.lock().await;
             assert_eq!(state.tree.len(), 2);
-            assert_eq!(state.current_case(&role, &channel_key()).map(|id| id.as_str()), Some("role-case-2"));
+            assert_eq!(state.current_case(&role, &channel_key()).as_deref(), Some("role-case-2"));
         }
 
         // 4 条消息分成三组：前两条延续当前 case case-2；第三条命中已有 case case；第四条是新话题
@@ -338,8 +338,8 @@ mod tests {
         let (current_first, current_other) = {
             let state = handle.state.lock().await;
             (
-                state.current_case(&role, &channel_key()).cloned().unwrap(),
-                state.current_case(&role, &other).cloned().unwrap(),
+                state.current_case(&role, &channel_key()).unwrap(),
+                state.current_case(&role, &other).unwrap(),
             )
         };
         assert_ne!(current_first, current_other);

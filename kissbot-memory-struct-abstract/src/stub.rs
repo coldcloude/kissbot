@@ -63,7 +63,7 @@ impl StubModel {
 
 #[async_trait]
 impl DecisionModel for StubModel {
-    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
+    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
         self.prompts.lock().unwrap().push(ArcStr::from(crate::model::grouping_prompt(batch, current)));
         if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
             // 与真实实现一致地校验覆盖：预置不完整时立即暴露，而不是静默丢记录
@@ -89,13 +89,13 @@ impl DecisionModel for StubModel {
         Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
     }
 
-    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
+    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
         self.prompts.lock().unwrap().push(ArcStr::from(crate::model::level_prompt(batch, level)));
         // 默认新开叶子 case：名称固定 "case"（重名时组件追加 -2、-3…），摘要一并给出
         Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or_else(|| LevelDecision::new_case("case", "新 case 摘要")))
     }
 
-    async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, content: &str) -> Result<ArcStr> {
+    async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, content: &str) -> Result<ArcStr> {
         self.summary_inputs.lock().unwrap().push(ArcStr::from(content));
         if self.fail_summarize.lock().unwrap().pop_front().is_some() {
             return Err(crate::error::Error::ModelApiError("stub summarize failure".into()));

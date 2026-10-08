@@ -71,7 +71,7 @@ pub trait DecisionModel: Send + Sync {
     async fn group(
         &self,
         agent_role: &AgentRole,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         batch: &str,
         total: usize,
         current: Option<&CaseBrief>,
@@ -82,13 +82,13 @@ pub trait DecisionModel: Send + Sync {
     async fn decide_level(
         &self,
         agent_role: &AgentRole,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         batch: &str,
         level: &[CaseBrief],
     ) -> Result<LevelDecision>;
 
     /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
-    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, content: &str) -> Result<ArcStr>;
+    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, content: &str) -> Result<ArcStr>;
 }
 
 // ========== 提示词 ==========
@@ -313,8 +313,8 @@ impl LlmModel {
         })
     }
 
-    async fn session(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>) -> Result<Arc<Session>> {
-        let key: (Arc<AgentRole>, Option<ArcStr>) = (Arc::new(agent_role.clone()), event_id.cloned());
+    async fn session(&self, agent_role: &AgentRole, event_id: Option<ArcStr>) -> Result<Arc<Session>> {
+        let key: (Arc<AgentRole>, Option<ArcStr>) = (Arc::new(agent_role.clone()), event_id.clone());
         if let Some(session) = self.sessions.get(&key) {
             return Ok(session.clone());
         }
@@ -337,8 +337,8 @@ impl LlmModel {
     }
 
     /// 一次判定调用：会话上下文 + 本次提示 → 结构化 JSON
-    async fn call(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, prompt: &str) -> Result<Value> {
-        let session = self.session(agent_role, event_id).await?;
+    async fn call(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, prompt: &str) -> Result<Value> {
+        let session = self.session(agent_role, event_id.clone()).await?;
         let mut messages = session.build_context().await;
         messages.push(Message::User { content: ArcStr::from(prompt) });
 
@@ -369,7 +369,7 @@ impl LlmModel {
         extract_json(&text)
     }
 
-    async fn trim_session(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, session: &Arc<Session>) {
+    async fn trim_session(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, session: &Arc<Session>) {
         let context = session.build_context().await;
         let non_system: Vec<Message> = context
             .into_iter()
@@ -406,7 +406,7 @@ impl DecisionModel for LlmModel {
     async fn group(
         &self,
         agent_role: &AgentRole,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         batch: &str,
         total: usize,
         current: Option<&CaseBrief>,
@@ -419,7 +419,7 @@ impl DecisionModel for LlmModel {
     async fn decide_level(
         &self,
         agent_role: &AgentRole,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         batch: &str,
         level: &[CaseBrief],
     ) -> Result<LevelDecision> {
@@ -427,7 +427,7 @@ impl DecisionModel for LlmModel {
         parse_level_decision(&value)
     }
 
-    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, content: &str) -> Result<ArcStr> {
+    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, content: &str) -> Result<ArcStr> {
         let value = self.call(agent_role, event_id, &summary_prompt(content)).await?;
         parse_summary(&value)
     }

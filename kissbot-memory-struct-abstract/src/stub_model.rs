@@ -29,17 +29,17 @@ impl StubModel {
 
 #[async_trait]
 impl DecisionModel for StubModel {
-    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, _batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
+    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
         // 桩：整批归为一组；有当前 case 即视为当前 case 的延续 → 直接并入当前 case
         Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
     }
 
-    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
+    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
         // 桩：一律新建 case，名称固定 "case"（重名时组件追加 -2、-3…），摘要与 summarize 同前缀
         Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str()))
     }
 
-    async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<&ArcStr>, _content: &str) -> Result<ArcStr> {
+    async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _content: &str) -> Result<ArcStr> {
         let next = self.summary_count.fetch_add(1, Ordering::Relaxed) + 1;
         Ok(ArcStr::from(format!("{}{}", STUB_SUMMARY_PREFIX, next)))
     }

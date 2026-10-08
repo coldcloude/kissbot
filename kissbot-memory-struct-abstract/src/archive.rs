@@ -204,7 +204,7 @@ impl Archiver {
         &self,
         handle: &AgentRoleHandle,
         state: &mut AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         channel: &ChannelKey,
         records: &[RecordEntry],
         messages: &[&LocateMessage],
@@ -213,13 +213,14 @@ impl Archiver {
             return Ok(ArchiveResult::default());
         }
 
-        let role_event = role_event_of(&handle.id, event_id);
+        let role_event = role_event_of(&handle.id, event_id.clone());
         let items = merge_batch(channel, records, messages);
         let new_messages = items.iter().filter(|item| !item.is_stored()).count();
         let mut outcomes = Vec::new();
         let mut groups = Vec::new();
         for chunk in items.chunks(self.max_batch_records) {
-            let (outcome, chunk_groups) = self.archive_chunk(handle, state, event_id, channel, chunk).await?;
+            let (outcome, chunk_groups) =
+                self.archive_chunk(handle, state, event_id.clone(), channel, chunk).await?;
             if outcome.archived > 0 {
                 // 逐块落盘：块失败时前面的进度不回退，失败块由 archive_chunk 恢复内存状态
                 handle.save_state(&role_event, state).await?;
@@ -238,7 +239,7 @@ impl Archiver {
         &self,
         handle: &AgentRoleHandle,
         state: &mut AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<(ArchiveOutcome, Vec<PlaceGroup>)> {
@@ -260,16 +261,16 @@ impl Archiver {
         &self,
         handle: &AgentRoleHandle,
         state: &mut AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         channel: &ChannelKey,
         items: &[BatchItem],
     ) -> Result<(ArchiveOutcome, Vec<PlaceGroup>)> {
         let now = crate::records::now_string();
         let agent_role: &AgentRole = &handle.id;
-        let role_event = role_event_of(agent_role, event_id);
+        let role_event = role_event_of(agent_role, event_id.clone());
 
         // 1. 定位（只读）：逐组判定落点，得到「已有 case / 需在何处新建」，此时不改树
-        let placements = match event_id {
+        let placements = match event_id.as_ref() {
             // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定。
             // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
             Some(event_id) => {
@@ -321,7 +322,7 @@ impl Archiver {
                 }
                 GroupVerdict::NewEvent => {
                     // 名称由 event_id 固定，可能已被建出（并发/重复请求）
-                    let Some(event_id) = event_id else {
+                    let Some(event_id) = event_id.as_ref() else {
                         return Err(Error::StateError("事件模式缺少事件标识".into()));
                     };
                     let case_name = event_case_name(event_id.as_str());
@@ -330,7 +331,7 @@ impl Archiver {
                         // 只有消息、还没有记录：立刻按本组内容生成摘要（有记录时交给第 3 步按记录生成）
                         if placement.records.is_empty() {
                             let text = render_group(items, &placement.items);
-                            let summary = self.model.summarize(agent_role, Some(event_id), &text).await?;
+                            let summary = self.model.summarize(agent_role, Some(event_id.clone()), &text).await?;
                             state.tree.set_summary(&case_name, &summary, &now);
                             created.insert(case_name.clone());
                             touched.insert(case_name.clone());
@@ -359,7 +360,7 @@ impl Archiver {
                 continue;
             }
             if let Some(summary) =
-                self.compute_summary(handle, state, event_id, &id, &new_records, &summaries).await?
+                self.compute_summary(handle, state, event_id.clone(), &id, &new_records, &summaries).await?
             {
                 summaries.insert(id, summary);
             }
@@ -398,9 +399,9 @@ impl Archiver {
         items: &[BatchItem],
     ) -> Result<Vec<Placement>> {
         let text = render_batch(items);
-        let current = state.current_case(role_event, channel).cloned();
+        let current = state.current_case(role_event, channel);
         let current_brief = current.as_deref().and_then(|id| state.tree.brief(id));
-        let groups = self.model.group(agent_role, role_event.event_id.as_ref(), &text, items.len(), current_brief.as_ref()).await?;
+        let groups = self.model.group(agent_role, role_event.event_id.clone(), &text, items.len(), current_brief.as_ref()).await?;
 
         let mut placements: Vec<Placement> = Vec::with_capacity(groups.len());
         for group in groups {
@@ -413,7 +414,7 @@ impl Archiver {
                     Some(current) => GroupVerdict::Case(current),
                     // 没有当前 case：只定位的组容忍（退回逐层判定）；有记录要落盘的组无法落位，按失败重试
                     None if records.is_empty() => {
-                        self.decide_placement(agent_role, role_event.event_id.as_ref(), &state.tree, &text, None).await?
+                        self.decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None).await?
                     }
                     None => {
                         return Err(Error::ModelApiError(format!(
@@ -423,7 +424,7 @@ impl Archiver {
                     }
                 }
             } else {
-                self.decide_placement(agent_role, role_event.event_id.as_ref(), &state.tree, &text, None).await?
+                self.decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None).await?
             };
             placements.push(Placement { verdict, items: group_items, records });
         }
@@ -442,7 +443,7 @@ impl Archiver {
     async fn decide_placement(
         &self,
         agent_role: &AgentRole,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         tree: &CaseTree,
         text: &str,
         parent: Option<ArcStr>,
@@ -455,7 +456,7 @@ impl Archiver {
 
         loop {
             let briefs: Vec<CaseBrief> = tree.briefs(&level);
-            match self.model.decide_level(agent_role, event_id, text, &briefs).await? {
+            match self.model.decide_level(agent_role, event_id.clone(), text, &briefs).await? {
                 LevelDecision::New { name, summary } => return Ok(GroupVerdict::NewRole { parent, name, summary }),
                 LevelDecision::Merge(case_name) => {
                     if !level.contains(&case_name) {
@@ -501,7 +502,7 @@ impl Archiver {
         &self,
         handle: &AgentRoleHandle,
         state: &AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         case_name: &str,
         new_records: &HashMap<ArcStr, Vec<RecordEntry>>,
         computed: &HashMap<ArcStr, ArcStr>,

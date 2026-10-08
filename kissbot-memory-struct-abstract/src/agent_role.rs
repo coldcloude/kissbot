@@ -45,8 +45,8 @@ impl fmt::Display for AgentRole {
 
 /// 记忆后缀（`RoleEvent`）：由角色（`AgentRole` 的角色名）与独立的 `event_id` 组装，
 /// 用于状态键、磁盘路径与会话标识。
-pub fn role_event_of(agent_role: &AgentRole, event_id: Option<&ArcStr>) -> RoleEvent {
-    RoleEvent { role_name: agent_role.role.clone(), event_id: event_id.cloned() }
+pub fn role_event_of(agent_role: &AgentRole, event_id: Option<ArcStr>) -> RoleEvent {
+    RoleEvent { role_name: agent_role.role.clone(), event_id }
 }
 
 /// LLM 会话标识（文件名安全；空后缀用 `_default`）：基于 kissbot-memory 的记忆后缀做字符替换。
@@ -138,8 +138,8 @@ impl AgentRoleState {
     }
 
     /// 某后缀某通道的当前 case
-    pub fn current_case(&self, role_event: &RoleEvent, channel: &ChannelKey) -> Option<&ArcStr> {
-        self.current_cases.get(&(role_event.clone(), channel.clone()))
+    pub fn current_case(&self, role_event: &RoleEvent, channel: &ChannelKey) -> Option<ArcStr> {
+        self.current_cases.get(&(role_event.clone(), channel.clone())).cloned()
     }
 
     /// 某后缀某通道的水位
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(session_id(&role), "dev");
 
         let event_id = ArcStr::from("e12");
-        let event = role_event_of(&AgentRole::new("0", "dev"), Some(&event_id));
+        let event = role_event_of(&AgentRole::new("0", "dev"), Some(event_id.clone()));
         assert_eq!(event, role_event("dev", Some("e12")));
         assert_eq!(kissbot_memory::role_event_suffix(&event), "dev-e12");
         assert_eq!(session_id(&event), "dev-e12");

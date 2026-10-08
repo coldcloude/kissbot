@@ -93,14 +93,14 @@ impl AbstractService {
         &self,
         handle: &Arc<AgentRoleHandle>,
         state: &mut AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         channel: &ChannelKey,
         records: &[RecordEntry],
         messages: &[LocateMessage],
         indices: &[usize],
     ) -> Result<(Vec<ArchiveOutcome>, Vec<(usize, ChannelKey, LocatedGroup)>)> {
         let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-        let result = self.archiver.archive(handle, state, event_id, channel, records, &channel_messages).await?;
+        let result = self.archiver.archive(handle, state, event_id.clone(), channel, records, &channel_messages).await?;
         if !records.is_empty() || result.new_messages > 0 {
             let archived: u64 = result.outcomes.iter().map(|outcome| outcome.archived).sum();
             let case_names: Vec<&str> =
@@ -129,17 +129,17 @@ impl AbstractService {
         &self,
         handle: &Arc<AgentRoleHandle>,
         state: &mut AgentRoleState,
-        event_id: Option<&ArcStr>,
+        event_id: Option<ArcStr>,
         force: bool,
         messages: &[LocateMessage],
     ) -> Result<(Vec<ArchiveOutcome>, Vec<(usize, ChannelKey, LocatedGroup)>)> {
-        let role_event = role_event_of(&handle.id, event_id);
+        let role_event = role_event_of(&handle.id, event_id.clone());
         if !force && !state.is_dirty(&role_event) && messages.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
         handle.ensure_role_event(state, &role_event).await?;
 
-        let view = self.store_view(handle, event_id).await?;
+        let view = self.store_view(handle, event_id.clone()).await?;
         // 统一按通道分组：本批消息所在的通道 ∪ 存储里出现过的通道（pending / 消息都可以为空）
         let mut grouped: BTreeMap<Arc<ChannelKey>, Vec<usize>> = group_indices_by_channel(messages).into_iter().collect();
         for channel in view.known_channels() {
@@ -156,7 +156,7 @@ impl AbstractService {
                 continue;
             }
             let (channel_outcomes, channel_groups) =
-                self.archive_located(handle, state, event_id, &channel, &pending, messages, &indices).await?;
+                self.archive_located(handle, state, event_id.clone(), &channel, &pending, messages, &indices).await?;
             outcomes.extend(channel_outcomes);
             located.extend(channel_groups);
         }
@@ -166,7 +166,7 @@ impl AbstractService {
     }
 
     /// 手动触发：忽略待处理标记，把该记忆后缀各通道水位之后的记录全部处理一次
-    pub async fn manual_trigger(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>) -> Result<ArchiveOutcome> {
+    pub async fn manual_trigger(&self, agent_role: &AgentRole, event_id: Option<ArcStr>) -> Result<ArchiveOutcome> {
         let handle = self.open(agent_role).await?;
         let mut state = handle.state.lock().await;
         let (outcomes, _) = self.process_pending(&handle, &mut state, event_id, true, &[]).await?;
@@ -177,12 +177,12 @@ impl AbstractService {
     ///
     /// 角色模式清该 AgentRole 树里全部 `role-` 前缀的角色 case；事件模式只清本后缀固定的
     /// `event-{event_id}` 叶子——同一角色的其他事件后缀与角色 case 都不受影响。
-    pub async fn rebuild(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>) -> Result<RebuildResponse> {
+    pub async fn rebuild(&self, agent_role: &AgentRole, event_id: Option<ArcStr>) -> Result<RebuildResponse> {
         let handle = self.open(agent_role).await?;
         let mut state = handle.state.lock().await;
-        let role_event = role_event_of(&handle.id, event_id);
+        let role_event = role_event_of(&handle.id, event_id.clone());
         handle.ensure_role_event(&mut state, &role_event).await?;
-        let cleared: BTreeSet<ArcStr> = match event_id {
+        let cleared: BTreeSet<ArcStr> = match event_id.as_ref() {
             Some(event_id) => match state.tree.event_case(event_id.as_str()) {
                 Some(node) => [node.case_name.clone()].into_iter().collect(),
                 None => BTreeSet::new(),
@@ -196,7 +196,7 @@ impl AbstractService {
         state.clear_role_event(&role_event);
         handle.reset_role_event_state(&role_event).await?;
         state.mark_role_event(&role_event);
-        let (outcomes, _) = self.process_pending(&handle, &mut state, event_id, true, &[]).await?;
+        let (outcomes, _) = self.process_pending(&handle, &mut state, event_id.clone(), true, &[]).await?;
         let archived = outcomes.iter().map(|outcome| outcome.archived).sum();
         let case_count = state.tree.len() as u64;
         drop(state);
@@ -205,7 +205,7 @@ impl AbstractService {
     }
 
     /// 该记忆后缀的共享记忆文件全量视图（记录 + 通道归属）；水位过滤按通道进行
-    pub async fn store_view(&self, handle: &AgentRoleHandle, event_id: Option<&ArcStr>) -> Result<StoreView> {
+    pub async fn store_view(&self, handle: &AgentRoleHandle, event_id: Option<ArcStr>) -> Result<StoreView> {
         let suffix = kissbot_memory::role_event_suffix(&role_event_of(&handle.id, event_id));
         read_store_records(self.manager.root(), &handle.id.agent_id, &suffix).await
     }
@@ -220,8 +220,8 @@ impl AbstractService {
         let handle = self.open(&agent_role).await?;
         let mut state = handle.state.lock().await;
         let (_, located) =
-            self.process_pending(&handle, &mut state, event_id.as_ref(), false, &request.messages).await?;
-        let role_event = role_event_of(&handle.id, event_id.as_ref());
+            self.process_pending(&handle, &mut state, event_id.clone(), false, &request.messages).await?;
+        let role_event = role_event_of(&handle.id, event_id);
         Ok(merge_located(located, &state.current_of(&role_event)))
     }
 
@@ -300,7 +300,7 @@ impl AbstractService {
     /// Case 树与该记忆后缀各通道的当前 case 指针；只读，不触发归档。
     ///
     /// 当前指针按记忆后缀落盘，首次读取该后缀时先从磁盘加载一次（只读，不写盘）。
-    pub async fn tree_get(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>) -> Result<TreeGetResponse> {
+    pub async fn tree_get(&self, agent_role: &AgentRole, event_id: Option<ArcStr>) -> Result<TreeGetResponse> {
         let handle = self.open(agent_role).await?;
         let mut state = handle.state.lock().await;
         let role_event = role_event_of(&handle.id, event_id);
@@ -547,13 +547,13 @@ mod tests {
 
     /// 手动归档一次（`/abstract/rebuild` 的 rebuild=false 路径）
     async fn process(f: &Fixture, role_event: &RoleEvent) -> ArchiveOutcome {
-        f.service.manual_trigger(&agent_role(role_event), role_event.event_id.as_ref()).await.unwrap()
+        f.service.manual_trigger(&agent_role(role_event), role_event.event_id.clone()).await.unwrap()
     }
 
     /// 手动归档一次后读 case 树（查询接口本身只读、不触发归档）
     async fn query(f: &Fixture, role_event: &RoleEvent) -> TreeGetResponse {
         process(f, role_event).await;
-        f.service.tree_get(&agent_role(role_event), role_event.event_id.as_ref()).await.unwrap()
+        f.service.tree_get(&agent_role(role_event), role_event.event_id.clone()).await.unwrap()
     }
 
     /// 角色状态内存中的 case 节点数（不触发懒处理）
@@ -583,13 +583,13 @@ mod tests {
             let state = handle.state.lock().await;
             state.watermark(role_event, channel)
         };
-        f.service.store_view(&handle, role_event.event_id.as_ref()).await.unwrap().pending_for(channel, &watermark).len()
+        f.service.store_view(&handle, role_event.event_id.clone()).await.unwrap().pending_for(channel, &watermark).len()
     }
 
     /// 某通道的当前 case id
     async fn current_case(f: &Fixture, role_event: &RoleEvent, channel: &ChannelKey) -> Option<ArcStr> {
         let handle = f.service.manager().get(&agent_role(role_event)).expect("角色已加载");
-        handle.state.lock().await.current_case(role_event, channel).cloned()
+        handle.state.lock().await.current_case(role_event, channel)
     }
 
     /// case 节点
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(f.model.prompts().len(), 0, "登记不调用模型");
 
         // 查询只读：不触发归档、不清标记
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(tree.nodes.len(), 0, "查询不触发归档");
         assert_eq!(f.service.case_count(&agent_role(role_event("dev", None))).await.unwrap(), 0);
         assert!(is_dirty(&f, &role_event("dev", None)).await, "查询不清除待处理标记");
@@ -642,7 +642,7 @@ mod tests {
         // 手动触发才统一计算
         let outcome = process(&f, &role_event("dev", None)).await;
         assert_eq!(outcome.archived, 2, "手动触发处理该后缀水位之后的记录");
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道水位之后的全部记录一起处理");
         assert_eq!(tree.nodes[0].summary.as_str(), "新 case 摘要", "新建 case 建立当次就带上模型给出的摘要");
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(restarted.case_count(&agent_role(role_event("dev", None))).await.unwrap(), 1);
 
         // 同一角色的事件后缀：共用磁盘上的同一棵树，但有自己的（空的）指针状态
-        let event_tree = restarted.tree_get(&agent_role(role_event("dev", Some("e1"))), Some(&ArcStr::from("e1"))).await.unwrap();
+        let event_tree = restarted.tree_get(&agent_role(role_event("dev", Some("e1"))), Some(ArcStr::from("e1"))).await.unwrap();
         assert_eq!(event_tree.nodes.len(), 1, "同一个角色共用一棵 case 树");
         assert!(current_pointer(&event_tree, &a).is_none(), "事件后缀的指针状态独立");
     }
@@ -685,7 +685,7 @@ mod tests {
         let prompts = f.model.prompts().len();
         let outcome = process(&f, &role_event("dev", None)).await;
         assert_eq!(outcome.archived, 0, "没有新变化时不再重复计算");
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "case 树保持");
         assert_eq!(f.model.prompts().len(), prompts, "没有新变化时不调用模型");
     }
@@ -798,7 +798,7 @@ mod tests {
         // 模型错误地把分组标记为当前 case，但该通道还没有当前 case → 按失败处理
         f.model.push_group(&[0], true);
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
-        assert!(f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.is_err(), "非法分组按失败处理");
+        assert!(f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.is_err(), "非法分组按失败处理");
         assert!(is_dirty(&f, &role_event("dev", None)).await, "失败后保留待处理标记，等待下次处理重试");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 1, "水位不动");
 
@@ -819,7 +819,7 @@ mod tests {
 
         // 分组调用失败（桩模型的输出没有覆盖整批）：归档整体失败，状态与磁盘保持不变
         f.model.push_groups(Vec::new());
-        assert!(f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.is_err(), "模型失败应向上报错");
+        assert!(f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.is_err(), "模型失败应向上报错");
         let role = role_event("dev", None);
         let handle = f.service.manager().get(&agent_role(&role)).unwrap();
         {
@@ -848,7 +848,7 @@ mod tests {
         notify(&f, Arc::new(role_event("dev", Some("e1"))), &a).await;
 
         f.model.push_summarize_failure();
-        assert!(f.service.manual_trigger(&agent_role(role_event("dev", Some("e1"))), Some(&ArcStr::from("e1"))).await.is_err(), "摘要失败应向上报错");
+        assert!(f.service.manual_trigger(&agent_role(role_event("dev", Some("e1"))), Some(ArcStr::from("e1"))).await.is_err(), "摘要失败应向上报错");
         let role = role_event("dev", Some("e1"));
         let handle = f.service.manager().get(&agent_role(&role)).unwrap();
         {
@@ -879,13 +879,13 @@ mod tests {
             append_store_channel(&root, "0", suffix, &a, "2099-01-01 10:00:00", 1, 0, "内容").await;
             notify(&f, Arc::new(role_event.clone()), &a).await;
 
-            let result = f.service.manual_trigger(&agent_role(&role_event), role_event.event_id.as_ref()).await;
+            let result = f.service.manual_trigger(&agent_role(&role_event), role_event.event_id.clone()).await;
             assert!(result.is_err(), "非法事件标识 {} 应报错", suffix);
 
             // dev-e_1 与 dev-事件 都属于同一个角色 dev：共享的 case 树上不应有节点
             let handle = f.service.manager().get(&agent_role(&role_event)).unwrap();
             assert!(handle.state.lock().await.tree.is_empty(), "失败不建出 case ({})", suffix);
-            let case_name = event_case_name(role_event.event_id.as_ref().unwrap().as_str());
+            let case_name = event_case_name(role_event.event_id.clone().unwrap().as_str());
             assert!(!handle.case_dir(&case_name).exists(), "失败不落原文副本 ({})", suffix);
         }
     }
@@ -1364,13 +1364,13 @@ mod tests {
         }
 
         // 手动触发：忽略待处理标记，把水位之后全部记录处理一次（桩模型：整批一组）
-        let first = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let first = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(first.archived, 4, "手动触发处理全部待处理记录");
         assert_eq!(first.case_names, vec![ArcStr::from("role-case")]);
-        let second = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let second = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(second.archived, 0, "水位已推进，无剩余记录");
 
-        let response = f.service.rebuild(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let response = f.service.rebuild(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(response.archived, 4, "重建归档全部历史记录");
         assert_eq!(response.case_count, 1, "重建结果与首次一致");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
@@ -1412,13 +1412,13 @@ mod tests {
             process(&f, &role_event).await;
         }
         // 三个后缀落到同一棵角色树：角色子树 + 两个事件 case
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(tree.nodes.len(), 3);
 
         // 重建事件后缀 dev-e1：只有 e1 清掉重建，e2 与 case 原样保留
-        let response = f.service.rebuild(&agent_role(role_event("dev", Some("e1"))), Some(&ArcStr::from("e1"))).await.unwrap();
+        let response = f.service.rebuild(&agent_role(role_event("dev", Some("e1"))), Some(ArcStr::from("e1"))).await.unwrap();
         assert_eq!(response.archived, 1, "只重建本后缀的记录");
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
         assert!(ids.contains(&"role-case"), "角色子树保留: {:?}", ids);
         assert!(ids.contains(&"event-e1"), "本后缀的 case 重建出来: {:?}", ids);
@@ -1426,8 +1426,8 @@ mod tests {
         assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "角色后缀的指针不动");
 
         // 重建角色模式：清角色子树，事件 case 都保留
-        f.service.rebuild(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
-        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.as_ref()).await.unwrap();
+        f.service.rebuild(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
+        let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
         let role_count = tree.nodes.iter().filter(|n| is_role_case(&n.case_name)).count();
         let event_count = tree.nodes.iter().filter(|n| n.case_name.starts_with(EVENT_CASE_PREFIX.as_str())).count();
@@ -1477,7 +1477,7 @@ mod tests {
         for i in 0..100u64 {
             let time = format!("2099-01-01 10:{:02}:{:02}", i / 60, i % 60);
             append_store_channel(&root, "0", "dev", &a, &time, i + 1, (i % 2) as usize, "内容").await;
-            let view = f.service.store_view(&handle, role_event("dev", None).event_id.as_ref()).await.unwrap();
+            let view = f.service.store_view(&handle, role_event("dev", None).event_id.clone()).await.unwrap();
             assert_eq!(view.records.len(), i as usize + 1, "第 {} 轮写入后立即读取的记录数不对", i + 1);
         }
     }
