@@ -12,7 +12,7 @@ mod locate;
 mod model;
 mod notify;
 mod records;
-mod scope;
+mod agent_role;
 mod service;
 mod stub_model;
 mod tree;
@@ -28,7 +28,7 @@ use tracing::{error, info};
 
 use crate::config::Config;
 use crate::model::{DecisionModel, LlmModel};
-use crate::scope::ScopeManager;
+use crate::agent_role::AgentRoleManager;
 use crate::service::AbstractService;
 use crate::stub_model::StubModel;
 
@@ -40,7 +40,7 @@ async fn main() {
     let security = SecurityConfig::get();
 
     let root = config.storage_root();
-    let manager = Arc::new(ScopeManager::new(root.clone()));
+    let manager = Arc::new(AgentRoleManager::new(root.clone()));
     // provider_type = "stub" 时使用确定性桩模型（集成测试与手动验证用，不调用外部模型）
     let model: Arc<dyn DecisionModel> = if config.provider_config.provider_type.as_str() == "stub" {
         info!("[abstract] provider_type=stub，使用桩模型（仅供测试/手动验证）");
@@ -63,10 +63,10 @@ async fn main() {
         config.notify_url
     );
 
-    // 启动恢复：加载磁盘上已有作用域（未归档的原始记录留待首次查询时统一处理）
-    match service.restore_scopes().await {
-        Ok(handles) => info!("[abstract] restored {} scopes", handles.len()),
-        Err(e) => error!("[abstract] restore scopes failed: {}", e),
+    // 启动恢复：加载磁盘上已有角色（未归档的原始记录留待首次查询时统一处理）
+    match service.restore_roles().await {
+        Ok(handles) => info!("[abstract] restored {} agent roles", handles.len()),
+        Err(e) => error!("[abstract] restore agent roles failed: {}", e),
     }
 
     // 通知订阅：连接 memory-store 的通知服务

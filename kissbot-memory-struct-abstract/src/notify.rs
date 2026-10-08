@@ -74,8 +74,8 @@ impl WsProcessorContext for NotifyClient {
             );
         }
 
-        // 每次（重）连接后把已加载作用域标记为待处理：断线期间的变更没有通知，
-        // 通道未知，查询时按作用域全部通道处理
+        // 每次（重）连接后把已加载角色的全部后缀标记为待处理：断线期间的变更没有通知，
+        // 通道未知，查询时按该后缀全部通道处理
         self.service.mark_all_dirty().await;
         Ok(())
     }
@@ -137,13 +137,13 @@ pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<ArcStr>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::{AgentRole, ScopeManager, agent_role, case_mode};
+    use crate::agent_role::{AgentRole, AgentRoleManager};
     use crate::service::AbstractService;
     use crate::stub::StubModel;
     use kissbot_api::RoleEvent;
 
     fn service(root: &std::path::Path) -> Arc<AbstractService> {
-        let manager = Arc::new(ScopeManager::new(root));
+        let manager = Arc::new(AgentRoleManager::new(root));
         let model = Arc::new(StubModel::new());
         Arc::new(AbstractService::new(manager, model, 4))
     }
@@ -201,7 +201,7 @@ mod tests {
         }
 
         // 查询只读：不触发归档
-        let tree = service.tree_get("0", &role_event("dev", None)).await.unwrap();
+        let tree = service.tree_get(&AgentRole::new("0", "dev"), None).await.unwrap();
         assert!(tree.nodes.is_empty(), "查询不触发归档");
         {
             let state = handle.state.lock().await;
@@ -209,9 +209,9 @@ mod tests {
         }
 
         // 手动触发归档：该通道水位之后的全部记录落成一个 case
-        let outcome = service.manual_trigger("0", &role_event("dev", None)).await.unwrap();
+        let outcome = service.manual_trigger(&AgentRole::new("0", "dev"), None).await.unwrap();
         assert_eq!(outcome.archived, 2, "手动触发处理该通道全部待处理记录");
-        let tree = service.tree_get("0", &role_event("dev", None)).await.unwrap();
+        let tree = service.tree_get(&AgentRole::new("0", "dev"), None).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
@@ -260,10 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn scope_ids_used_by_notifications() {
-        // 通知里的 agent/role_event 解析出「角色 + 记忆后缀」：角色决定 case 树，后缀决定输入与状态
+    fn notification_ids_map_to_agent_role_and_event() {
+        // 通知里的 agent/role_event 解析出「角色 + 事件标识」：AgentRole 决定 case 树，event_id 决定模式与事件 case
         let role_event = role_event("dev", Some("e1"));
-        assert_eq!(case_mode(&role_event), kissbot_api::CaseMode::Event);
-        assert_eq!(agent_role("0", &role_event), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
+        assert_eq!(AgentRole::new("0", role_event.role_name.as_str()), AgentRole::new("0", "dev"), "dev-e1 属于角色 dev");
+        assert_eq!(
+            crate::tree::event_case_name(role_event.event_id.as_deref().unwrap()).as_str(),
+            "event-e1"
+        );
     }
 }

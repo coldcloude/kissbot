@@ -1,7 +1,10 @@
 //! 模型接入：各判定环节的结构化输出调用。
 //!
 //! 调用方（归档器/定位器）只依赖 [`DecisionModel`]；真实实现 [`LlmModel`] 复用 kissbot-llm 的
-//! provider 与按作用域隔离的会话上下文，测试用桩实现替换（见 spec 验证）。
+//! provider 与按「角色 + event_id」隔离的会话上下文，测试用桩实现替换（见 spec 验证）。
+//!
+//! 判定的两个参数是：`agent_role`（角色，决定 case 树与会话所属 agent）与
+//! `event_id`（`None` 为角色模式，`Some` 为事件模式）；不存在单独的模型归属结构。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,7 +23,7 @@ use tracing::warn;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::scope::ModelScope;
+use crate::agent_role::{AgentRole, session_id, role_event_of};
 
 /// 第 1 轮（分组轮）的一个分组：属于同一 case 的消息（批次内下标，升序）
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,14 +68,27 @@ pub const MAX_CASE_NAME_LEN: usize = 64;
 #[async_trait]
 pub trait DecisionModel: Send + Sync {
     /// 第 1 轮（分组轮）：把待处理消息按 case 分组，并标记属于当前 case 的组
-    async fn group(&self, scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>>;
+    async fn group(
+        &self,
+        agent_role: &AgentRole,
+        event_id: Option<&ArcStr>,
+        batch: &str,
+        total: usize,
+        current: Option<&CaseBrief>,
+    ) -> Result<Vec<MessageGroup>>;
 
     /// 第 2 轮起逐层判定：并入当层某 case（非叶子继续下潜）/ 在本层新增叶子 case。
     /// 判定为新增时同一次调用就给出 case 名称与摘要（只用于定位的组也一样，新 case 一建出来就有内容）。
-    async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision>;
+    async fn decide_level(
+        &self,
+        agent_role: &AgentRole,
+        event_id: Option<&ArcStr>,
+        batch: &str,
+        level: &[CaseBrief],
+    ) -> Result<LevelDecision>;
 
     /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
-    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<ArcStr>;
+    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, content: &str) -> Result<ArcStr>;
 }
 
 // ========== 提示词 ==========
@@ -260,7 +276,7 @@ enum ProviderKind {
     Anthropic(AnthropicProvider),
 }
 
-/// 真实模型实现：按判定作用域（agent + 记忆后缀）隔离会话上下文
+/// 真实模型实现：会话上下文按「角色 + event_id」（即记忆后缀）隔离
 pub struct LlmModel {
     provider: ProviderKind,
     llm_cfg: EffectiveLLMConfig,
@@ -268,7 +284,8 @@ pub struct LlmModel {
     /// 记忆根目录（会话上下文按 `{root}/{agent}/memory-struct-abstract/llm` 落盘）
     root: PathBuf,
     session_max_messages: usize,
-    sessions: DashMap<Arc<ModelScope>, Arc<Session>>,
+    /// 会话表：键为（角色 + event_id），即一个记忆后缀一个会话
+    sessions: DashMap<(Arc<AgentRole>, Option<ArcStr>), Arc<Session>>,
     session_lock: Mutex<()>,
 }
 
@@ -296,31 +313,32 @@ impl LlmModel {
         })
     }
 
-    async fn session(&self, scope: &ModelScope) -> Result<Arc<Session>> {
-        if let Some(session) = self.sessions.get(scope) {
+    async fn session(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>) -> Result<Arc<Session>> {
+        let key: (Arc<AgentRole>, Option<ArcStr>) = (Arc::new(agent_role.clone()), event_id.cloned());
+        if let Some(session) = self.sessions.get(&key) {
             return Ok(session.clone());
         }
         let _guard = self.session_lock.lock().await;
-        if let Some(session) = self.sessions.get(scope) {
+        if let Some(session) = self.sessions.get(&key) {
             return Ok(session.clone());
         }
         let data_dir = self
             .root
-            .join(scope.agent_id.as_str())
+            .join(agent_role.agent_id.as_str())
             .join(crate::config::STRUCT_DIR_NAME.as_str())
             .join("llm")
             .to_string_lossy()
             .to_string();
-        let session = Arc::new(Session::new(&data_dir, &crate::scope::session_id(&scope.role_event)));
+        let session = Arc::new(Session::new(&data_dir, &session_id(&role_event_of(agent_role, event_id))));
         session.recover_from_cache().await?;
         session.set_system_message(SYSTEM_PROMPT).await;
-        self.sessions.insert(Arc::new(scope.clone()), session.clone());
+        self.sessions.insert(key, session.clone());
         Ok(session)
     }
 
     /// 一次判定调用：会话上下文 + 本次提示 → 结构化 JSON
-    async fn call(&self, scope: &ModelScope, prompt: &str) -> Result<Value> {
-        let session = self.session(scope).await?;
+    async fn call(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, prompt: &str) -> Result<Value> {
+        let session = self.session(agent_role, event_id).await?;
         let mut messages = session.build_context().await;
         messages.push(Message::User { content: ArcStr::from(prompt) });
 
@@ -346,12 +364,12 @@ impl LlmModel {
                 },
             ])
             .await;
-        self.trim_session(scope, &session).await;
+        self.trim_session(agent_role, event_id, &session).await;
 
         extract_json(&text)
     }
 
-    async fn trim_session(&self, scope: &ModelScope, session: &Arc<Session>) {
+    async fn trim_session(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, session: &Arc<Session>) {
         let context = session.build_context().await;
         let non_system: Vec<Message> = context
             .into_iter()
@@ -361,8 +379,8 @@ impl LlmModel {
             return;
         }
         warn!(
-            "[abstract] session context of {:?} exceeds {} messages, archive and keep recent",
-            scope, self.session_max_messages
+            "[abstract] session context of {}/{:?} exceeds {} messages, archive and keep recent",
+            agent_role, event_id, self.session_max_messages
         );
         let keep = non_system[non_system.len() - self.session_max_messages..].to_vec();
         session.context_archive_and_clear_cache_and_reset_messages(keep).await;
@@ -385,19 +403,32 @@ fn response_text(response: &ModelResponse) -> Result<String> {
 
 #[async_trait]
 impl DecisionModel for LlmModel {
-    async fn group(&self, scope: &ModelScope, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
-        let value = self.call(scope, &grouping_prompt(batch, current)).await?;
+    async fn group(
+        &self,
+        agent_role: &AgentRole,
+        event_id: Option<&ArcStr>,
+        batch: &str,
+        total: usize,
+        current: Option<&CaseBrief>,
+    ) -> Result<Vec<MessageGroup>> {
+        let value = self.call(agent_role, event_id, &grouping_prompt(batch, current)).await?;
         // 按下标总数严格校验：必须完整覆盖批次，漏掉任何一条都按失败处理（不能让它被水位跳过）
         parse_groups(&value, total)
     }
 
-    async fn decide_level(&self, scope: &ModelScope, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
-        let value = self.call(scope, &level_prompt(batch, level)).await?;
+    async fn decide_level(
+        &self,
+        agent_role: &AgentRole,
+        event_id: Option<&ArcStr>,
+        batch: &str,
+        level: &[CaseBrief],
+    ) -> Result<LevelDecision> {
+        let value = self.call(agent_role, event_id, &level_prompt(batch, level)).await?;
         parse_level_decision(&value)
     }
 
-    async fn summarize(&self, scope: &ModelScope, content: &str) -> Result<ArcStr> {
-        let value = self.call(scope, &summary_prompt(content)).await?;
+    async fn summarize(&self, agent_role: &AgentRole, event_id: Option<&ArcStr>, content: &str) -> Result<ArcStr> {
+        let value = self.call(agent_role, event_id, &summary_prompt(content)).await?;
         parse_summary(&value)
     }
 }

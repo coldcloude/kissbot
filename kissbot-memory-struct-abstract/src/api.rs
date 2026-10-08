@@ -12,6 +12,7 @@ use axum::{
 };
 use kissbot_api::*;
 
+use crate::agent_role::AgentRole;
 use crate::service::AbstractService;
 
 pub fn create_router(service: Arc<AbstractService>) -> Router {
@@ -25,6 +26,11 @@ pub fn create_router(service: Arc<AbstractService>) -> Router {
         .route("/abstract/tree/get", post(tree_get))
         .route("/abstract/rebuild", post(rebuild))
         .with_state(service)
+}
+
+/// 对外请求仍是「agent_id + 记忆后缀（RoleEvent）」：入口拆成 case 树的角色与独立的 event_id
+fn agent_role_of(agent_id: &ArcStr, role_event: &RoleEvent) -> AgentRole {
+    AgentRole::new(agent_id.clone(), role_event.role_name.clone())
 }
 
 type ApiResult<T> = (StatusCode, Json<ApiResponse<T>>);
@@ -45,12 +51,9 @@ async fn locate(State(service): State<Arc<AbstractService>>, Json(req): Json<Loc
 }
 
 async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseListRequest>) -> impl IntoResponse {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
-        .case_list(
-            req.agent_id.as_str(),
-            &req.role_event,
-            req.parent_id.as_ref().map(|id| id.as_str()),
-        )
+        .case_list(&agent_role, req.parent_id.as_ref().map(|id| id.as_str()))
         .await
     {
         Ok(response) => ok(response),
@@ -59,22 +62,25 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
 }
 
 async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
-    match service.case_summary(req.agent_id.as_str(), &req.role_event, req.case_name.as_str()).await {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
+    match service.case_summary(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
 async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
-    match service.case_records(req.agent_id.as_str(), &req.role_event, req.case_name.as_str()).await {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
+    match service.case_records(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
 async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
-        .case_records_after(req.agent_id.as_str(), &req.role_event, req.case_name.as_str(), &req.after)
+        .case_records_after(&agent_role, req.case_name.as_str(), &req.after)
         .await
     {
         Ok(response) => ok(response),
@@ -83,8 +89,9 @@ async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(re
 }
 
 async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
-        .case_records_tail(req.agent_id.as_str(), &req.role_event, req.case_name.as_str(), req.count)
+        .case_records_tail(&agent_role, req.case_name.as_str(), req.count)
         .await
     {
         Ok(response) => ok(response),
@@ -93,22 +100,25 @@ async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req
 }
 
 async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<TreeGetRequest>) -> impl IntoResponse {
-    match service.tree_get(req.agent_id.as_str(), &req.role_event).await {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
+    match service.tree_get(&agent_role, req.role_event.event_id.as_ref()).await {
         Ok(response) => ok(response),
         Err(e) => err(e.to_string()),
     }
 }
 
 async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<RebuildRequest>) -> impl IntoResponse {
+    let agent_role = agent_role_of(&req.agent_id, &req.role_event);
+    let event_id = req.role_event.event_id.clone();
     if req.rebuild {
-        match service.rebuild(req.agent_id.as_str(), &req.role_event).await {
+        match service.rebuild(&agent_role, event_id.as_ref()).await {
             Ok(response) => ok(response),
             Err(e) => err(e.to_string()),
         }
     } else {
-        match service.manual_trigger(req.agent_id.as_str(), &req.role_event).await {
+        match service.manual_trigger(&agent_role, event_id.as_ref()).await {
             Ok(outcome) => {
-                let case_count = service.case_count(req.agent_id.as_str(), &req.role_event).await.unwrap_or(0);
+                let case_count = service.case_count(&agent_role).await.unwrap_or(0);
                 ok(RebuildResponse { archived: outcome.archived, case_count })
             }
             Err(e) => err(e.to_string()),
@@ -119,7 +129,7 @@ async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scope::ScopeManager;
+    use crate::agent_role::AgentRoleManager;
     use crate::service::AbstractService;
     use crate::stub::StubModel;
     use axum::body::Body;
@@ -129,7 +139,7 @@ mod tests {
 
     fn test_service() -> (tempfile::TempDir, Arc<AbstractService>) {
         let temp = tempfile::tempdir().unwrap();
-        let manager = Arc::new(ScopeManager::new(temp.path()));
+        let manager = Arc::new(AgentRoleManager::new(temp.path()));
         let model = Arc::new(StubModel::new());
         let service = Arc::new(AbstractService::new(manager, model, 4));
         (temp, service)

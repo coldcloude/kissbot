@@ -63,9 +63,9 @@ mod tests {
     use crate::archive::Archiver;
     use crate::model::{LevelDecision, MessageGroup};
     use crate::records::{RecordBody, RecordEntry};
-    use crate::scope::{AgentRole, ScopeHandle, ScopeManager, agent_role};
+    use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
-    use kissbot_api::{CaseMode, ChannelRecord, Content, RecordKind, RoleEvent};
+    use kissbot_api::{ChannelRecord, Content, RecordKind, RoleEvent};
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
@@ -135,14 +135,14 @@ mod tests {
         }
     }
 
-    /// 打开某记忆后缀所属的角色句柄（角色树按角色共享）
-    async fn open(manager: &ScopeManager, role_event: &RoleEvent) -> Arc<ScopeHandle> {
-        manager.open(agent_role("0", role_event)).await.unwrap()
+    /// 打开某记忆后缀所属的角色句柄（case 树按 AgentRole）
+    async fn open(manager: &AgentRoleManager, role_event: &RoleEvent) -> Arc<AgentRoleHandle> {
+        manager.open(AgentRole::new("0", role_event.role_name.as_str())).await.unwrap()
     }
 
     /// 归档一批记录（不带新消息 = 原来的归档）
     async fn archive(
-        handle: &ScopeHandle,
+        handle: &AgentRoleHandle,
         model: &Arc<StubModel>,
         role_event: &RoleEvent,
         channel: &ChannelKey,
@@ -150,17 +150,17 @@ mod tests {
     ) {
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
-        archiver.archive(handle, &mut state, role_event, channel, entries, &[]).await.unwrap();
+        archiver.archive(handle, &mut state, role_event.event_id.as_ref(), channel, entries, &[]).await.unwrap();
     }
 
     /// 定位一批消息：逐通道走归档入口，但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）
-    async fn locate(handle: &ScopeHandle, model: &Arc<StubModel>, role_event: &RoleEvent, messages: &[LocateMessage]) -> LocateResponse {
+    async fn locate(handle: &AgentRoleHandle, model: &Arc<StubModel>, role_event: &RoleEvent, messages: &[LocateMessage]) -> LocateResponse {
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
         let mut located = Vec::new();
         for (channel, indices) in group_indices_by_channel(messages) {
             let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-            let result = archiver.archive(handle, &mut state, role_event, &channel, &[], &channel_messages).await.unwrap();
+            let result = archiver.archive(handle, &mut state, role_event.event_id.as_ref(), &channel, &[], &channel_messages).await.unwrap();
             for group in result.groups {
                 let global: Vec<usize> = group.messages.iter().map(|local| indices[*local]).collect();
                 let first = *global.first().expect("分组非空（parse_groups 保证）");
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn empty_messages_returns_nothing_and_empty_tree_creates_named_case() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -213,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn current_case_group_hits_current_case() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -232,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn new_topic_group_creates_empty_case() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -256,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_messages_map_to_multiple_cases() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -294,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn level_descent_picks_child_or_creates_child() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -302,7 +302,7 @@ mod tests {
         // 构造 case（父）/ role-2（子）结构
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("role-case"), CaseMode::Role, "t");
+            state.tree.create_node("role-2", Some("role-case"), "t");
         }
 
         // 第三条消息：顶层命中 case（非叶子）→ 下探子层命中 role-2
@@ -327,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn messages_on_different_channels_use_their_own_current_case() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn locate_does_not_read_records() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
@@ -371,9 +371,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn case_mode_returns_single_case_without_model() {
+    async fn event_mode_returns_single_case_without_model() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", Some("e1"))).await;
         let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
@@ -388,15 +388,14 @@ mod tests {
         let node = state.tree.get("event-e1").unwrap();
         assert!(node.parent_id.is_none(), "case 固定在顶层");
         assert!(node.is_leaf(), "case 是顶层叶子");
-        assert_eq!(node.mode, CaseMode::Event);
-        assert!(!node.summary.is_empty(), "有记录的 event case 由摘要重算生成摘要");
+                assert!(!node.summary.is_empty(), "有记录的 event case 由摘要重算生成摘要");
     }
 
     /// 事件模式 + 没有 case（也没有记录）：定位会建出角色 case（记忆条数 0），不调模型
     #[tokio::test]
-    async fn case_mode_without_event_creates_scope_case() {
+    async fn event_mode_without_case_creates_leaf() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ScopeManager::new(temp.path());
+        let manager = AgentRoleManager::new(temp.path());
         let handle = open(&manager, &role_event("dev", Some("e1"))).await;
         let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());

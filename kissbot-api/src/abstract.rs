@@ -61,15 +61,7 @@ impl CaseRecord {
 
 // ========== Case 与 case 树 ==========
 
-/// Case 模式：角色模式（记录经模型判定切分为 case、可多层归并）与事件模式（记忆后缀含 event，整体固定为一个顶层叶子 case）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CaseMode {
-    Role,
-    Event,
-}
-
-/// Case 节点（tree.json 的节点形状）
+/// Case 节点（tree.json 的节点形状）：只描述 case 本身，不带模式/事件信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseNode {
     pub case_name: ArcStr,
@@ -77,7 +69,6 @@ pub struct CaseNode {
     pub parent_id: Option<ArcStr>,
     #[serde(default)]
     pub children: Vec<ArcStr>,
-    pub mode: CaseMode,
     pub summary: ArcStr,
     /// 本 case 直接持有的原文副本条数（不含子 case）
     pub record_count: u64,
@@ -500,7 +491,6 @@ mod tests {
             case_name: ArcStr::from("e12"),
             parent_id: None,
             children: vec![ArcStr::from("e13")],
-            mode: CaseMode::Role,
             summary: ArcStr::from("摘要"),
             record_count: 42,
             start_time: ArcStr::from("2026-09-22 10:00:00"),
@@ -516,7 +506,6 @@ mod tests {
             case_name: ArcStr::from("e12"),
             parent_id: None,
             children: vec![ArcStr::from("e13")],
-            mode: CaseMode::Role,
             summary: ArcStr::from("摘要"),
             record_count: 42,
             start_time: ArcStr::from("2026-09-22 10:00:00"),
@@ -525,18 +514,19 @@ mod tests {
             updated_at: ArcStr::from("2026-09-22 13:49:00"),
         };
         let v = serde_json::to_value(&node).unwrap();
-        assert_eq!(v["mode"], "role");
+        assert!(v.get("mode").is_none(), "case 节点不带模式/事件信息");
         assert!(v["parent_id"].is_null(), "parent_id 为 null 时序列化为 null（tree.json 形状）");
         assert!(!node.is_leaf());
         assert_eq!(CaseBrief::from(&node).case_name.as_str(), "e12");
 
+        // 旧 tree.json 里的 mode 字段被忽略，不影响加载
         let leaf: CaseNode = serde_json::from_value(json!({
             "case_name": "e13", "mode": "event", "summary": "s", "record_count": 0,
             "start_time": "t", "end_time": "t", "created_at": "t", "updated_at": "t"
         })).unwrap();
         assert!(leaf.is_leaf());
         assert!(leaf.parent_id.is_none());
-        assert_eq!(leaf.mode, CaseMode::Event);
+        assert_eq!(leaf.summary.as_str(), "s");
     }
 
     #[test]

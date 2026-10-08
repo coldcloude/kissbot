@@ -408,7 +408,6 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const tree = await treeOf(request, eventRole);
     const node = tree.nodes.find((n: any) => n.case_name === caseName);
     expect(node, '事件模式建出固定 case').toBeTruthy();
-    expect(node.mode).toBe('event');
     expect(node.parent_id, '事件 case 固定在顶层').toBeUndefined();
     expect(node.record_count).toBe(3, '事件模式整体归入一个 case');
     expect(tree.nodes.some((n: any) => n.case_name === 'role-case'), '角色 case 与事件 case 共用一棵树').toBe(true);
