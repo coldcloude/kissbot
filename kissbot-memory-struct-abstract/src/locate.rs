@@ -137,7 +137,7 @@ mod tests {
 
     /// 打开某记忆后缀所属的角色句柄（case 树按 AgentRole）
     async fn open(manager: &AgentRoleManager, role_event: &RoleEvent) -> Arc<AgentRoleHandle> {
-        manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.role_name.as_str()))).await.unwrap()
+        manager.open(AgentRole::new(ArcStr::from("0"), role_event.role_name.clone())).await.unwrap()
     }
 
     /// 归档一批记录（不带新消息 = 原来的归档）

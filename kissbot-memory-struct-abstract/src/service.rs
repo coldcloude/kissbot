@@ -382,7 +382,7 @@ mod tests {
     /// 记忆后缀所属的角色（case 树按角色共享）
     /// 测试用「角色」：固定 agent 0，由记忆后缀得到 case 树归属（同时接受值与引用）
     fn agent_role(role_event: impl std::borrow::Borrow<RoleEvent>) -> AgentRole {
-        AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.borrow().role_name.as_str()))
+        AgentRole::new(ArcStr::from("0"), role_event.borrow().role_name.clone())
     }
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {

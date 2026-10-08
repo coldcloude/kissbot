@@ -7,7 +7,6 @@ mod message_store;
 
 use std::sync::Arc;
 
-use arcstr::ArcStr;
 use kissbot_channel::ChannelServer;
 use tokio::net::TcpListener;
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
@@ -27,8 +26,8 @@ async fn main() {
 
     // 2. 读取 messenger 配置，构造 Creator
     let creator = WebMessengerCreator::new(
-        &config.messenger_repo, ArcStr::from(config.attachment_dir.as_str()), ArcStr::from(config.message_dir.as_str()),
-        ArcStr::from(config.messenger_id.as_str()), ArcStr::from(config.admin_name.as_str()),
+        &config.messenger_repo, config.attachment_dir.clone(), config.message_dir.clone(),
+        config.messenger_id.clone(), config.admin_name.clone(),
     ).await
     .expect("Failed to load messenger config");
 

@@ -263,7 +263,7 @@ mod tests {
     fn notification_ids_map_to_agent_role_and_event() {
         // 通知里的 agent/role_event 解析出「角色 + 事件标识」：AgentRole 决定 case 树，event_id 决定模式与事件 case
         let role_event = role_event("dev", Some("e1"));
-        assert_eq!(AgentRole::new(ArcStr::from("0"), ArcStr::from(role_event.role_name.as_str())), AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "dev-e1 属于角色 dev");
+        assert_eq!(AgentRole::new(ArcStr::from("0"), role_event.role_name.clone()), AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "dev-e1 属于角色 dev");
         assert_eq!(
             crate::tree::event_case_name(role_event.event_id.as_deref().unwrap()).as_str(),
             "event-e1"
