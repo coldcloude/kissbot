@@ -2,8 +2,6 @@ pub mod abstract_input_processor;
 pub mod input_processor;
 pub mod output_processor;
 pub mod message_sender;
-pub mod tool_caller;
-pub mod system_prompter;
 
 use futures_util::future;
 pub use abstract_input_processor::*;
@@ -12,17 +10,68 @@ use dashmap::DashMap;
 use kissbot_api::IncomingMessageEvent;
 pub use output_processor::*;
 pub use message_sender::*;
+use serde_json::Value;
 use tokio::sync::RwLock;
-pub use tool_caller::*;
-pub use system_prompter::*;
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_llm::{Message, Session, ToolConfig};
+use async_trait::async_trait;
+use kissbot_llm::{Message, Session, ToolCall, ToolConfig, ToolData};
 
-use crate::{config_manager::ConfigManager, configs::PipelineConfig, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, types::{Error, Result, SessionKey}};
+use crate::{config_manager::ConfigManager, configs::PipelineConfig, nexus::{DEFAULT_SYSTEM_PROMPT, Nexus}, pipeline::{AgentInputProcessor, AgentMessageSender, AgentOutputProcessor, AgentPipeline, AgentSystemPrompter, AgentToolCaller, AgentTrigger}, station::{Station, TERR_TOOL_INTERNAL_ERROR, tool_error}, types::{Error, Result, SessionKey}};
+
+async fn get_system_prompt(session_key: &SessionKey) -> ArcStr {
+    let nexus = Nexus::get();
+    if let Some(prompt) = nexus.system_prompt_for_agent(session_key.agent_id.clone(), session_key.role_event.role_name.clone()).await {
+        prompt
+    } else {
+        DEFAULT_SYSTEM_PROMPT.clone()
+    }
+}
+
+async fn call_tool(mut tool_call: ToolCall) -> ToolCall {
+    let arguments = tool_call.data.arguments.take();
+    let called = Station::get().call_tool_local(tool_call.name.as_str(), arguments.clone()).await;
+    tool_call.data = match called {
+        Ok(result) => {
+            let content = serde_json::to_value(&result.content).unwrap_or(Value::Null);
+            if result.is_error {
+                ToolData {
+                    arguments,
+                    result: Value::Null,
+                    error: content,
+                }
+            } else {
+                ToolData {
+                    arguments,
+                    result: content,
+                    error: Value::Null
+                }
+            }
+        },
+        Err(e) => ToolData {
+            arguments,
+            result: Value::Null,
+            error: tool_error(TERR_TOOL_INTERNAL_ERROR, ArcStr::from(e.to_string())),
+        },
+    };
+    tool_call
+}
+
+pub struct DefaultAgentPipeline {
+    session_key: Arc<SessionKey>,
+    session: Arc<Session>,
+}
+
+#[async_trait]
+impl AgentSystemPrompter for DefaultAgentPipeline {
+    async fn reset_system_prompt(&self) {
+        let prompt = get_system_prompt(&self.session_key).await;
+        self.session.set_system_message(prompt).await;
+    }
+}
 
 pub const PP_IN_BATCH: ArcStr = arcstr::literal!("batch_input_processor");
 pub const PP_IN_ABSTRACT: ArcStr = arcstr::literal!("abstract_input_processor");
