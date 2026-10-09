@@ -162,7 +162,7 @@ async fn role_name_completion(Json(req): Json<ego::RoleNameCompletionRequest>) -
 }
 
 // ========== 个体识别信息 API ==========
-async fn get_individuals(Json(req): Json<ego::GetIndividualsRequest>) -> impl IntoResponse {
+async fn get_individuals(Json(req): Json<ego::GetAgentRequest>) -> impl IntoResponse {
     match IndividualRecognitionManager::get().get_individuals(&req.agent_id).await {
         Ok(individuals) => (StatusCode::OK, Json(ApiResponse::success(individuals))),
         Err(Error::AgentNotFound(_)) => (StatusCode::NOT_FOUND, Json(ApiResponse::<Arc<IndividualRecognition>>::error(ArcStr::from(format!("Agent {} not found", req.agent_id))))),

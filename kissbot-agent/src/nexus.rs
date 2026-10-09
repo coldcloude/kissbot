@@ -28,8 +28,12 @@ use crate::memory_store_client::MemoryStoreClient;
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::message::Content;
+
 /// 保留 role：空串 = 保留 role
 pub const RESERVED_ROLE_NAME: ArcStr = ArcStr::new();
+
+/// 默认系统提示词
+pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用可用工具完成用户任务");
 
 // 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
 // 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发重置，
@@ -87,7 +91,7 @@ impl Nexus {
 
     /// 校验 agent_id 存在（/agent 切换前调用）：空或保留 id "0" 直接通过；
     /// ego 未配置/HTTP 失败/agent 不存在返回 Err（调用方保持原 agent 不变）
-    pub async fn verify_agent_exists(&self, agent_id: &str) -> Result<()> {
+    pub async fn verify_agent_exists(&self, agent_id: ArcStr) -> Result<()> {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
@@ -100,7 +104,7 @@ impl Nexus {
 
     /// 校验 role 存在（apply_channel_key 应用前调用）：显式空串（保留 role）直接通过；
     /// 其余必须 ego 中存在，否则 Err（调用方保持原 role 不变）
-    pub async fn verify_role_exists(&self, agent_id: &str, role_name: &str) -> Result<()> {
+    pub async fn verify_role_exists(&self, agent_id: ArcStr, role_name: ArcStr) -> Result<()> {
         if role_name.is_empty() {
             return Ok(());
         }
@@ -113,11 +117,11 @@ impl Nexus {
 
     /// 校验 role 存在（/role 切换前调用）：经 channel 配置取当前 agent_id（role 变更保持 agent 不变，
     /// channel 不存在报 ConfigNotFound）；显式空串（保留 role）直接通过，其余必须 ego 中存在
-    pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: &str) -> Result<()> {
+    pub async fn verify_role_exists_for_channel(&self, channel_id: &str, role_name: ArcStr) -> Result<()> {
         let Some(ch) = ConfigManager::get().channel(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
         };
-        self.verify_role_exists(ch.agent_id.as_str(), role_name).await
+        self.verify_role_exists(ch.agent_id.clone(), role_name).await
     }
 
     /// 定位会话（不存在则创建并完成初始化：上下文恢复在 get_or_create 内，pipeline 同步与系统提示词在其之后）；返回会话
@@ -160,7 +164,7 @@ impl Nexus {
     /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
     /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
     /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
-    pub async fn system_prompt_for_agent(&self, agent_id: &str, role_name: &str) -> Option<ArcStr> {
+    pub async fn system_prompt_for_agent(&self, agent_id: ArcStr, role_name: ArcStr) -> Option<ArcStr> {
         if agent_id == RESERVED_AGENT_ID {
             return None;
         }
@@ -558,8 +562,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nexus = test_nexus(&dir).await;
         // 保留 id "0" 与空串直接 Ok，提前返回不触 ego HTTP
-        assert!(nexus.verify_agent_exists("0").await.is_ok());
-        assert!(nexus.verify_agent_exists("").await.is_ok());
+        assert!(nexus.verify_agent_exists(ArcStr::from("0")).await.is_ok());
+        assert!(nexus.verify_agent_exists(ArcStr::new()).await.is_ok());
     }
 
     #[tokio::test]
@@ -568,7 +572,7 @@ mod tests {
         let nexus = test_nexus(&dir).await;
         // 显式空串（保留 role）直接 Ok，提前返回不触 ego HTTP；
         // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
-        assert!(nexus.verify_role_exists("a1", "").await.is_ok());
+        assert!(nexus.verify_role_exists(ArcStr::from("a1"), ArcStr::new()).await.is_ok());
     }
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → 会话上下文） =====

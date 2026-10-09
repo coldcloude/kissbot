@@ -73,9 +73,9 @@ impl CommandRouter {
                 let new_agent_id = agent_id.filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| RESERVED_AGENT_ID);
                 let new_role = role.cloned().unwrap_or_else(|| RESERVED_ROLE_NAME);
                 // 校验 agent 存在（空/保留 id 直接通过）；role 非空时一并校验（agent+role 联合校验）
-                nexus.verify_agent_exists(new_agent_id.as_str()).await?;
+                nexus.verify_agent_exists(new_agent_id.clone()).await?;
                 if !new_role.is_empty() {
-                    nexus.verify_role_exists(new_agent_id.as_str(), new_role.as_str()).await?;
+                    nexus.verify_role_exists(new_agent_id.clone(), new_role.clone()).await?;
                 }
                 // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
                 nexus.channel_manager().change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
@@ -86,7 +86,7 @@ impl CommandRouter {
                 let role = parts.get(1);
                 let new_role = role.cloned().unwrap_or_else(|| RESERVED_ROLE_NAME);
                 // 经 channel_id 校验 role 存在（内部取当前 agent_id；空串保留 role 直接通过；channel 不存在报错）
-                nexus.verify_role_exists_for_channel(channel_id.as_str(), new_role.as_str()).await?;
+                nexus.verify_role_exists_for_channel(channel_id.as_str(), new_role.clone()).await?;
                 // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
                 nexus.channel_manager().change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(ArcStr::from(format!("✅ 已设置 role: {}", new_role)))

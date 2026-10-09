@@ -1,7 +1,7 @@
 //! ego 服务 REST 客户端（与 memory_store_client 同模式）：共享 reqwest client + ego 配置单例读取
 
 use arcstr::ArcStr;
-use kissbot_api::{AgentMetadata, GetAgentRequest, GetIndividualsRequest, GetRoleRequest, IndividualRecognition, RolePlay};
+use kissbot_api::{AgentMetadata, GetAgentRequest, GetRoleRequest, IndividualRecognition, RolePlay};
 
 use crate::types::{Error, Result};
 
@@ -25,13 +25,13 @@ impl MemoryEgoClient {
 
     /// POST /agent/get 查询 agent 元数据；data null（agent 不存在）→ Ok(None)；网络/解析失败 → Err；
     /// base_url 空 → Err("ego 未配置（memory_ego_url 为空）")（agent 查询与存在性校验共用）
-    pub async fn get_agent(&self, agent_id: &str) -> Result<Option<AgentMetadata>> {
+    pub async fn get_agent(&self, agent_id: ArcStr) -> Result<Option<AgentMetadata>> {
         if self.base_url.is_empty() {
             return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".into()));
         }
         let resp = self.client.post(format!("{}/agent/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
-            .json(&GetAgentRequest { agent_id: ArcStr::from(agent_id) })
+            .json(&GetAgentRequest { agent_id })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("agent/get 请求失败: {}", e).into()))?;
@@ -41,10 +41,10 @@ impl MemoryEgoClient {
     }
 
     /// POST /individual/get-all 查询个体识别；网络/解析失败 → Err
-    pub async fn get_individuals(&self, agent_id: &str) -> Result<Option<IndividualRecognition>> {
+    pub async fn get_individuals(&self, agent_id: ArcStr) -> Result<Option<IndividualRecognition>> {
         let resp = self.client.post(format!("{}/individual/get-all", self.base_url))
             .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
-            .json(&GetIndividualsRequest { agent_id: ArcStr::from(agent_id) })
+            .json(&GetAgentRequest { agent_id })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("individual/get-all 请求失败: {}", e).into()))?;
@@ -54,13 +54,10 @@ impl MemoryEgoClient {
     }
 
     /// POST /role/get 查询角色设定（role_name 空由调用方决定是否调用）；网络/解析失败 → Err
-    pub async fn get_role(&self, agent_id: &str, role_name: &str) -> Result<Option<RolePlay>> {
+    pub async fn get_role(&self, agent_id: ArcStr, role_name: ArcStr) -> Result<Option<RolePlay>> {
         let resp = self.client.post(format!("{}/role/get", self.base_url))
             .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
-            .json(&GetRoleRequest {
-                agent_id: ArcStr::from(agent_id),
-                role_name: ArcStr::from(role_name),
-            })
+            .json(&GetRoleRequest { agent_id, role_name })
             .send()
             .await
             .map_err(|e| Error::MemoryEgoError(format!("role/get 请求失败: {}", e).into()))?;

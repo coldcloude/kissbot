@@ -143,11 +143,6 @@ pub struct RoleNameCompletionRequest {
 
 // Individual Recognition Requests
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GetIndividualsRequest {
-    pub agent_id: ArcStr,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct GetIndividualRequest {
     pub agent_id: ArcStr,
     pub individual_name: ArcStr,
@@ -436,14 +431,6 @@ mod tests {
     }
 
     // === Individual Recognition Requests ===
-
-    #[test]
-    fn test_serde_get_individuals_request() {
-        let obj = GetIndividualsRequest { agent_id: ArcStr::from("a1") };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: GetIndividualsRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.agent_id, "a1");
-    }
 
     #[test]
     fn test_serde_get_individual_request() {
