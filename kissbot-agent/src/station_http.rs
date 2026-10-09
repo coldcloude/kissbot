@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arcstr::ArcStr;
 use axum::Router;
-use kissbot_mcp::{Implementation, McpHttpConfig, McpServer};
+use kissbot_mcp::{McpHttpConfig, McpServer};
 use kissbot_security::{AuthLayer, SecurityConfig, SimpleApiKeyValidator};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -24,7 +24,7 @@ impl StationHttpServer {
 
     /// 构建 Router：以全局 Station 单例为处理器，认证用已加载的 api key
     fn build_router(&self) -> Router {
-        let server = McpServer::new(Station::shared(), server_info());
+        let server = McpServer::new(Station::shared());
         kissbot_mcp::router(server, McpHttpConfig::default())
             .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(self.api_key.clone()))))
     }
@@ -39,8 +39,4 @@ impl StationHttpServer {
         axum::serve(listener, self.build_router()).await?;
         Ok(())
     }
-}
-
-fn server_info() -> Implementation {
-    Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from(env!("CARGO_PKG_VERSION")))
 }

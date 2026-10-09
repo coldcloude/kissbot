@@ -272,8 +272,12 @@ mod tests {
 
     #[async_trait]
     impl McpHandler for TestHandler {
+        fn server_info(&self) -> std::sync::Arc<Implementation> {
+            Arc::new(Implementation::new(ArcStr::from("test"), ArcStr::from("1")))
+        }
+
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new(ArcStr::from("test"), ArcStr::from("1")), None)
+            DiscoverResult::new(None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
@@ -290,7 +294,7 @@ mod tests {
 
     fn app() -> Router {
         router(
-            McpServer::new(Arc::new(TestHandler), Implementation::new(ArcStr::from("test"), ArcStr::from("1"))),
+            McpServer::new(Arc::new(TestHandler)),
             McpHttpConfig::default(),
         )
     }

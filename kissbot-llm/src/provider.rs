@@ -189,7 +189,6 @@ impl Provider for OpenAiProvider {
                             data: ToolData {
                                 arguments: v["function"]["arguments"].clone(),
                                 result: Value::Null,
-                                error: Value::Null,
                             },
                         });
                     }
@@ -728,7 +727,7 @@ mod tests {
         assert_eq!(tool_calls[0].name.as_str(), "read");
         // arguments 原样保留 API 返回的 JSON 字符串（不解析为对象）
         assert_eq!(tool_calls[0].data.arguments.as_str(), Some(r#"{"path":"/a"}"#));
-        assert!(tool_calls[0].data.result.is_null() && tool_calls[0].data.error.is_null(), "执行前 result/error 为空");
+        assert!(tool_calls[0].data.result.is_null(), "执行前 result/error 为空");
         assert_eq!(resp.raw_tool_calls, data["choices"][0]["message"]["tool_calls"], "raw_tool_calls 原样保留");
         assert!(resp.content.is_none(), "content 为 null → None");
         assert_eq!(text(&resp.finish_reason), Some("tool_calls"));

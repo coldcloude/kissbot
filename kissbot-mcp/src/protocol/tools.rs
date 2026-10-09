@@ -281,36 +281,6 @@ impl Content {
     }
 }
 
-/// kissbot 错误来源标识（`ErrorDetail.source`），kissbot 实现固定填该值
-pub const ERROR_SOURCE_KISSBOT: ArcStr = arcstr::literal!("kissbot");
-
-/// `isError=true` 时 `structuredContent` 的固定错误结构
-///
-/// `source` 标识错误来源。来源非 kissbot、结构不符或无法解析时，调用方应把结果原样透传，
-/// 不做解释；来源为 kissbot 时可按 `code` 处理（见 `CallToolResult::kissbot_error()`）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorDetail {
-    pub code: u32,
-    pub message: ArcStr,
-    pub source: ArcStr,
-}
-
-impl ErrorDetail {
-    /// kissbot 来源的错误
-    pub fn kissbot(code: u32, message: ArcStr) -> Self {
-        Self {
-            code,
-            message,
-            source: ERROR_SOURCE_KISSBOT.clone(),
-        }
-    }
-
-    /// 错误是否来自 kissbot
-    pub fn is_kissbot(&self) -> bool {
-        self.source.as_str() == ERROR_SOURCE_KISSBOT.as_str()
-    }
-}
-
 /// `tools/call` 结果
 ///
 /// `content` 由工具（结果生产方）决定并原样回传，MCP 服务不解释、不合成、不改写它；
@@ -348,41 +318,6 @@ impl CallToolResult {
             content: vec![Content::text(text)],
             ..Default::default()
         }
-    }
-
-    /// 工具执行失败结果：`isError=true`，固定错误结构落在 `structuredContent`
-    pub fn error(code: u32, message: ArcStr) -> Self {
-        let detail = ErrorDetail::kissbot(code, message);
-        Self {
-            content: vec![Content::text(detail.message.clone())],
-            structured_content: serde_json::to_value(&detail).unwrap_or(Value::Null),
-            is_error: true,
-            ..Default::default()
-        }
-    }
-
-    /// 仅当错误来源为 kissbot 时给出固定错误结构；解析失败、结构不符或来源非 kissbot 均为 None，
-    /// 此时调用方应把结果原样透传，不按错误码解释。
-    pub fn kissbot_error(&self) -> Option<ErrorDetail> {
-        if !self.is_error {
-            return None;
-        }
-        let Ok(detail) = serde_json::from_value::<ErrorDetail>(self.structured_content.clone()) else {
-            return None;
-        };
-        if detail.is_kissbot() {
-            Some(detail)
-        } else {
-            None
-        }
-    }
-
-    /// 失败结果中携带的错误文案（首个文本块）
-    pub fn error_message(&self) -> Option<&str> {
-        if !self.is_error {
-            return None;
-        }
-        self.content.iter().find_map(|c| c.as_text())
     }
 }
 
@@ -488,62 +423,6 @@ mod tests {
     }
 
     #[test]
-    fn call_result_error_uses_fixed_error_struct_with_kissbot_source() {
-        let r = CallToolResult::error(1002, ArcStr::from("工具不存在: nope"));
-        assert!(r.is_error);
-        // 固定错误结构：code / message / source
-        assert_eq!(r.structured_content["code"], 1002);
-        assert_eq!(r.structured_content["message"], "工具不存在: nope");
-        assert_eq!(r.structured_content["source"], ERROR_SOURCE_KISSBOT.as_str());
-        assert_eq!(r.error_message().unwrap(), "工具不存在: nope");
-        let detail = r.kissbot_error().expect("kissbot 来源应能解析");
-        assert_eq!(detail.code, 1002);
-        assert!(detail.is_kissbot());
-        let v = serde_json::to_value(&r).unwrap();
-        assert_eq!(v["resultType"], "complete");
-        assert_eq!(v["isError"], true);
-    }
-
-    #[test]
-    fn non_kissbot_or_malformed_error_is_not_interpreted() {
-        // 结构不符 / 来源非 kissbot / 解析失败：kissbot_error() 一律返回 None（调用方透传）
-        let cases = [
-            // 结构不符：无 source
-            json!({ "code": 7, "message": "boom" }),
-            // 结构不符：code 类型不对
-            json!({ "code": "7", "message": "boom", "source": ERROR_SOURCE_KISSBOT }),
-            // 来源非 kissbot
-            json!({ "code": 7, "message": "boom", "source": "other-mcp" }),
-            // 完全不是错误结构
-            json!("plain text error"),
-            json!({ "error": "boom" }),
-        ];
-        for structured in cases {
-            let r = CallToolResult {
-                content: vec![Content::text(ArcStr::from("boom"))],
-                structured_content: structured.clone(),
-                is_error: true,
-                ..Default::default()
-            };
-            assert!(
-                r.kissbot_error().is_none(),
-                "非 kissbot 结构不应被解释: {}",
-                structured
-            );
-            // 文案仍可取（回退文本块），但错误体本身原样保留
-            assert_eq!(r.error_message(), Some("boom"));
-            assert_eq!(serde_json::to_value(&r).unwrap()["structuredContent"], structured);
-        }
-    }
-
-    #[test]
-    fn kissbot_error_ignores_non_error_results() {
-        let ok = CallToolResult::text(ArcStr::from("正常结果"));
-        assert!(ok.kissbot_error().is_none());
-        assert!(ok.error_message().is_none());
-    }
-
-    #[test]
     fn call_result_covers_all_content_block_types() {
         // 规范的全部 ContentBlock 变体：text / image / audio / resource_link / resource
         let content = json!([
@@ -590,7 +469,7 @@ mod tests {
 
         // 有内容时正常输出
         let with_info = CallToolResult::text(ArcStr::from("ok"))
-            .with_server_info(crate::protocol::Implementation::new(ArcStr::from("s"), ArcStr::from("1")));
+            .with_server_info(Arc::new(Implementation::new(ArcStr::from("s"), ArcStr::from("1"))));
         assert_eq!(
             serde_json::to_value(&with_info).unwrap()["_meta"]
                 ["io.modelcontextprotocol/serverInfo"]["name"],

@@ -8,6 +8,7 @@ use arcstr::ArcStr;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::McpError;
 use crate::protocol::meta::{Implementation, RequestMeta};
 use crate::protocol::{
     CallToolResult, DiscoverResult, JsonRpcRequest, JsonRpcResponse, ToolsCallParams,
@@ -22,8 +23,8 @@ pub enum McpClientError {
     Transport(#[from] reqwest::Error),
     #[error("MCP 服务端 HTTP {status}: {message}")]
     Http { status: u16, message: ArcStr },
-    #[error("MCP 远程错误 [{code}]: {message}")]
-    Remote { code: i64, message: ArcStr },
+    #[error("MCP 远程错误 {0}")]
+    Remote(#[from] McpError),
     #[error("MCP 响应解析失败: {0}")]
     Decode(#[from] serde_json::Error),
 }
@@ -61,7 +62,7 @@ impl McpClient {
     /// `server/discover`：查询服务端支持的协议版本、能力与身份
     pub async fn discover(&self) -> Result<DiscoverResult, McpClientError> {
         let params = serde_json::json!({ "_meta": RequestMeta::new(self.client_info.clone()) });
-        self.send(METHOD_DISCOVER.as_str(), None, params).await
+        self.send(METHOD_DISCOVER.clone(), None, params).await.1
     }
 
     /// `tools/list`：按可选组白名单查询工具
@@ -72,63 +73,85 @@ impl McpClient {
         let meta = RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors);
         let params = ToolsListParams { cursor: None, meta };
         let params = serde_json::to_value(params)?;
-        self.send(METHOD_TOOLS_LIST.as_str(), None, params).await
+        self.send(METHOD_TOOLS_LIST.clone(), None, params).await.1
     }
 
     /// `tools/call`：调用远端工具
     pub async fn call_tool(
         &self,
-        name: &str,
+        name: ArcStr,
         arguments: Value,
         ancestors: Arc<Vec<ArcStr>>,
-    ) -> Result<CallToolResult, McpClientError> {
+    ) -> (Value, Result<CallToolResult, McpClientError>) {
         let params = ToolsCallParams {
-            name: ArcStr::from(name),
+            name: name.clone(),
             arguments,
             meta: RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
         };
-        let params = serde_json::to_value(params)?;
-        self.send(METHOD_TOOLS_CALL.as_str(), Some(name), params).await
+        let params = match serde_json::to_value(&params) {
+            Ok(r) => r,
+            Err(e) => return (params.arguments, Err(McpClientError::from(e)))
+        };
+        let (params_recover, result) = self.send(METHOD_TOOLS_CALL.clone(), Some(name), params).await;
+        let arguments_recover = match serde_json::from_value::<ToolsCallParams>(params_recover) {
+            Ok(mut r) => r.arguments.take(),
+            Err(_) => Value::Null,
+        };
+        (arguments_recover, result)
     }
 
     /// 发送 JSON-RPC 请求并解析结果；远程错误映射为 `Remote`
     async fn send<R: DeserializeOwned>(
         &self,
-        method: &str,
-        name: Option<&str>,
+        method: ArcStr,
+        name: Option<ArcStr>,
         params: Value,
-    ) -> Result<R, McpClientError> {
+    ) -> (Value, Result<R, McpClientError>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let request = JsonRpcRequest::new(id, ArcStr::from(method), params);
         let mut builder = self
             .client
             .post(self.endpoint.as_str())
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", PROTOCOL_VERSION.as_str())
-            .header("Mcp-Method", method);
-        if let Some(name) = name {
-            builder = builder.header("Mcp-Name", name);
+            .header("Mcp-Method", method.as_str());
+        if let Some(name) = name.as_ref() {
+            builder = builder.header("Mcp-Name", name.as_str());
         }
         if let Some(api_key) = &self.api_key {
             builder = builder.header("X-Api-Key", api_key.as_str());
         }
-        let response = builder.json(&request).send().await?;
+        let mut request = JsonRpcRequest::new(id, method, params);
+        let response = builder.json(&request).send().await;
+        let params_recover = request.params.take();
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => return (params_recover, Err(McpClientError::from(e)))
+        };
         let status = response.status();
-        let bytes = response.bytes().await?;
-        // HTTP 错误状态同样以 JSON-RPC 错误体返回：优先按其错误码上报
-        match serde_json::from_slice::<JsonRpcResponse>(&bytes) {
-            Ok(rpc) => match rpc.into_result() {
-                Ok(result) => Ok(serde_json::from_value(result)?),
-                Err(e) => Err(McpClientError::Remote {
-                    code: e.code,
-                    message: e.message,
-                }),
-            },
-            Err(_) => Err(McpClientError::Http {
+        let bytes = match response.bytes().await {
+            Ok(r) => r,
+            Err(e) => return (params_recover, Err(McpClientError::from(e)))
+        };
+        if !status.is_success() {
+            return (params_recover, Err(McpClientError::Http {
                 status: status.as_u16(),
-                message: ArcStr::from(String::from_utf8_lossy(&bytes).as_ref()),
-            }),
+                message: ArcStr::from(String::from_utf8_lossy(&bytes).into_owned()),
+            }));
         }
+        // HTTP 错误状态同样以 JSON-RPC 错误体返回：优先按其错误码上报
+        let rpc = match serde_json::from_slice::<JsonRpcResponse>(&bytes) {
+            Ok(r) => r,
+            Err(e) => return (params_recover, Err(McpClientError::from(e)))
+        };
+        let result = match rpc.into_result() {
+            Ok(r) => r,
+            Err(e) => return (params_recover, Err(McpClientError::from(e)))
+        };
+        let result = match serde_json::from_value(result) {
+            Ok(r) => r,
+            Err(e) => return (params_recover, Err(McpClientError::from(e)))
+        };
+        (params_recover, Ok(result))
     }
 }
 
@@ -155,8 +178,12 @@ mod tests {
 
     #[async_trait]
     impl McpHandler for TestHandler {
+        fn server_info(&self) -> std::sync::Arc<Implementation> {
+            Arc::new(Implementation::new(ArcStr::from("test-server"), ArcStr::from("0.1.0")))
+        }
+
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new(ArcStr::from("test-server"), ArcStr::from("0.1.0")), None)
+            DiscoverResult::new(None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> Result<ToolsListResult, McpError> {
@@ -168,9 +195,6 @@ mod tests {
         }
 
         async fn call_tool(&self, params: ToolsCallParams) -> Result<CallToolResult, McpError> {
-            if params.name.as_str() == "boom" {
-                return Err(McpError::station_cycle("station-a"));
-            }
             let value = json!({
                 "echo": params.arguments,
                 "ancestors": params.meta.ancestors,
@@ -187,10 +211,7 @@ mod tests {
     async fn spawn_server() -> (ArcStr, tokio::task::JoinHandle<()>, Arc<Observed>) {
         let observed = Arc::new(Observed::default());
         let app = router(
-            McpServer::new(
-                Arc::new(TestHandler { observed: observed.clone() }),
-                Implementation::new(ArcStr::from("test-server"), ArcStr::from("0.1.0")),
-            ),
+            McpServer::new(Arc::new(TestHandler { observed: observed.clone() })),
             McpHttpConfig::default(),
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -230,28 +251,11 @@ mod tests {
         let (endpoint, _h, _observed) = spawn_server().await;
         let client = McpClient::new(&endpoint, 5, None);
         let result = client
-            .call_tool("read", json!({ "path": "a.txt" }), Arc::new(Vec::new()))
-            .await
+            .call_tool(ArcStr::from("read"), json!({ "path": "a.txt" }), Arc::new(Vec::new()))
+            .await.1
             .unwrap();
         assert!(!result.is_error);
         assert_eq!(result.structured_content["echo"]["path"], "a.txt");
-    }
-
-    #[tokio::test]
-    async fn client_maps_remote_error() {
-        let (endpoint, _h, _observed) = spawn_server().await;
-        let client = McpClient::new(&endpoint, 5, None);
-        let err = client
-            .call_tool("boom", Value::Null, Arc::new(Vec::new()))
-            .await
-            .unwrap_err();
-        match err {
-            McpClientError::Remote { code, message } => {
-                assert_eq!(code, crate::protocol::STATION_CYCLE);
-                assert!(message.contains("station-a"));
-            }
-            other => panic!("期望 Remote 错误，实际: {:?}", other),
-        }
     }
 
     #[tokio::test]

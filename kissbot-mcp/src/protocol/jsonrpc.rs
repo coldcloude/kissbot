@@ -26,11 +26,6 @@ pub const MISSING_REQUIRED_CLIENT_CAPABILITY: i64 = -32021;
 /// 服务端不支持请求的协议版本
 pub const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
-// ========== kissbot 应用自定义错误码（JSON-RPC 保留区间之外） ==========
-
-/// station 级联自环（自身 station_id 出现在祖先链中）
-pub const STATION_CYCLE: i64 = 1001;
-
 /// JSON-RPC 请求 ID（字符串或整数；协议禁止 null）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -233,11 +228,6 @@ impl McpError {
             serde_json::json!({ "supportedVersions": supported }),
         )
     }
-
-    /// station 级联自环
-    pub fn station_cycle(station_id: &str) -> Self {
-        Self::new(STATION_CYCLE, ArcStr::from(format!("station cycle detected: {}", station_id)))
-    }
 }
 
 #[cfg(test)]
@@ -286,20 +276,6 @@ mod tests {
         assert_eq!(v["id"], 1);
         assert!(v.get("error").is_none());
         assert_eq!(resp.into_result().unwrap()["ok"], true);
-    }
-
-    #[test]
-    fn response_error_maps_to_mcp_error() {
-        let resp = JsonRpcResponse::error(
-            Some(RequestId::Number(2)),
-            McpError::station_cycle("station-a"),
-        );
-        let v = serde_json::to_value(&resp).unwrap();
-        assert_eq!(v["error"]["code"], STATION_CYCLE);
-        assert!(v.get("result").is_none());
-        let err = resp.into_result().unwrap_err();
-        assert_eq!(err.code, STATION_CYCLE);
-        assert!(err.message.contains("station-a"));
     }
 
     #[test]

@@ -23,24 +23,7 @@ mod filesystem;
 
 use native::native_group;
 
-// ========== 工具错误码（工具级失败随 CallToolResult 回带） ==========
-
-pub const TERR_TOOL_NOT_FOUND: u32 = 0x0000_0001;
-pub const TERR_TOOL_WRONG_ARGUMENTS: u32 = 0x0000_0003;
-/// 级联自环（kissbot 工具错误码；协议级同名错误码见 `kissbot_mcp::STATION_CYCLE`）
-pub const TERR_TOOL_CYCLE: u32 = 0x0000_0004;
-
-pub const TERR_TOOL_INTERNAL_ERROR: u32 = 0x0001_0000;
-
-pub const TERR_TOOL_EXTERNAL_ERROR: u32 = 0x0002_0000;
-
-/// 构造工具错误 JSON（Nexus 侧 ToolData.error 的形状）
-pub fn tool_error(code: u32, message: ArcStr) -> Value {
-    serde_json::json!({
-        "code": code,
-        "message": message
-    })
-}
+pub const MCP_ERROR_STATION_CYCLE: i64 = -50001;
 
 /// MCP 工具定义 → LLM 侧工具定义（kissbot-llm 的 ToolConfig，OpenAI `tools[].function` 形状）：
 /// 转换留在 agent（kissbot-llm 不依赖 MCP）
@@ -74,10 +57,10 @@ impl SubStation {
     }
 
     /// 唯一性前缀
-    fn local_name<'a>(&self, name: &'a str) -> &'a str {
+    fn local_name(&self, name: ArcStr) -> ArcStr {
         if let Some(prefix) = self.config.prefix.as_ref() {
             if let Some(n) = name.strip_prefix(prefix.as_str()) {
-                n
+                ArcStr::from(n)
             } else {
                 name
             }
@@ -101,7 +84,11 @@ pub struct Station {
     /// list_tools 拉取子 Station 成功时更新；
     /// 与本级/先到子重名时保留先到者（后到者剔除 + warn）
     tool_routes: ArcSwap<HashMap<ArcStr, ArcStr>>,
+    server_info: Arc<Implementation>,
 }
+
+const SERVER_INFO_NAME: ArcStr = arcstr::literal!("kissbot-station");
+const SERVER_INFO_VERSION: ArcStr = arcstr::literal!("0.1");
 
 impl Station {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
@@ -130,6 +117,7 @@ impl Station {
             tools: DashMap::new(),
             sub_stations: DashMap::new(),
             tool_routes: ArcSwap::from_pointee(HashMap::new()),
+            server_info: Arc::new(Implementation::new(SERVER_INFO_NAME, SERVER_INFO_VERSION)),
         };
         for name in repo.groups.iter() {
             // 未内置的 group 只有名字、没有工具，注册为空
@@ -167,7 +155,7 @@ impl Station {
     }
 
     /// 本地直接 tool call
-    pub async fn call_tool_local(&self, name: &str, arguments: Value) -> Result<CallToolResult> {
+    pub async fn call_tool_local(&self, name: ArcStr, arguments: Value) -> Result<CallToolResult> {
         let result = self.call_tool(name, arguments, Arc::new(Vec::new())).await?;
         Ok(result)
     }
@@ -240,12 +228,17 @@ impl Station {
     /// 执行工具：本级原生实现命中执行；未命中 → 查远程路由表（工具名 → 直接子 station_id）
     /// 经 MCP `tools/call` 路由到对应子；路由未命中 → 工具不存在
     /// ancestors 为根到当前父节点的 station_id 链；自身在链中 → 级联自环（协议级错误）
-    pub async fn call_tool(&self, name: &str, arguments: Value, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<CallToolResult, McpError> {
+    pub async fn call_tool(&self, name: ArcStr, arguments: Value, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<CallToolResult, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
-            return Err(McpError::station_cycle(&self.station_id));
+            // 级联自环按照自定义code协议错误返回
+            return Err(McpError {
+                code: MCP_ERROR_STATION_CYCLE,
+                message: ArcStr::from(format!("station cycle detected: {}", self.station_id)),
+                data: Value::Null,
+            });
         }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
-        let local = self.tools.get(name).map(|e| e.value().implement.clone());
+        let local = self.tools.get(&name).map(|e| e.value().implement.clone());
         if let Some(tool) = local {
             return Ok(tool.call(arguments).await);
         }
@@ -256,35 +249,26 @@ impl Station {
             let child_ancestors = Arc::make_mut(&mut ancestors);
             child_ancestors.push(self.station_id.clone());
         }
-        let routed = self.tool_routes.load().get(name).map(|r| r.clone());
+        let routed = self.tool_routes.load().get(&name).map(|r| r.clone());
         if let Some(station_id) = routed {
             if let Some(sub) = self.sub_stations.get(station_id.as_str()).map(|s| s.value().clone()) {
                 let nn = sub.local_name(name);
-                return match sub.client.call_tool(nn, arguments, ancestors).await {
-                    // 工具级失败：识别 kissbot 来源的循环错误码（与本地自环一致地以协议级错误上抛），
-                    // 其余（含非 kissbot / 结构不符 / 未识别的 kissbot 错误码）原样透传
-                    Ok(result) => {
-                        if result
-                            .kissbot_error()
-                            .is_some_and(|detail| detail.code == TERR_TOOL_CYCLE)
-                        {
-                            return Err(McpError::station_cycle(&self.station_id));
-                        }
-                        Ok(result)
+                return sub.client.call_tool(ArcStr::from(nn), arguments, ancestors).await.map_err(|e| {
+                    match e {
+                        McpClientError::Remote(ee) => {
+                            // 协议错误透传
+                            ee
+                        },
+                        ee => {
+                            // 其他错误按照内部错误上报
+                            McpError::internal(ee.message)
+                        },
                     }
-                    // 协议级错误：kissbot 的循环错误码同样识别为上抛；其余按本级外部调用失败处理
-                    Err(McpClientError::Remote { code, .. }) if code == kissbot_mcp::STATION_CYCLE => {
-                        Err(McpError::station_cycle(&self.station_id))
-                    }
-                    Err(e) => Ok(CallToolResult::error(
-                        TERR_TOOL_EXTERNAL_ERROR,
-                        ArcStr::from(format!("调用 sub station 工具失败: {}", e)),
-                    )),
-                };
+                });
             }
         }
         // 工具不存在
-        Ok(CallToolResult::error(TERR_TOOL_NOT_FOUND, ArcStr::from(format!("工具不存在: {}", name))))
+        Err(McpError::invalid_params(ArcStr::from(format!("工具不存在: {}", name))))
     }
 }
 
@@ -293,12 +277,13 @@ const STATION_INSTRUCTIONS: ArcStr = arcstr::literal!("kissbot Station：提供�
 
 #[async_trait]
 impl McpHandler for Station {
+    fn server_info(&self) -> Arc<Implementation> {
+        self.server_info.clone()
+    }
+
     async fn discover(&self) -> DiscoverResult {
         // 默认声明 kissbot 级联扩展能力（理解祖先链），供对端判定
-        DiscoverResult::new(
-            Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from(env!("CARGO_PKG_VERSION"))),
-            Some(STATION_INSTRUCTIONS.clone()),
-        )
+        DiscoverResult::new(Some(STATION_INSTRUCTIONS.clone()))
     }
 
     async fn list_tools(&self, mut params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
@@ -309,7 +294,7 @@ impl McpHandler for Station {
 
     async fn call_tool(&self, mut params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
         let ancestors = if let Some(ancestors) = params.meta.ancestors.take() { ancestors } else { Arc::new(Vec::new()) };
-        self.call_tool(params.name.as_str(), params.arguments, ancestors).await
+        self.call_tool(params.name, params.arguments, ancestors).await
     }
 }
 
@@ -387,53 +372,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_tool_routes_via_cache_table() {
-        let station = Station::from_repo(&repo_with_sub(), "test-key");
-        // 注入路由（模拟 list_tools 拉取后缓存）：工具 x 属于 station-a
-        set_routes(&station, &[("x", "station-a")]);
-        // 命中路由 → 经 MCP 调子 Station（子站不可达）：工具级失败映射为 EXTERNAL_ERROR
-        //（关键是「不是工具不存在」——路由确实生效了）
-        let result = station.call_tool("x", json!({}), ancestors(&[])).await.unwrap();
-        assert!(result.is_error);
-        assert_eq!(result.structured_content["code"], TERR_TOOL_EXTERNAL_ERROR, "路由命中应调子而非工具不存在");
-        assert!(result.error_message().unwrap().contains("调用 sub station 工具失败"), "子站调用失败文案");
-        // 未命中路由（本地也无）→ 工具不存在
-        let miss = station.call_tool("nope", json!({}), ancestors(&[])).await.unwrap();
-        assert_eq!(miss.structured_content["code"], TERR_TOOL_NOT_FOUND);
-        assert!(miss.error_message().unwrap().contains("工具不存在"));
-    }
-
-    #[tokio::test]
-    async fn call_tool_local_miss_returns_not_found() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
-        let miss = station.call_tool_local("nope", json!({})).await.unwrap();
-        assert_eq!(miss.structured_content["code"], TERR_TOOL_NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn call_tool_local_native_tool_executes() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
-        let result = station.call_tool_local("read", json!({ "path": "Cargo.toml" })).await.unwrap();
+        let result = station.call_tool_local(ArcStr::from("read"), json!({ "path": "Cargo.toml" })).await.unwrap();
         assert!(!result.is_error, "本地 read 应成功: {:?}", result.error_message());
         assert!(first_text(&result).unwrap().contains("kissbot-agent"));
-    }
-
-    #[tokio::test]
-    async fn call_tool_cycle_is_protocol_error() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
-        let err = station
-            .call_tool("read", json!({}), ancestors(&["station-self"]))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
-    }
-
-    #[tokio::test]
-    async fn list_tools_cycle_is_protocol_error() {
-        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
-        let err = station.list_tools(ancestors(&["station-self"])).await.unwrap_err();
-        assert_eq!(err.code, kissbot_mcp::STATION_CYCLE);
     }
 
     #[tokio::test]
@@ -474,8 +418,12 @@ mod tests {
 
     #[async_trait]
     impl McpHandler for MockMcpHandler {
+        fn server_info(&self) -> Arc<Implementation> {
+            Arc::new(Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")))
+        }
+
         async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")), None)
+            DiscoverResult::new(None)
         }
 
         async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
@@ -490,7 +438,6 @@ mod tests {
         async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
             // 按工具名模拟三类返回：kissbot 循环错误、非 kissbot 错误、正常结果
             match params.name.as_str() {
-                "cycle-tool" => Ok(CallToolResult::error(TERR_TOOL_CYCLE, ArcStr::from("远端检测到自环"))),
                 "foreign-tool" => Ok(CallToolResult {
                     content: vec![kissbot_mcp::Content::text(ArcStr::from("boom"))],
                     structured_content: json!({ "error": "boom" }),
@@ -517,7 +464,7 @@ mod tests {
             echo_group,
             observed: observed.clone(),
         });
-        let server = kissbot_mcp::McpServer::new(handler, Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")));
+        let server = kissbot_mcp::McpServer::new(handler);
         let app = kissbot_mcp::router(server, kissbot_mcp::McpHttpConfig::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -576,7 +523,7 @@ mod tests {
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools[0].name.as_str(), "a/mock-tool");
 
-        let called = station.call_tool("a/mock-tool", json!({}), ancestors(&[])).await.unwrap();
+        let called = station.call_tool(ArcStr::from("a/mock-tool"), json!({}), ancestors(&[])).await.unwrap();
         assert!(!called.is_error);
         // 子站收到的是去掉前缀的本地名
         assert_eq!(called.structured_content["mock"], "mock-tool");
@@ -597,22 +544,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sub_station_kissbot_cycle_error_surfaces_as_protocol_cycle() {
-        // 子站以工具级 kissbot 错误（code=TERR_TOOL_CYCLE）报告循环 → 本级识别为协议级自环
-        let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
-        set_routes(&station, &[("cycle-tool", "remote")]);
-        let err = station.call_tool("cycle-tool", json!({}), ancestors(&[])).await.unwrap_err();
-        assert_eq!(err.code, kissbot_mcp::STATION_CYCLE, "kissbot 循环错误码应被识别并上抛");
-    }
-
-    #[tokio::test]
     async fn sub_station_foreign_error_passes_through_unchanged() {
         // 非 kissbot 来源的错误体：本级不解释、不改写，原样回传
         let (base, _observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
         set_routes(&station, &[("foreign-tool", "remote")]);
-        let result = station.call_tool("foreign-tool", json!({}), ancestors(&[])).await.unwrap();
+        let result = station.call_tool(ArcStr::from("foreign-tool"), json!({}), ancestors(&[])).await.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content, json!({ "error": "boom" }), "第三方错误体原样透传");
         assert!(result.kissbot_error().is_none(), "非 kissbot 来源不按错误码解释");

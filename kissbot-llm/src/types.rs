@@ -10,7 +10,6 @@ use serde_json::Value;
 pub struct ToolData {
     pub arguments: Value,
     pub result: Value,
-    pub error: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +154,6 @@ mod tests {
             data: ToolData {
                 arguments: json!({ "path": "/tmp/a.txt" }),
                 result: json!("内容"),
-                error: Value::Null,
             },
         };
         let json = serde_json::to_string(&tc).unwrap();
@@ -164,7 +162,6 @@ mod tests {
         assert_eq!(back.name.as_str(), "read");
         assert_eq!(back.data.arguments["path"], "/tmp/a.txt", "arguments 保持 JSON 对象");
         assert_eq!(back.data.result, json!("内容"));
-        assert!(back.data.error.is_null());
     }
 
     #[test]

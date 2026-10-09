@@ -91,7 +91,7 @@ pub struct ResponseMeta {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub server_info: Option<Implementation>,
+    pub server_info: Option<Arc<Implementation>>,
 }
 
 #[macro_export]
@@ -99,7 +99,7 @@ macro_rules! with_response_meta {
     ($ty:ty) => {
         impl $ty {
             /// 添加meta
-            pub fn with_server_info(mut self, server_info: Implementation) -> Self {
+            pub fn with_server_info(mut self, server_info: Arc<Implementation>) -> Self {
                 let mut meta = self.meta.take().unwrap_or_default();
                 meta.server_info = Some(server_info);
                 self.meta = Some(meta);
@@ -165,7 +165,7 @@ mod tests {
         let empty = ResponseMeta::default();
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
         let filled = ResponseMeta {
-            server_info: Some(Implementation::new(ArcStr::from("s"), ArcStr::from("1"))),
+            server_info: Some(Arc::new(Implementation::new(ArcStr::from("s"), ArcStr::from("1")))),
         };
         assert_eq!(serde_json::to_value(&filled).unwrap()[META_SERVER_INFO.as_str()]["name"], "s");
     }
@@ -174,7 +174,7 @@ mod tests {
     fn response_meta_carries_server_info_only() {
         // 分组随工具定义携带（Tool._meta），不再放在响应 meta 上
         let meta = ResponseMeta {
-            server_info: Some(Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from("0.1.0"))),
+            server_info: Some(Arc::new(Implementation::new(ArcStr::from("kissbot-station"), ArcStr::from("0.1.0")))),
         };
         let v = serde_json::to_value(&meta).unwrap();
         assert_eq!(v[META_SERVER_INFO.as_str()]["name"], "kissbot-station");

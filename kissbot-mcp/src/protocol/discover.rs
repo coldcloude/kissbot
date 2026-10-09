@@ -1,5 +1,7 @@
 //! `server/discover`：查询服务端支持的协议版本、能力与身份
 
+use std::sync::Arc;
+
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
@@ -73,7 +75,7 @@ pub struct DiscoverResult {
 impl DiscoverResult {
     /// 以给定服务端身份构造发现结果：本实现默认声明 tools 与 kissbot 级联扩展能力。
     /// 读取方向仍兼容不带 kissbot 能力段的第三方服务端（`capabilities.kissbot` 为 `Option`）
-    pub fn new(server_info: Implementation, instructions: Option<ArcStr>) -> Self {
+    pub fn new(instructions: Option<ArcStr>) -> Self {
         Self {
             result_type: ResultType::Complete,
             supported_versions: vec![super::PROTOCOL_VERSION.clone()],
@@ -82,9 +84,7 @@ impl DiscoverResult {
                 kissbot: Some(KissbotCapability::full()),
             },
             instructions,
-            meta: Some(ResponseMeta {
-                server_info: Some(server_info),
-            }),
+            meta: None,
         }
     }
 
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn kissbot_capability_roundtrip() {
         // 本实现构造的发现结果默认声明 kissbot 级联扩展
-        let result = DiscoverResult::new(Implementation::new(ArcStr::from("s"), ArcStr::from("1")), None);
+        let result = DiscoverResult::new(None);
         let v = serde_json::to_value(&result).unwrap();
         assert_eq!(v["capabilities"]["kissbot"]["ancestors"], true);
         assert!(v["capabilities"]["kissbot"].get("group").is_none(), "分组归因不需要能力声明");

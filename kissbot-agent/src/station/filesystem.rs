@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use super::native::{ToolImplement, ObjectSchema, PropertySchema};
 use crate::station::native::Group;
-use crate::station::{TERR_TOOL_INTERNAL_ERROR, TERR_TOOL_WRONG_ARGUMENTS};
 use crate::types::{Error, Result};
 
 pub const BUILTIN_GROUP_FILESYSTEM: ArcStr = arcstr::literal!("filesystem");
@@ -86,12 +85,12 @@ impl ReadTool {
 impl ToolImplement for ReadTool {
     async fn call(&self, arguments: Value) -> CallToolResult {
         let Some(raw) = arguments["path"].as_str() else {
-            return CallToolResult::error(TERR_TOOL_WRONG_ARGUMENTS, ArcStr::from("缺少参数 path"));
+            return CallToolResult::text(ArcStr::from("缺少参数 path"));
         };
         let safe = match self.resolve_safe_path(raw) {
             Ok(safe) => safe,
             Err(e) => {
-                return CallToolResult::error(TERR_TOOL_INTERNAL_ERROR, ArcStr::from(format!("路径解析失败: {}", e)));
+                return CallToolResult::text(ArcStr::from(format!("路径解析失败: {}", e)));
             }
         };
         match tokio::fs::read(&safe).await {
@@ -100,10 +99,7 @@ impl ToolImplement for ReadTool {
                 // 文本结果用文本块直接承载（不加 JSON 转义）
                 CallToolResult::text(ArcStr::from(text))
             }
-            Err(e) => CallToolResult::error(
-                TERR_TOOL_INTERNAL_ERROR,
-                ArcStr::from(format!("读取文件失败 {}: {}", safe.display(), e)),
-            ),
+            Err(e) => CallToolResult::text(ArcStr::from(format!("读取文件失败 {}: {}", safe.display(), e))),
         }
     }
 }
