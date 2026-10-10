@@ -10,7 +10,7 @@ use tokio::time::sleep;
 
 use crate::config::{EffectiveLLMConfig, EffectiveModelConfig, ProviderConfig};
 use crate::error::{Error, Result};
-use crate::types::{Message, ModelResponse, ToolCall, ToolConfig, ToolData};
+use crate::types::{Message, ModelResponse, ToolCall, ToolConfig};
 
 /// Provider 抽象：负责向模型服务商发一次请求并解析响应
 #[async_trait]
@@ -186,10 +186,8 @@ impl Provider for OpenAiProvider {
                         tcs.push(ToolCall {
                             id: ArcStr::from(id),
                             name: ArcStr::from(name),
-                            data: ToolData {
-                                arguments: v["function"]["arguments"].clone(),
-                                result: Value::Null,
-                            },
+                            arguments: v["function"]["arguments"].clone(),
+                            result: None,
                         });
                     }
                 }
@@ -726,8 +724,8 @@ mod tests {
         assert_eq!(tool_calls[0].id.as_str(), "c1");
         assert_eq!(tool_calls[0].name.as_str(), "read");
         // arguments 原样保留 API 返回的 JSON 字符串（不解析为对象）
-        assert_eq!(tool_calls[0].data.arguments.as_str(), Some(r#"{"path":"/a"}"#));
-        assert!(tool_calls[0].data.result.is_null(), "执行前 result/error 为空");
+        assert_eq!(tool_calls[0].arguments.as_str(), Some(r#"{"path":"/a"}"#));
+        assert!(tool_calls[0].result.is_none(), "执行前 result 为空");
         assert_eq!(resp.raw_tool_calls, data["choices"][0]["message"]["tool_calls"], "raw_tool_calls 原样保留");
         assert!(resp.content.is_none(), "content 为 null → None");
         assert_eq!(text(&resp.finish_reason), Some("tool_calls"));

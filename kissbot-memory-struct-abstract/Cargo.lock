@@ -847,11 +847,29 @@ dependencies = [
  "chrono",
  "kai-file",
  "kissbot-api",
+ "kissbot-mcp",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "kissbot-mcp"
+version = "0.1.0"
+dependencies = [
+ "arcstr",
+ "async-trait",
+ "axum",
+ "bytes",
+ "kissbot-security",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

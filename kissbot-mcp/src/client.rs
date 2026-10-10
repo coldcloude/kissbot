@@ -178,7 +178,7 @@ mod tests {
                 "ancestors": params.meta.ancestors,
             });
             Ok(CallToolResult {
-                content: vec![crate::protocol::Content::text(ArcStr::from(value.to_string()))],
+                content: vec![crate::protocol::ContentBlock::text(ArcStr::from(value.to_string()))],
                 structured_content: value,
                 ..Default::default()
             })

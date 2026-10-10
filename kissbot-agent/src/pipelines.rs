@@ -31,33 +31,19 @@ async fn get_system_prompt(session_key: &SessionKey) -> ArcStr {
     }
 }
 
-async fn call_tool(mut tool_call: ToolCall) -> ToolCall {
+async fn call_tool(mut tool_call: ToolCall) -> (ToolCall, Option<Error>) {
     let arguments = tool_call.data.arguments.take();
-    let called = Station::get().call_tool_local(tool_call.name.as_str(), arguments.clone()).await;
-    tool_call.data = match called {
-        Ok(result) => {
-            let content = serde_json::to_value(&result.content).unwrap_or(Value::Null);
-            if result.is_error {
-                ToolData {
-                    arguments,
-                    result: Value::Null,
-                    error: content,
-                }
-            } else {
-                ToolData {
-                    arguments,
-                    result: content,
-                    error: Value::Null
-                }
-            }
+    let (arguments_recover, result) = Station::get().call_tool_local(tool_call.name.clone(), arguments).await;
+    tool_call.arguments = arguments_recover;
+    match result {
+        Ok(r) => {
+            tool_call.result = Some(r.content);
+            (tool_call, None)
         },
-        Err(e) => ToolData {
-            arguments,
-            result: Value::Null,
-            error: tool_error(TERR_TOOL_INTERNAL_ERROR, ArcStr::from(e.to_string())),
-        },
-    };
-    tool_call
+        Err(e) => {
+            (tool_call, Some(e))
+        }
+    }
 }
 
 pub struct DefaultAgentPipeline {

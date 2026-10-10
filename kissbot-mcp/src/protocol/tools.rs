@@ -195,7 +195,7 @@ pub enum ResourceContents {
 /// 工具结果内容块：`type` 即枚举变体（内部标签序列化，`type` 与其他字段平级）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Content {
+pub enum ContentBlock {
     /// 文本块
     Text {
         text: ArcStr,
@@ -251,10 +251,10 @@ pub enum Content {
     },
 }
 
-impl Content {
+impl ContentBlock {
     /// 文本块快捷构造
     pub fn text(text: ArcStr) -> Self {
-        Content::Text {
+        ContentBlock::Text {
             text,
             annotations: None,
             meta: None,
@@ -264,7 +264,7 @@ impl Content {
     /// 文本块返回其文本，非文本块返回 None
     pub fn as_text(&self) -> Option<&str> {
         match self {
-            Content::Text { text, .. } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         }
     }
@@ -272,11 +272,11 @@ impl Content {
     /// 内容块类型标签（与 wire 上的 `type` 一致）
     pub fn type_name(&self) -> &'static str {
         match self {
-            Content::Text { .. } => "text",
-            Content::Image { .. } => "image",
-            Content::Audio { .. } => "audio",
-            Content::ResourceLink { .. } => "resource_link",
-            Content::Resource { .. } => "resource",
+            ContentBlock::Text { .. } => "text",
+            ContentBlock::Image { .. } => "image",
+            ContentBlock::Audio { .. } => "audio",
+            ContentBlock::ResourceLink { .. } => "resource_link",
+            ContentBlock::Resource { .. } => "resource",
         }
     }
 }
@@ -291,7 +291,7 @@ pub struct CallToolResult {
     pub result_type: ResultType,
 
     #[serde(default)]
-    pub content: Vec<Content>,
+    pub content: Vec<ContentBlock>,
 
     #[serde(
         rename = "structuredContent",
@@ -315,7 +315,7 @@ impl CallToolResult {
     /// 成功结果：单个文本块（文本结果的便捷构造）
     pub fn text(text: ArcStr) -> Self {
         Self {
-            content: vec![Content::text(text)],
+            content: vec![ContentBlock::text(text)],
             ..Default::default()
         }
     }
@@ -402,7 +402,7 @@ mod tests {
         // MCP 服务只原样序列化，不做任何合成
         let value = json!({ "path": "a.txt" });
         let r = CallToolResult {
-            content: vec![Content::text(ArcStr::from(value.to_string()))],
+            content: vec![ContentBlock::text(ArcStr::from(value.to_string()))],
             structured_content: value.clone(),
             ..Default::default()
         };

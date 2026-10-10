@@ -14,7 +14,7 @@ use crate::station::filesystem::BUILTIN_GROUP_FILESYSTEM;
 /// Station 原生工具实现：本级 Station 自己实现的工具（区别于代理到子 Station 的 MCP 工具）
 #[async_trait]
 pub trait ToolImplement: Send + Sync {
-    async fn call(&self, arguments: Value) -> CallToolResult;
+    async fn call(&self, arguments: Value) -> (Value, CallToolResult);
 }
 
 // ========== 运行态结构 ==========

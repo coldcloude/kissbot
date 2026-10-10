@@ -1,22 +1,18 @@
 use std::sync::Arc;
 
 use arcstr::ArcStr;
+use kissbot_mcp::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ========== 工具调用相关 ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolData {
-    pub arguments: Value,
-    pub result: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: ArcStr,
     pub name: ArcStr,
-    pub data: ToolData,
+    pub arguments: Value,
+    pub result: Option<Vec<ContentBlock>>,
 }
 
 /// LLM 请求中的工具定义（OpenAI `tools[].function` 形状）。
@@ -151,19 +147,16 @@ mod tests {
         let tc = ToolCall {
             id: ArcStr::from("call_1"),
             name: ArcStr::from("read"),
-            data: ToolData {
-                arguments: json!({ "path": "/tmp/a.txt" }),
-                result: json!("内容"),
-            },
+            arguments: json!({ "path": "/tmp/a.txt" }),
+            result: Some(vec![ContentBlock::Text { text: ArcStr::from("内容"), annotations: None, meta: None }]),
         };
         let json = serde_json::to_string(&tc).unwrap();
         let back: ToolCall = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id.as_str(), "call_1");
         assert_eq!(back.name.as_str(), "read");
-        assert_eq!(back.data.arguments["path"], "/tmp/a.txt", "arguments 保持 JSON 对象");
-        assert_eq!(back.data.result, json!("内容"));
+        assert_eq!(back.arguments["path"], "/tmp/a.txt", "arguments 保持 JSON 对象");
+        assert!(matches!(back.result.unwrap().get(0).unwrap(), ContentBlock::Text { text, .. } if text.as_str() == "内容"));
     }
-
     #[test]
     fn message_assistant_optional_fields_omitted() {
         let m = Message::Assistant { content: Value::String("回答".into()), reasoning_content: Value::Null, tool_calls: Value::Null};

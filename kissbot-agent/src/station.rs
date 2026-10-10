@@ -16,7 +16,7 @@ use tracing::warn;
 use crate::config_manager::ConfigManager;
 use crate::configs::{StationRepo, SubStationConfig};
 use crate::station::native::NativeTool;
-use crate::types::Result;
+use crate::types::{Error, Result};
 
 mod native;
 mod filesystem;
@@ -155,9 +155,12 @@ impl Station {
     }
 
     /// 本地直接 tool call
-    pub async fn call_tool_local(&self, name: ArcStr, arguments: Value) -> Result<CallToolResult> {
-        let result = self.call_tool(name, arguments, Arc::new(Vec::new())).await?;
-        Ok(result)
+    pub async fn call_tool_local(&self, name: ArcStr, arguments: Value) -> (Value, Result<CallToolResult>) {
+        let (arguments_recover, result) = self.call_tool(name, arguments, Arc::new(Vec::new())).await;
+        match result {
+            Ok(r) => (arguments_recover, Ok(r)),
+            Err(e) => (arguments_recover, Err(Error::from(e))),
+        }
     }
 
     /// 工具元数据平铺查询：本级 + 子 MCP 实时拉取（更新路由缓存）
@@ -228,19 +231,20 @@ impl Station {
     /// 执行工具：本级原生实现命中执行；未命中 → 查远程路由表（工具名 → 直接子 station_id）
     /// 经 MCP `tools/call` 路由到对应子；路由未命中 → 工具不存在
     /// ancestors 为根到当前父节点的 station_id 链；自身在链中 → 级联自环（协议级错误）
-    pub async fn call_tool(&self, name: ArcStr, arguments: Value, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<CallToolResult, McpError> {
+    pub async fn call_tool(&self, name: ArcStr, arguments: Value, mut ancestors: Arc<Vec<ArcStr>>) -> (Value, std::result::Result<CallToolResult, McpError>) {
         if ancestors.iter().any(|a| a == &self.station_id) {
             // 级联自环按照自定义code协议错误返回
-            return Err(McpError {
+            return (arguments, Err(McpError {
                 code: MCP_ERROR_STATION_CYCLE,
                 message: ArcStr::from(format!("station cycle detected: {}", self.station_id)),
                 data: Value::Null,
-            });
+            }));
         }
         // 本地查找：无 await 阶段完成查找并释放 DashMap 读锁（不跨 await 持锁）
         let local = self.tools.get(&name).map(|e| e.value().implement.clone());
         if let Some(tool) = local {
-            return Ok(tool.call(arguments).await);
+            let (arguments_recover, result) = tool.call(arguments).await;
+            return (arguments_recover, Ok(result));
         }
         // 远程路由：查路由缓存表（工具名 → 直接子 station_id），命中 → 该子 MCP 调用
         // 不遍历全部子、不远程获取列表；先克隆 Arc 再 await（不跨 await 持锁）
@@ -253,22 +257,25 @@ impl Station {
         if let Some(station_id) = routed {
             if let Some(sub) = self.sub_stations.get(station_id.as_str()).map(|s| s.value().clone()) {
                 let nn = sub.local_name(name);
-                return sub.client.call_tool(ArcStr::from(nn), arguments, ancestors).await.map_err(|e| {
-                    match e {
-                        McpClientError::Remote(ee) => {
-                            // 协议错误透传
-                            ee
-                        },
-                        ee => {
-                            // 其他错误按照内部错误上报
-                            McpError::internal(ee.message)
-                        },
+                let (arguments_recover, result) = sub.client.call_tool(ArcStr::from(nn), arguments, ancestors).await;
+                return match result {
+                    Ok(r) => {
+                        // 返回参数和结果
+                        (arguments_recover, Ok(r))
                     }
-                });
+                    Err(McpClientError::Remote(e)) => {
+                        // 协议错误透传
+                        (arguments_recover, Err(e))
+                    },
+                    Err(e) => {
+                        // 其他错误按照内部错误上报
+                        (arguments_recover, Err(McpError::internal(e.message)))
+                    },
+                };
             }
         }
         // 工具不存在
-        Err(McpError::invalid_params(ArcStr::from(format!("工具不存在: {}", name))))
+        (arguments, Err(McpError::invalid_params(ArcStr::from(format!("工具不存在: {}", name)))))
     }
 }
 
@@ -294,7 +301,7 @@ impl McpHandler for Station {
 
     async fn call_tool(&self, mut params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
         let ancestors = if let Some(ancestors) = params.meta.ancestors.take() { ancestors } else { Arc::new(Vec::new()) };
-        self.call_tool(params.name, params.arguments, ancestors).await
+        self.call_tool(params.name, params.arguments, ancestors).await.1
     }
 }
 
@@ -439,7 +446,7 @@ mod tests {
             // 按工具名模拟三类返回：kissbot 循环错误、非 kissbot 错误、正常结果
             match params.name.as_str() {
                 "foreign-tool" => Ok(CallToolResult {
-                    content: vec![kissbot_mcp::Content::text(ArcStr::from("boom"))],
+                    content: vec![kissbot_mcp::ContentBlock::text(ArcStr::from("boom"))],
                     structured_content: json!({ "error": "boom" }),
                     is_error: true,
                     ..Default::default()
@@ -447,7 +454,7 @@ mod tests {
                 _ => {
                     let value = json!({ "mock": params.name.to_string() });
                     Ok(CallToolResult {
-                        content: vec![kissbot_mcp::Content::text(ArcStr::from(value.to_string()))],
+                        content: vec![kissbot_mcp::ContentBlock::text(ArcStr::from(value.to_string()))],
                         structured_content: value,
                         ..Default::default()
                     })

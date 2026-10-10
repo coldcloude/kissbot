@@ -896,6 +896,7 @@ dependencies = [
  "chrono",
  "kai-file",
  "kissbot-api",
+ "kissbot-mcp",
  "reqwest",
  "serde",
  "serde_json",
