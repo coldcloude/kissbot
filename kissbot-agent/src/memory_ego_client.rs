@@ -2,6 +2,7 @@
 
 use arcstr::ArcStr;
 use kissbot_api::{AgentMetadata, GetAgentRequest, GetRoleRequest, IndividualRecognition, RolePlay};
+use kissbot_security::HEADER_API_KEY;
 
 use crate::types::{Error, Result};
 
@@ -30,7 +31,7 @@ impl MemoryEgoClient {
             return Err(Error::MemoryEgoError("ego 未配置（memory_ego_url 为空）".into()));
         }
         let resp = self.client.post(format!("{}/agent/get", self.base_url))
-            .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(&GetAgentRequest { agent_id })
             .send()
             .await
@@ -43,7 +44,7 @@ impl MemoryEgoClient {
     /// POST /individual/get-all 查询个体识别；网络/解析失败 → Err
     pub async fn get_individuals(&self, agent_id: ArcStr) -> Result<Option<IndividualRecognition>> {
         let resp = self.client.post(format!("{}/individual/get-all", self.base_url))
-            .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(&GetAgentRequest { agent_id })
             .send()
             .await
@@ -56,7 +57,7 @@ impl MemoryEgoClient {
     /// POST /role/get 查询角色设定（role_name 空由调用方决定是否调用）；网络/解析失败 → Err
     pub async fn get_role(&self, agent_id: ArcStr, role_name: ArcStr) -> Result<Option<RolePlay>> {
         let resp = self.client.post(format!("{}/role/get", self.base_url))
-            .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(&GetRoleRequest { agent_id, role_name })
             .send()
             .await

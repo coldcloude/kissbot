@@ -60,7 +60,7 @@ impl StoreHttpConfig {
         }
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         let response = self.client.post(&url)
-            .header(HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(body)
             .send()
             .await
@@ -83,7 +83,7 @@ impl StoreHttpConfig {
     ) -> std::result::Result<T, kai_file::Error> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
         let response = self.client.post(&url)
-            .header(HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(body)
             .send()
             .await

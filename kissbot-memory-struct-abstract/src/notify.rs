@@ -41,7 +41,7 @@ impl NotifyClient {
 
     /// 连接-重连循环（阻塞；调用方 spawn）
     pub async fn run(self: Arc<Self>, url: &str, api_key: &str, reconnect_interval_secs: u64) {
-        let headers = [(HEADER_API_KEY.to_string(), api_key.to_string())];
+        let headers = [(&*HEADER_API_KEY, api_key.to_string())];
         let interval = Duration::from_secs(reconnect_interval_secs.max(1));
         loop {
             match kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone()).await {

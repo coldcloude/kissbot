@@ -43,7 +43,7 @@ impl WsHeaderFilter for ApiKeyWsFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
+    use crate::{HEADER_API_KEY, error::Error};
 
     /// Mock validator that returns a preset result.
     struct MockValidator {
@@ -61,7 +61,7 @@ mod tests {
         let filter = ApiKeyWsFilter::new(Arc::new(MockValidator { result: Ok(()) }));
         let request = http::Request::builder()
             .uri("ws://example.com/ws")
-            .header(crate::HEADER_API_KEY.as_str(), "valid-key")
+            .header(&*HEADER_API_KEY, "valid-key")
             .body(())
             .unwrap();
         let result = filter.filter(&request);
@@ -88,7 +88,7 @@ mod tests {
         }));
         let request = http::Request::builder()
             .uri("ws://example.com/ws")
-            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
+            .header(&*HEADER_API_KEY, "wrong-key")
             .body(())
             .unwrap();
         let result = filter.filter(&request);

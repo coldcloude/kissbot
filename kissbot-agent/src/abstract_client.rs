@@ -93,7 +93,7 @@ impl AbstractClient {
         let resp = self
             .client
             .post(format!("{}{}", self.base_url, path))
-            .header(kissbot_security::HEADER_API_KEY.as_str(), self.api_key.as_str())
+            .header(&*HEADER_API_KEY, self.api_key.as_str())
             .json(request)
             .send()
             .await

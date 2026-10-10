@@ -91,7 +91,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Error;
+    use crate::{HEADER_API_KEY, error::Error};
     use axum::body::Body;
     use http::Request;
     use tower::ServiceExt;
@@ -131,7 +131,7 @@ mod tests {
         let mut svc = make_auth_service(Ok(()));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY.as_str(), "valid-key")
+            .header(&*HEADER_API_KEY, "valid-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();
@@ -154,7 +154,7 @@ mod tests {
         let mut svc = make_auth_service(Err(Error::InvalidKey));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
+            .header(&*HEADER_API_KEY, "wrong-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();
@@ -166,7 +166,7 @@ mod tests {
         let mut svc = make_auth_service(Err(Error::InvalidKey));
         let request = Request::builder()
             .uri("/api/test")
-            .header(crate::HEADER_API_KEY.as_str(), "wrong-key")
+            .header(&*HEADER_API_KEY, "wrong-key")
             .body(Body::empty())
             .unwrap();
         let response = svc.call(request).await.unwrap();
