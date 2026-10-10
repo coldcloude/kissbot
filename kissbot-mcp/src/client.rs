@@ -5,13 +5,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arcstr::ArcStr;
+use axum::http::HeaderName;
+use kissbot_security::HEADER_API_KEY;
+use reqwest::header;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::McpError;
+use crate::{DiscoverParams, JsonRpcRequestRef, MCP_HEADER_METHOD, MCP_HEADER_NAME, MCP_HEADER_PROTOCOL_VERSION, McpError};
 use crate::protocol::meta::{Implementation, RequestMeta};
 use crate::protocol::{
-    CallToolResult, DiscoverResult, JsonRpcRequest, JsonRpcResponse, ToolsCallParams,
+    CallToolResult, DiscoverResult, JsonRpcResponse, ToolsCallParams,
     ToolsListParams, ToolsListResult, METHOD_DISCOVER, METHOD_TOOLS_CALL, METHOD_TOOLS_LIST,
     PROTOCOL_VERSION,
 };
@@ -61,8 +65,8 @@ impl McpClient {
 
     /// `server/discover`：查询服务端支持的协议版本、能力与身份
     pub async fn discover(&self) -> Result<DiscoverResult, McpClientError> {
-        let params = serde_json::json!({ "_meta": RequestMeta::new(self.client_info.clone()) });
-        self.send(METHOD_DISCOVER.clone(), None, params).await.1
+        let params = DiscoverParams { meta: RequestMeta::new(self.client_info.clone()) };
+        self.send(METHOD_DISCOVER.as_str(), &vec![], Some(&params)).await
     }
 
     /// `tools/list`：按可选组白名单查询工具
@@ -72,8 +76,7 @@ impl McpClient {
     ) -> Result<ToolsListResult, McpClientError> {
         let meta = RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors);
         let params = ToolsListParams { cursor: None, meta };
-        let params = serde_json::to_value(params)?;
-        self.send(METHOD_TOOLS_LIST.clone(), None, params).await.1
+        self.send(METHOD_TOOLS_LIST.as_str(), &vec![], Some(&params)).await
     }
 
     /// `tools/call`：调用远端工具
@@ -88,70 +91,45 @@ impl McpClient {
             arguments,
             meta: RequestMeta::new(self.client_info.clone()).with_ancestors(ancestors),
         };
-        let params = match serde_json::to_value(&params) {
-            Ok(r) => r,
-            Err(e) => return (params.arguments, Err(McpClientError::from(e)))
-        };
-        let (params_recover, result) = self.send(METHOD_TOOLS_CALL.clone(), Some(name), params).await;
-        let arguments_recover = match serde_json::from_value::<ToolsCallParams>(params_recover) {
-            Ok(mut r) => r.arguments.take(),
-            Err(_) => Value::Null,
-        };
-        (arguments_recover, result)
+        let result = self.send(METHOD_TOOLS_CALL.as_str(), &vec![(&*MCP_HEADER_NAME, name.as_str())], Some(&params)).await;
+        (params.arguments, result)
     }
 
     /// 发送 JSON-RPC 请求并解析结果；远程错误映射为 `Remote`
-    async fn send<R: DeserializeOwned>(
+    async fn send<T: Serialize, R: DeserializeOwned>(
         &self,
-        method: ArcStr,
-        name: Option<ArcStr>,
-        params: Value,
-    ) -> (Value, Result<R, McpClientError>) {
+        method: &str,
+        headers: &[(&HeaderName, &str)],
+        params: Option<&T>,
+    ) -> Result<R, McpClientError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut builder = self
             .client
             .post(self.endpoint.as_str())
-            .header("Accept", "application/json, text/event-stream")
-            .header("MCP-Protocol-Version", PROTOCOL_VERSION.as_str())
-            .header("Mcp-Method", method.as_str());
-        if let Some(name) = name.as_ref() {
-            builder = builder.header("Mcp-Name", name.as_str());
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(&*MCP_HEADER_PROTOCOL_VERSION, PROTOCOL_VERSION.as_str())
+            .header(&*MCP_HEADER_METHOD, method);
+        for (header_name, value) in headers {
+            builder = builder.header(*header_name, *value);
         }
         if let Some(api_key) = &self.api_key {
-            builder = builder.header("X-Api-Key", api_key.as_str());
+            builder = builder.header(&*HEADER_API_KEY, api_key.as_str());
         }
-        let mut request = JsonRpcRequest::new(id, method, params);
-        let response = builder.json(&request).send().await;
-        let params_recover = request.params.take();
-        let response = match response {
-            Ok(r) => r,
-            Err(e) => return (params_recover, Err(McpClientError::from(e)))
-        };
+        let request = JsonRpcRequestRef::new(id, method, params);
+        let response = builder.json(&request).send().await?;
         let status = response.status();
-        let bytes = match response.bytes().await {
-            Ok(r) => r,
-            Err(e) => return (params_recover, Err(McpClientError::from(e)))
-        };
+        let bytes = response.bytes().await?;
         if !status.is_success() {
-            return (params_recover, Err(McpClientError::Http {
+            return Err(McpClientError::Http {
                 status: status.as_u16(),
                 message: ArcStr::from(String::from_utf8_lossy(&bytes).into_owned()),
-            }));
+            });
         }
         // HTTP 错误状态同样以 JSON-RPC 错误体返回：优先按其错误码上报
-        let rpc = match serde_json::from_slice::<JsonRpcResponse>(&bytes) {
-            Ok(r) => r,
-            Err(e) => return (params_recover, Err(McpClientError::from(e)))
-        };
-        let result = match rpc.into_result() {
-            Ok(r) => r,
-            Err(e) => return (params_recover, Err(McpClientError::from(e)))
-        };
-        let result = match serde_json::from_value(result) {
-            Ok(r) => r,
-            Err(e) => return (params_recover, Err(McpClientError::from(e)))
-        };
-        (params_recover, Ok(result))
+        let rpc = serde_json::from_slice::<JsonRpcResponse>(&bytes)?;
+        let result = rpc.into_result()?;
+        let result = serde_json::from_value(result)?;
+        Ok(result)
     }
 }
 

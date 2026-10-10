@@ -71,6 +71,26 @@ pub struct JsonRpcRequest {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonRpcRequestRef<'a, T> {
+    pub jsonrpc: ArcStr,
+    pub id: RequestId,
+    pub method: &'a str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<&'a T>,
+}
+
+impl<'a, T> JsonRpcRequestRef<'a, T> {
+    pub fn new(id: impl Into<RequestId>, method: &'a str, params: Option<&'a T>) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.clone(),
+            id: id.into(),
+            method,
+            params,
+        }
+    }
+}
+
 impl JsonRpcRequest {
     pub fn new(id: impl Into<RequestId>, method: ArcStr, params: Value) -> Self {
         Self {

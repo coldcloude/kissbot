@@ -911,6 +911,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "kissbot-security",
  "reqwest",
  "serde",
  "serde_json",

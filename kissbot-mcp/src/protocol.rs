@@ -1,6 +1,9 @@
 //! MCP 协议类型与常量（2026-07-28 规范 + kissbot 扩展）
 
+use std::sync::LazyLock;
+
 use arcstr::ArcStr;
+use axum::http::HeaderName;
 use serde::{Deserialize, Serialize};
 
 pub mod discover;
@@ -12,6 +15,11 @@ pub use discover::*;
 pub use jsonrpc::*;
 pub use meta::*;
 pub use tools::*;
+
+/// HTTP Headers
+pub const MCP_HEADER_PROTOCOL_VERSION: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Protocol-Version"));
+pub const MCP_HEADER_METHOD: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Method"));
+pub const MCP_HEADER_NAME: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Name"));
 
 /// 本实现所实现的 MCP 协议版本
 pub const PROTOCOL_VERSION: ArcStr = arcstr::literal!("2026-07-28");
