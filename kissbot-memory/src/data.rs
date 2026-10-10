@@ -89,17 +89,17 @@ impl RequestParser<ChannelRequest, Arc<RecordKey>, ChannelRecord> for ChannelPar
             date: ArcStr::from(as_date(&request.time)),
         });
         let record = ChannelRecord {
-            user_id: request.user_id.clone(),
-            self_user_id: request.self_user_id.clone(),
-            messenger_id: request.messenger_id.clone(),
-            group_id: request.group_id.clone(),
+            user_id: request.user_id,
+            self_user_id: request.self_user_id,
+            messenger_id: request.messenger_id,
+            group_id: request.group_id,
             is_self: request.is_self,
-            msg_id: request.msg_id.clone(),
-            messenger_name: request.messenger_name.clone(),
-            user_name: request.user_name.clone(),
-            group_name: request.group_name.clone(),
-            content: request.content.clone(),
-            time: request.time.clone(),
+            msg_id: request.msg_id,
+            messenger_name: request.messenger_name,
+            user_name: request.user_name,
+            group_name: request.group_name,
+            content: request.content,
+            time: request.time,
             sn: 0,
         };
         (key, record)
@@ -132,10 +132,10 @@ impl RequestParser<ThinkRequest, Arc<RecordKey>, ThinkRecord> for ThinkParser {
             date: ArcStr::from(as_date(&request.time)),
         });
         let record = ThinkRecord {
-            reasoning_content: request.reasoning_content.clone(),
-            thinking: request.thinking.clone(),
-            key: request.key.clone(),
-            time: request.time.clone(),
+            reasoning_content: request.reasoning_content,
+            thinking: request.thinking,
+            key: request.key,
+            time: request.time,
             sn: 0,
         };
         (key, record)
@@ -168,10 +168,10 @@ impl RequestParser<ToolCallRequest, Arc<RecordKey>, ToolCallRecord> for ToolCall
             date: ArcStr::from(as_date(&request.time)),
         });
         let record = ToolCallRecord {
-            tool_name: request.tool_name.clone(),
+            tool_name: request.tool_name,
             tool_params: request.tool_params,
-            key: request.key.clone(),
-            time: request.time.clone(),
+            key: request.key,
+            time: request.time,
             sn: 0,
         };
         (key, record)
@@ -205,9 +205,8 @@ impl RequestParser<ToolResultRequest, Arc<RecordKey>, ToolResultRecord> for Tool
         });
         let record = ToolResultRecord {
             tool_result: request.tool_result,
-            tool_error: request.tool_error,
-            key: request.key.clone(),
-            time: request.time.clone(),
+            key: request.key,
+            time: request.time,
             sn: 0,
         };
         (key, record)

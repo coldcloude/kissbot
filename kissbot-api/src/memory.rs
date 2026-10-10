@@ -5,7 +5,7 @@ use kai_file::index::Record;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::Content;
+use crate::{Content, ContentBlock};
 
 // ========== 记忆后缀 ==========
 
@@ -87,7 +87,7 @@ pub struct ToolCallRequest {
     pub role_event: Arc<RoleEvent>,
     pub tool_name: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_params: Arc<Value>,
+    pub tool_params: Value,
     pub key: ArcStr,
     pub time: ArcStr,
 }
@@ -102,10 +102,8 @@ pub struct ToolCallRequests {
 pub struct ToolResultRequest {
     pub agent_id: ArcStr,
     pub role_event: Arc<RoleEvent>,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_result: Arc<Value>,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_error: Arc<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<Arc<Vec<ContentBlock>>>,
     pub key: ArcStr,
     pub time: ArcStr,
 }
@@ -173,7 +171,7 @@ pub struct ThinkRecord {
 pub struct ToolCallRecord {
     pub tool_name: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_params: Arc<Value>,
+    pub tool_params: Value,
     pub key: ArcStr,
     pub time: ArcStr,
     pub sn: u64,
@@ -181,10 +179,8 @@ pub struct ToolCallRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecord {
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_result: Arc<Value>,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_error: Arc<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<Arc<Vec<ContentBlock>>>,
     pub key: ArcStr,
     pub time: ArcStr,
     pub sn: u64,
@@ -725,7 +721,7 @@ mod tests {
     fn test_serde_tool_call_record() {
         let obj = ToolCallRecord {
             tool_name: ArcStr::from("get_weather"),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            tool_params: serde_json::json!({"city": "Beijing"}),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
@@ -739,8 +735,7 @@ mod tests {
     #[test]
     fn test_serde_tool_result_record() {
         let obj = ToolResultRecord {
-            tool_result: Arc::new(serde_json::json!({"temp": 25})),
-            tool_error: Arc::new(serde_json::Value::Null),
+            tool_result: Some(vec![ContentBlock::text(text)]),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,

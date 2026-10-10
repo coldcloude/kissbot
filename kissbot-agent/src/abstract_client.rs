@@ -7,6 +7,7 @@ use kissbot_api::{
     ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
     CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
 };
+use kissbot_security::HEADER_API_KEY;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::types::{Error, Result};

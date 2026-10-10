@@ -387,7 +387,7 @@ pub fn render_entry(entry: &RecordEntry) -> String {
         RecordBody::Think(r) => format!("[{}] (思考) {}", entry.time, think_text(r)),
         RecordBody::ToolCall(r) => format!("[{}] (工具调用) {} {}", entry.time, r.tool_name, r.tool_params),
         RecordBody::ToolResult(r) => {
-            let payload = if !r.tool_error.is_null() { &r.tool_error } else { &r.tool_result };
+            let payload = serde_json::to_string(&r.tool_result).unwrap_or_else(|_| String::new());
             format!("[{}] (工具结果) {}", entry.time, payload)
         }
     }
@@ -400,7 +400,7 @@ pub fn render_case_record(record: &CaseRecord) -> String {
         CaseRecord::Think(r) => format!("[{}] (思考) {}", r.time, think_text(r)),
         CaseRecord::ToolCall(r) => format!("[{}] (工具调用) {} {}", r.time, r.tool_name, r.tool_params),
         CaseRecord::ToolResult(r) => {
-            let payload = if !r.tool_error.is_null() { &r.tool_error } else { &r.tool_result };
+            let payload = serde_json::to_string(&r.tool_result).unwrap_or_else(|_| String::new());
             format!("[{}] (工具结果) {}", r.time, payload)
         }
     }

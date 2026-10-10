@@ -83,29 +83,31 @@ impl ReadTool {
 
 #[async_trait]
 impl ToolImplement for ReadTool {
-    async fn call(&self, arguments: Value) -> CallToolResult {
+    async fn call(&self, arguments: Value) -> (Value, CallToolResult) {
         let Some(raw) = arguments["path"].as_str() else {
-            return CallToolResult::text(ArcStr::from("缺少参数 path"));
+            return (arguments, CallToolResult::error(ArcStr::from("缺少参数 path")));
         };
         let safe = match self.resolve_safe_path(raw) {
             Ok(safe) => safe,
             Err(e) => {
-                return CallToolResult::text(ArcStr::from(format!("路径解析失败: {}", e)));
+                return (arguments, CallToolResult::error(ArcStr::from(format!("路径解析失败: {}", e))));
             }
         };
         match tokio::fs::read(&safe).await {
             Ok(content) => {
                 let text = String::from_utf8_lossy(&content[..content.len().min(READ_MAX_BYTES)]).to_string();
                 // 文本结果用文本块直接承载（不加 JSON 转义）
-                CallToolResult::text(ArcStr::from(text))
+                (arguments, CallToolResult::text(ArcStr::from(text)))
             }
-            Err(e) => CallToolResult::text(ArcStr::from(format!("读取文件失败 {}: {}", safe.display(), e))),
+            Err(e) => (arguments, CallToolResult::error(ArcStr::from(format!("读取文件失败 {}: {}", safe.display(), e)))),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use kissbot_api::ContentBlock;
+
     use super::*;
 
     #[test]
@@ -134,9 +136,9 @@ mod tests {
         let file = dir.path().join("a.txt");
         std::fs::write(&file, "文件内容").unwrap();
         let tool = ReadTool::new(dir.path().to_path_buf());
-        let result = tool.call(serde_json::json!({ "path": "a.txt" })).await;
+        let result = tool.call(serde_json::json!({ "path": "a.txt" })).await.1;
         // 文本结果由文本块直接承载（不加 JSON 转义），不设 structuredContent
-        assert_eq!(result.content.iter().find_map(|c| c.as_text()), Some("文件内容"));
+        assert!(matches!(result.content.get(0).unwrap(), ContentBlock::Text { text, .. } if text == "文件内容"));
         assert!(result.structured_content.is_null());
         assert!(!result.is_error);
     }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_mcp::ContentBlock;
+use kissbot_api::ContentBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -148,7 +148,7 @@ mod tests {
             id: ArcStr::from("call_1"),
             name: ArcStr::from("read"),
             arguments: json!({ "path": "/tmp/a.txt" }),
-            result: Some(vec![ContentBlock::Text { text: ArcStr::from("内容"), annotations: None, meta: None }]),
+            result: Some(vec![ContentBlock::Text { text: ArcStr::from("内容"), annotations: None, meta: Value::Null }]),
         };
         let json = serde_json::to_string(&tc).unwrap();
         let back: ToolCall = serde_json::from_str(&json).unwrap();

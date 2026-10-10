@@ -140,6 +140,7 @@ mod tests {
     use crate::protocol::{McpError, ResultType, Tool, ToolsListResult};
     use crate::server::{McpHandler, McpServer};
     use async_trait::async_trait;
+    use kissbot_api::ContentBlock;
     use serde_json::json;
     use std::sync::Mutex;
     use tokio::net::TcpListener;
@@ -178,7 +179,7 @@ mod tests {
                 "ancestors": params.meta.ancestors,
             });
             Ok(CallToolResult {
-                content: vec![crate::protocol::ContentBlock::text(ArcStr::from(value.to_string()))],
+                content: vec![ContentBlock::text(ArcStr::from(value.to_string()))],
                 structured_content: value,
                 ..Default::default()
             })

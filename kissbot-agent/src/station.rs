@@ -171,7 +171,11 @@ impl Station {
     /// （会话级白名单由 list_tools_local 在 nexus 入口处本地过滤）。
     pub async fn list_tools(&self, mut ancestors: Arc<Vec<ArcStr>>) -> std::result::Result<Vec<Arc<Tool>>, McpError> {
         if ancestors.iter().any(|a| a == &self.station_id) {
-            return Err(McpError::station_cycle(&self.station_id));
+            return Err(McpError {
+                code: MCP_ERROR_STATION_CYCLE,
+                message: ArcStr::from(format!("station cycle detected: {}", self.station_id)),
+                data: Value::Null,
+            });
         }
         let mut tools = Vec::new();
         // 本级工具名集合（冲突校验用：本级优先，子工具与本级重名剔除）
@@ -269,7 +273,7 @@ impl Station {
                     },
                     Err(e) => {
                         // 其他错误按照内部错误上报
-                        (arguments_recover, Err(McpError::internal(e.message)))
+                        (arguments_recover, Err(McpError::internal(ArcStr::from(e.to_string()))))
                     },
                 };
             }
@@ -308,6 +312,7 @@ impl McpHandler for Station {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kissbot_api::ContentBlock;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
     use serde_json::json;
 
@@ -446,7 +451,7 @@ mod tests {
             // 按工具名模拟三类返回：kissbot 循环错误、非 kissbot 错误、正常结果
             match params.name.as_str() {
                 "foreign-tool" => Ok(CallToolResult {
-                    content: vec![kissbot_mcp::ContentBlock::text(ArcStr::from("boom"))],
+                    content: vec![ContentBlock::text(ArcStr::from("boom"))],
                     structured_content: json!({ "error": "boom" }),
                     is_error: true,
                     ..Default::default()
@@ -454,7 +459,7 @@ mod tests {
                 _ => {
                     let value = json!({ "mock": params.name.to_string() });
                     Ok(CallToolResult {
-                        content: vec![kissbot_mcp::ContentBlock::text(ArcStr::from(value.to_string()))],
+                        content: vec![ContentBlock::text(ArcStr::from(value.to_string()))],
                         structured_content: value,
                         ..Default::default()
                     })
