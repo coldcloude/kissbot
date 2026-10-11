@@ -441,6 +441,7 @@ impl RecordManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kissbot_api::ContentBlock;
 
     #[derive(Clone)]
     pub(crate) struct NoopFileHook;
@@ -808,7 +809,7 @@ mod tests {
             agent_id: ArcStr::from("test_tool_call"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
             tool_name: ArcStr::from("get_weather"),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
+            tool_params: serde_json::json!({"city": "Beijing"}),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];
@@ -853,8 +854,7 @@ mod tests {
         let requests = vec![ToolResultRequest {
             agent_id: ArcStr::from("test_tool_result"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-            tool_result: Arc::new(serde_json::json!({"temp": 25})),
-            tool_error: Arc::new(serde_json::Value::Null),
+            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];

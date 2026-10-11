@@ -6,7 +6,7 @@ use http::HeaderName;
 use crate::error::Error;
 
 /// HTTP header 名称常量，用于传递 API key。
-pub const HEADER_API_KEY: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("X-Api-Key"));
+pub const HEADER_API_KEY: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("x-api-key"));
 
 /// 从 HTTP 请求头中提取 API key。
 /// 返回 `Err(Error::MissingKey)` 如果 header 不存在或值为空。

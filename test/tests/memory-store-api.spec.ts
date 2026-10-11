@@ -160,7 +160,7 @@ test.describe.serial('memory-store API 测试', () => {
     const resp = await apiPost(request, '/store/tool-result', {
       requests: [{
         agent_id: AGENT, role_event: { role_name: ROLE },
-        tool_result: { temp: 25 }, key: 'tool_result_key_1', time,
+        tool_result: [{ type: 'text', text: '{"temp":25}' }], key: 'tool_result_key_1', time,
       }],
       force: 1,
     });
@@ -177,7 +177,7 @@ test.describe.serial('memory-store API 测试', () => {
     const records = q.data[0][1];
     expect(records.length).toBeGreaterThanOrEqual(1);
     const record = records[records.length - 1][1];
-    expect(record.tool_result).toEqual({ temp: 25 });
+    expect(record.tool_result).toEqual([{ type: 'text', text: '{"temp":25}' }]);
     expect(record.key).toBe('tool_result_key_1');
     expect(record.time).toBe(time);
   });

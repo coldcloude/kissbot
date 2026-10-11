@@ -187,7 +187,21 @@ mod tests {
 
     /// 首个文本块内容（成功结果读文本用）
     fn first_text(result: &CallToolResult) -> Option<&str> {
-        result.content.iter().find_map(|c| c.as_text())
+        result.content.iter().find_map(|c| match c {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// 内容块类型标签（与 wire 上的 `type` 一致）
+    fn type_name(c: &ContentBlock) -> &'static str {
+        match c {
+            ContentBlock::Text { .. } => "text",
+            ContentBlock::Image { .. } => "image",
+            ContentBlock::Audio { .. } => "audio",
+            ContentBlock::ResourceLink { .. } => "resource_link",
+            ContentBlock::Resource { .. } => "resource",
+        }
     }
 
     #[test]
@@ -295,7 +309,7 @@ mod tests {
         assert_eq!(r.content.len(), 6);
         assert_eq!(first_text(&r), Some("说明"), "取首个文本块");
         assert_eq!(
-            r.content.iter().map(|c| c.type_name()).collect::<Vec<_>>(),
+            r.content.iter().map(type_name).collect::<Vec<_>>(),
             vec!["text", "image", "audio", "resource_link", "resource", "resource"]
         );
         // 各变体逐字段往返一致

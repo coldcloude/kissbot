@@ -17,9 +17,9 @@ pub use meta::*;
 pub use tools::*;
 
 /// HTTP Headers
-pub const MCP_HEADER_PROTOCOL_VERSION: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Protocol-Version"));
-pub const MCP_HEADER_METHOD: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Method"));
-pub const MCP_HEADER_NAME: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("Mcp-Name"));
+pub const MCP_HEADER_PROTOCOL_VERSION: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("mcp-protocol-version"));
+pub const MCP_HEADER_METHOD: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("mcp-method"));
+pub const MCP_HEADER_NAME: LazyLock<HeaderName> = LazyLock::new(|| HeaderName::from_static("mcp-name"));
 
 /// 本实现所实现的 MCP 协议版本
 pub const PROTOCOL_VERSION: ArcStr = arcstr::literal!("2026-07-28");

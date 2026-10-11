@@ -434,6 +434,7 @@ pub fn now_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kissbot_api::ContentBlock;
 
     fn channel_entry(time: &str, sn: u64, is_self: usize) -> RecordEntry {
         RecordEntry {
@@ -591,8 +592,7 @@ mod tests {
             time: ArcStr::from("2026-09-22 13:48:40"),
             sn: 1,
             body: RecordBody::ToolResult(Arc::new(ToolResultRecord {
-                tool_result: Arc::new(serde_json::json!({"v": 1})),
-                tool_error: Arc::new(Value::Null),
+                tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from("v1"))])),
                 key: ArcStr::from("k1"),
                 time: ArcStr::from("2026-09-22 13:48:40"),
                 sn: 1,

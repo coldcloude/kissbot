@@ -223,7 +223,7 @@ impl QueryParser<QueryRequest, Arc<RecordKey>> for ToolResultParser {
 mod tests {
     use std::sync::Arc;
 
-    use kissbot_api::Content;
+    use kissbot_api::{Content, ContentBlock};
 
 use super::*;
 
@@ -402,15 +402,16 @@ use super::*;
         let request = ToolResultRequest {
             agent_id: ArcStr::from("agent1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            tool_result: Arc::new(serde_json::json!({"temp": 25}).into()),
-            tool_error: Arc::new(serde_json::Value::Null),
+            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ToolResultParser;
         let (key, record) = parser.parse_request(request);
         assert_eq!(key.agent_id, "agent1");
-        assert_eq!(record.tool_result["temp"], 25);
+        let blocks = record.tool_result.unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text, .. } if text.as_str() == r#"{"temp":25}"#));
         assert_eq!(record.key, "k1");
         assert_eq!(record.sn, 0);
     }

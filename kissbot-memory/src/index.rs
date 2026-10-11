@@ -170,7 +170,7 @@ impl MemoryIndexer {
 mod tests {
     use super::*;
     use kissbot_api::Content;
-use tokio;
+    use tokio;
 
     // ========== MemoryIndexer: mark + query ==========
 
@@ -398,16 +398,16 @@ use tokio;
         };
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"A"},"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"A"}],"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"B"},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"B"}],"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
 
         let indexer = MemoryIndexer::new();
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
 
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"C"},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"C"}],"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
         indexer.mark_tool_result_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 2);
@@ -416,11 +416,11 @@ use tokio;
         let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
         tokio::fs::remove_file(&file_path).await.unwrap();
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"D"},"key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"D"}],"key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"E"},"key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"E"}],"key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
         append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":{"v":"F"},"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
+            r#"{"tool_result":[{"type":"text","text":"F"}],"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
 
         indexer.mark_tool_result_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();

@@ -541,13 +541,14 @@ mod tests {
             agent_id: ArcStr::from("a1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             tool_name: ArcStr::from("get_weather"),
-            tool_params: Arc::new(json!({"city": "Beijing"})),
+            tool_params: json!({"city": "Beijing"}),
             key: ArcStr::from("k1"),
             time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolCallRequest = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.tool_name, "get_weather");
+        assert_eq!(deserialized.tool_params["city"], "Beijing");
     }
 
     #[test]
@@ -564,14 +565,14 @@ mod tests {
         let obj = ToolResultRequest {
             agent_id: ArcStr::from("a1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-            tool_result: Arc::new(json!({"temp": 25})),
-            tool_error: Arc::new(Value::Null),
+            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
             key: ArcStr::from("k1"),
             time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolResultRequest = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.key, "k1");
+        assert_eq!(deserialized.tool_result.as_ref().unwrap().len(), 1);
     }
 
     #[test]
@@ -735,14 +736,16 @@ mod tests {
     #[test]
     fn test_serde_tool_result_record() {
         let obj = ToolResultRecord {
-            tool_result: Some(vec![ContentBlock::text(text)]),
+            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
         let deserialized: ToolResultRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.tool_result["temp"], 25);
+        let blocks = deserialized.tool_result.unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text, .. } if text.as_str() == r#"{"temp":25}"#));
     }
 
     // ========== Key serde ==========
