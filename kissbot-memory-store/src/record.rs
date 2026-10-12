@@ -809,7 +809,7 @@ mod tests {
             agent_id: ArcStr::from("test_tool_call"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
             tool_name: ArcStr::from("get_weather"),
-            tool_params: serde_json::json!({"city": "Beijing"}),
+            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
             key: ArcStr::from("k1"),
             time: ArcStr::from("2026-06-25 10:00:00"),
         }];

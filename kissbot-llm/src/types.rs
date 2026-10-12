@@ -12,7 +12,8 @@ pub struct ToolCall {
     pub id: ArcStr,
     pub name: ArcStr,
     pub arguments: Value,
-    pub result: Option<Vec<ContentBlock>>,
+    pub result_arguments: Option<Arc<Value>>,
+    pub result: Option<Arc<Vec<ContentBlock>>>,
 }
 
 /// LLM 请求中的工具定义（OpenAI `tools[].function` 形状）。
@@ -147,8 +148,9 @@ mod tests {
         let tc = ToolCall {
             id: ArcStr::from("call_1"),
             name: ArcStr::from("read"),
-            arguments: json!({ "path": "/tmp/a.txt" }),
-            result: Some(vec![ContentBlock::Text { text: ArcStr::from("内容"), annotations: None, meta: Value::Null }]),
+            arguments: Value::Null,
+            result_arguments: Some(Arc::new(json!({ "path": "/tmp/a.txt" }))),
+            result: Some(Arc::new(vec![ContentBlock::Text { text: ArcStr::from("内容"), annotations: None, meta: Value::Null }])),
         };
         let json = serde_json::to_string(&tc).unwrap();
         let back: ToolCall = serde_json::from_str(&json).unwrap();

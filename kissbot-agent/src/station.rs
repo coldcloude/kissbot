@@ -387,7 +387,7 @@ mod tests {
     async fn call_tool_local_native_tool_executes() {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
-        let result = station.call_tool_local(ArcStr::from("read"), json!({ "path": "Cargo.toml" })).await.unwrap();
+        let result = station.call_tool_local(ArcStr::from("read"), json!({ "path": "Cargo.toml" })).await.1.unwrap();
         assert!(!result.is_error, "本地 read 应成功: {:?}", result.error_message());
         assert!(first_text(&result).unwrap().contains("kissbot-agent"));
     }
@@ -535,7 +535,7 @@ mod tests {
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools[0].name.as_str(), "a/mock-tool");
 
-        let called = station.call_tool(ArcStr::from("a/mock-tool"), json!({}), ancestors(&[])).await.unwrap();
+        let called = station.call_tool(ArcStr::from("a/mock-tool"), json!({}), ancestors(&[])).await.1.unwrap();
         assert!(!called.is_error);
         // 子站收到的是去掉前缀的本地名
         assert_eq!(called.structured_content["mock"], "mock-tool");
@@ -561,7 +561,7 @@ mod tests {
         let (base, _observed) = spawn_mock_mcp(false).await;
         let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
         set_routes(&station, &[("foreign-tool", "remote")]);
-        let result = station.call_tool(ArcStr::from("foreign-tool"), json!({}), ancestors(&[])).await.unwrap();
+        let result = station.call_tool(ArcStr::from("foreign-tool"), json!({}), ancestors(&[])).await.1.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content, json!({ "error": "boom" }), "第三方错误体原样透传");
         assert!(result.kissbot_error().is_none(), "非 kissbot 来源不按错误码解释");

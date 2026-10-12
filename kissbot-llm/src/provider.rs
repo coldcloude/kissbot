@@ -187,6 +187,7 @@ impl Provider for OpenAiProvider {
                             id: ArcStr::from(id),
                             name: ArcStr::from(name),
                             arguments: v["function"]["arguments"].clone(),
+                            result_arguments: None,
                             result: None,
                         });
                     }

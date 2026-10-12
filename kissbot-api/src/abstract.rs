@@ -594,7 +594,7 @@ mod tests {
                     key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
                 })),
                 RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(ToolCallRecord {
-                    tool_name: ArcStr::from("read"), tool_params: Value::Null,
+                    tool_name: ArcStr::from("read"), tool_params: Arc::new(Value::Null),
                     key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
                 })),
                 RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(ToolResultRecord {
