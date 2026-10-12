@@ -15,7 +15,7 @@ use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
 use crate::{configs::nexus_repo::pipeline_config::*, types::MemoryKey};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct SessionConfigMergeMap {
+pub struct SessionConfigMergeMap {
     llm: Option<Arc<LLMConfig>>,
     compress: Option<Arc<CompressConfig>>,
     memory_recover: Option<Arc<MemoryRecoverConfig>>,
@@ -35,41 +35,20 @@ impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMergeMap);
 
 impl_option_arc_field_map!(SessionConfigMergeMap);
 
-trait SessionConfigMergeMapField<C: MergeSelf> {
-    fn set(&mut self, config: Arc<C>);
-}
-
-macro_rules! impl_session_config_merge_map_field {
-    ($ty:ty) => {
-        impl SessionConfigMergeMapField<$ty> for SessionConfigMergeMap {
-            fn set(&mut self, config: Arc<$ty>) {
-                let config = if let Some(mut old_config) = self.take::<$ty>() {
-                    let old_config_mut = Arc::make_mut(&mut old_config);
-                    old_config_mut.merge(config.as_ref());
-                    old_config
-                } else {
-                    config
-                };
-                self.insert::<$ty>(config);
-            }
-        }
-    };
-}
-
-impl_session_config_merge_map_field!(LLMConfig);
-impl_session_config_merge_map_field!(CompressConfig);
-impl_session_config_merge_map_field!(MemoryRecoverConfig);
-impl_session_config_merge_map_field!(ChannelBatchConfig);
-impl_session_config_merge_map_field!(OutChannelConfig);
-impl_session_config_merge_map_field!(GroupSetConfig);
-impl_session_config_merge_map_field!(PipelineConfig);
-
 impl SessionConfigMergeMap {
-    pub fn set<C: MergeSelf>(&mut self, config: Arc<C>)
+    pub fn set<C>(&mut self, config: Arc<C>)
     where
-        Self: SessionConfigMergeMapField<C>,
+        C: MergeSelf + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
     {
-        <Self as SessionConfigMergeMapField<C>>::set(self, config)
+        let config = if let Some(mut old_config) = self.take::<C>() {
+            let old_config_mut = Arc::make_mut(&mut old_config);
+            old_config_mut.merge(config.as_ref());
+            old_config
+        } else {
+            config
+        };
+        self.insert::<C>(config);
     }
 }
 
@@ -81,72 +60,48 @@ pub struct AgentRoleConfig {
     roles: Arc<HashMap<ArcStr, Arc<SessionConfigMergeMap>>>,
 }
 
-
-pub trait AgentRoleConfigField<C: MergeSelf> {
-    fn build(&self, role_name: &str) -> C;
-    fn set(&mut self, role_name: ArcStr, config: Arc<C>);
-}
-
-macro_rules! impl_agent_role_config_field {
-    ($ty:ty) => {
-        impl AgentRoleConfigField<$ty> for AgentRoleConfig {
-            fn build(&self, role_name: &str) -> $ty {
-                let mut config = <$ty>::default();
-                if let Some(agent_config) = self.config_map.get_deref::<$ty>() {
-                    config.merge(&agent_config);
-                }
-                if let Some(role_config_map) = self.roles.get(role_name) {
-                    if let Some(role_config) = role_config_map.get_deref::<$ty>() {
-                        config.merge(&role_config);
-                    }
-                }
-                config
-            }
-            fn set(&mut self, role_name: ArcStr, config: Arc<$ty>) {
-                if role_name.is_empty() {
-                    // 设置 agent 级配置
-                    let config_map = Arc::make_mut(&mut self.config_map);
-                    config_map.set::<$ty>(config);
-                }
-                else {
-                    let role_map = Arc::make_mut(&mut self.roles);
-                    // role 条目不存在则新建
-                    let role_config_map = if let Some(mut role_config_map) = role_map.remove(&role_name) {
-                        let role_config_map_mut = Arc::make_mut(&mut role_config_map);
-                        role_config_map_mut.set::<$ty>(config);
-                        role_config_map
-                    } else {
-                        let mut role_config_map = SessionConfigMergeMap::default();
-                        role_config_map.insert::<$ty>(config);
-                        Arc::new(role_config_map)
-                    };
-                    role_map.insert(role_name, role_config_map);
-                }
+impl AgentRoleConfig {
+    pub fn build<C>(&self, role_name: &str) -> C
+    where
+        C: MergeSelf,
+        SessionConfigMergeMap: OptionArcField<C>,
+    {
+        let mut config = C::default();
+        if let Some(agent_config) = self.config_map.get_deref::<C>() {
+            config.merge(&agent_config);
+        }
+        if let Some(role_config_map) = self.roles.get(role_name) {
+            if let Some(role_config) = role_config_map.get_deref::<C>() {
+                config.merge(&role_config);
             }
         }
-    };
-}
-
-impl_agent_role_config_field!(LLMConfig);
-impl_agent_role_config_field!(CompressConfig);
-impl_agent_role_config_field!(MemoryRecoverConfig);
-impl_agent_role_config_field!(ChannelBatchConfig);
-impl_agent_role_config_field!(OutChannelConfig);
-impl_agent_role_config_field!(GroupSetConfig);
-impl_agent_role_config_field!(PipelineConfig);
-
-impl AgentRoleConfig {
-    pub fn build<C: MergeSelf>(&self, role_name: &str) -> C
-    where
-        Self: AgentRoleConfigField<C>,
-    {
-        <Self as AgentRoleConfigField<C>>::build(self, role_name)
+        config
     }
-    pub fn set<C: MergeSelf>(&mut self, role_name: ArcStr, config: Arc<C>)
+
+    pub fn set<C>(&mut self, role_name: ArcStr, config: Arc<C>)
     where
-        Self: AgentRoleConfigField<C>,
+        C: MergeSelf + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
     {
-        <Self as AgentRoleConfigField<C>>::set(self, role_name, config)
+        if role_name.is_empty() {
+            // 设置 agent 级配置
+            let config_map = Arc::make_mut(&mut self.config_map);
+            config_map.set::<C>(config);
+        }
+        else {
+            let role_map = Arc::make_mut(&mut self.roles);
+            // role 条目不存在则新建
+            let role_config_map = if let Some(mut role_config_map) = role_map.remove(&role_name) {
+                let role_config_map_mut = Arc::make_mut(&mut role_config_map);
+                role_config_map_mut.set::<C>(config);
+                role_config_map
+            } else {
+                let mut role_config_map = SessionConfigMergeMap::default();
+                role_config_map.insert::<C>(config);
+                Arc::new(role_config_map)
+            };
+            role_map.insert(role_name, role_config_map);
+        }
     }
 }
 
@@ -171,39 +126,48 @@ impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
 
-pub trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
-    fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> E;
-}
+impl SessionConfigMap {
+    pub fn create_by_agent_role<C, E>(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> E
+    where 
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        SessionConfigMergeMap: OptionArcField<C>,
+    {
+        let merge_config = if let Some(agent_role_config) = agent_roles.get(memory_key.agent_id.as_str()) {
+            agent_role_config.build::<C>(memory_key.role_event.role_name.as_str())
+        } else {
+            C::default()
+        };
+        merge_config.get_effective_config()
+    }
 
-macro_rules! impl_agent_role_session_config_map_field {
-    ($ct:ty, $et:ty) => {
-        impl AgentRoleSessionConfigMapField<$ct, $et> for SessionConfigMap {
-            fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> $et {
-                let merge_config = if let Some(agent_role_config) = agents.get(memory_key.agent_id.as_str()) {
-                    agent_role_config.build::<$ct>(memory_key.role_event.role_name.as_str())
-                } else {
-                    <$ct>::default()
-                };
-                merge_config.get_effective_config()
-            }
+    pub fn get_or_insert<E>(&mut self, config: Arc<E>) -> Arc<E>
+    where
+        SessionConfigMap: kissbot_api::OptionArcField<E>,
+    {
+        if let Some(exist_config) = self.get::<E>() {
+            exist_config.clone()
+        } else {
+            self.insert::<E>(config.clone());
+            config
         }
     }
-}
 
-impl_agent_role_session_config_map_field!(LLMConfig, EffectiveLLMConfig);
-impl_agent_role_session_config_map_field!(CompressConfig, EffectiveCompressConfig);
-impl_agent_role_session_config_map_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
-impl_agent_role_session_config_map_field!(ChannelBatchConfig, ChannelBatchConfig);
-impl_agent_role_session_config_map_field!(OutChannelConfig, OutChannelConfig);
-impl_agent_role_session_config_map_field!(GroupSetConfig, GroupSetConfig);
-impl_agent_role_session_config_map_field!(PipelineConfig, PipelineConfig);
-
-impl SessionConfigMap {
-    pub fn create<C, E>(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> E
+    pub fn merge_or_insert_with<C, E, F>(&mut self, config: &C, creator: F)
     where
-        C: MergeSelf + MergeEffectiveConfig<E>,
-        Self: AgentRoleSessionConfigMapField<C, E>,
+        E: MergeBy<C> + Clone,
+        F: FnOnce() -> E,
+        SessionConfigMap: OptionArcField<E>,
     {
-        <Self as AgentRoleSessionConfigMapField<C, E>>::create(agents, memory_key)
+        let eff_config = if let Some(mut eff_config) = self.take::<E>() {
+            let eff_config_mut = Arc::make_mut(&mut eff_config);
+            eff_config_mut.merge(config);
+            eff_config
+        } else {
+            // 新建 session 配置
+            let mut eff_config = creator();
+            eff_config.merge(config);
+            Arc::new(eff_config)
+        };
+        self.insert::<E>(eff_config);
     }
 }

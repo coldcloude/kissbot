@@ -1,12 +1,12 @@
 use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
-use async_trait::async_trait;
+use kissbot_api::OptionArcField;
 use kissbot_api::{ChannelUser, write_key_value};
 use tokio::sync::RwLock;
 
 use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
-use kissbot_llm::{EffectiveLLMConfig, EffectiveModelConfig, LLMConfig, ProviderConfig, ProviderModelConfig};
+use kissbot_llm::{EffectiveModelConfig, ProviderConfig, ProviderModelConfig};
 
 use crate::configs::*;
 use crate::types::*;
@@ -24,110 +24,6 @@ pub struct ConfigManager {
     nexus_path: ArcStr,
     station_path: ArcStr,
 }
-
-#[async_trait]
-pub trait SessionConfigField<C: MergeSelf + MergeEffectiveConfig<E>, E: MergeBy<C>> {
-    async fn memory_session_config(&self, memory_key: Arc<MemoryKey>) -> Arc<E>;
-    async fn set_agent_role_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>;
-    async fn set_memory_session_config(&self, memory_key: Arc<MemoryKey>, config: &C) -> Result<()>;
-}
-
-macro_rules! impl_session_config_field {
-    ($ct:ty, $et:ty) => {
-        #[async_trait]
-        impl SessionConfigField<$ct, $et> for ConfigManager {
-            /// 按 MemoryKey 取 memory_session 运行配置，无运行配置回退到 agent role 配置
-            async fn memory_session_config(&self, memory_key: Arc<MemoryKey>) -> Arc<$et> {
-                // 先尝试获取 memory_session 配置，只读repo
-                {
-                    let repo = self.nexus_repo.read().await;
-                    if let Some(session_config_map) = repo.memory_sessions.get(memory_key.as_ref()) {
-                        if let Some(session_config) = session_config_map.as_ref().get::<$et>() {
-                            return session_config;
-                        }
-                    }
-                }
-
-                // 需要新建 memory_session 配置，需要写权限
-                let mut repo = self.nexus_repo.write().await;
-                // 新建 memory_session 配置
-                let config = Arc::new(SessionConfigMap::create::<$ct, $et>(repo.agent_roles.as_ref(), memory_key.as_ref()));
-                // 保存 memory_session config
-                let memory_sessions = Arc::make_mut(&mut repo.memory_sessions);
-                let config_map = if let Some(mut config_map) = memory_sessions.remove(memory_key.as_ref()) {
-                    let config_map_mut = Arc::make_mut(&mut config_map);
-                    config_map_mut.insert::<$et>(config.clone());
-                    config_map
-                } else {
-                    let mut config_map = SessionConfigMap::default();
-                    config_map.insert::<$et>(config.clone());
-                    Arc::new(config_map)
-                };
-                memory_sessions.insert(memory_key, config_map);
-                config
-            }
-
-            /// 设置 role 配置，role_name 为空时设置 agent配置
-            async fn set_agent_role_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<$ct>) -> Result<()> {
-                self.write_nexus_config(|repo| {
-                    let agent_roles = Arc::make_mut(&mut repo.agent_roles);
-                    // agent 条目不存在则懒建
-                    let agent_role_config = if let Some(mut agent_role_config) = agent_roles.remove(&agent_id) {
-                        let agent_role_config_mut = Arc::make_mut(&mut agent_role_config);
-                        agent_role_config_mut.set::<$ct>(role_name, config);
-                        agent_role_config
-                    } else {
-                        let mut agent_role_config = AgentRoleConfig::default();
-                        agent_role_config.set::<$ct>(role_name, config);
-                        Arc::new(agent_role_config)
-                    };
-                    agent_roles.insert(agent_id, agent_role_config);
-                    Ok(())
-                }).await
-            }
-
-            /// 设置 memory_session 配置
-            async fn set_memory_session_config(&self, memory_key: Arc<MemoryKey>, config: &$ct) -> Result<()> {
-                self.write_nexus_config(|repo| {
-                    let memory_sessions = Arc::make_mut(&mut repo.memory_sessions);
-                    let config_map = if let Some(mut config_map) = memory_sessions.remove(memory_key.as_ref()) {
-                        let config_map_mut = Arc::make_mut(&mut config_map);
-                        let eff_config = if let Some(mut eff_config) = config_map_mut.take::<$et>() {
-                            let eff_config_mut = Arc::make_mut(&mut eff_config);
-                            eff_config_mut.merge(config);
-                            eff_config
-                        } else {
-                            // 新建 memory_session 配置
-                            let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agent_roles.as_ref(), memory_key.as_ref());
-                            eff_config.merge(config);
-                            Arc::new(eff_config)
-                        };
-                        config_map_mut.insert::<$et>(eff_config);
-                        config_map
-                    } else {
-                        // 新建 memory_session 配置
-                        let mut eff_config = SessionConfigMap::create::<$ct, $et>(repo.agent_roles.as_ref(), memory_key.as_ref());
-                        eff_config.merge(config);
-                        // 新建 memory_session map
-                        let mut config_map = SessionConfigMap::default();
-                        config_map.insert::<$et>(Arc::new(eff_config));
-                        Arc::new(config_map)
-                    };
-                    memory_sessions.insert(memory_key, config_map);
-                    Ok(())
-                }).await
-            }
-        }
-    };
-}
-
-impl_session_config_field!(LLMConfig, EffectiveLLMConfig);
-impl_session_config_field!(CompressConfig, EffectiveCompressConfig);
-impl_session_config_field!(MemoryRecoverConfig, EffectiveMemoryRecoverConfig);
-impl_session_config_field!(ChannelBatchConfig, ChannelBatchConfig);
-impl_session_config_field!(OutChannelConfig, OutChannelConfig);
-impl_session_config_field!(GroupSetConfig, GroupSetConfig);
-impl_session_config_field!(PipelineConfig, PipelineConfig);
 
 impl ConfigManager {
     /// 取全局单例（进程内唯一；new() 完成后可用，此前调用 panic）
@@ -310,31 +206,183 @@ impl ConfigManager {
         }
     }
 
+    /// 按 MemoryKey 取 memory_session 运行配置，无运行配置回退到 agent role 配置
     pub async fn memory_session_config<C,E>(&self, memory_key: Arc<MemoryKey>) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
-        Self: SessionConfigField<C,E>,
+        SessionConfigMergeMap: OptionArcField<C>,
+        SessionConfigMap: OptionArcField<E>,
     {
-        <Self as SessionConfigField<C,E>>::memory_session_config(self, memory_key).await
+        // 先尝试获取 session 配置，只读repo
+        {
+            let repo = self.nexus_repo.read().await;
+            if let Some(session_config_map) = repo.memory_sessions.get(memory_key.as_ref()) {
+                if let Some(session_config) = session_config_map.as_ref().get::<E>() {
+                    return session_config;
+                }
+            }
+        }
+
+        // 需要新建 session 配置，需要写权限
+        let mut repo = self.nexus_repo.write().await;
+        // 新建 session 配置
+        let mut config = Arc::new(SessionConfigMap::create_by_agent_role::<C, E>(repo.agent_roles.as_ref(), memory_key.as_ref()));
+        // 保存 session config
+        let sessions = Arc::make_mut(&mut repo.memory_sessions);
+        let config_map = if let Some(mut config_map) = sessions.remove(memory_key.as_ref()) {
+            let config_map_mut = Arc::make_mut(&mut config_map);
+            config = config_map_mut.get_or_insert(config);
+            config_map
+        } else {
+            let mut config_map = SessionConfigMap::default();
+            config_map.insert::<E>(config.clone());
+            Arc::new(config_map)
+        };
+        sessions.insert(memory_key, config_map);
+        config
     }
 
-    pub async fn set_agent_role_config<C,E>(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>
+    /// 设置 role 配置，role_name 为空时设置 agent配置
+    pub async fn set_agent_role_config<C>(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>
     where
-        C: MergeSelf + MergeEffectiveConfig<E>,
-        E: MergeBy<C>,
-        Self: SessionConfigField<C,E>,
+        C: MergeSelf + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
     {
-        <Self as SessionConfigField<C,E>>::set_agent_role_config(self, agent_id, role_name, config).await
+        self.write_nexus_config(|repo| {
+            let agent_roles = Arc::make_mut(&mut repo.agent_roles);
+            // agent 条目不存在则懒建
+            let agent_role_config = if let Some(mut agent_role_config) = agent_roles.remove(&agent_id) {
+                let agent_role_config_mut = Arc::make_mut(&mut agent_role_config);
+                agent_role_config_mut.set::<C>(role_name, config);
+                agent_role_config
+            } else {
+                let mut agent_role_config = AgentRoleConfig::default();
+                agent_role_config.set::<C>(role_name, config);
+                Arc::new(agent_role_config)
+            };
+            agent_roles.insert(agent_id, agent_role_config);
+            Ok(())
+        }).await
     }
 
+    /// 设置 memory_session 配置
     pub async fn set_memory_session_config<C,E>(&self, memory_key: Arc<MemoryKey>, config: &C) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
-        E: MergeBy<C>,
-        Self: SessionConfigField<C,E>,
+        E: MergeBy<C> + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
+        SessionConfigMap: OptionArcField<E>,
     {
-        <Self as SessionConfigField<C,E>>::set_memory_session_config(self, memory_key, config).await
+        self.write_nexus_config(|repo| {
+            let sessions = Arc::make_mut(&mut repo.memory_sessions);
+            let config_map = if let Some(mut config_map) = sessions.remove(memory_key.as_ref()) {
+                let config_map_mut = Arc::make_mut(&mut config_map);
+                config_map_mut.merge_or_insert_with::<C,E,_>(config, || {
+                    SessionConfigMap::create_by_agent_role::<C, E>(repo.agent_roles.as_ref(), memory_key.as_ref())
+                });
+                config_map
+            } else {
+                // 新建 session 配置
+                let mut eff_config = SessionConfigMap::create_by_agent_role::<C, E>(repo.agent_roles.as_ref(), memory_key.as_ref());
+                eff_config.merge(config);
+                // 新建 session map
+                let mut config_map = SessionConfigMap::default();
+                config_map.insert::<E>(Arc::new(eff_config));
+                Arc::new(config_map)
+            };
+            sessions.insert(memory_key, config_map);
+            Ok(())
+        }).await
+    }
+
+    async fn raw_session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        // 先尝试获取 session 配置，只读repo
+        {
+            let repo = self.nexus_repo.read().await;
+            if let Some(session_config_map) = repo.raw_sessions.get(&session_id) {
+                if let Some(session_config) = session_config_map.as_ref().get::<E>() {
+                    return session_config;
+                }
+            }
+        }
+
+        // 需要新建 session 配置，需要写权限
+        let mut repo = self.nexus_repo.write().await;
+        // 新建 session 配置
+        let mut config = Arc::new(C::default().get_effective_config());
+        // 保存 session config
+        let sessions = Arc::make_mut(&mut repo.raw_sessions);
+        let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
+            let config_map_mut = Arc::make_mut(&mut config_map);
+            config = config_map_mut.get_or_insert(config);
+            config_map
+        } else {
+            let mut config_map = SessionConfigMap::default();
+            config_map.insert::<E>(config.clone());
+            Arc::new(config_map)
+        };
+        sessions.insert(session_id, config_map);
+        config
+    }
+
+    async fn set_raw_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C> + Clone,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        self.write_nexus_config(|repo| {
+            let sessions = Arc::make_mut(&mut repo.raw_sessions);
+            let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
+                let config_map_mut = Arc::make_mut(&mut config_map);
+                config_map_mut.merge_or_insert_with::<C,E,_>(config, || {
+                    C::default().get_effective_config()
+                });
+                config_map
+            } else {
+                // 新建 session 配置
+                let mut eff_config = C::default().get_effective_config();
+                eff_config.merge(config);
+                // 新建 session map
+                let mut config_map = SessionConfigMap::default();
+                config_map.insert::<E>(Arc::new(eff_config));
+                Arc::new(config_map)
+            };
+            sessions.insert(session_id, config_map);
+            Ok(())
+        }).await
+    }
+
+    async fn session_config<C, E>(&self, session_key: SessionKey) -> Arc<E>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
+        SessionConfigMergeMap: OptionArcField<C>,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        match session_key {
+            SessionKey::Memory(key) => self.memory_session_config(key).await,
+            SessionKey::Raw(id) => self.raw_session_config(id).await,
+        }
+    }
+
+    async fn set_session_config<C, E>(&self, session_key: SessionKey, config: &C) -> Result<()>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C> + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        match session_key {
+            SessionKey::Memory(key) => self.set_memory_session_config(key, config).await,
+            SessionKey::Raw(id) => self.set_raw_session_config(id, config).await,
+        }
     }
 
     /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
@@ -343,7 +391,7 @@ impl ConfigManager {
         let config = OutChannelConfig {
             out_channel: out,
         };
-        self.set_agent_role_config::<OutChannelConfig,OutChannelConfig>(agent_id, role_name, Arc::new(config)).await
+        self.set_agent_role_config::<OutChannelConfig>(agent_id, role_name, Arc::new(config)).await
     }
 
     /// 取 (agent, role) 级 out_channel 配置：每次按 agent+role 实时合成（不读 memory_session 快照），

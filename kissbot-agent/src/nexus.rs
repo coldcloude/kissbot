@@ -3,10 +3,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use chrono::Local;
 use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
 use kissbot_llm::{
-    EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig,
+    EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolConfig,
 };
 use tracing::{info, warn};
 
@@ -95,7 +94,7 @@ impl Nexus {
         if agent_id.is_empty() || agent_id == RESERVED_AGENT_ID {
             return Ok(());
         }
-        if self.memory_ego_client.get_agent(agent_id).await?.is_some() {
+        if self.memory_ego_client.get_agent(agent_id.clone()).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("agent 不存在: {}", agent_id).into()))
@@ -108,7 +107,7 @@ impl Nexus {
         if role_name.is_empty() {
             return Ok(());
         }
-        if self.memory_ego_client.get_role(agent_id, role_name).await?.is_some() {
+        if self.memory_ego_client.get_role(agent_id, role_name.clone()).await?.is_some() {
             Ok(())
         } else {
             Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name).into()))
@@ -172,11 +171,11 @@ impl Nexus {
         let mut system_parts = vec![];
 
         // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
-        if let Ok(Some(metadata)) = self.memory_ego_client.get_agent(agent_id).await {
+        if let Ok(Some(metadata)) = self.memory_ego_client.get_agent(agent_id.clone()).await {
             system_parts.push(crate::ego_md::build_ego_identity_md(&metadata));
         }
         // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
-        if let Ok(Some(individuals)) = self.memory_ego_client.get_individuals(agent_id).await {
+        if let Ok(Some(individuals)) = self.memory_ego_client.get_individuals(agent_id.clone()).await {
             system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, None));
         }
         // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
