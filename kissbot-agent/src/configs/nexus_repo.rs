@@ -24,11 +24,12 @@ pub struct NexusRepo {
     pub channels: Arc<HashMap<ArcStr, Arc<ChannelConfig>>>,
     pub providers: Arc<HashMap<ArcStr, Arc<ProviderModelConfig>>>, // key = provider 名
     pub memory_structs: Arc<HashMap<ArcStr, Arc<MemoryStructConfig>>>,
-    pub agents: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
+    pub agent_roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
     /// session 运行配置（key = Arc<MemoryKey>，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
     /// 故经 sessions_serde 以 [[key, value], ...] 数组对承载（不是 JSON 对象）
     #[serde(with = "sessions_serde")]
-    pub sessions: Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
+    pub memory_sessions: Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
+    pub raw_sessions: Arc<HashMap<ArcStr, Arc<SessionConfigMap>>>,
 }
 
 /// sessions 字段的 (反)序列化：MemoryKey 是结构体，不能作 JSON map 键（serde_json 要求字符串键，
@@ -44,7 +45,6 @@ mod sessions_serde {
         S: serde::Serializer,
     {
         // Vec<(&Arc<MemoryKey>, &Arc<SessionConfigMap>)> → [[key, value], ...]
-        // Arc<T> 的 serde 表示与 T 相同，wire 形式不变
         sessions.iter().collect::<Vec<_>>().serialize(serializer)
     }
 
@@ -54,8 +54,8 @@ mod sessions_serde {
     where
         D: serde::Deserializer<'de>,
     {
-        let entries = Vec::<(MemoryKey, Arc<SessionConfigMap>)>::deserialize(deserializer)?;
-        Ok(Arc::new(entries.into_iter().map(|(key, value)| (Arc::new(key), value)).collect()))
+        let entries = Vec::<_>::deserialize(deserializer)?;
+        Ok(Arc::new(entries.into_iter().collect()))
     }
 }
 
@@ -65,8 +65,9 @@ impl Default for NexusRepo {
             channels: Arc::new(HashMap::new()),
             providers: Arc::new(HashMap::new()),
             memory_structs: Arc::new(HashMap::new()),
-            agents: Arc::new(HashMap::new()),
-            sessions: Arc::new(HashMap::new()),
+            agent_roles: Arc::new(HashMap::new()),
+            memory_sessions: Arc::new(HashMap::new()),
+            raw_sessions: Arc::new(HashMap::new()),
         }
     }
 }

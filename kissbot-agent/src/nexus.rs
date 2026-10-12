@@ -139,7 +139,7 @@ impl Nexus {
     /// role 模式上下文构建（记忆回溯 reducer 调用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
     /// 取记忆用会话状态保存的 agent_id（来自会话 key）
     pub async fn build_context_from_memory_store(&self, memory_key: Arc<MemoryKey>) -> Vec<Message> {
-        let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig,EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
+        let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig,EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
         self.memory_store_client
             .read_recent_for_context(memory_key.agent_id.clone(), memory_key.role_event.clone(), cfg.memory_time_secs, cfg.memory_count).await
             .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
@@ -230,7 +230,7 @@ impl Nexus {
         let mut config = LLMConfig::default();
         config.provider = Some(ArcStr::from(provider));
         config.model = Some(ArcStr::from(model));
-        ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key), &config).await
+        ConfigManager::get().set_memory_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key), &config).await
     }
 
     /// 启动主循环（保持进程运行）：初始化会话 + 连接全部 channel
@@ -371,7 +371,7 @@ impl Nexus {
     /// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
     /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
     pub async fn tools_for_session(&self, memory_key: Arc<MemoryKey>) -> Vec<Arc<ToolConfig>> {
-        let cfg = ConfigManager::get().session_config::<GroupSetConfig,GroupSetConfig>(memory_key.clone()).await;
+        let cfg = ConfigManager::get().memory_session_config::<GroupSetConfig,GroupSetConfig>(memory_key.clone()).await;
         if cfg.group_set.is_empty() {
             return Vec::new();
         }

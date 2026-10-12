@@ -26,3 +26,8 @@ impl MemoryKey {
         }
     }
 }
+
+pub enum SessionKey {
+    Memory(Arc<MemoryKey>),
+    Raw(ArcStr),
+}
