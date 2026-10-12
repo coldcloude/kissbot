@@ -296,7 +296,7 @@ impl ConfigManager {
         }).await
     }
 
-    async fn raw_session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>
+    pub async fn raw_session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
@@ -331,7 +331,7 @@ impl ConfigManager {
         config
     }
 
-    async fn set_raw_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>
+    pub async fn set_raw_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C> + Clone,
@@ -359,7 +359,7 @@ impl ConfigManager {
         }).await
     }
 
-    async fn session_config<C, E>(&self, session_key: SessionKey) -> Arc<E>
+    pub async fn session_config<C, E>(&self, session_key: SessionKey) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C>,
@@ -372,7 +372,7 @@ impl ConfigManager {
         }
     }
 
-    async fn set_session_config<C, E>(&self, session_key: SessionKey, config: &C) -> Result<()>
+    pub async fn set_session_config<C, E>(&self, session_key: SessionKey, config: &C) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C> + Clone,

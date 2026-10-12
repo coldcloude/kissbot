@@ -14,7 +14,7 @@ use crate::configs::{EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecover
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{
-    Error, Result, MemoryKey,
+    Error, MemoryKey, Result, SessionKey,
 };
 use crate::session_manager::SessionManager;
 use crate::station::{Station, tool_config_from_mcp};
@@ -220,16 +220,21 @@ impl Nexus {
     }
 
     /// 设置来源 channel 所属会话的模型（每次切换都从 API 拉模型列表校验）
-    pub async fn set_session_model(&self, channel_id: &str, provider: &str, model: &str) -> Result<()> {
+    pub async fn set_session_model(&self, session_key: SessionKey, provider: ArcStr, model: ArcStr) -> Result<()> {
+        // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
+        self.verify_model(&provider, &model).await?;
+        let mut config = LLMConfig::default();
+        config.provider = Some(provider);
+        config.model = Some(model);
+        ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(session_key, &config).await
+    }
+
+    /// 设置来源 channel 所属会话的模型（每次切换都从 API 拉模型列表校验）
+    pub async fn set_channel_session_model(&self, channel_id: &str, provider: ArcStr, model: ArcStr) -> Result<()> {
         let Some(key) = self.channel_manager.memory_key(channel_id).await else {
             return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
         };
-        // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
-        self.verify_model(provider, model).await?;
-        let mut config = LLMConfig::default();
-        config.provider = Some(ArcStr::from(provider));
-        config.model = Some(ArcStr::from(model));
-        ConfigManager::get().set_memory_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key), &config).await
+        self.set_session_model(SessionKey::Memory(Arc::new(key)), provider, model).await
     }
 
     /// 启动主循环（保持进程运行）：初始化会话 + 连接全部 channel

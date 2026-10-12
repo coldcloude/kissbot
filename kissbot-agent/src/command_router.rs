@@ -160,7 +160,7 @@ impl CommandRouter {
                 if parts.len() != 3 {
                     return Err(Error::InvalidCommand("格式: /model <provider> <model>".into()));
                 }
-                nexus.set_session_model(channel_id.as_str(), parts[1].as_str(), parts[1].as_str()).await?;
+                nexus.set_channel_session_model(channel_id.as_str(), parts[1].clone(), parts[1].clone()).await?;
                 Ok(ArcStr::from(format!("✅ 已切换模型为: {}/{}", parts[1], parts[2])))
             }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]).into())),
