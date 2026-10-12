@@ -14,7 +14,7 @@ use arcstr::ArcStr;
 use kissbot_llm::ProviderModelConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::types::SessionKey;
+use crate::types::MemoryKey;
 
 // ========== 配置数据结构 ==========
 
@@ -25,36 +25,36 @@ pub struct NexusRepo {
     pub providers: Arc<HashMap<ArcStr, Arc<ProviderModelConfig>>>, // key = provider 名
     pub memory_structs: Arc<HashMap<ArcStr, Arc<MemoryStructConfig>>>,
     pub agents: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
-    /// session 运行配置（key = Arc<SessionKey>，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
+    /// session 运行配置（key = Arc<MemoryKey>，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
     /// 故经 sessions_serde 以 [[key, value], ...] 数组对承载（不是 JSON 对象）
     #[serde(with = "sessions_serde")]
-    pub sessions: Arc<HashMap<Arc<SessionKey>, Arc<SessionConfigMap>>>,
+    pub sessions: Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
 }
 
-/// sessions 字段的 (反)序列化：SessionKey 是结构体，不能作 JSON map 键（serde_json 要求字符串键，
+/// sessions 字段的 (反)序列化：MemoryKey 是结构体，不能作 JSON map 键（serde_json 要求字符串键，
 /// 结构体作键会报 "key must be a string"），因此改用数组对承载 key/value。
 mod sessions_serde {
     use super::*;
 
     pub fn serialize<S>(
-        sessions: &Arc<HashMap<Arc<SessionKey>, Arc<SessionConfigMap>>>,
+        sessions: &Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        // Vec<(&Arc<SessionKey>, &Arc<SessionConfigMap>)> → [[key, value], ...]
+        // Vec<(&Arc<MemoryKey>, &Arc<SessionConfigMap>)> → [[key, value], ...]
         // Arc<T> 的 serde 表示与 T 相同，wire 形式不变
         sessions.iter().collect::<Vec<_>>().serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<Arc<HashMap<Arc<SessionKey>, Arc<SessionConfigMap>>>, D::Error>
+    ) -> Result<Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let entries = Vec::<(SessionKey, Arc<SessionConfigMap>)>::deserialize(deserializer)?;
+        let entries = Vec::<(MemoryKey, Arc<SessionConfigMap>)>::deserialize(deserializer)?;
         Ok(Arc::new(entries.into_iter().map(|(key, value)| (Arc::new(key), value)).collect()))
     }
 }

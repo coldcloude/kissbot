@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["providers"].is_object());
         assert!(body["data"]["channels"].is_object());
-        // sessions 以 [[key, value], ...] 数组对承载（SessionKey 是结构体，不能作 JSON map 键）
+        // sessions 以 [[key, value], ...] 数组对承载（MemoryKey 是结构体，不能作 JSON map 键）
         assert!(body["data"]["sessions"].is_array(), "sessions 应为数组对");
 
         // POST /config/providers 添加

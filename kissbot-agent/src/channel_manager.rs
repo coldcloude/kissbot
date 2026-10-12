@@ -20,14 +20,14 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
 use crate::nexus::Nexus;
-use crate::types::{ChannelCommand, Error, Result, SessionKey};
+use crate::types::{ChannelCommand, Error, Result, MemoryKey};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(60);
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
 /// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位
-struct ApplyChannelSessionKey {
+struct ApplyChannelMemoryKey {
     channel_id: ArcStr,
     agent_id: Option<ArcStr>,
     role_name: Option<ArcStr>,
@@ -35,7 +35,7 @@ struct ApplyChannelSessionKey {
     done: oneshot::Sender<Result<()>>
 }
 
-/// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ApplyChannelSessionKey 同一消费者串行，写-写无竞态）
+/// channel 配置变更任务（排队调 ChannelManager 方法执行；与 ApplyChannelMemoryKey 同一消费者串行，写-写无竞态）
 struct ChannelTask {
     cmd: ChannelCommand,
     done: oneshot::Sender<Result<ArcStr>>,
@@ -107,12 +107,12 @@ impl Channel {
 /// 内部 DashMap 无锁并发；Nexus 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 /// 另持 channel 变更串行队列（写-写竞态防护；读无需外部加锁）：入队与执行都在本结构
 /// （change_channel_key / channel_command → apply_channel_key / apply_channel_command），
-/// 其中会话重定位部分经 Nexus（prune_sessions / session_key / ensure_session）
+/// 其中会话重定位部分经 Nexus（prune_sessions / memory_key / ensure_session）
 pub struct ChannelManager {
     channels: DashMap<ArcStr, Arc<Channel>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-    apply_channel_session_key_tx: mpsc::UnboundedSender<ApplyChannelSessionKey>,
-    /// channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelSessionKey 同一消费者 select! 等待）
+    apply_channel_memory_key_tx: mpsc::UnboundedSender<ApplyChannelMemoryKey>,
+    /// channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelMemoryKey 同一消费者 select! 等待）
     channel_task_tx: mpsc::UnboundedSender<ChannelTask>,
 }
 
@@ -122,13 +122,13 @@ impl ChannelManager {
     /// （消费者持一份 Arc<Self> 以便执行 apply_*；单例进程内长期存活，不构成引用环）
     pub fn new() -> Arc<Self> {
         // agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
-        let (apply_channel_session_key_tx, mut apply_channel_session_key_rx) = mpsc::unbounded_channel::<ApplyChannelSessionKey>();
-        // channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelSessionKey 同一消费者 select! 等待）
+        let (apply_channel_memory_key_tx, mut apply_channel_memory_key_rx) = mpsc::unbounded_channel::<ApplyChannelMemoryKey>();
+        // channel 配置变更串行队列（/bind、/unbind；与 ApplyChannelMemoryKey 同一消费者 select! 等待）
         let (channel_task_tx, mut channel_task_rx) = mpsc::unbounded_channel::<ChannelTask>();
 
         let this = Arc::new(Self {
             channels: DashMap::new(),
-            apply_channel_session_key_tx,
+            apply_channel_memory_key_tx,
             channel_task_tx,
         });
 
@@ -137,9 +137,9 @@ impl ChannelManager {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    change = apply_channel_session_key_rx.recv() => {
+                    change = apply_channel_memory_key_rx.recv() => {
                         match change {
-                            Some(ApplyChannelSessionKey { channel_id, agent_id, role_name, event_id, done }) => {
+                            Some(ApplyChannelMemoryKey { channel_id, agent_id, role_name, event_id, done }) => {
                                 let rst = consumer.apply_channel_key(&channel_id, agent_id, role_name, event_id).await;
                                 let _ = done.send(rst);
                             }
@@ -172,7 +172,7 @@ impl ChannelManager {
         event_id: Option<Option<ArcStr>>,
     ) -> Result<()> {
         let (done_tx, done_rx) = oneshot::channel();
-        self.apply_channel_session_key_tx.send(ApplyChannelSessionKey {
+        self.apply_channel_memory_key_tx.send(ApplyChannelMemoryKey {
             channel_id,
             agent_id,
             role_name,
@@ -226,7 +226,7 @@ impl ChannelManager {
         // 1. 清理无任何 channel 绑定的会话（pipeline/trigger 一并清理）
         nexus.prune_sessions().await;
         // 2. 新会话标识对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        nexus.ensure_session(Arc::new(SessionKey {
+        nexus.ensure_session(Arc::new(MemoryKey {
             agent_id: cc.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: cc.role_name.clone(),
@@ -259,11 +259,11 @@ impl ChannelManager {
     }
 
     /// 按 channel 定位会话二元组（config agent_id/role_name + 运行态事件；channel 不存在返回 None）
-    pub async fn session_key(&self, channel_id: &str) -> Option<SessionKey> {
+    pub async fn memory_key(&self, channel_id: &str) -> Option<MemoryKey> {
         let ch = ConfigManager::get().channel(channel_id).await?;
         let c = self.channels.get(channel_id)?;
         // 运行态事件（未绑定/缺失回退角色模式，即 None）
-        Some(SessionKey {
+        Some(MemoryKey {
             agent_id: ch.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: ch.role_name.clone(),

@@ -5,14 +5,14 @@ use arcstr::ArcStr;
 use dashmap::DashMap;
 use kissbot_llm::Session;
 
-use crate::types::SessionKey;
+use crate::types::MemoryKey;
 
 /// 会话管理器：汇总所有绑定 channel 的 (agent_id, role_event) 去重维护会话集合
-/// （session_key 仅用于去重；agent_id 直接取 key 的 agent_id 字段）。
+/// （memory_key 仅用于去重；agent_id 直接取 key 的 agent_id 字段）。
 /// 会话上下文本体（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担，
 /// 本结构只负责「按会话标识去重持有」与「无绑定会话清理」。
 pub struct SessionManager {
-    sessions: DashMap<Arc<SessionKey>, Arc<Session>>,
+    sessions: DashMap<Arc<MemoryKey>, Arc<Session>>,
     /// 数据目录（作为会话上下文缓存/历史归档的路径基准，随 session_id 传给 Session）
     data_dir: ArcStr,
 }
@@ -27,7 +27,7 @@ impl SessionManager {
 
     /// 定位会话，不存在则创建（返回 (会话, 是否新建)）；
     /// 新建时完成上下文恢复（recover_from_cache）；pipeline 同步与系统提示词初始化由调用方在拿到会话后执行
-    pub async fn get_or_create(&self, key: Arc<SessionKey>) -> (Arc<Session>, bool) {
+    pub async fn get_or_create(&self, key: Arc<MemoryKey>) -> (Arc<Session>, bool) {
         if let Some(s) = self.sessions.get(key.as_ref()) {
             return (s.clone(), false);
         }
@@ -48,7 +48,7 @@ impl SessionManager {
     }
 
     /// 只保留仍在绑定集合中的会话（绑定信息变化后清理无绑定会话）
-    pub fn retain(&self, keys: &HashSet<Arc<SessionKey>>) {
+    pub fn retain(&self, keys: &HashSet<Arc<MemoryKey>>) {
         self.sessions.retain(|k, _| keys.contains(k));
     }
 
@@ -60,8 +60,8 @@ mod tests {
 
     use kissbot_api::RoleEvent;
 
-    fn key(agent: &str, role: &str) -> SessionKey {
-        SessionKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from(role))) }
+    fn key(agent: &str, role: &str) -> MemoryKey {
+        MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from(role))) }
     }
 
     /// 测试用 SessionManager（data_dir 指向临时目录；会话持久化路径仅构造不落盘）
@@ -81,7 +81,7 @@ mod tests {
         assert!(!new2, "已存在不应报告新建");
         assert!(Arc::ptr_eq(&s1, &s2), "同 key 应返回同一 Session");
         // 不同事件是不同会话
-        let k_event = Arc::new(SessionKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))) });
+        let k_event = Arc::new(MemoryKey { agent_id: ArcStr::from("a1"), role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))) });
         let (s3, _) = mgr.get_or_create(k_event).await;
         assert!(!Arc::ptr_eq(&s1, &s3), "不同事件应返回不同 Session");
     }

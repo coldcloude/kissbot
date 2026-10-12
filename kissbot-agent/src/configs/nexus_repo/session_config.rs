@@ -12,10 +12,10 @@ use kissbot_api::{
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
 
-use crate::{configs::nexus_repo::pipeline_config::*, types::SessionKey};
+use crate::{configs::nexus_repo::pipeline_config::*, types::MemoryKey};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct AgentRoleConfigMap {
+struct SessionConfigMergeMap {
     llm: Option<Arc<LLMConfig>>,
     compress: Option<Arc<CompressConfig>>,
     memory_recover: Option<Arc<MemoryRecoverConfig>>,
@@ -25,23 +25,23 @@ struct AgentRoleConfigMap {
     pipeline: Option<Arc<PipelineConfig>>,
 }
 
-impl_option_arc_field!(LLMConfig => llm, AgentRoleConfigMap);
-impl_option_arc_field!(CompressConfig => compress, AgentRoleConfigMap);
-impl_option_arc_field!(MemoryRecoverConfig => memory_recover, AgentRoleConfigMap);
-impl_option_arc_field!(ChannelBatchConfig => channel_batch, AgentRoleConfigMap);
-impl_option_arc_field!(OutChannelConfig => out_channel, AgentRoleConfigMap);
-impl_option_arc_field!(GroupSetConfig => group_set, AgentRoleConfigMap);
-impl_option_arc_field!(PipelineConfig => pipeline, AgentRoleConfigMap);
+impl_option_arc_field!(LLMConfig => llm, SessionConfigMergeMap);
+impl_option_arc_field!(CompressConfig => compress, SessionConfigMergeMap);
+impl_option_arc_field!(MemoryRecoverConfig => memory_recover, SessionConfigMergeMap);
+impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMergeMap);
+impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMergeMap);
+impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMergeMap);
+impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMergeMap);
 
-impl_option_arc_field_map!(AgentRoleConfigMap);
+impl_option_arc_field_map!(SessionConfigMergeMap);
 
-trait AgentRoleConfigMapField<C: MergeSelf> {
+trait SessionConfigMergeMapField<C: MergeSelf> {
     fn set(&mut self, config: Arc<C>);
 }
 
-macro_rules! impl_agent_role_config_map_field {
+macro_rules! impl_session_config_merge_map_field {
     ($ty:ty) => {
-        impl AgentRoleConfigMapField<$ty> for AgentRoleConfigMap {
+        impl SessionConfigMergeMapField<$ty> for SessionConfigMergeMap {
             fn set(&mut self, config: Arc<$ty>) {
                 let config = if let Some(mut old_config) = self.take::<$ty>() {
                     let old_config_mut = Arc::make_mut(&mut old_config);
@@ -56,29 +56,29 @@ macro_rules! impl_agent_role_config_map_field {
     };
 }
 
-impl_agent_role_config_map_field!(LLMConfig);
-impl_agent_role_config_map_field!(CompressConfig);
-impl_agent_role_config_map_field!(MemoryRecoverConfig);
-impl_agent_role_config_map_field!(ChannelBatchConfig);
-impl_agent_role_config_map_field!(OutChannelConfig);
-impl_agent_role_config_map_field!(GroupSetConfig);
-impl_agent_role_config_map_field!(PipelineConfig);
+impl_session_config_merge_map_field!(LLMConfig);
+impl_session_config_merge_map_field!(CompressConfig);
+impl_session_config_merge_map_field!(MemoryRecoverConfig);
+impl_session_config_merge_map_field!(ChannelBatchConfig);
+impl_session_config_merge_map_field!(OutChannelConfig);
+impl_session_config_merge_map_field!(GroupSetConfig);
+impl_session_config_merge_map_field!(PipelineConfig);
 
-impl AgentRoleConfigMap {
+impl SessionConfigMergeMap {
     pub fn set<C: MergeSelf>(&mut self, config: Arc<C>)
     where
-        Self: AgentRoleConfigMapField<C>,
+        Self: SessionConfigMergeMapField<C>,
     {
-        <Self as AgentRoleConfigMapField<C>>::set(self, config)
+        <Self as SessionConfigMergeMapField<C>>::set(self, config)
     }
 }
 
 /// agent 级 context 配置（key = agent_id，覆盖全局默认；未配字段回落全局默认常量）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentRoleConfig {
-    config_map: Arc<AgentRoleConfigMap>,
+    config_map: Arc<SessionConfigMergeMap>,
     /// key = role_name（role 覆盖 agent 默认）
-    roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfigMap>>>,
+    roles: Arc<HashMap<ArcStr, Arc<SessionConfigMergeMap>>>,
 }
 
 
@@ -116,7 +116,7 @@ macro_rules! impl_agent_role_config_field {
                         role_config_map_mut.set::<$ty>(config);
                         role_config_map
                     } else {
-                        let mut role_config_map = AgentRoleConfigMap::default();
+                        let mut role_config_map = SessionConfigMergeMap::default();
                         role_config_map.insert::<$ty>(config);
                         Arc::new(role_config_map)
                     };
@@ -172,15 +172,15 @@ impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 impl_option_arc_field_map!(SessionConfigMap);
 
 pub trait AgentRoleSessionConfigMapField<C: MergeSelf + MergeEffectiveConfig<E>, E> {
-    fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E;
+    fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> E;
 }
 
 macro_rules! impl_agent_role_session_config_map_field {
     ($ct:ty, $et:ty) => {
         impl AgentRoleSessionConfigMapField<$ct, $et> for SessionConfigMap {
-            fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> $et {
-                let merge_config = if let Some(agent_role_config) = agents.get(session_key.agent_id.as_str()) {
-                    agent_role_config.build::<$ct>(session_key.role_event.role_name.as_str())
+            fn create(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> $et {
+                let merge_config = if let Some(agent_role_config) = agents.get(memory_key.agent_id.as_str()) {
+                    agent_role_config.build::<$ct>(memory_key.role_event.role_name.as_str())
                 } else {
                     <$ct>::default()
                 };
@@ -199,11 +199,11 @@ impl_agent_role_session_config_map_field!(GroupSetConfig, GroupSetConfig);
 impl_agent_role_session_config_map_field!(PipelineConfig, PipelineConfig);
 
 impl SessionConfigMap {
-    pub fn create<C, E>(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, session_key: &SessionKey) -> E
+    pub fn create<C, E>(agents: &HashMap<ArcStr, Arc<AgentRoleConfig>>, memory_key: &MemoryKey) -> E
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         Self: AgentRoleSessionConfigMapField<C, E>,
     {
-        <Self as AgentRoleSessionConfigMapField<C, E>>::create(agents, session_key)
+        <Self as AgentRoleSessionConfigMapField<C, E>>::create(agents, memory_key)
     }
 }

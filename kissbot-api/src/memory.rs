@@ -364,7 +364,7 @@ mod tests {
         let back: RoleEvent = serde_json::from_value(json!({"role_name": "dev", "event_id": "e1"})).unwrap();
         assert_eq!(back, event);
 
-        // 值相等 + 可作 HashSet 键（Arc<RoleEvent> / Arc<SessionKey> 依赖它）
+        // 值相等 + 可作 HashSet 键（Arc<RoleEvent> / Arc<MemoryKey> 依赖它）
         let mut set = HashSet::new();
         set.insert(RoleEvent::with_event(ArcStr::from("dev"), ArcStr::from("e1")));
         assert!(set.contains(&RoleEvent::with_event(ArcStr::from("dev"), ArcStr::from("e1"))));

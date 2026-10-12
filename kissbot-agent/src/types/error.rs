@@ -2,7 +2,7 @@
 
 use arcstr::ArcStr;
 
-use crate::types::SessionKey;
+use crate::types::MemoryKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -55,7 +55,7 @@ pub enum Error {
     InternalError(ArcStr),
 
     #[error("Pipeline {0}: {1} not found for session {2:?}")]
-    PipelineNotFound(ArcStr, ArcStr, SessionKey)
+    PipelineNotFound(ArcStr, ArcStr, MemoryKey)
 }
 
 /// kissbot-llm 错误逐变体映射到 agent 错误（保持本枚举的对外错误表面不变）
