@@ -25,8 +25,7 @@ pub enum Error {
     #[error("File error: {0}")]
     FileError(#[from] kai_file::Error),
 
-    // spec 约定的错误类型（内部错误）；当前实现未产生该分支
-    #[allow(dead_code)]
+    // spec 约定的错误类型（内部错误）；当前实现未产生该分支    #[allow(dead_code)]
     #[error("Internal error: {0}")]
     InternalError(ArcStr),
 }

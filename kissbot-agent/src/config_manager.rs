@@ -204,7 +204,6 @@ impl ConfigManager {
     }
 
     /// 写 Station 配置（同 write_nexus_config 模式；station 功能未实现，暂无调用方）
-    #[allow(dead_code)]
     async fn write_station_config<F, R>(&self, op: F) -> Result<R>
     where
         F: FnOnce(&mut StationRepo) -> Result<R>,
@@ -387,7 +386,7 @@ impl ConfigManager {
     }
 
     // ---------- memory_structs ----------
-    #[allow(dead_code)] // memory-struct 功能未实现，待后续接入时使用
+    // memory-struct 功能未实现，待后续接入时使用
     pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
         let repo = self.nexus_repo.read().await;
         repo.memory_structs.iter().map(|(_, v)| v.as_ref().clone()).collect()

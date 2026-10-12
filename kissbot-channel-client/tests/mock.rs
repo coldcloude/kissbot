@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Weak, atomic::{AtomicU32, Ordering}};
 use arcstr::ArcStr;
