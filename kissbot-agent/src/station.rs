@@ -341,7 +341,10 @@ mod tests {
     }
 
     fn first_text(result: &CallToolResult) -> Option<&str> {
-        result.content.iter().find_map(|c| c.as_text())
+        result.content.iter().find_map(|c| match c {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
     }
 
     /// 注入远程路由缓存（工具名 → 直接子 station_id）
@@ -388,7 +391,7 @@ mod tests {
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
         let result = station.call_tool_local(ArcStr::from("read"), json!({ "path": "Cargo.toml" })).await.1.unwrap();
-        assert!(!result.is_error, "本地 read 应成功: {:?}", result.error_message());
+        assert!(!result.is_error, "本地 read 应成功: {:?}", first_text(&result).unwrap());
         assert!(first_text(&result).unwrap().contains("kissbot-agent"));
     }
 
@@ -564,7 +567,6 @@ mod tests {
         let result = station.call_tool(ArcStr::from("foreign-tool"), json!({}), ancestors(&[])).await.1.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content, json!({ "error": "boom" }), "第三方错误体原样透传");
-        assert!(result.kissbot_error().is_none(), "非 kissbot 来源不按错误码解释");
     }
 
     #[tokio::test]

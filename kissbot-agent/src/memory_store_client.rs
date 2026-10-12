@@ -411,13 +411,12 @@ mod tests {
         let result = tool_result_requests(vec![ToolResultRequest {
             agent_id: ArcStr::from("a1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-            tool_result: Arc::new(serde_json::json!({ "ok": true })),
-            tool_error: Arc::new(serde_json::Value::Null),
+            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"ok":true}"#))])),
             key: ArcStr::new(),
             time: ArcStr::from("2026-08-03 10:00:00"),
         }]);
         assert_eq!(result.force, 1);
-        assert_eq!(result.requests[0].tool_result["ok"], true);
+        assert!(matches!(&result.requests[0].tool_result.as_ref().unwrap()[0], ContentBlock::Text { text, .. } if text.as_str() == r#"{"ok":true}"#));
     }
 
     #[tokio::test]
@@ -472,7 +471,8 @@ mod tests {
     }
 
     use crate::message::pack_memory_messages;
-    use kissbot_llm::Message;
+    use kissbot_api::ContentBlock;
+use kissbot_llm::Message;
     use axum::routing::post;
     use axum::{Json, Router};
     use serde_json::json;
