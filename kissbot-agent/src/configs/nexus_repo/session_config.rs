@@ -55,9 +55,9 @@ impl SessionConfigMergeMap {
 /// agent 级 context 配置（key = agent_id，覆盖全局默认；未配字段回落全局默认常量）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentRoleConfig {
-    config_map: Arc<SessionConfigMergeMap>,
+    pub config_map: Arc<SessionConfigMergeMap>,
     /// key = role_name（role 覆盖 agent 默认）
-    roles: Arc<HashMap<ArcStr, Arc<SessionConfigMergeMap>>>,
+    pub roles: Arc<HashMap<ArcStr, Arc<SessionConfigMergeMap>>>,
 }
 
 impl AgentRoleConfig {

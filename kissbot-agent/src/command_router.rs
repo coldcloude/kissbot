@@ -4,8 +4,8 @@ use arcstr::ArcStr;
 use crate::configs::{OutChannel};
 use crate::types::{ChannelCommand, Error, Result};
 use crate::config_manager::ConfigManager;
-use kissbot_api::{ChannelUser, RESERVED_AGENT_ID};
-use crate::nexus::{Nexus, RESERVED_ROLE_NAME};
+use kissbot_api::{ChannelUser, RESERVED_AGENT_ID, RESERVED_ROLE_NAME};
+use crate::nexus::Nexus;
 
 pub struct CommandRouter;
 

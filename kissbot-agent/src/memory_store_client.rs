@@ -9,8 +9,8 @@ use kissbot_api::memory::{
     ChannelRecord, ChannelRequest, ChannelRequests, QueryRequest, RecentQuery, RecordKey,
     ThinkRequest, ThinkRequests, ToolCallRequest, ToolCallRequests, ToolResultRequest, ToolResultRequests,
 };
-use kissbot_api::{ApiResponse, RoleEvent};
-use kissbot_security::HEADER_API_KEY;
+use kissbot_api::{ApiConfig, ApiResponse, RoleEvent};
+use kissbot_security::{HEADER_API_KEY, SecurityConfig};
 use reqwest::Client;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -30,24 +30,13 @@ const TOOL_RESULT_KEY: ArcStr = arcstr::literal!("4");
 // ========== 共享发送段（各记录类型复用，只写一遍） ==========
 
 /// 共享的 HTTP 配置（client / base_url / api_key，各类型 context 经 Arc 同源引用）
-pub struct StoreHttpConfig {
+pub struct MemoryStoreHttpClient {
     client: Client,
     base_url: ArcStr,
     api_key: ArcStr,
 }
 
-impl StoreHttpConfig {
-    /// 构造共享 HTTP 配置（client / base_url / api_key 取自全局配置）
-    fn new() -> Self {
-        let api_config = kissbot_api::ApiConfig::get();
-        let security = kissbot_security::SecurityConfig::get();
-        Self {
-            client: Client::new(),
-            base_url: api_config.memory_store_url.clone(),
-            api_key: security.api_key.clone(),
-        }
-    }
-
+impl MemoryStoreHttpClient {
     /// POST {base_url}{path}，带 X-Api-Key 鉴权头；base_url 空则跳过（Ok）；
     /// 非 2xx 返回 Err（错误含状态码与返回体）
     async fn send_store_request(
@@ -138,39 +127,47 @@ where
 
 pub struct MemoryStoreClient {
     /// 共享 HTTP 配置（与各 context 同一 Arc；读路径 read_recent_for_context 也经它发请求）
-    config: Arc<StoreHttpConfig>,
+    http_client: Arc<MemoryStoreHttpClient>,
     channel_appender: FileObjectAppender<ArcStr, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
     think_appender: FileObjectAppender<ArcStr, ThinkRequest, StoreSender<ThinkStoreContext>, ThinkStoreContext, LoggingErrorHandler>,
     tool_call_appender: FileObjectAppender<ArcStr, ToolCallRequest, StoreSender<ToolCallStoreContext>, ToolCallStoreContext, LoggingErrorHandler>,
     tool_result_appender: FileObjectAppender<ArcStr, ToolResultRequest, StoreSender<ToolResultStoreContext>, ToolResultStoreContext, LoggingErrorHandler>,
 }
 
+/// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
+pub type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
+
 impl MemoryStoreClient {
     /// 指定共享 HTTP 配置构造（new() 内部走此路径；测试注入 mock store 地址用）
-    fn with_config(config: Arc<StoreHttpConfig>) -> Self {
+    fn with_config(base_url: ArcStr, api_key: ArcStr) -> Self {
         // 共享 HTTP 配置：self 与各类型 context 经 Arc 同源引用（client / base_url / api_key 一份）
+        let http_client = Arc::new(MemoryStoreHttpClient {
+            client: Client::new(),
+            base_url,
+            api_key,
+        });
         Self {
-            config: config.clone(),
+            http_client: http_client.clone(),
             channel_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ChannelStoreContext { config: config.clone() })),
+                Arc::new(StoreSender::new(ChannelStoreContext { http_client: http_client.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             think_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ThinkStoreContext { config: config.clone() })),
+                Arc::new(StoreSender::new(ThinkStoreContext { http_client: http_client.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             tool_call_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ToolCallStoreContext { config: config.clone() })),
+                Arc::new(StoreSender::new(ToolCallStoreContext { http_client: http_client.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
             ),
             tool_result_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ToolResultStoreContext { config })),
+                Arc::new(StoreSender::new(ToolResultStoreContext { http_client: http_client.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,
@@ -179,8 +176,9 @@ impl MemoryStoreClient {
     }
 
     pub fn new() -> Self {
-        // 共享 HTTP 配置：各类型 context 经 Arc 同源引用（client / base_url / api_key 一份）
-        Self::with_config(Arc::new(StoreHttpConfig::new()))
+        let api_config = ApiConfig::get();
+        let security = SecurityConfig::get();
+        Self::with_config(api_config.memory_store_url.clone(), security.api_key.clone())
     }
 
     pub async fn push_channel_record(&self, record: ChannelRequest) {
@@ -193,7 +191,7 @@ impl MemoryStoreClient {
         self.think_appender.append(THINK_KEY.clone(), vec![record]).await;
     }
 
-    /// 推送 tool-call 记录（station 工具调用后写入记忆）
+    /// 推送 tool-call 记录（station 工具调用前写入记忆）
     pub async fn push_tool_call(&self, record: ToolCallRequest) {
         self.tool_call_appender.append(TOOL_CALL_KEY.clone(), vec![record]).await;
     }
@@ -203,99 +201,34 @@ impl MemoryStoreClient {
         self.tool_result_appender.append(TOOL_RESULT_KEY.clone(), vec![record]).await;
     }
 
-    /// 记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
-    /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
-    /// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序返回
-    /// （HTTP 经共享 config.send_store_query 发送）
-    /// 参数：role_event 角色 + 事件模式、memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
-    pub async fn read_recent_for_context(
-        &self,
-        agent_id: ArcStr,
-        role_event: Arc<RoleEvent>,
-        memory_time_secs: u64,
-        memory_count: usize,
-    ) -> Result<Vec<MessageContent>> {
-        // 时间窗起点计算失败（checked_sub_signed 溢出）→ 直接报错，不静默回退
-        let start = chrono::Local::now()
-            .checked_sub_signed(chrono::Duration::seconds(memory_time_secs as i64))
-            .map(|t| ArcStr::from(t.format("%Y-%m-%d %H:%M:%S").to_string()))
-            .ok_or_else(|| Error::MemoryTimeWindow("计算记忆时间窗起点失败".into()))?;
-
-        let count = memory_count;
-
-        let agent_id = ArcStr::from(agent_id);
-        let role_event = role_event.clone();
-
-        // ===== Query1：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
+    pub async fn query_last(&self, agent_id: ArcStr, role_event: Arc<RoleEvent>, count: u32) -> Result<QueryChannelData> {
         let body = RecentQuery {
-            agent_id: agent_id.clone(),
-            role_event: role_event.clone(),
-            count: count as u32,
+            agent_id,
+            role_event,
+            count,
         };
-        // 响应反序列化为类型化 ApiResponse<QueryChannelData>（tuple 由 serde 解析，无需手拼索引）
-        let resp: ApiResponse<QueryChannelData> = self.config
-            .send_store_query("/store/query/channel/recent", &body).await
-            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
-        let groups = resp.data.unwrap_or_default();
+        let resp: ApiResponse<QueryChannelData> = self.http_client
+        .send_store_query("/store/query/channel/recent", &body).await
+        .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
+        resp.data.ok_or_else(|| Error::InternalError(resp.error.unwrap_or_default()))
+    }
 
-        // ===== 解析：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
-        // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
-        let mut map: BTreeMap<(ArcStr, u64), MessageContent> = BTreeMap::new();
-        parse_channel_groups(groups, &mut map);
-
-        // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
-        // 一并在此处理；Query1 最旧若为非文本，其同时间组除非文本外无其他记录（否则文本记录会占据更小首键）
-        let Some((ln, _)) = map.keys().next() else {
-            return Ok(Vec::new());
-        };
-        let ln = ln.clone();
-        // 不足 N 条：直接返回（无需 Query2）。理论上去重后记录不重复，map 大小即取到的数量；
-        // 注意：以解析后文本数（map.len()）判定——非文本记录在最后 N 内被跳过时也会提前返回
-        if map.len() < count {
-            return Ok(map.into_values().collect());
-        }
-        // M = min(时间窗起点 start, ln)
-        let m = if start.as_str() < ln.as_str() { start } else { ln.clone() };  // M = min(cutoff, ln)
-
-        // ===== Query2：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
-        // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 map 去重）
+    pub async fn query_recent(&self, agent_id: ArcStr, role_event: Arc<RoleEvent>, start_time: ArcStr, end_time: ArcStr) -> Result<QueryChannelData> {
         let body = QueryRequest {
             agent_id,
             role_event,
-            start_time: m,
-            end_time: ln,
+            start_time,
+            end_time,
         };
-        let resp: ApiResponse<QueryChannelData> = self.config
-            .send_store_query("/store/query/channel", &body).await
-            .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
-        parse_channel_groups(resp.data.unwrap_or_default(), &mut map);
-        Ok(map.into_values().collect())
-    }
-}
-
-/// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
-type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
-
-/// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
-/// 同键重复记录只保留第一条（两查询共用 map → 并集自动去重，迭代天然按 (time, sn) 升序）
-/// 文本提取走 extract_content（递归收集全部 Text 段）
-fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u64), MessageContent>) {
-    for (_, records) in groups {
-        for (_, rec) in records {
-            let time = rec.time.clone();  // 键用（MessageContent 值不保留 time）
-            let sn = rec.sn;
-            let key = (time, sn);
-            // 同 (time, sn) 已存在（两查询并集在 ln 处重叠）→ 提前跳过，免去 user_name clone 与文本提取
-            if map.contains_key(&key) {
-                continue;
-            }
-            map.insert(key, extract_content(rec.user_name, &rec.content, rec.is_self));
-        }
+        let resp: ApiResponse<QueryChannelData> = self.http_client
+        .send_store_query("/store/query/channel", &body).await
+        .map_err(|e| Error::MemoryStoreError(format!("读取记忆失败: {}", e).into()))?;
+        resp.data.ok_or_else(|| Error::InternalError(resp.error.unwrap_or_default()))
     }
 }
 
 struct ChannelStoreContext {
-    config: Arc<StoreHttpConfig>,
+    http_client: Arc<MemoryStoreHttpClient>,
 }
 
 fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
@@ -305,14 +238,14 @@ fn channel_requests(records: Vec<ChannelRequest>) -> ChannelRequests {
 #[async_trait]
 impl FileAppendWriterContext<ArcStr, ChannelRequest> for ChannelStoreContext {
     async fn write(&mut self, _key: &ArcStr, records: Vec<ChannelRequest>) -> std::result::Result<(), kai_file::Error> {
-        self.config.send_store_request("/store/channel", &channel_requests(records)).await
+        self.http_client.send_store_request("/store/channel", &channel_requests(records)).await
     }
 }
 
 // ========== think / tool-call / tool-result 的 context 与 requests 构造 ==========
 
 pub struct ThinkStoreContext {
-    config: Arc<StoreHttpConfig>,
+    http_client: Arc<MemoryStoreHttpClient>,
 }
 
 fn think_requests(records: Vec<ThinkRequest>) -> ThinkRequests {
@@ -322,12 +255,12 @@ fn think_requests(records: Vec<ThinkRequest>) -> ThinkRequests {
 #[async_trait]
 impl FileAppendWriterContext<ArcStr, ThinkRequest> for ThinkStoreContext {
     async fn write(&mut self, _key: &ArcStr, records: Vec<ThinkRequest>) -> std::result::Result<(), kai_file::Error> {
-        self.config.send_store_request("/store/think", &think_requests(records)).await
+        self.http_client.send_store_request("/store/think", &think_requests(records)).await
     }
 }
 
 pub struct ToolCallStoreContext {
-    config: Arc<StoreHttpConfig>,
+    http_client: Arc<MemoryStoreHttpClient>,
 }
 
 fn tool_call_requests(records: Vec<ToolCallRequest>) -> ToolCallRequests {
@@ -337,12 +270,12 @@ fn tool_call_requests(records: Vec<ToolCallRequest>) -> ToolCallRequests {
 #[async_trait]
 impl FileAppendWriterContext<ArcStr, ToolCallRequest> for ToolCallStoreContext {
     async fn write(&mut self, _key: &ArcStr, records: Vec<ToolCallRequest>) -> std::result::Result<(), kai_file::Error> {
-        self.config.send_store_request("/store/tool-call", &tool_call_requests(records)).await
+        self.http_client.send_store_request("/store/tool-call", &tool_call_requests(records)).await
     }
 }
 
 pub struct ToolResultStoreContext {
-    config: Arc<StoreHttpConfig>,
+    http_client: Arc<MemoryStoreHttpClient>,
 }
 
 fn tool_result_requests(records: Vec<ToolResultRequest>) -> ToolResultRequests {
@@ -352,7 +285,7 @@ fn tool_result_requests(records: Vec<ToolResultRequest>) -> ToolResultRequests {
 #[async_trait]
 impl FileAppendWriterContext<ArcStr, ToolResultRequest> for ToolResultStoreContext {
     async fn write(&mut self, _key: &ArcStr, records: Vec<ToolResultRequest>) -> std::result::Result<(), kai_file::Error> {
-        self.config.send_store_request("/store/tool-result", &tool_result_requests(records)).await
+        self.http_client.send_store_request("/store/tool-result", &tool_result_requests(records)).await
     }
 }
 
@@ -421,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_store_request_skips_empty_base_url() {
-        let config = StoreHttpConfig {
+        let config = MemoryStoreHttpClient {
             client: Client::new(),
             base_url: ArcStr::new(),
             api_key: ArcStr::from("k"),
@@ -445,7 +378,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let config = StoreHttpConfig {
+        let config = MemoryStoreHttpClient {
             client: Client::new(),
             base_url: ArcStr::from(format!("http://{}", addr)),
             api_key: ArcStr::from("k"),
@@ -461,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn send_store_query_empty_base_url_errors() {
         // base_url 空 → 相对路径请求 → reqwest 报错（读路径无 store 配置不可静默跳过，与写路径 Ok 跳过语义不同）
-        let config = StoreHttpConfig {
+        let config = MemoryStoreHttpClient {
             client: Client::new(),
             base_url: ArcStr::new(),
             api_key: ArcStr::from("k"),
@@ -564,11 +497,7 @@ use kissbot_llm::Message;
 
     // 测试构造：指定 memory-store 根地址（覆盖 new() 的 ApiConfig 读取，避免与 http_server 测试的全局配置冲突）
     fn client_at(url: &str) -> MemoryStoreClient {
-        MemoryStoreClient::with_config(Arc::new(StoreHttpConfig {
-            client: Client::new(),
-            base_url: ArcStr::from(url),
-            api_key: ArcStr::from("k"),
-        }))
+        MemoryStoreClient::with_config(ArcStr::from(url),ArcStr::from("k"))
     }
 
     #[tokio::test]

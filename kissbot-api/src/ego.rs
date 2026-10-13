@@ -9,7 +9,10 @@ use crate::channel::ChannelUser;
 /// 保留 agent 的 memory-store/ego agent_id（"0"）
 pub const RESERVED_AGENT_ID: ArcStr = arcstr::literal!("0");
 
-/// 角色键：agent + 角色名（ego 无事件概念，保持纯角色名）
+/// 保留 role：空串 = 保留 role
+pub const RESERVED_ROLE_NAME: ArcStr = ArcStr::new();
+
+/// 角色键：agent + 角色名
 ///
 /// 内部字段用 `ArcStr`，并实现 `PartialEq` / `Hash`，因此 `Arc<RoleKey>`
 /// 可直接作为 Set / Map 的键。

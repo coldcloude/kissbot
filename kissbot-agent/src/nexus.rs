@@ -5,34 +5,25 @@ use std::time::Duration;
 use arcstr::ArcStr;
 use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
 use kissbot_llm::{
-    EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolConfig,
+    EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig,
 };
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannel};
+use crate::configs::{GroupSetConfig, OutChannel};
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
-use crate::types::{
-    Error, MemoryKey, Result, SessionKey,
-};
+use crate::types::{Error, MemoryKey, Result, SessionKey};
 use crate::session_manager::SessionManager;
 use crate::station::{Station, tool_config_from_mcp};
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
-use crate::message::pack_memory_messages;
 use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
 use kissbot_api::message::Content;
-
-/// 保留 role：空串 = 保留 role
-pub const RESERVED_ROLE_NAME: ArcStr = ArcStr::new();
-
-/// 默认系统提示词
-pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用可用工具完成用户任务");
 
 // 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
 // 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发重置，
@@ -43,14 +34,12 @@ pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用�
 static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 
 pub struct Nexus {
-    memory_store_client: Arc<MemoryStoreClient>,
-    memory_ego_client: Arc<MemoryEgoClient>,
-    session_manager: Arc<SessionManager>,
-    provider_manager: Arc<ProviderManager>,
-    pipeline_manager: Arc<PipelineManager>,
-    /// 每 channel 运行时管理（ChannelManager：内部 DashMap 无锁并发，含 pending/event/client；
-    /// 并持有 channel 变更串行队列，见 ChannelManager::change_channel_key / channel_command）
-    channel_manager: Arc<ChannelManager>,
+    pub memory_store_client: Arc<MemoryStoreClient>,
+    pub memory_ego_client: Arc<MemoryEgoClient>,
+    pub session_manager: Arc<SessionManager>,
+    pub provider_manager: Arc<ProviderManager>,
+    pub pipeline_manager: Arc<PipelineManager>,
+    pub channel_manager: Arc<ChannelManager>,
 }
 
 impl Nexus {
@@ -135,15 +124,6 @@ impl Nexus {
         session
     }
 
-    /// role 模式上下文构建（记忆回溯 reducer 调用）：查询记忆打包 → 归档旧上下文+清空缓存（内部幂等）→ 重建
-    /// 取记忆用会话状态保存的 agent_id（来自会话 key）
-    pub async fn build_context_from_memory_store(&self, memory_key: Arc<MemoryKey>) -> Vec<Message> {
-        let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig,EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
-        self.memory_store_client
-            .read_recent_for_context(memory_key.agent_id.clone(), memory_key.role_event.clone(), cfg.memory_time_secs, cfg.memory_count).await
-            .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
-    }
-
     /// 按当前全部 channel 的绑定集合清理无绑定会话（pipeline/trigger 一并清理）；
     /// pub(crate)：channel 侧的 apply_channel_key 在会话重定位时调用
     pub(crate) async fn prune_sessions(&self) {
@@ -157,47 +137,6 @@ impl Nexus {
         self.session_manager.retain(&keys);
         // pipeline/trigger 与会话同生命周期：不清理则被清会话的 trigger 与合批任务会一直留着
         self.pipeline_manager.retain(&keys);
-    }
-
-    /// 根据 agent_id 获取系统提示词（新建会话时由 MemoryEgoSystemPrompter 调用）：
-    /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
-    /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
-    /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
-    pub async fn system_prompt_for_agent(&self, agent_id: ArcStr, role_name: ArcStr) -> Option<ArcStr> {
-        if agent_id == RESERVED_AGENT_ID {
-            return None;
-        }
-
-        let mut system_parts = vec![];
-
-        // 1. agent 元数据（按 agent_id 查询）-> 身份 markdown
-        if let Ok(Some(metadata)) = self.memory_ego_client.get_agent(agent_id.clone()).await {
-            system_parts.push(crate::ego_md::build_ego_identity_md(&metadata));
-        }
-        // 2. 个体识别（按 agent_id 查询）-> 个体识别 markdown，并收集匹配个体名
-        if let Ok(Some(individuals)) = self.memory_ego_client.get_individuals(agent_id.clone()).await {
-            system_parts.push(crate::ego_md::build_ego_individual_recognition_md(&individuals, None));
-        }
-        // 3. 角色设定（按 agent_id + role_name 查询）-> 角色 markdown
-        if !role_name.is_empty() {
-            if let Ok(Some(role)) = self.memory_ego_client.get_role(agent_id, role_name).await {
-                system_parts.push(crate::ego_md::build_role_play_md(&role, None));
-            }
-        }
-
-        if system_parts.is_empty() {
-            return None;
-        }
-
-        Some(ArcStr::from(system_parts.join("\n")))
-    }
-
-    pub async fn get_system_prompt(&self, memory_key: &MemoryKey) -> ArcStr {
-        if let Some(prompt) = self.system_prompt_for_agent(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
-            prompt
-        } else {
-            DEFAULT_SYSTEM_PROMPT.clone()
-        }
     }
 
     // ==================== 运行状态修改（管理命令入口） ====================
@@ -350,26 +289,9 @@ impl Nexus {
         }
     }
 
-    /// 调用 LLM：交给 ProviderManager（工厂去重 + 有效模型配置解析 + provider_type 分派 + kissbot-llm 带重试调用）
-    pub async fn call_provider_model(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
-        self.provider_manager.call(llm_cfg, messages, tools).await
-    }
-
     pub async fn run_pipeline(&self, memory_key: Arc<MemoryKey>, message: Message) -> Result<()> {
         let tools = self.tools_for_session(memory_key.clone()).await;
         self.pipeline_manager.run_pipeline(memory_key.as_ref(), message, &tools).await
-    }
-
-    pub async fn send_memory_think(&self, request: ThinkRequest) {
-        self.memory_store_client.push_think(request).await;
-    }
-
-    pub async fn send_memory_tool_call(&self, request: ToolCallRequest) {
-        self.memory_store_client.push_tool_call(request).await;
-    }
-
-    pub async fn send_memory_tool_result(&self, request: ToolResultRequest) {
-        self.memory_store_client.push_tool_result(request).await;
     }
 
     /// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
@@ -475,9 +397,6 @@ mod tests {
     use kissbot_api::channel::IncomingMessage;
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
-    use crate::pipelines::{
-        PP_IN_BATCH, PP_MSG_RAW, PP_OUT_CHANNEL, PP_PRESET_EVENT, PP_PRESET_ROLE, PP_SYS_DEFAULT, PP_TOOL_STATION,
-    };
     use crate::types::ChannelCommand;
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====

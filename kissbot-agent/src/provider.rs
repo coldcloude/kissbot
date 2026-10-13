@@ -3,9 +3,7 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use kissbot_api::AsyncCacheFactory;
 use kissbot_llm::{
-    AnthropicProvider, EffectiveLLMConfig, EffectiveModelConfig, Message, ModelResponse,
-    OpenAiProvider, Provider, ProviderConfig, ToolConfig, call_with_retry,
-    create_anthropic_provider, create_openai_provider,
+    AnthropicProvider, EffectiveLLMConfig, Message, ModelResponse, OpenAiProvider, Provider, ProviderConfig, ToolConfig, call_with_retry, create_anthropic_provider, create_openai_provider,
 };
 
 use crate::config_manager::ConfigManager;
@@ -44,7 +42,8 @@ impl ProviderManager {
     pub async fn call(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
         let provider = llm_cfg.provider.as_str();
         let model = llm_cfg.model.as_str();
-        let pm_cfg = self.model_config(provider, model).await?;
+        let pm_cfg = ConfigManager::get().provider_model_config(provider, model).await
+        .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider), ArcStr::from(model)))?;
         // 按 provider_type 分派实现（"openai" | "anthropic"）
         match pm_cfg.provider_config.provider_type.as_str() {
             "openai" => {
@@ -80,12 +79,6 @@ impl ProviderManager {
             },
             other => Err(Error::ModelProviderNotSupported(format!("未知 provider_type: {}", other).into())),
         }
-    }
-
-    /// 按 (provider, model) 取有效模型配置（provider 未配置返回 Err）
-    async fn model_config(&self, provider: &str, model: &str) -> Result<EffectiveModelConfig> {
-        ConfigManager::get().provider_model_config(provider, model).await
-            .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider), ArcStr::from(model)))
     }
 }
 

@@ -27,6 +27,7 @@ impl MemoryKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionKey {
     Memory(Arc<MemoryKey>),
     Raw(ArcStr),

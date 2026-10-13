@@ -5,100 +5,29 @@ use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
 
-use kissbot_llm::{Message, ModelResponse, Session, ToolCall, ToolConfig};
+use kissbot_llm::{Message, ModelResponse, Session, ToolCall, ToolConfig, session};
 
-use crate::{nexus::Nexus, types::{Result, SessionKey}};
-
-#[async_trait]
-pub trait AgentToolCaller: Send + Sync {
-    async fn call_tool(&self, tool_call: ToolCall) -> ToolCall;
-}
+use crate::{nexus::Nexus, types::{MemoryKey, Result, SessionKey}};
 
 #[async_trait]
-pub trait AgentMessageSender: Send + Sync {
-    async fn send_messages(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse>;
-}
-
-pub trait AgentTrigger: Send + Sync {}
-
-#[async_trait]
-pub trait AgentSystemPrompter: AgentTrigger {
+pub trait SystemPromptGenerator {
     async fn reset_system_prompt(&self);
 }
 
 #[async_trait]
-pub trait AgentInputProcessor: AgentTrigger {
-    async fn accept(&self, event: Arc<IncomingMessageEvent>);
+pub trait IncomingMessageProcessor {
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>);
 }
 
 #[async_trait]
-pub trait AgentOutputProcessor: Send + Sync {
-    async fn accept(&self, turn: usize, response: Result<ModelResponse>) -> (bool, Vec<Message>);
+pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptGenerator {}
+
+#[async_trait]
+pub trait AgentMessageProcessor: Send + Sync {
+    async fn process_messages(&self, messages: Vec<Message>);
 }
 
-pub struct AgentPipeline {
-    pub session_key: Arc<SessionKey>,
-    pub session: Arc<Session>,
-    pub message_sender: Arc<dyn AgentMessageSender>,
-    pub tool_caller: Arc<dyn AgentToolCaller>,
-    pub output_processor: Arc<dyn AgentOutputProcessor>,
-}
-
-impl AgentPipeline {
-    async fn call_tool(&self, tool_call: ToolCall) -> ToolCall {
-        let coordinator = Nexus::get();
-        // 1. 工具调用 key：UUID（ToolCall/ToolResult 详情与 channel 占位同 key 关联）
-        let tool_key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-        // 2. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
-        coordinator.send_memory_tool_call(self.session_key.as_ref(), tool_key.clone(), &tool_call).await;
-        // 3. 执行工具
-        let result = self.tool_caller.call_tool(tool_call).await;
-        // 4. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
-        coordinator.send_memory_tool_result(self.session_key.as_ref(), tool_key, &result).await;
-        result
-    }
-
-    async fn run_once(&self, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> (bool, Vec<Message>) {
-        let response = self.message_sender.send_messages(messages, tools).await;
-        match response {
-            Ok(mut res) => {
-                // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
-                // 任一有值才写，都 None 跳过
-                if res.reasoning_content.is_some() || res.thinking.is_some() {
-                    let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-                    Nexus::get().send_memory_think(self.session_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone()).await;
-                }
-                // 遍历执行 tool call
-                if let Some(mut tool_calls) = res.tool_calls.take() {
-                    let mut futs = Vec::with_capacity(tool_calls.len());
-                    for tool_call in tool_calls.drain(..) {
-                        let f = self.call_tool(tool_call);
-                        futs.push(f);
-                    }
-                    let tool_results = future::join_all(futs).await;
-                    res.tool_calls.replace(tool_results);
-                }
-                self.output_processor.accept(round, Ok(res)).await
-            }
-            Err(e) => {
-                self.output_processor.accept(round, Err(e)).await
-            }
-        }
-    }
-
-    pub async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) {
-        let mut round = 1 as usize;
-        let (mut next, mut messages) = self.run_once(round, vec![message], tools).await;
-        loop {
-            if next {
-                round = round + 1;
-                (next, messages) = self.run_once(round, messages, tools).await;
-            } else {
-                if !messages.is_empty() {
-                    self.session.context_append(messages).await;
-                }
-                break;
-            }
-        }
-    }
+#[async_trait]
+pub trait TokenReducer: Send + Sync + 'static {
+    async fn reduce(&self, session_key: SessionKey, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>);
 }

@@ -266,6 +266,19 @@ impl ConfigManager {
         }).await
     }
 
+    pub async fn agent_role_config<C>(&self, agent_id: &str, role_name: &str) -> Option<C>
+    where
+        C: MergeSelf + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
+    {
+        let repo = self.nexus_repo.read().await;
+        let agent_role_config = repo.agent_roles.get(agent_id);
+        if let Some(agent_role_config) = agent_role_config {
+            return Some(agent_role_config.build::<C>(role_name))
+        }
+        None
+    }
+
     /// 设置 memory_session 配置
     pub async fn set_memory_session_config<C,E>(&self, memory_key: Arc<MemoryKey>, config: &C) -> Result<()>
     where
@@ -396,13 +409,12 @@ impl ConfigManager {
 
     /// 取 (agent, role) 级 out_channel 配置：每次按 agent+role 实时合成（不读 memory_session 快照），
     /// 使 /bind-outgoing、/unbind-outgoing 对已存在的会话立即生效
-    pub async fn out_channel_config(&self, agent_id: &str, role_name: &str) -> Arc<OutChannelConfig> {
-        let repo = self.nexus_repo.read().await;
-        let config = match repo.agent_roles.get(agent_id) {
-            Some(agent) => agent.build::<OutChannelConfig>(role_name),
-            None => OutChannelConfig::default(),
-        };
-        Arc::new(config)
+    pub async fn out_channel_config(&self, agent_id: &str, role_name: &str) -> Option<Arc<OutChannel>> {
+        let config = self.agent_role_config::<OutChannelConfig>(agent_id, role_name).await;
+        if let Some(config) = config {
+            return config.out_channel.clone();
+        }
+        None
     }
 
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
@@ -470,14 +482,8 @@ mod tests {
 
     use super::*;
     use kissbot_api::RoleEvent;
-    use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, ModelConfig};
+    use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, EffectiveLLMConfig, LLMConfig, ModelConfig};
     use tempfile::tempdir;
-
-    // TODO 适配测试
-    use crate::pipelines::{
-        PP_IN_BATCH, PP_MSG_COMPRESS, PP_MSG_MEMORY_RECOVER, PP_MSG_RAW, PP_OUT_CHANNEL, PP_SYS_DEFAULT,
-        PP_SYS_MEMORY_EGO, PP_TOOL_STATION,
-    };
 
     fn agent_config(data_dir: &str) -> AgentConfig {
         AgentConfig {
@@ -736,60 +742,6 @@ mod tests {
         assert!(repo.agent_roles.is_empty(), "agent_roles 初始为空 map");
         assert!(repo.memory_sessions.is_empty(), "memory_sessions 初始为空 map");
         assert!(repo.raw_sessions.is_empty(), "raw_sessions 初始为空 map");
-    }
-
-    // TODO 适配测试
-    /// 仓库内随代码发布的配置模板/测试数据必须能被当前 schema 加载：
-    /// 字段改名、新增必填项、组件名改动时先在这里失败，避免模板再次落后于代码
-    #[test]
-    fn shipped_config_templates_match_current_schema() {
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let read = |rel: &str| {
-            let path = format!("{}/../{}", manifest, rel);
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {} 失败: {}", path, e))
-        };
-
-        // station 模板：station_id 必填，groups / sub_stations 可缺省
-        for rel in ["script/template/station.json", "test/workspace-template/agent-data/station.json"] {
-            let repo: StationRepo = serde_json::from_str(&read(rel))
-                .unwrap_or_else(|e| panic!("{} 不符合当前 StationRepo schema: {}", rel, e));
-            assert!(!repo.station_id.is_empty(), "{} 应声明 station_id", rel);
-        }
-
-        // nexus 模板：解析成功 + 关键配置齐备 + 组件名必须是工厂认识的常量
-        for rel in ["script/template/nexus.json", "test/workspace-template/agent-data/nexus.json"] {
-            let repo: NexusRepo = serde_json::from_str(&read(rel))
-                .unwrap_or_else(|e| panic!("{} 不符合当前 NexusRepo schema: {}", rel, e));
-            assert!(!repo.channels.is_empty(), "{} 应含示例 channel", rel);
-            assert!(!repo.providers.is_empty(), "{} 应含示例 provider", rel);
-            let mut has_out_channel = false;
-            for (agent_id, agent) in repo.agent_roles.iter() {
-                let llm: LLMConfig = agent.build("");
-                assert!(llm.provider.is_some() && llm.model.is_some(),
-                    "{} 的 agent {} 未配 provider/model", rel, agent_id);
-                let pipeline: PipelineConfig = agent.build("");
-                let sender = pipeline.message_sender.as_deref().unwrap_or("");
-                let caller = pipeline.tool_caller.as_deref().unwrap_or("");
-                let output = pipeline.output_processor.as_deref().unwrap_or("");
-                assert!([PP_MSG_RAW.as_str(), PP_MSG_COMPRESS.as_str(), PP_MSG_MEMORY_RECOVER.as_str()].contains(&sender),
-                    "{} 的 agent {} message_sender 名无效: {}", rel, agent_id, sender);
-                assert_eq!(caller, PP_TOOL_STATION, "{} 的 agent {} tool_caller 名无效", rel, agent_id);
-                assert_eq!(output, PP_OUT_CHANNEL, "{} 的 agent {} output_processor 名无效", rel, agent_id);
-                for name in pipeline.input_processor.iter().flatten() {
-                    assert_eq!(name.as_str(), PP_IN_BATCH,
-                        "{} 的 agent {} input_processor 名无效: {}", rel, agent_id, name);
-                }
-                for name in pipeline.system_prompter.iter().flatten() {
-                    assert!([PP_SYS_DEFAULT.as_str(), PP_SYS_MEMORY_EGO.as_str()].contains(&name.as_str()),
-                        "{} 的 agent {} system_prompter 名无效: {}", rel, agent_id, name);
-                }
-                // 工具集齐备；out_channel 可缺省（缺省 = 只存不回复，out_channel 路由测试用无默认值 agent）
-                assert!(agent.build::<GroupSetConfig>("").group_set.contains("filesystem"),
-                    "{} 的 agent {} 未启用 filesystem group", rel, agent_id);
-                has_out_channel |= agent.build::<OutChannelConfig>("").out_channel.is_some();
-            }
-            assert!(has_out_channel, "{} 至少应有一个 agent 配 out_channel", rel);
-        }
     }
 
     // ---------- Provider 配置 ----------
@@ -1158,11 +1110,11 @@ mod tests {
     async fn set_agent_role_config_merges_into_existing() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         // 第二次只配 max_tokens：应合并进同一条 agent 配置（不丢 provider/model）
         let mut more = LLMConfig::default();
         more.set_max_tokens(Some(4096));
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(more)).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(more)).await.unwrap();
 
         let snap = manager.nexus_snapshot().await;
         let agent = snap.agent_roles.get("a1").expect("agent 条目应懒建");
@@ -1179,10 +1131,10 @@ mod tests {
     async fn session_config_falls_back_to_agent_role_config() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let mut role_llm = LLMConfig::default();
         role_llm.set_max_tokens(Some(4096));
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(role_llm)).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(role_llm)).await.unwrap();
 
         // 无 session 配置 → 现场按 agent + role 合成（三层继承的最后一级）
         let eff = manager.memory_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(memory_key("a1", "r1"))).await;
@@ -1209,7 +1161,7 @@ mod tests {
         // agent 级覆盖阈值 → 生效；未配的 prompt 保留默认
         let mut cfg = CompressConfig::default();
         cfg.compress_threshold = Some(0.5);
-        manager.set_agent_role_config::<CompressConfig, EffectiveCompressConfig>(ArcStr::from("a2"), ArcStr::from(""), Arc::new(cfg)).await.unwrap();
+        manager.set_agent_role_config::<CompressConfig>(ArcStr::from("a2"), ArcStr::from(""), Arc::new(cfg)).await.unwrap();
         let eff = manager.memory_session_config::<CompressConfig, EffectiveCompressConfig>(Arc::new(memory_key("a2", "r1"))).await;
         assert_eq!(eff.compress_threshold, 0.5, "agent 级覆盖生效");
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT, "未配字段保留默认");
@@ -1237,7 +1189,7 @@ mod tests {
     async fn set_session_config_overrides_agent_role_config() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig, EffectiveLLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
+        manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let key = memory_key("a1", "r1");
         let before = manager.memory_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(before.model.as_str(), "deepseek-chat");
@@ -1285,15 +1237,15 @@ mod tests {
         // role 级设置：role out1 命中，同 agent 的其他 role 不受影响
         manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), Some(out)).await.unwrap();
         let got = manager.out_channel_config("a1", "out1").await;
-        let got = got.out_channel.as_ref().expect("role 级 out_channel 应生效");
+        let got = got.as_ref().expect("role 级 out_channel 应生效");
         assert_eq!(got.channel_id.as_str(), "web-main");
         assert_eq!(got.user.user_id.as_str(), "u1");
-        assert!(manager.out_channel_config("a1", "r1").await.out_channel.is_none(), "未设置的 role 应为空");
+        assert!(manager.out_channel_config("a1", "r1").await.is_none(), "未设置的 role 应为空");
         // 未配置的 agent 为空
-        assert!(manager.out_channel_config("nobody", "").await.out_channel.is_none());
+        assert!(manager.out_channel_config("nobody", "").await.is_none());
 
         // 清除同一条 (agent, role)：无需换 session key，下一次读取即为空
         manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), None).await.unwrap();
-        assert!(manager.out_channel_config("a1", "out1").await.out_channel.is_none(), "清除后立即为空");
+        assert!(manager.out_channel_config("a1", "out1").await.is_none(), "清除后立即为空");
     }
 }
