@@ -261,7 +261,9 @@ async fn flush_batch(
     events: Vec<Arc<IncomingMessageEvent>>,
 ) {
     match build_context(Arc::clone(memory_key), client, &events).await {
-        Ok(messages) => session.context_archive_and_clear_cache_and_reset_messages(messages).await,
+        Ok(messages) => {
+            let _ = session.context_archive_and_clear_cache_and_reset_messages(messages).await;
+        },
         Err(e) => warn!(
             "摘要记忆重建上下文失败，降级为普通合批（channel={}:{}:{}）: {:?}",
             channel.messenger_id, channel.self_user_id, channel.group_id, e

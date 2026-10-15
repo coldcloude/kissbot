@@ -1,13 +1,10 @@
 use std::sync::Arc;
 
-use arcstr::ArcStr;
 use async_trait::async_trait;
-use futures_util::future;
 use kissbot_api::IncomingMessageEvent;
 
-use kissbot_llm::{Message, ModelResponse, Session, ToolCall, ToolConfig, session};
-
-use crate::{nexus::Nexus, types::{MemoryKey, Result, SessionKey}};
+use kissbot_llm::{Message, Session, ToolCall};
+use crate::types::{Error, SessionKey};
 
 #[async_trait]
 pub trait SystemPromptGenerator {
@@ -30,4 +27,9 @@ pub trait AgentMessageProcessor: Send + Sync {
 #[async_trait]
 pub trait TokenReducer: Send + Sync + 'static {
     async fn reduce(&self, session_key: SessionKey, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>);
+}
+
+#[async_trait]
+pub trait ToolCaller: Send + Sync {
+    async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>);
 }

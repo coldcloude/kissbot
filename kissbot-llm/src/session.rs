@@ -1,3 +1,4 @@
+use std::collections::LinkedList;
 use std::path::PathBuf;
 
 use arcstr::ArcStr;
@@ -20,7 +21,7 @@ use crate::types::Message;
 /// 历史与当前缓存格式完全一致（都是 <session_id>.jsonl 每行一条 Message），
 /// 因此内存、缓存、历史三者统一在本结构体实现（会话上下文唯一入口）。
 pub struct SessionContext {
-    messages: Vec<Message>,
+    messages: LinkedList<Message>,
     /// 当前系统消息（模型上下文首条；含从缓存恢复的，直到下次发送前对比替换）
     system_message: Option<ArcStr>,
     /// 待定系统消息（set 只写这里，多次 set 只保留最近一次；下次发送前对比应用）
@@ -35,7 +36,7 @@ impl SessionContext {
     /// session_id 由调用方按自己的会话身份编码（须为文件名安全字符串，如 "{agent}-{role}"）
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self {
         Self {
-            messages: Vec::new(),
+            messages: LinkedList::new(),
             system_message: None,
             pending_system: None,
             data_dir: PathBuf::from(data_dir),
@@ -59,6 +60,11 @@ impl SessionContext {
         self.pending_system = Some(content);
     }
 
+    pub async fn write_current_cache(&mut self) -> Result<()> {
+        let mut file = self.open_cache_and_write_system_line().await?;
+        write_cache_lines(&mut file, &self.messages).await
+    }
+
     /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
     /// 与当前一致 → 仅清空待定；不一致 → 归档并清空当前上下文 →
     /// 应用新系统消息 → 从内存写回缓存（System + 消息行）
@@ -74,8 +80,7 @@ impl SessionContext {
         if self.messages.is_empty() {
             return Ok(());
         }
-        let mut file = self.open_cache_and_write_system_line().await?;
-        write_cache_lines(&mut file, &self.messages).await
+        self.write_current_cache().await
     }
 
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
@@ -89,9 +94,43 @@ impl SessionContext {
         write_cache_lines(&mut file, &messages).await?;
         // 内存追加
         for message in messages.drain(..) {
-            self.messages.push(message);
+            self.messages.push_back(message);
         }
         Ok(())
+    }
+
+    /// 回退消息。消息变化会导致重建缓存
+    pub async fn revert_until(&mut self, condition: &mut impl FnMut(&Message) -> bool) -> Result<Vec<Message>> {
+        let mut results = LinkedList::new();
+        let mut backup = false;
+        while let Some(msg) = self.messages.back() {
+            if condition(msg) {
+                break;
+            } else {
+                if !backup {
+                    self.archive_and_clear_cache_and_reset_messages(None).await?;
+                    backup = true;
+                }
+                if let Some(msg) = self.messages.pop_back() {
+                    results.push_front(msg);
+                }
+            }
+        }
+        if backup {
+            self.write_current_cache().await?;
+        }
+        Ok(results.into_iter().collect())
+    }
+
+    pub async fn revert(&mut self, mut count: usize) -> Result<Vec<Message>> {
+        self.revert_until(&mut |_| {
+            if count > 0 {
+                count = count - 1;
+                false
+            } else {
+                true
+            }
+        }).await
     }
 
     /// 从缓存恢复上下文：正序全量回读（LineReader 按时间顺序）装入内存；
@@ -99,35 +138,26 @@ impl SessionContext {
     pub async fn recover_from_cache(&mut self) -> Result<()> {
         let path = self.cache_path();
         if !path.exists() {
-            self.messages = Vec::new();
+            self.messages = LinkedList::new();
             self.system_message = None;
             return Ok(());
         }
         let mut reader = kai_file::LineReader::new(&path, None, None).await?;
-        let mut msgs = Vec::new();
+        let mut msgs = LinkedList::new();
         while let Some(line) = reader.next_line().await? {
             let s = line.line.trim();
             if s.is_empty() { continue; }
             if let Ok(m) = serde_json::from_str::<Message>(s) {
-                msgs.push(m);
+                msgs.push_back(m);
             }
         }
         // 首行 System → 当前系统消息（缓存格式：System 行在最前，其后为消息行）
-        if let Some(Message::System { content }) = msgs.first() {
-            self.system_message = Some(content.clone());
-            msgs.remove(0);
-        }
-        // 崩溃一致性清理：恢复应从完整轮次开始。
-        // 1) 若末尾是带 tool_calls 的 assistant（崩溃发生在追加 assistant(tool_calls) 后、
-        //    工具响应写入前），丢弃这条悬挂的 assistant——否则恢复后 tool_calls 悬空无 Tool 响应。
-        // 2) 丢弃开头的 Tool 消息（恢复起点之前的残留）。
-        if let Some(Message::Assistant { tool_calls: tcs, .. }) = msgs.last() {
-            if !tcs.is_null() {
-                msgs.pop();
+        if let Some(msg) = msgs.pop_front() {
+            if let Message::System { content } = msg {
+                self.system_message = Some(content);
+            } else {
+                msgs.push_front(msg);
             }
-        }
-        while matches!(msgs.first(), Some(Message::Tool { .. })) {
-            msgs.remove(0);
         }
         self.messages = msgs;
         Ok(())
@@ -207,7 +237,7 @@ impl SessionContext {
 
 /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
 /// 自由函数（不依赖 self 字段）：排他性由 &mut self 调用方（append / apply_pending_system / archive_and_clear_cache）保证
-async fn write_cache_lines(file: &mut tokio::fs::File, messages: &[Message]) -> Result<()> {
+async fn write_cache_lines(file: &mut tokio::fs::File, messages: impl IntoIterator<Item = &Message>) -> Result<()> {
     for m in messages {
         let line = serde_json::to_string(m)?;
         file.write_all(line.as_bytes()).await?;
@@ -242,14 +272,24 @@ impl Session {
         ctx.build()
     }
 
-    pub async fn context_append(&self, messages: Vec<Message>) {
+    pub async fn context_append(&self, messages: Vec<Message>) -> Result<()>{
         let mut ctx = self.context.lock().await;
-        let _ = ctx.append(messages).await;
+        ctx.append(messages).await
     }
 
-    pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>) {
+    pub async fn context_revert_until(&self, condition: &mut impl FnMut(&Message) -> bool) -> Result<Vec<Message>> {
         let mut ctx = self.context.lock().await;
-        let _ = ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await;
+        ctx.revert_until(condition).await
+    }
+
+    pub async fn context_revert(&mut self, count: usize) -> Result<Vec<Message>> {
+        let mut ctx = self.context.lock().await;
+        ctx.revert(count).await
+    }
+
+    pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>) -> Result<()> {
+        let mut ctx = self.context.lock().await;
+        ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await
     }
 
     pub async fn set_system_message(&self, content: ArcStr) {

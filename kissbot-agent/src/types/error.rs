@@ -55,7 +55,10 @@ pub enum Error {
     InternalError(ArcStr),
 
     #[error("Pipeline {0}: {1} not found for session {2:?}")]
-    PipelineNotFound(ArcStr, ArcStr, MemoryKey)
+    PipelineNotFound(ArcStr, ArcStr, MemoryKey),
+
+    #[error("Errors:\n{}", format_errors(.0))]
+    MultiError(Vec<Error>),
 }
 
 /// kissbot-llm 错误逐变体映射到 agent 错误（保持本枚举的对外错误表面不变）
@@ -72,6 +75,13 @@ impl From<kissbot_llm::Error> for Error {
             kissbot_llm::Error::InternalError(message) => Error::InternalError(message),
         }
     }
+}
+
+fn format_errors(errs: &[Error]) -> String {
+    errs.iter()
+    .map(|e| format!("  - {}", e))
+    .collect::<Vec<_>>()
+    .join("\n")
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
