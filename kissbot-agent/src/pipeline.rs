@@ -17,6 +17,11 @@ pub trait IncomingMessageProcessor {
 }
 
 #[async_trait]
+pub trait IncomingMessageBatchProcessor {
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>);
+}
+
+#[async_trait]
 pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptGenerator {}
 
 #[async_trait]

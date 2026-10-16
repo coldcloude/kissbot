@@ -4,25 +4,22 @@ use std::time::Duration;
 
 use arcstr::ArcStr;
 use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
-use kissbot_llm::{
-    EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig,
-};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::{GroupSetConfig, OutChannel};
-use crate::pipelines::PipelineManager;
+use crate::configs::OutChannel;
+use crate::pipelines::{PipelineManager, tools_for_session};
 use crate::provider::ProviderManager;
 use crate::types::{Error, MemoryKey, Result, SessionKey};
 use crate::session_manager::SessionManager;
-use crate::station::{Station, tool_config_from_mcp};
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
 use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
-use kissbot_api::memory::{ChannelRequest, ThinkRequest, ToolCallRequest, ToolResultRequest};
+use kissbot_api::memory::{ChannelRequest};
 use kissbot_api::message::Content;
 
 // 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
@@ -290,33 +287,14 @@ impl Nexus {
     }
 
     pub async fn run_pipeline(&self, memory_key: Arc<MemoryKey>, message: Message) -> Result<()> {
-        let tools = self.tools_for_session(memory_key.clone()).await;
+        let tools = tools_for_session(SessionKey::Memory(memory_key)).await;
         self.pipeline_manager.run_pipeline(memory_key.as_ref(), message, &tools).await
-    }
-
-    /// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
-    /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
-    pub async fn tools_for_session(&self, memory_key: Arc<MemoryKey>) -> Vec<Arc<ToolConfig>> {
-        let cfg = ConfigManager::get().memory_session_config::<GroupSetConfig,GroupSetConfig>(memory_key.clone()).await;
-        if cfg.group_set.is_empty() {
-            return Vec::new();
-        }
-        match Station::get().list_tools_local(Some(cfg.group_set.as_ref())).await {
-            Ok(tools) => tools
-                .iter()
-                .map(|t| Arc::new(tool_config_from_mcp(t.as_ref())))
-                .collect(),
-            Err(e) => {
-                warn!("工具查询失败: {}", e);
-                Vec::new()
-            }
-        }
     }
 
     /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
     /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
     /// role_event 由会话标识携带（记忆编码）；role_name 用于清理定位（roles key 是原始 role）
-    pub async fn send_outgoing(&self, agent_id: ArcStr, role_name: ArcStr, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: ArcStr) {
+    pub async fn send_outgoing(&self, agent_id: ArcStr, role_name: ArcStr, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: Content) {
         // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
         let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
             .map(|c| c.bind_users.contains(&out_channel.user))
@@ -326,12 +304,12 @@ impl Nexus {
             let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
             return;
         }
-        // 2. 发送（role_event 来自会话标识，无需再查 channel_manager 运行态事件）
+        // 2. 发送
         let msg = OutgoingMessage {
             messenger_id: out_channel.user.messenger_id.clone(),
             user_id: out_channel.user.user_id.clone(),
             group_id: out_channel.group_id.clone(),
-            content: Content::Text(content),
+            content,
         };
 
         // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
@@ -461,7 +439,6 @@ mod tests {
             unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
             // 幂等：每个单例只注册一次（重复 new 的实例被丢弃，set 失败被忽略）
             let _ = ConfigManager::new().await;
-            let _ = Station::new().await;
             let _ = Nexus::new().await;
             TEST_INIT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
         }

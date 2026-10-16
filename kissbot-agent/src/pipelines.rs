@@ -2,24 +2,27 @@ pub mod abstract_input_processor;
 pub mod channel_batch_processor;
 pub mod token_reducer;
 
+pub use channel_batch_processor::*;
+pub use token_reducer::*;
+
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{Content, ContentBlock, RESERVED_AGENT_ID, ResourceContents};
-pub use token_reducer::*;
+use kissbot_api::{Content, ContentBlock, IncomingMessageEvent, RESERVED_AGENT_ID, ResourceContents};
+use tokio::spawn;
 use tokio::sync::Mutex;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 
-use crate::configs::{CompressConfig, EffectiveCompressConfig};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig};
 use crate::memory_store_client::QueryChannelData;
-use crate::message::extract_content;
-use crate::pipeline::{TokenReducer, ToolCaller};
+use crate::message::{extract_content, pack_batch};
+use crate::pipeline::{IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer, ToolCaller};
+use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result}};
 
@@ -151,7 +154,7 @@ pub async fn send_messages(session_key: SessionKey, session: &Session, messages:
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
 
-async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, usage: &AtomicU64) -> Result<ModelResponse> {
+async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, tokens_usage: u64) -> Result<ModelResponse> {
     let cfg_mngr = ConfigManager::get();
     let llm_cfg = cfg_mngr.session_config::<LLMConfig, EffectiveLLMConfig>(session_key.clone()).await;
     let compress_cfg = cfg_mngr.session_config::<CompressConfig, EffectiveCompressConfig>(session_key.clone()).await;
@@ -165,7 +168,6 @@ async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mu
     //    上次模型响应的 usage.total_tokens 超过阈值触发
     //    无新消息不触发
     if model_cfg.max_tokens_usage > 0 {
-        let mut tokens_usage = usage.load(Relaxed);
         let max_tokens_usage = ((model_cfg.max_tokens_usage as f64) * compress_cfg.compress_threshold) as u64;
         if tokens_usage > max_tokens_usage {
             // 压缩前回退至最后一条 assistant 消息
@@ -176,20 +178,13 @@ async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mu
                 }
             }).await?;
             pending_messages.extend(messages);
-            (tokens_usage, messages) = reducer.reduce(session_key, session, pending_messages).await;
-            // 保存本次请求 token 占用
-            usage.store(tokens_usage, Relaxed);
+            (_, messages) = reducer.reduce(session_key, session, pending_messages).await;
         }
     }
     // 2. 正常的发送流程
     session.context_append(messages).await;
     let full_messages = session.build_context().await;
-    let response = Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await;
-    if let Ok(model_resp) = response.as_ref() {
-        // 保存本次请求 token 占用
-        usage.store(model_resp.total_tokens, Relaxed);
-    }
-    response
+    Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
 
 pub fn retrieve_assistant_message(res: &mut ModelResponse) -> Message {
@@ -197,6 +192,22 @@ pub fn retrieve_assistant_message(res: &mut ModelResponse) -> Message {
         content: res.raw_content.take(),
         reasoning_content: res.raw_reasoning_content.take(),
         tool_calls: res.raw_tool_calls.take(),
+    }
+}
+
+/// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
+/// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
+pub async fn tools_for_session(session_key: SessionKey) -> Vec<Arc<ToolConfig>> {
+    let cfg = ConfigManager::get().session_config::<GroupSetConfig, GroupSetConfig>(session_key).await;
+    if cfg.group_set.is_empty() {
+        return Vec::new();
+    }
+    match Station::get().list_tools_local(Some(cfg.group_set.as_ref())).await {
+        Ok(tools) => tools
+            .iter()
+            .map(|t| Arc::new(tool_config_from_mcp(t.as_ref())))
+            .collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -263,29 +274,69 @@ pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>
     call_tools_dyn(tool_calls, &RawToolCaller).await
 }
 
-pub fn retrieve_tool_messages(mut tool_calls: Vec<ToolCall>) -> Vec<Message> {
+/// 工具结果渲染：MCP content 数组（内容块数组）逐块渲染，字符串原样输出，其余值按 JSON 输出
+fn render_tool_result(blocks: &Vec<ContentBlock>) -> ArcStr {
+    let result = blocks.iter()
+    .map(|block| match block {
+        ContentBlock::Text { text, .. } => text.clone(),
+        ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+        ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+        ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
+        ContentBlock::Resource { resource, .. } => match resource.as_ref() {
+            ResourceContents::Text { text, .. } => text.clone(),
+            ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
+        },
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
+    ArcStr::from(result)
+}
+
+pub fn retrieve_tool_messages(tool_calls: &Vec<ToolCall>) -> Vec<Message> {
     let mut tool_messages = Vec::new();
-    for tool_call in tool_calls.drain(..) {
-        let content = render_tool_result(tool_call.result.as_deref().unwrap_or(&vec![]));
-        tool_messages.push(Message::Tool {
-            tool_call_id: tool_call.id,
-            content: ArcStr::from(content),
-        });
+    for tool_call in tool_calls.iter() {
+        if let Some(result) = tool_call.result.as_ref() {
+            let content = result.iter()
+            .map(|block| match block {
+                ContentBlock::Text { text, .. } => text.clone(),
+                ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+                ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+                ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
+                ContentBlock::Resource { resource, .. } => match resource.as_ref() {
+                    ResourceContents::Text { text, .. } => text.clone(),
+                    ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
+                },
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+            tool_messages.push(Message::Tool {
+                tool_call_id: tool_call.id.clone(),
+                content: ArcStr::from(content),
+            });
+        }
     }
     tool_messages
 }
 
-pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, tokens_usage: &AtomicU64) -> Result<bool> {
-    let mut res = send_messages_with_limit(session_key.clone(), session, messages, tools, &CompressTokenReducer, tokens_usage).await?;
+/// Agentic Loop 工具调用轮次上限（防死循环）
+const MAX_TOOL_ROUNDS: usize = 10;
+
+pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, tokens_usage: Option<u64>) -> Result<(bool,u64)> {
+    let mut res = if let Some(tokens_usage) = tokens_usage {
+        send_messages_with_limit(session_key.clone(), session, messages, tools, &CompressTokenReducer, tokens_usage).await?
+    } else {
+        send_messages(session_key.clone(), session, messages, tools).await?
+    };
     // 保存回复的消息
     session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
     // 遍历执行 tool call
     let mut next = false;
     let errors = if let Some(tool_calls) = res.tool_calls.take() {
-        next = !tool_calls.is_empty();
         let (tool_calls, errors) = call_tools(tool_calls).await;
-        let tool_messages = retrieve_tool_messages(tool_calls);
-        session.context_append(tool_messages).await;
+        if !tool_calls.is_empty() {
+            next = true;
+            session.context_append(retrieve_tool_messages(&tool_calls)).await?;
+        }
         errors
     } else {
         vec![]
@@ -297,34 +348,21 @@ pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, 
     if round >= MAX_TOOL_ROUNDS {
         next = false;
     }
-    Ok(next)
+    Ok((next, res.total_tokens))
 }
 
-/// 单个内容块渲染为提示词文本：文本块取原文，其余块给紧凑占位（不把 base64 塞进上下文）
-fn render_content_block(block: &ContentBlock) -> ArcStr {
-    match block {
-        ContentBlock::Text { text, .. } => text.clone(),
-        ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-        ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-        ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
-        ContentBlock::Resource { resource, .. } => match resource.as_ref() {
-            ResourceContents::Text { text, .. } => text.clone(),
-            ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
-        },
+pub async fn run(session_key: SessionKey, session: &Session, message: Message, tools: &Vec<Arc<ToolConfig>>, mut tokens_usage: Option<u64>) -> Result<u64> {
+    let mut round = 1 as usize;
+    let (mut next, mut total_tokens) = run_once(session_key.clone(), session, round, vec![message], tools, tokens_usage).await?;
+    while next {
+        round = round + 1;
+        if tokens_usage.is_some() {
+            tokens_usage = Some(total_tokens);
+        }
+        (next, total_tokens) = run_once(session_key.clone(), session, round, vec![], tools, tokens_usage).await?;
     }
+    Ok(total_tokens)
 }
-
-/// 工具结果渲染：MCP content 数组（内容块数组）逐块渲染，字符串原样输出，其余值按 JSON 输出
-pub(crate) fn render_tool_result(blocks: &Vec<ContentBlock>) -> ArcStr {
-    let result = blocks.iter()
-    .map(render_content_block)
-    .collect::<Vec<_>>()
-    .join("\n");
-    ArcStr::from(result)
-}
-
-/// Agentic Loop 工具调用轮次上限（防死循环）
-const MAX_TOOL_ROUNDS: usize = 10;
 
 pub struct AgenticLoopPipeline {
     session_key: SessionKey,
@@ -332,6 +370,27 @@ pub struct AgenticLoopPipeline {
     load_memory: bool,
     last_total_tokens: AtomicU64,
     pending_contents: Mutex<Vec<Content>>,
+    producer: BatchProducer,
+}
+
+#[async_trait]
+impl IncomingMessageProcessor for AgenticLoopPipeline {
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
+        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
+        self.producer.send(event, cfg.channel_batch_interval_secs)
+    }
+}
+
+#[async_trait]
+impl IncomingMessageBatchProcessor for AgenticLoopPipeline {
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+        // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
+        let content = pack_batch(&events);
+        // 找到工具
+        let tools = tools_for_session(self.session_key.clone()).await;
+        // 发送消息
+        self.run(content, &tools).await;
+    }
 }
 
 #[async_trait]
@@ -355,12 +414,32 @@ impl ToolCaller for AgenticLoopPipeline {
 }
 
 impl AgenticLoopPipeline {
+    pub fn new(session_key: SessionKey, session: Arc<Session>, load_memory: bool) -> Arc<Self> {
+        let (producer, mut consumer) = channel_batch_processor();
+        let result = Arc::new(AgenticLoopPipeline {
+            session_key,
+            session,
+            load_memory,
+            last_total_tokens: AtomicU64::new(0),
+            pending_contents: Mutex::new(Vec::new()),
+            producer
+        });
+        consumer.processor = Some(result.clone());
+        spawn(async move {
+            consumer.run()
+        });
+        result
+    }
+
     async fn run_once(&self, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<bool> {
+        // send message to llm
+        let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
         let mut res = if self.load_memory {
-            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &MemoryRecoverTokenReducer, &self.last_total_tokens).await?
+            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &MemoryRecoverTokenReducer, tokens_usage).await?
         } else {
-            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &CompressTokenReducer, &self.last_total_tokens).await?
+            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &CompressTokenReducer, tokens_usage).await?
         };
+        self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
         // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
         if let SessionKey::Memory(mk) = &self.session_key {
             // 任一有值才写，都 None 跳过
@@ -385,20 +464,37 @@ impl AgenticLoopPipeline {
                 });
                 next = true;
             }
-            self.session.context_append(tool_messages).await;
+            self.session.context_append(tool_messages).await?;
             errors
         } else {
             vec![]
         };
         // output channel
-        if let Some(content) = res.content.as_ref() {
-            if let SessionKey::Memory(mk) = &self.session_key {
-                let out_channel = ConfigManager::get().out_channel_config(mk.agent_id.as_str(), mk.role_event.role_name.as_str()).await;
-                if let Some(out_channel) = out_channel {
-                    let agent_id = mk.agent_id.clone();
-                    let role_name = mk.role_event.role_name.clone();
-                    let role_event = mk.role_event.clone();
-                    Nexus::get().send_outgoing(agent_id, role_name, role_event, out_channel.as_ref(), content.clone()).await;
+        if let SessionKey::Memory(mk) = &self.session_key {
+            let out_channel = ConfigManager::get().out_channel_config(mk.agent_id.as_str(), mk.role_event.role_name.as_str()).await;
+            if let Some(out_channel) = out_channel {
+                let agent_id = mk.agent_id.clone();
+                let role_name = mk.role_event.role_name.clone();
+                let role_event = mk.role_event.clone();
+                let mut contents = Vec::new();
+                {
+                    let mut pending_contents = self.pending_contents.lock().await;
+                    contents.extend(pending_contents.drain(..));
+                }
+                let content = if contents.is_empty() {
+                    if let Some(content) = res.content.take() {
+                        Some(Content::Text(content))
+                    } else {
+                        None
+                    }
+                } else {
+                    if let Some(content) = res.content.take() {
+                        contents.push(Content::Text(content));
+                    }
+                    Some(Content::Multi(Arc::new(contents)))
+                };
+                if let Some(content) = content {
+                    Nexus::get().send_outgoing(agent_id, role_name, role_event, out_channel.as_ref(), content).await;
                 }
             }
         }

@@ -531,12 +531,12 @@ mod tests {
         assert_eq!(ctx.len(), 1, "仅有系统消息");
         assert!(matches!(&ctx[0], Message::System { content } if content.as_str() == "系统"));
         // 追加消息 → build_context 应用待定系统消息（System 首条）
-        session.context_append(vec![Message::User { content: ArcStr::from("你好") }]).await;
+        let _ = session.context_append(vec![Message::User { content: ArcStr::from("你好") }]).await;
         let ctx = session.build_context().await;
         assert_eq!(ctx.len(), 2, "system + 消息");
         assert!(matches!(&ctx[0], Message::System { content } if content.as_str() == "系统"));
         // 归档 + 重建：内容整体替换，system 保留
-        session.context_archive_and_clear_cache_and_reset_messages(
+        let _ =session.context_archive_and_clear_cache_and_reset_messages(
             vec![Message::User { content: ArcStr::from("新话题") }]).await;
         let ctx = session.build_context().await;
         assert_eq!(ctx.len(), 2, "system + 新消息");
@@ -550,7 +550,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_str().unwrap();
         let first = Session::new(base, ArcStr::from("a1-r1"));
-        first.context_append(sample_msgs()).await;
+        let _ = first.context_append(sample_msgs()).await;
         let second = Session::new(base, ArcStr::from("a1-r1"));
         second.recover_from_cache().await.unwrap();
         assert_eq!(second.build_context().await.len(), 2, "恢复出上一次上下文");

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +15,6 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::error;
 
-use crate::message::{MessageContent, extract_content};
 use crate::types::{Error, Result};
 
 // 批处理参数
