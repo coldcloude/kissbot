@@ -21,11 +21,13 @@ use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
-use crate::pipeline::{IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer, ToolCaller};
+use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, TokenReducer, ToolCaller};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result}};
 
+/// 默认系统提示词
+pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
 
 /// 根据 agent_id 获取系统提示词（新建会话时由 MemoryEgoSystemPrompter 调用）：
 /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
@@ -60,17 +62,6 @@ pub async fn get_ego_system_prompt(agent_id: ArcStr, role_name: ArcStr) -> Optio
     }
 
     Some(ArcStr::from(system_parts.join("\n")))
-}
-
-/// 默认系统提示词
-pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用可用工具完成用户任务");
-
-pub async fn get_system_prompt(memory_key: &MemoryKey) -> ArcStr {
-    if let Some(prompt) = get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
-        prompt
-    } else {
-        DEFAULT_SYSTEM_PROMPT.clone()
-    }
 }
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
@@ -364,7 +355,46 @@ pub async fn run(session_key: SessionKey, session: &Session, message: Message, t
     Ok(total_tokens)
 }
 
-pub struct AgenticLoopPipeline {
+pub struct DefaultAgenticLoopPipeline {
+    session_key: SessionKey,
+    session: Arc<Session>,
+    last_total_tokens: AtomicU64,
+    producer: BatchProducer,
+}
+
+#[async_trait]
+impl SystemPromptManager for DefaultAgenticLoopPipeline {
+    async fn reset_system_prompt(&self) {
+        self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
+        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
+        self.producer.send(event, cfg.channel_batch_interval_secs)
+    }
+}
+
+impl AgentPipeline for DefaultAgenticLoopPipeline {}
+
+#[async_trait]
+impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+        // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
+        let content = pack_batch(&events);
+        // 找到工具
+        let tools = tools_for_session(self.session_key.clone()).await;
+        // 发送消息启动 agent 循环
+        let token_usage = self.last_total_tokens.load(Ordering::Relaxed);
+        if let Ok(total_tokens) = run(self.session_key.clone(), &self.session, content, &tools, Some(token_usage)).await {
+            self.last_total_tokens.store(total_tokens, Ordering::Relaxed);
+        }
+    }
+}
+
+pub struct DefaultAgenticLoopPipelineWithMemory {
     session_key: SessionKey,
     session: Arc<Session>,
     load_memory: bool,
@@ -374,15 +404,30 @@ pub struct AgenticLoopPipeline {
 }
 
 #[async_trait]
-impl IncomingMessageProcessor for AgenticLoopPipeline {
+impl SystemPromptManager for DefaultAgenticLoopPipelineWithMemory {
+    async fn reset_system_prompt(&self) {
+        if let SessionKey::Memory(memory_key) = self.session_key {
+            if let Some(prompt) = get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
+                self.session.set_system_message(prompt).await;
+                return;
+            }
+        }
+        self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
     async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
         let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
 
+impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {}
+
 #[async_trait]
-impl IncomingMessageBatchProcessor for AgenticLoopPipeline {
+impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
     async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
@@ -394,7 +439,7 @@ impl IncomingMessageBatchProcessor for AgenticLoopPipeline {
 }
 
 #[async_trait]
-impl ToolCaller for AgenticLoopPipeline {
+impl ToolCaller for DefaultAgenticLoopPipelineWithMemory {
     async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
         match &self.session_key {
             SessionKey::Memory(memory_key) => {
@@ -413,10 +458,10 @@ impl ToolCaller for AgenticLoopPipeline {
     }
 }
 
-impl AgenticLoopPipeline {
+impl DefaultAgenticLoopPipelineWithMemory {
     pub fn new(session_key: SessionKey, session: Arc<Session>, load_memory: bool) -> Arc<Self> {
         let (producer, mut consumer) = channel_batch_processor();
-        let result = Arc::new(AgenticLoopPipeline {
+        let result = Arc::new(DefaultAgenticLoopPipelineWithMemory {
             session_key,
             session,
             load_memory,

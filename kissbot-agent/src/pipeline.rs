@@ -7,7 +7,7 @@ use kissbot_llm::{Message, Session, ToolCall};
 use crate::types::{Error, SessionKey};
 
 #[async_trait]
-pub trait SystemPromptGenerator {
+pub trait SystemPromptManager {
     async fn reset_system_prompt(&self);
 }
 
@@ -22,7 +22,7 @@ pub trait IncomingMessageBatchProcessor {
 }
 
 #[async_trait]
-pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptGenerator {}
+pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager {}
 
 #[async_trait]
 pub trait AgentMessageProcessor: Send + Sync {
