@@ -548,6 +548,7 @@ mod tests {
     #[test]
     fn test_case_record_tagged_shape() {
         let record = CaseRecord::Channel(Arc::new(ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self"),
             messenger_id: ArcStr::from("web"),
@@ -581,6 +582,7 @@ mod tests {
         ] {
             let record = match kind {
                 RecordKind::Channel => CaseRecord::Channel(Arc::new(ChannelRecord {
+                    meta: None,
                     user_id: ArcStr::from("u"), self_user_id: ArcStr::from("s"),
                     messenger_id: ArcStr::from("m"), group_id: ArcStr::from("g"),
                     is_self: 0, msg_id: ArcStr::new(),

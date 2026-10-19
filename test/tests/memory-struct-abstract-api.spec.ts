@@ -179,7 +179,7 @@ interface TestChannel {
   group: string;
 }
 
-/** 往指定通道推送一条通道消息（msgId 供消息与记录去重） */
+/** 往指定通道推送一条通道消息（msgId 写入记录；locate 不再与已存记录去重） */
 async function pushChannelIn(
   request: APIRequestContext,
   role: string,
@@ -189,6 +189,7 @@ async function pushChannelIn(
   text: string,
   time: string,
   msgId = '',
+  meta?: unknown,
 ) {
   const resp = await apiPost(request, STORE_BASE, '/store/channel', {
     requests: [{
@@ -205,6 +206,7 @@ async function pushChannelIn(
       group_name: '',
       content: { msg_type: 'Text', data: text },
       time,
+      ...(meta === undefined ? {} : { meta }),
     }],
     force: 0,
   });
@@ -507,8 +509,8 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(keys2).toEqual(['keyB'], 'e2 只含 B 通道的思考记录');
   });
 
-  // TC-09 定位即处理：新消息与该通道的待归档记录去重后一并分析（同一条消息不分析两次）
-  test('TC-09: 定位与懒处理合并并去重', async ({ request }) => {
+  // TC-09 定位即处理：新消息与该通道的待归档记录合并后一并分析（新消息在 locate 时尚未写入记忆，无需去重）
+  test('TC-09: 定位与懒处理合并处理', async ({ request }) => {
     const role = 'dev4';
     const channel: TestChannel = { messenger: 'web', selfUser: 'self4', group: 'g4' };
     const t0 = timeAt(1000);
@@ -521,8 +523,8 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     await waitForStoreFile(role, 'channel', t0, '定位前的提问');
     await waitForStoreFile(role, 'channel', t1, '定位前的回答');
 
-    // 定位请求：前两条与该通道的待归档记录同 msg_id（内容 / 时间 / 发送者都不同也判为同一条），
-    // 第三条是新消息。通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到 case。
+    // 定位请求：前两条与该通道的待归档记录同 msg_id，第三条是新消息；三者都参与同一次分组。
+    // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到 case。
     let data: any = null;
     await waitFor(async () => {
       data = await locateMessages(request, role, [
@@ -536,10 +538,10 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(data.groups.map((g: any) => g.messages)).toEqual([[0, 1, 2]], '整个合并批次一次分组（桩模型整批一组）');
     expect(data.groups[0].case_name).toBe('role-case');
 
-    // 已存记录归档一次（去重后用的是已存版本，内容与时间以记录为准）；定位时的新消息不落盘
+    // 已存记录归档一次（内容与时间以记录为准）；定位时的新消息不落盘
     const records = await waitForCaseRecords(request, role, 'role-case', 2);
     expect(records.map((r: any) => r.is_self)).toEqual([0, 1], '新消息不进原文副本');
-    expect(records.map((r: any) => r.content.data)).toEqual(['定位前的提问', '定位前的回答'], '重复消息按已存版本归档');
+    expect(records.map((r: any) => r.content.data)).toEqual(['定位前的提问', '定位前的回答'], '新消息只定位、不落盘');
     expect(records.map((r: any) => r.msg_id)).toEqual(['msg-1', 'msg-2']);
     // 水位推进到定位前最后一条记录（新消息不推进水位）
     const watermark = await waitForWatermark(role, 'self4', t1);
@@ -567,5 +569,30 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const records = await apiPost(request, ABSTRACT_BASE, '/abstract/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
     expect(records.success).toBe(true);
     expect(records.data.records).toHaveLength(0);
+  });
+  // TC-11 记录带摘要记忆 meta：直接按 case 名落位，不再分组/逐层判定（也不会新建 case）
+  test('TC-11: 带 meta 的记录直接归入指定 case', async ({ request }) => {
+    const role = 'dev6';
+    const channel: TestChannel = { messenger: 'web', selfUser: 'self6', group: 'g6' };
+    const t0 = timeAt(3000);
+    const t1 = timeAt(3001);
+    await pushChannelIn(request, role, channel, 'alice', 0, '初始话题', t0, 'meta-1');
+    await waitForStoreFile(role, 'channel', t0, '初始话题');
+    // 先归档出 role-case
+    const first = await waitForCaseRecords(request, role, 'role-case', 1);
+    expect(first.map((r: any) => r.content.data)).toEqual(['初始话题']);
+
+    // 第二条记录自带 case 名：直接追加到 role-case，不因内容不同而新建 case
+    await pushChannelIn(request, role, channel, 'alice', 0, '完全不同的话题', t1, 'meta-2', {
+      abstract_memory: { case_name: 'role-case' },
+    });
+    await waitForStoreFile(role, 'channel', t1, '完全不同的话题');
+    const records = await waitForCaseRecords(request, role, 'role-case', 2);
+    expect(records.map((r: any) => r.content.data)).toEqual(['初始话题', '完全不同的话题']);
+    expect(records[1].meta, '原文副本保留 meta').toEqual({ abstract_memory: { case_name: 'role-case' } });
+
+    const tree = await treeOf(request, role);
+    expect(tree.nodes).toHaveLength(1, '带 meta 的记录不新建 case');
+    expect(tree.nodes[0].case_name).toBe('role-case');
   });
 });

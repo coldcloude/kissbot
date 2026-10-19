@@ -3,12 +3,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
+use kissbot_api::RESERVED_AGENT_ID;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Session};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
-use crate::configs::OutChannel;
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{Error, Result, SessionKey};
@@ -19,12 +18,11 @@ use crate::memory_ego_client::MemoryEgoClient;
 use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
-use kissbot_api::memory::{ChannelRequest};
 use kissbot_api::message::Content;
 
-// 上下文重置阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
-// 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发重置，
-// 见 pipelines/message_sender.rs 的 TokenLimitMessageSender。
+// 上下文压缩/回溯阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
+// 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发，
+// 见 pipelines.rs 的 send_messages_with_limit 与 AgenticLoop。
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 Nexus 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
@@ -136,6 +134,32 @@ impl Nexus {
         self.pipeline_manager.retain(&keys);
     }
 
+    /// channel 绑定变化后的会话重绑定（解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话），
+    /// channel 侧 apply_channel_key 在写完新配置后调用。
+    ///
+    /// `old_key` 为变化前的会话标识；与 `new_key` 不同时先通知旧 pipeline「该 channel 不再绑定本会话」，
+    /// 由 pipeline 清理该 channel（messenger + 绑定用户）的批次生产者（否则旧 channel 的消息会继续进旧会话）。
+    /// `bind_users` 是变化前该 channel 的绑定身份（一个 channel 可绑定多个 messenger 用户）。
+    pub(crate) async fn rebind_session(
+        &self,
+        old_key: Option<SessionKey>,
+        new_key: SessionKey,
+        bind_users: &HashSet<Arc<kissbot_api::channel::ChannelUser>>,
+    ) {
+        if let Some(old_key) = old_key {
+            if old_key != new_key {
+                for user in bind_users {
+                    self.pipeline_manager
+                        .channel_unbound(&old_key, user.messenger_id.as_str(), user.user_id.as_str())
+                        .await;
+                }
+            }
+        }
+        // 清理无任何 channel 绑定的会话（pipeline/trigger 一并清理），再为新三元组创建会话
+        self.prune_sessions().await;
+        self.ensure_session(new_key).await;
+    }
+
     // ==================== 运行状态修改（管理命令入口） ====================
 
     /// channel 运行态与变更队列（channel 侧入口：change_channel_key / channel_command 都在 ChannelManager 上）
@@ -201,9 +225,9 @@ impl Nexus {
 
 impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
-    /// 完整处理链：会话定位/上行记忆 → 系统事件过滤 → 管理命令 → 普通消息合批进 agentic loop
+    /// 完整处理链：管理命令 → 会话定位 → 系统事件过滤 → 普通消息进 pipeline（记忆写入由 pipeline 负责）
     pub async fn incoming_message(&self, channel_id: ArcStr, event: Arc<IncomingMessageEvent>) {
-        // 0. 先取 channel 配置（命令分支 admin 判断与普通分支会话定位/记忆复用，避免重复查询）
+        // 0. 先取 channel 配置（命令分支 admin 判断与普通分支会话定位复用，避免重复查询）
         let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else { return; };
 
         // 1. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
@@ -237,33 +261,13 @@ impl Nexus {
             return;
         };
 
-        // 3. 推上行消息到记忆（is_self=0，name 取自 IncomingMessage；agent_id 直接从 config clone Arc，
-        //    不 clone string；role_event 由 config role + 运行态事件合成）
-        let agent_id = ch.agent_id.clone();
-        self.memory_store_client.push_channel_record(ChannelRequest {
-            agent_id,
-            role_event: key.role_event.clone(),
-            messenger_id: event.incoming_message.messenger_id.clone(),
-            user_id: event.incoming_message.user_id.clone(),
-            // 接收方身份 = event.recipient_user_id（agent 视角的 self；与 is_self 不同，其他人用绑定用户发消息时 user_id == self_user_id 但 is_self == 0）
-            self_user_id: event.recipient_user_id.clone(),
-            group_id: event.incoming_message.group_id.clone(),
-            is_self: 0,
-            msg_id: event.incoming_message.msg_id.clone(),
-            messenger_name: event.incoming_message.messenger_name.clone(),
-            user_name: event.incoming_message.user_name.clone(),
-            group_name: event.incoming_message.group_name.clone(),
-            content: event.incoming_message.content.clone(),
-            time: event.incoming_message.time.clone(),
-        }).await;
-
-        // 4. 系统事件（群组变更/用户移除）不进 agentic loop
+        // 3. 系统事件（群组变更/用户移除）不进 agentic loop
         match &event.incoming_message.content {
             Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
             _ => {}
         }
 
-        // 5. 普通消息：运行pipeline
+        // 4. 普通消息：运行 pipeline（记忆写入在 pipeline 内完成）
         let key = SessionKey::Memory(Arc::new(key));
         let _ = self.ensure_session(key.clone()).await;
         let _ = self.pipeline_manager.incoming_message(key, event).await;
@@ -286,79 +290,6 @@ impl Nexus {
         }
     }
 
-    /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
-    /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
-    /// role_event 由会话标识携带（记忆编码）；role_name 用于清理定位（roles key 是原始 role）
-    pub async fn send_outgoing(&self, agent_id: ArcStr, role_name: ArcStr, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: Content) {
-        // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
-        let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
-            .map(|c| c.bind_users.contains(&out_channel.user))
-            .unwrap_or(false);
-        if !bound {
-            warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
-            let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
-            return;
-        }
-        // 2. 发送
-        let msg = OutgoingMessage {
-            messenger_id: out_channel.user.messenger_id.clone(),
-            user_id: out_channel.user.user_id.clone(),
-            group_id: out_channel.group_id.clone(),
-            content,
-        };
-
-        // 发送经 ChannelManager（内部取 client + 记录 pending msg_id 供回显判定）
-        match self.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
-            Ok(response) => {
-                // 下行成功后：推记忆（is_self=1）
-                self.memory_store_client.push_channel_record(ChannelRequest {
-                    agent_id,
-                    role_event,
-                    messenger_id: out_channel.user.messenger_id.clone(),
-                    user_id: out_channel.user.user_id.clone(),
-                    self_user_id: out_channel.user.user_id.clone(),
-                    group_id: out_channel.group_id.clone(),
-                    is_self: 1,
-                    msg_id: response.msg_id.clone(),
-                    messenger_name: response.messenger_name.clone(),
-                    user_name: response.user_name.clone(),
-                    group_name: response.group_name.clone(),
-                    content: response.content.clone(),
-                    time: response.time.clone(),
-                }).await;
-            }
-            Err(e) => {
-                warn!("send_outgoing 失败: {:?}", e);
-            }
-        }
-    }
-}
-
-fn placeholder_request(
-    agent_id: ArcStr,
-    role_event: Arc<RoleEvent>,
-    content: Content,
-    time: ArcStr,
-    out_channel: &OutChannel,
-) -> ChannelRequest {
-    let empty = ArcStr::new();
-    let messenger_id = out_channel.user.messenger_id.clone();
-    let user_id = out_channel.user.user_id.clone();
-    ChannelRequest {
-        agent_id,
-        role_event,
-        messenger_id,
-        user_id: user_id.clone(),
-        self_user_id: user_id.clone(),
-        group_id: out_channel.group_id.clone(),
-        is_self: 1,
-        msg_id: ArcStr::new(),
-        messenger_name: empty.clone(),
-        user_name: empty.clone(),
-        group_name: empty.clone(),
-        content,
-        time,
-    }
 }
 
 #[cfg(test)]
@@ -368,6 +299,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Instant;
 
+    use kissbot_api::RoleEvent;
     use kissbot_api::channel::IncomingMessage;
     use kissbot_llm::{LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig};
 

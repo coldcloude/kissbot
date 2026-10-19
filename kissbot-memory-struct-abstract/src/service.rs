@@ -455,6 +455,36 @@ mod tests {
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
 
+    /// 追加一条带摘要记忆 meta 的通道记录（写入方已给出所属 case）
+    async fn append_store_channel_with_case(
+        root: &Path,
+        agent_id: &str,
+        suffix: &str,
+        channel: &ChannelKey,
+        time: &str,
+        sn: u64,
+        is_self: usize,
+        text: &str,
+        case_name: &str,
+    ) {
+        let record = serde_json::json!({
+            "msg_id": "",
+            "user_id": if is_self == 1 { channel.self_user_id.as_str() } else { "u1" },
+            "self_user_id": channel.self_user_id.as_str(),
+            "messenger_id": channel.messenger_id.as_str(),
+            "group_id": channel.group_id.as_str(),
+            "is_self": is_self,
+            "messenger_name": "",
+            "user_name": "alice",
+            "group_name": "",
+            "content": {"msg_type": "Text", "data": text},
+            "time": time,
+            "sn": sn,
+            "meta": {"abstract_memory": {"case_name": case_name}}
+        });
+        append_store_line(root, agent_id, suffix, "channel", record, time).await;
+    }
+
     /// 追加一条思考记录：先写占位通道记录（内容为该 key），再写思考记录本体
     async fn append_store_think(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, key: &str, time: &str, sn: u64, text: &str) {
         let placeholder = serde_json::json!({
@@ -981,7 +1011,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locate_merges_pending_records_with_new_messages_once() {
+    async fn locate_analyzes_pending_records_and_new_messages_together() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
@@ -989,28 +1019,26 @@ mod tests {
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
-        // 定位请求：第一条与已存记录同 msg_id（内容 / 时间 / 发送者都可以不同），第二条是新消息
+        // 定位请求：第一条与已存记录同 msg_id，第二条是新消息。新消息在 locate 时还没有写入记忆，
+        // 因此不再与已存记录去重，整批（2 条记录 + 2 条消息）一起分组。
         let response = f
             .service
             .locate(&locate_request(&role_event("dev", None), vec![
-                locate_message_at(&a, "2099-01-01 23:59:59", 0, "内容不同也判为同一条", "m1"),
+                locate_message_at(&a, "2099-01-01 23:59:59", 0, "与已存记录同 msg_id 的新消息", "m1"),
                 locate_message_at(&a, "2099-01-01 12:00:00", 0, "新问题", "m3"),
             ]))
             .await
             .unwrap();
 
-        // 懒处理与定位合并为一次分组：待归档记录 + 去重后的新消息
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1, "懒处理与定位只做一次分组");
-        assert_eq!(prompts[0].matches("已存的问题").count(), 1, "重复的新消息不重复送模型");
-        assert!(!prompts[0].contains("内容不同也判为同一条"), "重复的新消息自身不进批次");
-        assert!(prompts[0].contains("已存的回答"), "待归档记录参与同一次分析");
-        assert!(prompts[0].contains("新问题"), "不重复的新消息参与同一次分析");
+        assert!(prompts[0].contains("已存的问题") && prompts[0].contains("已存的回答"), "待归档记录参与分析");
+        assert!(prompts[0].contains("与已存记录同 msg_id 的新消息") && prompts[0].contains("新问题"), "新消息都参与分析");
 
         // 记录归档一次；新消息只返回所属 case，不进原文副本
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].messages, vec![0, 1], "重复的新消息映射到已存记录所在 case");
+        assert_eq!(response.groups[0].messages, vec![0, 1]);
         assert!(response.groups[0].is_current);
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "只有已存记录落盘");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "懒处理完成");
@@ -1018,7 +1046,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locate_with_only_duplicates_archives_records_once() {
+    async fn locate_archives_pending_records_without_persisting_messages() {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
@@ -1026,7 +1054,7 @@ mod tests {
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
-        // 请求的两条消息都与已存记录重复：批次只剩已存记录，仍只做一次分组
+        // 请求的两条消息与已存记录同 msg_id：仍一起分析，记录只落盘一次、消息不落盘
         let response = f
             .service
             .locate(&locate_request(&role_event("dev", None), vec![
@@ -1038,10 +1066,51 @@ mod tests {
 
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts[0].matches("已存的问题").count(), 1);
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups[0].messages, vec![0, 1]);
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "记录不因定位重复落盘");
+    }
+
+    /// 带摘要记忆 meta 的记录直接按 case 名归档：不调分组轮与逐层判定，只重算摘要
+    #[tokio::test]
+    async fn meta_case_name_places_records_without_grouping() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let a = channel_a();
+        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "初始内容").await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
+        query(&f, &role_event("dev", None)).await;
+        let prompts_before = f.model.prompts().len();
+        let summaries_before = f.model.summary_inputs().len();
+
+        // 新记录自带 case 名：直接归入该 case，不走定位流程
+        append_store_channel_with_case(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "带 meta 的回复", "role-case").await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
+        process(&f, &role_event("dev", None)).await;
+
+        assert_eq!(f.model.prompts().len(), prompts_before, "不再调用分组轮/逐层判定");
+        assert_eq!(f.model.summary_inputs().len(), summaries_before + 1, "只重算落位 case 的摘要");
+        assert!(f.model.summary_inputs().last().unwrap().contains("带 meta 的回复"));
+        let records = records_of(&f, &role_event("dev", None), "role-case").await;
+        assert_eq!(records.len(), 2, "记录直接追加到 meta 指定的 case");
+        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 2);
+        assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 2, "水位照常推进");
+    }
+
+    /// meta 指向不存在的 case（例如重建后树里还没有该节点）：退回分组流程，不丢记录
+    #[tokio::test]
+    async fn meta_case_name_falls_back_when_case_missing() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let a = channel_a();
+        append_store_channel_with_case(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "找不到 case 的记录", "role-missing").await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
+        process(&f, &role_event("dev", None)).await;
+
+        // 走正常分组：桩模型建出 role-case，记录落在那里
+        assert_eq!(group_prompts(&f).len(), 1, "case 不存在时仍走分组");
+        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 1);
+        assert!(node(&f, &role_event("dev", None), "role-missing").await.is_none(), "不建 meta 指向的缺失 case");
     }
 
     /// 没有待处理标记时调 locate：仍按「pending 空 + 本批消息」处理（定位不依赖 dirty）
@@ -1168,17 +1237,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn locate_dedups_only_within_the_message_channel() {
+    async fn locate_processes_each_channel_without_cross_channel_dedup() {
         let f = fixture().await;
         let root = f.service.root();
         let (a, b) = (channel_a(), channel_b());
-        // 两个通道的记录用同一个 msg_id：去重只看本通道的记录
+        // 两个通道的记录用同一个 msg_id：定位与归档都按通道分开，互不影响
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 自己的记录", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         notify(&f, Arc::new(role_event("dev", None)), &b).await;
 
-        // 消息属于 B 通道：与 B 通道同 msg_id 的记录去重（不能命中 A 通道的同 msg_id 记录）
+        // 消息属于 B 通道：A、B 各一次分组，消息只和 B 通道的记录同批分析
         let response = f
             .service
             .locate(&locate_request(&role_event("dev", None), vec![locate_message_at(&b, "2099-01-01 10:00:00", 0, "B 通道的问题", "m1")]))
@@ -1189,7 +1258,7 @@ mod tests {
         assert_eq!(prompts.len(), 2, "两个通道各一次分组");
         let b_prompt = prompts.last().unwrap();
         assert!(b_prompt.contains("B 自己的记录"), "B 的消息与 B 通道的记录合并分析");
-        assert!(!b_prompt.contains("B 通道的问题"), "重复的新消息自身不进批次");
+        assert!(b_prompt.contains("B 通道的问题"), "新消息参与分析（不与已存记录去重）");
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 1, "A 通道照常归档");
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case-2").await.len(), 1, "B 通道只有自己的记录落盘");
         assert_eq!(cases_of(&response), vec!["role-case-2"], "消息命中 B 通道的 case");

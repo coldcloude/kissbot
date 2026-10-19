@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 use crate::locate::render_message;
 use crate::model::{DecisionModel, LevelDecision};
 use crate::records::{
-    RecordBody, RecordEntry, append_case_records, read_case_records, render_case_record,
+    RecordEntry, append_case_records, read_case_records, render_case_record,
     render_entry,
 };
 use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleState, role_event_of};
@@ -47,16 +47,15 @@ pub struct ArchiveResult {
     pub outcomes: Vec<ArchiveOutcome>,
     /// 消息分组（`PlaceGroup::messages` 是传入 `messages` 的下标）
     pub groups: Vec<PlaceGroup>,
-    /// 本次并入分析的新消息条数（与已存记录重复的不计）
+    /// 本次参与定位的新消息条数
     pub new_messages: usize,
 }
 
 /// 统一分析批次的一个条目
 #[derive(Debug, Clone)]
 pub enum BatchItem {
-    /// 共享记忆中的待归档记录；`aliases` 是与之重复的新消息在请求中的下标
-    /// （分析只用已存版本一次，重复的新消息只返回所属 case）
-    Stored { record: RecordEntry, aliases: Vec<usize> },
+    /// 共享记忆中的待归档记录
+    Stored(RecordEntry),
     /// 只用于定位的新消息（请求内下标）
     New { index: usize, message: LocateMessage },
 }
@@ -65,7 +64,7 @@ impl BatchItem {
     /// 排序键：条目时间
     fn time(&self) -> &str {
         match self {
-            BatchItem::Stored { record, .. } => record.time.as_str(),
+            BatchItem::Stored(record) => record.time.as_str(),
             BatchItem::New { message, .. } => message.time.as_str(),
         }
     }
@@ -73,7 +72,7 @@ impl BatchItem {
     /// 送模型的文本形态
     fn render(&self) -> String {
         match self {
-            BatchItem::Stored { record, .. } => render_entry(record),
+            BatchItem::Stored(record) => render_entry(record),
             BatchItem::New { message, .. } => render_message(message),
         }
     }
@@ -81,20 +80,20 @@ impl BatchItem {
     /// 待归档记录（只用于定位的新消息没有）
     fn record(&self) -> Option<&RecordEntry> {
         match self {
-            BatchItem::Stored { record, .. } => Some(record),
+            BatchItem::Stored(record) => Some(record),
             BatchItem::New { .. } => None,
         }
     }
 
     /// 是否是待归档记录（会落盘归档）
     pub fn is_stored(&self) -> bool {
-        matches!(self, BatchItem::Stored { .. })
+        matches!(self, BatchItem::Stored(_))
     }
 
     /// 该条目涉及的新消息下标
     fn messages(&self) -> &[usize] {
         match self {
-            BatchItem::Stored { aliases, .. } => aliases,
+            BatchItem::Stored(_) => &[],
             BatchItem::New { index, .. } => std::slice::from_ref(index),
         }
     }
@@ -127,11 +126,10 @@ struct Placement {
     records: Vec<RecordEntry>,
 }
 
-/// 把某通道的待归档记录与该通道的新消息合并为统一分析批次。
+/// 把某通道的待归档记录与该通道的新消息合并为统一分析批次（按时间升序，同一时刻已存记录在前）。
 ///
-/// 调用方必须已**按通道分开调用**（归档与定位都逐通道进行）：批次内条目同属 `channel`，
-/// 因此判重只比 `msg_id`。与新消息重复的记录保留已存版本、把新消息记为该记录的别名
-/// （同一条消息只分析一次）；其余新消息独立成条。按时间升序排列，同一时刻已存记录在前。
+/// 调用方必须已**按通道分开调用**（归档与定位都逐通道进行）。新消息在调用 locate 时还没有写入记忆，
+/// 因此不需要与已存记录按 `msg_id` 去重。
 pub fn merge_batch(channel: &ChannelKey, records: &[RecordEntry], messages: &[&LocateMessage]) -> Vec<BatchItem> {
     // 通道记录（含思考/工具占位记录）必须属于本通道；思考/工具记录本身没有通道身份，按 key 归属后随批次传入
     debug_assert!(
@@ -144,39 +142,11 @@ pub fn merge_batch(channel: &ChannelKey, records: &[RecordEntry], messages: &[&L
     );
     let mut items: Vec<BatchItem> = records
         .iter()
-        .map(|record| BatchItem::Stored { record: record.clone(), aliases: Vec::new() })
+        .map(|record| BatchItem::Stored(record.clone()))
+        .chain(messages.iter().enumerate().map(|(index, message)| BatchItem::New { index, message: (*message).clone() }))
         .collect();
-    let mut taken = vec![false; records.len()];
-    for (index, message) in messages.iter().enumerate() {
-        // 一条已存记录只吸收一条重复的新消息：同一条消息在两侧都出现多次时，多出来的新消息按新消息处理
-        let matched = records
-            .iter()
-            .enumerate()
-            .find(|(record_index, record)| !taken[*record_index] && duplicates(record, message));
-        match matched {
-            Some((record_index, _)) => {
-                taken[record_index] = true;
-                if let BatchItem::Stored { aliases, .. } = &mut items[record_index] {
-                    aliases.push(index);
-                }
-            }
-            None => items.push(BatchItem::New { index, message: (*message).clone() }),
-        }
-    }
     items.sort_by(|a, b| a.time().cmp(b.time()));
     items
-}
-
-/// 批次内新消息与已存记录是否同一条：只比 `msg_id`（批次已按通道切分，通道无需再比）；
-/// `msg_id` 为空（思考/工具占位记录、旧记录）不参与去重、原样保留。
-fn duplicates(record: &RecordEntry, message: &LocateMessage) -> bool {
-    let RecordBody::Channel(channel) = &record.body else {
-        return false;
-    };
-    if message.msg_id.is_empty() || channel.msg_id.is_empty() {
-        return false;
-    }
-    channel.msg_id == message.msg_id
 }
 
 /// 归档器
@@ -269,46 +239,66 @@ impl Archiver {
         let agent_role: &AgentRole = &handle.id;
         let role_event = role_event_of(agent_role, event_id.clone());
 
-        // 1. 定位（只读）：逐组判定落点，得到「已有 case / 需在何处新建」，此时不改树
-        let placements = match event_id.as_ref() {
-            // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定。
-            // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
-            Some(event_id) => {
-                // 事件标识必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
-                if !crate::model::valid_case_name(event_id) {
-                    return Err(Error::StateError(format!(
-                        "事件标识不能用于 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
-                        crate::model::MAX_CASE_NAME_LEN,
-                        event_id
-                    ).into()));
+        // 0. 带 meta 的待归档记录：写入方已经给出所属 case，直接按 case 名定位，
+        //    不参与分组/逐层判定（case 不存在时退回分组流程，例如重建后树里还没有该节点）
+        let mut new_records: HashMap<ArcStr, Vec<RecordEntry>> = HashMap::new();
+        let mut unplaced: Vec<BatchItem> = Vec::with_capacity(items.len());
+        for item in items {
+            let meta_case = item.record().and_then(RecordEntry::meta_case_name);
+            match meta_case {
+                Some(case_name) if state.tree.contains(case_name) => {
+                    let record = item.record().expect("meta 只来自待归档记录").clone();
+                    new_records.entry(case_name.clone()).or_default().push(record);
                 }
-                let case_name = event_case_name(event_id);
-                let indices: Vec<usize> = (0..items.len()).collect();
-                let records = stored_records(items, &indices);
-                let verdict = match state.tree.event_case(event_id) {
-                    // 事件 case 已存在：直接命中（按 event_id 定位，不看层级）
-                    Some(_) => GroupVerdict::Case(case_name),
-                    // case 还不存在：由落盘阶段建出（只含消息时记忆条数为 0）
-                    None => GroupVerdict::NewEvent,
-                };
-                vec![Placement { verdict, items: indices, records }]
+                _ => unplaced.push(item.clone()),
             }
-            // 角色模式：模型分组 + 逐层判定，只看角色 case（事件叶子不在候选里）
-            None => self.group_and_place(agent_role, state, &role_event, channel, items).await?,
+        }
+
+        // 1. 定位（只读）：只对没有 meta 的记录与新消息逐组判定落点，得到「已有 case / 需在何处新建」
+        let placements = if unplaced.is_empty() {
+            Vec::new()
+        } else {
+            match event_id.as_ref() {
+                // 事件模式：整个后缀固定一个顶层叶子 case，不分组、不参与判定。
+                // 名称是 `event-{事件标识}`，与角色模式的 `role-*` 天然不会重名，无需跨模式判重
+                Some(event_id) => {
+                    // 事件标识必须满足 case 名称字符集（只能含英文字母、数字与 `-`）
+                    if !crate::model::valid_case_name(event_id) {
+                        return Err(Error::StateError(format!(
+                            "事件标识不能用于 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
+                            crate::model::MAX_CASE_NAME_LEN,
+                            event_id
+                        ).into()));
+                    }
+                    let case_name = event_case_name(event_id);
+                    let indices: Vec<usize> = (0..unplaced.len()).collect();
+                    let records = stored_records(&unplaced, &indices);
+                    let verdict = match state.tree.event_case(event_id) {
+                        // 事件 case 已存在：直接命中（按 event_id 定位，不看层级）
+                        Some(_) => GroupVerdict::Case(case_name),
+                        // case 还不存在：由落盘阶段建出（只含消息时记忆条数为 0）
+                        None => GroupVerdict::NewEvent,
+                    };
+                    vec![Placement { verdict, items: indices, records }]
+                }
+                // 角色模式：模型分组 + 逐层判定，只看角色 case（事件叶子不在候选里）
+                None => self.group_and_place(agent_role, state, &role_event, channel, &unplaced).await?,
+            }
         };
 
         // 2. 落地 + 存储：逐组建出/命中 case（新话题建出记忆条数为 0 的 case），
         //    有记录的组再聚合记录；随后摘要重算、追加原文副本、应用内存状态、推进水位。
         //    新建的 case 在落盘阶段就带上名称与摘要（角色模式来自模型判定，事件模式按内容生成），
         //    不留到后续查询再去调用模型；这些 case 不再参与第 3 步的摘要重算（祖先仍会级联）。
-        let mut new_records: HashMap<ArcStr, Vec<RecordEntry>> = HashMap::new();
-        let mut touched: BTreeSet<ArcStr> = BTreeSet::new();
+        let mut touched: BTreeSet<ArcStr> = new_records.keys().cloned().collect();
         let mut created: BTreeSet<ArcStr> = BTreeSet::new();
-        let mut case_names: Vec<ArcStr> = Vec::new();
+        // 带 meta 的记录已经直接落到 case：按名称排序，保证结果的确定性
+        let mut case_names: Vec<ArcStr> = new_records.keys().cloned().collect();
+        case_names.sort();
         let mut groups: Vec<PlaceGroup> = Vec::with_capacity(placements.len());
         for placement in &placements {
             let mut messages: Vec<usize> =
-                placement.items.iter().flat_map(|index| items[*index].messages().iter().copied()).collect();
+                placement.items.iter().flat_map(|index| unplaced[*index].messages().iter().copied()).collect();
             messages.sort_unstable();
             let case_name = match &placement.verdict {
                 GroupVerdict::Case(case_name) => case_name.clone(),
@@ -330,7 +320,7 @@ impl Archiver {
                         state.tree.create_node(&case_name, None, &now);
                         // 只有消息、还没有记录：立刻按本组内容生成摘要（有记录时交给第 3 步按记录生成）
                         if placement.records.is_empty() {
-                            let text = render_group(items, &placement.items);
+                            let text = render_group(&unplaced, &placement.items);
                             let summary = self.model.summarize(agent_role, Some(event_id.clone()), &text).await?;
                             state.tree.set_summary(&case_name, &summary, &now);
                             created.insert(case_name.clone());
@@ -581,6 +571,7 @@ pub fn advance_watermark(watermark: &mut kissbot_api::Watermark, batch: &[Record
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::records::RecordBody;
     use kissbot_api::ChannelRecord;
     use kissbot_api::Content;
 
@@ -595,6 +586,7 @@ mod tests {
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self"),
                 messenger_id: ArcStr::from("web"),
@@ -613,7 +605,7 @@ mod tests {
 
     /// 待归档记录形态的批次条目
     fn stored(time: &str, sn: u64, is_self: usize, text: &str) -> BatchItem {
-        BatchItem::Stored { record: channel(time, sn, is_self, text), aliases: Vec::new() }
+        BatchItem::Stored(channel(time, sn, is_self, text))
     }
 
     fn message(time: &str, text: &str) -> LocateMessage {
@@ -660,32 +652,22 @@ mod tests {
     }
 
     #[test]
-    fn merge_batch_dedups_messages_against_records() {
+    fn merge_batch_keeps_records_and_messages() {
+        // 新消息在 locate 时还没有写入记忆：不与已存记录去重，各自成条（按时间排序）
         let records = vec![
             channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1"),
             channel_with_id("2099-01-01 10:02:00", 2, 1, "C", "m2"),
         ];
-        // 新消息：msg_id 与已存 A 相同（内容 / 时间 / 发送者都可以不同）；B 的 msg_id 是新的
-        let a = message_with_id("2099-01-01 23:59:59", "m1", "内容不同也判为同一条");
-        let b = message_with_id("2099-01-01 10:03:00", "m3", "B");
-        let items = merge_batch(&channel_key(), &records, &[&a, &b]);
+        let same_id = message_with_id("2099-01-01 23:59:59", "m1", "与 A 同 msg_id 的新消息");
+        let new = message_with_id("2099-01-01 10:03:00", "m3", "B");
+        let items = merge_batch(&channel_key(), &records, &[&same_id, &new]);
 
-        assert_eq!(items.len(), 3, "重复的新消息不单独成条");
+        assert_eq!(items.len(), 4, "2 条已存记录 + 2 条新消息");
         let text = render_batch(&items);
-        assert_eq!(
-            text,
-            "[0] [2099-01-01 10:00:00] alice: A\n[1] [2099-01-01 10:02:00] alice: C\n[2] [2099-01-01 10:03:00] alice: B",
-            "重复的新消息只以已存版本出现一次"
-        );
-        assert!(!text.contains("内容不同也判为同一条"), "重复的新消息自身不进分析批次");
-        match &items[0] {
-            BatchItem::Stored { aliases, .. } => assert_eq!(aliases, &[0], "已存 A 吸收重复的新消息 0"),
-            other => panic!("应为已存记录: {:?}", other),
-        }
-        match &items[1] {
-            BatchItem::Stored { aliases, .. } => assert!(aliases.is_empty(), "已存 C 没有重复的新消息"),
-            other => panic!("应为已存记录: {:?}", other),
-        }
+        assert!(text.contains("alice: A") && text.contains("alice: C"), "已存记录参与分析");
+        assert!(text.contains("与 A 同 msg_id 的新消息") && text.contains("alice: B"), "新消息都参与分析");
+        assert_eq!(items[0].time(), "2099-01-01 10:00:00");
+        assert!(items[0].is_stored(), "同一时刻已存记录在前");
         match &items[2] {
             BatchItem::New { index, message } => {
                 assert_eq!(*index, 1, "新消息保留请求下标");
@@ -693,40 +675,7 @@ mod tests {
             }
             other => panic!("应为新消息: {:?}", other),
         }
-    }
-
-    #[test]
-    fn merge_batch_dedups_by_msg_id() {
-        let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
-
-        // 批次已按通道切分，判重只比 msg_id：内容 / 时间 / 发送者 / is_self 都不参与
-        let same = message_with_id("2099-01-01 23:00:00", "m1", "另一个内容");
-        assert_eq!(merge_batch(&channel_key(), &records, &[&same]).len(), 1, "msg_id 相同即同一条");
-
-        let other = message_with_id("2099-01-01 10:00:00", "m2", "A");
-        assert_eq!(merge_batch(&channel_key(), &records, &[&other]).len(), 2, "msg_id 不同不去重");
-        let other = message_with_id("2099-01-01 10:00:00", "", "A");
-        assert_eq!(merge_batch(&channel_key(), &records, &[&other]).len(), 2, "新消息 msg_id 为空时不参与去重");
-
-        // 已存记录 msg_id 为空（旧记录、思考/工具占位记录）不参与去重、原样保留
-        let legacy = vec![channel("2099-01-01 10:00:00", 1, 0, "A")];
-        assert_eq!(merge_batch(&channel_key(), &legacy, &[&same]).len(), 2, "已存记录 msg_id 为空时不参与去重");
-
-        // 思考/工具记录不参与新消息去重（body 不是通道记录）
-        let time = ArcStr::from("2099-01-01 10:00:00");
-        let think = RecordEntry {
-            kind: RecordKind::Think,
-            time: time.clone(),
-            sn: 1,
-            body: RecordBody::Think(Arc::new(kissbot_api::ThinkRecord {
-                reasoning_content: Some(ArcStr::from("A")),
-                thinking: None,
-                key: ArcStr::from("k1"),
-                time,
-                sn: 1,
-            })),
-        };
-        assert_eq!(merge_batch(&channel_key(), &[think], &[&same]).len(), 2, "非通道记录不去重");
+        assert!(items.iter().any(|item| matches!(item, BatchItem::New { index, .. } if *index == 0)));
     }
 
     /// 调用方必须按通道分开调用：混入其他通道的记录/消息会被契约断言拦住
@@ -741,24 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_batch_matches_duplicates_one_to_one() {
-        let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
-        let first = message_with_id("2099-01-01 10:00:00", "m1", "A");
-        let second = message_with_id("2099-01-01 10:01:00", "m1", "A");
-        let items = merge_batch(&channel_key(), &records, &[&first, &second]);
-
-        assert_eq!(items.len(), 2, "一条已存记录只吸收一条重复新消息，多出来的按新消息处理");
-        match &items[0] {
-            BatchItem::Stored { aliases, .. } => assert_eq!(aliases, &[0]),
-            other => panic!("应为已存记录: {:?}", other),
-        }
-        match &items[1] {
-            BatchItem::New { index, .. } => assert_eq!(*index, 1),
-            other => panic!("应为新消息: {:?}", other),
-        }
-    }
-
-    #[test]
     fn merge_batch_orders_by_time_with_records_first() {
         let records = vec![channel("2099-01-01 10:00:00", 1, 0, "已存")];
         let earlier = message("2099-01-01 09:00:00", "更早的新消息");
@@ -768,7 +699,7 @@ mod tests {
         let times: Vec<&str> = items.iter().map(BatchItem::time).collect();
         assert_eq!(times, vec!["2099-01-01 09:00:00", "2099-01-01 10:00:00", "2099-01-01 10:00:00"]);
         assert!(matches!(&items[0], BatchItem::New { .. }));
-        assert!(matches!(&items[1], BatchItem::Stored { .. }), "同一时刻已存记录在前");
+        assert!(matches!(&items[1], BatchItem::Stored(_)), "同一时刻已存记录在前");
         assert!(matches!(&items[2], BatchItem::New { .. }));
     }
 

@@ -26,7 +26,7 @@ kissbot-agent 使用三份配置：
   "api": {
     "memory_store_url": "http://127.0.0.1:8082",           // memory-store 地址（空 = 关闭读写）
     "memory_ego_url": "http://127.0.0.1:3001",             // memory-ego 地址（空 = ego 未配置）
-    "memory_struct_abstract_url": "http://127.0.0.1:8083"  // 摘要记忆地址（空 = 未部署，输入处理器降级为普通合批）
+    "memory_struct_abstract_url": "http://127.0.0.1:8083"  // 摘要记忆地址（空 = 未部署，摘要记忆 pipeline 降级）
   },
   "agent": {
     "data_dir": "agent-data",                 // nexus.json / station.json / 会话上下文的根目录
@@ -82,12 +82,7 @@ kissbot-agent 使用三份配置：
                                           "user": { "messenger_id": "web", "user_id": "u1" },
                                           "group_id": "g1" } },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": { "preset": "preset_role",
-                      "input_processor": ["batch_input_processor"],
-                      "system_prompter": ["memory_ego_system_prompter"],
-                      "message_sender": "memory_recover_message_sender",
-                      "tool_caller": "station_tool_caller",
-                      "output_processor": "channel_output_processor" }
+        "pipeline": { "pipeline_name": "default_memory" }
       },
       "roles": { "dev": { "llm": { "model": "deepseek-v4-pro" } } }
     }
@@ -105,8 +100,8 @@ kissbot-agent 使用三份配置：
 - `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](llm.md)；agent 只负责其存储、落盘与 CRUD。
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
-- `input_processor` / `system_prompter` 为**数组**（同一会话可挂多个输入处理器与系统提示词器）；`message_sender` / `tool_caller` / `output_processor` 为单个名称。
-- `input_processor` 可选 `batch_input_processor`（默认，按会话合批）与 `abstract_input_processor`（摘要记忆：按通道攒批 + 超时触发 + case 上下文重建）。
+- `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆回溯）或 `abstract_memory`（摘要记忆）；未配置时按会话类型取默认：Memory 会话用 `default_memory`，Raw 会话用 `default`。
+- `abstract_memory` 只适用于 Memory 会话：一个会话一条 pipeline，按 channel 分别攒批，触发时先 locate 再用 case 上下文重建会话。
 - `sessions` 的 key 是 `SessionKey`（结构体），JSON 不支持结构体作 map 键，故以 `[[key, value], ...]` 数组对承载。
 
 ### 配置继承与合成
@@ -207,7 +202,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 ## Memory-Struct-Abstract API 交互
 
-摘要记忆输入处理器（`abstract_input_processor`，需在 `pipeline.input_processor` 显式启用）经 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`：
+摘要记忆 pipeline（`abstract_memory`，经 `pipeline.pipeline_name` 显式启用）经 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -216,9 +211,13 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 | POST | `/abstract/case/records-tail` | 取 case 结尾 count 条原文副本（升序） |
 
 - 请求里的 `role_event` 与会话写记忆用同一个 `RoleEvent`（项目级基础类型）：`event_id` 缺省为角色模式，给出事件标识为事件模式。拼接记忆后缀是 memory 内部的事（只在构造文件名时进行），agent 不再自己拼字符串。后缀决定原始记录读取、水位、当前 case 指针与模型会话，角色名（`role_name`）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
-- 触发策略：消息按通道（messenger + 接收方用户 + 群组）攒批，每秒检测一次，最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 触发时用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文；还没有归档内容的 case 跳过、不进上下文：记忆条数为 0 的 case 正是本批消息刚定位建出的（它概括的就是本批消息，原文也会随本批进 pipeline），摘要为空的只可能是历史遗留数据。查出的记录与本批新消息按「通道三元组 + `msg_id`」去重（case 原文副本可能来自多个通道，故带通道三元组；`msg_id` 为空的不参与去重、原样保留），去重后本批新消息整体进 pipeline。定位请求本身按通道发出（每批消息同属一个通道，消息仍带通道三元组）。
-- `memory_struct_abstract_url` 为空或任一调用失败：记 warn，不重置上下文，直接以合批消息运行 pipeline（与 `batch_input_processor` 行为一致）。
+- 触发策略：一个 pipeline 为每个 channel（messenger + 接收方用户 + 群组）维护一个 `ChannelBatchProducer`（DashMap 按 `ChannelKey` 索引），各 channel 有独立的合批队列与消费者，互不干扰；最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
+- 触发后先在 `run_lock` 内串行执行（同一会话的上下文只能串行改写）：`/abstract/locate` 定位本批消息的 case → 用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文 → 把本批消息作为一条 user 消息运行 agentic loop。
+- 记忆写入从 Nexus 移到 pipeline：本批上行消息在 **locate 之后**才写入 memory-store，并带 `meta.abstract_memory.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。查出的历史记录与本批新消息在组装上下文时仍按「通道三元组 + `msg_id`」去重（防御重复；不带通道的 `msg_id` 为空记录原样保留）。
+- 模型回复（下行记录）也带当前触发 case 的 meta（本批最后一个组落入的 case，与摘要记忆的当前 case 指针一致），不需要再次 locate。`default_memory` pipeline 写入上下行记录时不带 meta。
+- channel 不再绑定本会话（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；Nexus 的 `rebind_session` 把「解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话」合成一次调用。
+- `memory_struct_abstract_url` 为空或 locate 调用失败：记 warn，不重置上下文，本批上行记录不带 meta，直接以合批消息运行 pipeline。
+- 上下文重建（case 摘要/原文查询）失败：记 warn，保留原上下文继续运行本批。
 
 ## Memory-Ego API 交互
 
@@ -283,7 +282,7 @@ enum Error {
     WsError(kai_ws::Error),
     McpError(kissbot_mcp::McpError),
     InternalError(ArcStr),           // 预留
-    PipelineNotFound(ArcStr, ArcStr, SessionKey),  // (组件类别, 配置名, 会话 key)
+    PipelineNotFound(ArcStr, SessionKey),  // (配置名, 会话 key)
 }
 ```
 

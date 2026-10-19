@@ -7,7 +7,7 @@
 
 - 四类记录（channel / think / tool-call / tool-result）共用同一套写入框架，各自实例化批量追加器
 - 每类记录由对应的 RequestParser 将请求解析为 (key, record)，同批请求按 key 分组后并行写入各文件
-- channel 记录原样带入 `msg_id`（思考/工具占位记录为空）；归档与定位按通道分开调用，消息与记录的去重在单通道批次内只按 `msg_id` 判定，见 [memory-directory.md](memory-directory.md)
+- channel 记录原样带入 `msg_id` 与可选 `meta`（思考/工具占位记录 `msg_id` 为空）；归档与定位按通道分开调用，locate 不与已存记录去重（调用方在 locate 之后才写入新消息），见 [memory-directory.md](memory-directory.md)
 
 ## 文件状态与序号
 

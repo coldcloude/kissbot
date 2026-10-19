@@ -101,6 +101,7 @@ impl RequestParser<ChannelRequest, Arc<RecordKey>, ChannelRecord> for ChannelPar
             content: request.content,
             time: request.time,
             sn: 0,
+            meta: request.meta,
         };
         (key, record)
     }
@@ -329,6 +330,7 @@ use super::*;
     #[test]
     fn test_channel_request_parser() {
         let request = ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("agent1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),

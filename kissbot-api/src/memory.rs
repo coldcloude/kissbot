@@ -35,6 +35,43 @@ impl RoleEvent {
     }
 }
 
+// ========== 记录元信息 ==========
+
+/// 摘要记忆信息：记录所属的 case。
+///
+/// 由摘要记忆的使用方（agent 侧的摘要记忆 pipeline）在写入记忆时填入：摘要记忆组件读到带该信息的
+/// 记录时直接按 case 名称定位，不再走分组/逐层判定流程。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbstractMemoryMeta {
+    /// 这条记录所属的 case 名称
+    pub case_name: ArcStr,
+}
+
+/// 记录元信息：各组件可选的附加信息（未识别的字段在反序列化时忽略）。
+///
+/// 目前只有通道记录携带 meta；思考/工具记录通过占位通道记录的 key 归属到通道，
+/// 其 case 随之确定，因此不需要单独记录。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemoryMeta {
+    /// 摘要记忆信息
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abstract_memory: Option<AbstractMemoryMeta>,
+}
+
+impl MemoryMeta {
+    /// 只带摘要记忆 case 名的元信息
+    pub fn with_case_name(case_name: ArcStr) -> Self {
+        Self {
+            abstract_memory: Some(AbstractMemoryMeta { case_name }),
+        }
+    }
+
+    /// 摘要记忆 case 名（没有该信息时为 None）
+    pub fn case_name(&self) -> Option<&ArcStr> {
+        self.abstract_memory.as_ref().map(|meta| &meta.case_name)
+    }
+}
+
 // ========== Request structures ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +92,9 @@ pub struct ChannelRequest {
     pub group_name: ArcStr,
     pub content: Content,
     pub time: ArcStr,
+    /// 可选的记录元信息（摘要记忆用它记录所属 case）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Arc<MemoryMeta>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +194,9 @@ pub struct ChannelRecord {
     pub content: Content,
     pub time: ArcStr,
     pub sn: u64,
+    /// 可选的记录元信息（摘要记忆用它记录所属 case）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Arc<MemoryMeta>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +417,7 @@ mod tests {
     #[test]
     fn test_channel_key_serde_and_from_record() {
         let record = ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("alice"),
             self_user_id: ArcStr::from("self1"),
             messenger_id: ArcStr::from("web"),
@@ -402,6 +446,7 @@ mod tests {
     #[test]
     fn test_serde_channel_request() {
         let obj = ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("agent1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("admin"))),
             messenger_id: ArcStr::from("m1"),
@@ -433,6 +478,41 @@ mod tests {
     }
 
     #[test]
+    fn test_channel_meta_roundtrip_and_legacy_default() {
+        // 摘要记忆信息写在 meta 里随记录透传；无 meta 的旧记录反序列化为 None
+        let meta = Arc::new(MemoryMeta::with_case_name(ArcStr::from("role-weather")));
+        let request = ChannelRequest {
+            meta: Some(meta.clone()),
+            agent_id: ArcStr::from("a1"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
+            messenger_id: ArcStr::from("m1"),
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self1"),
+            group_id: ArcStr::from("g1"),
+            is_self: 0,
+            msg_id: ArcStr::from("m-1"),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("你好")),
+            time: ArcStr::from("2026-01-01 00:00:00"),
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["meta"], serde_json::json!({"abstract_memory": {"case_name": "role-weather"}}));
+        assert_eq!(meta.case_name().map(|name| name.as_str()), Some("role-weather"));
+        let back: ChannelRequest = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back.meta, Some(meta));
+
+        // meta 缺省不序列化；旧记录（无 meta 字段）反序列化成功
+        let no_meta = ChannelRequest { meta: None, ..request };
+        assert!(serde_json::to_value(&no_meta).unwrap().get("meta").is_none());
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("meta");
+        let legacy: ChannelRequest = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.meta.is_none());
+    }
+
+    #[test]
     fn test_serde_recent_query() {
         let obj = RecentQuery {
             agent_id: ArcStr::from("a"),
@@ -448,6 +528,7 @@ mod tests {
     #[test]
     fn test_serde_channel_requests() {
         let req = ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("a1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             messenger_id: ArcStr::from("m1"),
@@ -601,6 +682,7 @@ mod tests {
     #[test]
     fn test_record_impl() {
         let mut channel = ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
             messenger_id: ArcStr::from("telegram"),
@@ -633,6 +715,7 @@ mod tests {
     #[test]
     fn test_record_cmp_time() {
         let r1 = ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
             messenger_id: ArcStr::from("telegram"),
@@ -647,6 +730,7 @@ mod tests {
             sn: 1,
         };
         let r2 = ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
             messenger_id: ArcStr::from("telegram"),
@@ -664,6 +748,7 @@ mod tests {
 
         // same time, different sn
         let r3 = ChannelRecord {
+            meta: None,
             time: ArcStr::from("2026-06-24 10:00:00"),
             sn: 2,
             ..r1.clone()
@@ -676,6 +761,7 @@ mod tests {
     #[test]
     fn test_serde_channel_record() {
         let obj = ChannelRecord {
+            meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
             messenger_id: ArcStr::from("telegram"),

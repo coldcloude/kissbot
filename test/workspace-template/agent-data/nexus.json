@@ -26,7 +26,7 @@
     }
   },
   "memory_structs": {},
-  "agents": {
+  "agent_roles": {
     "0": {
       "config_map": {
         "llm": {
@@ -48,13 +48,7 @@
           }
         },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": {
-          "input_processor": ["batch_input_processor"],
-          "system_prompter": ["memory_ego_system_prompter"],
-          "message_sender": "memory_recover_message_sender",
-          "tool_caller": "station_tool_caller",
-          "output_processor": "channel_output_processor"
-        }
+        "pipeline": { "pipeline_name": "default_memory" }
       },
       "roles": {}
     },
@@ -79,13 +73,7 @@
           }
         },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": {
-          "input_processor": ["batch_input_processor"],
-          "system_prompter": ["memory_ego_system_prompter"],
-          "message_sender": "memory_recover_message_sender",
-          "tool_caller": "station_tool_caller",
-          "output_processor": "channel_output_processor"
-        }
+        "pipeline": { "pipeline_name": "default_memory" }
       },
       "roles": {}
     },
@@ -103,16 +91,11 @@
         },
         "channel_batch": { "channel_batch_interval_secs": 3 },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": {
-          "input_processor": ["batch_input_processor"],
-          "system_prompter": ["memory_ego_system_prompter"],
-          "message_sender": "memory_recover_message_sender",
-          "tool_caller": "station_tool_caller",
-          "output_processor": "channel_output_processor"
-        }
+        "pipeline": { "pipeline_name": "default_memory" }
       },
       "roles": {}
     }
   },
-  "sessions": []
+  "memory_sessions": [],
+  "raw_sessions": {}
 }

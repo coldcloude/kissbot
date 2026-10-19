@@ -85,17 +85,15 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - SessionManager 只负责会话集合的去重持有与无绑定清理，不做 pipeline 装配
 
 ### 5. pipeline 体系（会话执行流程）
-- **AgentPipeline**：agentic loop 本体，装配时注入会话实例，按轮次执行「发送 → 输出处理」，直至无需继续或达到轮次上限；结束轮次后把本轮新消息写回会话上下文
-- **输入处理器（AgentInputProcessor）**：会话消息入口，按名索引可挂多个实现。默认实现为合批处理器——连续到达的消息先入队并刷新合批截止时间，到期后打包为一条 user 消息并请求启动该会话的 pipeline；摘要记忆处理器则按通道（messenger + 接收方用户 + 群组）攒批、每秒检测最后一条是否超时，触发时经摘要记忆定位 case 并取 case 摘要与结尾原文副本重建上下文，再把本批新消息交给 pipeline，摘要记忆未配置或调用失败时降级为普通合批。
-- **消息发送器（AgentMessageSender）**：直接读写会话上下文并调用 LLM，返回归一化响应。默认实现三种：raw（直接发送）、compress（超阈值时 LLM 总结压缩上下文）、memory_recover（超阈值时从 memory-store 回溯打包重建上下文）；阈值判定所需的上次 token 占用由发送器自身维护
-- **工具调用器（AgentToolCaller）**：执行单个 tool call 并回填结果，默认实现经适配层分派到全局 Station（把 Nexus 侧工具调用结构转换为 Station 的工具接口，再把结果还原回 Nexus 侧结构）
-- **输出处理器（AgentOutputProcessor）**：构造本轮要回写上下文的消息（助手消息 + 工具结果消息）、判断是否继续下一轮、在有正文时经回复通道发送
-- **系统提示词器（AgentSystemPrompter）**：持有会话，直接设置该系统消息；默认实现为固定提示词，另一实现从 memory-ego 读取自我认知信息（保留 agent 或读取失败时回退默认提示词）
-- **trigger 标记（AgentTrigger）**：会话内可能与 pipeline 联动、且可保留多个实例的执行体统一标记（输入处理器与系统提示词器均实现它）；对应的 trigger 集合用于承载「无手动触发」的执行体（如定时 / 事件驱动），当前为空，尚无生产实现
-- **PipelineManager**：按会话 key 持有 SessionPipeline（输入处理器 / 系统提示词器 / trigger 为按名索引的多实例集合，正在运行的 pipeline 由独立锁保护），提供装配（同步）、消息投递、系统提示词重置与随会话清理
+- **AgentPipeline**：会话执行流程本体，装配时注入会话实例。当前三实现：`default`（无记忆的 agentic loop）、`default_memory`（带记忆读写的 agentic loop）、`abstract_memory`（摘要记忆 pipeline，按 channel 攒批 + case 上下文重建）。
+- **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个会话一个合批队列；`abstract_memory` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的 `ChannelBatchProducer`，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline，pipeline 再打包为一条 user 消息运行 agentic loop。
+- **AgenticLoop**：`default_memory` 与 `abstract_memory` 共用的 agentic loop 运行体：按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆；超过 token 阈值时按配置压缩或记忆回溯。
+- **记忆写入位置**：上下行通道记录的构造是纯函数，写入动作在 pipeline 内完成：`default_memory` 在收到上行消息时立即写入；`abstract_memory` 在 locate 之后写入，并带上消息所属 case 的 meta。模型回复也由 pipeline 发送并写入（可达的回复带当前触发 case 的 meta）。
+- **channel 解绑**：AgentPipeline 提供 `channel_unbound(messenger_id, self_user_id)`。channel 切换 agent/role/mode 时，通道侧对旧会话的 pipeline 调用它；摘要记忆 pipeline 据此丢弃该 channel 全部分组的生产者与待处理消息。Nexus 把「解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话」合成为一个重绑定流程。
+- **PipelineManager**：按会话 key 持有 pipeline，提供装配（同步）、消息投递、系统提示词重置、channel 解绑通知与随会话清理；pipeline 之间的配置变化由 `pipeline.pipeline_name` 决定。
 
 ### 6. 记忆读写
-- 上行消息、下行回复、思考内容、tool call / tool result 统一经 memory-store 客户端写入；写入失败仅记录日志、不重试
+- 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
 - 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
 - 首次合成会话配置时也读取记忆回溯配置（时间窗、条数），与 LLM 参数独立
 
@@ -132,16 +130,15 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 按 msg_id 查所属 channel 的未回显 outgoing 集合
     ├─ 命中 → 识别为自身发出的消息回显，丢弃（发送时已写入记忆）
     └─ 未命中 → 转发 Nexus：
-        → 记忆写入：推上行消息（is_self=0）
         → 管理命令（文本以 "/" 开头且在 admins 中）→ 命令路由器执行 → 回复发回来源通道
         → 系统事件（群组变更 / 用户移除）→ 不进 pipeline
-        → 普通消息 → 定位会话（按来源 channel 的绑定）→ 该会话的输入处理器
+        → 普通消息 → 定位会话（按来源 channel 的绑定）→ 该会话的 pipeline（记忆写入也在 pipeline 内）
 ```
 
 ### pipeline 执行流程（agentic loop）
 
 ```
-普通消息 → 输入处理（合批：连续消息等待合批间隔后打包为一条 user 消息；摘要记忆：按通道超时触发，先用摘要记忆重建上下文）
+普通消息 → pipeline 接入（合批：连续消息等待合批间隔后打包为一条 user 消息；摘要记忆：按 channel 独立攒批，先用 locate 与 case 上下文重建）
   → AgentPipeline：装配时注入会话（发送器 / 工具调用器 / 输出处理器，运行期直接读写该会话上下文）
   → 循环（上限防死循环）：
       1. 发送器：上下文超阈值时先压缩或记忆回溯 → 追加新消息 → 调用 LLM

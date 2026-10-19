@@ -80,6 +80,7 @@ mod tests {
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self1"),
                 messenger_id: ArcStr::from("web"),

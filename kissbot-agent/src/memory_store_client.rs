@@ -310,6 +310,7 @@ mod tests {
     #[test]
     fn channel_requests_force_is_one() {
         let reqs = channel_requests(vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("a1"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             messenger_id: ArcStr::from("web"),

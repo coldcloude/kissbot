@@ -202,8 +202,15 @@ impl ChannelManager {
         mut role_name: Option<ArcStr>,
         mut event_id: Option<Option<ArcStr>>,
     ) -> Result<()> {
-        // 设置 agent 和 role
         let cm = ConfigManager::get();
+        // 变化前的会话标识与绑定身份：写完新配置后旧会话/旧 channel 的批次状态需要按它们清理
+        let c = self.get_or_create(channel_id);
+        let old_key = self.memory_key(channel_id).await.map(|key| SessionKey::Memory(Arc::new(key)));
+        let old_bind_users = cm.channel(channel_id).await
+            .map(|channel| channel.bind_users.clone())
+            .unwrap_or_default();
+
+        // 设置 agent 和 role
         let cc = if agent_id.is_some() || role_name.is_some() {
             cm.update_channel(channel_id, |c| {
                 if let Some(agent_id) = agent_id.take() {
@@ -217,22 +224,18 @@ impl ChannelManager {
             cm.channel(channel_id).await.ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?
         };
         // 设置 event
-        let c = self.get_or_create(channel_id);
         if let Some(event_id) = event_id.take() {
             c.event.store(Arc::new(event_id));
         }
-        // 会话/流水线重定位归 Nexus（会话与 pipeline 都挂在 Nexus 上）
-        let nexus = Nexus::get();
-        // 1. 清理无任何 channel 绑定的会话（pipeline/trigger 一并清理）
-        nexus.prune_sessions().await;
-        // 2. 新会话标识对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        nexus.ensure_session(SessionKey::Memory(Arc::new(MemoryKey {
+        // 会话/流水线重定位归 Nexus：解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话
+        let new_key = SessionKey::Memory(Arc::new(MemoryKey {
             agent_id: cc.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: cc.role_name.clone(),
                 event_id: c.event.load().as_ref().clone(),
             }),
-        }))).await;
+        }));
+        Nexus::get().rebind_session(old_key, new_key, old_bind_users.as_ref()).await;
         Ok(())
     }
 

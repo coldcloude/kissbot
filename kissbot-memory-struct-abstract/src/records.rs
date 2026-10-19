@@ -65,6 +65,16 @@ impl RecordEntry {
             _ => None,
         }
     }
+
+    /// 记录 meta 里给出的摘要记忆 case 名（没有则返回 None）。
+    ///
+    /// 这是摘要记忆的使用方在写入记忆时填入的：有该信息时直接按 case 名定位，不再走分组/逐层判定。
+    pub fn meta_case_name(&self) -> Option<&ArcStr> {
+        match &self.body {
+            RecordBody::Channel(r) => r.meta.as_ref().and_then(|meta| meta.case_name()),
+            _ => None,
+        }
+    }
 }
 
 /// 占位通道记录关联的详情 key（内容为 Think / ToolCall / ToolResult）
@@ -442,6 +452,7 @@ mod tests {
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from("u1"),
                 self_user_id: ArcStr::from("self"),
                 messenger_id: ArcStr::from("web"),
@@ -480,6 +491,7 @@ mod tests {
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from(self_user),
                 self_user_id: ArcStr::from(self_user),
                 messenger_id: ArcStr::from("web"),
@@ -611,6 +623,7 @@ mod tests {
     fn case_records_fixture() -> Vec<CaseRecord> {
         vec![
             CaseRecord::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from("u1"), self_user_id: ArcStr::from("self"),
                 messenger_id: ArcStr::from("web"), group_id: ArcStr::from("g1"),
                 is_self: 0, msg_id: ArcStr::new(),
@@ -625,6 +638,7 @@ mod tests {
                 time: ArcStr::from("2026-09-22 10:00:00"), sn: 1,
             })),
             CaseRecord::Channel(Arc::new(ChannelRecord {
+                meta: None,
                 user_id: ArcStr::from("self"), self_user_id: ArcStr::from("self"),
                 messenger_id: ArcStr::from("web"), group_id: ArcStr::from("g1"),
                 is_self: 1, msg_id: ArcStr::new(),

@@ -52,7 +52,7 @@ case 树按**角色**共用；原始记录、水位、当前 case 指针、模�
 
 | 文件 | 内容 |
 |------|------|
-| channel-records-{date}.jsonl | 消息通道的文本记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id 与 messenger/group/self 身份） |
+| channel-records-{date}.jsonl | 消息通道的文本记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id、messenger/group/self 身份与可选的 meta） |
 | think-records-{date}.jsonl | 思考内容记录 |
 | tool-call-records-{date}.jsonl | 工具调用记录 |
 | tool-result-records-{date}.jsonl | 工具调用结果记录 |
@@ -69,8 +69,9 @@ channel 记录包含完整身份字段：
 | messenger_id | 消息来源通道标识 |
 | group_id | 群组标识（单聊可为空） |
 | is_self | 是否 agent 实际发送（1 / 0） |
+| meta | 可选的记录元信息；摘要记忆使用 `meta.abstract_memory.case_name` 记录所属 case，缺省不序列化 |
 
-> **msg_id 与去重**：消息与已存记录是否同一条，在**单通道批次内只按 `msg_id`** 判定（归档与定位都按通道分开调用），不比较内容；`msg_id` 为空（思考/工具占位记录、加字段前的旧记录）的条目不参与去重、原样保留。
+> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.abstract_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-abstract.md](memory-struct-abstract.md)。
 >
 > **is_self 与 self_user_id 不同**：is_self 只在 agent 实际发送消息时为 1（agent 经 msg_id 回显匹配识别并过滤自身回声后确定），不由 `user_id == self_user_id` 推导。其他人使用 agent 绑定的用户发送消息时，`user_id == self_user_id`，但 `is_self == 0`。
 

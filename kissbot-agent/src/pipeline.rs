@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use arcstr::ArcStr;
 use kissbot_api::IncomingMessageEvent;
 
 use kissbot_llm::{Message, Session, ToolCall};
@@ -22,7 +23,13 @@ pub trait IncomingMessageBatchProcessor {
 }
 
 #[async_trait]
-pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager + Send + Sync {}
+pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager + Send + Sync {
+    /// channel 不再绑定本会话：清理该 channel（messenger + 绑定用户）在本会话中的资源。
+    ///
+    /// 按 channel 攒批的 pipeline 覆写本方法丢弃对应 channel 的批次生产者与待处理消息；
+    /// 其余 pipeline 无 channel 级状态，使用默认空实现。
+    async fn channel_unbound(&self, _messenger_id: ArcStr, _self_user_id: ArcStr) {}
+}
 
 #[async_trait]
 pub trait TokenReducer: Send + Sync + 'static {

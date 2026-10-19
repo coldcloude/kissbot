@@ -232,6 +232,7 @@ mod tests {
 
     fn record(user: &str, self_user: &str, group: &str, is_self: usize, time: &str, sn: u64) -> ChannelRecord {
         ChannelRecord {
+            meta: None,
             user_id: ArcStr::from(user),
             self_user_id: ArcStr::from(self_user),
             messenger_id: ArcStr::from("web"),

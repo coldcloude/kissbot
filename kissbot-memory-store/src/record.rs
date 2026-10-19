@@ -526,6 +526,7 @@ mod tests {
 
         let requests = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_append_new"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -584,6 +585,7 @@ mod tests {
 
         let requests = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_append_multi"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -599,6 +601,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_append_multi"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -614,6 +617,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:01:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_append_multi"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -673,6 +677,7 @@ mod tests {
 
         // 第一次写入
         let req1 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_append_seq"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -701,6 +706,7 @@ mod tests {
 
         // 第二次写入
         let req2 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_append_seq"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -891,6 +897,7 @@ mod tests {
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_ooor"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -910,6 +917,7 @@ mod tests {
 
         // 再写入一条 time=10:00:00 — 早于已有记录，应该被拒绝
         let req2 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_ooor"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -944,6 +952,7 @@ mod tests {
 
         // 先写入一条 time=10:02:00
         let req1 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_force_ooo"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -963,6 +972,7 @@ mod tests {
 
         // force=true 写入一条 time=10:00:00 — 强制重排序
         let req2 = vec![ChannelRequest {
+            meta: None,
             agent_id: ArcStr::from("test_force_ooo"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
             messenger_id: ArcStr::from("telegram"),
@@ -1011,6 +1021,7 @@ mod tests {
         // 先写入 3 条，time 分别是 10:01, 10:02, 10:03
         let req1 = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_force_existing"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1026,6 +1037,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:01:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_force_existing"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1041,6 +1053,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:02:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_force_existing"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1062,6 +1075,7 @@ mod tests {
         // force 写入 2 条更早的记录：09:59, 10:00
         let req2 = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_force_existing"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1077,6 +1091,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 09:59:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_force_existing"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1129,6 +1144,7 @@ mod tests {
         // 两个不同 key 的请求（不同 agent_id）
         let requests = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_mk_a"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1144,6 +1160,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_mk_b"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1205,6 +1222,7 @@ mod tests {
         // 两个请求：同一 agent/role/date、不同 messenger/user/self_user/group → 合并到同一文件、sn 连续
         let reqs = vec![
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_merged_ids"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("telegram"),
@@ -1220,6 +1238,7 @@ mod tests {
                 time: ArcStr::from("2026-06-25 10:00:00"),
             },
             ChannelRequest {
+                meta: None,
                 agent_id: ArcStr::from("test_merged_ids"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
                 messenger_id: ArcStr::from("web"),
