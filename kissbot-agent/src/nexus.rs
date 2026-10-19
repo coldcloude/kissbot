@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use arcstr::ArcStr;
 use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
-use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Session};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
 use crate::configs::OutChannel;
-use crate::pipelines::{PipelineManager, tools_for_session};
+use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
-use crate::types::{Error, MemoryKey, Result, SessionKey};
+use crate::types::{Error, Result, SessionKey};
 use crate::session_manager::SessionManager;
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
@@ -111,12 +111,12 @@ impl Nexus {
 
     /// 定位会话（不存在则创建并完成初始化：上下文恢复在 get_or_create 内，pipeline 同步与系统提示词在其之后）；返回会话
     /// key 传 Arc（与 pipeline 表共用同一份 key，只增引用计数）
-    pub async fn ensure_session(&self, key: Arc<MemoryKey>) -> Arc<Session> {
+    pub async fn ensure_session(&self, key: SessionKey) -> Arc<Session> {
         let (session, new) = self.session_manager.get_or_create(key.clone()).await;
         if new {
             // 初始化 pipeline
             let _ = self.pipeline_manager.sync_pipeline(key.clone(), session.clone()).await;
-            let _ = self.pipeline_manager.reset_system_prompt(key.as_ref()).await;
+            let _ = self.pipeline_manager.reset_system_prompt(key).await;
         }
         session
     }
@@ -128,7 +128,7 @@ impl Nexus {
         let mut keys = HashSet::new();
         for (_, ch) in &channels {
             if let Some(key) = self.channel_manager.memory_key(ch.channel_id.as_str()).await {
-                keys.insert(Arc::new(key));
+                keys.insert(SessionKey::Memory(Arc::new(key)));
             }
         }
         self.session_manager.retain(&keys);
@@ -179,7 +179,7 @@ impl Nexus {
         // 按 channel 绑定的 agent/role/运行态事件初始化会话集合（agent_id 取 config，保留 agent = "0"）
         for (_, ch) in ConfigManager::get().channels().await {
             if let Some(key) = self.channel_manager.memory_key(ch.channel_id.as_str()).await {
-                self.ensure_session(Arc::new(key)).await;
+                self.ensure_session(SessionKey::Memory(Arc::new(key))).await;
             }
         }
         // 连接全部 enabled 的 channel（连接/重连/回显/发送归 ChannelManager 通道适配层；
@@ -264,9 +264,9 @@ impl Nexus {
         }
 
         // 5. 普通消息：运行pipeline
-        let key = Arc::new(key);
+        let key = SessionKey::Memory(Arc::new(key));
         let _ = self.ensure_session(key.clone()).await;
-        let _ = self.pipeline_manager.incoming_message(key.as_ref(), event).await;
+        let _ = self.pipeline_manager.incoming_message(key, event).await;
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
@@ -284,11 +284,6 @@ impl Nexus {
         if let Err(e) = self.channel_manager.send(channel_id, msg).await {
             warn!("send_admin_reply 失败: {:?}", e);
         }
-    }
-
-    pub async fn run_pipeline(&self, memory_key: Arc<MemoryKey>, message: Message) -> Result<()> {
-        let tools = tools_for_session(SessionKey::Memory(memory_key)).await;
-        self.pipeline_manager.run_pipeline(memory_key.as_ref(), message, &tools).await
     }
 
     /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）

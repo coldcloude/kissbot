@@ -20,7 +20,7 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
 use crate::nexus::Nexus;
-use crate::types::{ChannelCommand, Error, Result, MemoryKey};
+use crate::types::{ChannelCommand, Error, MemoryKey, Result, SessionKey};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(60);
@@ -226,13 +226,13 @@ impl ChannelManager {
         // 1. 清理无任何 channel 绑定的会话（pipeline/trigger 一并清理）
         nexus.prune_sessions().await;
         // 2. 新会话标识对应会话不存在则创建并构建初始上下文（agent 标识取会话 key）
-        nexus.ensure_session(Arc::new(MemoryKey {
+        nexus.ensure_session(SessionKey::Memory(Arc::new(MemoryKey {
             agent_id: cc.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: cc.role_name.clone(),
                 event_id: c.event.load().as_ref().clone(),
             }),
-        })).await;
+        }))).await;
         Ok(())
     }
 

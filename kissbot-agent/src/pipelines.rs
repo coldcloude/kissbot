@@ -3,6 +3,7 @@ pub mod channel_batch_processor;
 pub mod token_reducer;
 
 pub use channel_batch_processor::*;
+use dashmap::{DashMap, Entry};
 pub use token_reducer::*;
 
 use async_trait::async_trait;
@@ -11,14 +12,14 @@ use kissbot_api::{Content, ContentBlock, IncomingMessageEvent, RESERVED_AGENT_ID
 use tokio::spawn;
 use tokio::sync::Mutex;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, PipelineConfig};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, TokenReducer, ToolCaller};
@@ -139,7 +140,7 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<
 }
 
 pub async fn send_messages(session_key: SessionKey, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
-    session.context_append(messages).await;
+    let _ = session.context_append(messages).await;
     let full_messages = session.build_context().await;
     let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(session_key).await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
@@ -173,7 +174,7 @@ async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mu
         }
     }
     // 2. 正常的发送流程
-    session.context_append(messages).await;
+    let _ = session.context_append(messages).await;
     let full_messages = session.build_context().await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
@@ -319,7 +320,7 @@ pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, 
         send_messages(session_key.clone(), session, messages, tools).await?
     };
     // 保存回复的消息
-    session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
+    let _ = session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
     // 遍历执行 tool call
     let mut next = false;
     let errors = if let Some(tool_calls) = res.tool_calls.take() {
@@ -394,6 +395,23 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
     }
 }
 
+impl DefaultAgenticLoopPipeline {
+    pub fn new(session_key: SessionKey, session: Arc<Session>) -> Arc<Self> {
+        let (producer, mut consumer) = channel_batch_processor();
+        let result = Arc::new(DefaultAgenticLoopPipeline {
+            session_key,
+            session,
+            last_total_tokens: AtomicU64::new(0),
+            producer
+        });
+        consumer.processor = Some(result.clone());
+        spawn(async move {
+            consumer.run()
+        });
+        result
+    }
+}
+
 pub struct DefaultAgenticLoopPipelineWithMemory {
     session_key: SessionKey,
     session: Arc<Session>,
@@ -406,7 +424,7 @@ pub struct DefaultAgenticLoopPipelineWithMemory {
 #[async_trait]
 impl SystemPromptManager for DefaultAgenticLoopPipelineWithMemory {
     async fn reset_system_prompt(&self) {
-        if let SessionKey::Memory(memory_key) = self.session_key {
+        if let SessionKey::Memory(memory_key) = &self.session_key {
             if let Some(prompt) = get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
                 self.session.set_system_message(prompt).await;
                 return;
@@ -434,7 +452,7 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         // 找到工具
         let tools = tools_for_session(self.session_key.clone()).await;
         // 发送消息
-        self.run(content, &tools).await;
+        let _ = self.run(content, &tools).await;
     }
 }
 
@@ -495,7 +513,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
             }
         }
         // 保存回复的消息
-        self.session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
+        let _ = self.session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
@@ -561,5 +579,75 @@ impl DefaultAgenticLoopPipelineWithMemory {
             next = self.run_once(round, vec![], tools).await?;
         }
         Ok(())
+    }
+}
+
+const PIPELINE_DEFAULT_STR: &str = "default";
+const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
+const PIPELINE_DEFAULT: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_STR);
+const PIPELINE_DEAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
+
+pub fn create_pipeline(pipeline_name: ArcStr, session_key: SessionKey, session: Arc<Session>) -> Result<Arc<dyn AgentPipeline>> {
+    match pipeline_name.as_str() {
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(session_key, session)),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(session_key, session, true)),
+        _ => Err(Error::PipelineNotFound(pipeline_name, session_key))
+    }
+}
+
+/// 会话 pipeline 注册表
+pub struct PipelineManager {
+    pipeline_map: DashMap<SessionKey, (Arc<PipelineConfig>, Arc<dyn AgentPipeline>)>,
+}
+
+impl PipelineManager {
+    pub fn new() -> Self {
+        Self {
+            pipeline_map: DashMap::new(),
+        }
+    }
+
+    pub async fn sync_pipeline(&self, session_key: SessionKey, session: Arc<Session>) -> Result<()> {
+        let cfg = ConfigManager::get().session_config::<PipelineConfig, PipelineConfig>(session_key.clone()).await;
+        let pipeline_name = if let Some(name) = cfg.pipeline_name.as_ref() {
+            name.clone()
+        } else {
+            match &session_key {
+                SessionKey::Memory(_) => PIPELINE_DEAULT_MEMORY.clone(),
+                SessionKey::Raw(_) => PIPELINE_DEFAULT.clone(),
+            }
+        };
+        match self.pipeline_map.entry(session_key.clone()) {
+            Entry::Occupied(mut entry) => {
+                if cfg.as_ref() == entry.get().0.as_ref() {
+                    return Ok(())
+                }
+                let pipeline = create_pipeline(pipeline_name, session_key, session)?;
+                entry.insert((cfg, pipeline));
+            }
+            Entry::Vacant(entry) => {
+                let pipeline = create_pipeline(pipeline_name, session_key, session)?;
+                entry.insert((cfg, pipeline));
+            }
+        }
+        Ok(())
+    }
+
+    /// 只保留仍在绑定集合中的会话的 trigger/pipeline（与 SessionManager::retain 成对调用，
+    /// 会话被清理后其 trigger/pipeline 一并丢弃；trigger 丢弃会触发输入处理器的 Drop → 合批任务退出）
+    pub fn retain(&self, keys: &HashSet<SessionKey>) {
+        self.pipeline_map.retain(|k, _| keys.contains(k));
+    }
+
+    pub async fn incoming_message(&self, session_key: SessionKey, event: Arc<IncomingMessageEvent>) {
+        if let Some(pipeline) = self.pipeline_map.get(&session_key) {
+            pipeline.1.incoming_message(event).await;
+        }
+    }
+
+    pub async fn reset_system_prompt(&self, session_key: SessionKey) {
+        if let Some(pipeline) = self.pipeline_map.get(&session_key) {
+            pipeline.1.reset_system_prompt().await;
+        }
     }
 }

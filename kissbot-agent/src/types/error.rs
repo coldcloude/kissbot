@@ -2,7 +2,7 @@
 
 use arcstr::ArcStr;
 
-use crate::types::MemoryKey;
+use crate::types::SessionKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -54,8 +54,8 @@ pub enum Error {
     #[error("Internal error: {0}")]
     InternalError(ArcStr),
 
-    #[error("Pipeline {0}: {1} not found for session {2:?}")]
-    PipelineNotFound(ArcStr, ArcStr, MemoryKey),
+    #[error("Pipeline {0} not found for session {1:?}")]
+    PipelineNotFound(ArcStr, SessionKey),
 
     #[error("Errors:\n{}", format_errors(.0))]
     MultiError(Vec<Error>),

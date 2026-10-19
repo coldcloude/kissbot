@@ -221,41 +221,16 @@ impl MergeEffectiveConfig<GroupSetConfig> for GroupSetConfig {
 
 // ============ pipeline =================
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<ArcStr>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_processor: Option<Vec<ArcStr>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompter: Option<Vec<ArcStr>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_sender: Option<ArcStr>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_caller: Option<ArcStr>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_processor: Option<ArcStr>,
+    pub pipeline_name: Option<ArcStr>,
 }
 
 impl MergeBy<PipelineConfig> for PipelineConfig {
     fn merge(&mut self, other: &Self) {
-        if let Some(preset) = other.preset.as_ref() {
-            self.preset = Some(preset.clone());
-        }
-        if let Some(input_processor) = other.input_processor.as_ref() {
-            self.input_processor = Some(input_processor.clone());
-        }
-        if let Some(system_prompter) = other.system_prompter.as_ref() {
-            self.system_prompter = Some(system_prompter.clone());
-        }
-        if let Some(message_sender) = other.message_sender.as_ref() {
-            self.message_sender = Some(message_sender.clone());
-        }
-        if let Some(tool_caller) = other.tool_caller.as_ref() {
-            self.tool_caller = Some(tool_caller.clone());
-        }
-        if let Some(output_processor) = other.output_processor.as_ref() {
-            self.output_processor = Some(output_processor.clone());
+        if let Some(name) = other.pipeline_name.as_ref() {
+            self.pipeline_name = Some(name.clone());
         }
     }
 }

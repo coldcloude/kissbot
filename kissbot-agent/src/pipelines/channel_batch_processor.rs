@@ -107,7 +107,7 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
                             }
                             if !items.is_empty() {
                                 if let Some(processor) = &self.processor {
-                                    processor.incoming_message_batch(items);
+                                    processor.incoming_message_batch(items).await;
                                 }
                             }
                         },

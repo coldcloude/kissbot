@@ -12,7 +12,7 @@ impl TokenReducer for CompressTokenReducer {
         let llm_cfg = cfg_mngr.session_config::<LLMConfig,EffectiveLLMConfig>(session_key.clone()).await;
         let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(session_key.clone()).await;
         let c_msg = Message::User { content: compress_cfg.compress_prompt.clone() };
-        session.context_append(vec![c_msg.clone()]).await;
+        let _ = session.context_append(vec![c_msg.clone()]).await;
         let compress_messages = session.build_context().await;
         let response = Nexus::get().provider_manager.call(&llm_cfg, compress_messages, &vec![]).await;
         let mut tokens = 0 as u64;
@@ -22,7 +22,7 @@ impl TokenReducer for CompressTokenReducer {
                 reasoning_content: model_resp.raw_reasoning_content.take(),
                 tool_calls: model_resp.raw_tool_calls.take(),
             };
-            session.context_archive_and_clear_cache_and_reset_messages(vec![c_msg,sum_msg]).await;
+            let _ = session.context_archive_and_clear_cache_and_reset_messages(vec![c_msg,sum_msg]).await;
             tokens = model_resp.total_tokens;
         }
         (tokens, messages)
@@ -39,7 +39,7 @@ impl TokenReducer for MemoryRecoverTokenReducer {
         if let SessionKey::Memory(mk) = session_key {
             let new_messages = build_context_from_memory_store(mk).await;
             // 归档旧上下文（新建时无内容幂等跳过）+ 清空缓存 → 重建（清空内存 + 从内存写回缓存；无消息不落盘）
-            session.context_archive_and_clear_cache_and_reset_messages(new_messages).await;
+            let _ = session.context_archive_and_clear_cache_and_reset_messages(new_messages).await;
         }
         (0 as u64, messages)
     }

@@ -22,12 +22,7 @@ pub trait IncomingMessageBatchProcessor {
 }
 
 #[async_trait]
-pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager {}
-
-#[async_trait]
-pub trait AgentMessageProcessor: Send + Sync {
-    async fn process_messages(&self, messages: Vec<Message>);
-}
+pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager + Send + Sync {}
 
 #[async_trait]
 pub trait TokenReducer: Send + Sync + 'static {
