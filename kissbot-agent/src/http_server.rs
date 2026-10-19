@@ -240,8 +240,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(body["data"]["providers"].is_object());
         assert!(body["data"]["channels"].is_object());
-        // sessions 以 [[key, value], ...] 数组对承载（MemoryKey 是结构体，不能作 JSON map 键）
-        assert!(body["data"]["sessions"].is_array(), "sessions 应为数组对");
+        // memory_sessions 以 [[key, value], ...] 数组对承载（MemoryKey 是结构体，不能作 JSON map 键）
+        assert!(body["data"]["memory_sessions"].is_array(), "memory_sessions 应为数组对");
 
         // POST /config/providers 添加
         let (status, body) = send(app.clone(), "POST", "/config/providers", "admin-key-123",

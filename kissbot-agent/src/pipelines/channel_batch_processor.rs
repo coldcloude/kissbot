@@ -61,7 +61,7 @@ pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
 }
 
 /// 触发 flush（BatchConsumer 成员函数）：判定（force 或 deadline 已过；内联 now_millis/deadline_passed）→
-/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_batch）→ 经 Nexus::run_pipeline 进 agentic loop
+/// deadline 置 0 → drain（&mut self.rx 零锁）→ 打包（内联 pack_batch）→ 交 processor.incoming_message_batch 进 agentic loop
 impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
     /// 触发任务主循环（consumer 成员函数；BatchAgentInputProcessor::new 经 tokio::spawn 启动）
     /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问；

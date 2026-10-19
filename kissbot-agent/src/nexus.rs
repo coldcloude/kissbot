@@ -365,12 +365,14 @@ fn placeholder_request(
 mod tests {
     use super::*;
 
+    use std::collections::HashMap;
     use std::time::Instant;
 
     use kissbot_api::channel::IncomingMessage;
+    use kissbot_llm::{LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig};
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
-    use crate::types::ChannelCommand;
+    use crate::types::{ChannelCommand, MemoryKey};
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
     // 成员函数化后需构造实例取 &self；MemoryEgoClient/MemoryStoreClient 构造读 ApiConfig/SecurityConfig
@@ -447,19 +449,30 @@ mod tests {
         let channel_id = "nexus-chain-test";
         let key = MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) };
 
-        // 1. agent 级（role 空串）pipeline：显式指定全部组件（不依赖 preset 映射），必须在会话首次合成
-        //    session 配置之前写入。message_sender 用 raw：它先把消息写进会话上下文再调模型
-        //    （provider 未配置 → 模型调用返回 Err，不影响本用例断言上下文已增长）
-        let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![PP_IN_BATCH.clone()]);
-        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.clone()]);
-        pipeline.message_sender = Some(PP_MSG_RAW.clone());
-        pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
-        pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
-        cm.set_agent_role_config::<PipelineConfig, PipelineConfig>(ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
+        // 1. agent 级（role 空串）pipeline：显式指定 pipeline 名 default（不依赖会话类型的默认映射），
+        //    必须在会话首次合成 session 配置之前写入。default 的发送器先把消息写进会话上下文再调模型
+        let pipeline = PipelineConfig { pipeline_name: Some(ArcStr::from("default")) };
+        cm.set_agent_role_config::<PipelineConfig>(ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
         // 合批间隔缩到 1 秒，让 flush 尽快发生
-        cm.set_agent_role_config::<ChannelBatchConfig, ChannelBatchConfig>(
+        cm.set_agent_role_config::<ChannelBatchConfig>(
             ArcStr::from(agent_id), ArcStr::from(""), Arc::new(ChannelBatchConfig { channel_batch_interval_secs: 1 })).await.unwrap();
+        // provider/model 已配置但 provider_type 无法映射 → 发送器解析到模型配置、写入上下文后，
+        // 模型调用返回 Err（不触网），不影响本用例断言上下文已增长
+        let provider = "chain-test-provider";
+        let model = "chain-test-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("typo"),
+                base_url: ArcStr::from("http://127.0.0.1:1"),
+                api_key: ArcStr::from("k"),
+            }),
+            default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            SessionKey::Memory(Arc::new(key.clone())),
+            &LLMConfig { provider: Some(ArcStr::from(provider)), model: Some(ArcStr::from(model)), ..Default::default() },
+        ).await.unwrap();
 
         // 2. channel 绑定 (a1, "")；channel_id 用本用例专用名，避免与其他测试互相干扰
         let _ = cm.add_channel(ChannelConfig {
@@ -493,7 +506,7 @@ mod tests {
 
         // 4. 等合批 flush + pipeline 运行：会话上下文应含系统消息（首条，由系统提示词初始化设置）
         //    与本条用户消息
-        let session = Nexus::get().ensure_session(Arc::new(key)).await;
+        let session = Nexus::get().ensure_session(SessionKey::Memory(Arc::new(key))).await;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let ctx = session.build_context().await;
@@ -552,49 +565,44 @@ mod tests {
         let agent_id = "prune-agent";
         let k1 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
         let k2 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1"))) });
-        // agent 级 pipeline：显式指定组件，使两个 key 都能注册
-        let mut pipeline = PipelineConfig::default();
-        pipeline.input_processor = Some(vec![PP_IN_BATCH.clone()]);
-        pipeline.system_prompter = Some(vec![PP_SYS_DEFAULT.clone()]);
-        pipeline.message_sender = Some(PP_MSG_RAW.clone());
-        pipeline.tool_caller = Some(PP_TOOL_STATION.clone());
-        pipeline.output_processor = Some(PP_OUT_CHANNEL.clone());
-        ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
-            ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
+        // agent 级未配置 pipeline_name → 两个 key 都按会话类型取默认实现（Memory 会话 = default_memory）
 
         // 会话实例由本地 SessionManager 创建、pipeline 直接持有，用本地管线表与会话表避免影响全局单例
         let dir = tempfile::tempdir().unwrap();
         let sm = SessionManager::new(dir.path().to_str().unwrap());
-        let (s1, _) = sm.get_or_create(k1.clone()).await;
-        let (s2, _) = sm.get_or_create(k2.clone()).await;
+        let key1 = SessionKey::Memory(k1.clone());
+        let key2 = SessionKey::Memory(k2.clone());
+        let (s1, _) = sm.get_or_create(key1.clone()).await;
+        let (s2, _) = sm.get_or_create(key2.clone()).await;
 
         let pm = PipelineManager::new();
-        pm.sync_pipeline(k1.clone(), s1).await.expect("k1 应能注册");
-        pm.sync_pipeline(k2.clone(), s2).await.expect("k2 应能注册");
-        assert!(pm.reset_system_prompt(k1.as_ref()).await.is_ok(), "注册后 trigger 应可命中");
-        assert!(pm.reset_system_prompt(k2.as_ref()).await.is_ok(), "注册后 trigger 应可命中");
+        pm.sync_pipeline(key1.clone(), s1).await.expect("k1 应能注册");
+        pm.sync_pipeline(key2.clone(), s2).await.expect("k2 应能注册");
+        assert!(pm.contains(&key1), "注册后 k1 应有 pipeline");
+        assert!(pm.contains(&key2), "注册后 k2 应有 pipeline");
 
-        // 只保留 k1：k2 的 trigger 与 pipeline 都被丢弃
-        pm.retain(&HashSet::from([k1.clone()]));
-        assert!(pm.reset_system_prompt(k1.as_ref()).await.is_ok(), "保留的 key 仍在");
-        let msg = Message::User { content: ArcStr::from("x") };
-        assert!(matches!(pm.reset_system_prompt(k2.as_ref()).await, Err(Error::PipelineNotFound(_,_,_))),
-            "被清理的 key 的 trigger 应移除");
-        assert!(matches!(pm.run_pipeline(k2.as_ref(), msg, &vec![]).await, Err(Error::PipelineNotFound(_,_,_))),
-            "被清理的 key 的 pipeline 应移除");
+        // 只保留 k1：k2 的 pipeline 被丢弃
+        pm.retain(&HashSet::from([key1.clone()]));
+        assert!(pm.contains(&key1), "保留的 key 仍在");
+        assert!(!pm.contains(&key2), "被清理的 key 的 pipeline 应移除");
+
+        // 重新同步即可恢复（配置未变也允许重建）
+        let (s2, _) = sm.get_or_create(key2.clone()).await;
+        pm.sync_pipeline(key2.clone(), s2).await.expect("清理后可重新注册");
+        assert!(pm.contains(&key2), "重新注册后 k2 恢复");
     }
 
     // ===== provider 分派（未知 provider 名 / 未知 provider_type） =====
     // 分派与工厂去重由 ProviderManager 承担，其单测见 provider.rs；此处覆盖 Nexus 的委托链路
 
     #[tokio::test]
-    async fn call_provider_model_delegates_unknown_provider_to_error() {
+    async fn provider_manager_call_delegates_unknown_provider_to_error() {
         ensure_test_globals().await;
         // provider 未配置 → ProviderManager 解析有效模型配置失败 → ModelProviderNotFound（不触网）
         let mut llm_cfg = EffectiveLLMConfig::new();
         llm_cfg.provider = ArcStr::from("no-such-provider");
         llm_cfg.model = ArcStr::from("m");
-        let err = Nexus::get().call_provider_model(&llm_cfg, vec![], &vec![]).await
+        let err = Nexus::get().provider_manager.call(&llm_cfg, vec![], &vec![]).await
             .err().expect("未配置的 provider 应返回 Err");
         assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider: {:?}", err);
     }
@@ -613,29 +621,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preset_assembles_pipeline_components() {
-        // 只写 preset 名（不显式列组件）时，预设负责补齐输入处理器 / 系统提示词器 / 发送器 / 工具调用 / 输出处理
+    async fn pipeline_name_selects_implementation_and_rejects_unknown() {
+        // pipeline_name 选择会话执行流程：显式 default / default_memory 均可装配，
+        // 未配置时按会话类型取默认（Memory 会话 = default_memory），未知名称返回 PipelineNotFound
         ensure_test_globals().await;
-        let agent_id = "preset-agent";
         let dir = tempfile::tempdir().unwrap();
         let sm = SessionManager::new(dir.path().to_str().unwrap());
         let pm = PipelineManager::new();
-        let msg = || Message::User { content: ArcStr::from("x") };
 
-        for (preset, is_event) in [(PP_PRESET_ROLE, false), (PP_PRESET_EVENT, true)] {
-            let mut pipeline = PipelineConfig::default();
-            pipeline.preset = Some(preset.clone());
-            ConfigManager::get().set_agent_role_config::<PipelineConfig, PipelineConfig>(
-                ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
+        // 1. 显式 default：系统提示词器应把默认提示词写入会话
+        let agent_default = "pipeline-default-agent";
+        ConfigManager::get().set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent_default), ArcStr::from(""),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default")) })).await.unwrap();
+        let key_default = SessionKey::Memory(Arc::new(MemoryKey {
+            agent_id: ArcStr::from(agent_default), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) }));
+        let (session, _) = sm.get_or_create(key_default.clone()).await;
+        pm.sync_pipeline(key_default.clone(), session.clone()).await.expect("显式 default 应能装配 pipeline");
+        pm.reset_system_prompt(key_default.clone()).await;
+        assert!(matches!(session.build_context().await.first(), Some(Message::System { .. })),
+            "default 应提供系统提示词器");
 
-            let role_event = if is_event { RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1")) } else { RoleEvent::new(ArcStr::from("")) };
-            let key = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(role_event) });
-            let (session, _) = sm.get_or_create(key.clone()).await;
-            pm.sync_pipeline(key.clone(), session).await
-                .unwrap_or_else(|e| panic!("preset {} 应能装配 pipeline: {:?}", preset, e));
-            assert!(pm.reset_system_prompt(key.as_ref()).await.is_ok(), "preset {} 应提供系统提示词器", preset);
-            // 发送器走 provider 解析失败返回 Err（provider 未配置），输出处理器收尾后正常结束
-            assert!(pm.run_pipeline(key.as_ref(), msg(), &vec![]).await.is_ok(), "preset {} 应提供发送/工具/输出 pipeline", preset);
-        }
+        // 2. 显式 default_memory：ego 未配置 → 回退默认提示词，装配与重置同样可用
+        let agent_memory = "pipeline-memory-agent";
+        ConfigManager::get().set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent_memory), ArcStr::from(""),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default_memory")) })).await.unwrap();
+        let key_memory = SessionKey::Memory(Arc::new(MemoryKey {
+            agent_id: ArcStr::from(agent_memory), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) }));
+        let (session, _) = sm.get_or_create(key_memory.clone()).await;
+        pm.sync_pipeline(key_memory.clone(), session.clone()).await.expect("显式 default_memory 应能装配 pipeline");
+        pm.reset_system_prompt(key_memory.clone()).await;
+        assert!(matches!(session.build_context().await.first(), Some(Message::System { .. })),
+            "default_memory 应提供系统提示词器");
+
+        // 3. 未配置名称 → 按会话类型默认（Memory 会话 = default_memory）
+        let agent_fallback = "pipeline-fallback-agent";
+        let key_fallback = SessionKey::Memory(Arc::new(MemoryKey {
+            agent_id: ArcStr::from(agent_fallback), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) }));
+        let (session, _) = sm.get_or_create(key_fallback.clone()).await;
+        pm.sync_pipeline(key_fallback.clone(), session).await.expect("未配置名称应回退会话类型默认 pipeline");
+        assert!(pm.contains(&key_fallback), "默认 pipeline 应已注册");
+
+        // 4. 未知名称 → PipelineNotFound
+        let agent_unknown = "pipeline-unknown-agent";
+        ConfigManager::get().set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent_unknown), ArcStr::from(""),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("no-such-pipeline")) })).await.unwrap();
+        let key_unknown = SessionKey::Memory(Arc::new(MemoryKey {
+            agent_id: ArcStr::from(agent_unknown), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) }));
+        let (session, _) = sm.get_or_create(key_unknown.clone()).await;
+        let err = pm.sync_pipeline(key_unknown, session).await.unwrap_err();
+        assert!(matches!(err, Error::PipelineNotFound(_, _)), "未知 pipeline 名应返回 PipelineNotFound: {:?}", err);
     }
 }

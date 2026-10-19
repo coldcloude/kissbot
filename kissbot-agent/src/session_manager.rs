@@ -64,6 +64,8 @@ mod tests {
 
     use kissbot_api::RoleEvent;
 
+    use crate::types::MemoryKey;
+
     fn key(agent: &str, role: &str) -> MemoryKey {
         MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from(role))) }
     }

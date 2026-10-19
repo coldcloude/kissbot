@@ -144,7 +144,8 @@ mod tests {
 
     #[test]
     fn tool_call_derived_serde_roundtrip() {
-        // ToolCall 为派生序列化（{id, name, data}），wire 形状由 raw_tool_calls 透传承担（见上）
+        // ToolCall 为派生序列化：arguments 为模型原始参数，result_arguments 为回显/记忆用的恢复参数，
+        // wire 形状由 raw_tool_calls 透传承担（见上）
         let tc = ToolCall {
             id: ArcStr::from("call_1"),
             name: ArcStr::from("read"),
@@ -156,7 +157,9 @@ mod tests {
         let back: ToolCall = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id.as_str(), "call_1");
         assert_eq!(back.name.as_str(), "read");
-        assert_eq!(back.arguments["path"], "/tmp/a.txt", "arguments 保持 JSON 对象");
+        assert!(back.arguments.is_null(), "arguments 原样保留（本例为 Null）");
+        assert_eq!(back.result_arguments.as_ref().expect("result_arguments 应回读")["path"], "/tmp/a.txt",
+            "result_arguments 保持 JSON 对象");
         assert!(matches!(back.result.unwrap().get(0).unwrap(), ContentBlock::Text { text, .. } if text.as_str() == "内容"));
     }
     #[test]

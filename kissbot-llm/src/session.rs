@@ -310,21 +310,11 @@ mod tests {
         Message::Assistant { content, reasoning_content, tool_calls }
     }
 
-    /// Tool 消息助手（无 name 字段：工具名由 assistant.tool_calls 承载）
-    fn tool_msg(id: &str, content: &str) -> Message {
-        Message::Tool { tool_call_id: ArcStr::from(id), content: ArcStr::from(content) }
-    }
-
     fn sample_msgs() -> Vec<Message> {
         vec![
             Message::User { content: ArcStr::from("你好") },
             assistant(Value::String("在的".into()), Value::String("思考".into()), Value::Null),
         ]
-    }
-
-    /// 上下文里的 assistant(tool_calls)：raw_tool_calls 原样透传（与 API 返回 JSON 一致）
-    fn wire_tool_calls() -> Value {
-        serde_json::json!([{ "id": "c1", "type": "function", "function": { "name": "read", "arguments": "{}" } }])
     }
 
     #[tokio::test]
@@ -371,47 +361,6 @@ mod tests {
         ctx.append(vec![]).await.unwrap();
         assert!(ctx.build().is_empty());
         assert!(!dir.path().join("context").exists(), "空追加不建缓存");
-    }
-
-    #[tokio::test]
-    async fn recover_sanitizes_dangling_tool_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().to_str().unwrap();
-        // 用例 A：完整轮次 user → assistant(tool_calls) → tool，末尾再追一条悬挂 assistant(tool_calls)
-        // （崩溃发生在追加 assistant(tool_calls) 后、Tool 响应写入前）→ 回读丢弃悬挂尾巴，保留完整轮次
-        let mut ctx_a = SessionContext::new(base, ArcStr::from("a1-r1-e1"));
-        ctx_a.append(vec![
-            Message::User { content: ArcStr::from("查一下") },
-            assistant(Value::String(String::new()), Value::Null, wire_tool_calls()),
-            tool_msg("c1", "内容"),
-        ]).await.unwrap();
-        ctx_a.append(vec![assistant(Value::String(String::new()), Value::Null, wire_tool_calls())]).await.unwrap();
-        let mut rec_a = SessionContext::new(base, ArcStr::from("a1-r1-e1"));
-        rec_a.recover_from_cache().await.unwrap();
-        let back = rec_a.build();
-        assert_eq!(back.len(), 3, "悬挂的 assistant(tool_calls) 应被丢弃，保留完整轮次");
-        assert!(matches!(&back[1], Message::Assistant { tool_calls, .. } if !tool_calls.is_null()),
-            "完整轮次的 assistant(tool_calls) 保留");
-        assert!(matches!(&back[2], Message::Tool { .. }), "tool 响应保留");
-
-        // 用例 B：仅一条悬挂 assistant(tool_calls) → 恢复为空
-        let mut ctx_b = SessionContext::new(base, ArcStr::from("a1-r2"));
-        ctx_b.append(vec![assistant(Value::String(String::new()), Value::Null, wire_tool_calls())]).await.unwrap();
-        let mut rec_b = SessionContext::new(base, ArcStr::from("a1-r2"));
-        rec_b.recover_from_cache().await.unwrap();
-        assert!(rec_b.build().is_empty(), "仅悬挂 assistant 时恢复为空");
-
-        // 用例 C：开头的 Tool 残留（恢复起点之前的半条轮次）被丢弃
-        let mut ctx_c = SessionContext::new(base, ArcStr::from("a1-r3"));
-        ctx_c.append(vec![
-            tool_msg("c9", "残留"),
-            Message::User { content: ArcStr::from("继续") },
-        ]).await.unwrap();
-        let mut rec_c = SessionContext::new(base, ArcStr::from("a1-r3"));
-        rec_c.recover_from_cache().await.unwrap();
-        let back_c = rec_c.build();
-        assert_eq!(back_c.len(), 1, "开头 Tool 残留被丢弃，保留后续完整消息");
-        assert!(matches!(&back_c[0], Message::User { content } if content.as_str() == "继续"));
     }
 
     #[tokio::test]

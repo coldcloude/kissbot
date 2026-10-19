@@ -21,8 +21,7 @@ use crate::{
     abstract_client::AbstractClient,
     config_manager::ConfigManager,
     configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig},
-    message::{MessageContent, extract_content, pack_batch, pack_memory_messages},
-    nexus::Nexus,
+    message::{MessageContent, extract_content, pack_memory_messages},
     pipeline::{IncomingMessageProcessor},
     types::{Result, MemoryKey},
 };
@@ -270,7 +269,6 @@ async fn flush_batch(
         ),
     }
     todo!()
-    // let _ = Nexus::get().run_pipeline(Arc::clone(memory_key), pack_batch(&events)).await;
 }
 
 /// 用摘要记忆重建上下文：定位 case → 各 case 摘要 + case 结尾原文副本 → 时间窗与去重 → 组装消息

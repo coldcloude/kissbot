@@ -405,9 +405,7 @@ impl DefaultAgenticLoopPipeline {
             producer
         });
         consumer.processor = Some(result.clone());
-        spawn(async move {
-            consumer.run()
-        });
+        spawn(consumer.run());
         result
     }
 }
@@ -488,9 +486,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
             producer
         });
         consumer.processor = Some(result.clone());
-        spawn(async move {
-            consumer.run()
-        });
+        spawn(consumer.run());
         result
     }
 
@@ -649,5 +645,11 @@ impl PipelineManager {
         if let Some(pipeline) = self.pipeline_map.get(&session_key) {
             pipeline.1.reset_system_prompt().await;
         }
+    }
+
+    /// 单测用：会话是否已装配 pipeline（生产代码不依赖该查询）
+    #[cfg(test)]
+    pub fn contains(&self, session_key: &SessionKey) -> bool {
+        self.pipeline_map.contains_key(session_key)
     }
 }

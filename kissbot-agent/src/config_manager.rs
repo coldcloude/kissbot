@@ -1214,9 +1214,9 @@ mod tests {
         let eff = manager.memory_session_config::<LLMConfig, EffectiveLLMConfig>(Arc::new(key.clone())).await;
         assert_eq!(eff.provider.as_str(), "openai");
         assert_eq!(eff.model.as_str(), "gpt-4o");
-        // sessions 落盘形状：MemoryKey 是结构体，不能作 JSON map 键，故用 [[key, value], ...] 数组对
+        // memory_sessions 落盘形状：MemoryKey 是结构体，不能作 JSON map 键，故用 [[key, value], ...] 数组对
         let saved = read_nexus_json(&dir);
-        let sessions = saved["sessions"].as_array().expect("sessions 应为数组对");
+        let sessions = saved["memory_sessions"].as_array().expect("memory_sessions 应为数组对");
         assert_eq!(sessions.len(), 1, "一条 session 配置一个数组对");
         assert_eq!(sessions[0][0]["agent_id"], "a1", "数组对首项为 MemoryKey");
         assert_eq!(sessions[0][0]["role_event"]["role_name"], "r1");
