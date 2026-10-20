@@ -292,6 +292,32 @@ pub async fn call_tools(mut tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Er
     (tool_calls, errors)
 }
 
+/// 并发执行带记忆写入的 tool calls；全部完成后按返回顺序把工具 key 写入本次 run 的 pending_contents。
+///
+/// 工具调用本身并发执行；pending 内容统一在 join_all 完成后更新，避免并发写入。
+pub async fn call_tools_with_memory(
+    tool_calls: Vec<ToolCall>,
+    memory_key: &MemoryKey,
+    pending_contents: &mut Vec<Content>,
+) -> (Vec<ToolCall>, Vec<Error>) {
+    let results: Vec<(ArcStr, ToolCall, Option<Error>)> = future::join_all(
+        tool_calls.into_iter().map(|tool_call| call_tool_with_memory(tool_call, memory_key))
+    ).await;
+    let mut tool_calls = Vec::with_capacity(results.len());
+    let mut errors = Vec::new();
+    for (key, tool_call, error) in results {
+        pending_contents.push(Content::ToolCall(key.clone()));
+        if error.is_none() {
+            pending_contents.push(Content::ToolResult(key));
+        }
+        if let Some(error) = error {
+            errors.push(error);
+        }
+        tool_calls.push(tool_call);
+    }
+    (tool_calls, errors)
+}
+
 pub fn retrieve_tool_messages(mut tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Message> {
     let mut tool_messages = Vec::new();
     for mut tool_call in tool_calls.drain(..) {
@@ -548,23 +574,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
             let (tool_calls, errors) = match &self.session_key {
                 SessionKey::Memory(memory_key) => {
-                    // 并发执行全部 tool call，全部完成后统一更新本次 run 的 pending_contents
-                    let results: Vec<(ArcStr, ToolCall, Option<Error>)> = future::join_all(
-                        tool_calls.into_iter().map(|tool_call| call_tool_with_memory(tool_call, memory_key.as_ref()))
-                    ).await;
-                    let mut tool_calls = Vec::with_capacity(results.len());
-                    let mut errors = Vec::new();
-                    for (key, tool_call, error) in results {
-                        pending_contents.push(Content::ToolCall(key.clone()));
-                        if error.is_none() {
-                            pending_contents.push(Content::ToolResult(key));
-                        }
-                        if let Some(error) = error {
-                            errors.push(error);
-                        }
-                        tool_calls.push(tool_call);
-                    }
-                    (tool_calls, errors)
+                    call_tools_with_memory(tool_calls, memory_key.as_ref(), pending_contents).await
                 }
                 _ => call_tools(tool_calls).await,
             };
