@@ -74,10 +74,10 @@ impl AsRoleKey for CompletionResult<Arc<RoleKey>> {
     }
 }
 
-fn filter_results<R: AsRoleKey>(mut results: Vec<R>, agent_id: Option<&str>) -> Vec<R> {
+fn filter_results<R: AsRoleKey>(results: Vec<R>, agent_id: Option<&str>) -> Vec<R> {
     if let Some(agent_id) = agent_id {
         let mut filtered_results = Vec::new();
-        for result in results.drain(0..results.len()) {
+        for result in results.into_iter() {
             if result.as_role_key().agent_id.as_str() == agent_id {
                 filtered_results.push(result);
             }
@@ -193,10 +193,10 @@ impl SearchManager {
         }
     }
 
-    pub async fn retrieve_agents(&self, mut agent_ids: Vec<ArcStr>) -> Vec<Arc<AgentMetadata>> {
+    pub async fn retrieve_agents(&self, agent_ids: Vec<ArcStr>) -> Vec<Arc<AgentMetadata>> {
         let mut results = Vec::new();
         let mut futs = Vec::new();
-        for id in agent_ids.drain(..) {
+        for id in agent_ids.into_iter() {
             let fut = AgentManager::get().get_agent_arc(id);
             futs.push(fut);
         }
@@ -324,10 +324,10 @@ impl SearchManager {
         }
     }
 
-    pub async fn retrieve_roles(&self, mut keys: Vec<Arc<RoleKey>>) -> Vec<Arc<Role>> {
+    pub async fn retrieve_roles(&self, keys: Vec<Arc<RoleKey>>) -> Vec<Arc<Role>> {
         let mut results = Vec::new();
         let mut futs = Vec::new();
-        for role_key in keys.drain(..) {
+        for role_key in keys.into_iter() {
             let fut = RolePlayManager::get().get_role_arc(role_key);
             futs.push(fut);
         }

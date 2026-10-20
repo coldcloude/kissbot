@@ -75,8 +75,8 @@ impl FilePathGenerator<Arc<MsgKey>> for MessageParser {
 impl QueryParser<TimeRangeQuery, Arc<MsgKey>> for MessageParser {
     fn parse_query(&self, query: TimeRangeQuery) -> Vec<(Arc<MsgKey>, (String, String))> {
         let mut keys = Vec::new();
-        if let Ok(mut ranges) = get_date_time_segments(&query.start, &query.end) {
-            for range in ranges.drain(..) {
+        if let Ok(ranges) = get_date_time_segments(&query.start, &query.end) {
+            for range in ranges.into_iter() {
                 let date = ArcStr::from(as_date(range.0.as_str()));
                 keys.push((Arc::new(MsgKey {
                     group_id: query.group_id.clone(),
@@ -342,11 +342,11 @@ impl MessageStore {
     }
 
     pub async fn get_range(&self, query: TimeRangeQuery) -> Result<Vec<GroupedMessages>> {
-        let mut results = self.index.query_all(query).await?;
+        let results = self.index.query_all(query).await?;
         let mut grouped = Vec::with_capacity(results.len());
-        for (key,mut msgs) in results.drain(..) {
+        for (key, msgs) in results.into_iter() {
             let mut messages = Vec::with_capacity(msgs.len());
-            for (l, msg) in msgs.drain(..) {
+            for (l, msg) in msgs.into_iter() {
                 messages.push(LineMessage { line: l, message: msg });
             }
             grouped.push(GroupedMessages { key, messages });

@@ -278,12 +278,12 @@ pub async fn call_tool_with_memory(tool_call: ToolCall, memory_key: &MemoryKey) 
     (tool_key, result.0, result.1)
 }
 
-pub async fn call_tools(mut tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>) {
-    let futs: Vec<_> = tool_calls.drain(..).map(call_tool).collect();
-    let mut results = future::join_all(futs).await;
+pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>) {
+    let futs: Vec<_> = tool_calls.into_iter().map(call_tool).collect();
+    let results = future::join_all(futs).await;
     let mut errors = Vec::new();
     let mut tool_calls = Vec::with_capacity(results.len());
-    for (tool_call, error) in results.drain(..) {
+    for (tool_call, error) in results.into_iter() {
         if let Some(error) = error {
             errors.push(error);
         }
@@ -318,9 +318,9 @@ pub async fn call_tools_with_memory(
     (tool_calls, errors)
 }
 
-pub fn retrieve_tool_messages(mut tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Message> {
+pub fn retrieve_tool_messages(tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Message> {
     let mut tool_messages = Vec::new();
-    for mut tool_call in tool_calls.drain(..) {
+    for mut tool_call in tool_calls.into_iter() {
         if let Some(mut result) = tool_call.result.take() {
             let content = if multi {
                 let cs = Arc::make_mut(&mut result);

@@ -199,9 +199,9 @@ impl Station {
         let mut tool_routes = HashMap::new();
         for sub in subs {
             match sub.client.list_tools(ancestors.clone()).await {
-                Ok(mut result) => {
+                Ok(result) => {
                     let default_group = sub.default_group();
-                    for mut tool in result.tools.drain(..) {
+                    for mut tool in result.tools.into_iter() {
                         let name = sub.global_name(tool.name.clone());
                         if !local_names.contains(name.as_str()) && !tool_routes.contains_key(name.as_str()) {
                             {

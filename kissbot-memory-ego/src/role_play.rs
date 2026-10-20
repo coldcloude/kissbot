@@ -262,7 +262,7 @@ impl RolePlayManager {
         self.read_role_play_other_role(agent_id, role_name, other_role_name).await
     }
 
-    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, mut remove_other_roles: Vec<ArcStr>, mut insert_other_roles: Vec<OtherRoleEntry>) -> Result<()> {
+    pub async fn replace_other_roles(&self, agent_id: &str, role_name: &str, remove_other_roles: Vec<ArcStr>, insert_other_roles: Vec<OtherRoleEntry>) -> Result<()> {
         for entry in insert_other_roles.iter() {
             validate_code(&entry.role_name)?;
         }
@@ -271,10 +271,10 @@ impl RolePlayManager {
                 let mut role_new_arc = role.clone();
                 let role_new = Arc::make_mut(&mut role_new_arc);
                 let other_roles = Arc::make_mut(&mut role_new.other_roles);
-                for name in remove_other_roles.drain(..) {
+                for name in remove_other_roles.into_iter() {
                     other_roles.remove(name.as_str());
                 }
-                for entry in insert_other_roles.drain(..) {
+                for entry in insert_other_roles.into_iter() {
                     other_roles.insert(entry.role_name, entry.other_role);
                 }
                 Ok(role_new_arc)
@@ -368,16 +368,16 @@ impl RolePlayManager {
         }).await
     }
 
-    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, mut remove_relations: Vec<ArcStr>, mut insert_relations: Vec<RoleRelationEntry>) -> Result<()> {
+    pub async fn replace_other_role_relations(&self, agent_id: &str, role_name: &str, other_role_name: &str, remove_relations: Vec<ArcStr>, insert_relations: Vec<RoleRelationEntry>) -> Result<()> {
         for entry in insert_relations.iter() {
             validate_code(&entry.role_name)?;
         }
         self.write_role_play_other_role_ref(agent_id, role_name, other_role_name, |other_role| {
             let other_role_relations = Arc::make_mut(&mut other_role.other_role_relations);
-            for name in remove_relations.drain(..) {
+            for name in remove_relations.into_iter() {
                 other_role_relations.remove(name.as_str());
             }
-            for entry in insert_relations.drain(..) {
+            for entry in insert_relations.into_iter() {
                 other_role_relations.insert(entry.role_name, entry.relation);
             }
         }).await

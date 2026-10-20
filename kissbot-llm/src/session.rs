@@ -85,7 +85,7 @@ impl SessionContext {
 
     /// 追加消息（内存 + 缓存一体，每行一条 Message JSON；不截断）
     /// best-effort：缓存失败仅丢缓存不阻塞流程（内存已装入，调用方按 Result 决定）
-    pub async fn append(&mut self, mut messages: Vec<Message>) -> Result<()> {
+    pub async fn append(&mut self, messages: Vec<Message>) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
         }
@@ -93,7 +93,7 @@ impl SessionContext {
         let mut file = self.open_cache_and_write_system_line().await?;
         write_cache_lines(&mut file, &messages).await?;
         // 内存追加
-        for message in messages.drain(..) {
+        for message in messages.into_iter() {
             self.messages.push_back(message);
         }
         Ok(())

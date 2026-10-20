@@ -327,7 +327,7 @@ where
     }
 
     let mut futs = Vec::new();
-    for (key, records) in records_map.drain() {
+    for (key, records) in records_map.into_iter() {
         let f = appender.append(key, records);
         futs.push(f);
     }

@@ -159,7 +159,7 @@ impl IndividualRecognitionManager {
         Ok(entry.clone())
     }
 
-    pub async fn replace_individuals(&self, agent_id: &str, mut remove_individual_names: Vec<ArcStr>, mut insert_individuals: Vec<IndividualEntry>) -> Result<()> {
+    pub async fn replace_individuals(&self, agent_id: &str, remove_individual_names: Vec<ArcStr>, insert_individuals: Vec<IndividualEntry>) -> Result<()> {
         for entry in insert_individuals.iter() {
             validate_code(entry.name.as_str())?;
         }
@@ -168,10 +168,10 @@ impl IndividualRecognitionManager {
                 let mut individuals_new_arc = individuals.clone();
                 let individuals_new = Arc::make_mut(&mut individuals_new_arc);
                 let individual_map = Arc::make_mut(&mut individuals_new.individual_map);
-                for name in remove_individual_names.drain(..) {
+                for name in remove_individual_names.into_iter() {
                     individual_map.remove(name.as_str());
                 }
-                for entry in insert_individuals.drain(..) {
+                for entry in insert_individuals.into_iter() {
                     individual_map.insert(entry.name, entry.individual);
                 }
                 Ok(individuals_new_arc)
@@ -206,29 +206,29 @@ impl IndividualRecognitionManager {
         }).await
     }
 
-    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, mut remove_identifiers: Vec<ChannelUser>, mut insert_identifiers: Vec<ChannelUser>) -> Result<()> {
+    pub async fn replace_individual_identifiers(&self, agent_id: &str, individual_name: &str, remove_identifiers: Vec<ChannelUser>, insert_identifiers: Vec<ChannelUser>) -> Result<()> {
         self.write_individual_ref(agent_id, individual_name, |individual| {
             let identifiers = Arc::make_mut(&mut individual.identifiers);
-            for identifier in remove_identifiers.drain(..) {
+            for identifier in remove_identifiers.into_iter() {
                 identifiers.remove(&identifier);
             }
-            for identifier in insert_identifiers.drain(..) {
+            for identifier in insert_identifiers.into_iter() {
                 identifiers.insert(Arc::new(identifier));
             }
         }).await
     }
 
-    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, mut remove_relations: Vec<ArcStr>, mut insert_relations: Vec<IndividualRelationEntry>) -> Result<()> {
+    pub async fn replace_individual_other_relations(&self, agent_id: &str, individual_name: &str, remove_relations: Vec<ArcStr>, insert_relations: Vec<IndividualRelationEntry>) -> Result<()> {
         // 校验新增 other_relations 的 key（individual_name 代号）
         for entry in insert_relations.iter() {
             validate_code(&entry.individual_name)?;
         }
         self.write_individual_ref(agent_id, individual_name, |individual| {
             let other_relations = Arc::make_mut(&mut individual.other_relations);
-            for name in remove_relations.drain(..) {
+            for name in remove_relations.into_iter() {
                 other_relations.remove(name.as_str());
             }
-            for entry in insert_relations.drain(..) {
+            for entry in insert_relations.into_iter() {
                 other_relations.insert(entry.individual_name, entry.relation);
             }
         }).await
