@@ -202,7 +202,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 ## Memory-Struct-Abstract API 交互
 
-摘要记忆 pipeline（`abstract_memory`，经 `pipeline.pipeline_name` 显式启用）经 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`。它自己实现 agentic loop（复用 pipelines.rs 的发送/工具/提示词函数），与 `default_memory` 的行为差异都在本 pipeline 内：
+摘要记忆 pipeline（`abstract_memory`，经 `pipeline.pipeline_name` 显式启用）经 Nexus 持有的 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`。它自己实现 agentic loop（复用 pipelines.rs 的发送/工具/提示词函数），与 `default_memory` 的行为差异都在本 pipeline 内：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -212,7 +212,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 - 请求里的 `role_event` 与会话写记忆用同一个 `RoleEvent`（项目级基础类型）：`event_id` 缺省为角色模式，给出事件标识为事件模式。拼接记忆后缀是 memory 内部的事（只在构造文件名时进行），agent 不再自己拼字符串。后缀决定原始记录读取、水位、当前 case 指针与模型会话，角色名（`role_name`）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
 - 触发策略：一个 pipeline 为每个 channel（messenger + 接收方用户 + 群组）维护一个 `BatchProducer`（DashMap 按 `ChannelKey` 索引），各 channel 有独立的合批队列与消费者，互不干扰；最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 触发后先在 `run_lock` 内串行执行（同一会话的上下文只能串行改写）：`/abstract/locate` 定位本批消息的 case → 用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文 → 把本批消息作为一条 user 消息运行 agentic loop。
+- 各 channel 消费者把批次投递到 tokio mpsc 串行队列，由唯一 worker 按到达顺序处理（同一会话的上下文只能串行改写）：`/abstract/locate` 定位本批消息的 case → 用「涉及 case 的全部摘要 + 各 case 结尾 `memory_recover.memory_count` 条、且时间落在 `memory_recover.memory_time_secs` 内的通道原文副本」重置会话上下文 → 把本批消息作为一条 user 消息运行 agentic loop；出站记录的 case meta 由 locate 结果作为 run 参数传入，不再是 pipeline 成员状态。
 - 上行记忆写入由 pipeline 自己负责（Nexus 不再统一写入）：`default_memory` 在 `incoming_message` 收到消息时立即写入（meta 为 None）；`abstract_memory` 在 **locate 之后**写入，并带 `meta.abstract_memory.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。查出的历史记录与本批新消息在组装上下文时仍按「通道三元组 + `msg_id`」去重（防御重复；`msg_id` 为空的记录原样保留）。
 - 模型回复由 pipeline 调用 `pipelines.rs` 的自由函数 `send_outgoing` 发送并写下行记录；`abstract_memory` 带当前触发 case 的 meta（本批最后一个组落入的 case，与摘要记忆的当前 case 指针一致），`default_memory` 带 None。
 - channel 不再绑定本会话（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；Nexus 的 `rebind_session` 把「解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话」合成一次调用。

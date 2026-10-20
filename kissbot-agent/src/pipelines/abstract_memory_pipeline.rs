@@ -10,10 +10,9 @@
 
 use std::{
     collections::HashSet,
-    sync::{Arc, atomic::{AtomicU64, Ordering}},
+    sync::{Arc, Weak, atomic::{AtomicU64, Ordering}},
 };
 
-use arc_swap::ArcSwapOption;
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Local};
@@ -23,7 +22,7 @@ use kissbot_api::{
     LocatedCaseRef, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolCall, ToolConfig};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
 use crate::{
@@ -41,38 +40,31 @@ type MessageKey = (ArcStr, ArcStr, ArcStr, ArcStr);
 pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
     session: Arc<Session>,
-    /// 摘要记忆客户端（定位、case 摘要、case 原文尾部）
-    client: Arc<AbstractClient>,
     /// 各 channel 的批次生产者（按 ChannelKey 分桶）
     producers: DashMap<Arc<ChannelKey>, BatchProducer>,
-    /// 同一会话的批次串行执行（不同 channel 的消费者可能并发触发，会话上下文只能串行改写）
-    run_lock: Mutex<()>,
+    /// 串行执行队列：各 channel 消费者把批次投递到这里，由唯一 worker 按到达顺序处理，
+    /// 避免不同 channel 的 locate/上下文重建/agentic loop 并发改写同一会话
+    batch_tx: mpsc::UnboundedSender<Vec<Arc<IncomingMessageEvent>>>,
     /// 上一次模型响应的 token 占用（供下一次压缩阈值判定）
     last_total_tokens: AtomicU64,
     /// 本轮工具调用/结果（下一条出站消息一并携带）
     pending_contents: Mutex<Vec<kissbot_api::Content>>,
-    /// 出站记录 meta（当前触发 case；locate 失败时清空）
-    outgoing_meta: ArcSwapOption<MemoryMeta>,
 }
 
 impl AbstractMemoryPipeline {
-    /// 生产构造：从进程级配置构造摘要记忆客户端
     pub fn new(memory_key: Arc<MemoryKey>, session: Arc<Session>) -> Arc<Self> {
-        Self::with_client(memory_key, session, Arc::new(AbstractClient::new()))
-    }
-
-    /// 显式客户端构造（单测注入空地址客户端，不触网）
-    pub fn with_client(memory_key: Arc<MemoryKey>, session: Arc<Session>, client: Arc<AbstractClient>) -> Arc<Self> {
-        Arc::new(Self {
+        let (batch_tx, batch_rx) = mpsc::unbounded_channel();
+        let pipeline = Arc::new(Self {
             memory_key,
             session,
-            client,
             producers: DashMap::new(),
-            run_lock: Mutex::new(()),
+            batch_tx,
             last_total_tokens: AtomicU64::new(0),
             pending_contents: Mutex::new(Vec::new()),
-            outgoing_meta: ArcSwapOption::new(None),
-        })
+        });
+        // worker 只持 Weak：pipeline 销毁 → sender 关闭 → 队列 worker 退出
+        tokio::spawn(run_batch_queue(Arc::downgrade(&pipeline), batch_rx));
+        pipeline
     }
 
     /// 入批：按 channel 找（或惰性创建）批次生产者；每个 channel 有自己的队列与消费者。
@@ -125,14 +117,35 @@ impl IncomingMessageBatchProcessor for AbstractMemoryPipeline {
         if events.is_empty() {
             return;
         }
-        // 同一会话串行：不同 channel 的批次可能同时到期，上下文重建与运行不能交错
-        let _guard = self.run_lock.lock().await;
+        // 批次投递到串行队列：由唯一 worker 按到达顺序处理，避免不同 channel 并发改写同一会话
+        if self.batch_tx.send(events).is_err() {
+            warn!("摘要记忆 pipeline 已销毁，丢弃本批消息");
+        }
+    }
+}
+
+/// 串行处理队列：worker 只持 Weak，pipeline 销毁后 sender 关闭，队列清空后自动退出
+async fn run_batch_queue(
+    pipeline: Weak<AbstractMemoryPipeline>,
+    mut rx: mpsc::UnboundedReceiver<Vec<Arc<IncomingMessageEvent>>>,
+) {
+    while let Some(events) = rx.recv().await {
+        let Some(pipeline) = pipeline.upgrade() else { break };
+        pipeline.process_batch(events).await;
+    }
+}
+
+impl AbstractMemoryPipeline {
+    /// 串行处理一个批次：locate → 写上行记录（带 case meta）→ case 上下文重建 → agentic loop
+    async fn process_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+        let nexus = Nexus::get();
+        let client = nexus.abstract_client.clone();
         let channel = event_channel(&events[0]);
         let memory_key = self.memory_key.as_ref();
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
         // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：不重置上下文，消息不带 meta）
-        let located = match self.client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), messages).await {
+        let located = match client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), messages).await {
             Ok(located) => Some(located),
             Err(e) => {
                 warn!(
@@ -152,30 +165,28 @@ impl IncomingMessageBatchProcessor for AbstractMemoryPipeline {
                 .flatten()
                 .map(|case_name| Arc::new(MemoryMeta::with_case_name(case_name)));
             let request = channel_request_from_incoming(memory_key, event.as_ref(), meta);
-            Nexus::get().memory_store_client.push_channel_record(request).await;
+            nexus.memory_store_client.push_channel_record(request).await;
         }
 
-        // 3. 用命中的 case 摘要 + case 结尾原文副本重建上下文；出站回复带上当前触发 case
-        match located {
+        // 3. 用命中的 case 摘要 + case 结尾原文副本重建上下文；本次运行的出站记录带当前触发 case
+        let outgoing_meta = match located {
             Some(located) => {
                 let current_case = located.groups.last().map(|group| group.case_name.clone());
-                self.outgoing_meta.store(
-                    current_case.map(|case_name| Arc::new(MemoryMeta::with_case_name(case_name))),
-                );
-                match build_context(&self.memory_key, &self.client, &located.cases, &events).await {
+                match build_context(&self.memory_key, client.as_ref(), &located.cases, &events).await {
                     Ok(messages) => {
                         let _ = self.session.context_archive_and_clear_cache_and_reset_messages(messages).await;
                     }
                     Err(e) => warn!("摘要记忆上下文重建失败，保留原上下文继续运行: {:?}", e),
                 }
+                current_case.map(|case_name| Arc::new(MemoryMeta::with_case_name(case_name)))
             }
-            None => self.outgoing_meta.store(None),
-        }
+            None => None,
+        };
 
-        // 4. 运行 agentic loop（本批新消息作为一条 user 消息）
+        // 4. 运行 agentic loop（本批新消息作为一条 user 消息，出站记录 meta 由参数传入）
         let content = pack_batch(&events);
         let tools = tools_for_session(SessionKey::Memory(self.memory_key.clone())).await;
-        let _ = self.run(content, &tools).await;
+        let _ = self.run(content, &tools, outgoing_meta).await;
     }
 }
 
@@ -215,7 +226,13 @@ impl AgentPipeline for AbstractMemoryPipeline {
 }
 
 impl AbstractMemoryPipeline {
-    async fn run_once(&self, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<bool> {
+    async fn run_once(
+        &self,
+        round: usize,
+        messages: Vec<Message>,
+        tools: &Vec<Arc<ToolConfig>>,
+        outgoing_meta: Option<Arc<MemoryMeta>>,
+    ) -> Result<bool> {
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
         // 摘要记忆的上下文已由 case 重建，超阈值时用压缩总结（不回溯 memory-store，避免把其他 case 的内容拼进来）
         let mut res = send_messages_with_limit(
@@ -267,7 +284,7 @@ impl AbstractMemoryPipeline {
                 Some(kissbot_api::Content::Multi(Arc::new(contents)))
             };
             if let Some(content) = content {
-                send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, self.outgoing_meta.load_full()).await;
+                send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
             }
         }
         if !errors.is_empty() {
@@ -280,12 +297,12 @@ impl AbstractMemoryPipeline {
         Ok(next)
     }
 
-    async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
+    async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>, outgoing_meta: Option<Arc<MemoryMeta>>) -> Result<()> {
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, vec![message], tools).await?;
+        let mut next = self.run_once(round, vec![message], tools, outgoing_meta.clone()).await?;
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools).await?;
+            next = self.run_once(round, vec![], tools, outgoing_meta.clone()).await?;
         }
         Ok(())
     }
@@ -431,7 +448,7 @@ fn compose_context(summaries: &[ArcStr], history: &[MessageContent]) -> Vec<Mess
 /// 用摘要记忆重建上下文：命中 case 的摘要 + 各 case 结尾原文副本 → 时间窗与去重 → 组装消息
 async fn build_context(
     memory_key: &Arc<MemoryKey>,
-    client: &Arc<AbstractClient>,
+    client: &AbstractClient,
     cases: &[Arc<LocatedCaseRef>],
     events: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
@@ -526,13 +543,12 @@ mod tests {
     }
 
     fn pipeline() -> Arc<AbstractMemoryPipeline> {
-        AbstractMemoryPipeline::with_client(
+        AbstractMemoryPipeline::new(
             Arc::new(MemoryKey {
                 agent_id: ArcStr::from("a1"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             }),
             Arc::new(Session::new("", ArcStr::from("test-session"))),
-            Arc::new(AbstractClient::with_url(ArcStr::new(), ArcStr::new())),
         )
     }
 

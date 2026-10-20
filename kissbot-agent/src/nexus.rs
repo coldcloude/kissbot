@@ -7,6 +7,7 @@ use kissbot_api::RESERVED_AGENT_ID;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Session};
 use tracing::{info, warn};
 
+use crate::abstract_client::AbstractClient;
 use crate::channel_manager::ChannelManager;
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
@@ -31,6 +32,7 @@ static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 pub struct Nexus {
     pub memory_store_client: Arc<MemoryStoreClient>,
     pub memory_ego_client: Arc<MemoryEgoClient>,
+    pub abstract_client: Arc<AbstractClient>,
     pub session_manager: Arc<SessionManager>,
     pub provider_manager: Arc<ProviderManager>,
     pub pipeline_manager: Arc<PipelineManager>,
@@ -47,6 +49,7 @@ impl Nexus {
         let config = ConfigManager::get();
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let memory_ego_client = Arc::new(MemoryEgoClient::new());
+        let abstract_client = Arc::new(AbstractClient::new());
         let data_dir = config.data_dir().to_string();
         let session_manager = SessionManager::new(&data_dir);
         let provider_manager = Arc::new(ProviderManager::new());
@@ -57,6 +60,7 @@ impl Nexus {
         let coordinator = Self {
             memory_store_client,
             memory_ego_client,
+            abstract_client,
             session_manager,
             provider_manager,
             pipeline_manager,
@@ -323,6 +327,7 @@ mod tests {
         Nexus {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
+            abstract_client: Arc::new(AbstractClient::new()),
             session_manager: SessionManager::new(data_dir.to_str().unwrap()),
             provider_manager: Arc::new(ProviderManager::new()),
             pipeline_manager: Arc::new(PipelineManager::new()),
