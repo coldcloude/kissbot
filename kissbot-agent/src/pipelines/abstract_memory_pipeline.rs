@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::{
     abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, ToolCaller}, pipelines::{
-        ChannelBatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
+        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
@@ -36,6 +36,11 @@ use crate::{
 
 /// 某条消息在「通道三元组 + msg_id」下的去重键
 type MessageKey = (ArcStr, ArcStr, ArcStr, ArcStr);
+
+/// 单 channel 的批次生产者；channel 本身是 `producers` 的 key，结构里只放 producer
+struct ChannelBatchProducer {
+    producer: BatchProducer,
+}
 
 /// 摘要记忆 pipeline：每个 channel 一个批次生产者（DashMap 持有），channel 之间互不干扰。
 pub struct AbstractMemoryPipeline {
@@ -80,15 +85,14 @@ impl AbstractMemoryPipeline {
     /// 消费者只持 `Weak<Self>`：pipeline 销毁时强引用归零，`Drop` 清理生产者，消费者随 producer 退出。
     fn enqueue(self: Arc<Self>, event: Arc<IncomingMessageEvent>, interval: u64) {
         let channel = Arc::new(event_channel(&event));
-        match self.producers.entry(channel.clone()) {
-            Entry::Occupied(entry) => entry.get().send(event, interval),
+        match self.producers.entry(channel) {
+            Entry::Occupied(entry) => entry.get().producer.send(event, interval),
             Entry::Vacant(entry) => {
-                let (batch_producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
+                let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
                 consumer.processor = Arc::downgrade(&self);
                 tokio::spawn(consumer.run());
-                let producer = ChannelBatchProducer::new(channel, batch_producer);
                 producer.send(event, interval);
-                entry.insert(producer);
+                entry.insert(ChannelBatchProducer { producer });
             }
         }
     }
@@ -203,9 +207,8 @@ impl AgentPipeline for AbstractMemoryPipeline {
             .producers
             .iter()
             .filter(|entry| {
-                let channel = entry.value().channel();
-                channel.messenger_id.as_str() == messenger_id.as_str()
-                    && channel.self_user_id.as_str() == self_user_id.as_str()
+                entry.key().messenger_id.as_str() == messenger_id.as_str()
+                    && entry.key().self_user_id.as_str() == self_user_id.as_str()
             })
             .map(|entry| entry.key().clone())
             .collect();

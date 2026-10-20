@@ -1,7 +1,7 @@
 use std::{sync::{Arc, Weak, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
 
 use futures_util::StreamExt;
-use kissbot_api::{ChannelKey, IncomingMessageEvent};
+use kissbot_api::IncomingMessageEvent;
 use tokio::sync::mpsc;
 use tokio_util::time::DelayQueue;
 
@@ -43,26 +43,6 @@ impl BatchProducer {
         let _ = self.trigger_tx.send(at);
     }
 
-}
-
-/// 单 channel 的批次生产者：一个 pipeline 为每个 channel 维护一个，不同 channel 各自成队互不干扰。
-pub struct ChannelBatchProducer {
-    channel: Arc<ChannelKey>,
-    producer: BatchProducer,
-}
-
-impl ChannelBatchProducer {
-    pub(crate) fn new(channel: Arc<ChannelKey>, producer: BatchProducer) -> Self {
-        Self { channel, producer }
-    }
-
-    pub fn channel(&self) -> &Arc<ChannelKey> {
-        &self.channel
-    }
-
-    pub fn send(&self, event: Arc<IncomingMessageEvent>, interval: u64) {
-        self.producer.send(event, interval);
-    }
 }
 
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
