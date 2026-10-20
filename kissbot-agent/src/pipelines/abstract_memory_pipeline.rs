@@ -37,11 +37,6 @@ use crate::{
 /// 某条消息在「通道三元组 + msg_id」下的去重键
 type MessageKey = (ArcStr, ArcStr, ArcStr, ArcStr);
 
-/// 单 channel 的批次生产者；channel 本身是 `producers` 的 key，结构里只放 producer
-struct ChannelBatchProducer {
-    producer: BatchProducer,
-}
-
 /// 摘要记忆 pipeline：每个 channel 一个批次生产者（DashMap 持有），channel 之间互不干扰。
 pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
@@ -49,7 +44,7 @@ pub struct AbstractMemoryPipeline {
     /// 摘要记忆客户端（定位、case 摘要、case 原文尾部）
     client: Arc<AbstractClient>,
     /// 各 channel 的批次生产者（按 ChannelKey 分桶）
-    producers: DashMap<Arc<ChannelKey>, ChannelBatchProducer>,
+    producers: DashMap<Arc<ChannelKey>, BatchProducer>,
     /// 同一会话的批次串行执行（不同 channel 的消费者可能并发触发，会话上下文只能串行改写）
     run_lock: Mutex<()>,
     /// 上一次模型响应的 token 占用（供下一次压缩阈值判定）
@@ -86,13 +81,13 @@ impl AbstractMemoryPipeline {
     fn enqueue(self: Arc<Self>, event: Arc<IncomingMessageEvent>, interval: u64) {
         let channel = Arc::new(event_channel(&event));
         match self.producers.entry(channel) {
-            Entry::Occupied(entry) => entry.get().producer.send(event, interval),
+            Entry::Occupied(entry) => entry.get().send(event, interval),
             Entry::Vacant(entry) => {
                 let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
                 consumer.processor = Arc::downgrade(&self);
                 tokio::spawn(consumer.run());
                 producer.send(event, interval);
-                entry.insert(ChannelBatchProducer { producer });
+                entry.insert(producer);
             }
         }
     }
