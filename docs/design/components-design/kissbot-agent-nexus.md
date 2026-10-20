@@ -88,7 +88,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **AgentPipeline**：会话执行流程本体，装配时注入会话实例。当前三实现：`default`（无记忆的 agentic loop）、`default_memory`（带记忆读写的 agentic loop）、`abstract_memory`（摘要记忆 pipeline，按 channel 攒批 + case 上下文重建）。
 - **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个会话一个合批队列；`abstract_memory` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的 `ChannelBatchProducer`，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline，pipeline 再打包为一条 user 消息运行 agentic loop。
 - **agentic loop**：`default_memory` 与 `abstract_memory` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。摘要记忆 pipeline 复用 pipelines.rs 的发送/工具/提示词函数，但批次接入、locate 与上下文重建在自己的文件里。
-- **记忆写入位置**：上下行通道记录的构造是纯函数。`default_memory` 的上行记录仍由 Nexus 立即写入，回复由 Nexus 发送并写入；`abstract_memory` 会话由 Nexus 跳过提前写入，pipeline 在 locate 之后写入上行记录（带消息所属 case 的 meta），回复也由该 pipeline 发送并写入（带当前触发 case 的 meta）。
+- **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经 `send_outgoing` 发送并写入（meta 为 None）；`abstract_memory` 在 locate 之后写入上行记录（带消息所属 case 的 meta），回复同样带当前触发 case 的 meta。
 - **channel 解绑**：AgentPipeline 提供 `channel_unbound(messenger_id, self_user_id)`。channel 切换 agent/role/mode 时，通道侧对旧会话的 pipeline 调用它；摘要记忆 pipeline 据此丢弃该 channel 全部分组的生产者与待处理消息。Nexus 把「解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话」合成为一个重绑定流程。
 - **PipelineManager**：按会话 key 持有 pipeline，提供装配（同步）、消息投递、系统提示词重置、channel 解绑通知与随会话清理；pipeline 之间的配置变化由 `pipeline.pipeline_name` 决定。
 

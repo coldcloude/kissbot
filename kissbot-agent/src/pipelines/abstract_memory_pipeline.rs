@@ -20,7 +20,7 @@ use chrono::{Duration as ChronoDuration, Local};
 use dashmap::{DashMap, Entry};
 use kissbot_api::{
     CaseRecord, ChannelKey, ChannelRecord, IncomingMessageEvent, LocateMessage, LocateResponse,
-    LocatedCaseRef, MemoryMeta, OutgoingMessage,
+    LocatedCaseRef, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolCall, ToolConfig};
 use tokio::sync::Mutex;
@@ -29,18 +29,17 @@ use tracing::warn;
 use crate::{
     abstract_client::AbstractClient,
     config_manager::ConfigManager,
-    configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig, OutChannel},
+    configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig},
     message::{MessageContent, extract_content, pack_batch, pack_memory_messages},
     nexus::Nexus,
     pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, ToolCaller},
     pipelines::{
         ChannelBatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS,
         call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, render_tool_result,
-        retrieve_assistant_message, send_messages_with_limit, tools_for_session,
+        retrieve_assistant_message, send_messages_with_limit, send_outgoing, tools_for_session,
     },
     types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
-        channel_request_from_outgoing,
     },
 };
 
@@ -296,7 +295,7 @@ impl AbstractMemoryPipeline {
                 Some(kissbot_api::Content::Multi(Arc::new(contents)))
             };
             if let Some(content) = content {
-                self.send_outgoing(out_channel.as_ref(), content, self.outgoing_meta.load_full()).await;
+                send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, self.outgoing_meta.load_full()).await;
             }
         }
         if !errors.is_empty() {
@@ -319,35 +318,7 @@ impl AbstractMemoryPipeline {
         Ok(())
     }
 
-    /// 发送回复并写下行记录（meta = 当前触发 case）
-    async fn send_outgoing(&self, out_channel: &OutChannel, content: kissbot_api::Content, meta: Option<Arc<MemoryMeta>>) {
-        let nexus = Nexus::get();
-        let agent_id = self.memory_key.agent_id.clone();
-        let role_name = self.memory_key.role_event.role_name.clone();
-        // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
-        let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
-            .map(|c| c.bind_users.contains(&out_channel.user))
-            .unwrap_or(false);
-        if !bound {
-            warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
-            let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
-            return;
-        }
-        // 2. 发送
-        let msg = OutgoingMessage {
-            messenger_id: out_channel.user.messenger_id.clone(),
-            user_id: out_channel.user.user_id.clone(),
-            group_id: out_channel.group_id.clone(),
-            content,
-        };
-        match nexus.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
-            Ok(response) => {
-                let request = channel_request_from_outgoing(self.memory_key.as_ref(), out_channel, response.as_ref(), meta);
-                nexus.memory_store_client.push_channel_record(request).await;
-            }
-            Err(e) => warn!("send_outgoing 失败: {:?}", e),
-        }
-    }
+
 }
 
 /// 消息所属通道：messenger + 接收方用户（agent 在该通道绑定的身份）+ 群组；发送者 user_id 不参与

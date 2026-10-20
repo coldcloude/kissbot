@@ -9,7 +9,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{Content, ContentBlock, IncomingMessageEvent, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{Content, ContentBlock, IncomingMessageEvent, MemoryMeta, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 use tokio::sync::Mutex;
 
@@ -19,14 +19,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
+use tracing::warn;
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, PipelineConfig};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, PipelineConfig};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, TokenReducer, ToolCaller};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
-use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
 
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
@@ -201,6 +202,47 @@ pub async fn tools_for_session(session_key: SessionKey) -> Vec<Arc<ToolConfig>> 
             .map(|t| Arc::new(tool_config_from_mcp(t.as_ref())))
             .collect(),
         Err(_) => Vec::new(),
+    }
+}
+
+/// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码），
+/// 成功后把下行消息写入记忆（is_self=1）；`meta` 由调用方给出（摘要记忆 pipeline 写入当前 case）。
+///
+/// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过。
+pub async fn send_outgoing(
+    memory_key: &MemoryKey,
+    out_channel: &OutChannel,
+    content: Content,
+    meta: Option<Arc<MemoryMeta>>,
+) {
+    let nexus = Nexus::get();
+    let agent_id = memory_key.agent_id.clone();
+    let role_name = memory_key.role_event.role_name.clone();
+    // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
+    let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
+        .map(|c| c.bind_users.contains(&out_channel.user))
+        .unwrap_or(false);
+    if !bound {
+        warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
+        let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
+        return;
+    }
+    // 2. 发送
+    let msg = OutgoingMessage {
+        messenger_id: out_channel.user.messenger_id.clone(),
+        user_id: out_channel.user.user_id.clone(),
+        group_id: out_channel.group_id.clone(),
+        content,
+    };
+    match nexus.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
+        Ok(response) => {
+            // 3. 下行成功后写记忆（is_self=1）
+            let request = channel_request_from_outgoing(memory_key, out_channel, response.as_ref(), meta);
+            nexus.memory_store_client.push_channel_record(request).await;
+        }
+        Err(e) => {
+            warn!("send_outgoing 失败: {:?}", e);
+        }
     }
 }
 
@@ -436,6 +478,11 @@ impl SystemPromptManager for DefaultAgenticLoopPipelineWithMemory {
 #[async_trait]
 impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
+        // 记忆 pipeline 自己负责写入上行记录（Nexus 不再统一写入）
+        if let SessionKey::Memory(memory_key) = &self.session_key {
+            let request = channel_request_from_incoming(memory_key.as_ref(), event.as_ref(), None);
+            Nexus::get().memory_store_client.push_channel_record(request).await;
+        }
         let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
@@ -533,9 +580,6 @@ impl DefaultAgenticLoopPipelineWithMemory {
         if let SessionKey::Memory(mk) = &self.session_key {
             let out_channel = ConfigManager::get().out_channel_config(mk.agent_id.as_str(), mk.role_event.role_name.as_str()).await;
             if let Some(out_channel) = out_channel {
-                let agent_id = mk.agent_id.clone();
-                let role_name = mk.role_event.role_name.clone();
-                let role_event = mk.role_event.clone();
                 let mut contents = Vec::new();
                 {
                     let mut pending_contents = self.pending_contents.lock().await;
@@ -554,7 +598,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
                     Some(Content::Multi(Arc::new(contents)))
                 };
                 if let Some(content) = content {
-                    Nexus::get().send_outgoing(agent_id, role_name, role_event, out_channel.as_ref(), content).await;
+                    send_outgoing(mk.as_ref(), out_channel.as_ref(), content, None).await;
                 }
             }
         }

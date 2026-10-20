@@ -9,7 +9,7 @@
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
 | config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；合成 provider+model 与 (agent, role)+session 的有效配置 | 被几乎所有模块调用 |
-| nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、会话定位与构建、通道连接调度、回复发送、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
+| nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、会话定位与构建、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
 | session_manager | SessionManager | 会话（agent_id + `RoleEvent`）去重创建（返回 `(Session, 是否新建)`）与无绑定会话清理；会话标识编码为 kissbot-llm 的 session_id | 被 nexus 调用；持有 kissbot-llm 的 Session |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / SystemPromptManager / TokenReducer / ToolCaller | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、系统提示词、token 压缩与工具调用；AgentPipeline 装配时注入会话，并提供 channel 解绑通知 | 被 pipelines 实现/组合 |
@@ -166,10 +166,9 @@ sequenceDiagram
             CO->>PLS: incoming_message(key, event)
             PLS->>IP: incoming_message(event)（该会话的 pipeline）
             alt default_memory
-                CO->>MSC: push_channel_record(is_self=0, meta=None)（Nexus 写入）
+                IP->>MSC: push_channel_record(is_self=0, meta=None)
                 Note over IP: 合批（mpsc + deadline）→ pack_batch → agentic loop
             else abstract_memory
-                Note over CO: Nexus 跳过提前写入（pipeline_name=abstract_memory）
                 Note over IP: 按 channel 独立攒批（ChannelBatchProducer DashMap）
                 IP->>IP: locate → 写上行记录(meta=case) → case 上下文重建
                 Note over IP: → pack_batch → 自实现的 agentic loop（回复记录 meta=当前 case）
