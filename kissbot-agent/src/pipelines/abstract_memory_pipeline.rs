@@ -209,21 +209,8 @@ impl AgentPipeline for AbstractMemoryPipeline {
             .map(|entry| entry.key().clone())
             .collect();
         for key in keys {
-            if let Some((_, producer)) = self.producers.remove(&key) {
-                producer.shutdown();
-            }
-        }
-    }
-}
-
-impl Drop for AbstractMemoryPipeline {
-    fn drop(&mut self) {
-        // pipeline 销毁：清理全部 channel 生产者，消费者任务随之退出（避免任务泄漏）
-        let keys: Vec<Arc<ChannelKey>> = self.producers.iter().map(|entry| entry.key().clone()).collect();
-        for key in keys {
-            if let Some((_, producer)) = self.producers.remove(&key) {
-                producer.shutdown();
-            }
+            // 移除即销毁 producer：trigger channel 关闭，消费者退出；未到期的待处理消息随之丢弃
+            self.producers.remove(&key);
         }
     }
 }

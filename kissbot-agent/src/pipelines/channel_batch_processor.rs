@@ -1,8 +1,8 @@
-use std::{sync::{Arc, Weak, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{Duration, Instant}};
+use std::{sync::{Arc, Weak, atomic::{AtomicU64, Ordering}}, time::{Duration, Instant}};
 
 use futures_util::StreamExt;
 use kissbot_api::{ChannelKey, IncomingMessageEvent};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::time::DelayQueue;
 
 use crate::pipeline::IncomingMessageBatchProcessor;
@@ -17,17 +17,10 @@ pub struct BatchProducer {
     anchor: Instant,
     /// 截止时间（u64 毫秒，相对 anchor；0 = 无待 flush 哨兵）——Arc<AtomicU64> 无锁共享
     deadline: Arc<AtomicU64>,
-    /// 退出标记：shutdown 后不再接收新消息
-    closed: AtomicBool,
-    /// 退出通知（与 consumer 共享；notify_one 留下 permit，错过唤醒的下一轮也能退出）
-    shutdown: Arc<Notify>,
 }
 
 impl BatchProducer {
     pub fn send(&self, event: Arc<IncomingMessageEvent>, interval: u64) {
-        if self.closed.load(Ordering::Relaxed) {
-            return;
-        }
         // push message
         let _ = self.tx.send(event);
         // 设置截止时间（Instant → u64 毫秒，相对 anchor；enqueue 推数据后调用，后推覆盖）
@@ -50,18 +43,6 @@ impl BatchProducer {
         let _ = self.trigger_tx.send(at);
     }
 
-    /// 主动退出：停止接收新消息，并唤醒消费者（消费者处理完队列中剩余消息后退出）
-    pub fn shutdown(&self) {
-        self.closed.store(true, Ordering::Relaxed);
-        self.shutdown.notify_one();
-    }
-}
-
-impl Drop for BatchProducer {
-    fn drop(&mut self) {
-        // 丢弃 producer（例如 channel 解绑、pipeline 销毁）即通知消费者退出，避免任务泄漏
-        self.shutdown.notify_one();
-    }
 }
 
 /// 单 channel 的批次生产者：一个 pipeline 为每个 channel 维护一个，不同 channel 各自成队互不干扰。
@@ -78,16 +59,11 @@ impl ChannelBatchProducer {
     pub fn send(&self, event: Arc<IncomingMessageEvent>, interval: u64) {
         self.producer.send(event, interval);
     }
-
-    pub fn shutdown(&self) {
-        self.producer.shutdown();
-    }
 }
 
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
-/// 持 notify（任务 select 等待会话销毁通知；与 BatchAgentInputProcessor.notify 同一 Arc）
-/// 持 anchor/deadline（与 producer 共享同一份：enqueue 侧 send 写 deadline，任务侧 run 读/清）
-/// 持 memory_key（flush 时据此启动对应会话的 pipeline）
+/// 持 anchor/deadline（与 producer 共享同一份：enqueue 侧 send 写 deadline，任务侧 run 读/清）；
+/// 退出靠 producer 被丢弃后 trigger channel 关闭（tx/trigger_tx 均只在 producer 里）。
 pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
     rx: mpsc::UnboundedReceiver<Arc<IncomingMessageEvent>>,
     trigger_rx: mpsc::UnboundedReceiver<Instant>,
@@ -96,8 +72,6 @@ pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
     anchor: Instant,
     /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush 哨兵）
     deadline: Arc<AtomicU64>,
-    /// 退出通知（与 producer 共享；producer 被丢弃或主动 shutdown 时通知）
-    shutdown: Arc<Notify>,
     /// 下游处理体。**弱引用**（`Weak::new()` 表示未绑定）：消费者任务不能强持有 pipeline，
     /// 否则「pipeline → producer → 消费者任务 → pipeline」形成引用环，pipeline 永远不会 Drop、
     /// producer 永远不会关闭。
@@ -127,14 +101,11 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
     }
 
     /// 触发任务主循环（consumer 成员函数；构造方经 tokio::spawn 启动）
-    /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline/shutdown 经 self 内共享 Arc 访问）
-    /// 退出：producer 主动 shutdown / 被丢弃，或 trigger channel 关闭；退出前处理队列中剩余消息
+    /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问）。
+    /// 退出：producer 被丢弃 → trigger channel 关闭 → `recv()` 返回 None；未到期的待处理消息一并丢弃。
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                _ = self.shutdown.notified() => {
-                    break;
-                }
                 t = self.trigger_rx.recv() => {
                     match t {
                         // 按剩余时长插入（DelayQueue::insert 收 Duration；at 为 std::time::Instant）
@@ -170,29 +141,25 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
 }
 
 pub fn channel_batch_processor<P: IncomingMessageBatchProcessor>() -> (BatchProducer, BatchConsumer<P>) {
-    // 1. anchor + deadline + shutdown + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
+    // 1. anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
     let anchor = Instant::now();
     let deadline = Arc::new(AtomicU64::new(0));
-    let shutdown = Arc::new(Notify::new());
     let (tx, rx) = mpsc::unbounded_channel();
     let (trigger_tx, trigger_rx) = mpsc::unbounded_channel();
-    // 2. 用 tx 构造 producer（anchor/deadline/shutdown 复制自独立 Arc）
+    // 2. 用 tx 构造 producer（anchor/deadline 复制自独立 Arc）
     let producer = BatchProducer {
         tx,
         trigger_tx,
         anchor,
         deadline: deadline.clone(),
-        closed: AtomicBool::new(false),
-        shutdown: shutdown.clone(),
     };
-    // 3. 用 rx 和 session 构造 consumer（anchor/deadline/shutdown 均与 producer 共享同一 Arc）
+    // 3. 用 rx 和 session 构造 consumer（anchor/deadline 均与 producer 共享同一 Arc）
     let consumer = BatchConsumer {
         rx,
         trigger_rx,
         delay: DelayQueue::new(),
         anchor,
         deadline,
-        shutdown,
         processor: Weak::new(),
     };
     (producer, consumer)
@@ -246,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn due_batch_flushes_and_shutdown_exits_consumer() {
+    async fn due_batch_flushes_and_producer_drop_exits_consumer() {
         let (producer, mut consumer) = channel_batch_processor::<Recorder>();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
@@ -261,8 +228,7 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
 
-        // 主动退出：消费者任务结束
-        producer.shutdown();
+        // producer 销毁 → trigger channel 关闭 → 消费者任务退出
         drop(producer);
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
@@ -271,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_discards_pending_messages() {
+    async fn producer_drop_exits_consumer_and_discards_pending() {
         let (producer, mut consumer) = channel_batch_processor::<Recorder>();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
@@ -280,7 +246,6 @@ mod tests {
 
         // 消息还没到期就被解绑：丢弃待处理消息并退出（不写入已不属于它的会话）
         producer.send(event("a"), 3600);
-        producer.shutdown();
         drop(producer);
         tokio::time::timeout(Duration::from_secs(2), handle)
             .await
