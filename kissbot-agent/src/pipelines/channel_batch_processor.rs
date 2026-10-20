@@ -98,9 +98,10 @@ pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
     deadline: Arc<AtomicU64>,
     /// 退出通知（与 producer 共享；producer 被丢弃或主动 shutdown 时通知）
     shutdown: Arc<Notify>,
-    /// 下游处理体。**弱引用**：消费者任务不能强持有 pipeline，否则「pipeline → producer →
-    /// 消费者任务 → pipeline」形成引用环，pipeline 永远不会 Drop、producer 永远不会关闭。
-    pub processor: Option<Weak<P>>,
+    /// 下游处理体。**弱引用**（`Weak::new()` 表示未绑定）：消费者任务不能强持有 pipeline，
+    /// 否则「pipeline → producer → 消费者任务 → pipeline」形成引用环，pipeline 永远不会 Drop、
+    /// producer 永远不会关闭。
+    pub processor: Weak<P>,
 }
 
 /// 触发 flush（BatchConsumer 成员函数）：deadline 置 0 → drain（&mut self.rx 零锁）→
@@ -119,7 +120,7 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
             }
         }
         if !items.is_empty() {
-            if let Some(processor) = self.processor.as_ref().and_then(Weak::upgrade) {
+            if let Some(processor) = self.processor.upgrade() {
                 processor.incoming_message_batch(items).await;
             }
         }
@@ -192,7 +193,7 @@ pub fn channel_batch_processor<P: IncomingMessageBatchProcessor>() -> (BatchProd
         anchor,
         deadline,
         shutdown,
-        processor: None,
+        processor: Weak::new(),
     };
     (producer, consumer)
 }
@@ -222,7 +223,7 @@ mod tests {
 
     #[async_trait]
     impl IncomingMessageBatchProcessor for Recorder {
-        async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+        async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
             let _ = self.tx.send(events.len());
         }
     }
@@ -249,7 +250,7 @@ mod tests {
         let (producer, mut consumer) = channel_batch_processor::<Recorder>();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
-        consumer.processor = Some(Arc::downgrade(&recorder));
+        consumer.processor = Arc::downgrade(&recorder);
         let handle = tokio::spawn(consumer.run());
 
         // 间隔 0：立即到期，消费者 flush 到 processor
@@ -274,7 +275,7 @@ mod tests {
         let (producer, mut consumer) = channel_batch_processor::<Recorder>();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
-        consumer.processor = Some(Arc::downgrade(&recorder));
+        consumer.processor = Arc::downgrade(&recorder);
         let handle = tokio::spawn(consumer.run());
 
         // 消息还没到期就被解绑：丢弃待处理消息并退出（不写入已不属于它的会话）

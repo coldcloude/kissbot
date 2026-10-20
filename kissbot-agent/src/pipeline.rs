@@ -13,13 +13,16 @@ pub trait SystemPromptManager {
 }
 
 #[async_trait]
-pub trait IncomingMessageProcessor {
-    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>);
+pub trait IncomingMessageProcessor: Send + Sync {
+    /// 输入入口。以 `Arc<Self>` 接收：按 channel 攒批的 pipeline 需要把 `Weak<Self>` 交给批次消费者，
+    /// 避免「pipeline → producer → 消费者 → pipeline」引用环。
+    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>);
 }
 
 #[async_trait]
-pub trait IncomingMessageBatchProcessor {
-    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>);
+pub trait IncomingMessageBatchProcessor: Send + Sync {
+    /// 批次入口。以 `Arc<Self>` 接收：批次消费者只持弱引用，处理时升级后调用本方法。
+    async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>);
 }
 
 #[async_trait]

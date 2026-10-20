@@ -13,7 +13,7 @@
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
 | session_manager | SessionManager | 会话（agent_id + `RoleEvent`）去重创建（返回 `(Session, 是否新建)`）与无绑定会话清理；会话标识编码为 kissbot-llm 的 session_id | 被 nexus 调用；持有 kissbot-llm 的 Session |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / SystemPromptManager / TokenReducer / ToolCaller | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、系统提示词、token 压缩与工具调用；AgentPipeline 装配时注入会话，并提供 channel 解绑通知 | 被 pipelines 实现/组合 |
-| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / AgenticLoop / ChannelBatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；`AgenticLoop` 是 default_memory 与 abstract_memory 共用的 agentic loop 运行体；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 再重建上下文 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / ChannelBatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 再重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
@@ -48,7 +48,7 @@ graph TB
         CHM["channel_manager<br/>ChannelManager / Channel<br/>+ Terminal 实现 + 变更队列"]
         SM["session_manager<br/>SessionManager<br/>（会话集合去重与清理）"]
         PL["pipeline<br/>AgentPipeline / 各执行体 trait"]
-        PLS["pipelines<br/>PipelineManager / AgentPipeline 实现<br/>AgenticLoop / 批次生产者 / reducer"]
+        PLS["pipelines<br/>PipelineManager / AgentPipeline 实现<br/>批次生产者 / reducer"]
         CRT["command_router<br/>CommandRouter"]
         MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
@@ -166,12 +166,13 @@ sequenceDiagram
             CO->>PLS: incoming_message(key, event)
             PLS->>IP: incoming_message(event)（该会话的 pipeline）
             alt default_memory
-                IP->>MSC: push_channel_record(is_self=0, meta=None)
+                CO->>MSC: push_channel_record(is_self=0, meta=None)（Nexus 写入）
                 Note over IP: 合批（mpsc + deadline）→ pack_batch → agentic loop
             else abstract_memory
+                Note over CO: Nexus 跳过提前写入（pipeline_name=abstract_memory）
                 Note over IP: 按 channel 独立攒批（ChannelBatchProducer DashMap）
                 IP->>IP: locate → 写上行记录(meta=case) → case 上下文重建
-                Note over IP: → pack_batch → agentic loop（回复记录 meta=当前 case）
+                Note over IP: → pack_batch → 自实现的 agentic loop（回复记录 meta=当前 case）
             else default
                 Note over IP: 合批 → pack_batch → agentic loop（不写记忆）
             end
@@ -184,7 +185,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant PL as AgentPipeline（run / run_once）
-    participant MSN as AgenticLoop（send_messages_with_limit / reducer）
+    participant MSN as 发送与 reducer（send_messages_with_limit）
     participant CO as Nexus
     participant CTX as SessionContext（kissbot-llm：内存 + 缓存 + 历史一体）
     participant PRV as ProviderManager（工厂 + 分派）
@@ -193,7 +194,7 @@ sequenceDiagram
     participant MSC as MemoryStoreClient
     participant CHM as ChannelManager
 
-    Note over PL: pipeline 触发（合批 / 摘要记忆）→ AgenticLoop::run(message, tools)；tools 由 tools_for_session 预取，会话在装配时已注入
+    Note over PL: pipeline 触发（合批 / 摘要记忆）→ 各自的 run(message, tools)；tools 由 tools_for_session 预取，会话在装配时已注入
     loop 多轮（≤ MAX_TOOL_ROUNDS = 10）
         PL->>MSN: send_messages(messages, tools)
         alt send_messages_with_limit（compress / memory_recover）

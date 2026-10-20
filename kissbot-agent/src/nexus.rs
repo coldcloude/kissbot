@@ -3,14 +3,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use kissbot_api::RESERVED_AGENT_ID;
+use kissbot_api::{RoleEvent, RESERVED_AGENT_ID};
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Session};
 use tracing::{info, warn};
 
 use crate::channel_manager::ChannelManager;
+use crate::configs::{OutChannel, PipelineConfig};
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
-use crate::types::{Error, Result, SessionKey};
+use crate::types::{Error, MemoryKey, Result, SessionKey};
 use crate::session_manager::SessionManager;
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
@@ -19,10 +20,11 @@ use crate::memory_store_client::MemoryStoreClient;
 
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessage, ChannelUser};
 use kissbot_api::message::Content;
+use crate::types::{channel_request_from_incoming, channel_request_from_outgoing};
 
 // 上下文压缩/回溯阈值来自会话模型 effective.max_tokens_usage（provider/model 配置合成）：
 // 最近一次模型响应的 usage.total_tokens 超过其 compress_threshold（默认 0.8）倍时触发，
-// 见 pipelines.rs 的 send_messages_with_limit 与 AgenticLoop。
+// 见 pipelines.rs 的 send_messages_with_limit 与 DefaultAgenticLoopPipelineWithMemory。
 
 /// Nexus 全局单例（进程内唯一；new() 完成时注册，此后 get() 可用）。
 /// 所有使用 Nexus 的位置一律不传参数、从单例获取（Session/Channel 不保存引用）。
@@ -160,6 +162,18 @@ impl Nexus {
         self.ensure_session(new_key).await;
     }
 
+    /// 会话当前配置的 pipeline 是否为摘要记忆 pipeline。
+    ///
+    /// 摘要记忆 pipeline 在 locate 之后才写入上行记录（带 case meta），Nexus 不再提前写入。
+    async fn uses_abstract_pipeline(&self, key: &MemoryKey) -> bool {
+        ConfigManager::get()
+            .session_config::<PipelineConfig, PipelineConfig>(SessionKey::Memory(Arc::new(key.clone())))
+            .await
+            .pipeline_name
+            .as_deref()
+            == Some("abstract_memory")
+    }
+
     // ==================== 运行状态修改（管理命令入口） ====================
 
     /// channel 运行态与变更队列（channel 侧入口：change_channel_key / channel_command 都在 ChannelManager 上）
@@ -225,7 +239,8 @@ impl Nexus {
 
 impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
-    /// 完整处理链：管理命令 → 会话定位 → 系统事件过滤 → 普通消息进 pipeline（记忆写入由 pipeline 负责）
+    /// 完整处理链：管理命令 → 会话定位 → 系统事件过滤 → 普通消息进 pipeline
+    /// （default_memory 的上行记录仍在本方法写入；abstract_memory 跳过，由 pipeline 在 locate 后写入）
     pub async fn incoming_message(&self, channel_id: ArcStr, event: Arc<IncomingMessageEvent>) {
         // 0. 先取 channel 配置（命令分支 admin 判断与普通分支会话定位复用，避免重复查询）
         let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else { return; };
@@ -261,16 +276,55 @@ impl Nexus {
             return;
         };
 
-        // 3. 系统事件（群组变更/用户移除）不进 agentic loop
+        // 3. 推上行消息到记忆（原行为；摘要记忆 pipeline 例外：它在 locate 之后自行写入，
+        //    以便带上消息所属 case 的 meta，避免同一消息被写两次）
+        if !self.uses_abstract_pipeline(&key).await {
+            let request = channel_request_from_incoming(&key, event.as_ref(), None);
+            self.memory_store_client.push_channel_record(request).await;
+        }
+
+        // 4. 系统事件（群组变更/用户移除）不进 agentic loop
         match &event.incoming_message.content {
             Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
             _ => {}
         }
 
-        // 4. 普通消息：运行 pipeline（记忆写入在 pipeline 内完成）
+        // 5. 普通消息：运行 pipeline
         let key = SessionKey::Memory(Arc::new(key));
         let _ = self.ensure_session(key.clone()).await;
         let _ = self.pipeline_manager.incoming_message(key, event).await;
+    }
+
+    /// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码）
+    /// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过
+    pub async fn send_outgoing(&self, agent_id: ArcStr, role_name: ArcStr, role_event: Arc<RoleEvent>, out_channel: &OutChannel, content: Content) {
+        // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
+        let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
+            .map(|c| c.bind_users.contains(&out_channel.user))
+            .unwrap_or(false);
+        if !bound {
+            warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
+            let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
+            return;
+        }
+        // 2. 发送
+        let msg = OutgoingMessage {
+            messenger_id: out_channel.user.messenger_id.clone(),
+            user_id: out_channel.user.user_id.clone(),
+            group_id: out_channel.group_id.clone(),
+            content,
+        };
+        match self.channel_manager.send(out_channel.channel_id.as_str(), msg).await {
+            Ok(response) => {
+                // 3. 下行成功后写记忆（is_self=1）
+                let memory_key = MemoryKey { agent_id, role_event };
+                let request = channel_request_from_outgoing(&memory_key, out_channel, response.as_ref(), None);
+                self.memory_store_client.push_channel_record(request).await;
+            }
+            Err(e) => {
+                warn!("send_outgoing 失败: {:?}", e);
+            }
+        }
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
