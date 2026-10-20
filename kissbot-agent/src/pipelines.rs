@@ -307,11 +307,10 @@ pub async fn call_tools_with_memory(
     let mut errors = Vec::new();
     for (key, tool_call, error) in results {
         pending_contents.push(Content::ToolCall(key.clone()));
-        if error.is_none() {
-            pending_contents.push(Content::ToolResult(key));
-        }
         if let Some(error) = error {
             errors.push(error);
+        } else {
+            pending_contents.push(Content::ToolResult(key));
         }
         tool_calls.push(tool_call);
     }
