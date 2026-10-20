@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use arcstr::ArcStr;
 use kissbot_api::IncomingMessageEvent;
 
-use kissbot_llm::{Message, Session, ToolCall};
-use crate::types::{Error, SessionKey};
+use kissbot_llm::{Message, Session};
+use crate::types::SessionKey;
 
 #[async_trait]
 pub trait SystemPromptManager {
@@ -37,10 +37,4 @@ pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager + Send +
 #[async_trait]
 pub trait TokenReducer: Send + Sync + 'static {
     async fn reduce(&self, session_key: SessionKey, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>);
-}
-
-#[async_trait]
-pub trait ToolCaller: Send + Sync {
-    /// 依次执行工具调用（`&mut self` 便于调用方在单次 run 内直接累积工具内容，无需共享 Mutex）
-    async fn call_tool(&mut self, tool_call: ToolCall) -> (ToolCall, Option<Error>);
 }

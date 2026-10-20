@@ -17,8 +17,9 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use chrono::{Duration as ChronoDuration, Local};
 use dashmap::{DashMap, Entry};
+use futures_util::future;
 use kissbot_api::{
-    CaseRecord, ChannelKey, ChannelRecord, IncomingMessageEvent, LocateMessage, LocateResponse,
+    CaseRecord, ChannelKey, ChannelRecord, Content, IncomingMessageEvent, LocateMessage, LocateResponse,
     LocatedCaseRef, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
@@ -27,7 +28,7 @@ use tracing::warn;
 
 use crate::{
     abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager}, pipelines::{
-        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, PendingToolCaller, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
+        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
@@ -238,13 +239,22 @@ impl AbstractMemoryPipeline {
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, errors) = {
-                let mut caller = PendingToolCaller {
-                    memory_key: Some(self.memory_key.as_ref()),
-                    pending_contents,
-                };
-                call_tools_dyn(tool_calls, &mut caller).await
-            };
+            // 并发执行全部 tool call，全部完成后统一更新本次 run 的 pending_contents
+            let results = future::join_all(
+                tool_calls.into_iter().map(|tool_call| call_tool_with_memory(tool_call, self.memory_key.as_ref()))
+            ).await;
+            let mut tool_calls = Vec::with_capacity(results.len());
+            let mut errors = Vec::new();
+            for (key, tool_call, error) in results {
+                pending_contents.push(Content::ToolCall(key.clone()));
+                if error.is_none() {
+                    pending_contents.push(Content::ToolResult(key));
+                }
+                if let Some(error) = error {
+                    errors.push(error);
+                }
+                tool_calls.push(tool_call);
+            }
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
