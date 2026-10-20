@@ -52,6 +52,10 @@ pub struct ChannelBatchProducer {
 }
 
 impl ChannelBatchProducer {
+    pub(crate) fn new(channel: Arc<ChannelKey>, producer: BatchProducer) -> Self {
+        Self { channel, producer }
+    }
+
     pub fn channel(&self) -> &Arc<ChannelKey> {
         &self.channel
     }
@@ -163,14 +167,6 @@ pub fn channel_batch_processor<P: IncomingMessageBatchProcessor>() -> (BatchProd
         processor: Weak::new(),
     };
     (producer, consumer)
-}
-
-/// 构造单 channel 的批次生产者与消费者（pipeline 按 channel 各持一对）
-pub fn channel_batch_producer<P: IncomingMessageBatchProcessor>(
-    channel: Arc<ChannelKey>,
-) -> (ChannelBatchProducer, BatchConsumer<P>) {
-    let (producer, consumer) = channel_batch_processor();
-    (ChannelBatchProducer { channel, producer }, consumer)
 }
 
 #[cfg(test)]

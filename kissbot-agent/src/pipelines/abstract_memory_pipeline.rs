@@ -83,9 +83,10 @@ impl AbstractMemoryPipeline {
         match self.producers.entry(channel.clone()) {
             Entry::Occupied(entry) => entry.get().send(event, interval),
             Entry::Vacant(entry) => {
-                let (producer, mut consumer) = crate::pipelines::channel_batch_producer::<AbstractMemoryPipeline>(channel);
+                let (batch_producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
                 consumer.processor = Arc::downgrade(&self);
                 tokio::spawn(consumer.run());
+                let producer = ChannelBatchProducer::new(channel, batch_producer);
                 producer.send(event, interval);
                 entry.insert(producer);
             }
