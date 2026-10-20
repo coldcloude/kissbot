@@ -21,9 +21,6 @@ pub enum Error {
     #[error("Memory store error: {0}")]
     MemoryStoreError(ArcStr),
 
-    #[error("Memory time window error: {0}")]
-    MemoryTimeWindow(ArcStr),
-
     #[error("Memory ego error: {0}")]
     MemoryEgoError(ArcStr),
 

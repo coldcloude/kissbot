@@ -85,60 +85,60 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u6
     }
 }
 
-/// 记忆打包：两次查询并集——① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
+/// 记忆打包（两次查询并集）→ 交替的 User/Assistant 消息：
+/// ① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
 /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
-/// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序返回
-/// （HTTP 经共享 config.send_store_query 发送）
-/// 参数：role_event 角色 + 事件模式、memory_time_secs 时间窗（秒）、memory_count 条数上限（与 context 解耦，标量传入）
-pub async fn read_recent_for_context(
-    memory_key: &MemoryKey,
-    memory_time_secs: u64,
-    memory_count: usize,
-) -> Result<Vec<MessageContent>> {
+/// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序打包。
+/// 任一步失败（时间窗计算 / 查询）均返回空上下文（不阻塞消息发送）。
+pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<Message> {
+    let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
     let nexus = Nexus::get();
 
-    // 时间窗起点计算失败（checked_sub_signed 溢出）→ 直接报错，不静默回退
-    let start = chrono::Local::now()
-        .checked_sub_signed(chrono::Duration::seconds(memory_time_secs as i64))
+    // 时间窗起点计算失败（checked_sub_signed 溢出）→ 空上下文，不静默回退到错误的时间窗
+    let start = match chrono::Local::now()
+        .checked_sub_signed(chrono::Duration::seconds(cfg.memory_time_secs as i64))
         .map(|t| ArcStr::from(t.format("%Y-%m-%d %H:%M:%S").to_string()))
-        .ok_or_else(|| Error::MemoryTimeWindow("计算记忆时间窗起点失败".into()))?;
+    {
+        Some(start) => start,
+        None => return Vec::new(),
+    };
 
-    let count = memory_count;
+    let count = cfg.memory_count;
 
     // ===== 解析：BTreeMap 以 (time, sn) 为键同时做去重与排序（迭代天然升序） =====
     // 两次查询共用同一 map → 并集自动去重（Query2 的 [M, ln] 区间与 Query1 尾部在 ln 处重叠）
     let mut map: BTreeMap<(ArcStr, u64), MessageContent> = BTreeMap::new();
 
     // ===== Query1：POST {store}/store/query/channel/recent（RecentQuery，无时间参数） =====
-    let groups = nexus.memory_store_client.query_last(memory_key.agent_id.clone(), memory_key.role_event.clone(), count as u32).await?;
+    let groups = match nexus.memory_store_client.query_last(memory_key.agent_id.clone(), memory_key.role_event.clone(), count as u32).await {
+        Ok(groups) => groups,
+        Err(_) => return Vec::new(),
+    };
     parse_channel_groups(groups, &mut map);
 
     // ln = 已解析记录最旧一条的 time（BTreeMap 首键）；map 为空说明无记录（count=0 时 Query1 必为空）
     // 一并在此处理；Query1 最旧若为非文本，其同时间组除非文本外无其他记录（否则文本记录会占据更小首键）
     let Some((ln, _)) = map.keys().next() else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let ln = ln.clone();
     // 不足 N 条：直接返回（无需 Query2）。理论上去重后记录不重复，map 大小即取到的数量；
     // 注意：以解析后文本数（map.len()）判定——非文本记录在最后 N 内被跳过时也会提前返回
     if map.len() < count {
-        return Ok(map.into_values().collect());
+        return pack_memory_messages(&map.into_values().collect::<Vec<_>>());
     }
     // M = min(时间窗起点 start, ln)
     let m = if start.as_str() < ln.as_str() { start } else { ln.clone() };  // M = min(cutoff, ln)
 
     // ===== Query2：POST {store}/store/query/channel（QueryRequest 时间范围 [M, ln]，无 limit） =====
     // M == ln 时退化为单点 [ln, ln]（取 ln 同时间组）；与 Query1 并集（共用 map 去重）
-    let groups = nexus.memory_store_client.query_recent(memory_key.agent_id.clone(), memory_key.role_event.clone(), m, ln).await?;
+    let groups = match nexus.memory_store_client.query_recent(memory_key.agent_id.clone(), memory_key.role_event.clone(), m, ln).await {
+        Ok(groups) => groups,
+        Err(_) => return Vec::new(),
+    };
     parse_channel_groups(groups, &mut map);
 
-    Ok(map.into_values().collect())
-}
-
-pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<Message> {
-    let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
-    read_recent_for_context(memory_key.as_ref(), cfg.memory_time_secs, cfg.memory_count).await
-    .map_or_else(|_| vec![], |msgs| pack_memory_messages(&msgs))
+    pack_memory_messages(&map.into_values().collect::<Vec<_>>())
 }
 
 pub async fn send_messages(session_key: SessionKey, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {

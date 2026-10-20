@@ -124,7 +124,7 @@ where
 // ========== MemoryStoreClient（push 直接用 kissbot-api 的 *Request） ==========
 
 pub struct MemoryStoreClient {
-    /// 共享 HTTP 配置（与各 context 同一 Arc；读路径 read_recent_for_context 也经它发请求）
+    /// 共享 HTTP 配置（与各 context 同一 Arc；读路径 build_context_from_memory_store 也经它发请求）
     http_client: Arc<MemoryStoreHttpClient>,
     channel_appender: FileObjectAppender<ArcStr, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
     think_appender: FileObjectAppender<ArcStr, ThinkRequest, StoreSender<ThinkStoreContext>, ThinkStoreContext, LoggingErrorHandler>,

@@ -198,7 +198,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 | POST | `/store/query/channel/recent` | RecentQuery — 按 (agent_id, role_event) 取最近 count 条（跨日期文件） |
 | POST | `/store/query/channel` | QueryRequest — 按 (agent_id, role_event) + 时间范围查询（所有 channel 记录同文件，无需组合枚举） |
 
-`read_recent_for_context` 用两次查询并集：① recent 取最近 N 条，`T_N` = 最旧一条时间；② 时间范围 `[M, T_N]`（`M = min(时间窗起点, T_N)`）取该段全部；结果按 (time, sn) 去重后时间正序，打包为交替的 User/Assistant 消息（结尾为 User 时补空 Assistant）。读路径在 `base_url` 为空时报错（不静默跳过）。
+`build_context_from_memory_store` 用两次查询并集：① recent 取最近 N 条，`T_N` = 最旧一条时间；② 时间范围 `[M, T_N]`（`M = min(时间窗起点, T_N)`）取该段全部；结果按 (time, sn) 去重后时间正序，打包为交替的 User/Assistant 消息（结尾为 User 时补空 Assistant）。读路径在 `base_url` 为空时报错（不静默跳过）。
 
 ## Memory-Struct-Abstract API 交互
 
@@ -271,7 +271,6 @@ enum Error {
     ModelProviderNotFound(ArcStr, ArcStr),
     ModelProviderNotSupported(ArcStr),
     MemoryStoreError(ArcStr),
-    MemoryTimeWindow(ArcStr),
     MemoryEgoError(ArcStr),          // 预留
     AbstractError(ArcStr),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
     InvalidCommand(ArcStr),
