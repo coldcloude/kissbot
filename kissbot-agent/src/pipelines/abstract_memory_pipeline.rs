@@ -21,13 +21,13 @@ use kissbot_api::{
     CaseRecord, ChannelKey, ChannelRecord, IncomingMessageEvent, LocateMessage, LocateResponse,
     LocatedCaseRef, MemoryMeta,
 };
-use kissbot_llm::{Message, Session, ToolCall, ToolConfig};
+use kissbot_llm::{Message, Session, ToolConfig};
 use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
 use crate::{
-    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, ToolCaller}, pipelines::{
-        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
+    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager}, pipelines::{
+        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, PendingToolCaller, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
@@ -47,8 +47,6 @@ pub struct AbstractMemoryPipeline {
     batch_tx: mpsc::UnboundedSender<Vec<Arc<IncomingMessageEvent>>>,
     /// 上一次模型响应的 token 占用（供下一次压缩阈值判定）
     last_total_tokens: AtomicU64,
-    /// 本轮工具调用/结果（下一条出站消息一并携带）
-    pending_contents: Mutex<Vec<kissbot_api::Content>>,
 }
 
 impl AbstractMemoryPipeline {
@@ -60,7 +58,6 @@ impl AbstractMemoryPipeline {
             producers: DashMap::new(),
             batch_tx,
             last_total_tokens: AtomicU64::new(0),
-            pending_contents: Mutex::new(Vec::new()),
         });
         // worker 只持 Weak：pipeline 销毁 → sender 关闭 → 队列 worker 退出
         tokio::spawn(run_batch_queue(Arc::downgrade(&pipeline), batch_rx));
@@ -191,21 +188,6 @@ impl AbstractMemoryPipeline {
 }
 
 #[async_trait]
-impl ToolCaller for AbstractMemoryPipeline {
-    async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
-        let result = call_tool_with_memory(tool_call, self.memory_key.as_ref()).await;
-        {
-            let mut pending_contents = self.pending_contents.lock().await;
-            pending_contents.push(kissbot_api::Content::ToolCall(result.0.clone()));
-            if result.2.is_none() {
-                pending_contents.push(kissbot_api::Content::ToolResult(result.0.clone()));
-            }
-        }
-        (result.1, result.2)
-    }
-}
-
-#[async_trait]
 impl AgentPipeline for AbstractMemoryPipeline {
     /// channel 不再绑定本会话：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃
     async fn channel_unbound(&self, messenger_id: ArcStr, self_user_id: ArcStr) {
@@ -231,6 +213,7 @@ impl AbstractMemoryPipeline {
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
+        pending_contents: &Mutex<Vec<kissbot_api::Content>>,
         outgoing_meta: Option<Arc<MemoryMeta>>,
     ) -> Result<bool> {
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
@@ -255,7 +238,10 @@ impl AbstractMemoryPipeline {
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, errors) = call_tools_dyn(tool_calls, self).await;
+            let (tool_calls, errors) = call_tools_dyn(
+                tool_calls,
+                &PendingToolCaller { memory_key: Some(self.memory_key.as_ref()), pending_contents },
+            ).await;
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -272,7 +258,7 @@ impl AbstractMemoryPipeline {
         if let Some(out_channel) = out_channel {
             let mut contents = Vec::new();
             {
-                let mut pending_contents = self.pending_contents.lock().await;
+                let mut pending_contents = pending_contents.lock().await;
                 contents.extend(pending_contents.drain(..));
             }
             let content = if contents.is_empty() {
@@ -298,11 +284,12 @@ impl AbstractMemoryPipeline {
     }
 
     async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>, outgoing_meta: Option<Arc<MemoryMeta>>) -> Result<()> {
+        let pending_contents = Mutex::new(Vec::new());
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, vec![message], tools, outgoing_meta.clone()).await?;
+        let mut next = self.run_once(round, vec![message], tools, &pending_contents, outgoing_meta.clone()).await?;
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools, outgoing_meta.clone()).await?;
+            next = self.run_once(round, vec![], tools, &pending_contents, outgoing_meta.clone()).await?;
         }
         Ok(())
     }
