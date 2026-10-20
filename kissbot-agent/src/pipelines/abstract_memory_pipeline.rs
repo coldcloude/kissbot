@@ -27,18 +27,9 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::{
-    abstract_client::AbstractClient,
-    config_manager::ConfigManager,
-    configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig},
-    message::{MessageContent, extract_content, pack_batch, pack_memory_messages},
-    nexus::Nexus,
-    pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, ToolCaller},
-    pipelines::{
-        ChannelBatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS,
-        call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, render_tool_result,
-        retrieve_assistant_message, send_messages_with_limit, send_outgoing, tools_for_session,
-    },
-    types::{
+    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, ToolCaller}, pipelines::{
+        ChannelBatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, call_tools_dyn, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
+    }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
 };
@@ -261,17 +252,12 @@ impl AbstractMemoryPipeline {
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (mut tool_calls, errors) = call_tools_dyn(tool_calls, self).await;
-            let mut tool_messages = Vec::new();
-            for tool_call in tool_calls.drain(..) {
-                let content = render_tool_result(tool_call.result.as_deref().unwrap_or(&vec![]));
-                tool_messages.push(Message::Tool {
-                    tool_call_id: tool_call.id,
-                    content: ArcStr::from(content),
-                });
+            let (tool_calls, errors) = call_tools_dyn(tool_calls, self).await;
+            if !tool_calls.is_empty() {
                 next = true;
+                let tool_messages = retrieve_tool_messages(tool_calls, false);
+                self.session.context_append(tool_messages).await?;
             }
-            self.session.context_append(tool_messages).await?;
             errors
         } else {
             vec![]

@@ -136,4 +136,56 @@ impl ContentBlock {
             meta: Value::Null,
         }
     }
+    pub fn image(data: ArcStr, mime_type: ArcStr) -> Self {
+        ContentBlock::Image {
+            data,
+            mime_type,
+            annotations: None,
+            meta: Value::Null
+        }
+    }
+    pub fn audio(data: ArcStr, mime_type: ArcStr) -> Self {
+        ContentBlock::Audio {
+            data,
+            mime_type,
+            annotations: None,
+            meta: Value::Null
+        }
+    }
+    pub fn resource_link(uri: ArcStr, name: ArcStr, title: Option<ArcStr>, description: Option<ArcStr>, mime_type: Option<ArcStr>, icons: Option<Vec<Arc<Icon>>>) -> Self {
+        ContentBlock::ResourceLink {
+            uri,
+            name,
+            title,
+            description,
+            mime_type,
+            icons,
+            annotations: None,
+            meta: Value::Null
+        }
+    }
+    pub fn resource_text(uri: ArcStr, mime_type: Option<ArcStr>, text: ArcStr) -> Self {
+        ContentBlock::Resource {
+            resource: Arc::new(ResourceContents::Text {
+                uri,
+                mime_type,
+                text,
+                meta: Value::Null
+            }),
+            annotations: None,
+            meta: Value::Null
+        }
+    }
+    pub fn resource_blob(uri: ArcStr, mime_type: Option<ArcStr>, blob: ArcStr) -> Self {
+        ContentBlock::Resource {
+            resource: Arc::new(ResourceContents::Blob {
+                uri,
+                mime_type,
+                blob,
+                meta: Value::Null
+            }),
+            annotations: None,
+            meta: Value::Null
+        }
+    }
 }

@@ -450,7 +450,7 @@ mod tests {
 
     /// Tool 消息（无 name 字段：工具名由 assistant.tool_calls 承载）
     fn tool_msg(id: &str, content: &str) -> Message {
-        Message::Tool { tool_call_id: ArcStr::from(id), content: ArcStr::from(content) }
+        Message::Tool { tool_call_id: ArcStr::from(id), content: Value::String(content.to_string()) }
     }
 
     /// 工具定义（parameters 为 Arc<Value>）

@@ -63,7 +63,7 @@ pub enum Message {
     Tool {
         tool_call_id: ArcStr,
         /// 调用结果
-        content: ArcStr,
+        content: Value,
     },
 }
 
@@ -93,7 +93,7 @@ mod tests {
                 tool_calls: Value::Null,
             }, r#"{"role":"assistant","content":""}"#),
             // Tool 消息已无 name 字段（工具名由 assistant.tool_calls 承载）
-            (Message::Tool { tool_call_id: ArcStr::from("call_1"), content: ArcStr::from("内容") }, r#"{"role":"tool","tool_call_id":"call_1","content":"内容"}"#),
+            (Message::Tool { tool_call_id: ArcStr::from("call_1"), content: Value::String("内容".to_string()) }, r#"{"role":"tool","tool_call_id":"call_1","content":"内容"}"#),
         ];
         for (m, expected) in cases {
             assert_eq!(serde_json::to_string(&m).unwrap(), expected);
@@ -139,7 +139,7 @@ mod tests {
 
         let tool: Message = serde_json::from_str(r#"{"role":"tool","tool_call_id":"call_1","content":"内容"}"#).unwrap();
         assert!(matches!(tool, Message::Tool { tool_call_id, content }
-            if tool_call_id.as_str() == "call_1" && content.as_str() == "内容"));
+            if tool_call_id.as_str() == "call_1" && content.as_str().unwrap() == "内容"));
     }
 
     #[test]

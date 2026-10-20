@@ -5,6 +5,7 @@ pub mod token_reducer;
 pub use abstract_memory_pipeline::*;
 pub use channel_batch_processor::*;
 use dashmap::{DashMap, Entry};
+use serde_json::Value;
 pub use token_reducer::*;
 
 use async_trait::async_trait;
@@ -309,44 +310,65 @@ pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>
     call_tools_dyn(tool_calls, &RawToolCaller).await
 }
 
-/// 工具结果渲染：MCP content 数组（内容块数组）逐块渲染，字符串原样输出，其余值按 JSON 输出
-fn render_tool_result(blocks: &Vec<ContentBlock>) -> ArcStr {
-    let result = blocks.iter()
-    .map(|block| match block {
-        ContentBlock::Text { text, .. } => text.clone(),
-        ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-        ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-        ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
-        ContentBlock::Resource { resource, .. } => match resource.as_ref() {
-            ResourceContents::Text { text, .. } => text.clone(),
-            ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
-        },
-    })
-    .collect::<Vec<_>>()
-    .join("\n");
-    ArcStr::from(result)
-}
-
-pub fn retrieve_tool_messages(tool_calls: &Vec<ToolCall>) -> Vec<Message> {
+pub fn retrieve_tool_messages(mut tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Message> {
     let mut tool_messages = Vec::new();
-    for tool_call in tool_calls.iter() {
-        if let Some(result) = tool_call.result.as_ref() {
-            let content = result.iter()
-            .map(|block| match block {
-                ContentBlock::Text { text, .. } => text.clone(),
-                ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-                ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
-                ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
-                ContentBlock::Resource { resource, .. } => match resource.as_ref() {
-                    ResourceContents::Text { text, .. } => text.clone(),
-                    ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
-                },
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+    for mut tool_call in tool_calls.drain(..) {
+        if let Some(mut result) = tool_call.result.take() {
+            let content = if multi {
+                let cs = Arc::make_mut(&mut result);
+                for mut block in cs.iter_mut() {
+                    match &mut block {
+                        ContentBlock::Text { annotations, meta, .. } => {
+                            *annotations = None;
+                            *meta = Value::Null;
+                        },
+                        ContentBlock::Image { annotations, meta, .. } => {
+                            *annotations = None;
+                            *meta = Value::Null;
+                        },
+                        ContentBlock::Audio { annotations, meta, .. } => {
+                            *annotations = None;
+                            *meta = Value::Null;
+                        },
+                        ContentBlock::ResourceLink { annotations, meta, .. } => {
+                            *annotations = None;
+                            *meta = Value::Null;
+                        },
+                        ContentBlock::Resource { resource, annotations, meta } => {
+                            *annotations = None;
+                            *meta = Value::Null;
+                            let res = Arc::make_mut(resource);
+                            match res {
+                                ResourceContents::Text { meta, .. } => {
+                                    *meta = Value::Null;
+                                },
+                                ResourceContents::Blob { meta, .. } => {
+                                    *meta = Value::Null;
+                                },
+                            };
+                        },
+                    }
+                }
+                serde_json::to_value(result).unwrap_or(Value::Null)
+            } else {
+                let content = result.iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text, .. } => text.clone(),
+                    ContentBlock::Image { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+                    ContentBlock::Audio { mime_type, .. } => ArcStr::from(format!("[image {}]", mime_type)),
+                    ContentBlock::ResourceLink { uri, name, .. } => ArcStr::from(format!("[resource_link {} {}]", name, uri)),
+                    ContentBlock::Resource { resource, .. } => match resource.as_ref() {
+                        ResourceContents::Text { text, .. } => text.clone(),
+                        ResourceContents::Blob { uri, mime_type, .. } => ArcStr::from(format!("[resource {} {}]", uri, mime_type.as_deref().unwrap_or_default())),
+                    },
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+                Value::String(content)
+            };
             tool_messages.push(Message::Tool {
-                tool_call_id: tool_call.id.clone(),
-                content: ArcStr::from(content),
+                tool_call_id: tool_call.id,
+                content
             });
         }
     }
@@ -370,7 +392,8 @@ pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, 
         let (tool_calls, errors) = call_tools(tool_calls).await;
         if !tool_calls.is_empty() {
             next = true;
-            session.context_append(retrieve_tool_messages(&tool_calls)).await?;
+            let tool_messages = retrieve_tool_messages(tool_calls, false);
+            session.context_append(tool_messages).await?;
         }
         errors
     } else {
@@ -561,17 +584,12 @@ impl DefaultAgenticLoopPipelineWithMemory {
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (mut tool_calls, errors) = call_tools_dyn(tool_calls, self).await;
-            let mut tool_messages = Vec::new();
-            for tool_call in tool_calls.drain(..) {
-                let content = render_tool_result(tool_call.result.as_deref().unwrap_or(&vec![]));
-                tool_messages.push(Message::Tool {
-                    tool_call_id: tool_call.id,
-                    content: ArcStr::from(content),
-                });
+            let (tool_calls, errors) = call_tools_dyn(tool_calls, self).await;
+            if !tool_calls.is_empty() {
                 next = true;
+                let tool_messages = retrieve_tool_messages(tool_calls, false);
+                self.session.context_append(tool_messages).await?;
             }
-            self.session.context_append(tool_messages).await?;
             errors
         } else {
             vec![]
