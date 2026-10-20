@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager}, pipelines::{
+    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
         BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tool_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
@@ -80,20 +80,6 @@ impl AbstractMemoryPipeline {
                 entry.insert(producer);
             }
         }
-    }
-}
-
-#[async_trait]
-impl SystemPromptManager for AbstractMemoryPipeline {
-    async fn reset_system_prompt(&self) {
-        if let Some(prompt) = get_ego_system_prompt(
-            self.memory_key.agent_id.clone(),
-            self.memory_key.role_event.role_name.clone(),
-        ).await {
-            self.session.set_system_message(prompt).await;
-            return;
-        }
-        self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
     }
 }
 
@@ -190,6 +176,17 @@ impl AbstractMemoryPipeline {
 
 #[async_trait]
 impl AgentPipeline for AbstractMemoryPipeline {
+    async fn reset_system_prompt(&self) {
+        if let Some(prompt) = get_ego_system_prompt(
+            self.memory_key.agent_id.clone(),
+            self.memory_key.role_event.role_name.clone(),
+        ).await {
+            self.session.set_system_message(prompt).await;
+            return;
+        }
+        self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
+    }
+
     /// channel 不再绑定本会话：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃
     async fn channel_unbound(&self, messenger_id: ArcStr, self_user_id: ArcStr) {
         let keys: Vec<Arc<ChannelKey>> = self

@@ -24,7 +24,7 @@ use tracing::warn;
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, PipelineConfig};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
-use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, SystemPromptManager, TokenReducer};
+use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
@@ -412,7 +412,7 @@ pub struct DefaultAgenticLoopPipeline {
 }
 
 #[async_trait]
-impl SystemPromptManager for DefaultAgenticLoopPipeline {
+impl AgentPipeline for DefaultAgenticLoopPipeline {
     async fn reset_system_prompt(&self) {
         self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
     }
@@ -425,8 +425,6 @@ impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
-
-impl AgentPipeline for DefaultAgenticLoopPipeline {}
 
 #[async_trait]
 impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
@@ -467,7 +465,7 @@ pub struct DefaultAgenticLoopPipelineWithMemory {
 }
 
 #[async_trait]
-impl SystemPromptManager for DefaultAgenticLoopPipelineWithMemory {
+impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
     async fn reset_system_prompt(&self) {
         if let SessionKey::Memory(memory_key) = &self.session_key {
             if let Some(prompt) = get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
@@ -491,8 +489,6 @@ impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
-
-impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {}
 
 #[async_trait]
 impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {

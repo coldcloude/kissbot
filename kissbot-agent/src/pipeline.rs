@@ -8,11 +8,6 @@ use kissbot_llm::{Message, Session};
 use crate::types::SessionKey;
 
 #[async_trait]
-pub trait SystemPromptManager {
-    async fn reset_system_prompt(&self);
-}
-
-#[async_trait]
 pub trait IncomingMessageProcessor: Send + Sync {
     /// 输入入口。以 `Arc<Self>` 接收：按 channel 攒批的 pipeline 需要把 `Weak<Self>` 交给批次消费者，
     /// 避免「pipeline → producer → 消费者 → pipeline」引用环。
@@ -26,7 +21,10 @@ pub trait IncomingMessageBatchProcessor: Send + Sync {
 }
 
 #[async_trait]
-pub trait AgentPipeline: IncomingMessageProcessor + SystemPromptManager + Send + Sync {
+pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
+    /// 重置会话系统提示词（存为待定，下次发送前应用）
+    async fn reset_system_prompt(&self);
+
     /// channel 不再绑定本会话：清理该 channel（messenger + 绑定用户）在本会话中的资源。
     ///
     /// 按 channel 攒批的 pipeline 覆写本方法丢弃对应 channel 的批次生产者与待处理消息；
