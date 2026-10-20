@@ -210,7 +210,7 @@ sequenceDiagram
         PL->>OUT: accept(round, response)
         alt 有 tool_calls
             OUT->>CTX: 追加 Assistant（raw_content / raw_reasoning_content / raw_tool_calls）
-            loop 每个 tool call（并发 join）
+            loop 每个 tool call（顺序执行，ToolCaller 以 &mut self 累积本次 run 的工具内容）
                 PL->>MSC: send_memory_tool_call（UUID key）
                 PL->>ST: Station::call_tool（本级原生实现 / 路由到子 Station 的 MCP tools/call）
                 PL->>MSC: send_memory_tool_result（同 key）

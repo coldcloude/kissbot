@@ -41,5 +41,6 @@ pub trait TokenReducer: Send + Sync + 'static {
 
 #[async_trait]
 pub trait ToolCaller: Send + Sync {
-    async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>);
+    /// 依次执行工具调用（`&mut self` 便于调用方在单次 run 内直接累积工具内容，无需共享 Mutex）
+    async fn call_tool(&mut self, tool_call: ToolCall) -> (ToolCall, Option<Error>);
 }

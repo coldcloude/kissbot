@@ -22,7 +22,7 @@ use kissbot_api::{
     LocatedCaseRef, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
@@ -213,7 +213,7 @@ impl AbstractMemoryPipeline {
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
-        pending_contents: &Mutex<Vec<kissbot_api::Content>>,
+        pending_contents: &mut Vec<kissbot_api::Content>,
         outgoing_meta: Option<Arc<MemoryMeta>>,
     ) -> Result<bool> {
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
@@ -238,10 +238,13 @@ impl AbstractMemoryPipeline {
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, errors) = call_tools_dyn(
-                tool_calls,
-                &PendingToolCaller { memory_key: Some(self.memory_key.as_ref()), pending_contents },
-            ).await;
+            let (tool_calls, errors) = {
+                let mut caller = PendingToolCaller {
+                    memory_key: Some(self.memory_key.as_ref()),
+                    pending_contents,
+                };
+                call_tools_dyn(tool_calls, &mut caller).await
+            };
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -256,11 +259,7 @@ impl AbstractMemoryPipeline {
             .out_channel_config(self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str())
             .await;
         if let Some(out_channel) = out_channel {
-            let mut contents = Vec::new();
-            {
-                let mut pending_contents = pending_contents.lock().await;
-                contents.extend(pending_contents.drain(..));
-            }
+            let mut contents = std::mem::take(pending_contents);
             let content = if contents.is_empty() {
                 res.content.take().map(kissbot_api::Content::Text)
             } else {
@@ -284,12 +283,12 @@ impl AbstractMemoryPipeline {
     }
 
     async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>, outgoing_meta: Option<Arc<MemoryMeta>>) -> Result<()> {
-        let pending_contents = Mutex::new(Vec::new());
+        let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, vec![message], tools, &pending_contents, outgoing_meta.clone()).await?;
+        let mut next = self.run_once(round, vec![message], tools, &mut pending_contents, outgoing_meta.clone()).await?;
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools, &pending_contents, outgoing_meta.clone()).await?;
+            next = self.run_once(round, vec![], tools, &mut pending_contents, outgoing_meta.clone()).await?;
         }
         Ok(())
     }

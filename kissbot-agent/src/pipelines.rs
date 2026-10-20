@@ -9,10 +9,8 @@ use serde_json::Value;
 pub use token_reducer::*;
 
 use async_trait::async_trait;
-use futures_util::future;
 use kissbot_api::{Content, ContentBlock, IncomingMessageEvent, MemoryMeta, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
-use tokio::sync::Mutex;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -279,57 +277,49 @@ pub async fn call_tool_with_memory(tool_call: ToolCall, memory_key: &MemoryKey) 
     (tool_key, result.0, result.1)
 }
 
-pub async fn call_tools_dyn(mut tool_calls: Vec<ToolCall>, op: &impl ToolCaller) -> (Vec<ToolCall>, Vec<Error>) {
-    let mut futs = Vec::with_capacity(tool_calls.len());
-    for tool_call in tool_calls.drain(..) {
-        let f = op.call_tool(tool_call);
-        futs.push(f);
-    }
-    let mut tool_results = future::join_all(futs).await;
+pub async fn call_tools_dyn(mut tool_calls: Vec<ToolCall>, op: &mut impl ToolCaller) -> (Vec<ToolCall>, Vec<Error>) {
+    let mut results = Vec::with_capacity(tool_calls.len());
     let mut errors = Vec::new();
-    let mut tool_calls = Vec::with_capacity(tool_results.len());
-    for (tool_call, mut error) in tool_results.drain(..) {
-        if let Some(error) = error.take() {
+    for tool_call in tool_calls.drain(..) {
+        let (tool_call, error) = op.call_tool(tool_call).await;
+        if let Some(error) = error {
             errors.push(error);
         }
-        tool_calls.push(tool_call);
+        results.push(tool_call);
     }
-    (tool_calls, errors)
+    (results, errors)
 }
 
 struct RawToolCaller;
 
 #[async_trait]
 impl ToolCaller for RawToolCaller {
-    async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
+    async fn call_tool(&mut self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
         call_tool(tool_call).await
     }
 }
 
 pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>) {
-    call_tools_dyn(tool_calls, &RawToolCaller).await
+    call_tools_dyn(tool_calls, &mut RawToolCaller).await
 }
 
 /// 单次 run 内的工具调用器：把 tool call / tool result 收集到本次 run 的 `pending_contents`，
 /// 由 run_once 在出站时取出（不跨 run 保留）。
 struct PendingToolCaller<'a> {
     memory_key: Option<&'a MemoryKey>,
-    pending_contents: &'a Mutex<Vec<Content>>,
+    pending_contents: &'a mut Vec<Content>,
 }
 
 #[async_trait]
 impl ToolCaller for PendingToolCaller<'_> {
-    async fn call_tool(&self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
+    async fn call_tool(&mut self, tool_call: ToolCall) -> (ToolCall, Option<Error>) {
         let Some(memory_key) = self.memory_key else {
             return call_tool(tool_call).await;
         };
         let result = call_tool_with_memory(tool_call, memory_key).await;
-        {
-            let mut pending_contents = self.pending_contents.lock().await;
-            pending_contents.push(Content::ToolCall(result.0.clone()));
-            if result.2.is_none() {
-                pending_contents.push(Content::ToolResult(result.0.clone()));
-            }
+        self.pending_contents.push(Content::ToolCall(result.0.clone()));
+        if result.2.is_none() {
+            self.pending_contents.push(Content::ToolResult(result.0.clone()));
         }
         (result.1, result.2)
     }
@@ -569,7 +559,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
-        pending_contents: &Mutex<Vec<Content>>,
+        pending_contents: &mut Vec<Content>,
     ) -> Result<bool> {
         // send message to llm
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
@@ -597,10 +587,10 @@ impl DefaultAgenticLoopPipelineWithMemory {
                 SessionKey::Memory(memory_key) => Some(memory_key.as_ref()),
                 _ => None,
             };
-            let (tool_calls, errors) = call_tools_dyn(
-                tool_calls,
-                &PendingToolCaller { memory_key, pending_contents },
-            ).await;
+            let (tool_calls, errors) = {
+                let mut caller = PendingToolCaller { memory_key, pending_contents };
+                call_tools_dyn(tool_calls, &mut caller).await
+            };
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -614,11 +604,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
         if let SessionKey::Memory(mk) = &self.session_key {
             let out_channel = ConfigManager::get().out_channel_config(mk.agent_id.as_str(), mk.role_event.role_name.as_str()).await;
             if let Some(out_channel) = out_channel {
-                let mut contents = Vec::new();
-                {
-                    let mut pending_contents = pending_contents.lock().await;
-                    contents.extend(pending_contents.drain(..));
-                }
+                let mut contents = std::mem::take(pending_contents);
                 let content = if contents.is_empty() {
                     if let Some(content) = res.content.take() {
                         Some(Content::Text(content))
@@ -647,12 +633,12 @@ impl DefaultAgenticLoopPipelineWithMemory {
     }
 
     pub async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
-        let pending_contents = Mutex::new(Vec::new());
+        let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, vec![message], tools, &pending_contents).await?;
+        let mut next = self.run_once(round, vec![message], tools, &mut pending_contents).await?;
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools, &pending_contents).await?;
+            next = self.run_once(round, vec![], tools, &mut pending_contents).await?;
         }
         Ok(())
     }
