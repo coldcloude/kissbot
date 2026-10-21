@@ -3,6 +3,7 @@
 //! Case 与 case 树查询、定位、归档状态与重建；接口路径与字段约定见
 //! [memory-struct-abstract 技术规格](../../docs/spec/memory-struct-abstract.md)。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
@@ -107,71 +108,66 @@ pub struct LocateRequest {
     pub agent_id: ArcStr,
     /// 记忆后缀：角色模式（无事件）或事件模式（角色 + 事件标识）
     pub role_event: RoleEvent,
-    /// 待定位消息（可多条、可跨通道）：每条自带通道三元组，按通道分别与各自的当前 case 比对
+    /// 本批消息所属通道：一次定位只针对一个通道，用该通道的当前 case 与水位之后的记录做比对
+    pub channel: ChannelKey,
+    /// 待定位消息（可多条，同属上面的通道）
     pub messages: Vec<LocateMessage>,
 }
 
-/// 定位用新消息（公共消息格式中判定所需的字段）
+/// 定位用新消息（公共消息格式中判定所需的字段；通道由请求给出）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateMessage {
-    /// 消息标识：与已存记录去重只按「通道三元组 + msg_id」判定；为空则不参与去重
+    /// 消息标识：供调用方关联（locate 不按它去重）
     #[serde(default)]
     pub msg_id: ArcStr,
     pub time: ArcStr,
     pub user_name: ArcStr,
     pub is_self: usize,
-    /// 通道三元组：决定用哪个通道的当前 case 指针做比对
-    pub messenger_id: ArcStr,
-    pub self_user_id: ArcStr,
-    pub group_id: ArcStr,
     pub content: Content,
 }
 
-impl LocateMessage {
-    /// 新消息所属通道
-    pub fn channel(&self) -> ChannelKey {
-        ChannelKey {
-            messenger_id: self.messenger_id.clone(),
-            self_user_id: self.self_user_id.clone(),
-            group_id: self.group_id.clone(),
-        }
-    }
-}
-
-/// 消息涉及的 case
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LocatedCaseRef {
-    pub case_name: ArcStr,
-    /// 是否是涉及该 case 的通道的当前 case
-    #[serde(default)]
-    pub is_current: bool,
-}
-
-/// 定位分组：一组属于同一 case 的消息
+/// 定位分组：同一 case 的消息合成一组
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocatedGroup {
-    /// 消息在请求 `messages` 中的下标（升序）
-    pub messages: Vec<usize>,
+    /// 组内消息在请求 `messages` 中的下标：集合（合并同 case 组时取并、调用方按 `contains` 匹配），
+    /// 序列化为升序数组
+    #[serde(with = "sorted_indices")]
+    pub messages: HashSet<usize>,
     /// 该组所属 case：命中已有 case 即该 case；新话题会在本次定位中建出 case（记忆条数为 0）
     pub case_name: ArcStr,
+    /// 该 case 是否是请求通道的当前 case
     #[serde(default)]
     pub is_current: bool,
 }
 
-/// 定位结果：消息涉及的全部 case + 分组（哪几条消息属于哪个 case）
+/// 定位结果：哪几条消息属于哪个 case
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocateResponse {
-    /// 消息涉及的全部 case（按首次出现顺序去重；都不涉及已有 case 时为空）
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cases: Vec<Arc<LocatedCaseRef>>,
-    /// 分组结果（按各组首条消息的下标升序）
+    /// 分组结果（按各组首条消息的下标升序；同一 case 的多个组已合并）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<Arc<LocatedGroup>>,
 }
 
 impl LocateResponse {
     pub fn empty() -> Self {
-        Self { cases: Vec::new(), groups: Vec::new() }
+        Self { groups: Vec::new() }
+    }
+}
+
+/// `LocatedGroup::messages` 的集合存储：内存里是 `HashSet`，JSON 仍是升序数组
+mod sorted_indices {
+    use std::collections::HashSet;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(indices: &HashSet<usize>, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sorted: Vec<usize> = indices.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<HashSet<usize>, D::Error> {
+        Ok(Vec::<usize>::deserialize(deserializer)?.into_iter().collect())
     }
 }
 
@@ -376,9 +372,6 @@ mod tests {
             user_name: ArcStr::from("alice"),
             is_self: 0,
             msg_id: ArcStr::new(),
-            messenger_id: ArcStr::from("web"),
-            self_user_id: ArcStr::from("self1"),
-            group_id: ArcStr::from("g1"),
             content: Content::Text(ArcStr::from("你好")),
         }
     }
@@ -416,43 +409,44 @@ mod tests {
         let req = LocateRequest {
             agent_id: ArcStr::from("0"),
             role_event: RoleEvent::new(ArcStr::from("dev")),
+            channel: ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1")),
             messages: vec![message(), message()],
         };
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["agent_id"], "0");
         assert_eq!(v["role_event"], json!({"role_name": "dev"}));
+        assert_eq!(v["channel"], json!({"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"}));
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(v["messages"][0]["messenger_id"], "web");
-        assert_eq!(v["messages"][0]["self_user_id"], "self1");
         assert_eq!(v["messages"][0]["content"]["msg_type"], "Text");
+        assert!(v["messages"][0].get("messenger_id").is_none(), "通道在请求上，消息不再重复携带");
         let back: LocateRequest = serde_json::from_value(v).unwrap();
         assert_eq!(back.messages.len(), 2);
         assert_eq!(back.messages[0].is_self, 0);
-        assert_eq!(back.messages[0].channel(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1")));
+        assert_eq!(back.channel.messenger_id.as_str(), "web");
 
-        // 都不涉及已有 case：cases 与 groups 都为空
+        // 没有分组：groups 为空（序列化为 {}）
         assert_eq!(serde_json::to_value(LocateResponse::empty()).unwrap(), json!({}));
 
-        // 命中：涉及的 case + 分组（每个组都命中或建出 case，case_name 必填）
+        // 命中：分组（每个组都命中或建出 case，case_name 必填；同一 case 只有一个组）
         let hit = LocateResponse {
-            cases: vec![
-                Arc::new(LocatedCaseRef { case_name: ArcStr::from("e12"), is_current: true }),
-                Arc::new(LocatedCaseRef { case_name: ArcStr::from("e13"), is_current: false }),
-            ],
             groups: vec![
-                Arc::new(LocatedGroup { messages: vec![0, 1], case_name: ArcStr::from("e12"), is_current: true }),
-                Arc::new(LocatedGroup { messages: vec![2], case_name: ArcStr::from("e13"), is_current: false }),
-                Arc::new(LocatedGroup { messages: vec![3], case_name: ArcStr::from("e14"), is_current: true }),
+                Arc::new(LocatedGroup { messages: HashSet::from([0, 1]), case_name: ArcStr::from("e12"), is_current: true }),
+                Arc::new(LocatedGroup { messages: HashSet::from([2]), case_name: ArcStr::from("e13"), is_current: false }),
+                Arc::new(LocatedGroup { messages: HashSet::from([3]), case_name: ArcStr::from("e14"), is_current: true }),
             ],
         };
         let v = serde_json::to_value(&hit).unwrap();
-        assert_eq!(v["cases"][0], json!({"case_name": "e12", "is_current": true}));
         assert_eq!(v["groups"][0], json!({"messages": [0, 1], "case_name": "e12", "is_current": true}));
         assert_eq!(v["groups"][2], json!({"messages": [3], "case_name": "e14", "is_current": true}));
         let back: LocateResponse = serde_json::from_value(v).unwrap();
-        assert_eq!(back.cases.len(), 2);
         assert_eq!(back.groups.len(), 3);
         assert_eq!(back.groups[2].case_name.as_str(), "e14");
+
+        // messages 是集合：乱序输入也按升序数组输出
+        let unsorted: LocateResponse =
+            serde_json::from_value(json!({"groups": [{"messages": [2, 0, 1], "case_name": "e12"}]})).unwrap();
+        assert_eq!(unsorted.groups[0].messages, HashSet::from([0, 1, 2]));
+        assert_eq!(serde_json::to_value(&unsorted).unwrap()["groups"][0]["messages"], json!([0, 1, 2]));
     }
 
     #[test]

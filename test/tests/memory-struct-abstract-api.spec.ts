@@ -152,19 +152,18 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 15000, interva
 async function locateMessages(
   request: APIRequestContext,
   role: string,
-  messages: { channel: TestChannel; text: string; user?: string; isSelf?: number; time?: string; msgId?: string }[],
+  channel: TestChannel,
+  messages: { text: string; user?: string; isSelf?: number; time?: string; msgId?: string }[],
 ) {
   const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/locate', {
     agent_id: AGENT,
     role_event: roleEventOf(role),
+    channel: { messenger_id: channel.messenger, self_user_id: channel.selfUser, group_id: channel.group },
     messages: messages.map((item) => ({
       msg_id: item.msgId ?? '',
       time: item.time ?? timeAt(200),
       user_name: item.user ?? 'alice',
       is_self: item.isSelf ?? 0,
-      messenger_id: item.channel.messenger,
-      self_user_id: item.channel.selfUser,
-      group_id: item.channel.group,
       content: { msg_type: 'Text', data: item.text },
     })),
   });
@@ -307,14 +306,13 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
 
   // TC-03 定位：可带多条消息，返回消息涉及的全部 case（不返回摘要与原文）
   test('TC-03: 定位返回消息涉及的 case', async ({ request }) => {
-    const data = await locateMessages(request, ROLE, [
-      { channel: ROLE_CHANNEL, text: '我们之前聊了什么' },
-      { channel: ROLE_CHANNEL, text: '那后来呢' },
+    const data = await locateMessages(request, ROLE, ROLE_CHANNEL, [
+      { text: '我们之前聊了什么' },
+      { text: '那后来呢' },
     ]);
-    expect(data.cases).toHaveLength(1);
-    expect(data.cases[0].case_name).toBe('role-case');
-    expect(data.cases[0].is_current).toBe(true);
+    expect(data.cases).toBeUndefined();
     expect(data.groups).toHaveLength(1);
+    expect(data.groups[0].is_current).toBe(true);
     expect(data.groups[0].messages).toEqual([0, 1], '同一话题的多条消息归为一组');
     expect(data.groups[0].case_name).toBe('role-case');
     // 只定位：不带摘要、子 case 摘要与原文副本
@@ -452,15 +450,14 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(watermarkOf('selfA').watermark.channel.sn).toBe(3);
     expect(watermarkOf('selfB').watermark.channel.sn).toBe(5, '两个通道共用同一个记录文件的 sn 序列');
 
-    // 一次定位带两条消息（跨通道）：按各自通道的当前 case 分别命中，返回涉及的全部 case
-    const data = await locateMessages(request, role, [
-      { channel: channelA, text: '继续 A 的话题' },
-      { channel: channelB, text: '继续 B 的话题' },
-    ]);
-    expect(data.cases.map((e: any) => e.case_name)).toEqual(['role-case', 'role-case-2']);
-    expect(data.cases.map((e: any) => e.is_current)).toEqual([true, true], '各自命中本通道的当前 case');
-    expect(data.groups.map((g: any) => g.messages)).toEqual([[0], [1]]);
-    expect(data.groups.map((g: any) => g.case_name)).toEqual(['role-case', 'role-case-2']);
+    // 一次定位只针对一个通道：两个通道各定位一次，各自命中自己的当前 case
+    const fromA = await locateMessages(request, role, channelA, [{ text: '继续 A 的话题' }]);
+    expect(fromA.groups.map((g: any) => g.case_name)).toEqual(['role-case']);
+    expect(fromA.groups[0].is_current).toBe(true);
+    expect(fromA.groups[0].messages).toEqual([0]);
+    const fromB = await locateMessages(request, role, channelB, [{ text: '继续 B 的话题' }]);
+    expect(fromB.groups.map((g: any) => g.case_name)).toEqual(['role-case-2']);
+    expect(fromB.groups[0].is_current).toBe(true);
   });
 
   // TC-08 思考记录按 key 归属通道：key 关联的占位通道消息决定它属于哪个通道
@@ -527,14 +524,14 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到 case。
     let data: any = null;
     await waitFor(async () => {
-      data = await locateMessages(request, role, [
-        { channel, text: '内容不同的重复提问', user: 'someone', isSelf: 0, time: timeAt(3000), msgId: 'msg-1' },
-        { channel, text: '内容不同的重复回答', user: 'someone', isSelf: 1, time: timeAt(3001), msgId: 'msg-2' },
-        { channel, text: '定位时的新问题', user: 'alice', isSelf: 0, time: t2, msgId: 'msg-3' },
+      data = await locateMessages(request, role, channel, [
+        { text: '内容不同的重复提问', user: 'someone', isSelf: 0, time: timeAt(3000), msgId: 'msg-1' },
+        { text: '内容不同的重复回答', user: 'someone', isSelf: 1, time: timeAt(3001), msgId: 'msg-2' },
+        { text: '定位时的新问题', user: 'alice', isSelf: 0, time: t2, msgId: 'msg-3' },
       ]);
-      return data.cases.length > 0;
+      return data.groups.length > 0;
     });
-    expect(data.cases.map((e: any) => e.case_name)).toEqual(['role-case']);
+    expect(data.groups.map((g: any) => g.case_name)).toEqual(['role-case']);
     expect(data.groups.map((g: any) => g.messages)).toEqual([[0, 1, 2]], '整个合并批次一次分组（桩模型整批一组）');
     expect(data.groups[0].case_name).toBe('role-case');
 
@@ -553,11 +550,11 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const role = 'dev5';
     const channel: TestChannel = { messenger: 'web', selfUser: 'self5', group: 'g5' };
 
-    const data = await locateMessages(request, role, [{ channel, text: '一个全新话题' }]);
-    const caseName = data.cases[0]?.case_name;
+    const data = await locateMessages(request, role, channel, [{ text: '一个全新话题' }]);
+    const caseName = data.groups[0]?.case_name;
     // 桩模型把新 case 命名为 "case"：组件拼成 case 名 role-case（唯一标识）
     expect(caseName, '新话题返回 case 名（唯一标识）').toBe('role-case');
-    expect(data.cases[0].is_current).toBe(true);
+    expect(data.groups[0].is_current).toBe(true);
     expect(data.groups).toEqual([{ messages: [0], case_name: caseName, is_current: true }]);
 
     // 查询只读：能看到这个 case，记忆条数为 0、原文为空，但摘要当场就有

@@ -1,54 +1,33 @@
 //! 定位结果汇总：归档器对「记录 + 只用于定位的新消息」分组并逐层判定所属 case 后，
-//! 本模块把各通道的分组按请求下标合并成对外响应（[`merge_located`]），并提供按通道切分
-//! 消息下标的 [`group_indices_by_channel`] 与新消息的文本渲染 [`render_message`]。
+//! 本模块把各组按请求下标合并成对外响应（[`merge_located`]），并提供新消息的文本渲染
+//! [`render_message`]。
 //!
 //! 定位复用归档的判定：每个组都会命中已有 case 或建出 case（只含新消息的组也一样，
 //! 新话题建出的 case 记忆条数为 0），见 [`crate::archive`]。
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_api::{ChannelKey, LocateMessage, LocateResponse, LocatedCaseRef, LocatedGroup};
+use kissbot_api::{LocateMessage, LocateResponse, LocatedGroup};
 
 use crate::records::render_content;
 
-/// 汇总各通道的定位分组：`is_current` 按该记忆后缀下各通道的最终当前 case 判定，
-/// 分组按各组首条消息下标升序，case 按首次出现顺序去重。
-pub(crate) fn merge_located(
-    mut located: Vec<(usize, ChannelKey, LocatedGroup)>,
-    current_cases: &BTreeMap<Arc<ChannelKey>, ArcStr>,
-) -> LocateResponse {
-    located.sort_by_key(|(first, _, _)| *first);
-
-    let mut groups: Vec<Arc<LocatedGroup>> = Vec::with_capacity(located.len());
-    let mut cases: Vec<Arc<LocatedCaseRef>> = Vec::new();
-    for (_, channel, group) in located {
-        let is_current = current_cases
-            .get(&channel)
-            .map(|current| current.as_str() == group.case_name.as_str())
-            .unwrap_or(false);
-        let group = Arc::new(LocatedGroup { messages: group.messages, case_name: group.case_name, is_current });
-        match cases.iter_mut().find(|case| case.case_name == group.case_name) {
-            Some(case) => {
-                if is_current {
-                    *case = Arc::new(LocatedCaseRef { case_name: group.case_name.clone(), is_current: true });
-                }
-            }
-            None => cases.push(Arc::new(LocatedCaseRef { case_name: group.case_name.clone(), is_current })),
+/// 汇总定位分组：同一 case 的多个组按消息下标的并集合并成一组（`is_current` 取并），
+/// 分组按各组最小消息下标升序；`is_current` 按该通道的最终当前 case 判定。
+pub(crate) fn merge_located(groups: Vec<LocatedGroup>, current_case: Option<&ArcStr>) -> LocateResponse {
+    let mut merged: Vec<Arc<LocatedGroup>> = Vec::new();
+    for group in groups {
+        match merged.iter_mut().find(|existing| existing.case_name == group.case_name) {
+            Some(existing) => Arc::make_mut(existing).messages.extend(group.messages),
+            None => merged.push(Arc::new(group)),
         }
-        groups.push(group);
     }
-    LocateResponse { cases, groups }
-}
-
-/// 按通道分组消息下标（通道按三元组升序，组内下标升序）
-pub(crate) fn group_indices_by_channel(messages: &[LocateMessage]) -> Vec<(Arc<ChannelKey>, Vec<usize>)> {
-    let mut by_channel: BTreeMap<Arc<ChannelKey>, Vec<usize>> = BTreeMap::new();
-    for (index, message) in messages.iter().enumerate() {
-        by_channel.entry(Arc::new(message.channel())).or_default().push(index);
+    merged.sort_by_key(|group| group.messages.iter().copied().min().unwrap_or(usize::MAX));
+    for group in &mut merged {
+        let group = Arc::make_mut(group);
+        group.is_current = current_case.is_some_and(|current| current.as_str() == group.case_name.as_str());
     }
-    by_channel.into_iter().collect()
+    LocateResponse { groups: merged }
 }
 
 /// 新消息的可判定文本
@@ -59,13 +38,15 @@ pub fn render_message(message: &LocateMessage) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::archive::Archiver;
     use crate::model::{LevelDecision, MessageGroup};
     use crate::records::{RecordBody, RecordEntry};
     use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
-    use kissbot_api::{ChannelRecord, Content, RecordKind, RoleEvent};
+    use kissbot_api::{ChannelKey, ChannelRecord, Content, RecordKind, RoleEvent};
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
@@ -120,19 +101,7 @@ mod tests {
             user_name: ArcStr::from("alice"),
             is_self: 0,
             msg_id: ArcStr::new(),
-            messenger_id: ArcStr::from("web"),
-            self_user_id: ArcStr::from("self1"),
-            group_id: ArcStr::from("g1"),
             content: Content::Text(ArcStr::from(text)),
-        }
-    }
-
-    fn message_in(channel: &ChannelKey, text: &str) -> LocateMessage {
-        LocateMessage {
-            messenger_id: channel.messenger_id.clone(),
-            self_user_id: channel.self_user_id.clone(),
-            group_id: channel.group_id.clone(),
-            ..message(text)
         }
     }
 
@@ -154,29 +123,31 @@ mod tests {
         archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, entries, &[]).await.unwrap();
     }
 
-    /// 定位一批消息：逐通道走归档入口，但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）
-    async fn locate(handle: &AgentRoleHandle, model: &Arc<StubModel>, role_event: &RoleEvent, messages: &[LocateMessage]) -> LocateResponse {
+    /// 定位一批消息：走归档入口但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）
+    async fn locate(
+        handle: &AgentRoleHandle,
+        model: &Arc<StubModel>,
+        role_event: &RoleEvent,
+        channel: &ChannelKey,
+        messages: &[LocateMessage],
+    ) -> LocateResponse {
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
-        let mut located = Vec::new();
-        for (channel, indices) in group_indices_by_channel(messages) {
-            let channel_messages: Vec<&LocateMessage> = indices.iter().map(|index| &messages[*index]).collect();
-            let result = archiver.archive(handle, &mut state, role_event.event_id.clone(), &channel, &[], &channel_messages).await.unwrap();
-            for group in result.groups {
-                let global: Vec<usize> = group.messages.iter().map(|local| indices[*local]).collect();
-                let first = *global.first().expect("分组非空（parse_groups 保证）");
-                located.push((
-                    first,
-                    channel.as_ref().clone(),
-                    LocatedGroup { messages: global, case_name: group.case_name, is_current: false },
-                ));
-            }
-        }
-        merge_located(located, &state.current_of(role_event))
+        let channel_messages: Vec<&LocateMessage> = messages.iter().collect();
+        let result =
+            archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, &[], &channel_messages).await.unwrap();
+        let groups: Vec<LocatedGroup> = result
+            .groups
+            .into_iter()
+            .filter(|group| !group.messages.is_empty())
+            .map(|group| LocatedGroup { messages: group.messages.into_iter().collect(), case_name: group.case_name, is_current: false })
+            .collect();
+        let current = state.current_case(role_event, channel);
+        merge_located(groups, current.as_ref())
     }
 
     fn case_names(response: &LocateResponse) -> Vec<String> {
-        response.cases.iter().map(|case| case.case_name.as_str().to_string()).collect()
+        response.groups.iter().map(|group| group.case_name.as_str().to_string()).collect()
     }
 
     #[tokio::test]
@@ -188,13 +159,12 @@ mod tests {
         let model = Arc::new(StubModel::new());
 
         // 没有消息：不建 case
-        let response = locate(&handle, &model, &role, &[]).await;
-        assert!(response.cases.is_empty());
+        let response = locate(&handle, &model, &role, &channel_key(), &[]).await;
         assert!(response.groups.is_empty());
         assert_eq!(model.prompts().len(), 0, "没有消息不调用模型");
 
         // 空树 + 消息：整批一组；当层没有候选也调一次逐层判定，由它给出名称与摘要
-        let response = locate(&handle, &model, &role, &[message("你好"), message("在吗")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("你好"), message("在吗")]).await;
         assert_eq!(case_names(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1, "同一通道归一组");
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
@@ -222,11 +192,11 @@ mod tests {
 
         // 第 1 轮把整批标记为当前 case 组 → 命中该通道当前 case
         model.push_group(&[0, 1], true);
-        let response = locate(&handle, &model, &role, &[message("今天下雨吗"), message("带伞吗")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("今天下雨吗"), message("带伞吗")]).await;
         assert_eq!(case_names(&response), vec!["role-case"]);
-        assert!(response.cases[0].is_current);
+        assert!(response.groups[0].is_current);
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].messages, vec![0, 1]);
+        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
     }
 
@@ -242,11 +212,11 @@ mod tests {
         // 组未标记当前 case → 逐层判定给出名称与摘要 → 建出记忆条数为 0 的新 case
         model.push_group(&[0], false);
         model.push_level(LevelDecision::new_case("topic", "话题摘要"));
-        let response = locate(&handle, &model, &role, &[message("换个话题")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("换个话题")]).await;
         assert_eq!(case_names(&response), vec!["role-topic"], "新话题也建出 case");
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].case_name.as_str(), "role-topic");
-        assert!(response.cases[0].is_current, "指针指向本批最后一个组的 case");
+        assert!(response.groups[0].is_current, "指针指向本批最后一个组的 case");
         let state = handle.state.lock().await;
         let created = state.tree.get("role-topic").unwrap();
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
@@ -279,13 +249,13 @@ mod tests {
         ]);
         model.push_level(LevelDecision::Merge("role-case".into())); // 第三条：顶层命中 case（叶子）
         model.push_level(LevelDecision::new_case("third", "第三摘要")); // 第四条：顶层未命中 → 新话题
-        let response = locate(&handle, &model, &role, &[message("a"), message("b"), message("c"), message("d")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("a"), message("b"), message("c"), message("d")]).await;
 
         assert_eq!(case_names(&response), vec!["role-case-2", "role-case", "role-third"], "涉及的 case 按首次出现顺序去重（新话题建出 third）");
-        let flags: Vec<bool> = response.cases.iter().map(|event| event.is_current).collect();
+        let flags: Vec<bool> = response.groups.iter().map(|group| group.is_current).collect();
         assert_eq!(flags, vec![false, false, true], "指针指向本批最后一个组的 case third");
         assert_eq!(response.groups.len(), 3);
-        assert_eq!(response.groups[0].messages, vec![0, 1]);
+        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
         assert_eq!(response.groups[1].case_name.as_str(), "role-case");
         assert!(!response.groups[0].is_current);
         assert!(!response.groups[1].is_current);
@@ -310,14 +280,14 @@ mod tests {
         model.push_group(&[0], false);
         model.push_level(LevelDecision::Merge("role-case".into()));
         model.push_level(LevelDecision::Merge("role-2".into()));
-        let response = locate(&handle, &model, &role, &[message("子 case 相关")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("子 case 相关")]).await;
         assert_eq!(case_names(&response), vec!["role-2"]);
 
         // 第四条消息：顶层命中 case（非叶子）→ 子层都未命中 → 在 case 下建出新的空 case
         model.push_group(&[0], false);
         model.push_level(LevelDecision::Merge("role-case".into()));
         model.push_level(LevelDecision::new_case("child", "子摘要"));
-        let response = locate(&handle, &model, &role, &[message("父 case 相关")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("父 case 相关")]).await;
         assert_eq!(case_names(&response), vec!["role-child"]);
         let state = handle.state.lock().await;
         let created = state.tree.get("role-child").unwrap();
@@ -345,14 +315,53 @@ mod tests {
         };
         assert_ne!(current_first, current_other);
 
-        // 两个通道各一条消息，各自标记为当前 case 组 → 各命中自己的当前 case
+        // 两个通道各定位一次（一次只针对一个通道），各自标记为当前 case 组 → 各命中自己的当前 case
         model.push_group(&[0], true);
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("通道一问")]).await;
+        assert_eq!(case_names(&response), vec![current_first.as_str()]);
+        assert_eq!(response.groups[0].messages, HashSet::from([0]));
+        assert!(response.groups[0].is_current);
+
         model.push_group(&[0], true);
-        let response = locate(&handle, &model, &role, &[message("通道一问"), message_in(&other, "通道二问")]).await;
-        assert_eq!(case_names(&response), vec![current_first.as_str(), current_other.as_str()]);
-        assert_eq!(response.groups[0].messages, vec![0]);
-        assert_eq!(response.groups[1].messages, vec![1]);
-        assert!(response.groups.iter().all(|group| group.is_current));
+        let response = locate(&handle, &model, &role, &other, &[message("通道二问")]).await;
+        assert_eq!(case_names(&response), vec![current_other.as_str()]);
+        assert_eq!(response.groups[0].messages, HashSet::from([0]));
+        assert!(response.groups[0].is_current);
+    }
+
+    /// 同一 case 的多个组在返回前合并：下标取并集、`is_current` 取并
+    #[tokio::test]
+    async fn groups_of_same_case_merge_into_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AgentRoleManager::new(temp.path());
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
+        let model = Arc::new(StubModel::new());
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
+
+        // 两组都标记为当前 case 的延续，中间隔着一条别的话题 → 两组落点相同
+        model.push_groups(vec![
+            MessageGroup { messages: vec![0], is_current: true },
+            MessageGroup { messages: vec![1], is_current: false },
+            MessageGroup { messages: vec![2], is_current: true },
+        ]);
+        model.push_level(LevelDecision::new_case("other", "别的话题摘要"));
+        let response = locate(
+            &handle,
+            &model,
+            &role,
+            &channel_key(),
+            &[message("继续"), message("别的"), message("又继续")],
+        )
+        .await;
+
+        assert_eq!(response.groups.len(), 2, "同 case 的两组在返回前合并成一组");
+        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
+        assert_eq!(response.groups[0].messages, HashSet::from([0, 2]), "合并后下标取并集");
+        assert!(response.groups[0].is_current, "当前 case 是其一组，合并后取并");
+        assert_eq!(response.groups[1].case_name.as_str(), "role-other");
+        assert_eq!(response.groups[1].messages, HashSet::from([1]));
+        assert!(!response.groups[1].is_current);
     }
 
     #[tokio::test]
@@ -367,7 +376,7 @@ mod tests {
         tokio::fs::remove_dir_all(handle.cases_dir()).await.unwrap();
 
         model.push_group(&[0], true);
-        let response = locate(&handle, &model, &role, &[message("今天下雨吗")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("今天下雨吗")]).await;
         assert_eq!(case_names(&response), vec!["role-case"]);
     }
 
@@ -380,10 +389,10 @@ mod tests {
         let model = Arc::new(StubModel::new());
         archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")]).await;
 
-        let response = locate(&handle, &model, &role, &[message("任意消息"), message("又一条")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("任意消息"), message("又一条")]).await;
         assert_eq!(case_names(&response), vec!["event-e1"], "事件模式固定归入事件标识本身");
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].messages, vec![0, 1]);
+        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
         assert!(model.prompts().is_empty(), "事件模式不触发定位判定");
         let state = handle.state.lock().await;
         let node = state.tree.get("event-e1").unwrap();
@@ -401,7 +410,7 @@ mod tests {
         let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
 
-        let response = locate(&handle, &model, &role, &[message("任意消息")]).await;
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("任意消息")]).await;
         assert_eq!(case_names(&response), vec!["event-e1"]);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].case_name.as_str(), "event-e1");

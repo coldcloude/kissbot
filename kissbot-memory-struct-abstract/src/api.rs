@@ -170,14 +170,15 @@ mod tests {
         // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_name
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
             "agent_id": "0", "role_event": {"role_name": "dev"},
+            "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},
             "messages": [{"time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
-                          "messenger_id": "web", "self_user_id": "self1", "group_id": "g1",
                           "content": {"msg_type": "Text", "data": "你好"}}]
         })).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
-        assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
+        assert!(body["data"].get("cases").is_none(), "响应只有分组");
         assert_eq!(body["data"]["groups"][0]["case_name"], "role-case");
+        assert_eq!(body["data"]["groups"][0]["messages"], serde_json::json!([0]));
 
         // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
         let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;

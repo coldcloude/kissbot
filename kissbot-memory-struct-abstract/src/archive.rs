@@ -136,10 +136,6 @@ pub fn merge_batch(channel: &ChannelKey, records: &[RecordEntry], messages: &[&L
         records.iter().all(|record| record.channel_key().is_none_or(|key| key == *channel)),
         "merge_batch 只接受同一通道的记录"
     );
-    debug_assert!(
-        messages.iter().all(|message| &message.channel() == channel),
-        "merge_batch 只接受同一通道的新消息"
-    );
     let mut items: Vec<BatchItem> = records
         .iter()
         .map(|record| BatchItem::Stored(record.clone()))
@@ -164,8 +160,8 @@ impl Archiver {
     /// 归档某记忆后缀某通道的待处理记录，并（可选）一并定位本批新消息。
     ///
     /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息分组（手动触发 / 重建走这条）；
-    /// - `messages` 非空：先按 `msg_id`（单通道批次内）与记录**去重合并**为一个批次一起分析：
-    ///   记录落盘归档，消息只定位；每组都会命中或建出 case（新话题建出的 case 记忆条数为 0），
+    /// - `messages` 非空：与本通道的待归档记录合并为一个批次一起分析——记录落盘归档、消息只定位；
+    ///   每组都会命中或建出 case（新话题建出的 case 记忆条数为 0），
     ///   按 [`PlaceGroup`] 返回（`PlaceGroup::messages` 是 `messages` 里的下标）。
     ///
     /// 记录按 `max_batch_records` 分块，逐块归档并落盘：一块失败时已完成的块保留进度，
@@ -619,9 +615,6 @@ mod tests {
             time: ArcStr::from(time),
             user_name: ArcStr::from("alice"),
             is_self: 0,
-            messenger_id: ArcStr::from("web"),
-            self_user_id: ArcStr::from("self"),
-            group_id: ArcStr::from("g1"),
             content: Content::Text(ArcStr::from(text)),
         }
     }
@@ -676,17 +669,6 @@ mod tests {
             other => panic!("应为新消息: {:?}", other),
         }
         assert!(items.iter().any(|item| matches!(item, BatchItem::New { index, .. } if *index == 0)));
-    }
-
-    /// 调用方必须按通道分开调用：混入其他通道的记录/消息会被契约断言拦住
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "只接受同一通道")]
-    fn merge_batch_rejects_mixed_channels() {
-        let records = vec![channel_with_id("2099-01-01 10:00:00", 1, 0, "A", "m1")];
-        let mut foreign = message_with_id("2099-01-01 10:00:00", "m1", "A");
-        foreign.self_user_id = ArcStr::from("self2");
-        merge_batch(&channel_key(), &records, &[&foreign]);
     }
 
     #[test]

@@ -165,7 +165,7 @@ impl AbstractMemoryPipeline {
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
         // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
-        let located = match client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), messages).await {
+        let located = match client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), &channel, messages).await {
             Ok(located) => Some(located),
             Err(e) => {
                 warn!(
@@ -348,16 +348,13 @@ fn event_channel(event: &IncomingMessageEvent) -> ChannelKey {
     }
 }
 
-/// 新消息 → 定位请求消息（本 pipeline 只处理上行消息，is_self 固定 0）
+/// 新消息 → 定位请求消息（通道由请求给出；本 pipeline 只处理上行消息，is_self 固定 0）
 fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
     LocateMessage {
         msg_id: event.incoming_message.msg_id.clone(),
         time: event.incoming_message.time.clone(),
         user_name: event.incoming_message.user_name.clone(),
         is_self: 0,
-        messenger_id: event.incoming_message.messenger_id.clone(),
-        self_user_id: event.recipient_user_id.clone(),
-        group_id: event.incoming_message.group_id.clone(),
         content: event.incoming_message.content.clone(),
     }
 }
@@ -433,6 +430,8 @@ async fn build_context(memory_key: Arc<MemoryKey>, client: &AbstractClient, case
 mod tests {
     use super::*;
 
+    use std::collections::HashSet;
+
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
     use kissbot_api::{ChannelRecord, LocatedGroup, RoleEvent};
@@ -507,23 +506,22 @@ mod tests {
     }
 
     #[test]
-    fn locate_message_maps_recipient_to_self_user() {
+    fn locate_message_keeps_locator_fields() {
         let e = ev_with_id("web", "self", "g1", "u1", "a", "2026-09-23 10:00:00", "m7");
         let lm = locate_message(&e);
-        assert_eq!(lm.self_user_id.as_str(), "self");
         assert_eq!(lm.user_name.as_str(), "u1");
         assert_eq!(lm.is_self, 0, "只处理上行消息");
         assert_eq!(lm.msg_id.as_str(), "m7");
-        assert_eq!(lm.channel(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
+        assert_eq!(lm.time.as_str(), "2026-09-23 10:00:00");
+        assert_eq!(lm.content, Content::Text(ArcStr::from("a")));
     }
 
     #[test]
     fn case_by_message_aligns_request_indices() {
         let located = LocateResponse {
-            cases: vec![],
             groups: vec![
-                Arc::new(LocatedGroup { messages: vec![0, 2], case_name: ArcStr::from("role-a"), is_current: false }),
-                Arc::new(LocatedGroup { messages: vec![1], case_name: ArcStr::from("role-b"), is_current: true }),
+                Arc::new(LocatedGroup { messages: HashSet::from([0, 2]), case_name: ArcStr::from("role-a"), is_current: false }),
+                Arc::new(LocatedGroup { messages: HashSet::from([1]), case_name: ArcStr::from("role-b"), is_current: true }),
             ],
         };
         assert_eq!(

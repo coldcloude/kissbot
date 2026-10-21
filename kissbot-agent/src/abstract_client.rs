@@ -5,7 +5,7 @@
 use arcstr::ArcStr;
 use kissbot_api::{
     ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
-    CaseSummaryResponse, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
+    CaseSummaryResponse, ChannelKey, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
 };
 use kissbot_security::HEADER_API_KEY;
 use serde::{Serialize, de::DeserializeOwned};
@@ -38,13 +38,20 @@ impl AbstractClient {
         }
     }
 
-    /// POST /abstract/locate：定位一批消息涉及的 case（摘要与原文副本由调用方按 case 标识另取）
-    pub async fn locate(&self, agent_id: &str, role_event: &RoleEvent, messages: Vec<LocateMessage>) -> Result<LocateResponse> {
+    /// POST /abstract/locate：定位一批消息（同一通道）涉及的 case（摘要与原文副本由调用方按 case 标识另取）
+    pub async fn locate(
+        &self,
+        agent_id: &str,
+        role_event: &RoleEvent,
+        channel: &ChannelKey,
+        messages: Vec<LocateMessage>,
+    ) -> Result<LocateResponse> {
         self.post(
             "/abstract/locate",
             &LocateRequest {
                 agent_id: ArcStr::from(agent_id),
                 role_event: role_event.clone(),
+                channel: channel.clone(),
                 messages,
             },
         )
@@ -117,7 +124,8 @@ mod tests {
     async fn empty_base_url_returns_abstract_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
         let client = AbstractClient::with_url(ArcStr::new(), ArcStr::new());
-        let err = client.locate("0", &RoleEvent::new(ArcStr::from("dev")), vec![]).await.unwrap_err();
+        let channel = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
+        let err = client.locate("0", &RoleEvent::new(ArcStr::from("dev")), &channel, vec![]).await.unwrap_err();
         assert!(matches!(err, Error::AbstractError(_)), "未配置地址应返回 AbstractError: {:?}", err);
     }
 }
