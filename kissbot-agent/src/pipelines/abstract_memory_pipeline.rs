@@ -1,25 +1,25 @@
 //! 摘要记忆 pipeline：一个会话一条 pipeline，按 channel（messenger + 接收方用户 + 群组）分别攒批；
 //! 某 channel 的最后一条消息超过合批间隔即触发该批。
 //!
-//! 触发后先经摘要记忆定位 case（locate），再用「命中 case 的摘要 + case 结尾原文副本」重建会话上下文，
-//! 最后把本批新消息交给 agentic loop。本批上行消息在 locate 之后才写入记忆，并带上所属 case 的 meta，
-//! 摘要记忆组件下次归档时直接按 case 名落位；模型回复也带当前触发 case 的 meta，无需再次 locate。
+//! 批次处理只做 locate 与本批上行记录的写入，随后把消息按 case 并入各自的待执行任务并立即返回，下一批
+//! 可以紧接着处理；待执行任务由另一个队列的 worker 串行执行：每个 case 一次 run，run 开头用该 case 的
+//! 「摘要 + 结尾原文副本」重置上下文，再加上本次新增的消息。同一 case 至多一个待执行任务，排队等待执行
+//! 期间又来的消息并入同一次 run；已开始执行的 run 不受影响，其后的消息形成下一轮。还没轮到的 case
+//! 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
+//!
+//! 本批上行消息在 locate 之后才写入记忆，并带上所属 case 的 meta，摘要记忆组件下次归档时直接按 case
+//! 名落位；模型回复也带当前 run 所属 case 的 meta，无需再次 locate。
 //!
 //! 本 pipeline 与 `default_memory` 共用 pipelines.rs 中的发送、工具调用、提示词等函数，
-//! 但批次接入、locate、上下文重建与带 meta 的记忆写入都在本文件内完成。
+//! 但批次接入、locate、case 拆分与带 meta 的记忆写入都在本文件内完成。
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, Weak, atomic::{AtomicU64, Ordering}},
-};
+use std::sync::{Arc, Weak, atomic::{AtomicU64, Ordering}};
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use chrono::{Duration as ChronoDuration, Local};
 use dashmap::{DashMap, Entry};
 use kissbot_api::{
-    CaseRecord, ChannelKey, ChannelRecord, IncomingMessageEvent, LocateMessage, LocateResponse,
-    LocatedCaseRef, MemoryMeta,
+    CaseRecord, ChannelKey, IncomingMessageEvent, LocateMessage, LocateResponse, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -33,18 +33,19 @@ use crate::{
     },
 };
 
-/// 某条消息在「通道三元组 + msg_id」下的去重键
-type MessageKey = (ArcStr, ArcStr, ArcStr, ArcStr);
-
 /// 摘要记忆 pipeline：每个 channel 一个批次生产者（DashMap 持有），channel 之间互不干扰。
 pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
     session: Arc<Session>,
     /// 各 channel 的批次生产者（按 ChannelKey 分桶）
     producers: DashMap<Arc<ChannelKey>, BatchProducer>,
-    /// 串行执行队列：各 channel 消费者把批次投递到这里，由唯一 worker 按到达顺序处理，
-    /// 避免不同 channel 的 locate/上下文重建/agentic loop 并发改写同一会话
+    /// 批次队列：各 channel 消费者把批次投递到这里，由唯一 worker 串行 locate 并写入上行记录
     batch_tx: mpsc::UnboundedSender<Vec<Arc<IncomingMessageEvent>>>,
+    /// 待执行任务表：case 名（None 表示 locate 不可用的降级任务）→ 尚未开始 run 的消息。
+    /// 同一 case 的消息在这里合并，run 开始时整条取走；执行期间到达的消息形成下一轮
+    pending: DashMap<Option<ArcStr>, Vec<Arc<IncomingMessageEvent>>>,
+    /// case 队列：只投递 case 名（同一 case 至多一个），worker 按到达顺序取 case 执行
+    case_tx: mpsc::UnboundedSender<Option<ArcStr>>,
     /// 上一次模型响应的 token 占用（供下一次压缩阈值判定）
     last_total_tokens: AtomicU64,
 }
@@ -52,15 +53,19 @@ pub struct AbstractMemoryPipeline {
 impl AbstractMemoryPipeline {
     pub fn new(memory_key: Arc<MemoryKey>, session: Arc<Session>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
+        let (case_tx, case_rx) = mpsc::unbounded_channel();
         let pipeline = Arc::new(Self {
             memory_key,
             session,
             producers: DashMap::new(),
             batch_tx,
+            pending: DashMap::new(),
+            case_tx,
             last_total_tokens: AtomicU64::new(0),
         });
         // worker 只持 Weak：pipeline 销毁 → sender 关闭 → 队列 worker 退出
         tokio::spawn(run_batch_queue(Arc::downgrade(&pipeline), batch_rx));
+        tokio::spawn(run_case_queue(Arc::downgrade(&pipeline), case_rx));
         pipeline
     }
 
@@ -78,6 +83,24 @@ impl AbstractMemoryPipeline {
                 producer.send(event, interval);
                 entry.insert(producer);
             }
+        }
+    }
+
+    /// 把一个 batch 的消息并入所属 case 的待执行任务：该 case 还没有待执行任务时同时投递 case 名，
+    /// 已有（还没开始 run）时只合并消息，不再重复投递
+    fn enqueue_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
+        let queued = match self.pending.entry(case_name.clone()) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().extend(events);
+                false
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(events);
+                true
+            }
+        };
+        if queued && self.case_tx.send(case_name).is_err() {
+            warn!("摘要记忆 pipeline 已销毁，丢弃 case 任务");
         }
     }
 }
@@ -100,14 +123,14 @@ impl IncomingMessageBatchProcessor for AbstractMemoryPipeline {
         if events.is_empty() {
             return;
         }
-        // 批次投递到串行队列：由唯一 worker 按到达顺序处理，避免不同 channel 并发改写同一会话
+        // 批次投递到串行队列：由唯一 worker 按到达顺序 locate 并写入上行记录
         if self.batch_tx.send(events).is_err() {
             warn!("摘要记忆 pipeline 已销毁，丢弃本批消息");
         }
     }
 }
 
-/// 串行处理队列：worker 只持 Weak，pipeline 销毁后 sender 关闭，队列清空后自动退出
+/// 批次队列 worker：顺序 locate 各通道批次（同一会话的记忆写入只能串行），pipeline 销毁后队列清空即退出
 async fn run_batch_queue(
     pipeline: Weak<AbstractMemoryPipeline>,
     mut rx: mpsc::UnboundedReceiver<Vec<Arc<IncomingMessageEvent>>>,
@@ -118,8 +141,22 @@ async fn run_batch_queue(
     }
 }
 
+/// case 队列 worker：按到达顺序一次取一个 case，执行它当前全部待执行消息，完成后取下一个。
+///
+/// 取 case 时整条取走该 case 的待执行消息：执行期间到达的同 case 消息留在任务表里形成下一轮；
+/// 还没轮到的 case 的任务表条目不动，继续与后续批次的消息合并。
+async fn run_case_queue(pipeline: Weak<AbstractMemoryPipeline>, mut rx: mpsc::UnboundedReceiver<Option<ArcStr>>) {
+    while let Some(case_name) = rx.recv().await {
+        let Some(pipeline) = pipeline.upgrade() else { break };
+        let Some((_, events)) = pipeline.pending.remove(&case_name) else { continue };
+        pipeline.run_case(case_name, events).await;
+    }
+}
+
 impl AbstractMemoryPipeline {
-    /// 串行处理一个批次：locate → 写上行记录（带 case meta）→ case 上下文重建 → agentic loop
+    /// 处理一个批次：locate → 写上行记录（带 case meta）→ 按消息所属 case 并入待执行任务，随即返回。
+    ///
+    /// case 的实际执行在 case 队列里串行进行，因此本批入队后即可处理下一批。
     async fn process_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         let nexus = Nexus::get();
         let client = nexus.abstract_client.clone();
@@ -127,7 +164,7 @@ impl AbstractMemoryPipeline {
         let memory_key = self.memory_key.as_ref();
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
-        // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：不重置上下文，消息不带 meta）
+        // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
         let located = match client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), messages).await {
             Ok(located) => Some(located),
             Err(e) => {
@@ -151,22 +188,33 @@ impl AbstractMemoryPipeline {
             nexus.memory_store_client.push_channel_record(request).await;
         }
 
-        // 3. 用命中的 case 摘要 + case 结尾原文副本重建上下文；本次运行的出站记录带当前触发 case
-        let outgoing_meta = match located {
-            Some(located) => {
-                let current_case = located.groups.last().map(|group| group.case_name.clone());
-                match build_context(&self.memory_key, client.as_ref(), &located.cases, &events).await {
+        // 3. 按消息所属 case 入队：同 case 的消息合并为一个任务、一次 run，不同 case 各自 run
+        for (index, event) in events.iter().enumerate() {
+            let case_name = case_by_index.get(index).cloned().flatten();
+            self.enqueue_case(case_name, vec![event.clone()]);
+        }
+    }
+
+    /// 执行一个 case 任务：run 开头用该 case 的摘要与结尾原文副本重建上下文，再运行 agentic loop；
+    /// 本次运行的出站记录带该 case 的 meta
+    async fn run_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
+        let client = Nexus::get().abstract_client.clone();
+        let outgoing_meta = match &case_name {
+            Some(case_name) => {
+                match build_context(self.memory_key.clone(), client.as_ref(), case_name.as_str()).await {
                     Ok(messages) => {
                         let _ = self.session.context_archive_and_clear_cache_and_reset_messages(messages).await;
                     }
-                    Err(e) => warn!("摘要记忆上下文重建失败，保留原上下文继续运行: {:?}", e),
+                    Err(e) => {
+                        // 不沿用上一个 case 的上下文：清空后只用本次新增消息运行
+                        warn!("摘要记忆上下文重建失败，清空上下文后继续运行（case={}）: {:?}", case_name, e);
+                        let _ = self.session.context_archive_and_clear_cache_and_reset_messages(Vec::new()).await;
+                    }
                 }
-                current_case.map(|case_name| Arc::new(MemoryMeta::with_case_name(case_name)))
+                Some(Arc::new(MemoryMeta::with_case_name(case_name.clone())))
             }
             None => None,
         };
-
-        // 4. 运行 agentic loop（本批新消息作为一条 user 消息，出站记录 meta 由参数传入）
         let content = pack_batch(&events);
         let tools = tools_for_session(SessionKey::Memory(self.memory_key.clone())).await;
         let _ = self.run(content, &tools, outgoing_meta).await;
@@ -249,7 +297,7 @@ impl AbstractMemoryPipeline {
         } else {
             vec![]
         };
-        // 输出到 out_channel（摘要记忆：下行记录带当前触发 case 的 meta）
+        // 输出到 out_channel（摘要记忆：下行记录带当前 run 所属 case 的 meta）
         let out_channel = ConfigManager::get()
             .out_channel_config(self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str())
             .await;
@@ -334,88 +382,28 @@ fn case_by_message(located: &LocateResponse) -> Vec<Option<ArcStr>> {
     cases
 }
 
-/// 一条消息的去重键（通道三元组 + msg_id；msg_id 为空时返回 None，不参与去重）
-fn message_key(messenger_id: &str, self_user_id: &str, group_id: &str, msg_id: &str) -> Option<MessageKey> {
-    if msg_id.is_empty() {
-        return None;
-    }
-    Some((
-        ArcStr::from(messenger_id),
-        ArcStr::from(self_user_id),
-        ArcStr::from(group_id),
-        ArcStr::from(msg_id),
-    ))
-}
-
-/// 新消息的去重键
-fn new_message_key(event: &IncomingMessageEvent) -> Option<MessageKey> {
-    message_key(
-        event.incoming_message.messenger_id.as_str(),
-        event.recipient_user_id.as_str(),
-        event.incoming_message.group_id.as_str(),
-        event.incoming_message.msg_id.as_str(),
-    )
-}
-
-/// 通道记录的去重键
-fn record_message_key(record: &ChannelRecord) -> Option<MessageKey> {
-    message_key(
-        record.messenger_id.as_str(),
-        record.self_user_id.as_str(),
-        record.group_id.as_str(),
-        record.msg_id.as_str(),
-    )
-}
-
-/// 合并各 case 结尾的原文副本：只保留通道记录；各 case 内部按 (time, sn) 去重
-/// （sn 在各 case 自己的记录文件里独立编号，跨 case 不可比）
-fn merge_tail_records(tails: &[Vec<Arc<CaseRecord>>]) -> Vec<Arc<ChannelRecord>> {
-    let mut records = Vec::new();
-    for tail in tails {
-        let mut seen: HashSet<(ArcStr, u64)> = HashSet::new();
-        for record in tail {
-            if let CaseRecord::Channel(channel_record) = record.as_ref() {
-                if seen.insert((channel_record.time.clone(), channel_record.sn)) {
-                    records.push(channel_record.clone());
-                }
-            }
-        }
-    }
+/// 原文副本 → 对话消息内容：只保留通道记录（思考/工具记录不是对话消息），顺序与 client 返回一致
+fn record_contents(records: &[Arc<CaseRecord>]) -> Vec<MessageContent> {
     records
+        .iter()
+        .filter_map(|record| match record.as_ref() {
+            CaseRecord::Channel(channel_record) => Some(extract_content(
+                channel_record.user_name.clone(),
+                &channel_record.content,
+                channel_record.is_self,
+            )),
+            _ => None,
+        })
+        .collect()
 }
 
-/// 历史记录过滤：只留时间窗内（time >= cutoff）且文本非空的记录，按 (time, sn) 升序，
-/// 并与本批新消息按「通道三元组 + msg_id」去重
-fn filter_history(records: &[Arc<ChannelRecord>], cutoff: &str, new_keys: &HashSet<MessageKey>) -> Vec<MessageContent> {
-    let mut sorted: Vec<&Arc<ChannelRecord>> = records.iter().collect();
-    sorted.sort_by(|a, b| (a.time.as_str(), a.sn).cmp(&(b.time.as_str(), b.sn)));
-    let mut history = Vec::new();
-    for record in sorted {
-        if record.time.as_str() < cutoff {
-            continue; // 时间窗外的记录不取
-        }
-        let mc = extract_content(record.user_name.clone(), &record.content, record.is_self);
-        if mc.content.is_empty() {
-            continue; // 非文本记录跳过
-        }
-        if record_message_key(record).map(|key| new_keys.contains(&key)).unwrap_or(false) {
-            continue; // 与本批新消息重复：本批会进 pipeline，历史里去掉
-        }
-        history.push(mc);
-    }
-    history
-}
-
-/// 组装重置用的上下文：摘要块置首（并入首条 User，避免连续两条 User），其后为历史消息
-fn compose_context(summaries: &[ArcStr], history: &[MessageContent]) -> Vec<Message> {
+/// 组装一个 case 的运行上下文：摘要块置首（并入首条 User，避免连续两条 User），其后为原文副本消息
+fn compose_context(summary: &str, history: &[MessageContent]) -> Vec<Message> {
     let mut messages = pack_memory_messages(history);
-    if summaries.is_empty() {
+    if summary.is_empty() {
         return messages;
     }
-    let block = format!(
-        "【相关专案摘要】\n{}",
-        summaries.iter().map(|summary| format!("- {}", summary)).collect::<Vec<_>>().join("\n")
-    );
+    let block = format!("【相关专案摘要】\n- {}", summary);
     if matches!(messages.first(), Some(Message::User { .. })) {
         if let Some(Message::User { content }) = messages.first_mut() {
             *content = ArcStr::from(format!("{}\n\n{}", block, content.as_str()));
@@ -426,38 +414,19 @@ fn compose_context(summaries: &[ArcStr], history: &[MessageContent]) -> Vec<Mess
     messages
 }
 
-/// 用摘要记忆重建上下文：命中 case 的摘要 + 各 case 结尾原文副本 → 时间窗与去重 → 组装消息
-async fn build_context(
-    memory_key: &Arc<MemoryKey>,
-    client: &AbstractClient,
-    cases: &[Arc<LocatedCaseRef>],
-    events: &[Arc<IncomingMessageEvent>],
-) -> Result<Vec<Message>> {
-    let agent_id = memory_key.agent_id.as_str();
-    let role_event = memory_key.role_event.as_ref();
+/// 读取一个 case 的运行上下文：case 摘要 + 结尾 `memory_recover.memory_count` 条原文副本。
+/// 摘要为空时不加摘要块；原文副本按 client 返回的顺序转成消息，不再按时间去窗、去重或排序。
+async fn build_context(memory_key: Arc<MemoryKey>, client: &AbstractClient, case_name: &str) -> Result<Vec<Message>> {
     let cfg = ConfigManager::get()
         .memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(memory_key.clone())
         .await;
-    let mut summaries = Vec::new();
-    let mut tails: Vec<Vec<Arc<CaseRecord>>> = Vec::new();
-    for case in cases {
-        let node = client.case_summary(agent_id, role_event, case.case_name.as_str()).await?;
-        if node.summary.as_str().is_empty() {
-            continue; // 摘要为空的历史 case 不进上下文
-        }
-        summaries.push(node.summary.clone());
-        let tail = client
-            .case_records_tail(agent_id, role_event, case.case_name.as_str(), cfg.memory_count as u64)
-            .await?;
-        tails.push(tail.records);
-    }
-    let records = merge_tail_records(&tails);
-    let cutoff = (Local::now() - ChronoDuration::seconds(cfg.memory_time_secs as i64))
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
-    let new_keys: HashSet<MessageKey> = events.iter().filter_map(|event| new_message_key(event.as_ref())).collect();
-    let history = filter_history(&records, &cutoff, &new_keys);
-    Ok(compose_context(&summaries, &history))
+    let agent_id = memory_key.agent_id.as_str();
+    let role_event = memory_key.role_event.as_ref();
+    let node = client.case_summary(agent_id, role_event, case_name).await?;
+    let tail = client
+        .case_records_tail(agent_id, role_event, case_name, cfg.memory_count as u64)
+        .await?;
+    Ok(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
 }
 
 #[cfg(test)]
@@ -466,9 +435,7 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-    use kissbot_api::{LocatedGroup, RoleEvent};
-
-    use crate::types::Error;
+    use kissbot_api::{ChannelRecord, LocatedGroup, RoleEvent};
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -496,15 +463,15 @@ mod tests {
         ev_in("web", "self", "g1", name, text, time)
     }
 
-    /// 构造测试用通道原文副本（msg_id 为空：不参与去重）
-    fn rec_with_id(user: &str, text: &str, is_self: usize, time: &str, sn: u64, msg_id: &str) -> Arc<ChannelRecord> {
+    /// 构造测试用通道原文副本
+    fn rec(user: &str, text: &str, is_self: usize, time: &str, sn: u64) -> Arc<ChannelRecord> {
         Arc::new(ChannelRecord {
             user_id: ArcStr::from(user),
             self_user_id: ArcStr::from("self"),
             messenger_id: ArcStr::from("web"),
             group_id: ArcStr::from("g1"),
             is_self,
-            msg_id: ArcStr::from(msg_id),
+            msg_id: ArcStr::new(),
             messenger_name: ArcStr::new(),
             user_name: ArcStr::from(user),
             group_name: ArcStr::new(),
@@ -566,65 +533,63 @@ mod tests {
         assert!(case_by_message(&LocateResponse::empty()).is_empty(), "没有分组时没有 case");
     }
 
-    #[test]
-    fn new_message_key_uses_channel_and_msg_id() {
-        let e = ev_with_id("web", "self", "g1", "u1", "hello", "2026-09-23 10:00:00", "m7");
-        assert_eq!(new_message_key(&e), message_key("web", "self", "g1", "m7"));
-        // 内容 / 时间 / 发送者都不参与去重键
-        let other = ev_with_id("web", "self", "g1", "u2", "完全不同的内容", "2099-01-01 00:00:00", "m7");
-        assert_eq!(new_message_key(&other), new_message_key(&e));
-        let empty = ev_with_id("web", "self", "g1", "u2", "x", "2099-01-01 00:00:00", "");
-        assert_eq!(new_message_key(&empty), None);
-        assert_eq!(message_key("web", "self", "g1", ""), None);
+    #[tokio::test]
+    async fn enqueue_case_merges_waiting_case_into_one_run() {
+        // 用例内不 await：spawn 出来的 case worker 不会被执行（只要不影响待执行任务表的断言）
+        let pipeline = pipeline();
+        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
+        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
+        pipeline.enqueue_case(Some(ArcStr::from("role-b")), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
+        assert_eq!(pipeline.pending.len(), 2, "同 case 只有一个待执行任务，不同 case 分开");
+        let a = pipeline.pending.get(&Some(ArcStr::from("role-a"))).unwrap();
+        assert_eq!(a.len(), 2, "排队中的同 case 消息合并为一次 run");
+        drop(a);
+        // worker 取 case 时只取走被取到的 case 的消息，其他 case 的任务表条目不动、继续等待合并
+        let (_, b) = pipeline.pending.remove(&Some(ArcStr::from("role-b"))).unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(pipeline.pending.len(), 1);
+        assert!(pipeline.pending.contains_key(&Some(ArcStr::from("role-a"))), "其他 case 继续等待合并");
+    }
+
+    #[tokio::test]
+    async fn enqueue_case_keeps_ungrouped_task_separate() {
+        let pipeline = pipeline();
+        pipeline.enqueue_case(None, vec![ev("u1", "a", "2026-09-23 10:00:00")]);
+        pipeline.enqueue_case(None, vec![ev("u1", "b", "2026-09-23 10:00:01")]);
+        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "c", "2026-09-23 10:00:02")]);
+        assert_eq!(pipeline.pending.len(), 2, "无 case 的降级任务与 case 任务分开");
+        assert_eq!(pipeline.pending.get(&None).unwrap().len(), 2, "降级任务同样按 key 合并");
     }
 
     #[test]
-    fn filter_history_windows_time_and_dedups_new_messages() {
+    fn record_contents_keeps_channel_records_in_returned_order() {
         let records = vec![
-            rec_with_id("u1", "old", 0, "2026-09-23 09:00:00", 1, "m-old"),
-            rec_with_id("u1", "dup", 0, "2026-09-23 10:00:01", 2, "m-dup"),
-            rec_with_id("agent", "reply", 1, "2026-09-23 10:00:02", 3, ""),
-            rec_with_id("u2", "new", 0, "2026-09-23 10:00:03", 4, "m-new"),
-            rec_with_id("u1", "dup", 0, "2026-09-23 10:00:04", 5, ""),
-        ];
-        let new_keys = HashSet::from([message_key("web", "self", "g1", "m-dup").unwrap()]);
-        let history = filter_history(&records, "2026-09-23 10:00:00", &new_keys);
-        assert_eq!(history.len(), 3, "窗外 1 条与同 msg_id 的 1 条被剔除；msg_id 为空的记录保留");
-        assert!(history[0].is_self, "本人回复保留");
-        assert_eq!(history[0].content[0].as_str(), "reply");
-        assert_eq!(history[1].content[0].as_str(), "new");
-        assert_eq!(history[2].content[0].as_str(), "dup", "msg_id 为空时不去重");
-    }
-
-    #[test]
-    fn merge_tail_records_keeps_channel_only_and_dedups_per_case() {
-        let e1 = vec![
-            Arc::new(CaseRecord::Channel(rec_with_id("u1", "a", 0, "2026-09-23 10:00:00", 1, ""))),
-            Arc::new(CaseRecord::Channel(rec_with_id("u1", "a", 0, "2026-09-23 10:00:00", 1, ""))),
+            Arc::new(CaseRecord::Channel(rec("u1", "second", 0, "2026-09-23 10:00:05", 2))),
             Arc::new(CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
                 reasoning_content: Some(ArcStr::from("推理")),
                 thinking: None,
                 key: ArcStr::from("k1"),
-                time: ArcStr::from("2026-09-23 10:00:01"),
-                sn: 1,
+                time: ArcStr::from("2026-09-23 10:00:06"),
+                sn: 3,
             }))),
+            Arc::new(CaseRecord::Channel(rec("agent", "first", 1, "2026-09-23 10:00:01", 1))),
         ];
-        let e2 = vec![Arc::new(CaseRecord::Channel(rec_with_id("u2", "b", 0, "2026-09-23 10:00:00", 1, "")))];
-        let merged = merge_tail_records(&[e1, e2]);
-        assert_eq!(merged.len(), 2, "case 内去重、非通道记录跳过、跨 case 不去重");
-        assert_eq!(merged[0].user_name.as_str(), "u1");
-        assert_eq!(merged[1].user_name.as_str(), "u2");
+        let contents = record_contents(&records);
+        assert_eq!(contents.len(), 2, "思考记录不是对话消息，跳过");
+        assert_eq!(contents[0].content[0].as_str(), "second", "保持 client 返回的顺序，不重排");
+        assert_eq!(contents[1].content[0].as_str(), "first");
+        assert!(contents[1].is_self);
     }
 
     #[test]
     fn compose_context_puts_summary_first_and_keeps_history() {
         let history = vec![mc("u1", "hi", false), mc("agent", "yo", true)];
-        let messages = compose_context(&[ArcStr::from("专案A"), ArcStr::from("专案B")], &history);
+        let messages = compose_context("专案A", &history);
         assert_eq!(messages.len(), 2, "摘要并入首条 User，不新增消息");
         match &messages[0] {
             Message::User { content } => {
                 assert!(content.starts_with("【相关专案摘要】"), "摘要块置首: {}", content);
-                assert!(content.contains("- 专案A") && content.contains("- 专案B"));
+                assert!(content.contains("- 专案A"));
                 assert!(content.ends_with("u1: hi"), "原首条 User 内容保留");
             }
             other => panic!("首条应为 User: {:?}", other),
@@ -634,10 +599,14 @@ mod tests {
 
     #[test]
     fn compose_context_without_history_or_summaries() {
-        assert!(compose_context(&[], &[]).is_empty());
-        let only_summary = compose_context(&[ArcStr::from("专案A")], &[]);
+        assert!(compose_context("", &[]).is_empty());
+        let only_summary = compose_context("专案A", &[]);
         assert_eq!(only_summary.len(), 1);
         assert!(matches!(&only_summary[0], Message::User { content } if content.contains("专案A")));
+        // 没有摘要时直接用原文副本消息
+        let only_history = compose_context("", &[mc("u1", "hi", false)]);
+        assert_eq!(only_history.len(), 2, "User + 补的空 Assistant");
+        assert!(!matches!(&only_history[0], Message::User { content } if content.contains("专案摘要")));
     }
 
     #[tokio::test]
@@ -677,23 +646,5 @@ mod tests {
         drop(pipeline);
         // 批次消费者只持 Weak：最后一个强引用释放后 pipeline 立即销毁（不会形成引用环）
         assert!(weak.upgrade().is_none(), "pipeline 销毁后不应再被消费者强持有");
-    }
-
-    #[tokio::test]
-    async fn build_context_fails_without_abstract_service() {
-        let client = Arc::new(AbstractClient::with_url(ArcStr::new(), ArcStr::new()));
-        let memory_key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-        });
-        let err = build_context(
-            &memory_key,
-            &client,
-            &[Arc::new(LocatedCaseRef { case_name: ArcStr::from("role-a"), is_current: true })],
-            &[ev("u1", "a", "2026-09-23 10:00:00")],
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, Error::AbstractError(_)), "未配置摘要记忆应返回 AbstractError: {:?}", err);
     }
 }

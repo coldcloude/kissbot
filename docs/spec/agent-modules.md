@@ -13,7 +13,7 @@
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做会话重定位 |
 | session_manager | SessionManager | 会话（agent_id + `RoleEvent`）去重创建（返回 `(Session, 是否新建)`）与无绑定会话清理；会话标识编码为 kissbot-llm 的 session_id | 被 nexus 调用；持有 kissbot-llm 的 Session |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt` 与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
-| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 再重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每次 run 用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
@@ -170,8 +170,8 @@ sequenceDiagram
                 Note over IP: 合批（mpsc + deadline）→ pack_batch → agentic loop
             else abstract_memory
                 Note over IP: 按 channel 独立攒批（BatchProducer DashMap）
-                IP->>IP: locate → 写上行记录(meta=case) → case 上下文重建
-                Note over IP: → pack_batch → 自实现的 agentic loop（回复记录 meta=当前 case）
+                IP->>IP: locate → 写上行记录(meta=case) → 按 case 拆任务入队
+                Note over IP: case 队列串行 run（同一 case 排队中合并）：该 case 摘要+tail 重建上下文 → pack_batch → agentic loop（回复记录 meta=case）
             else default
                 Note over IP: 合批 → pack_batch → agentic loop（不写记忆）
             end
