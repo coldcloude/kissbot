@@ -13,13 +13,13 @@
 //! 本 pipeline 与 `default_memory` 共用 pipelines.rs 中的发送、工具调用、提示词等函数，
 //! 但批次接入、locate、case 拆分与带 meta 的记忆写入都在本文件内完成。
 
-use std::sync::{Arc, Weak, atomic::{AtomicU64, Ordering}};
+use std::{collections::{HashMap, LinkedList, hash_map}, sync::{Arc, Weak, atomic::{AtomicU64, Ordering}}};
 
 use arcstr::ArcStr;
 use async_trait::async_trait;
-use dashmap::{DashMap, Entry};
+use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, IncomingMessageEvent, LocateMessage, LocateResponse, MemoryMeta,
+    CaseRecord, ChannelKey, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -75,8 +75,8 @@ impl AbstractMemoryPipeline {
     fn enqueue(self: Arc<Self>, event: Arc<IncomingMessageEvent>, interval: u64) {
         let channel = Arc::new(event_channel(&event));
         match self.producers.entry(channel) {
-            Entry::Occupied(entry) => entry.get().send(event, interval),
-            Entry::Vacant(entry) => {
+            dashmap::Entry::Occupied(entry) => entry.get().send(event, interval),
+            dashmap::Entry::Vacant(entry) => {
                 let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
                 consumer.processor = Arc::downgrade(&self);
                 tokio::spawn(consumer.run());
@@ -88,20 +88,16 @@ impl AbstractMemoryPipeline {
 
     /// 把一个 batch 的消息并入所属 case 的待执行任务：该 case 还没有待执行任务时同时投递 case 名，
     /// 已有（还没开始 run）时只合并消息，不再重复投递
-    fn enqueue_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
-        let queued = match self.pending.entry(case_name.clone()) {
-            Entry::Occupied(mut entry) => {
+    fn enqueue_case(&self, case_name: Option<ArcStr>, events: impl IntoIterator<Item = Arc<IncomingMessageEvent>>) {
+        match self.pending.entry(case_name.clone()) {
+            dashmap::Entry::Occupied(mut entry) => {
                 entry.get_mut().extend(events);
-                false
             }
-            Entry::Vacant(entry) => {
-                entry.insert(events);
-                true
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(events.into_iter().collect());
+                let _ = self.case_tx.send(case_name);
             }
         };
-        if queued && self.case_tx.send(case_name).is_err() {
-            warn!("摘要记忆 pipeline 已销毁，丢弃 case 任务");
-        }
     }
 }
 
@@ -165,33 +161,43 @@ impl AbstractMemoryPipeline {
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
         // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
-        let located = match client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), &channel, messages).await {
-            Ok(located) => Some(located),
-            Err(e) => {
-                warn!(
-                    "摘要记忆定位失败，降级为本批直接运行（channel={}:{}:{}）: {:?}",
-                    channel.messenger_id, channel.self_user_id, channel.group_id, e
-                );
-                None
+        let mut case_map = HashMap::new();
+        if let Ok(located) = client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), &channel, messages).await {
+            for group in located.groups.into_iter() {
+                for index in group.messages.iter() {
+                    case_map.insert(index.clone(), group.case_name.clone());
+                }
             }
         };
 
         // 2. 写入本批上行记录：定位成功的消息带上所属 case，摘要记忆组件下次归档时直接按 case 名落位
-        let case_by_index = located.as_ref().map(case_by_message).unwrap_or_default();
-        for (index, event) in events.iter().enumerate() {
-            let meta = case_by_index
-                .get(index)
-                .cloned()
-                .flatten()
-                .map(|case_name| Arc::new(MemoryMeta::with_case_name(case_name)));
+        let mut case_order = LinkedList::new();
+        let mut case_msgs: HashMap<Option<ArcStr>, LinkedList<Arc<IncomingMessageEvent>>> = HashMap::new();
+        for (index, event) in events.into_iter().enumerate() {
+            let case_name = case_map.get(&index).cloned();
+            // 带 meta 加入记忆
+            let meta = case_name.as_ref().map(|n| Arc::new(MemoryMeta::with_case_name(n.clone())));
             let request = channel_request_from_incoming(memory_key, event.as_ref(), meta);
             nexus.memory_store_client.push_channel_record(request).await;
+            // 加入 case 分析
+            match case_msgs.entry(case_name) {
+                hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().push_back(event);
+                },
+                hash_map::Entry::Vacant(entry) => {
+                    let mut msgs = LinkedList::new();
+                    msgs.push_back(event);
+                    case_order.push_back(entry.key().clone());
+                    entry.insert(msgs);
+                },
+            };
         }
 
         // 3. 按消息所属 case 入队：同 case 的消息合并为一个任务、一次 run，不同 case 各自 run
-        for (index, event) in events.iter().enumerate() {
-            let case_name = case_by_index.get(index).cloned().flatten();
-            self.enqueue_case(case_name, vec![event.clone()]);
+        for case_name in case_order.into_iter() {
+            if let Some(msgs) = case_msgs.remove(&case_name) {
+                self.enqueue_case(case_name, msgs);
+            }
         }
     }
 
@@ -359,26 +365,6 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
     }
 }
 
-/// 定位分组 → 每条消息所属 case（下标与请求 messages 对齐；未被任何组覆盖的消息为 None）
-fn case_by_message(located: &LocateResponse) -> Vec<Option<ArcStr>> {
-    let total = located
-        .groups
-        .iter()
-        .flat_map(|group| group.messages.iter().copied())
-        .max()
-        .map(|max| max + 1)
-        .unwrap_or(0);
-    let mut cases = vec![None; total];
-    for group in &located.groups {
-        for index in &group.messages {
-            if let Some(slot) = cases.get_mut(*index) {
-                *slot = Some(group.case_name.clone());
-            }
-        }
-    }
-    cases
-}
-
 /// 原文副本 → 对话消息内容：只保留通道记录（思考/工具记录不是对话消息），顺序与 client 返回一致
 fn record_contents(records: &[Arc<CaseRecord>]) -> Vec<MessageContent> {
     records
@@ -430,11 +416,9 @@ async fn build_context(memory_key: Arc<MemoryKey>, client: &AbstractClient, case
 mod tests {
     use super::*;
 
-    use std::collections::HashSet;
-
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-    use kissbot_api::{ChannelRecord, LocatedGroup, RoleEvent};
+    use kissbot_api::{ChannelRecord, RoleEvent};
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -514,21 +498,6 @@ mod tests {
         assert_eq!(lm.msg_id.as_str(), "m7");
         assert_eq!(lm.time.as_str(), "2026-09-23 10:00:00");
         assert_eq!(lm.content, Content::Text(ArcStr::from("a")));
-    }
-
-    #[test]
-    fn case_by_message_aligns_request_indices() {
-        let located = LocateResponse {
-            groups: vec![
-                Arc::new(LocatedGroup { messages: HashSet::from([0, 2]), case_name: ArcStr::from("role-a"), is_current: false }),
-                Arc::new(LocatedGroup { messages: HashSet::from([1]), case_name: ArcStr::from("role-b"), is_current: true }),
-            ],
-        };
-        assert_eq!(
-            case_by_message(&located),
-            vec![Some(ArcStr::from("role-a")), Some(ArcStr::from("role-b")), Some(ArcStr::from("role-a"))]
-        );
-        assert!(case_by_message(&LocateResponse::empty()).is_empty(), "没有分组时没有 case");
     }
 
     #[tokio::test]
