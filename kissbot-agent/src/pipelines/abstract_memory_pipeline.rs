@@ -164,8 +164,8 @@ impl AbstractMemoryPipeline {
         let mut case_map = HashMap::new();
         if let Ok(located) = client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), &channel, messages).await {
             for group in located.groups.into_iter() {
-                for index in group.messages.iter() {
-                    case_map.insert(index.clone(), group.case_name.clone());
+                for msg_id in group.messages.iter() {
+                    case_map.insert(msg_id.clone(), group.case_name.clone());
                 }
             }
         };
@@ -173,8 +173,8 @@ impl AbstractMemoryPipeline {
         // 2. 写入本批上行记录：定位成功的消息带上所属 case，摘要记忆组件下次归档时直接按 case 名落位
         let mut case_order = LinkedList::new();
         let mut case_msgs: HashMap<Option<ArcStr>, LinkedList<Arc<IncomingMessageEvent>>> = HashMap::new();
-        for (index, event) in events.into_iter().enumerate() {
-            let case_name = case_map.get(&index).cloned();
+        for event in events.into_iter() {
+            let case_name = case_map.get(&event.incoming_message.msg_id).cloned();
             // 带 meta 加入记忆
             let meta = case_name.as_ref().map(|n| Arc::new(MemoryMeta::with_case_name(n.clone())));
             let request = channel_request_from_incoming(memory_key, event.as_ref(), meta);

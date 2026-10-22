@@ -45,7 +45,7 @@ pub struct ArchiveOutcome {
 pub struct ArchiveResult {
     /// 各分块的归档结果（按块序）
     pub outcomes: Vec<ArchiveOutcome>,
-    /// 消息分组（`PlaceGroup::messages` 是传入 `messages` 的下标）
+    /// 消息分组（`PlaceGroup::messages` 是消息的 `msg_id`）
     pub groups: Vec<PlaceGroup>,
     /// 本次参与定位的新消息条数
     pub new_messages: usize,
@@ -56,8 +56,8 @@ pub struct ArchiveResult {
 pub enum BatchItem {
     /// 共享记忆中的待归档记录
     Stored(RecordEntry),
-    /// 只用于定位的新消息（请求内下标）
-    New { index: usize, message: LocateMessage },
+    /// 只用于定位的新消息
+    New { message: LocateMessage },
 }
 
 impl BatchItem {
@@ -90,11 +90,11 @@ impl BatchItem {
         matches!(self, BatchItem::Stored(_))
     }
 
-    /// 该条目涉及的新消息下标
-    fn messages(&self) -> &[usize] {
+    /// 该条目涉及的新消息 msg_id（待归档记录没有）
+    fn message_id(&self) -> Option<&ArcStr> {
         match self {
-            BatchItem::Stored(_) => &[],
-            BatchItem::New { index, .. } => std::slice::from_ref(index),
+            BatchItem::Stored(_) => None,
+            BatchItem::New { message } => Some(&message.msg_id),
         }
     }
 }
@@ -102,8 +102,8 @@ impl BatchItem {
 /// 批次分析后的分组落位（定位返回给调用方）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceGroup {
-    /// 组内新消息在请求中的下标（升序；只含待归档记录的组为空）
-    pub messages: Vec<usize>,
+    /// 组内新消息的 `msg_id`（只含待归档记录的组为空）
+    pub messages: Vec<ArcStr>,
     /// 该组所属 case：命中已有 case 即该 case，新话题即本次新建的 case（记忆条数为 0）
     pub case_name: ArcStr,
 }
@@ -139,7 +139,7 @@ pub fn merge_batch(channel: &ChannelKey, records: &[RecordEntry], messages: &[&L
     let mut items: Vec<BatchItem> = records
         .iter()
         .map(|record| BatchItem::Stored(record.clone()))
-        .chain(messages.iter().enumerate().map(|(index, message)| BatchItem::New { index, message: (*message).clone() }))
+        .chain(messages.iter().map(|message| BatchItem::New { message: (*message).clone() }))
         .collect();
     items.sort_by(|a, b| a.time().cmp(b.time()));
     items
@@ -162,7 +162,7 @@ impl Archiver {
     /// - `messages` 为空：即原来的归档——只有记录落盘，不产出消息分组（手动触发 / 重建走这条）；
     /// - `messages` 非空：与本通道的待归档记录合并为一个批次一起分析——记录落盘归档、消息只定位；
     ///   每组都会命中或建出 case（新话题建出的 case 记忆条数为 0），
-    ///   按 [`PlaceGroup`] 返回（`PlaceGroup::messages` 是 `messages` 里的下标）。
+    ///   按 [`PlaceGroup`] 返回（`PlaceGroup::messages` 是消息的 `msg_id`）。
     ///
     /// 记录按 `max_batch_records` 分块，逐块归档并落盘：一块失败时已完成的块保留进度，
     /// 失败块回到处理前状态，留待下次查询重试。返回（各块归档结果，消息分组，并入的新消息条数）。
@@ -293,9 +293,8 @@ impl Archiver {
         case_names.sort();
         let mut groups: Vec<PlaceGroup> = Vec::with_capacity(placements.len());
         for placement in &placements {
-            let mut messages: Vec<usize> =
-                placement.items.iter().flat_map(|index| unplaced[*index].messages().iter().copied()).collect();
-            messages.sort_unstable();
+            let messages: Vec<ArcStr> =
+                placement.items.iter().filter_map(|index| unplaced[*index].message_id().cloned()).collect();
             let case_name = match &placement.verdict {
                 GroupVerdict::Case(case_name) => case_name.clone(),
                 GroupVerdict::NewRole { parent, name, summary } => {
@@ -662,13 +661,13 @@ mod tests {
         assert_eq!(items[0].time(), "2099-01-01 10:00:00");
         assert!(items[0].is_stored(), "同一时刻已存记录在前");
         match &items[2] {
-            BatchItem::New { index, message } => {
-                assert_eq!(*index, 1, "新消息保留请求下标");
+            BatchItem::New { message } => {
+                assert_eq!(message.msg_id.as_str(), "m3", "新消息保留 msg_id");
                 assert_eq!(message.content, Content::Text(ArcStr::from("B")));
             }
             other => panic!("应为新消息: {:?}", other),
         }
-        assert!(items.iter().any(|item| matches!(item, BatchItem::New { index, .. } if *index == 0)));
+        assert!(items.iter().any(|item| matches!(item, BatchItem::New { message } if message.msg_id.as_str() == "m1")));
     }
 
     #[test]

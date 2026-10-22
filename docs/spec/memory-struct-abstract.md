@@ -99,7 +99,7 @@
     "messenger_id": "web", "self_user_id": "self1", "group_id": "g1"
   },
   "messages": [                           // 待定位消息：可多条，同属上面的通道
-    { "msg_id": "m-1001",                 // 消息标识（供调用方关联；locate 不按它去重）
+    { "msg_id": "m-1001",                 // 消息标识：分组按它标识消息，本批内必须非空且唯一
       "time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
       "content": "…" },                   // 统一的公共消息格式
     { "msg_id": "m-1002",
@@ -111,9 +111,9 @@
 // 响应 data
 {
   "groups": [                                       // 分组：哪几条消息属于哪个 case（同一 case 只有一组）
-    { "messages": [0, 1], "case_name": "role-weather-chat", "is_current": true },
-    { "messages": [2], "case_name": "role-work-plan", "is_current": false },
-    { "messages": [3], "case_name": "role-new-topic", "is_current": true }  // 新话题：本次建出该 case（记忆条数 0）
+    { "messages": ["m-1001", "m-1002"], "case_name": "role-weather-chat", "is_current": true },
+    { "messages": ["m-1003"], "case_name": "role-work-plan", "is_current": false },
+    { "messages": ["m-1004"], "case_name": "role-new-topic", "is_current": true }  // 新话题：本次建出该 case（记忆条数 0）
   ]
 }
 ```
@@ -128,8 +128,9 @@
 - **事件模式**不分组、不做定位判定：整个后缀固定归入 `event-{事件标识}` 顶层叶子 case；case 还不存在时建出它（记忆条数为 0）。
 - 角色树里还没有角色 case（空树）时候选为空，逐层判定照常**调用模型**（提示词写明当层没有 case）：模型必须给出新 case 的名称与摘要，随后每个组建出 case（记忆条数为 0，但已有名称与摘要）。
 - `is_current` 表示该 case 是否是**请求通道**的当前 case：处理完本批后，该通道的当前 case 指针指向本批**最后一个组**落入的 case（含新建的空 case），`is_current` 据此判定。
-- `groups` 按各组首条消息在请求 `messages` 中的下标升序；消息在请求中的下标即分组里的 `messages`。**同一 case 的多个组在返回前合并成一组**（`messages` 取并集、`is_current` 取并），因此同一 case 在响应里只出现一次。
-- `messages` 在内存里是集合（`HashSet<usize>`，合并同 case 组时取并、调用方按 `contains` 匹配），序列化为升序数组。
+- 请求里的每条消息都必须带**非空且唯一**的 `msg_id`（分组结果用它标识消息），否则按失败处理；定位不按 `msg_id` 与已存记录去重。
+- 分组里的 `messages` 是消息的 `msg_id`，**同一 case 的多个组在返回前合并成一组**（`messages` 取并集、`is_current` 取并），因此同一 case 在响应里只出现一次；`groups` 之间、`messages` 内部都不构成顺序约定，调用方按 `msg_id` 匹配。
+- `messages` 在内存里是集合（`HashSet<ArcStr>`，合并同 case 组时取并、调用方按 `contains` 匹配），序列化为升序数组以便比对。
 - 事件模式的 case 是固定的顶层叶子；角色模式的判定看不到它，两种模式互不并入。
 
 ### case/list
@@ -448,5 +449,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 ## 验证
 
-- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组覆盖校验、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.json 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
-- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条消息定位（pending + 消息一次处理，同一 case 的多组合并）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入 `event-{事件标识}` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。
+- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组覆盖校验、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.json 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、msg_id 必填且唯一、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
+- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条消息定位（pending + 消息一次处理，按 msg_id 标识消息，同一 case 的多组合并）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入 `event-{事件标识}` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考记录按 key 归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。

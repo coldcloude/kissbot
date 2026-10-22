@@ -1,6 +1,6 @@
 //! 服务层：把通知、触发判定、归档、定位、查询与管理串成组件的对外能力。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use arcstr::ArcStr;
@@ -122,7 +122,7 @@ impl AbstractService {
     /// - 带消息：消息所属通道的待归档记录与本批消息一起分析，记录落盘归档、消息只定位；
     /// - 该后缀没有待处理标记且没有消息时直接返回（不读盘）；否则读一次共享记忆提取各通道 pending。
     ///
-    /// 返回（各通道归档结果，消息分组，下标对齐请求 `messages`）。
+    /// 返回（各通道归档结果，消息分组：组内是消息的 `msg_id`）。
     async fn process_pending(
         &self,
         handle: &Arc<AgentRoleHandle>,
@@ -220,6 +220,16 @@ impl AbstractService {
     /// 定位一批消息涉及的 case：提取该后缀各通道的待归档记录与本批消息（消息可空），
     /// 逐通道执行「归档 + 定位」——记录落盘、消息只定位，结果按 case 合并后返回。
     pub async fn locate(&self, request: &LocateRequest) -> Result<LocateResponse> {
+        // 分组结果按 msg_id 标识消息：必须非空且在本批内唯一
+        let mut seen: HashSet<&str> = HashSet::with_capacity(request.messages.len());
+        for message in &request.messages {
+            if message.msg_id.is_empty() {
+                return Err(Error::StateError("定位请求的消息缺少 msg_id".into()));
+            }
+            if !seen.insert(message.msg_id.as_str()) {
+                return Err(Error::StateError(format!("定位请求的 msg_id 重复: {}", message.msg_id).into()));
+            }
+        }
         let agent_role = AgentRole::new(request.agent_id.clone(), request.role_event.role_name.clone());
         let event_id = request.role_event.event_id.clone();
         let handle = self.open(&agent_role).await?;
@@ -355,7 +365,7 @@ fn sum_outcomes(outcomes: Vec<ArchiveOutcome>) -> ArchiveOutcome {
     }
 }
 
-/// 归档分组 → 定位分组：只含待归档记录的组不出现在定位结果里（消息下标已经是请求下标）。
+/// 归档分组 → 定位分组：只含待归档记录的组不出现在定位结果里（组内是消息的 `msg_id`）。
 /// `is_current` 由 [`merge_located`] 按该通道的最终当前 case 统一填充。
 fn place_groups(groups: Vec<PlaceGroup>) -> Vec<LocatedGroup> {
     groups
@@ -639,14 +649,21 @@ mod tests {
         f.service.case_records(&agent_role(role_event), case_name).await.unwrap().records
     }
 
-    /// 定位用消息（msg_id 为空表示不参与与已存记录的去重）
+    /// 定位用消息（测试里用文本充当 msg_id）
     fn locate_message(text: &str) -> LocateMessage {
-        locate_message_at("2099-01-01 12:00:00", 0, text, "")
+        locate_message_at("2099-01-01 12:00:00", 0, text, text)
     }
 
-    /// 定位结果中的 case id
+    /// 定位结果中的 case id（分组顺序不构成约定，返回排序后的集合）
     fn cases_of(response: &LocateResponse) -> Vec<&str> {
-        response.groups.iter().map(|group| group.case_name.as_str()).collect()
+        let mut cases: Vec<&str> = response.groups.iter().map(|group| group.case_name.as_str()).collect();
+        cases.sort_unstable();
+        cases
+    }
+
+    /// 组内消息的 msg_id 集合
+    fn ids(values: &[&str]) -> HashSet<ArcStr> {
+        values.iter().map(|value| ArcStr::from(*value)).collect()
     }
 
     /// 当前 case 指针表
@@ -1047,7 +1064,7 @@ mod tests {
         // 记录归档一次；新消息只返回所属 case，不进原文副本
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
+        assert_eq!(response.groups[0].messages, ids(&["m1", "m3"]));
         assert!(response.groups[0].is_current);
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "只有已存记录落盘");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "懒处理完成");
@@ -1076,7 +1093,7 @@ mod tests {
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1);
         assert_eq!(cases_of(&response), vec!["role-case"]);
-        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
+        assert_eq!(response.groups[0].messages, ids(&["m1", "m2"]));
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "记录不因定位重复落盘");
     }
 
@@ -1145,12 +1162,27 @@ mod tests {
 
         assert_eq!(cases_of(&response), vec!["role-case"], "新话题也建出 case（记忆条数 0）");
         assert_eq!(response.groups.len(), 1, "同通道整批一组");
-        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
+        assert_eq!(response.groups[0].messages, ids(&["m1", "m2"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
         assert_eq!(f.model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称与摘要）");
         let created = node(&f, &role_event("dev", None), "role-case").await.unwrap();
         assert_eq!(created.record_count, 0);
         assert_eq!(created.summary.as_str(), "新 case 摘要", "新 case 建立当次就有摘要");
+    }
+
+    /// msg_id 是分组结果的标识：本批内必须非空且唯一
+    #[tokio::test]
+    async fn locate_requires_unique_message_ids() {
+        let f = fixture().await;
+        let a = channel_a();
+        let missing = locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "一问", "")]);
+        assert!(f.service.locate(&missing).await.is_err(), "缺少 msg_id 应报错");
+        let duplicate = locate_request(&a, &role_event("dev", None), vec![
+            locate_message_at("2099-01-01 12:00:00", 0, "一问", "m1"),
+            locate_message_at("2099-01-01 12:01:00", 0, "二问", "m1"),
+        ]);
+        assert!(f.service.locate(&duplicate).await.is_err(), "msg_id 重复应报错");
+        assert!(f.model.prompts().is_empty(), "校验失败不调模型");
     }
 
     /// 逐层判定给出的 case 必须在当层候选里：给出树里存在但不在当层的深层 case → 按模型失败处理
@@ -1207,7 +1239,7 @@ mod tests {
             "该通道只归档一次（补齐循环不会重复处理已被 process_pending 覆盖的通道）"
         );
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].messages, HashSet::from([0, 1]));
+        assert_eq!(response.groups[0].messages, ids(&["m2", "m3"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-two", "新话题建出记忆条数为 0 的 case");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
     }
@@ -1263,7 +1295,7 @@ mod tests {
         let before = f.model.prompts().len();
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "延续旧话题", "")]))
+            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "延续旧话题", "m1")]))
             .await
             .unwrap();
 
@@ -1280,7 +1312,7 @@ mod tests {
         assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 1, "新消息不落盘");
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert!(response.groups[0].is_current, "指针指向本批最后一个组的 case");
-        assert_eq!(response.groups[0].messages, HashSet::from([0]));
+        assert_eq!(response.groups[0].messages, ids(&["m1"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
     }
 
@@ -1295,7 +1327,7 @@ mod tests {
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "新消息", "")]))
+            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "新消息", "m1")]))
             .await
             .unwrap();
 
@@ -1304,7 +1336,7 @@ mod tests {
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 3, "新消息不影响水位");
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 3, "新消息不落盘");
         assert_eq!(cases_of(&response), vec!["role-case"]);
-        assert_eq!(response.groups[0].messages, HashSet::from([0]));
+        assert_eq!(response.groups[0].messages, ids(&["m1"]));
     }
 
     #[tokio::test]
