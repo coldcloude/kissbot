@@ -5,28 +5,29 @@
 //! 定位复用归档的判定：每个组都会命中已有 case 或建出 case（只含新消息的组也一样，
 //! 新话题建出的 case 记忆条数为 0），见 [`crate::archive`]。
 
-use std::sync::Arc;
+use std::{collections::{HashMap, hash_map::Entry}};
 
 use arcstr::ArcStr;
 use kissbot_api::{LocateMessage, LocateResponse, LocatedGroup};
 
 use crate::records::render_content;
 
-/// 汇总定位分组：同一 case 的多个组按消息 `msg_id` 的并集合并成一组（`is_current` 取并），
-/// `is_current` 按该通道的最终当前 case 判定；分组顺序不构成约定。
-pub(crate) fn merge_located(groups: Vec<LocatedGroup>, current_case: Option<&ArcStr>) -> LocateResponse {
-    let mut merged: Vec<Arc<LocatedGroup>> = Vec::new();
-    for group in groups {
-        match merged.iter_mut().find(|existing| existing.case_name == group.case_name) {
-            Some(existing) => Arc::make_mut(existing).messages.extend(group.messages),
-            None => merged.push(Arc::new(group)),
+/// 汇总定位分组：同一 case 的多个组按消息 `msg_id` 的并集合并成一组；分组顺序不构成约定。
+pub(crate) fn merge_located(groups: impl IntoIterator<Item = LocatedGroup>) -> LocateResponse {
+    let mut merged: HashMap<ArcStr, LocatedGroup> = HashMap::new();
+    for group in groups.into_iter() {
+        match merged.entry(group.case_name.clone()) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().messages.extend(group.messages);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(group);
+            }
         }
     }
-    for group in &mut merged {
-        let group = Arc::make_mut(group);
-        group.is_current = current_case.is_some_and(|current| current.as_str() == group.case_name.as_str());
+    LocateResponse {
+        groups: merged.into_iter().map(|(_, group)| group).collect()
     }
-    LocateResponse { groups: merged }
 }
 
 /// 新消息的可判定文本
@@ -38,6 +39,7 @@ pub fn render_message(message: &LocateMessage) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     use super::*;
     use crate::archive::Archiver;
@@ -150,10 +152,9 @@ mod tests {
             .groups
             .into_iter()
             .filter(|group| !group.messages.is_empty())
-            .map(|group| LocatedGroup { messages: group.messages.into_iter().collect(), case_name: group.case_name, is_current: false })
+            .map(|group| LocatedGroup { messages: group.messages.into_iter().collect(), case_name: group.case_name })
             .collect();
-        let current = state.current_case(role_event, channel);
-        merge_located(groups, current.as_ref())
+        merge_located(groups)
     }
 
     fn case_names(response: &LocateResponse) -> Vec<String> {
@@ -204,7 +205,6 @@ mod tests {
         model.push_group(&[0, 1], true);
         let response = locate(&handle, &model, &role, &channel_key(), &[message("今天下雨吗"), message("带伞吗")]).await;
         assert_eq!(case_names(&response), vec!["role-case"]);
-        assert!(response.groups[0].is_current);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["今天下雨吗", "带伞吗"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
@@ -226,7 +226,6 @@ mod tests {
         assert_eq!(case_names(&response), vec!["role-topic"], "新话题也建出 case");
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].case_name.as_str(), "role-topic");
-        assert!(response.groups[0].is_current, "指针指向本批最后一个组的 case");
         let state = handle.state.lock().await;
         let created = state.tree.get("role-topic").unwrap();
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
@@ -268,9 +267,6 @@ mod tests {
         assert_eq!(group_of(&response, "role-case-2").messages, ids(&["a", "b"]));
         assert_eq!(group_of(&response, "role-case").messages, ids(&["c"]));
         assert_eq!(group_of(&response, "role-third").messages, ids(&["d"]), "新话题组建出新 case");
-        assert!(!group_of(&response, "role-case-2").is_current);
-        assert!(!group_of(&response, "role-case").is_current);
-        assert!(group_of(&response, "role-third").is_current, "指针指向本批最后一个组的 case third");
     }
 
     #[tokio::test]
@@ -331,16 +327,13 @@ mod tests {
         let response = locate(&handle, &model, &role, &channel_key(), &[message("通道一问")]).await;
         assert_eq!(case_names(&response), vec![current_first.as_str()]);
         assert_eq!(response.groups[0].messages, ids(&["通道一问"]));
-        assert!(response.groups[0].is_current);
-
         model.push_group(&[0], true);
         let response = locate(&handle, &model, &role, &other, &[message("通道二问")]).await;
         assert_eq!(case_names(&response), vec![current_other.as_str()]);
         assert_eq!(response.groups[0].messages, ids(&["通道二问"]));
-        assert!(response.groups[0].is_current);
     }
 
-    /// 同一 case 的多个组在返回前合并：msg_id 取并集、`is_current` 取并
+    /// 同一 case 的多个组在返回前合并：msg_id 取并集
     #[tokio::test]
     async fn groups_of_same_case_merge_into_one() {
         let temp = tempfile::tempdir().unwrap();
@@ -368,9 +361,7 @@ mod tests {
 
         assert_eq!(response.groups.len(), 2, "同 case 的两组在返回前合并成一组");
         assert_eq!(group_of(&response, "role-case").messages, ids(&["继续", "又继续"]), "合并后 msg_id 取并集");
-        assert!(group_of(&response, "role-case").is_current, "当前 case 是其一组，合并后取并");
         assert_eq!(group_of(&response, "role-other").messages, ids(&["别的"]));
-        assert!(!group_of(&response, "role-other").is_current);
     }
 
     #[tokio::test]

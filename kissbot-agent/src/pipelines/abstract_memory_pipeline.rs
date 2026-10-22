@@ -162,7 +162,9 @@ impl AbstractMemoryPipeline {
 
         // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
         let mut case_map = HashMap::new();
-        if let Ok(located) = client.locate(memory_key.agent_id.as_str(), memory_key.role_event.as_ref(), &channel, messages).await {
+        if let Ok(located) =
+            client.locate(memory_key.agent_id.as_str(), memory_key.role_event.clone(), Arc::new(channel.clone()), messages).await
+        {
             for group in located.groups.into_iter() {
                 for msg_id in group.messages.iter() {
                     case_map.insert(msg_id.clone(), group.case_name.clone());

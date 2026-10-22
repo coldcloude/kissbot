@@ -243,9 +243,7 @@ impl AbstractService {
                 Some((&request.channel, &request.messages)),
             )
             .await?;
-        let role_event = role_event_of(&handle.id, event_id);
-        let current = state.current_case(&role_event, &request.channel);
-        Ok(merge_located(located, current.as_ref()))
+        Ok(merge_located(located))
     }
 
     // ========== 查询 ==========
@@ -366,12 +364,11 @@ fn sum_outcomes(outcomes: Vec<ArchiveOutcome>) -> ArchiveOutcome {
 }
 
 /// 归档分组 → 定位分组：只含待归档记录的组不出现在定位结果里（组内是消息的 `msg_id`）。
-/// `is_current` 由 [`merge_located`] 按该通道的最终当前 case 统一填充。
 fn place_groups(groups: Vec<PlaceGroup>) -> Vec<LocatedGroup> {
     groups
         .into_iter()
         .filter(|group| !group.messages.is_empty())
-        .map(|group| LocatedGroup { messages: group.messages.into_iter().collect(), case_name: group.case_name, is_current: false })
+        .map(|group| LocatedGroup { messages: group.messages.into_iter().collect(), case_name: group.case_name })
         .collect()
 }
 
@@ -1022,7 +1019,7 @@ mod tests {
     }
 
     /// 定位请求
-    fn locate_request(channel: &ChannelKey, role_event: &RoleEvent, messages: Vec<LocateMessage>) -> LocateRequest {
+    fn locate_request(channel: Arc<ChannelKey>, role_event: Arc<RoleEvent>, messages: Vec<LocateMessage>) -> LocateRequest {
         LocateRequest {
             agent_id: ArcStr::from("0"),
             role_event: role_event.clone(),
@@ -1040,7 +1037,7 @@ mod tests {
     async fn locate_analyzes_pending_records_and_new_messages_together() {
         let f = fixture().await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
@@ -1049,7 +1046,7 @@ mod tests {
         // 因此不再与已存记录去重，整批（2 条记录 + 2 条消息）一起分组。
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![
+            .locate(&locate_request(a.clone(), Arc::new(role_event("dev", None)), vec![
                 locate_message_at("2099-01-01 23:59:59", 0, "与已存记录同 msg_id 的新消息", "m1"),
                 locate_message_at("2099-01-01 12:00:00", 0, "新问题", "m3"),
             ]))
@@ -1065,9 +1062,8 @@ mod tests {
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["m1", "m3"]));
-        assert!(response.groups[0].is_current);
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "只有已存记录落盘");
-        assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "懒处理完成");
+        assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0, "懒处理完成");
         assert!(!is_dirty(&f, &role_event("dev", None)).await);
     }
 
@@ -1075,7 +1071,7 @@ mod tests {
     async fn locate_archives_pending_records_without_persisting_messages() {
         let f = fixture().await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "已存的问题", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "已存的回答", "m2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
@@ -1083,7 +1079,7 @@ mod tests {
         // 请求的两条消息与已存记录同 msg_id：仍一起分析，记录只落盘一次、消息不落盘
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![
+            .locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![
                 locate_message_at("2099-01-01 10:00:00", 0, "已存的问题", "m1"),
                 locate_message_at("2099-01-01 10:01:00", 1, "已存的回答", "m2"),
             ]))
@@ -1143,7 +1139,7 @@ mod tests {
     #[tokio::test]
     async fn locate_without_dirty_marks_still_locates_messages() {
         let f = fixture().await;
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         // 显式清掉首次加载置的待处理标记，覆盖「不 dirty」分支
         {
             let handle = f.service.manager().open(agent_role(&role_event("dev", None))).await.unwrap();
@@ -1153,7 +1149,7 @@ mod tests {
 
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![
+            .locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![
                 locate_message_at("2099-01-01 12:00:00", 0, "一问", "m1"),
                 locate_message_at("2099-01-01 12:01:00", 0, "二问", "m2"),
             ]))
@@ -1174,10 +1170,10 @@ mod tests {
     #[tokio::test]
     async fn locate_requires_unique_message_ids() {
         let f = fixture().await;
-        let a = channel_a();
-        let missing = locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "一问", "")]);
+        let a = Arc::new(channel_a());
+        let missing = locate_request(a.clone(), Arc::new(role_event("dev", None)), vec![locate_message_at("2099-01-01 12:00:00", 0, "一问", "")]);
         assert!(f.service.locate(&missing).await.is_err(), "缺少 msg_id 应报错");
-        let duplicate = locate_request(&a, &role_event("dev", None), vec![
+        let duplicate = locate_request(a, Arc::new(role_event("dev", None)), vec![
             locate_message_at("2099-01-01 12:00:00", 0, "一问", "m1"),
             locate_message_at("2099-01-01 12:01:00", 0, "二问", "m1"),
         ]);
@@ -1190,7 +1186,7 @@ mod tests {
     async fn level_merge_must_target_a_current_level_candidate() {
         let f = fixture().await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "父内容").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
@@ -1204,7 +1200,7 @@ mod tests {
         // 顶层判定直接给出深层 case role-2（不在顶层候选里）→ 失败
         f.model.push_group(&[0], false);
         f.model.push_level(LevelDecision::Merge("role-2".into()));
-        let result = f.service.locate(&locate_request(&a, &role_event("dev", None), vec![locate_message("延续深层话题")])).await;
+        let result = f.service.locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![locate_message("延续深层话题")])).await;
         assert!(result.is_err(), "合并到非当层 case 应按模型失败处理");
     }
 
@@ -1213,7 +1209,7 @@ mod tests {
     async fn locate_archives_each_message_channel_once() {
         let f = fixture().await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         // A 已归档过：存储里存在该通道，但水位之后没有待归档记录
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "m1").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
@@ -1225,7 +1221,7 @@ mod tests {
         f.model.push_level(LevelDecision::new_case("two", "第二摘要"));
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![
+            .locate(&locate_request(a.clone(), Arc::new(role_event("dev", None)), vec![
                 locate_message_at("2099-01-01 12:00:00", 0, "一问", "m2"),
                 locate_message_at("2099-01-01 12:01:00", 0, "二问", "m3"),
             ]))
@@ -1241,14 +1237,14 @@ mod tests {
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["m2", "m3"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-two", "新话题建出记忆条数为 0 的 case");
-        assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
+        assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0);
     }
 
     #[tokio::test]
     async fn locate_processes_each_channel_without_cross_channel_dedup() {
         let f = fixture().await;
         let root = f.service.root();
-        let (a, b) = (channel_a(), channel_b());
+        let (a, b) = (Arc::new(channel_a()), Arc::new(channel_b()));
         // 两个通道的记录用同一个 msg_id：定位与归档都按通道分开，互不影响
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 自己的记录", "m1").await;
         append_store_channel_with_id(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1").await;
@@ -1258,7 +1254,7 @@ mod tests {
         // 消息属于 B 通道：A、B 各一次分组，消息只和 B 通道的记录同批分析
         let response = f
             .service
-            .locate(&locate_request(&b, &role_event("dev", None), vec![locate_message_at("2099-01-01 10:00:00", 0, "B 通道的问题", "m1")]))
+            .locate(&locate_request(b.clone(), Arc::new(role_event("dev", None)), vec![locate_message_at("2099-01-01 10:00:00", 0, "B 通道的问题", "m1")]))
             .await
             .unwrap();
 
@@ -1270,14 +1266,14 @@ mod tests {
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 1, "A 通道照常归档");
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case-2").await.len(), 1, "B 通道只有自己的记录落盘");
         assert_eq!(cases_of(&response), vec!["role-case-2"], "消息命中 B 通道的 case");
-        assert_eq!(pending_len(&f, &role_event("dev", None), &b).await, 0);
+        assert_eq!(pending_len(&f, &role_event("dev", None), b.as_ref()).await, 0);
     }
 
     #[tokio::test]
     async fn locate_message_group_merges_into_existing_case() {
         let f = fixture().await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧话题").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
@@ -1295,7 +1291,7 @@ mod tests {
         let before = f.model.prompts().len();
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "延续旧话题", "m1")]))
+            .locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![locate_message_at("2099-01-01 12:00:00", 0, "延续旧话题", "m1")]))
             .await
             .unwrap();
 
@@ -1311,7 +1307,6 @@ mod tests {
         assert_eq!(node(&f, &role_event("dev", None), "role-two").await.unwrap().record_count, 1, "待归档记录落到新 case");
         assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 1, "新消息不落盘");
         assert_eq!(cases_of(&response), vec!["role-case"]);
-        assert!(response.groups[0].is_current, "指针指向本批最后一个组的 case");
         assert_eq!(response.groups[0].messages, ids(&["m1"]));
         assert_eq!(response.groups[0].case_name.as_str(), "role-case");
     }
@@ -1320,20 +1315,20 @@ mod tests {
     async fn locate_chunks_the_merged_batch() {
         let f = fixture_with_batch(2).await;
         let root = f.service.root();
-        let a = channel_a();
+        let a = Arc::new(channel_a());
         for i in 1..=3u64 {
             append_store_channel(&root, "0", "dev", &a, &format!("2099-01-01 10:0{}:00", i), i, 0, &format!("记录{}", i)).await;
         }
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let response = f
             .service
-            .locate(&locate_request(&a, &role_event("dev", None), vec![locate_message_at("2099-01-01 12:00:00", 0, "新消息", "m1")]))
+            .locate(&locate_request(a.clone(), Arc::new(role_event("dev", None)), vec![locate_message_at("2099-01-01 12:00:00", 0, "新消息", "m1")]))
             .await
             .unwrap();
 
         assert_eq!(group_prompts(&f).len(), 2, "3 条记录 + 1 条新消息按每块 2 条分成 2 块");
-        assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
-        assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 3, "新消息不影响水位");
+        assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0);
+        assert_eq!(watermark_point(&f, &role_event("dev", None), a.as_ref()).await.1, 3, "新消息不影响水位");
         assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 3, "新消息不落盘");
         assert_eq!(cases_of(&response), vec!["role-case"]);
         assert_eq!(response.groups[0].messages, ids(&["m1"]));
@@ -1343,7 +1338,7 @@ mod tests {
     async fn locate_uses_current_case_of_the_message_channel() {
         let f = fixture().await;
         let root = f.service.root();
-        let (a, b) = (channel_a(), channel_b());
+        let (a, b) = (Arc::new(channel_a()), Arc::new(channel_b()));
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 的消息").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
@@ -1355,10 +1350,10 @@ mod tests {
         let (current_a, current_b) = (current(&a), current(&b));
         assert_ne!(current_a, current_b, "两个通道各有自己的当前 case");
 
-        let locate = |channel: &ChannelKey, text: &str| {
+        let locate = |channel: Arc<ChannelKey>, text: &str| {
             let request = LocateRequest {
                 agent_id: ArcStr::from("0"),
-                role_event: role_event("dev", None),
+                role_event: Arc::new(role_event("dev", None)),
                 channel: channel.clone(),
                 messages: vec![locate_message(text)],
             };
@@ -1367,22 +1362,19 @@ mod tests {
         };
 
         f.model.push_group(&[0], true);
-        let from_a = locate(&a, "继续 A 的话题").await;
+        let from_a = locate(a.clone(), "继续 A 的话题").await;
         assert_eq!(cases_of(&from_a), vec![current_a.as_str()]);
-        assert!(from_a.groups[0].is_current);
         f.model.push_group(&[0], true);
-        let from_b = locate(&b, "继续 B 的话题").await;
+        let from_b = locate(b.clone(), "继续 B 的话题").await;
         assert_eq!(cases_of(&from_b), vec![current_b.as_str()]);
-        assert!(from_b.groups[0].is_current);
 
         // 同一个 case 用另一个通道的消息定位：命中 B 的 case，A 通道的当前 case 指针也跟随到它
         f.model.push_group(&[0], false);
         f.model.push_level(LevelDecision::Merge(current_b.clone()));
-        let cross = locate(&a, "从 A 通道问 B 的话题").await;
+        let cross = locate(a.clone(), "从 A 通道问 B 的话题").await;
         assert_eq!(cases_of(&cross), vec![current_b.as_str()]);
-        assert!(cross.groups[0].is_current, "定位后该 case 成为 A 通道的当前 case");
-        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some(current_b.as_str()));
-        assert_eq!(current_case(&f, &role_event("dev", None), &b).await.as_deref(), Some(current_b.as_str()), "B 通道指针不变");
+        assert_eq!(current_case(&f, &role_event("dev", None), a.as_ref()).await.as_deref(), Some(current_b.as_str()));
+        assert_eq!(current_case(&f, &role_event("dev", None), b.as_ref()).await.as_deref(), Some(current_b.as_str()), "B 通道指针不变");
     }
 
     #[tokio::test]

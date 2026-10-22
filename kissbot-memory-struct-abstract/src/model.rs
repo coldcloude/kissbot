@@ -354,16 +354,14 @@ impl LlmModel {
 
         let text = response_text(&response)?;
         // 共享上下文：把本次提示与回答追加回会话，超限时只保留最近的消息
-        session
-            .context_append(vec![
-                Message::User { content: ArcStr::from(prompt) },
-                Message::Assistant {
-                    content: response.raw_content.clone(),
-                    reasoning_content: response.raw_reasoning_content.clone(),
-                    tool_calls: Value::Null,
-                },
-            ])
-            .await;
+        let _ = session.context_append(vec![
+            Message::User { content: ArcStr::from(prompt) },
+            Message::Assistant {
+                content: response.raw_content.clone(),
+                reasoning_content: response.raw_reasoning_content.clone(),
+                tool_calls: Value::Null,
+            },
+        ]).await;
         self.trim_session(agent_role, event_id, &session).await;
 
         extract_json(&text)
@@ -383,7 +381,7 @@ impl LlmModel {
             agent_role, event_id, self.session_max_messages
         );
         let keep = non_system[non_system.len() - self.session_max_messages..].to_vec();
-        session.context_archive_and_clear_cache_and_reset_messages(keep).await;
+        let _ = session.context_archive_and_clear_cache_and_reset_messages(keep).await;
     }
 }
 

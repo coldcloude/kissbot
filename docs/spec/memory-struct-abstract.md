@@ -111,9 +111,9 @@
 // 响应 data
 {
   "groups": [                                       // 分组：哪几条消息属于哪个 case（同一 case 只有一组）
-    { "messages": ["m-1001", "m-1002"], "case_name": "role-weather-chat", "is_current": true },
-    { "messages": ["m-1003"], "case_name": "role-work-plan", "is_current": false },
-    { "messages": ["m-1004"], "case_name": "role-new-topic", "is_current": true }  // 新话题：本次建出该 case（记忆条数 0）
+    { "messages": ["m-1001", "m-1002"], "case_name": "role-weather-chat" },
+    { "messages": ["m-1003"], "case_name": "role-work-plan" },
+    { "messages": ["m-1004"], "case_name": "role-new-topic" }  // 新话题：本次建出该 case（记忆条数 0）
   ]
 }
 ```
@@ -127,10 +127,9 @@
 - 其余组自顶层逐层判定，**没有层数上限**：每判定一次要么落在当层（并入叶子 case，或新建），要么下潜一层；case 树有限且无环，下潜必然终止。命中叶子 case 即该组的 case；下潜后当层都未命中则该组在该父 case 下新建。判定为「需要新建」时一律建出叶子 case——只有消息的组也建，只是那个 case 的记忆条数为 0（便于这些消息之后写入记忆时并入同一 case）。
 - **事件模式**不分组、不做定位判定：整个后缀固定归入 `event-{事件标识}` 顶层叶子 case；case 还不存在时建出它（记忆条数为 0）。
 - 角色树里还没有角色 case（空树）时候选为空，逐层判定照常**调用模型**（提示词写明当层没有 case）：模型必须给出新 case 的名称与摘要，随后每个组建出 case（记忆条数为 0，但已有名称与摘要）。
-- `is_current` 表示该 case 是否是**请求通道**的当前 case：处理完本批后，该通道的当前 case 指针指向本批**最后一个组**落入的 case（含新建的空 case），`is_current` 据此判定。
 - 请求里的每条消息都必须带**非空且唯一**的 `msg_id`（分组结果用它标识消息），否则按失败处理；定位不按 `msg_id` 与已存记录去重。
-- 分组里的 `messages` 是消息的 `msg_id`，**同一 case 的多个组在返回前合并成一组**（`messages` 取并集、`is_current` 取并），因此同一 case 在响应里只出现一次；`groups` 之间、`messages` 内部都不构成顺序约定，调用方按 `msg_id` 匹配。
-- `messages` 在内存里是集合（`HashSet<ArcStr>`，合并同 case 组时取并、调用方按 `contains` 匹配），序列化为升序数组以便比对。
+- 分组里的 `messages` 是消息的 `msg_id`，**同一 case 的多个组在返回前合并成一组**（`messages` 取并集），因此同一 case 在响应里只出现一次；`groups` 之间、`messages` 内部都不构成顺序约定，调用方按 `msg_id` 匹配。
+- `messages` 在内存里是集合（`HashSet<ArcStr>`，合并同 case 组时取并、调用方按 `contains` 匹配），按数组序列化。
 - 事件模式的 case 是固定的顶层叶子；角色模式的判定看不到它，两种模式互不并入。
 
 ### case/list
@@ -442,7 +441,6 @@ enum Error {
     IoError(std::io::Error),
     JsonError(serde_json::Error),
     FileError(kai_file::Error),
-    InternalError(ArcStr),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 ```
