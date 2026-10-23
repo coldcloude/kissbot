@@ -331,8 +331,14 @@ where
         let f = appender.append(key, records);
         futs.push(f);
     }
-    future::join_all(futs).await;
-
+    // 等待写入后再返回
+    let promises = future::join_all(futs).await;
+    let results = future::join_all(promises).await;
+    for result in results {
+        if let Ok(Err(e)) = result {
+            return Err(Error::from(e));
+        }
+    }
     Ok(())
 }
 

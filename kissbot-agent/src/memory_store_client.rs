@@ -180,23 +180,27 @@ impl MemoryStoreClient {
     }
 
     pub async fn push_channel_record(&self, record: ChannelRequest) {
-        self.channel_appender.append(CHANNEL_KEY.clone(), vec![record]).await;
+        let promise = self.channel_appender.append(CHANNEL_KEY.clone(), vec![record]).await;
+        let _ = promise.await;
     }
 
     /// 推送 think 记录（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
     /// 调用方：AgentPipeline::run_once（思考记忆推送）
     pub async fn push_think(&self, record: ThinkRequest) {
-        self.think_appender.append(THINK_KEY.clone(), vec![record]).await;
+        let promise = self.think_appender.append(THINK_KEY.clone(), vec![record]).await;
+        let _ = promise.await;
     }
 
     /// 推送 tool-call 记录（station 工具调用前写入记忆）
     pub async fn push_tool_call(&self, record: ToolCallRequest) {
-        self.tool_call_appender.append(TOOL_CALL_KEY.clone(), vec![record]).await;
+        let promise = self.tool_call_appender.append(TOOL_CALL_KEY.clone(), vec![record]).await;
+        let _ = promise.await;
     }
 
     /// 推送 tool-result 记录（station 工具调用后写入记忆）
     pub async fn push_tool_result(&self, record: ToolResultRequest) {
-        self.tool_result_appender.append(TOOL_RESULT_KEY.clone(), vec![record]).await;
+        let promise = self.tool_result_appender.append(TOOL_RESULT_KEY.clone(), vec![record]).await;
+        let _ = promise.await;
     }
 
     pub async fn query_last(&self, agent_id: ArcStr, role_event: Arc<RoleEvent>, count: u32) -> Result<QueryChannelData> {
