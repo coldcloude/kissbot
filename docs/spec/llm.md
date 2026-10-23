@@ -52,12 +52,17 @@ impl SessionContext {
     pub fn build(&self) -> Vec<Message>;
 }
 
-pub struct Session { pub context: Mutex<SessionContext> }
+pub struct Session { pub context: RwLock<SessionContext> }  // tokio::sync::RwLock（异步读写锁）
 impl Session {
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
     pub async fn recover_from_cache(&self) -> Result<()>;
+    /// 只读构建：当前系统消息 + 内存消息；不应用待定系统消息、不写缓存
     pub async fn build_context(&self) -> Vec<Message>;
+    /// 发送前入口：应用待定系统消息后再构建
+    pub async fn build_context_full(&self) -> Vec<Message>;
     pub async fn context_append(&self, messages: Vec<Message>);
+    /// 只读访问内存消息（不含系统消息）：闭包内只读，上下文不变
+    pub async fn context_read<R>(&self, f: impl FnOnce(&LinkedList<Message>) -> R) -> R;
     pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>);
     pub async fn set_system_message(&self, content: ArcStr);
 }
@@ -65,10 +70,14 @@ impl Session {
 
 约定：
 
+- `Session.context` 用 tokio 的异步读写锁：`build_context` / `context_read` 取读锁（可并发），其余上下文方法取写锁。
+- `build_context` 只读、不应用待定系统消息；`build_context_full` 是应用待定系统消息的发送前入口。
+- `archive_and_clear_cache_and_reset_messages` 在归档旧上下文后应用待定系统消息（新上下文直接使用新系统消息，不产生二次重建）。
 - `call_with_retry` 的失败重试为指数退避（第 n 次失败后等待 `2^n` 秒），`retry_count = 0` 表示不重试。
 - 未知 `provider_type` 由调用方分派时判定；组件内不会出现该分支。
 - `create_*_provider` 每次返回新实例（含独立 HTTP 客户端），组件不缓存、不共享客户端；按名复用（工厂去重）由调用方完成（agent 中为 ProviderManager 的 `AsyncCacheFactory`）。
 - `session_id` 由调用方编码，须为文件名安全字符串；组件不解释其含义。
+- `context_read` 只读暴露内存消息（不含系统消息）：不应用待定系统消息、不写缓存、不改变上下文。
 
 ## 配置结构
 

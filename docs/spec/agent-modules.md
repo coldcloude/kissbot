@@ -198,9 +198,10 @@ sequenceDiagram
         PL->>MSN: send_messages(messages, tools)
         alt send_messages_with_limit（compress / memory_recover）
             MSN->>MSN: max_tokens_usage > 0 且上次 usage.total_tokens > max_tokens_usage × compress_threshold（默认 0.8）
-            Note over MSN: 超阈值 → reducer：压缩（LLM 总结）或记忆回溯（memory-store 打包）
+            MSN->>MSN: 超阈值 → reducer 处理，返回仍需追加的消息
+            Note over MSN: 压缩：只读 build_context 出上下文（不应用待定系统消息、不触发重建）并只从中弹出最后一条 assistant（含）及之后的消息 → 剩余部分 + 压缩指令 → LLM 总结<br/>→ 一次重置为「压缩指令 + 总结 + 弹出的消息 + 新消息」（返回空；重置时应用待定系统消息）<br/>记忆回溯：只读取最后一条 assistant（含）及之后的会话消息 → 拼接 memory-store 打包结果 → 一次重置
         end
-        MSN->>CTX: context_append(messages) → build_context()（应用待定系统消息）
+        MSN->>CTX: context_append(仍需追加的消息) → build_context_full()（应用待定系统消息）
         MSN->>CO: call_provider_model(llm_cfg, messages, tools)
         CO->>PRV: call（取有效模型配置 + provider_type 分派 + 实现实例工厂去重）
         PRV->>PRV: kissbot-llm call_with_retry（超时/重试来自有效模型配置）
@@ -249,7 +250,7 @@ sequenceDiagram
     else 已存在会话
         Note over CO: 快速路径命中，直接复用（不重复恢复/装配）
     end
-    Note over CO: 系统消息存待定；下次 build_context 时 apply_pending_system 对比应用<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer → build_context_from_memory_store 读 memory-store）
+    Note over CO: 系统消息存待定；下次 build_context_full 时 apply_pending_system 对比应用，重建/压缩时由 context_archive_and_clear_cache_and_reset_messages 一并应用<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）
 ```
 
 ## 七、对外交互边界

@@ -339,7 +339,7 @@ impl LlmModel {
     /// 一次判定调用：会话上下文 + 本次提示 → 结构化 JSON
     async fn call(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, prompt: &str) -> Result<Value> {
         let session = self.session(agent_role, event_id.clone()).await?;
-        let mut messages = session.build_context().await;
+        let mut messages = session.build_context_full().await;
         messages.push(Message::User { content: ArcStr::from(prompt) });
 
         let tools = Vec::new();
@@ -368,7 +368,7 @@ impl LlmModel {
     }
 
     async fn trim_session(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, session: &Arc<Session>) {
-        let context = session.build_context().await;
+        let context = session.build_context_full().await;
         let non_system: Vec<Message> = context
             .into_iter()
             .filter(|m| !matches!(m, Message::System { .. }))

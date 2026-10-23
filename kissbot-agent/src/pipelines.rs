@@ -143,7 +143,7 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<
 
 pub async fn send_messages(session_key: SessionKey, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
     let _ = session.context_append(messages).await;
-    let full_messages = session.build_context().await;
+    let full_messages = session.build_context_full().await;
     let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(session_key).await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
@@ -160,24 +160,15 @@ async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mu
     // 1. 检查上下文 token 占用超限
     //    阈值来自会话模型的 max_tokens_usage
     //    上次模型响应的 usage.total_tokens 超过阈值触发
-    //    无新消息不触发
     if model_cfg.max_tokens_usage > 0 {
         let max_tokens_usage = ((model_cfg.max_tokens_usage as f64) * compress_cfg.compress_threshold) as u64;
         if tokens_usage > max_tokens_usage {
-            // 压缩前回退至最后一条 assistant 消息
-            let mut pending_messages = session.context_revert_until(&mut |msg| {
-                match msg {
-                    Message::Assistant { .. } => true,
-                    _ => false,
-                }
-            }).await?;
-            pending_messages.extend(messages);
-            (_, messages) = reducer.reduce(session_key, session, pending_messages).await;
+            (_, messages) = reducer.reduce(session_key, session, messages).await;
         }
     }
     // 2. 正常的发送流程
     let _ = session.context_append(messages).await;
-    let full_messages = session.build_context().await;
+    let full_messages = session.build_context_full().await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
 

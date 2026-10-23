@@ -1,9 +1,9 @@
-use std::collections::LinkedList;
 use std::path::PathBuf;
 
 use arcstr::ArcStr;
 use chrono::Local;
-use tokio::{io::AsyncWriteExt, sync::Mutex};
+use tokio::fs::File;
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use crate::error::{Error, Result};
 use crate::types::Message;
@@ -21,7 +21,7 @@ use crate::types::Message;
 /// 历史与当前缓存格式完全一致（都是 <session_id>.jsonl 每行一条 Message），
 /// 因此内存、缓存、历史三者统一在本结构体实现（会话上下文唯一入口）。
 pub struct SessionContext {
-    messages: LinkedList<Message>,
+    messages: Vec<Message>,
     /// 当前系统消息（模型上下文首条；含从缓存恢复的，直到下次发送前对比替换）
     system_message: Option<ArcStr>,
     /// 待定系统消息（set 只写这里，多次 set 只保留最近一次；下次发送前对比应用）
@@ -36,7 +36,7 @@ impl SessionContext {
     /// session_id 由调用方按自己的会话身份编码（须为文件名安全字符串，如 "{agent}-{role}"）
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self {
         Self {
-            messages: LinkedList::new(),
+            messages: Vec::new(),
             system_message: None,
             pending_system: None,
             data_dir: PathBuf::from(data_dir),
@@ -55,7 +55,7 @@ impl SessionContext {
     }
 
     /// 设置系统消息（会话创建/重置时，配置或 ego 生成后调用）：只保存待定，
-    /// 当前系统消息保留到下次发送前对比应用（多次 set 只保留最近一次）
+    /// 当前系统消息保留到下次发送前对比应用（重建/压缩重置上下文时也会一并应用；多次 set 只保留最近一次）
     pub fn set_system_message(&mut self, content: ArcStr) {
         self.pending_system = Some(content);
     }
@@ -66,15 +66,16 @@ impl SessionContext {
     }
 
     /// 发送前应用待定系统消息（下次发送时调用）：无待定直接返回；
-    /// 与当前一致 → 仅清空待定；不一致 → 归档并清空当前上下文 →
-    /// 应用新系统消息 → 从内存写回缓存（System + 消息行）
+    /// 与当前一致 → 仅清空待定；不一致 → 归档并清空当前上下文（切换系统消息）→
+    /// 从内存写回缓存（新 System + 消息行）
     pub async fn apply_pending_system(&mut self) -> Result<()> {
-        let Some(pending) = self.pending_system.take() else { return Ok(()); };
-        if self.system_message.as_deref() == Some(pending.as_str()) {
-            return Ok(());   // 一致：无需变更（set 消息已清空）
+        let Some(pending) = self.pending_system.as_deref() else { return Ok(()); };
+        if self.system_message.as_deref() == Some(pending) {
+            self.pending_system = None;   // 一致：无需变更
+            return Ok(());
         }
+        // 归档旧上下文，并在重置时把当前系统消息切到待定值
         self.archive_and_clear_cache_and_reset_messages(None).await?;
-        self.system_message = Some(pending);
         // 从内存写回缓存（只写消息行；System 首行由 open_cache_and_write_system_line 对新文件落，避免 System 重复）
         // 消息源为自身内存：直接借用 self.messages；无消息不写
         if self.messages.is_empty() {
@@ -94,43 +95,9 @@ impl SessionContext {
         write_cache_lines(&mut file, &messages).await?;
         // 内存追加
         for message in messages.into_iter() {
-            self.messages.push_back(message);
+            self.messages.push(message);
         }
         Ok(())
-    }
-
-    /// 回退消息。消息变化会导致重建缓存
-    pub async fn revert_until(&mut self, condition: &mut impl FnMut(&Message) -> bool) -> Result<Vec<Message>> {
-        let mut results = LinkedList::new();
-        let mut backup = false;
-        while let Some(msg) = self.messages.back() {
-            if condition(msg) {
-                break;
-            } else {
-                if !backup {
-                    self.archive_and_clear_cache_and_reset_messages(None).await?;
-                    backup = true;
-                }
-                if let Some(msg) = self.messages.pop_back() {
-                    results.push_front(msg);
-                }
-            }
-        }
-        if backup {
-            self.write_current_cache().await?;
-        }
-        Ok(results.into_iter().collect())
-    }
-
-    pub async fn revert(&mut self, mut count: usize) -> Result<Vec<Message>> {
-        self.revert_until(&mut |_| {
-            if count > 0 {
-                count = count - 1;
-                false
-            } else {
-                true
-            }
-        }).await
     }
 
     /// 从缓存恢复上下文：正序全量回读（LineReader 按时间顺序）装入内存；
@@ -138,26 +105,23 @@ impl SessionContext {
     pub async fn recover_from_cache(&mut self) -> Result<()> {
         let path = self.cache_path();
         if !path.exists() {
-            self.messages = LinkedList::new();
+            self.messages = Vec::new();
             self.system_message = None;
             return Ok(());
         }
         let mut reader = kai_file::LineReader::new(&path, None, None).await?;
-        let mut msgs = LinkedList::new();
+        let mut msgs = Vec::new();
         while let Some(line) = reader.next_line().await? {
             let s = line.line.trim();
             if s.is_empty() { continue; }
             if let Ok(m) = serde_json::from_str::<Message>(s) {
-                msgs.push_back(m);
+                msgs.push(m);
             }
         }
         // 首行 System → 当前系统消息（缓存格式：System 行在最前，其后为消息行）
-        if let Some(msg) = msgs.pop_front() {
-            if let Message::System { content } = msg {
-                self.system_message = Some(content);
-            } else {
-                msgs.push_front(msg);
-            }
+        if let Some(Message::System { content }) = msgs.first() {
+            self.system_message = Some(content.clone());
+            msgs.remove(0);
         }
         self.messages = msgs;
         Ok(())
@@ -166,10 +130,11 @@ impl SessionContext {
     /// 归档当前上下文到历史并清空缓存文件（归档与清空永远配对；重置/重建/系统切换前的持久化清理）：
     /// 1) 把当前内存（含当前系统消息，System 首行）写成一个历史文件（<session_id>-<时间戳>.jsonl，无包装格式），
     ///    不复制缓存文件；内存为空则无可归档内容（仅有系统消息不归档，幂等）
-    /// 2) 清空缓存文件（文件不存在幂等）
-    /// 3) 重置上下文（可选）：清空内存（system 保留）→ messages 写入内存、缓存
+    /// 2) 应用待定系统消息（如有）：新上下文直接使用它，不再等下次构建触发再次重建
+    /// 3) 清空缓存文件（文件不存在幂等）
+    /// 4) 重置上下文（可选）：清空内存（system 保留）→ messages 写入内存、缓存
     ///
-    /// &mut self 强制排他：调用方须持独占引用（经 session.context 互斥锁），避免并发归档/清空交错
+    /// &mut self 强制排他：调用方须持独占引用（经 session 的写锁），避免并发归档/清空交错
     pub async fn archive_and_clear_cache_and_reset_messages(&mut self, messages: Option<Vec<Message>>) -> Result<()> {
         // 1. 归档：当前内存（含当前系统消息）→ 历史
         if !self.messages.is_empty() {
@@ -193,7 +158,11 @@ impl SessionContext {
                 return Err(Error::IoError(e));
             }
         }
-        // 3. 重置消息（只有清空缓存文件后才允许重置消息）
+        // 3. 应用待定系统消息：归档保留旧系统消息，新上下文用新系统消息
+        if let Some(pending) = self.pending_system.take() {
+            self.system_message = Some(pending);
+        }
+        // 4. 重置消息（只有清空缓存文件后才允许重置消息）
         if let Some(messages) = messages {
             self.messages.clear();
             // append 复用内存装入 + 缓存写回
@@ -237,7 +206,7 @@ impl SessionContext {
 
 /// 逐行写 Message JSON（每行一条，\n 结尾；缓存/历史共用）
 /// 自由函数（不依赖 self 字段）：排他性由 &mut self 调用方（append / apply_pending_system / archive_and_clear_cache）保证
-async fn write_cache_lines(file: &mut tokio::fs::File, messages: impl IntoIterator<Item = &Message>) -> Result<()> {
+async fn write_cache_lines(file: &mut File, messages: &Vec<Message>) -> Result<()> {
     for m in messages {
         let line = serde_json::to_string(m)?;
         file.write_all(line.as_bytes()).await?;
@@ -248,52 +217,58 @@ async fn write_cache_lines(file: &mut tokio::fs::File, messages: impl IntoIterat
 
 /// 单个会话：独立上下文（模型与模式状态不在会话上保存，模型/参数由调用方在发送时解析）
 pub struct Session {
-    /// 会话上下文（内存消息 + 本地缓存 + 历史归档；调用方不直接访问，统一经 Session 方法）
-    pub context: Mutex<SessionContext>,
+    /// 会话上下文（内存消息 + 本地缓存 + 历史归档；调用方不直接访问，统一经 Session 方法）。
+    /// 读写锁：只读访问（`build_context` / `context_read`）可并发，写路径（追加 / 重建 / 设置系统消息）互斥
+    pub context: RwLock<SessionContext>,
 }
 
 impl Session {
     /// 新建会话（不读缓存；需要恢复上一次上下文时另调 recover_from_cache）
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self {
         Self {
-            context: Mutex::new(SessionContext::new(data_dir, session_id)),
+            context: RwLock::new(SessionContext::new(data_dir, session_id)),
         }
     }
 
     /// 从本地缓存恢复上下文（新建会话时调用；文件不存在视为空上下文）
     pub async fn recover_from_cache(&self) -> Result<()> {
-        let mut ctx = self.context.lock().await;
+        let mut ctx = self.context.write().await;
         ctx.recover_from_cache().await
     }
 
+    /// 构建模型消息（只读）：首条为当前系统消息；不应用待定系统消息、不写缓存。
+    /// 压缩等只需读取上下文的路径用它，避免系统消息变更触发上下文重建
     pub async fn build_context(&self) -> Vec<Message> {
-        let mut ctx = self.context.lock().await;
+        let ctx = self.context.read().await;
+        ctx.build()
+    }
+
+    /// 构建模型消息并应用待定系统消息（发送前入口）
+    pub async fn build_context_full(&self) -> Vec<Message> {
+        let mut ctx = self.context.write().await;
         let _ = ctx.apply_pending_system().await;
         ctx.build()
     }
 
     pub async fn context_append(&self, messages: Vec<Message>) -> Result<()>{
-        let mut ctx = self.context.lock().await;
+        let mut ctx = self.context.write().await;
         ctx.append(messages).await
     }
 
-    pub async fn context_revert_until(&self, condition: &mut impl FnMut(&Message) -> bool) -> Result<Vec<Message>> {
-        let mut ctx = self.context.lock().await;
-        ctx.revert_until(condition).await
-    }
-
-    pub async fn context_revert(&mut self, count: usize) -> Result<Vec<Message>> {
-        let mut ctx = self.context.lock().await;
-        ctx.revert(count).await
+    /// 只读访问会话消息（不含系统消息，保持当前顺序）：闭包拿到的列表只读，上下文不变。
+    /// 压缩 / 记忆回溯取尾部消息时用：只需读取，避免「先回退再重置」两次上下文变更
+    pub async fn context_read<R>(&self, f: impl FnOnce(&Vec<Message>) -> R) -> R {
+        let ctx = self.context.read().await;
+        f(&ctx.messages)
     }
 
     pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>) -> Result<()> {
-        let mut ctx = self.context.lock().await;
+        let mut ctx = self.context.write().await;
         ctx.archive_and_clear_cache_and_reset_messages(Some(new_messages)).await
     }
 
     pub async fn set_system_message(&self, content: ArcStr) {
-        let mut ctx = self.context.lock().await;
+        let mut ctx = self.context.write().await;
         ctx.set_system_message(content);
     }
 }
@@ -475,22 +450,61 @@ mod tests {
         let session = Session::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
         // set_system_message 只写待定（SessionContext::build 不立即带 system）
         session.set_system_message(ArcStr::from("系统")).await;
-        // build_context 是发送前入口：应用待定系统消息（System 首条）
-        let ctx = session.build_context().await;
+        // build_context 只读：不应用待定系统消息
+        assert!(session.build_context().await.is_empty(), "待定系统消息未应用");
+        // build_context_full 是发送前入口：应用待定系统消息（System 首条）
+        let ctx = session.build_context_full().await;
         assert_eq!(ctx.len(), 1, "仅有系统消息");
         assert!(matches!(&ctx[0], Message::System { content } if content.as_str() == "系统"));
-        // 追加消息 → build_context 应用待定系统消息（System 首条）
+        // 追加消息 → build_context_full 带出 System + 消息
         let _ = session.context_append(vec![Message::User { content: ArcStr::from("你好") }]).await;
-        let ctx = session.build_context().await;
+        let ctx = session.build_context_full().await;
         assert_eq!(ctx.len(), 2, "system + 消息");
         assert!(matches!(&ctx[0], Message::System { content } if content.as_str() == "系统"));
         // 归档 + 重建：内容整体替换，system 保留
         let _ =session.context_archive_and_clear_cache_and_reset_messages(
             vec![Message::User { content: ArcStr::from("新话题") }]).await;
-        let ctx = session.build_context().await;
+        let ctx = session.build_context_full().await;
         assert_eq!(ctx.len(), 2, "system + 新消息");
         assert!(matches!(&ctx[1], Message::User { content } if content.as_str() == "新话题"));
         assert!(dir.path().join("context-history").exists(), "归档目录已建立");
+    }
+
+    #[tokio::test]
+    async fn archive_and_reset_applies_pending_system_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
+        session.set_system_message(ArcStr::from("旧系统")).await;
+        let _ = session.context_append(vec![Message::User { content: ArcStr::from("你好") }]).await;
+        let _ = session.build_context_full().await;   // 应用旧系统
+        // 待定新系统 + 重建：重建时直接应用新系统，不再等下次构建触发二次重建
+        session.set_system_message(ArcStr::from("新系统")).await;
+        let _ = session.context_archive_and_clear_cache_and_reset_messages(
+            vec![Message::User { content: ArcStr::from("新话题") }]).await;
+        let ctx = session.build_context_full().await;
+        assert_eq!(ctx.len(), 2, "新系统 + 新消息");
+        assert!(matches!(&ctx[0], Message::System { content } if content.as_str() == "新系统"));
+        // 只归档一次（旧上下文）：重建时已应用待定系统消息，后续构建不再产生归档
+        let mut count = 0;
+        let mut rd = tokio::fs::read_dir(dir.path().join("context-history")).await.unwrap();
+        while rd.next_entry().await.unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "重建时应用新系统，不产生二次重建");
+    }
+
+    #[tokio::test]
+    async fn context_read_sees_messages_only_and_keeps_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(dir.path().to_str().unwrap(), ArcStr::from("a1-r1"));
+        session.set_system_message(ArcStr::from("系统")).await;
+        let _ = session.context_append(sample_msgs()).await;
+        // 只读访问：不含系统消息，且不应用待定系统 / 不改变上下文
+        let count = session.context_read(|msgs| msgs.len()).await;
+        assert_eq!(count, 2, "只有消息，不含系统消息");
+        assert!(!dir.path().join("context-history").exists(), "只读不产生归档");
+        assert_eq!(session.build_context().await.len(), 2, "读操作不改变上下文");
+        assert_eq!(session.build_context_full().await.len(), 3, "发送前入口才应用待定系统消息");
     }
 
     #[tokio::test]

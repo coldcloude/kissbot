@@ -447,7 +447,7 @@ mod tests {
         let session = Nexus::get().ensure_session(SessionKey::Memory(Arc::new(key))).await;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let ctx = session.build_context().await;
+            let ctx = session.build_context_full().await;
             let has_system = matches!(ctx.first(), Some(Message::System { .. }));
             let has_user = ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str().contains("链路测试消息")));
             if has_system && has_user {
@@ -577,7 +577,7 @@ mod tests {
         let (session, _) = sm.get_or_create(key_default.clone()).await;
         pm.sync_pipeline(key_default.clone(), session.clone()).await.expect("显式 default 应能装配 pipeline");
         pm.reset_system_prompt(key_default.clone()).await;
-        assert!(matches!(session.build_context().await.first(), Some(Message::System { .. })),
+        assert!(matches!(session.build_context_full().await.first(), Some(Message::System { .. })),
             "default 应提供系统提示词器");
 
         // 2. 显式 default_memory：ego 未配置 → 回退默认提示词，装配与重置同样可用
@@ -590,7 +590,7 @@ mod tests {
         let (session, _) = sm.get_or_create(key_memory.clone()).await;
         pm.sync_pipeline(key_memory.clone(), session.clone()).await.expect("显式 default_memory 应能装配 pipeline");
         pm.reset_system_prompt(key_memory.clone()).await;
-        assert!(matches!(session.build_context().await.first(), Some(Message::System { .. })),
+        assert!(matches!(session.build_context_full().await.first(), Some(Message::System { .. })),
             "default_memory 应提供系统提示词器");
 
         // 3. 未配置名称 → 按会话类型默认（Memory 会话 = default_memory）

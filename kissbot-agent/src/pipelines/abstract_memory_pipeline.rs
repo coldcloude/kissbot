@@ -19,7 +19,7 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, IncomingMessageEvent, LocateMessage, MemoryMeta,
+    CaseRecord, ChannelKey, Content, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -273,7 +273,7 @@ impl AbstractMemoryPipeline {
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
-        pending_contents: &mut Vec<kissbot_api::Content>,
+        pending_contents: &mut Vec<Content>,
         outgoing_meta: Option<Arc<MemoryMeta>>,
     ) -> Result<bool> {
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
@@ -319,12 +319,12 @@ impl AbstractMemoryPipeline {
         if let Some(out_channel) = out_channel {
             let mut contents = std::mem::take(pending_contents);
             let content = if contents.is_empty() {
-                res.content.take().map(kissbot_api::Content::Text)
+                res.content.take().map(Content::Text)
             } else {
                 if let Some(content) = res.content.take() {
-                    contents.push(kissbot_api::Content::Text(content));
+                    contents.push(Content::Text(content));
                 }
-                Some(kissbot_api::Content::Multi(Arc::new(contents)))
+                Some(Content::Multi(Arc::new(contents)))
             };
             if let Some(content) = content {
                 send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
@@ -412,7 +412,7 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-    use kissbot_api::{ChannelRecord, RoleEvent};
+    use kissbot_api::{ChannelRecord, RoleEvent, ThinkRecord};
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -526,7 +526,7 @@ mod tests {
     fn record_contents_keeps_channel_records_in_returned_order() {
         let records = vec![
             CaseRecord::Channel(rec("u1", "second", 0, "2026-09-23 10:00:05", 2)),
-            CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
+            CaseRecord::Think(Arc::new(ThinkRecord {
                 reasoning_content: Some(ArcStr::from("推理")),
                 thinking: None,
                 key: ArcStr::from("k1"),

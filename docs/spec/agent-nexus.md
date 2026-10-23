@@ -200,6 +200,8 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 `build_context_from_memory_store` 用两次查询并集：① recent 取最近 N 条，`T_N` = 最旧一条时间；② 时间范围 `[M, T_N]`（`M = min(时间窗起点, T_N)`）取该段全部；结果按 (time, sn) 去重后时间正序，打包为交替的 User/Assistant 消息（结尾为 User 时补空 Assistant）。读路径在 `base_url` 为空时报错（不静默跳过）。
 
+记忆回溯（`MemoryRecoverTokenReducer`）只读取当前会话中「最后一条 assistant（含）及之后」的消息（这部分可能还没形成通道记录，如工具轮次；也可能与打包结果末条重复），与上面的打包结果拼接后一次重置上下文；拼接前若打包结果末条与保留段首条同为 assistant，去掉打包结果末条，避免连续两条 assistant。
+
 ## Memory-Struct-Abstract API 交互
 
 摘要记忆 pipeline（`abstract_memory`，经 `pipeline.pipeline_name` 显式启用）经 Nexus 持有的 `AbstractClient` 调用摘要记忆，鉴权用 `X-Api-Key`。它自己实现 agentic loop（复用 pipelines.rs 的发送/工具/提示词函数），与 `default_memory` 的行为差异都在本 pipeline 内：
