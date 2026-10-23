@@ -9,7 +9,7 @@ pub fn end_by_trim_last_assistent(context: &Vec<Message>) -> usize {
         let msg = &context[curr as usize];
         curr -= 1;
         if matches!(msg, Message::Assistant { .. }) {
-            return curr as usize;
+            return curr as usize + 1;
         }
     }
     context.len()
@@ -25,7 +25,7 @@ impl TokenReducer for CompressTokenReducer {
         let compress_cfg = cfg_mngr.session_config::<CompressConfig,EffectiveCompressConfig>(session_key.clone()).await;
         let c_msg = Message::User { content: compress_cfg.compress_prompt.clone() };
 
-        // 1. 只读 build_context（读锁）：以最后一条 assistant（含）为界切出要保留的消息
+        // 1. 只读 build_context（读锁）：以最后一条 assistant（不含）为界切出要保留的消息
         let mut context = session.build_context().await;
         let end = end_by_trim_last_assistent(&context);
         let popped = context.split_off(end);
@@ -56,7 +56,7 @@ pub struct MemoryRecoverTokenReducer;
 
 #[async_trait]
 impl TokenReducer for MemoryRecoverTokenReducer {
-    /// 记忆回溯：不用发模型，只读取出「最后一条 assistant（含）之后」的会话消息（尚未进记忆），
+    /// 记忆回溯：不用发模型，只读取出「最后一条 assistant（不含）之后」的会话消息（尚未进记忆），
     /// 与 memory-store 打包的记忆上下文拼接后一次重置会话；新消息仍交回调用方追加。
     async fn reduce(&self, session_key: SessionKey, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>) {
         // 记忆打包：组合查询 + 每组合全史查询 + 并集算法（最后 N 条 ∪ [M, T_N] 同时间组，窗口内早于 T_N 的记录不含），
@@ -69,11 +69,6 @@ impl TokenReducer for MemoryRecoverTokenReducer {
             }).await;
             // 2. 记忆上下文 + 会话尾部消息：尾部以 assistant 开头且记忆也以 assistant 结尾时去掉记忆最后一条
             let mut new_messages = build_context_from_memory_store(mk).await;
-            if matches!(tail.first(), Some(Message::Assistant { .. }))
-                && matches!(new_messages.last(), Some(Message::Assistant { .. }))
-            {
-                new_messages.pop();
-            }
             new_messages.extend(tail);
             // 3. 一次重置（归档旧上下文 + 应用待定系统消息 + 清空缓存 + 写入拼接结果）
             let _ = session.context_archive_and_clear_cache_and_reset_messages(new_messages).await;
