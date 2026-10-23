@@ -27,7 +27,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
+        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
@@ -276,15 +276,12 @@ impl AbstractMemoryPipeline {
         pending_contents: &mut Vec<Content>,
         outgoing_meta: Option<Arc<MemoryMeta>>,
     ) -> Result<bool> {
-        let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        // 摘要记忆的上下文已由 case 重建，超阈值时用压缩总结（不回溯 memory-store，避免把其他 case 的内容拼进来）
-        let mut res = send_messages_with_limit(
+        // 摘要记忆的上下文已由 case 重建，不做超阈值判断
+        let mut res = send_messages(
             SessionKey::Memory(self.memory_key.clone()),
             self.session.as_ref(),
             messages,
             tools,
-            &CompressTokenReducer,
-            tokens_usage,
         ).await?;
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
         // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
