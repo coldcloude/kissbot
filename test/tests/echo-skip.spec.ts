@@ -21,6 +21,17 @@ let cli: SpawnedCli;   // u2（管理员）经 channel-web 与 nexus 通信
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+/** 递归取 Content 中的文本段（Text 或 Multi 内的 Text） */
+function textOfContent(content: any): string | null {
+  if (!content) return null;
+  if (content.msg_type === 'Text') return content.data;
+  if (content.msg_type === 'Multi') {
+    const texts = (content.data as any[]).map(textOfContent).filter((t): t is string => t !== null);
+    return texts.length > 0 ? texts.join('\n') : null;
+  }
+  return null;
+}
+
 async function apiPost(request: APIRequestContext, path: string, body: unknown) {
   return (await request.post(`${MEMORY_STORE_BASE}${path}`, {
     headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
@@ -66,7 +77,7 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
     // 发一条文本，等待 agent 的 LLM 回复（以 bind_user u1 身份回复，CLI 打印 << [u1:g1] ...）
     const baseline = cli.getOutput();
     cli.stdin('/send 请只回复两个字：你好');
-    const replyMarker = /<< \[u1:g1\] \{"msg_type":"Text","data":"([^"]*)/;
+    const replyMarker = /<< \[u1:g1\] .*?"msg_type":"Text","data":"([^"]*)/;
     const start = Date.now();
     let replyData = '';
     while (Date.now() - start < 60000) {
@@ -99,10 +110,10 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
     }
 
     // 回复内容对应记录：发送时写入一条 is_self=1；回显若未被跳过会再写一条 is_self=0
-    const replyRecords = records.filter((r: any) => r.content?.data === replyData);
+    const replyRecords = records.filter((r: any) => textOfContent(r.content) === replyData);
     expect(replyRecords.length).toBe(1, `回复内容应仅一条记录（回显被跳过），实际 ${replyRecords.length}`);
     expect(replyRecords[0].is_self).toBe(1);
-    const echoRecords = records.filter((r: any) => r.content?.data === replyData && r.is_self === 0);
+    const echoRecords = records.filter((r: any) => textOfContent(r.content) === replyData && r.is_self === 0);
     expect(echoRecords.length).toBe(0, '回显不应被当作普通上行消息写入记忆');
   });
 });

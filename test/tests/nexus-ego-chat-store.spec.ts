@@ -48,7 +48,7 @@ function utcDate(): string {
 async function sendAndWaitReply(text: string): Promise<void> {
   const baseline = cli.getOutput();
   cli.stdin(`/send ${text}`);
-  const replyMarker = /<< \[u1:g1\] \{"msg_type":"Text","data":"([^"]*)/;
+  const replyMarker = /<< \[u1:g1\] .*?"msg_type":"Text","data":"([^"]*)/;
   const start = Date.now();
   let replyData = '';
   while (Date.now() - start < 60000) {
@@ -68,6 +68,29 @@ async function waitNewOutput(baseline: string, regex: RegExp, timeout = 10000): 
     await sleep(200);
   }
   throw new Error(`CLI 新输出超时（${timeout}ms），期望 /${regex.source}/，基线后输出: ${cli.getOutput().slice(baseline.length).slice(-200)}`);
+}
+
+/** 递归取 Content 中的文本段（Text 或 Multi 内的 Text） */
+function textOfContent(content: any): string | null {
+  if (!content) return null;
+  if (content.msg_type === 'Text') return content.data;
+  if (content.msg_type === 'Multi') {
+    const texts = (content.data as any[]).map(textOfContent).filter((t): t is string => t !== null);
+    return texts.length > 0 ? texts.join('\n') : null;
+  }
+  return null;
+}
+
+/** 递归取 Content 中的思考/工具占位引用（Multi 内的 Think/ToolCall/ToolResult） */
+function detailRefsOfContent(content: any): any[] {
+  if (!content) return [];
+  if (content.msg_type === 'Think' || content.msg_type === 'ToolCall' || content.msg_type === 'ToolResult') {
+    return [{ msgType: content.msg_type, key: content.data?.key, time: content.data?.time }];
+  }
+  if (content.msg_type === 'Multi') {
+    return (content.data as any[]).flatMap(detailRefsOfContent);
+  }
+  return [];
 }
 
 // 查询 memory-store channel 记录并断言该场景的双向消息（is_self=0 用户消息 / is_self=1 agent 回复）
@@ -96,21 +119,24 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const userMsgs = recs.filter((r) => r.is_self === 0);
   expect(userMsgs.length).toBeGreaterThanOrEqual(1);
   expect(userMsgs[userMsgs.length - 1].user_id).toBe('u2');
-  // agent 回复：以绑定用户 u1 身份发送，is_self=1（区分文本消息与思考/工具占位记录）
+  // agent 回复：以绑定用户 u1 身份发送，is_self=1（内容可能是 Multi，其中包含思考/工具占位引用）
   const selfMsgs = recs.filter((r) => r.is_self === 1);
   expect(selfMsgs.length).toBeGreaterThanOrEqual(1);
-  const selfTexts = selfMsgs.filter((r) => r.content?.msg_type === 'Text');
+  const selfTexts = selfMsgs
+    .map((record) => ({ record, text: textOfContent(record.content) }))
+    .filter((entry): entry is { record: any; text: string } => entry.text !== null);
   expect(selfTexts.length).toBeGreaterThanOrEqual(1);
-  expect(selfTexts[selfTexts.length - 1].user_id).toBe('u1');
+  expect(selfTexts[selfTexts.length - 1].record.user_id).toBe('u1');
   // 消息标识：上行来自 incoming_message、下行来自 outgoing_message_response，均写入记录（去重用）
   const userMsgId = userMsgs[userMsgs.length - 1].msg_id;
-  const selfMsgId = selfTexts[selfTexts.length - 1].msg_id;
+  const selfMsgId = selfTexts[selfTexts.length - 1].record.msg_id;
   expect(userMsgId, '上行记录的 msg_id 应非空').toBeTruthy();
   expect(selfMsgId, '下行记录的 msg_id 应非空').toBeTruthy();
   expect(userMsgId).not.toBe(selfMsgId);
-  // 思考/工具占位记录：msg_id 留空（不参与去重）
-  for (const record of selfMsgs.filter((r) => r.content?.msg_type !== 'Text')) {
-    expect(record.msg_id, `占位记录 ${record.content?.msg_type} 的 msg_id 应为空`).toBe('');
+  // 思考/工具占位引用随回复记录写入：引用带 key 与详情时间
+  for (const ref of selfMsgs.flatMap((record) => detailRefsOfContent(record.content))) {
+    expect(ref.key, `占位引用 ${ref.msgType} 应带 key`).toBeTruthy();
+    expect(ref.time, `占位引用 ${ref.msgType} 应带详情时间`).toBeTruthy();
   }
 }
 

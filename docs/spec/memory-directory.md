@@ -63,7 +63,7 @@ channel 记录包含完整身份字段：
 
 | 字段 | 含义 |
 |------|------|
-| msg_id | 消息标识：上行取自 `incoming_message.msg_id`、下行取自 `outgoing_message_response.msg_id`；思考/工具占位记录为空 |
+| msg_id | 消息标识：上行取自 `incoming_message.msg_id`、下行取自 `outgoing_message_response.msg_id` |
 | user_id | 消息发送者身份 |
 | self_user_id | agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self） |
 | messenger_id | 消息来源通道标识 |
@@ -72,6 +72,8 @@ channel 记录包含完整身份字段：
 | meta | 可选的记录元信息；摘要记忆使用 `meta.abstract_memory.case_name` 记录所属 case，缺省不序列化 |
 
 > **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.abstract_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-abstract.md](memory-struct-abstract.md)。
+>
+> **占位引用与详情**：思考/工具记录是独立文件中的详情记录；回复的通道记录内容（`Multi`）中携带占位引用 `{"key": "…", "time": "YYYY-MM-DD HH:mm:ss"}`（`msg_type` 为 `Think` / `ToolCall` / `ToolResult`）。一次 run 内没有文本的轮次不写通道记录，占位引用累积到有文本的回复记录中。详情记录先于携带占位引用的通道记录写入并等待落盘，引用的 `time` 即详情记录的写入时间；读取方按 `time` 定位当天的详情文件、按 `key` 取出详情。
 >
 > **is_self 与 self_user_id 不同**：is_self 只在 agent 实际发送消息时为 1（agent 经 msg_id 回显匹配识别并过滤自身回声后确定），不由 `user_id == self_user_id` 推导。其他人使用 agent 绑定的用户发送消息时，`user_id == self_user_id`，但 `is_self == 0`。
 

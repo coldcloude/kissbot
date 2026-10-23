@@ -109,7 +109,7 @@ pub fn build_memory_tool_result(memory_key: &MemoryKey, key: ArcStr, tool_call: 
 mod tests {
     use kissbot_api::channel::{ChannelUser, IncomingMessage, OutgoingMessageResponse};
     use kissbot_api::message::Content;
-    use kissbot_api::RoleEvent;
+    use kissbot_api::{DetailRef, RoleEvent};
 
     use super::*;
 
@@ -187,5 +187,30 @@ mod tests {
 
         // 不带 meta：普通记忆 pipeline
         assert!(channel_request_from_outgoing(&memory_key(), &out_channel, &response, None).meta.is_none());
+    }
+
+    #[test]
+    fn detail_ref_is_taken_from_the_request() {
+        let think = build_memory_think(&memory_key(), ArcStr::from("k1"), Some(ArcStr::from("推理")), None);
+        let think_ref = DetailRef::new(think.key.clone(), think.time.clone());
+        assert_eq!(think_ref.key, think.key);
+        assert_eq!(think_ref.time, think.time, "占位引用直接取详情请求的 key 与 time");
+
+        let tool_call = ToolCall {
+            id: ArcStr::from("c1"),
+            name: ArcStr::from("get_date"),
+            arguments: serde_json::json!({}),
+            result_arguments: None,
+            result: Some(Arc::new(Vec::new())),
+        };
+        let call = build_memory_tool_call(&memory_key(), ArcStr::from("k2"), &tool_call);
+        let result = build_memory_tool_result(&memory_key(), ArcStr::from("k2"), &tool_call);
+        let call_ref = DetailRef::new(call.key.clone(), call.time.clone());
+        let result_ref = DetailRef::new(result.key.clone(), result.time.clone());
+        assert_eq!(call_ref.key, call.key);
+        assert_eq!(call_ref.time, call.time);
+        assert_eq!(result_ref.key, result.key);
+        assert_eq!(result_ref.time, result.time);
+        assert_eq!(call.key, result.key, "工具调用与结果共用同一 key");
     }
 }

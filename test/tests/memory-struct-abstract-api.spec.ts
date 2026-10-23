@@ -464,24 +464,28 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const channelA: TestChannel = { messenger: 'web', selfUser: 'selfA', group: 'gA' };
     const channelB: TestChannel = { messenger: 'web', selfUser: 'selfB', group: 'gB' };
 
-    /** 一段对话：本人消息 → 占位通道消息（内容为 key）+ 思考记录 → 非本人消息 */
+    /** 一段对话：本人消息 → 思考记录 + 回复消息（Multi 中带占位引用）→ 非本人消息 */
     const pushConversation = async (channel: TestChannel, key: string, base: number) => {
       const t = (offset: number) => timeAt(base + offset);
       await pushChannelIn(request, role, channel, 'alice', 0, '提问', t(0));
       await pushChannelIn(request, role, channel, 'bot', 1, '回答', t(1));
-      // 占位通道消息与思考记录同一时刻写入（与 nexus 的写入方式一致）
+      // 详情先写，带占位引用的回复记录后写（与 nexus 的写入顺序一致）
       const thinkTime = t(2);
+      await pushThink(request, role, key, `${key} 的思考内容`, thinkTime);
       const placeholder = await apiPost(request, STORE_BASE, '/store/channel', {
         requests: [{
           agent_id: AGENT, role_event: roleEventOf(role), messenger_id: channel.messenger,
           user_id: channel.selfUser, self_user_id: channel.selfUser, group_id: channel.group,
           is_self: 1, messenger_name: '', user_name: '', group_name: '',
-          content: { msg_type: 'Think', data: key }, time: thinkTime,
+          content: {
+            msg_type: 'Multi',
+            data: [{ msg_type: 'Think', data: { key, time: thinkTime } }],
+          },
+          time: thinkTime,
         }],
         force: 0,
       });
       expect(placeholder.success, `推送占位记录失败: ${JSON.stringify(placeholder)}`).toBe(true);
-      await pushThink(request, role, key, `${key} 的思考内容`, thinkTime);
       await waitForStoreFile(role, 'channel', thinkTime, key);
       await waitForStoreFile(role, 'think', thinkTime, key);
       await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(3));

@@ -49,8 +49,8 @@ pub struct AbstractMemoryMeta {
 
 /// 记录元信息：各组件可选的附加信息（未识别的字段在反序列化时忽略）。
 ///
-/// 目前只有通道记录携带 meta；思考/工具记录通过占位通道记录的 key 归属到通道，
-/// 其 case 随之确定，因此不需要单独记录。
+/// 目前只有通道记录携带 meta；思考/工具记录通过通道记录内容中的占位引用（详情时间 + key）
+/// 归属到通道，其 case 随之确定，因此不需要单独记录。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMeta {
     /// 摘要记忆信息

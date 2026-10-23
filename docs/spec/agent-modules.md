@@ -16,7 +16,7 @@
 | pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按会话 key 装配（装配时注入会话）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每次 run 用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
-| memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
+| memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
 | abstract_client | AbstractClient | 摘要记忆（memory-struct-abstract）REST 客户端：case 定位、case 摘要、case 原文副本尾部查询 | Nexus 成员；AbstractMemoryPipeline 经 Nexus 单例调用 |
 | provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
@@ -207,20 +207,20 @@ sequenceDiagram
         PRV->>PRV: kissbot-llm call_with_retry（超时/重试来自有效模型配置）
         PRV-->>MSN: ModelResponse（content / reasoning_content / thinking / tool_calls / total_tokens）
         MSN->>MSN: 记录本次 usage.total_tokens（供下次阈值判定）
-        PL->>MSC: send_memory_think（reasoning_content / thinking 任一有值，每轮成功响应都推）
+        PL->>MSC: send_memory_think（reasoning_content / thinking 任一有值，每轮成功响应都推；等待详情落盘）
         PL->>OUT: accept(round, response)
         alt 有 tool_calls
             OUT->>CTX: 追加 Assistant（raw_content / raw_reasoning_content / raw_tool_calls）
-            loop 每个 tool call（并发 join；带记忆的 pipeline 在全部完成后统一更新 pending_contents）
-                PL->>MSC: send_memory_tool_call（UUID key）
+            loop 每个 tool call（并发 join；带记忆的 pipeline 在全部完成后收集详情引用）
+                PL->>MSC: send_memory_tool_call（UUID key，等待详情落盘）
                 PL->>ST: Station::call_tool（本级原生实现 / 路由到子 Station 的 MCP tools/call）
-                PL->>MSC: send_memory_tool_result（同 key）
+                PL->>MSC: send_memory_tool_result（同 key，等待详情落盘）
                 OUT->>CTX: 追加 Tool（tool_call_id + content=result 或 error）
             end
-            Note over OUT: 有 tool_calls 且未达上限 → next=true，进入下一轮
+            Note over OUT: 本轮没有文本 → 不发送，占位内容留到有文本的轮次一起发送<br/>有 tool_calls 且未达上限 → next=true，进入下一轮
         else 最终回复
             OUT->>CTX: 追加 Assistant
-            PL->>CO: send_outgoing（校验 out_channel 绑定 → CHM.send → 写下行记录；摘要记忆 pipeline 带当前 case 的 meta）
+            PL->>CO: send_outgoing（本次 run 累积的 think/tool 占位引用 + 本轮文本；详情已落盘，摘要记忆带当前 case 的 meta）
         end
     end
     PL->>CTX: 无下一轮时把本轮新消息追加进上下文
@@ -268,7 +268,6 @@ sequenceDiagram
 
 - **无手动触发的 trigger**：当前没有独立 trigger 集合；pipeline 自己维护批次生产者，channel 解绑与 pipeline 销毁时退出消费者任务。
 - **memory-struct**：`NexusRepo.memory_structs` 与 `MemoryStructConfig` 仅建结构，无消费方；摘要记忆的上下文由 `AbstractMemoryPipeline` 经 memory-struct-abstract 提供，其余会话的上下文回溯走 memory-store 的两查询并集。
-- **思考/工具记录的 case 归属**：摘要记忆 pipeline 目前只给上下行通道记录写 meta；think/tool 记录依赖占位通道记录的 key 归属，占位记录尚未接线。
 - **Terminal（ChannelManager）的 join_group / leave_group / user_removed / download_chunk**：回调为 no-op / 未使用，业务逻辑预留。
 - **`ModelResponse.finish_reason`**：已解析但无消费方（截断等停止原因不触发额外处理）。
 - **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。

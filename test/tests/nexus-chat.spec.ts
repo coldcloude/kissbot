@@ -55,10 +55,10 @@ test.describe.serial('nexus-chat：真实 LLM 文本通信（deepseek）', () =>
     // 而 waitForOutput 匹配的是全量缓冲区、会立即命中旧内容，
     // 因此这里用"基线之后的新输出"轮询等待 agent 的 LLM 回复特征：
     // agent 以 channel bind_user（u1）身份回复，CLI 打印形如 << [u1:g1] {"msg_type":"Text","data":"..."}
-    // （自己发送的文本经 channel 回显为 << [u2:g1] ...，可作区分）
+    // （带思考/工具占位时 content 为 Multi，文本在其中的 Text 项；自己发送的文本经 channel 回显为 << [u2:g1] ...，可作区分）
     const baseline = cli.getOutput();
     cli.stdin('/send 你好，请用一句话自我介绍');
-    const replyMarker = /<< \[u1:g1\] \{"msg_type":"Text","data":"([^"]*)/;
+    const replyMarker = /<< \[u1:g1\] .*?"msg_type":"Text","data":"([^"]*)/;
     const start = Date.now();
     let replyData = '';
     while (Date.now() - start < 60000) {

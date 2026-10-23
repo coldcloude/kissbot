@@ -496,8 +496,16 @@ mod tests {
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
 
-    /// 追加一条思考记录：先写占位通道记录（内容为该 key），再写思考记录本体
+    /// 追加一条思考记录：先写思考记录本体，再写引用它的占位通道记录
     async fn append_store_think(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, key: &str, time: &str, sn: u64, text: &str) {
+        let think = serde_json::json!({
+            "reasoning_content": text,
+            "thinking": null,
+            "key": key,
+            "time": time,
+            "sn": sn
+        });
+        append_store_line(root, agent_id, suffix, "think", think, time).await;
         let placeholder = serde_json::json!({
             "user_id": channel.self_user_id.as_str(),
             "self_user_id": channel.self_user_id.as_str(),
@@ -507,19 +515,11 @@ mod tests {
             "messenger_name": "",
             "user_name": "",
             "group_name": "",
-            "content": {"msg_type": "Think", "data": key},
+            "content": {"msg_type": "Think", "data": {"key": key, "time": time}},
             "time": time,
             "sn": sn
         });
         append_store_line(root, agent_id, suffix, "channel", placeholder, time).await;
-        let think = serde_json::json!({
-            "reasoning_content": text,
-            "thinking": null,
-            "key": key,
-            "time": time,
-            "sn": sn
-        });
-        append_store_line(root, agent_id, suffix, "think", think, time).await;
     }
 
     /// 追加一条没有占位通道记录的思考记录（key 无人认领）

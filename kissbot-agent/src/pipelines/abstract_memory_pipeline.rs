@@ -19,7 +19,7 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, Content, IncomingMessageEvent, LocateMessage, MemoryMeta,
+    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
 use kissbot_llm::{Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -27,7 +27,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, tools_for_session,
+        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
     },
@@ -284,22 +284,24 @@ impl AbstractMemoryPipeline {
             tools,
         ).await?;
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
-        // 推送 think 到 memory-store（reasoning_content + thinking 双字段，key 关联 ChannelRecord(Think)）
+        // 推送 think 到 memory-store（reasoning_content + thinking 双字段；详情落盘后把占位引用累积到本次 run）
         if res.reasoning_content.is_some() || res.thinking.is_some() {
             let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
             let think_request = build_memory_think(self.memory_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone());
+            let think_ref = Arc::new(DetailRef::new(think_request.key.clone(), think_request.time.clone()));
             Nexus::get().memory_store_client.push_think(think_request).await;
+            pending_contents.push(Content::Think(think_ref));
         }
         // 保存回复的消息
         let _ = self.session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, errors) = call_tools_with_memory(
+            let (tool_calls, tool_placeholders, errors) = call_tools_with_memory(
                 tool_calls,
                 self.memory_key.as_ref(),
-                pending_contents,
             ).await;
+            pending_contents.extend(tool_placeholders);
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -309,21 +311,12 @@ impl AbstractMemoryPipeline {
         } else {
             vec![]
         };
-        // 输出到 out_channel（摘要记忆：下行记录带当前 run 所属 case 的 meta）
+        // 输出到 out_channel：只有本轮有文本才发送，本轮及之前累积的占位内容与文本一起作为下行记录写入
         let out_channel = ConfigManager::get()
             .out_channel_config(self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str())
             .await;
         if let Some(out_channel) = out_channel {
-            let mut contents = std::mem::take(pending_contents);
-            let content = if contents.is_empty() {
-                res.content.take().map(Content::Text)
-            } else {
-                if let Some(content) = res.content.take() {
-                    contents.push(Content::Text(content));
-                }
-                Some(Content::Multi(Arc::new(contents)))
-            };
-            if let Some(content) = content {
+            if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
                 send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
             }
         }

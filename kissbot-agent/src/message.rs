@@ -126,7 +126,12 @@ pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
 mod tests {
     use super::*;
     use kissbot_api::channel::IncomingMessage;
-    use kissbot_api::message::Content;
+    use kissbot_api::message::{Content, DetailRef};
+
+    /// 思考/工具占位内容（非文本）
+    fn tool_call_content() -> Content {
+        Content::ToolCall(Arc::new(DetailRef::new(ArcStr::from("k"), ArcStr::from("2026-09-22 10:00:00"))))
+    }
 
     // 构造测试用 MessageContent
     fn msg(name: &str, content: &str, is_self: bool) -> MessageContent {
@@ -196,14 +201,14 @@ mod tests {
         // Multi 递归收集 Text 段；非文本子项跳过
         let multi = Content::Multi(Arc::new(vec![
             Content::Text(ArcStr::from("a")),
-            Content::ToolCall(ArcStr::from("k")),
+            tool_call_content(),
             Content::Multi(Arc::new(vec![Content::Text(ArcStr::from("b"))])),
         ]));
         let mc2 = extract_content(&multi, ArcStr::from("u"), 0);
         assert_eq!(mc2.content, vec![ArcStr::from("a"), ArcStr::from("b")]);
         assert!(!mc2.is_self, "is_self=0 → false");
         // 非文本 → 空 content
-        let mc3 = extract_content(&Content::ToolCall(ArcStr::from("k")), ArcStr::from("u"), 0);
+        let mc3 = extract_content(&tool_call_content(), ArcStr::from("u"), 0);
         assert!(mc3.content.is_empty());
     }
 
@@ -230,14 +235,14 @@ mod tests {
         let events = vec![
             ev("u1", Content::Text(ArcStr::from("a"))),
             ev("", Content::Text(ArcStr::from("b"))),
-            ev("u3", Content::ToolCall(ArcStr::from("k"))),  // 非文本 → 跳过
+            ev("u3", tool_call_content()),  // 非文本 → 跳过
             ev("u4", Content::Text(ArcStr::from("c"))),
         ];
         let msg = pack_batch(&events);
         assert!(matches!(&msg, Message::User { content } if content.as_str() == "u1: a\nb\nu4: c"), "非文本事件跳过，空 name 只留 text");
 
         // 全非文本 → 空 content 的 User
-        let all_empty = vec![ev("u", Content::ToolCall(ArcStr::from("k")))];
+        let all_empty = vec![ev("u", tool_call_content())];
         let msg2 = pack_batch(&all_empty);
         assert!(matches!(&msg2, Message::User { content } if content.is_empty()));
     }
