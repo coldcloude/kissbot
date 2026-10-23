@@ -152,7 +152,7 @@ impl LocateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseListRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
     /// 父 case id；缺省或 null 表示查询顶层 case
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<ArcStr>,
@@ -160,20 +160,20 @@ pub struct CaseListRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseListResponse {
-    pub cases: Vec<Arc<CaseNode>>,
+    pub cases: Vec<CaseNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseSummaryRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
     pub case_name: ArcStr,
 }
 
 /// Case 摘要：节点本身即摘要侧表示（摘要文本 + 层级 + 记录数 + 起止时间）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseSummaryResponse {
-    pub case: Arc<CaseNode>,
+    pub case: CaseNode,
 }
 
 /// Case 原文副本的位置（分页游标）：与某一条原文副本一一对应，
@@ -200,14 +200,14 @@ impl CaseCursor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
     pub case_name: ArcStr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsAfterRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
     pub case_name: ArcStr,
     /// 只返回该位置之后的原文副本
     pub after: CaseCursor,
@@ -216,7 +216,7 @@ pub struct CaseRecordsAfterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsTailRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
     pub case_name: ArcStr,
     /// 只返回结尾若干条原文副本
     pub count: u64,
@@ -225,21 +225,21 @@ pub struct CaseRecordsTailRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsResponse {
     /// 原文副本（四类记录按 (time, sn) 升序）
-    pub records: Vec<Arc<CaseRecord>>,
+    pub records: Vec<CaseRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeGetRequest {
     pub agent_id: ArcStr,
-    pub role_event: RoleEvent,
+    pub role_event: Arc<RoleEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeGetResponse {
     /// 各通道的当前 case 指针（无指针的通道不出现）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub current_cases: Vec<Arc<ChannelCasePointer>>,
-    pub nodes: Vec<Arc<CaseNode>>,
+    pub current_cases: Vec<ChannelCasePointer>,
+    pub nodes: Vec<CaseNode>,
 }
 
 // ========== 状态与重建 ==========
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(tail.count, 5);
 
         // 摘要响应即节点本身（摘要文本 + 层级 + 记录数 + 起止时间）
-        let summary = CaseSummaryResponse { case: Arc::new(node()) };
+        let summary = CaseSummaryResponse { case: node() };
         let v = serde_json::to_value(&summary).unwrap();
         assert_eq!(v["case"]["case_name"], "e12");
         assert_eq!(v["case"]["summary"], "摘要");

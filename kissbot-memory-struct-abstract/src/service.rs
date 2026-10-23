@@ -253,7 +253,7 @@ impl AbstractService {
     pub async fn case_list(&self, agent_role: &AgentRole, parent_id: Option<&str>) -> Result<CaseListResponse> {
         let handle = self.open(agent_role).await?;
         let state = handle.state.lock().await;
-        let cases: Vec<Arc<CaseNode>> = state
+        let cases: Vec<CaseNode> = state
             .tree
             .nodes()
             .into_iter()
@@ -262,7 +262,6 @@ impl AbstractService {
                 None => node.parent_id.is_none(),
             })
             .cloned()
-            .map(Arc::new)
             .collect();
         Ok(CaseListResponse { cases })
     }
@@ -276,7 +275,7 @@ impl AbstractService {
             .get(case_name)
             .cloned()
             .ok_or_else(|| Error::StateError(format!("case 不存在: {}/{}", handle.id, case_name).into()))?;
-        Ok(CaseSummaryResponse { case: Arc::new(node) })
+        Ok(CaseSummaryResponse { case: node })
     }
 
     /// Case 全部原文副本
@@ -329,16 +328,14 @@ impl AbstractService {
         let current_cases = state
             .current_of(&role_event)
             .iter()
-            .map(|(channel, case_name)| {
-                Arc::new(ChannelCasePointer {
-                    channel: channel.as_ref().clone(),
-                    case_name: case_name.clone(),
-                })
+            .map(|(channel, case_name)| ChannelCasePointer {
+                channel: channel.as_ref().clone(),
+                case_name: case_name.clone(),
             })
             .collect();
         Ok(TreeGetResponse {
             current_cases,
-            nodes: state.tree.nodes().into_iter().cloned().map(Arc::new).collect(),
+            nodes: state.tree.nodes().into_iter().cloned().collect(),
         })
     }
 
@@ -374,7 +371,7 @@ fn place_groups(groups: Vec<PlaceGroup>) -> Vec<LocatedGroup> {
 
 /// 原文副本响应（统一装配成 Arc）
 fn response_of(records: Vec<kissbot_api::CaseRecord>) -> CaseRecordsResponse {
-    CaseRecordsResponse { records: records.into_iter().map(Arc::new).collect() }
+    CaseRecordsResponse { records }
 }
 
 /// 通道的可读文本（日志用）
@@ -637,12 +634,12 @@ mod tests {
     }
 
     /// case 节点
-    async fn node(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Option<Arc<CaseNode>> {
+    async fn node(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Option<CaseNode> {
         query(f, role_event).await.nodes.into_iter().find(|n| n.case_name.as_str() == case_name)
     }
 
     /// case 原文副本
-    async fn records_of(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Vec<Arc<CaseRecord>> {
+    async fn records_of(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Vec<CaseRecord> {
         f.service.case_records(&agent_role(role_event), case_name).await.unwrap().records
     }
 
@@ -664,7 +661,7 @@ mod tests {
     }
 
     /// 当前 case 指针表
-    fn current_pointer<'a>(tree: &'a TreeGetResponse, channel: &ChannelKey) -> Option<&'a Arc<ChannelCasePointer>> {
+    fn current_pointer<'a>(tree: &'a TreeGetResponse, channel: &ChannelKey) -> Option<&'a ChannelCasePointer> {
         tree.current_cases.iter().find(|pointer| &pointer.channel == channel)
     }
 
@@ -973,10 +970,10 @@ mod tests {
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批");
-        let think_keys = |records: Vec<Arc<CaseRecord>>| -> Vec<String> {
+        let think_keys = |records: Vec<CaseRecord>| -> Vec<String> {
             records
                 .iter()
-                .filter_map(|r| match r.as_ref() {
+                .filter_map(|r| match r {
                     CaseRecord::Think(t) => Some(t.key.as_str().to_string()),
                     _ => None,
                 })
@@ -1004,7 +1001,7 @@ mod tests {
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "该通道记录已处理完");
         let records = records_of(&f, &role_event("dev", None), "role-case").await;
         assert_eq!(records.len(), 2, "孤儿思考记录不属于任何通道，不进 case");
-        assert!(!records.iter().any(|r| matches!(r.as_ref(), CaseRecord::Think(_))));
+        assert!(!records.iter().any(|r| matches!(r, CaseRecord::Think(_))));
     }
 
     /// 定位用消息（指定时间、is_self）

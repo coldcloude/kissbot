@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    abstract_client::AbstractClient, config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
+    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
         BatchProducer, CompressTokenReducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, get_ego_system_prompt, retrieve_assistant_message, retrieve_tool_messages, send_messages_with_limit, send_outgoing, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, SessionKey, build_memory_think, channel_request_from_incoming,
@@ -156,14 +156,14 @@ impl AbstractMemoryPipeline {
     async fn process_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         let nexus = Nexus::get();
         let client = nexus.abstract_client.clone();
-        let channel = event_channel(&events[0]);
+        let channel = Arc::new(event_channel(&events[0]));
         let memory_key = self.memory_key.as_ref();
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
         // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
         let mut case_map = HashMap::new();
         if let Ok(located) =
-            client.locate(memory_key.agent_id.as_str(), memory_key.role_event.clone(), Arc::new(channel.clone()), messages).await
+            client.locate(memory_key, channel, messages).await
         {
             for group in located.groups.into_iter() {
                 for msg_id in group.messages.iter() {
@@ -209,7 +209,14 @@ impl AbstractMemoryPipeline {
         let client = Nexus::get().abstract_client.clone();
         let outgoing_meta = match &case_name {
             Some(case_name) => {
-                match build_context(self.memory_key.clone(), client.as_ref(), case_name.as_str()).await {
+                // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
+                let rebuilt = async {
+                    let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(self.memory_key.clone()).await;
+                    let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
+                    let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
+                    Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
+                }.await;
+                match rebuilt {
                     Ok(messages) => {
                         let _ = self.session.context_archive_and_clear_cache_and_reset_messages(messages).await;
                     }
@@ -368,13 +375,13 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
 }
 
 /// 原文副本 → 对话消息内容：只保留通道记录（思考/工具记录不是对话消息），顺序与 client 返回一致
-fn record_contents(records: &[Arc<CaseRecord>]) -> Vec<MessageContent> {
+fn record_contents(records: &[CaseRecord]) -> Vec<MessageContent> {
     records
         .iter()
-        .filter_map(|record| match record.as_ref() {
+        .filter_map(|record| match record {
             CaseRecord::Channel(channel_record) => Some(extract_content(
-                channel_record.user_name.clone(),
                 &channel_record.content,
+                channel_record.user_name.clone(),
                 channel_record.is_self,
             )),
             _ => None,
@@ -397,21 +404,6 @@ fn compose_context(summary: &str, history: &[MessageContent]) -> Vec<Message> {
         messages.insert(0, Message::User { content: ArcStr::from(block) });
     }
     messages
-}
-
-/// 读取一个 case 的运行上下文：case 摘要 + 结尾 `memory_recover.memory_count` 条原文副本。
-/// 摘要为空时不加摘要块；原文副本按 client 返回的顺序转成消息，不再按时间去窗、去重或排序。
-async fn build_context(memory_key: Arc<MemoryKey>, client: &AbstractClient, case_name: &str) -> Result<Vec<Message>> {
-    let cfg = ConfigManager::get()
-        .memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(memory_key.clone())
-        .await;
-    let agent_id = memory_key.agent_id.as_str();
-    let role_event = memory_key.role_event.as_ref();
-    let node = client.case_summary(agent_id, role_event, case_name).await?;
-    let tail = client
-        .case_records_tail(agent_id, role_event, case_name, cfg.memory_count as u64)
-        .await?;
-    Ok(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
 }
 
 #[cfg(test)]
@@ -533,15 +525,15 @@ mod tests {
     #[test]
     fn record_contents_keeps_channel_records_in_returned_order() {
         let records = vec![
-            Arc::new(CaseRecord::Channel(rec("u1", "second", 0, "2026-09-23 10:00:05", 2))),
-            Arc::new(CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
+            CaseRecord::Channel(rec("u1", "second", 0, "2026-09-23 10:00:05", 2)),
+            CaseRecord::Think(Arc::new(kissbot_api::ThinkRecord {
                 reasoning_content: Some(ArcStr::from("推理")),
                 thinking: None,
                 key: ArcStr::from("k1"),
                 time: ArcStr::from("2026-09-23 10:00:06"),
                 sn: 3,
-            }))),
-            Arc::new(CaseRecord::Channel(rec("agent", "first", 1, "2026-09-23 10:00:01", 1))),
+            })),
+            CaseRecord::Channel(rec("agent", "first", 1, "2026-09-23 10:00:01", 1)),
         ];
         let contents = record_contents(&records);
         assert_eq!(contents.len(), 2, "思考记录不是对话消息，跳过");

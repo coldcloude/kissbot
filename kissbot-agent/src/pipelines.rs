@@ -80,7 +80,7 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u6
             if map.contains_key(&key) {
                 continue;
             }
-            map.insert(key, extract_content(rec.user_name, &rec.content, rec.is_self));
+            map.insert(key, extract_content(&rec.content, rec.user_name, rec.is_self));
         }
     }
 }

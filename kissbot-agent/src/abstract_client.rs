@@ -7,12 +7,12 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use kissbot_api::{
     ApiResponse, CaseNode, CaseRecordsResponse, CaseRecordsTailRequest, CaseSummaryRequest,
-    CaseSummaryResponse, ChannelKey, LocateMessage, LocateRequest, LocateResponse, RoleEvent,
+    ChannelKey, LocateMessage, LocateRequest, LocateResponse,
 };
 use kissbot_security::HEADER_API_KEY;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::types::{Error, Result};
+use crate::types::{Error, MemoryKey, Result};
 
 /// 摘要记忆 REST 客户端：请求走 `X-Api-Key`；`memory_struct_abstract_url` 为空时
 /// 所有调用在发请求前返回 Err（调用方降级为普通合批）
@@ -43,50 +43,44 @@ impl AbstractClient {
     /// POST /abstract/locate：定位一批消息（同一通道）涉及的 case（摘要与原文副本由调用方按 case 标识另取）
     pub async fn locate(
         &self,
-        agent_id: &str,
-        role_event: Arc<RoleEvent>,
+        memory_key: &MemoryKey,
         channel: Arc<ChannelKey>,
         messages: Vec<LocateMessage>,
     ) -> Result<LocateResponse> {
         self.post(
             "/abstract/locate",
             &LocateRequest {
-                agent_id: ArcStr::from(agent_id),
-                role_event,
+                agent_id: memory_key.agent_id.clone(),
+                role_event: memory_key.role_event.clone(),
                 channel,
                 messages,
             },
-        )
-        .await
+        ).await
     }
 
     /// POST /abstract/case/summary：取 case 摘要（返回节点本身：摘要文本 + 层级 + 记录数 + 起止时间）
-    pub async fn case_summary(&self, agent_id: &str, role_event: &RoleEvent, case_name: &str) -> Result<CaseNode> {
-        let resp: CaseSummaryResponse = self
-            .post(
-                "/abstract/case/summary",
-                &CaseSummaryRequest {
-                    agent_id: ArcStr::from(agent_id),
-                    role_event: role_event.clone(),
-                    case_name: ArcStr::from(case_name),
-                },
-            )
-            .await?;
-        Ok(resp.case.as_ref().clone())
+    pub async fn case_summary(&self, memory_key: &MemoryKey, case_name: ArcStr) -> Result<CaseNode> {
+        self.post(
+            "/abstract/case/summary",
+            &CaseSummaryRequest {
+                agent_id: memory_key.agent_id.clone(),
+                role_event: memory_key.role_event.clone(),
+                case_name,
+            },
+        ).await
     }
 
     /// POST /abstract/case/records-tail：取 case 结尾 count 条原文副本（升序）
-    pub async fn case_records_tail(&self, agent_id: &str, role_event: &RoleEvent, case_name: &str, count: u64) -> Result<CaseRecordsResponse> {
+    pub async fn case_records_tail(&self, memory_key: &MemoryKey, case_name: ArcStr, count: u64) -> Result<CaseRecordsResponse> {
         self.post(
             "/abstract/case/records-tail",
             &CaseRecordsTailRequest {
-                agent_id: ArcStr::from(agent_id),
-                role_event: role_event.clone(),
-                case_name: ArcStr::from(case_name),
+                agent_id: memory_key.agent_id.clone(),
+                role_event: memory_key.role_event.clone(),
+                case_name,
                 count,
             },
-        )
-        .await
+        ).await
     }
 
     /// 统一 POST + ApiResponse 解包：未配置地址 / 网络失败 / 解析失败 / 业务失败都返回 Err
@@ -120,6 +114,8 @@ impl AbstractClient {
 
 #[cfg(test)]
 mod tests {
+    use kissbot_api::RoleEvent;
+
     use super::*;
 
     #[tokio::test]
@@ -127,8 +123,8 @@ mod tests {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
         let client = AbstractClient::with_url(ArcStr::new(), ArcStr::new());
         let channel = Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
-        let role_event = Arc::new(RoleEvent::new(ArcStr::from("dev")));
-        let err = client.locate("0", role_event, channel, vec![]).await.unwrap_err();
+        let memory_key = MemoryKey { agent_id: ArcStr::from("0"), role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))) };
+        let err = client.locate(&memory_key, channel, vec![]).await.unwrap_err();
         assert!(matches!(err, Error::AbstractError(_)), "未配置地址应返回 AbstractError: {:?}", err);
     }
 }
