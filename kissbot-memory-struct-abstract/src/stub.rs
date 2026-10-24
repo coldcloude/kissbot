@@ -9,13 +9,16 @@ use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
 use crate::error::Result;
-use crate::model::{DecisionModel, LevelDecision, MessageGroup};
+use crate::model::{DecisionModel, GroupItem, LevelDecision, MessageGroup};
 use crate::agent_role::AgentRole;
+
+/// 预置分组：批次下标（组内消息在本批中的位置）+ 是否当前 case
+pub type StubGroup = (Vec<usize>, bool);
 
 #[derive(Default)]
 pub struct StubModel {
     /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前 case 即标记为当前 case 组）
-    pub group_decisions: Mutex<VecDeque<Vec<MessageGroup>>>,
+    pub group_decisions: Mutex<VecDeque<Vec<StubGroup>>>,
     pub level_decisions: Mutex<VecDeque<LevelDecision>>,
     /// 每次 summarize 的输入（断言级联时父 case 能看到子 case 摘要）
     pub summary_inputs: Mutex<Vec<ArcStr>>,
@@ -32,14 +35,14 @@ impl StubModel {
     }
 
     /// 预置第 1 轮分组结果（下标范围必须完整覆盖批次，否则归档按失败处理）
-    pub fn push_groups(&self, groups: Vec<MessageGroup>) -> &Self {
+    pub fn push_groups(&self, groups: Vec<StubGroup>) -> &Self {
         self.group_decisions.lock().unwrap().push_back(groups);
         self
     }
 
-    /// 便捷写法：把一批消息分成「当前 case 组 + 若干普通组」
+    /// 便捷写法：把一批消息分成一组
     pub fn push_group(&self, messages: &[usize], is_current: bool) -> &Self {
-        self.push_groups(vec![MessageGroup { messages: messages.to_vec(), is_current }])
+        self.push_groups(vec![(messages.to_vec(), is_current)])
     }
 
     pub fn push_level(&self, decision: LevelDecision) -> &Self {
@@ -63,30 +66,48 @@ impl StubModel {
 
 #[async_trait]
 impl DecisionModel for StubModel {
-    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
-        self.prompts.lock().unwrap().push(ArcStr::from(crate::model::grouping_prompt(batch, current)));
+    async fn group(
+        &self,
+        _agent_role: &AgentRole,
+        _event_id: Option<ArcStr>,
+        items: &[GroupItem],
+        current: Option<&CaseBrief>,
+    ) -> Result<Vec<MessageGroup>> {
+        self.prompts.lock().unwrap().push(ArcStr::from(crate::model::grouping_prompt(items, current)));
         if let Some(groups) = self.group_decisions.lock().unwrap().pop_front() {
             // 与真实实现一致地校验覆盖：预置不完整时立即暴露，而不是静默丢记录
-            let mut next = 0usize;
-            for group in &groups {
-                if group.messages.first() != Some(&next) {
-                    return Err(crate::error::Error::ModelApiError(format!(
-                        "桩分组未完整覆盖批次：期望下一组从下标 {} 开始，实际为 {:?}",
-                        next, group.messages
-                    ).into()));
+            let mut covered = vec![false; items.len()];
+            for (indices, _) in &groups {
+                for &index in indices {
+                    if index >= items.len() || covered[index] {
+                        return Err(crate::error::Error::ModelApiError(format!(
+                            "桩分组下标非法或重复: {}（批次共 {} 条）",
+                            index,
+                            items.len()
+                        ).into()));
+                    }
+                    covered[index] = true;
                 }
-                next = group.messages.last().expect("桩分组非空") + 1;
             }
-            if next != total {
+            if let Some(missing) = covered.iter().position(|covered| !covered) {
                 return Err(crate::error::Error::ModelApiError(format!(
-                    "桩分组未完整覆盖批次：覆盖到下标 {}，批次共 {} 条",
-                    next, total
+                    "桩分组未完整覆盖批次：漏掉下标 {}",
+                    missing
                 ).into()));
             }
-            return Ok(groups);
+            return Ok(groups
+                .into_iter()
+                .map(|(indices, is_current)| MessageGroup {
+                    msg_ids: indices.into_iter().map(|index| items[index].msg_id.clone()).collect(),
+                    is_current,
+                })
+                .collect());
         }
         // 默认：整批一组；有当前 case 即视为当前 case 的延续
-        Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
+        Ok(vec![MessageGroup {
+            msg_ids: items.iter().map(|item| item.msg_id.clone()).collect(),
+            is_current: current.is_some(),
+        }])
     }
 
     async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {

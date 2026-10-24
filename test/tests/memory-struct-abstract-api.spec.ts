@@ -162,6 +162,7 @@ async function locateMessages(
     messages: messages.map((item) => ({
       msg_id: item.msgId,
       time: item.time ?? timeAt(200),
+      user_id: item.user ?? 'alice',
       user_name: item.user ?? 'alice',
       is_self: item.isSelf ?? 0,
       content: { msg_type: 'Text', data: item.text },

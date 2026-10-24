@@ -437,11 +437,10 @@ async fn read_json(path: &Path) -> Result<Option<Value>> {
 mod tests {
     use super::*;
     use crate::records::{RecordBody, RecordEntry};
-    use kissbot_api::{ChannelKey, ChannelRecord, Content, RecordKind};
+    use kissbot_api::{ChannelKey, ChannelRecord, Content};
 
     fn channel(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
-            kind: RecordKind::Channel,
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {

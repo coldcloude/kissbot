@@ -10,7 +10,9 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChannelKey, ChannelRecord, Content, RecordKind, RoleEvent, ThinkRecord, ToolCallRecord, ToolResultRecord,
+    ChannelKey, ChannelRecord, Content, RoleEvent, ThinkRecord, ToolCallRecord, ToolResultRecord,
+    RECORD_CHANNEL, RECORD_CHANNEL_ARC, RECORD_KINDS, RECORD_THINK, RECORD_THINK_ARC,
+    RECORD_TOOL_CALL, RECORD_TOOL_CALL_ARC, RECORD_TOOL_RESULT, RECORD_TOOL_RESULT_ARC,
 };
 
 // ========== Case 原文副本 ==========
@@ -27,12 +29,23 @@ pub enum CaseRecord {
 }
 
 impl CaseRecord {
-    pub fn kind(&self) -> RecordKind {
+    /// 记录类型段（与落盘文件的类型段一致）
+    pub fn kind(&self) -> &'static str {
         match self {
-            CaseRecord::Channel(_) => RecordKind::Channel,
-            CaseRecord::Think(_) => RecordKind::Think,
-            CaseRecord::ToolCall(_) => RecordKind::ToolCall,
-            CaseRecord::ToolResult(_) => RecordKind::ToolResult,
+            CaseRecord::Channel(_) => RECORD_CHANNEL,
+            CaseRecord::Think(_) => RECORD_THINK,
+            CaseRecord::ToolCall(_) => RECORD_TOOL_CALL,
+            CaseRecord::ToolResult(_) => RECORD_TOOL_RESULT,
+        }
+    }
+
+    /// 记录类型段的 `ArcStr` 形态（需要持有的场合，如 [`CaseCursor`]）
+    pub fn kind_arc(&self) -> ArcStr {
+        match self {
+            CaseRecord::Channel(_) => RECORD_CHANNEL_ARC.clone(),
+            CaseRecord::Think(_) => RECORD_THINK_ARC.clone(),
+            CaseRecord::ToolCall(_) => RECORD_TOOL_CALL_ARC.clone(),
+            CaseRecord::ToolResult(_) => RECORD_TOOL_RESULT_ARC.clone(),
         }
     }
 
@@ -120,13 +133,15 @@ pub struct LocateMessage {
     /// 消息标识：分组结果按它标识消息，本批内必须非空且唯一
     pub msg_id: ArcStr,
     pub time: ArcStr,
+    /// 发送者身份：分组输入按它区分说话人
+    pub user_id: ArcStr,
     pub user_name: ArcStr,
     pub is_self: usize,
     pub content: Content,
 }
 
 /// 定位分组：同一 case 的消息合成一组
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocatedGroup {
     /// 组内消息的 `msg_id`：集合（合并同 case 组时取并、调用方按 `contains` 匹配），
     pub messages: HashSet<ArcStr>,
@@ -182,9 +197,23 @@ pub struct CaseSummaryResponse {
 pub struct CaseCursor {
     pub time: ArcStr,
     pub sn: u64,
-    /// 记录类型（`channel` / `think` / `tool-call` / `tool-result`）：
+    /// 记录类型段（`channel` / `think` / `tool-call` / `tool-result`）：
     /// 各类型文件的 `sn` 相互独立，同一时刻的先后只在同类型内可比
-    pub record_type: RecordKind,
+    #[serde(deserialize_with = "deserialize_record_type")]
+    pub record_type: ArcStr,
+}
+
+/// 反序列化记录类型段：只接受四个合法值（其余按请求格式错误处理）
+fn deserialize_record_type<'de, D>(deserializer: D) -> std::result::Result<ArcStr, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let record_type = ArcStr::deserialize(deserializer)?;
+    if RECORD_KINDS.contains(&record_type.as_str()) {
+        Ok(record_type)
+    } else {
+        Err(serde::de::Error::custom(format!("未知的记录类型: {record_type}")))
+    }
 }
 
 impl CaseCursor {
@@ -192,7 +221,7 @@ impl CaseCursor {
         Self {
             time: ArcStr::from(record.time()),
             sn: record.sn(),
-            record_type: record.kind(),
+            record_type: record.kind_arc(),
         }
     }
 }
@@ -285,21 +314,24 @@ impl Default for Watermark {
 }
 
 impl Watermark {
-    pub fn point(&self, kind: crate::RecordKind) -> &WatermarkPoint {
+    /// 某记录类型段的水位（`kind` 取 [`RECORD_CHANNEL`] 等四个常量）
+    pub fn point(&self, kind: &str) -> &WatermarkPoint {
         match kind {
-            crate::RecordKind::Channel => &self.channel,
-            crate::RecordKind::Think => &self.think,
-            crate::RecordKind::ToolCall => &self.tool_call,
-            crate::RecordKind::ToolResult => &self.tool_result,
+            RECORD_CHANNEL => &self.channel,
+            RECORD_THINK => &self.think,
+            RECORD_TOOL_CALL => &self.tool_call,
+            RECORD_TOOL_RESULT => &self.tool_result,
+            other => unreachable!("未知的记录类型段: {other}"),
         }
     }
 
-    pub fn point_mut(&mut self, kind: crate::RecordKind) -> &mut WatermarkPoint {
+    pub fn point_mut(&mut self, kind: &str) -> &mut WatermarkPoint {
         match kind {
-            crate::RecordKind::Channel => &mut self.channel,
-            crate::RecordKind::Think => &mut self.think,
-            crate::RecordKind::ToolCall => &mut self.tool_call,
-            crate::RecordKind::ToolResult => &mut self.tool_result,
+            RECORD_CHANNEL => &mut self.channel,
+            RECORD_THINK => &mut self.think,
+            RECORD_TOOL_CALL => &mut self.tool_call,
+            RECORD_TOOL_RESULT => &mut self.tool_result,
+            other => unreachable!("未知的记录类型段: {other}"),
         }
     }
 }
@@ -340,14 +372,14 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::RecordKind;
 
     fn message() -> LocateMessage {
         LocateMessage {
+            msg_id: ArcStr::new(),
             time: ArcStr::from("2026-09-22 13:48:37"),
+            user_id: ArcStr::from("u1"),
             user_name: ArcStr::from("alice"),
             is_self: 0,
-            msg_id: ArcStr::new(),
             content: Content::Text(ArcStr::from("你好")),
         }
     }
@@ -372,11 +404,11 @@ mod tests {
     #[test]
     fn test_watermark_point_accessors_cover_all_kinds() {
         let mut wm = Watermark::default();
-        for kind in RecordKind::ALL {
-            wm.point_mut(kind).sn = kind as u64 + 1;
+        for (index, kind) in RECORD_KINDS.iter().enumerate() {
+            wm.point_mut(kind).sn = index as u64 + 1;
         }
-        for kind in RecordKind::ALL {
-            assert_eq!(wm.point(kind).sn, kind as u64 + 1, "按类型读写水位");
+        for (index, kind) in RECORD_KINDS.iter().enumerate() {
+            assert_eq!(wm.point(kind).sn, index as u64 + 1, "按类型读写水位");
         }
     }
 
@@ -394,6 +426,7 @@ mod tests {
         assert_eq!(v["channel"], json!({"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"}));
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
         assert_eq!(v["messages"][0]["content"]["msg_type"], "Text");
+        assert_eq!(v["messages"][0]["user_id"], "u1", "消息带发送者身份（分组输入用）");
         assert!(v["messages"][0].get("messenger_id").is_none(), "通道在请求上，消息不再重复携带");
         let back: LocateRequest = serde_json::from_value(v).unwrap();
         assert_eq!(back.messages.len(), 2);
@@ -451,13 +484,18 @@ mod tests {
         })));
         assert_eq!(cursor.time.as_str(), "2026-09-22 13:48:37");
         assert_eq!(cursor.sn, 7);
-        assert_eq!(cursor.record_type, RecordKind::Think);
+        assert_eq!(cursor.record_type.as_str(), RECORD_THINK);
         let v = serde_json::to_value(&cursor).unwrap();
         assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "think"}));
 
         let after: CaseRecordsAfterRequest =
             serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "after": v})).unwrap();
-        assert_eq!(after.after.record_type, RecordKind::Think);
+        assert_eq!(after.after.record_type.as_str(), RECORD_THINK);
+        // 未知记录类型按请求格式错误处理
+        assert!(serde_json::from_value::<CaseRecordsAfterRequest>(json!({
+            "agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1",
+            "after": {"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "unknown"}
+        })).is_err());
 
         let tail: CaseRecordsTailRequest =
             serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "count": 5})).unwrap();
@@ -553,44 +591,40 @@ mod tests {
         assert_eq!(value["sn"], 3);
         assert_eq!(value["content"]["msg_type"], "Text");
         let back: CaseRecord = serde_json::from_value(value).unwrap();
-        assert_eq!(back.kind(), RecordKind::Channel);
+        assert_eq!(back.kind(), RECORD_CHANNEL);
         assert_eq!(back.time(), "2026-09-22 10:00:00");
         assert_eq!(back.sn(), 3);
         assert_eq!(back.sort_key(), ("2026-09-22 10:00:00", 3));
 
         // 四类类型标签
-        for (kind, label) in [
-            (RecordKind::Channel, "channel"),
-            (RecordKind::Think, "think"),
-            (RecordKind::ToolCall, "tool-call"),
-            (RecordKind::ToolResult, "tool-result"),
-        ] {
-            let record = match kind {
-                RecordKind::Channel => CaseRecord::Channel(Arc::new(ChannelRecord {
-                    meta: None,
-                    user_id: ArcStr::from("u"), self_user_id: ArcStr::from("s"),
-                    messenger_id: ArcStr::from("m"), group_id: ArcStr::from("g"),
-                    is_self: 0, msg_id: ArcStr::new(),
-                    messenger_name: ArcStr::new(),
-                    user_name: ArcStr::from("u"), group_name: ArcStr::new(),
-                    content: Content::Text(ArcStr::from("t")),
-                    time: ArcStr::from("t"), sn: 1,
-                })),
-                RecordKind::Think => CaseRecord::Think(Arc::new(ThinkRecord {
-                    reasoning_content: None, thinking: None,
-                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-                })),
-                RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(ToolCallRecord {
-                    tool_name: ArcStr::from("read"), tool_params: Arc::new(Value::Null),
-                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-                })),
-                RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(ToolResultRecord {
-                    tool_result: None,
-                    key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-                })),
-            };
+        let records = [
+            (RECORD_CHANNEL, CaseRecord::Channel(Arc::new(ChannelRecord {
+                meta: None,
+                user_id: ArcStr::from("u"), self_user_id: ArcStr::from("s"),
+                messenger_id: ArcStr::from("m"), group_id: ArcStr::from("g"),
+                is_self: 0, msg_id: ArcStr::new(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("u"), group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from("t")),
+                time: ArcStr::from("t"), sn: 1,
+            }))),
+            (RECORD_THINK, CaseRecord::Think(Arc::new(ThinkRecord {
+                reasoning_content: None, thinking: None,
+                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
+            }))),
+            (RECORD_TOOL_CALL, CaseRecord::ToolCall(Arc::new(ToolCallRecord {
+                tool_name: ArcStr::from("read"), tool_params: Arc::new(Value::Null),
+                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
+            }))),
+            (RECORD_TOOL_RESULT, CaseRecord::ToolResult(Arc::new(ToolResultRecord {
+                tool_result: None,
+                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
+            }))),
+        ];
+        for (label, record) in records {
             assert_eq!(serde_json::to_value(&record).unwrap()["record_type"], label);
-            assert_eq!(record.kind(), kind);
+            assert_eq!(record.kind(), label);
+            assert_eq!(record.kind_arc().as_str(), label);
         }
     }
 

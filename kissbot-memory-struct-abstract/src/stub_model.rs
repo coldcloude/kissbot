@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
 use crate::error::Result;
-use crate::model::{DecisionModel, LevelDecision, MessageGroup};
+use crate::model::{DecisionModel, GroupItem, LevelDecision, MessageGroup};
 use crate::agent_role::AgentRole;
 
 pub const STUB_SUMMARY_PREFIX: ArcStr = arcstr::literal!("桩摘要");
@@ -29,9 +29,18 @@ impl StubModel {
 
 #[async_trait]
 impl DecisionModel for StubModel {
-    async fn group(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, total: usize, current: Option<&CaseBrief>) -> Result<Vec<MessageGroup>> {
+    async fn group(
+        &self,
+        _agent_role: &AgentRole,
+        _event_id: Option<ArcStr>,
+        items: &[GroupItem],
+        current: Option<&CaseBrief>,
+    ) -> Result<Vec<MessageGroup>> {
         // 桩：整批归为一组；有当前 case 即视为当前 case 的延续 → 直接并入当前 case
-        Ok(vec![MessageGroup { messages: (0..total).collect(), is_current: current.is_some() }])
+        Ok(vec![MessageGroup {
+            msg_ids: items.iter().map(|item| item.msg_id.clone()).collect(),
+            is_current: current.is_some(),
+        }])
     }
 
     async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
@@ -50,6 +59,15 @@ impl DecisionModel for StubModel {
 mod tests {
     use super::*;
 
+    fn item(msg_id: &str) -> GroupItem {
+        GroupItem {
+            msg_id: ArcStr::from(msg_id),
+            time: ArcStr::from("2026-09-22 10:00:00"),
+            user_id: ArcStr::from("u1"),
+            content: ArcStr::from("内容"),
+        }
+    }
+
     #[tokio::test]
     async fn stub_is_deterministic() {
         let model = StubModel::new();
@@ -58,10 +76,13 @@ mod tests {
             case_name: ArcStr::from("role-1"),
             summary: ArcStr::from("当前 case"),
         }];
-        let groups = model.group(&agent_role, None, "batch", 2, current.first()).await.unwrap();
-        assert_eq!(groups, vec![MessageGroup { messages: vec![0, 1], is_current: true }]);
-        let groups = model.group(&agent_role, None, "batch", 1, None).await.unwrap();
-        assert_eq!(groups, vec![MessageGroup { messages: vec![0], is_current: false }], "没有当前 case 时不标记");
+        let groups = model.group(&agent_role, None, &[item("m1"), item("m2")], current.first()).await.unwrap();
+        assert_eq!(
+            groups,
+            vec![MessageGroup { msg_ids: vec![ArcStr::from("m1"), ArcStr::from("m2")], is_current: true }]
+        );
+        let groups = model.group(&agent_role, None, &[item("m1")], None).await.unwrap();
+        assert_eq!(groups, vec![MessageGroup { msg_ids: vec![ArcStr::from("m1")], is_current: false }], "没有当前 case 时不标记");
         assert_eq!(
             model.decide_level(&agent_role, None, "seg", &[]).await.unwrap(),
             LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str())

@@ -358,6 +358,7 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
     LocateMessage {
         msg_id: event.incoming_message.msg_id.clone(),
         time: event.incoming_message.time.clone(),
+        user_id: event.incoming_message.user_id.clone(),
         user_name: event.incoming_message.user_name.clone(),
         is_self: 0,
         content: event.incoming_message.content.clone(),

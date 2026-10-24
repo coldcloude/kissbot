@@ -310,56 +310,27 @@ impl From<&ChannelRecord> for ChannelKey {
     }
 }
 
+// ========== 记录类型段 ==========
+
+// 四类原始记录的公共分类（通知、读取与文件命名共用）。不设枚举：读取阶段的记录类型由 body 判定，
+// 原文副本的类型由所在文件的类型段决定，这里只保留类型段本身。
+
+/// 记录文件名的类型段（`{stem}-records-{date}.jsonl`）与 case 原文副本的 `record_type`
+pub const RECORD_CHANNEL: &str = "channel";
+pub const RECORD_THINK: &str = "think";
+pub const RECORD_TOOL_CALL: &str = "tool-call";
+pub const RECORD_TOOL_RESULT: &str = "tool-result";
+
+/// 四类记录（遍历用；顺序与 [`crate::Watermark`] 字段一致）
+pub const RECORD_KINDS: [&str; 4] = [RECORD_CHANNEL, RECORD_THINK, RECORD_TOOL_CALL, RECORD_TOOL_RESULT];
+
+/// 上面四个类型段的 `ArcStr` 形态：需要持有类型段时直接克隆，避免每次从 `&str` 分配
+pub const RECORD_CHANNEL_ARC: ArcStr = arcstr::literal!("channel");
+pub const RECORD_THINK_ARC: ArcStr = arcstr::literal!("think");
+pub const RECORD_TOOL_CALL_ARC: ArcStr = arcstr::literal!("tool-call");
+pub const RECORD_TOOL_RESULT_ARC: ArcStr = arcstr::literal!("tool-result");
+
 //===================== New data notification ======================
-
-/// 记录类型：四类原始记录的公共分类（通知、读取与文件命名共用）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RecordKind {
-    Channel,
-    Think,
-    ToolCall,
-    ToolResult,
-}
-
-impl RecordKind {
-    pub const ALL: [RecordKind; 4] = [
-        RecordKind::Channel,
-        RecordKind::Think,
-        RecordKind::ToolCall,
-        RecordKind::ToolResult,
-    ];
-
-    /// 记录文件名的类型段（`{stem}-records-{date}.jsonl`）
-    pub fn file_stem(self) -> &'static str {
-        match self {
-            RecordKind::Channel => "channel",
-            RecordKind::Think => "think",
-            RecordKind::ToolCall => "tool-call",
-            RecordKind::ToolResult => "tool-result",
-        }
-    }
-
-    /// 通知帧的 payload_type（kai-ws 信封；记录类型由 payload_type 承载）
-    pub fn payload_type(self) -> u32 {
-        match self {
-            RecordKind::Channel => TYPE_NOTIFY_CHANNEL,
-            RecordKind::Think => TYPE_NOTIFY_THINK,
-            RecordKind::ToolCall => TYPE_NOTIFY_TOOL_CALL,
-            RecordKind::ToolResult => TYPE_NOTIFY_TOOL_RESULT,
-        }
-    }
-
-    pub fn from_payload_type(payload_type: u32) -> Option<Self> {
-        match payload_type {
-            TYPE_NOTIFY_CHANNEL => Some(RecordKind::Channel),
-            TYPE_NOTIFY_THINK => Some(RecordKind::Think),
-            TYPE_NOTIFY_TOOL_CALL => Some(RecordKind::ToolCall),
-            TYPE_NOTIFY_TOOL_RESULT => Some(RecordKind::ToolResult),
-            _ => None,
-        }
-    }
-}
 
 /// 新数据通知 payload_type：memory-store → memory-struct-*（0x3001xxxx）
 pub const TYPE_NOTIFY_CHANNEL: u32 = 0x3001_0001;
@@ -849,27 +820,21 @@ mod tests {
         assert_eq!(deserialized.role_event, Arc::new(RoleEvent::new(ArcStr::from("default"))));
     }
 
-    // ========== New data notification ==========
+    // ========== 记录类型段 ==========
 
     #[test]
-    fn test_record_kind_file_stem_and_payload_type() {
-        assert_eq!(RecordKind::Channel.file_stem(), "channel");
-        assert_eq!(RecordKind::ToolCall.file_stem(), "tool-call");
-        for kind in RecordKind::ALL {
-            assert_eq!(RecordKind::from_payload_type(kind.payload_type()), Some(kind), "payload_type 往返");
-        }
-        assert_eq!(RecordKind::from_payload_type(0x9999_9999), None);
+    fn test_record_kind_constants() {
+        assert_eq!(RECORD_KINDS, ["channel", "think", "tool-call", "tool-result"]);
+        // ArcStr 形态与 &str 形态一一对应
+        assert_eq!(RECORD_CHANNEL_ARC.as_str(), RECORD_CHANNEL);
+        assert_eq!(RECORD_THINK_ARC.as_str(), RECORD_THINK);
+        assert_eq!(RECORD_TOOL_CALL_ARC.as_str(), RECORD_TOOL_CALL);
+        assert_eq!(RECORD_TOOL_RESULT_ARC.as_str(), RECORD_TOOL_RESULT);
         // 四类 payload_type 互不相同
-        let mut types: Vec<u32> = RecordKind::ALL.iter().map(|k| k.payload_type()).collect();
+        let mut types = vec![TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL, TYPE_NOTIFY_TOOL_RESULT];
         types.sort_unstable();
         types.dedup();
         assert_eq!(types.len(), 4);
-    }
-
-    #[test]
-    fn test_record_kind_serde_kebab_case() {
-        assert_eq!(serde_json::to_string(&RecordKind::ToolCall).unwrap(), r#""tool-call""#);
-        assert_eq!(serde_json::from_str::<RecordKind>(r#""tool-result""#).unwrap(), RecordKind::ToolResult);
     }
 
     #[test]

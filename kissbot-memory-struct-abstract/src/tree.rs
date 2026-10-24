@@ -238,7 +238,6 @@ mod tests {
 
     fn entry(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
-            kind: kissbot_api::RecordKind::Channel,
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {

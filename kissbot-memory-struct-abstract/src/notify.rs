@@ -1,7 +1,7 @@
 //! 通知订阅：作为 WS 客户端连接 memory-store 的通知服务，维护长连接与重连。
 //!
-//! 帧格式为 kai-ws 信封：记录类型由 `payload_type` 承载（见
-//! [`kissbot_api::RecordKind::payload_type`]），`payload` 为 `RecordNotification`。
+//! 帧格式为 kai-ws 信封：记录类型由 `payload_type` 承载（见 kissbot-api 的
+//! `TYPE_NOTIFY_*` 常量），`payload` 为 `RecordNotification`。
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -12,7 +12,10 @@ use kai_ws::{
     TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage,
     WsProcessorContext,
 };
-use kissbot_api::{RecordKind, RecordNotification};
+use kissbot_api::{
+    RecordNotification, RECORD_CHANNEL, RECORD_THINK, RECORD_TOOL_CALL, RECORD_TOOL_RESULT,
+    TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL, TYPE_NOTIFY_TOOL_RESULT,
+};
 use kissbot_security::HEADER_API_KEY;
 use tokio::sync::{Notify, RwLock};
 use tracing::{error, info, warn};
@@ -67,9 +70,14 @@ impl WsProcessorContext for NotifyClient {
 
         ws_context.set_close_processor(Arc::new(NotifyCloseProcessor { client: Arc::downgrade(&self) }));
 
-        for kind in RecordKind::ALL {
+        for (kind, payload_type) in [
+            (RECORD_CHANNEL, TYPE_NOTIFY_CHANNEL),
+            (RECORD_THINK, TYPE_NOTIFY_THINK),
+            (RECORD_TOOL_CALL, TYPE_NOTIFY_TOOL_CALL),
+            (RECORD_TOOL_RESULT, TYPE_NOTIFY_TOOL_RESULT),
+        ] {
             ws_context.set_json_processor(
-                kind.payload_type(),
+                payload_type,
                 Arc::new(RecordNotificationProcessor { service: self.service.clone(), kind }),
             );
         }
@@ -96,14 +104,15 @@ impl WsCloseProcessor for NotifyCloseProcessor {
 
 struct RecordNotificationProcessor {
     service: Arc<AbstractService>,
-    kind: RecordKind,
+    /// 记录类型段（`channel` / `think` / `tool-call` / `tool-result`）
+    kind: &'static str,
 }
 
 #[async_trait]
 impl WsJsonProcessor for RecordNotificationProcessor {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         let Some(payload) = data.payload else {
-            warn!("[abstract] notification frame without payload: {:?}", self.kind);
+            warn!("[abstract] notification frame without payload: {}", self.kind);
             return;
         };
         let notification = match serde_json::from_value::<RecordNotification>(payload) {
@@ -115,7 +124,7 @@ impl WsJsonProcessor for RecordNotificationProcessor {
         };
         if let Err(e) = self.service.on_notification(self.kind, &notification).await {
             error!(
-                "[abstract] handle notification ({:?}, {}/{:?}) failed: {}",
+                "[abstract] handle notification ({}, {}/{:?}) failed: {}",
                 self.kind, notification.agent_id, notification.role_event, e
             );
         }
@@ -176,11 +185,11 @@ mod tests {
         }
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), lines).await.unwrap();
 
-        let processor = RecordNotificationProcessor { service: service.clone(), kind: RecordKind::Channel };
+        let processor = RecordNotificationProcessor { service: service.clone(), kind: RECORD_CHANNEL };
         let ws_context = Arc::new(WsContext::new(4));
         let frame = WsMessage {
             sn: 0,
-            payload_type: RecordKind::Channel.payload_type(),
+            payload_type: TYPE_NOTIFY_CHANNEL,
             status_code: kai_ws::CODE_SUCCESS,
             payload: Some(serde_json::json!({
                 "agent_id": "0", "role_event": {"role_name": "dev"}, "time": "2026-09-22 10:02:00", "is_self": 0,
@@ -227,10 +236,10 @@ mod tests {
     async fn processor_ignores_bad_payload() {
         let temp = tempfile::tempdir().unwrap();
         let service = service(temp.path());
-        let processor = RecordNotificationProcessor { service, kind: RecordKind::Think };
+        let processor = RecordNotificationProcessor { service, kind: RECORD_THINK };
         let frame = WsMessage {
             sn: 0,
-            payload_type: RecordKind::Think.payload_type(),
+            payload_type: TYPE_NOTIFY_THINK,
             status_code: kai_ws::CODE_SUCCESS,
             payload: Some(serde_json::json!({"unexpected": true})),
         };
@@ -242,10 +251,10 @@ mod tests {
     async fn processor_without_payload_is_noop() {
         let temp = tempfile::tempdir().unwrap();
         let service = service(temp.path());
-        let processor = RecordNotificationProcessor { service, kind: RecordKind::ToolCall };
+        let processor = RecordNotificationProcessor { service, kind: RECORD_TOOL_CALL };
         let frame = WsMessage {
             sn: 0,
-            payload_type: RecordKind::ToolCall.payload_type(),
+            payload_type: TYPE_NOTIFY_TOOL_CALL,
             status_code: kai_ws::CODE_SUCCESS,
             payload: None,
         };

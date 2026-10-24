@@ -6,6 +6,7 @@
 //! 判定的两个参数是：`agent_role`（角色，决定 case 树与会话所属 agent）与
 //! `event_id`（`None` 为角色模式，`Some` 为事件模式）；不存在单独的模型归属结构。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,10 +26,26 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::agent_role::{AgentRole, session_id, role_event_of};
 
-/// 第 1 轮（分组轮）的一个分组：属于同一 case 的消息（批次内下标，升序）
+/// 分组输入的一条原文消息：一条通道消息一条
+///
+/// 思考/工具不是独立消息：它们是所属消息 `Multi` 内容的一部分，已按 `<think>` / `<reasoning_content>` /
+/// `<tool_call>` / `<tool_result>` 标签内嵌到 `content` 里，整条消息只占一个条目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupItem {
+    /// 分组标识（消息的 `msg_id`；历史占位记录没有 msg_id 时由归档器给兜底标识），批次内唯一
+    pub msg_id: ArcStr,
+    pub time: ArcStr,
+    /// 发送者身份
+    pub user_id: ArcStr,
+    /// 原文（思考/工具已内嵌）
+    pub content: ArcStr,
+}
+
+/// 第 1 轮（分组轮）的一个分组：属于同一 case 的消息标识
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageGroup {
-    pub messages: Vec<usize>,
+    /// 组内消息的 `msg_id`（集合语义：组内顺序不构成约定）
+    pub msg_ids: Vec<ArcStr>,
     /// 是否属于当前 case（该通道的当前话题延续）
     pub is_current: bool,
 }
@@ -72,8 +89,7 @@ pub trait DecisionModel: Send + Sync {
         &self,
         agent_role: &AgentRole,
         event_id: Option<ArcStr>,
-        batch: &str,
-        total: usize,
+        items: &[GroupItem],
         current: Option<&CaseBrief>,
     ) -> Result<Vec<MessageGroup>>;
 
@@ -93,7 +109,7 @@ pub trait DecisionModel: Send + Sync {
 
 // ========== 提示词 ==========
 
-const SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是记忆 case 归档与定位的判定器。输入是记忆记录文本与候选 case 摘要。\
+const SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是记忆 case 归档与定位的判定器。输入是记忆记录（固定格式 JSON 或文本）与候选 case 摘要。\
 你只输出一个 JSON 对象，不输出解释、markdown 代码块或其他任何内容。");
 
 fn render_level(level: &[CaseBrief]) -> String {
@@ -107,8 +123,24 @@ fn render_level(level: &[CaseBrief]) -> String {
         .join("\n")
 }
 
-/// 第 1 轮（分组轮）提示词：给出当前 case 与全部待处理消息，让模型按 case 分组并标记当前 case
-pub fn grouping_prompt(batch: &str, current: Option<&CaseBrief>) -> String {
+/// 分组输入：固定格式的 JSON 数组，每项四个字段 `msg_id` / `time` / `user_id` / `content`
+pub fn grouping_batch(items: &[GroupItem]) -> String {
+    let messages: Vec<Value> = items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "msg_id": item.msg_id,
+                "time": item.time,
+                "user_id": item.user_id,
+                "content": item.content,
+            })
+        })
+        .collect();
+    serde_json::to_string(&messages).unwrap_or_else(|_| String::from("[]"))
+}
+
+/// 第 1 轮（分组轮）提示词：写明输入格式、分组操作与输出格式，要求按 `msg_id` 给出每组的原文列表
+pub fn grouping_prompt(items: &[GroupItem], current: Option<&CaseBrief>) -> String {
     let current = match current {
         Some(brief) => format!("- {}: {}", brief.case_name, brief.summary),
         None => "（该通道还没有当前 case）".to_string(),
@@ -120,14 +152,21 @@ pub fn grouping_prompt(batch: &str, current: Option<&CaseBrief>) -> String {
     };
     format!(
         "当前 case：\n{current}\n\n\
-待处理消息（每行格式 `[下标] 时间 内容`，下标从 0 开始）：\n{batch}\n\n\
-请把这些消息按 case 分组（一组 = 一个独立话题/case）：\n\
-- `messages` 是该组消息的下标数组，升序、不重复、不遗漏\n\
-- 各组按首个下标升序排列，且合起来正好覆盖全部下标\n\
-- {current_rule}\n\
-只输出 JSON，例如 {{\"groups\":[{{\"messages\":[0,1],\"current\":true}},{{\"messages\":[2,3],\"current\":false}}]}}",
+输入格式：`messages` 是 JSON 数组，每项固定四个字段：\
+`msg_id`（消息标识）、`time`（时间）、`user_id`（发送者）、`content`（原文，字符串）。\
+思考与工具不是独立条目：它们已按顺序内嵌在所属消息的 `content` 里，\
+分别用 <think>…</think>、<reasoning_content>…</reasoning_content>、<tool_call>…</tool_call>、\
+<tool_result>…</tool_result> 标签包裹，每条消息一行、一个 `msg_id`。\n\
+messages：\n{messages}\n\n\
+分组操作：\n\
+- 按 case 分组：一个 case 是一个独立话题，同一话题的消息即使中间夹着别的话题也要放进同一组；\n\
+- 每条消息必须且只能属于一个组（不重不漏），组内顺序没有意义；\n\
+- 每组输出该组全部消息的 `msg_id` 列表，`msg_id` 原样照抄，不要改写、不要用下标代替；\n\
+- {current_rule}。\n\n\
+输出格式：只输出一个 JSON 对象，不要解释、不要 markdown 代码块：\n\
+{{\"groups\":[{{\"msg_ids\":[\"<msg_id>\",\"<msg_id>\"],\"current\":true}},{{\"msg_ids\":[\"<msg_id>\"],\"current\":false}}]}}",
         current = current,
-        batch = batch,
+        messages = grouping_batch(items),
         current_rule = current_rule
     )
 }
@@ -136,7 +175,7 @@ pub fn grouping_prompt(batch: &str, current: Option<&CaseBrief>) -> String {
 pub fn level_prompt(batch: &str, level: &[CaseBrief]) -> String {
     format!(
         "当层 case（id + 摘要）：\n{level}\n\n\
-待归并内容（每行格式 `[序号] 时间 内容`）：\n{batch}\n\n\
+待归并内容（每行一条消息，格式 `[时间] 说话人: 原文`；思考/工具内容已内嵌在原文里）：\n{batch}\n\n\
 请判断：\n\
 - 若应并入某个已有 case，输出 {{\"target\":\"<case_name>\"}}\n\
 - 若应在本层新增 case，输出 {{\"target\":\"new\",\"name\":\"<名称>\",\"summary\":\"<摘要>\"}}：\
@@ -177,11 +216,12 @@ pub fn extract_json(text: &str) -> Result<Value> {
         .map_err(|e| Error::ModelApiError(format!("模型输出 JSON 解析失败: {} ({})", e, text).into()))
 }
 
-/// 第 1 轮输出：按 case 分组的结果。
+/// 第 1 轮输出：按 case 分组的结果，每组是该组原文消息的 `msg_id` 列表。
 ///
-/// 严格校验分组可拼成完整批次：下标必须唯一、升序、组内不重复、各组按首下标升序，
-/// 且合起来正好覆盖 `0..total`——漏掉任何一条都不允许（否则该记录会被水位跳过而丢失）。
-pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
+/// 严格校验分组可拼成完整批次：`msg_id` 必须都在批次里、每组非空、每个 `msg_id` 恰好出现一次、
+/// 且合起来正好覆盖 `expected` 全部标识——漏掉任何一条都不允许（否则该记录会被水位跳过而丢失）。
+/// 组之间、组内都不要求顺序（话题消息可以交错），只要求集合覆盖。
+pub fn parse_groups(value: &Value, expected: &[ArcStr]) -> Result<Vec<MessageGroup>> {
     let groups = value
         .get("groups")
         .and_then(|g| g.as_array())
@@ -190,48 +230,46 @@ pub fn parse_groups(value: &Value, total: usize) -> Result<Vec<MessageGroup>> {
         return Err(Error::ModelApiError("分组输出 groups 为空".into()));
     }
 
+    let expected_set: HashSet<&str> = expected.iter().map(|id| id.as_str()).collect();
+    let mut seen: HashSet<&str> = HashSet::with_capacity(expected.len());
     let mut parsed: Vec<MessageGroup> = Vec::with_capacity(groups.len());
-    let mut next_expected = 0usize;
     for (index, group) in groups.iter().enumerate() {
-        let messages = group
-            .get("messages")
+        let msg_ids = group
+            .get("msg_ids")
             .and_then(|m| m.as_array())
-            .ok_or_else(|| Error::ModelApiError(format!("第 {} 组缺少 messages: {}", index, group).into()))?;
-        let mut indices = Vec::with_capacity(messages.len());
-        for message in messages {
-            let value = message
-                .as_u64()
-                .ok_or_else(|| Error::ModelApiError(format!("第 {} 组的 messages 含非整数下标: {}", index, message).into()))?;
-            let value = value as usize;
-            if value >= total {
-                return Err(Error::ModelApiError(format!(
-                    "第 {} 组下标 {} 超出批次范围（共 {} 条）",
-                    index, value, total
-                ).into()));
-            }
-            if indices.last().map(|last| value <= *last).unwrap_or(false) {
-                return Err(Error::ModelApiError(format!("第 {} 组下标未严格升序: {:?}", index, messages).into()));
-            }
-            indices.push(value);
-        }
-        if indices.is_empty() {
+            .ok_or_else(|| Error::ModelApiError(format!("第 {} 组缺少 msg_ids: {}", index, group).into()))?;
+        if msg_ids.is_empty() {
             return Err(Error::ModelApiError(format!("第 {} 组没有消息", index).into()));
         }
-        // 各组按顺序首尾相接：不漏、不重、不交叉
-        if indices[0] != next_expected {
-            return Err(Error::ModelApiError(format!(
-                "分组未覆盖全部消息：期望第 {} 组从下标 {} 开始，实际为 {:?}",
-                index, next_expected, indices
-            ).into()));
+        let mut ids = Vec::with_capacity(msg_ids.len());
+        for msg_id in msg_ids {
+            let msg_id = msg_id
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| Error::ModelApiError(format!("第 {} 组的 msg_ids 含非法标识: {}", index, msg_id).into()))?;
+            if !expected_set.contains(msg_id) {
+                return Err(Error::ModelApiError(format!(
+                    "第 {} 组的 msg_id {} 不在本批消息里（批次共 {} 条）",
+                    index, msg_id, expected.len()
+                ).into()));
+            }
+            if !seen.insert(msg_id) {
+                return Err(Error::ModelApiError(format!(
+                    "第 {} 组的 msg_id {} 重复出现（每条消息只能属于一个组）",
+                    index, msg_id
+                ).into()));
+            }
+            ids.push(ArcStr::from(msg_id));
         }
-        next_expected = indices[indices.len() - 1] + 1;
         let is_current = group.get("current").and_then(|c| c.as_bool()).unwrap_or(false);
-        parsed.push(MessageGroup { messages: indices, is_current });
+        parsed.push(MessageGroup { msg_ids: ids, is_current });
     }
-    if next_expected != total {
+    let missing: Vec<&str> = expected_set.iter().filter(|id| !seen.contains(**id)).copied().collect();
+    if !missing.is_empty() {
         return Err(Error::ModelApiError(format!(
-            "分组未覆盖全部消息：覆盖到下标 {}，批次共 {} 条",
-            next_expected, total
+            "分组未覆盖全部消息：漏掉 {} 条（{:?}）",
+            missing.len(),
+            missing
         ).into()));
     }
     Ok(parsed)
@@ -405,13 +443,13 @@ impl DecisionModel for LlmModel {
         &self,
         agent_role: &AgentRole,
         event_id: Option<ArcStr>,
-        batch: &str,
-        total: usize,
+        items: &[GroupItem],
         current: Option<&CaseBrief>,
     ) -> Result<Vec<MessageGroup>> {
-        let value = self.call(agent_role, event_id, &grouping_prompt(batch, current)).await?;
-        // 按下标总数严格校验：必须完整覆盖批次，漏掉任何一条都按失败处理（不能让它被水位跳过）
-        parse_groups(&value, total)
+        let value = self.call(agent_role, event_id, &grouping_prompt(items, current)).await?;
+        // 按批次标识严格校验：必须完整覆盖批次，漏掉任何一条都按失败处理（不能让它被水位跳过）
+        let expected: Vec<ArcStr> = items.iter().map(|item| item.msg_id.clone()).collect();
+        parse_groups(&value, &expected)
     }
 
     async fn decide_level(
@@ -452,33 +490,35 @@ mod tests {
 
     #[test]
     fn parse_groups_requires_full_coverage() {
-        // 合法：两组、首尾相接、覆盖全部下标
+        let expected: Vec<ArcStr> = ["m1", "m2", "m3"].into_iter().map(ArcStr::from).collect();
+        // 合法：同一话题的消息可以交错（m1/m3 一组、m2 另一组），组内顺序不构成约定
         let groups = parse_groups(&json!({"groups":[
-            {"messages":[0,1],"current":true},
-            {"messages":[2],"current":false}
-        ]}), 3).unwrap();
+            {"msg_ids":["m3","m1"],"current":true},
+            {"msg_ids":["m2"],"current":false}
+        ]}), &expected).unwrap();
         assert_eq!(groups, vec![
-            MessageGroup { messages: vec![0, 1], is_current: true },
-            MessageGroup { messages: vec![2], is_current: false },
+            MessageGroup { msg_ids: vec![ArcStr::from("m3"), ArcStr::from("m1")], is_current: true },
+            MessageGroup { msg_ids: vec![ArcStr::from("m2")], is_current: false },
         ]);
         // current 缺省为 false
-        let groups = parse_groups(&json!({"groups":[{"messages":[0]}]}), 1).unwrap();
+        let groups = parse_groups(&json!({"groups":[{"msg_ids":["m1"]}]}), &expected[..1]).unwrap();
         assert!(!groups[0].is_current);
 
-        // 漏掉尾部下标 → 失败（不能让它被水位跳过）
-        assert!(parse_groups(&json!({"groups":[{"messages":[0]}]}), 2).is_err());
-        // 下标越界
-        assert!(parse_groups(&json!({"groups":[{"messages":[0,5]}]}), 2).is_err());
-        // 组内未严格升序 / 重复
-        assert!(parse_groups(&json!({"groups":[{"messages":[1,0]}]}), 2).is_err());
-        assert!(parse_groups(&json!({"groups":[{"messages":[0,0]}]}), 2).is_err());
-        // 组间不连续（留洞）与空组
-        assert!(parse_groups(&json!({"groups":[{"messages":[0]},{"messages":[2]}]}), 3).is_err());
-        assert!(parse_groups(&json!({"groups":[{"messages":[]}]}), 1).is_err());
+        // 漏掉标识 → 失败（不能让它被水位跳过）
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":["m1"]}]}), &expected).is_err());
+        // 不在批次里的标识
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":["m1","m9"]}]}), &expected[..1]).is_err());
+        // 同一标识出现在两个组 / 同一组里重复
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":["m1","m3"]},{"msg_ids":["m1"]}]}), &expected).is_err());
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":["m1","m1"]}]}), &expected[..1]).is_err());
+        // 空组、空标识、用下标代替 msg_id
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":[]}]}), &expected[..1]).is_err());
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":[""]}]}), &expected[..1]).is_err());
+        assert!(parse_groups(&json!({"groups":[{"msg_ids":[0]}]}), &expected[..1]).is_err());
         // 结构错误
-        assert!(parse_groups(&json!({}), 1).is_err());
-        assert!(parse_groups(&json!({"groups":[]}), 0).is_err());
-        assert!(parse_groups(&json!({"groups":[{"messages":["a"]}]}), 1).is_err());
+        assert!(parse_groups(&json!({}), &expected[..1]).is_err());
+        assert!(parse_groups(&json!({"groups":[]}), &[]).is_err());
+        assert!(parse_groups(&json!({"groups":[{"messages":["m1"]}]}), &expected[..1]).is_err());
     }
 
     #[test]
@@ -525,15 +565,24 @@ mod tests {
     #[test]
     fn prompts_include_context_and_require_json() {
         let candidates = vec![brief("e1", "聊了天气"), brief("e2", "聊了工作")];
+        let items = vec![
+            item("m1", "2026-09-22 10:00:00", "u1", "你好"),
+            item("m2", "2026-09-22 10:01:00", "self", "<reasoning_content>想法</reasoning_content>\n你好呀"),
+        ];
 
-        // 分组轮：当前 case + 全部待处理消息
-        let prompt = grouping_prompt("[0] 2026-09-22 10:00:00 alice: 你好\n[1] 2026-09-22 10:01:00 bot: 你好呀", Some(&candidates[0]));
+        // 分组轮：写明输入格式、分组操作、输出格式，输入是固定字段的 JSON
+        let prompt = grouping_prompt(&items, Some(&candidates[0]));
         assert!(prompt.contains("- e1: 聊了天气"));
-        assert!(prompt.contains("\"groups\""));
-        assert!(prompt.contains("[0] 2026-09-22 10:00:00 alice: 你好"));
+        assert!(prompt.contains("输入格式") && prompt.contains("分组操作") && prompt.contains("输出格式"));
+        assert!(prompt.contains("\"groups\"") && prompt.contains("\"msg_ids\""));
+        assert!(prompt.contains("\"msg_id\":\"m1\""));
+        assert!(prompt.contains("\"time\":\"2026-09-22 10:00:00\""));
+        assert!(prompt.contains("\"user_id\":\"u1\""));
+        assert!(prompt.contains("\"content\":\"你好\""));
+        assert!(prompt.contains("<reasoning_content>想法</reasoning_content>"), "思考已内嵌在原文里");
         assert!(prompt.contains("标记 \"current\": true"));
         // 没有当前 case：要求所有组都不得标记 current
-        let prompt = grouping_prompt("[0] 内容", None);
+        let prompt = grouping_prompt(&items[..1], None);
         assert!(prompt.contains("还没有当前 case"));
         assert!(prompt.contains("都不得标记 current"));
 
@@ -541,5 +590,31 @@ mod tests {
         assert!(prompt.contains("当层 case"));
         assert!(prompt.contains("\"target\":\"new\""));
         assert_eq!(render_level(&[]), "（当层没有 case）");
+    }
+
+    fn item(msg_id: &str, time: &str, user_id: &str, content: &str) -> GroupItem {
+        GroupItem {
+            msg_id: ArcStr::from(msg_id),
+            time: ArcStr::from(time),
+            user_id: ArcStr::from(user_id),
+            content: ArcStr::from(content),
+        }
+    }
+
+    /// 分组输入是固定字段的 JSON 数组：每项恰好 msg_id / time / user_id / content 四个字段
+    #[test]
+    fn grouping_batch_is_fixed_shape_json() {
+        let items = vec![item("m1", "2026-09-22 10:00:00", "u1", "你好"), item("m2", "2026-09-22 10:01:00", "u2", "在吗")];
+        let batch: Vec<Value> = serde_json::from_str(&grouping_batch(&items)).unwrap();
+        assert_eq!(batch.len(), 2);
+        for (index, value) in batch.iter().enumerate() {
+            let object = value.as_object().expect("每项是 JSON 对象");
+            let mut keys: Vec<&str> = object.keys().map(|key| key.as_str()).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, vec!["content", "msg_id", "time", "user_id"], "第 {} 项字段固定", index);
+        }
+        assert_eq!(batch[0]["msg_id"], "m1");
+        assert_eq!(batch[0]["user_id"], "u1");
+        assert_eq!(batch[0]["content"], "你好");
     }
 }

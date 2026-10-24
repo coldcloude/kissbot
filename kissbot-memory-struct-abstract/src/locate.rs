@@ -1,6 +1,5 @@
-//! 定位结果汇总：归档器对「记录 + 只用于定位的新消息」分组并逐层判定所属 case 后，
-//! 本模块把各组合并成对外响应（[`merge_located`]：同一 case 的多组合并成一组），并提供新消息的文本渲染
-//! [`render_message`]。
+//! 定位结果汇总：归档器对「待归档消息 + 只用于定位的新消息」分组并逐层判定所属 case 后，
+//! 本模块把各组合并成对外响应（[`merge_located`]：同一 case 的多组合并成一组）。
 //!
 //! 定位复用归档的判定：每个组都会命中已有 case 或建出 case（只含新消息的组也一样，
 //! 新话题建出的 case 记忆条数为 0），见 [`crate::archive`]。
@@ -8,9 +7,7 @@
 use std::{collections::{HashMap, hash_map::Entry}};
 
 use arcstr::ArcStr;
-use kissbot_api::{LocateMessage, LocateResponse, LocatedGroup};
-
-use crate::records::render_content;
+use kissbot_api::{LocatedGroup, LocateResponse};
 
 /// 汇总定位分组：同一 case 的多个组按消息 `msg_id` 的并集合并成一组；分组顺序不构成约定。
 pub(crate) fn merge_located(groups: impl IntoIterator<Item = LocatedGroup>) -> LocateResponse {
@@ -30,12 +27,6 @@ pub(crate) fn merge_located(groups: impl IntoIterator<Item = LocatedGroup>) -> L
     }
 }
 
-/// 新消息的可判定文本
-pub fn render_message(message: &LocateMessage) -> String {
-    let self_mark = if message.is_self > 0 { " (本人)" } else { "" };
-    format!("[{}] {}: {}{}", message.time, message.user_name, render_content(&message.content), self_mark)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -43,11 +34,11 @@ mod tests {
 
     use super::*;
     use crate::archive::Archiver;
-    use crate::model::{LevelDecision, MessageGroup};
-    use crate::records::{RecordBody, RecordEntry};
+    use crate::model::LevelDecision;
+    use crate::records::{RecordBody, RecordEntry, StoreMessage, PendingMessage};
     use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
-    use kissbot_api::{ChannelKey, ChannelRecord, Content, RecordKind, RoleEvent};
+    use kissbot_api::{ChannelKey, ChannelRecord, Content, LocateMessage, RoleEvent};
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
@@ -58,7 +49,6 @@ mod tests {
 
     fn record_entry(time: &str, sn: u64, text: &str) -> RecordEntry {
         RecordEntry {
-            kind: RecordKind::Channel,
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
@@ -99,10 +89,11 @@ mod tests {
     /// 测试用定位消息：用文本充当 msg_id（分组结果按 msg_id 标识消息）
     fn message(text: &str) -> LocateMessage {
         LocateMessage {
+            msg_id: ArcStr::from(text),
             time: ArcStr::from("2099-01-01 14:00:00"),
+            user_id: ArcStr::from("u1"),
             user_name: ArcStr::from("alice"),
             is_self: 0,
-            msg_id: ArcStr::from(text),
             content: Content::Text(ArcStr::from(text)),
         }
     }
@@ -130,9 +121,22 @@ mod tests {
         channel: &ChannelKey,
         entries: &[RecordEntry],
     ) {
+        let pending: Vec<PendingMessage> = entries.iter().map(pending_of).collect();
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
-        archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, entries, &[]).await.unwrap();
+        archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, &pending, &[]).await.unwrap();
+    }
+
+    /// 测试用：通道记录 → 待归档消息（无思考/工具详情）
+    fn pending_of(record: &RecordEntry) -> PendingMessage {
+        PendingMessage {
+            message: StoreMessage {
+                channel: record.channel_key().expect("测试只归档通道记录"),
+                record: record.clone(),
+                details: Vec::new(),
+            },
+            pending: vec![record.clone()],
+        }
     }
 
     /// 定位一批消息：走归档入口但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）
@@ -252,9 +256,9 @@ mod tests {
 
         // 4 条消息分成三组：前两条延续当前 case case-2；第三条命中已有 case case；第四条是新话题
         model.push_groups(vec![
-            MessageGroup { messages: vec![0, 1], is_current: true },
-            MessageGroup { messages: vec![2], is_current: false },
-            MessageGroup { messages: vec![3], is_current: false },
+            (vec![0, 1], true),
+            (vec![2], false),
+            (vec![3], false),
         ]);
         model.push_level(LevelDecision::Merge("role-case".into())); // 第三条：顶层命中 case（叶子）
         model.push_level(LevelDecision::new_case("third", "第三摘要")); // 第四条：顶层未命中 → 新话题
@@ -345,9 +349,9 @@ mod tests {
 
         // 两组都标记为当前 case 的延续，中间隔着一条别的话题 → 两组落点相同
         model.push_groups(vec![
-            MessageGroup { messages: vec![0], is_current: true },
-            MessageGroup { messages: vec![1], is_current: false },
-            MessageGroup { messages: vec![2], is_current: true },
+            (vec![0], true),
+            (vec![1], false),
+            (vec![2], true),
         ]);
         model.push_level(LevelDecision::new_case("other", "别的话题摘要"));
         let response = locate(
@@ -428,13 +432,5 @@ mod tests {
         assert!(Arc::ptr_eq(&shared, &handle), "角色模式与事件模式共用同一个句柄");
         assert_eq!(shared.id, AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "记忆后缀 dev-e1 的角色是 dev");
         assert!(shared.state.lock().await.tree.contains("event-e1"), "case 在角色共享的 case 树上");
-    }
-
-    #[test]
-    fn render_message_marks_self() {
-        let mut msg = message("你好");
-        assert_eq!(render_message(&msg), "[2099-01-01 14:00:00] alice: 你好");
-        msg.is_self = 1;
-        assert!(render_message(&msg).ends_with("(本人)"));
     }
 }

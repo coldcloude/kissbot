@@ -171,7 +171,7 @@ mod tests {
         let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
             "agent_id": "0", "role_event": {"role_name": "dev"},
             "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},
-            "messages": [{"msg_id": "m1", "time": "2026-09-22 13:48:37", "user_name": "alice", "is_self": 0,
+            "messages": [{"msg_id": "m1", "time": "2026-09-22 13:48:37", "user_id": "u1", "user_name": "alice", "is_self": 0,
                           "content": {"msg_type": "Text", "data": "你好"}}]
         })).await;
         assert_eq!(status, StatusCode::OK);

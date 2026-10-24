@@ -1,7 +1,7 @@
 //! 新数据通知服务：接受记忆结构实现模块的 WS 连接，写入完成后广播新数据。
 //!
 //! 帧格式复用 kai-ws 信封（`WsMessage`）：记录类型由 `payload_type` 承载
-//! （见 [`kissbot_api::RecordKind::payload_type`]），`payload` 为 [`RecordNotification`]。
+//! （见 kissbot-api 的 `TYPE_NOTIFY_*` 常量），`payload` 为 [`RecordNotification`]。
 //! 客户端按自身水位从共享记忆文件读取，通知只传达位置信息。
 
 use std::collections::BTreeMap;
@@ -15,7 +15,11 @@ use kai_ws::{
     CODE_SUCCESS, TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsMessage,
     WsProcessorContext, ws_handle_connection_with_filter,
 };
-use kissbot_api::{ChannelKey, ChannelRecord, RecordKey, RecordKind, RecordNotification, ThinkRecord, ToolCallRecord, ToolResultRecord};
+use kissbot_api::{
+    ChannelKey, ChannelRecord, RecordKey, RecordNotification, ThinkRecord, ToolCallRecord,
+    ToolResultRecord, TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL,
+    TYPE_NOTIFY_TOOL_RESULT,
+};
 use kissbot_security::{ApiKeyWsFilter, SecurityConfig, SimpleApiKeyValidator};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -26,29 +30,29 @@ use crate::error::Result;
 const MSG_QUEUE_SIZE: usize = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// 广播事件：记录类型 + 通知负载
+/// 广播事件：通知帧的 payload_type + 通知负载
 #[derive(Debug, Clone)]
 pub struct NotifyEvent {
-    pub kind: RecordKind,
+    pub payload_type: u32,
     pub payload: RecordNotification,
 }
 
 static SENDER: OnceLock<UnboundedSender<NotifyEvent>> = OnceLock::new();
 
 /// 发布一条新数据通知（写入完成后由 FileHook 调用；未启动通知服务时静默丢弃）
-pub fn publish(kind: RecordKind, payload: RecordNotification) {
+pub fn publish(payload_type: u32, payload: RecordNotification) {
     let Some(sender) = SENDER.get() else {
         return;
     };
-    if sender.send(NotifyEvent { kind, payload }).is_err() {
-        warn!("[memory-store] notify receiver gone, drop notification: {:?}", kind);
+    if sender.send(NotifyEvent { payload_type, payload }).is_err() {
+        warn!("[memory-store] notify receiver gone, drop notification: payload_type {:#x}", payload_type);
     }
 }
 
 /// 通道消息通知：按通道分组，每个通道一条（订阅方据此只评估该通道）
 pub fn publish_channel(key: &RecordKey, records: &[ChannelRecord]) {
     for notification in channel_notifications(key, records) {
-        publish(RecordKind::Channel, notification);
+        publish(TYPE_NOTIFY_CHANNEL, notification);
     }
 }
 
@@ -73,7 +77,7 @@ pub fn channel_notifications(key: &RecordKey, records: &[ChannelRecord]) -> Vec<
 
 pub fn publish_think(key: &RecordKey, records: &[ThinkRecord]) {
     if let Some(last) = records.last() {
-        publish(RecordKind::Think, RecordNotification {
+        publish(TYPE_NOTIFY_THINK, RecordNotification {
             agent_id: key.agent_id.clone(),
             role_event: key.role_event.clone(),
             time: last.time.clone(),
@@ -85,7 +89,7 @@ pub fn publish_think(key: &RecordKey, records: &[ThinkRecord]) {
 
 pub fn publish_tool_call(key: &RecordKey, records: &[ToolCallRecord]) {
     if let Some(last) = records.last() {
-        publish(RecordKind::ToolCall, RecordNotification {
+        publish(TYPE_NOTIFY_TOOL_CALL, RecordNotification {
             agent_id: key.agent_id.clone(),
             role_event: key.role_event.clone(),
             time: last.time.clone(),
@@ -97,7 +101,7 @@ pub fn publish_tool_call(key: &RecordKey, records: &[ToolCallRecord]) {
 
 pub fn publish_tool_result(key: &RecordKey, records: &[ToolResultRecord]) {
     if let Some(last) = records.last() {
-        publish(RecordKind::ToolResult, RecordNotification {
+        publish(TYPE_NOTIFY_TOOL_RESULT, RecordNotification {
             agent_id: key.agent_id.clone(),
             role_event: key.role_event.clone(),
             time: last.time.clone(),
@@ -140,7 +144,7 @@ impl NotifyServer {
                 };
                 let message = WsMessage {
                     sn: 0,
-                    payload_type: event.kind.payload_type(),
+                    payload_type: event.payload_type,
                     status_code: CODE_SUCCESS,
                     payload: Some(payload),
                 };
@@ -221,7 +225,7 @@ mod tests {
     #[test]
     fn test_publish_without_server_is_noop() {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
-        publish(RecordKind::Think, RecordNotification {
+        publish(TYPE_NOTIFY_THINK, RecordNotification {
             agent_id: ArcStr::from("0"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),

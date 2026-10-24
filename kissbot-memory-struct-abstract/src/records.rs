@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use arcstr::ArcStr;
 use kissbot_api::{
-    CaseCursor, CaseRecord, ChannelKey, ChannelRecord, Content, DetailRef, RecordKind, ThinkRecord,
-    ToolCallRecord, ToolResultRecord, Watermark,
+    CaseCursor, CaseRecord, ChannelKey, ChannelRecord, Content, DetailRef, ThinkRecord,
+    ToolCallRecord, ToolResultRecord, Watermark, RECORD_CHANNEL, RECORD_KINDS, RECORD_THINK,
+    RECORD_TOOL_CALL, RECORD_TOOL_RESULT,
 };
 use kai_file::LineReader;
 use serde_json::Value;
@@ -21,10 +22,9 @@ use tracing::warn;
 
 use crate::error::Result;
 
-/// 一条原始记录（读取阶段带类型；落盘为记忆存储的记录格式）
+/// 一条原始记录（类型由 body 判定；落盘为记忆存储的记录格式）
 #[derive(Debug, Clone)]
 pub struct RecordEntry {
-    pub kind: RecordKind,
     pub time: ArcStr,
     pub sn: u64,
     pub body: RecordBody,
@@ -39,6 +39,16 @@ pub enum RecordBody {
 }
 
 impl RecordEntry {
+    /// 记录类型段（由 body 决定）
+    pub fn kind(&self) -> &'static str {
+        match &self.body {
+            RecordBody::Channel(_) => RECORD_CHANNEL,
+            RecordBody::Think(_) => RECORD_THINK,
+            RecordBody::ToolCall(_) => RECORD_TOOL_CALL,
+            RecordBody::ToolResult(_) => RECORD_TOOL_RESULT,
+        }
+    }
+
     /// 记忆存储中的记录 JSON（case 原文副本的落盘格式）
     pub fn to_value(&self) -> Result<Value> {
         Ok(match &self.body {
@@ -66,14 +76,24 @@ impl RecordEntry {
             _ => None,
         }
     }
+
+    /// 详情记录（思考/工具）的 key：占位引用按它找到详情（通道记录没有 key）
+    pub fn key(&self) -> Option<&ArcStr> {
+        match &self.body {
+            RecordBody::Think(r) => Some(&r.key),
+            RecordBody::ToolCall(r) => Some(&r.key),
+            RecordBody::ToolResult(r) => Some(&r.key),
+            RecordBody::Channel(_) => None,
+        }
+    }
 }
 
 /// 占位内容引用的详情记录类型与详情引用（Multi 内递归收集）
-fn placeholder_refs(content: &Content) -> Vec<(RecordKind, &DetailRef)> {
+fn placeholder_refs(content: &Content) -> Vec<(&'static str, &DetailRef)> {
     match content {
-        Content::Think(detail) => vec![(RecordKind::Think, detail.as_ref())],
-        Content::ToolCall(detail) => vec![(RecordKind::ToolCall, detail.as_ref())],
-        Content::ToolResult(detail) => vec![(RecordKind::ToolResult, detail.as_ref())],
+        Content::Think(detail) => vec![(RECORD_THINK, detail.as_ref())],
+        Content::ToolCall(detail) => vec![(RECORD_TOOL_CALL, detail.as_ref())],
+        Content::ToolResult(detail) => vec![(RECORD_TOOL_RESULT, detail.as_ref())],
         Content::Multi(items) => items.iter().flat_map(|item| placeholder_refs(item)).collect(),
         _ => Vec::new(),
     }
@@ -87,7 +107,7 @@ fn detail_date(time: &str) -> Option<&str> {
 
 impl PartialEq for RecordEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.time == other.time && self.sn == other.sn
+        self.kind() == other.kind() && self.time == other.time && self.sn == other.sn
     }
 }
 
@@ -106,8 +126,8 @@ impl Ord for RecordEntry {
 }
 
 /// Case 原文副本文件：`{case_dir}/{kind}-records.jsonl`
-pub fn case_record_path(case_dir: &Path, kind: RecordKind) -> PathBuf {
-    case_dir.join(format!("{}-records.jsonl", kind.file_stem()))
+pub fn case_record_path(case_dir: &Path, kind: &str) -> PathBuf {
+    case_dir.join(format!("{kind}-records.jsonl"))
 }
 
 /// Case 目录：`{root}/{agent}/memory-struct-abstract/{角色名}/cases/{case_name}`
@@ -123,7 +143,7 @@ pub async fn list_store_files(
     root: &Path,
     agent_id: &str,
     suffix: &str,
-    kind: RecordKind,
+    kind: &str,
     from_date: &str,
 ) -> Result<Vec<(String, PathBuf)>> {
     let store_root = root.join(agent_id).join("memory-store");
@@ -133,7 +153,7 @@ pub async fn list_store_files(
         Err(e) => return Err(e.into()),
     };
 
-    let prefix = format!("{}-records-", kind.file_stem());
+    let prefix = format!("{kind}-records-");
     let mut files = Vec::new();
     while let Some(entry) = year_dirs.next_entry().await? {
         if !entry.file_type().await?.is_dir() {
@@ -192,52 +212,84 @@ pub async fn list_store_suffixes(root: &Path, agent_id: &str, role: &str) -> Res
     Ok(suffixes)
 }
 
-/// 共享记忆文件的全量视图：记录与逐条对应的通道归属
+/// 共享记忆文件的全量视图：通道消息 + 每条消息被其内容引用的思考/工具记录
 #[derive(Debug, Clone, Default)]
 pub struct StoreView {
-    /// 通道记录与被占位内容引用的思考/工具记录（按 (time, sn) 升序）
-    pub records: Vec<RecordEntry>,
-    /// 与 `records` 一一对应的通道归属
-    pub channels: Vec<ChannelKey>,
+    /// 全部通道消息（按通道记录 `(time, sn)` 升序）
+    pub messages: Vec<StoreMessage>,
+}
+
+/// 一条通道消息：通道记录 + 内容中占位引用到的思考/工具记录
+///
+/// 思考/工具记录不是独立的对话消息：它们在原文里以占位引用的形式出现在所属消息的 `Multi` 内容中，
+/// 分组与归档都以消息为单位（一整条 multi 消息合成一条），因此详情归属到引用它的那条消息。
+#[derive(Debug, Clone)]
+pub struct StoreMessage {
+    /// 通道归属（含思考/工具的通道归属：按占位引用）
+    pub channel: ChannelKey,
+    /// 通道记录本身（`content` 中的思考/工具为占位引用）
+    pub record: RecordEntry,
+    /// 该消息内容引用到的思考/工具记录（按 `(time, sn)` 升序）
+    pub details: Vec<RecordEntry>,
+}
+
+/// 水位之后的待归档消息：消息本身与详情各自按类型水位判定
+#[derive(Debug, Clone)]
+pub struct PendingMessage {
+    /// 消息原文（含详情），用于分组与落位分析
+    pub message: StoreMessage,
+    /// 待归档记录：通道记录本身（过了通道水位时）+ 过了各自类型水位的详情记录
+    pub pending: Vec<RecordEntry>,
 }
 
 impl StoreView {
     /// 记录中出现过的全部通道（按三元组升序）
     pub fn known_channels(&self) -> BTreeSet<Arc<ChannelKey>> {
-        self.channels.iter().cloned().map(Arc::new).collect()
+        self.messages.iter().map(|message| Arc::new(message.channel.clone())).collect()
     }
 
-    /// 某通道水位之后的待归档记录（按 (time, sn) 升序）
-    pub fn pending_for(&self, channel: &ChannelKey, watermark: &Watermark) -> Vec<RecordEntry> {
-        self.records
+    /// 某通道水位之后的待归档消息（按通道记录 `(time, sn)` 升序）
+    ///
+    /// 一条消息只要还有任一记录（通道记录或某条详情）没过水位就进批次：分组按消息进行，
+    /// 待归档记录由 [`PendingMessage::pending`] 逐条给出，水位只按这些记录推进。
+    pub fn pending_for(&self, channel: &ChannelKey, watermark: &Watermark) -> Vec<PendingMessage> {
+        self.messages
             .iter()
-            .zip(&self.channels)
-            .filter(|(_, of)| *of == channel)
-            .filter(|(record, _)| {
-                let point = watermark.point(record.kind);
-                (record.time.as_str(), record.sn) > (point.time.as_str(), point.sn)
+            .filter(|message| message.channel == *channel)
+            .filter_map(|message| {
+                let mut pending = Vec::new();
+                let point = watermark.point(message.record.kind());
+                if (message.record.time.as_str(), message.record.sn) > (point.time.as_str(), point.sn) {
+                    pending.push(message.record.clone());
+                }
+                for detail in &message.details {
+                    let point = watermark.point(detail.kind());
+                    if (detail.time.as_str(), detail.sn) > (point.time.as_str(), point.sn) {
+                        pending.push(detail.clone());
+                    }
+                }
+                (!pending.is_empty()).then(|| PendingMessage { message: message.clone(), pending })
             })
-            .map(|(record, _)| record.clone())
             .collect()
     }
 }
 
-/// 读取某记忆后缀的共享记忆文件视图（按 (time, sn) 升序）。
+/// 读取某记忆后缀的共享记忆文件视图（按通道记录 `(time, sn)` 升序）。
 ///
-/// 先读全部通道记录并收集占位内容引用的详情（类型 + 详情时间 + key → 通道），再按详情时间定位到
-/// 当天的思考/工具记录文件、按 key 取出详情。详情先于占位写入，因此读到占位时详情必然已落盘；
-/// 没有被任何占位引用的思考/工具记录不属于任何通道，不参与读取。
+/// 先读全部通道记录并收集占位内容引用的详情（类型 + 详情时间 + key → 所属消息），再按详情时间定位到
+/// 当天的思考/工具记录文件、按 key 取出详情并挂到引用它的消息上。详情先于占位写入，因此读到占位时
+/// 详情必然已落盘；没有被任何占位引用的思考/工具记录不属于任何通道，不参与读取。
 ///
-/// 不做水位过滤：按通道判定批次需要看到全部记录——占位记录可能已被归档到更早的水位之下；
+/// 不做水位过滤：按通道判定批次需要看到全部记录——消息可能已被归档到更早的水位之下而它的详情还没；
 /// 水位过滤由 [`StoreView::pending_for`] 按通道完成。
 pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Result<StoreView> {
     let from_date = kissbot_api::WATERMARK_ZERO_TIME[..10].to_string();
-    let mut entries: Vec<(RecordEntry, ChannelKey)> = Vec::new();
-    // (详情类型, 详情日期, key) → 占位记录所在的通道
-    let mut refs: HashMap<(RecordKind, ArcStr, ArcStr), ChannelKey> = HashMap::new();
+    let mut messages: Vec<StoreMessage> = Vec::new();
+    // (详情类型段, 详情日期, key) → 引用它的消息下标
+    let mut refs: HashMap<(&'static str, ArcStr, ArcStr), usize> = HashMap::new();
 
     // 1. 全部通道记录：身份即归属，内容中的占位引用登记到 refs
-    let files = list_store_files(root, agent_id, suffix, RecordKind::Channel, &from_date).await?;
+    let files = list_store_files(root, agent_id, suffix, RECORD_CHANNEL, &from_date).await?;
     for (_, path) in files {
         let mut reader = LineReader::new(&path, None, None).await?;
         while let Some(line) = reader.next_line().await? {
@@ -264,23 +316,22 @@ pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Re
             for (kind, detail) in placeholder_refs(&record.content) {
                 if let Some(date) = detail_date(detail.time.as_str()) {
                     refs.entry((kind, ArcStr::from(date), detail.key.clone()))
-                        .or_insert_with(|| channel.clone());
+                        .or_insert(messages.len());
                 }
             }
             let entry = RecordEntry {
-                kind: RecordKind::Channel,
                 time: record.time.clone(),
                 sn: record.sn,
                 body: RecordBody::Channel(Arc::new(record)),
             };
-            entries.push((entry, channel));
+            messages.push(StoreMessage { channel, record: entry, details: Vec::new() });
         }
     }
 
-    // 2. 按 (详情类型, 日期) 分组读取被引用的详情记录
-    let mut by_file: BTreeMap<(RecordKind, ArcStr), HashMap<ArcStr, ChannelKey>> = BTreeMap::new();
-    for ((kind, date, key), channel) in refs {
-        by_file.entry((kind, date)).or_default().insert(key, channel);
+    // 2. 按 (详情类型段, 日期) 分组读取被引用的详情记录，挂到引用它的消息上
+    let mut by_file: BTreeMap<(&'static str, ArcStr), HashMap<ArcStr, usize>> = BTreeMap::new();
+    for ((kind, date, key), owner) in refs {
+        by_file.entry((kind, date)).or_default().insert(key, owner);
     }
     for ((kind, date), keys) in by_file {
         let path = store_record_path(root, agent_id, suffix, kind, &date);
@@ -301,41 +352,44 @@ pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Re
                     continue;
                 }
             };
-            let Some(channel) = value.get("key").and_then(Value::as_str).and_then(|key| keys.get(key)).cloned() else {
+            let Some(owner) = value.get("key").and_then(Value::as_str).and_then(|key| keys.get(key)).copied() else {
                 continue;
             };
             let Some((time, sn)) = value_time_sn(&value) else {
                 continue;
             };
             match parse_entry(kind, time, sn, &value) {
-                Ok(entry) => entries.push((entry, channel)),
+                Ok(entry) => messages[owner].details.push(entry),
                 Err(e) => warn!("[abstract] skip malformed record in {}: {}", path.display(), e),
             }
         }
     }
 
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let (records, channels) = entries.into_iter().unzip();
-    Ok(StoreView { records, channels })
+    for message in &mut messages {
+        message.details.sort();
+    }
+    messages.sort_by(|a, b| a.record.cmp(&b.record));
+    Ok(StoreView { messages })
 }
 
 /// 记忆存储中某类型某日期的记录文件：`{root}/{agent}/memory-store/{year}-{后缀}/{stem}-records-{date}.jsonl`
-fn store_record_path(root: &Path, agent_id: &str, suffix: &str, kind: RecordKind, date: &str) -> PathBuf {
+fn store_record_path(root: &Path, agent_id: &str, suffix: &str, kind: &str, date: &str) -> PathBuf {
     let year = &date[..4];
     root.join(agent_id)
         .join("memory-store")
         .join(format!("{}-{}", year, suffix))
-        .join(format!("{}-records-{}.jsonl", kind.file_stem(), date))
+        .join(format!("{kind}-records-{date}.jsonl"))
 }
 
-fn parse_entry(kind: RecordKind, time: ArcStr, sn: u64, value: &Value) -> Result<RecordEntry> {
+fn parse_entry(kind: &str, time: ArcStr, sn: u64, value: &Value) -> Result<RecordEntry> {
     let body = match kind {
-        RecordKind::Channel => RecordBody::Channel(Arc::new(serde_json::from_value::<ChannelRecord>(value.clone())?)),
-        RecordKind::Think => RecordBody::Think(Arc::new(serde_json::from_value::<ThinkRecord>(value.clone())?)),
-        RecordKind::ToolCall => RecordBody::ToolCall(Arc::new(serde_json::from_value::<ToolCallRecord>(value.clone())?)),
-        RecordKind::ToolResult => RecordBody::ToolResult(Arc::new(serde_json::from_value::<ToolResultRecord>(value.clone())?)),
+        RECORD_CHANNEL => RecordBody::Channel(Arc::new(serde_json::from_value::<ChannelRecord>(value.clone())?)),
+        RECORD_THINK => RecordBody::Think(Arc::new(serde_json::from_value::<ThinkRecord>(value.clone())?)),
+        RECORD_TOOL_CALL => RecordBody::ToolCall(Arc::new(serde_json::from_value::<ToolCallRecord>(value.clone())?)),
+        RECORD_TOOL_RESULT => RecordBody::ToolResult(Arc::new(serde_json::from_value::<ToolResultRecord>(value.clone())?)),
+        other => unreachable!("未知的记录类型段: {other}"),
     };
-    Ok(RecordEntry { kind, time, sn, body })
+    Ok(RecordEntry { time, sn, body })
 }
 
 /// 从记录 JSON 取 (time, sn)
@@ -355,10 +409,10 @@ pub async fn append_case_records(dir: &Path, entries: &[RecordEntry]) -> Result<
     }
     tokio::fs::create_dir_all(dir).await?;
     use tokio::io::AsyncWriteExt;
-    let mut buffers: BTreeMap<RecordKind, String> = BTreeMap::new();
+    let mut buffers: BTreeMap<&'static str, String> = BTreeMap::new();
     for entry in entries {
         let line = serde_json::to_string(&entry.to_value()?)?;
-        let buffer = buffers.entry(entry.kind).or_default();
+        let buffer = buffers.entry(entry.kind()).or_default();
         buffer.push_str(&line);
         buffer.push('\n');
     }
@@ -380,7 +434,7 @@ pub fn records_after(records: &[CaseRecord], after: &CaseCursor) -> Vec<CaseReco
         .filter(|record| match record.time().cmp(after.time.as_str()) {
             Ordering::Greater => true,
             Ordering::Less => false,
-            Ordering::Equal => record.kind() != after.record_type || record.sn() > after.sn,
+            Ordering::Equal => record.kind() != after.record_type.as_str() || record.sn() > after.sn,
         })
         .cloned()
         .collect()
@@ -395,7 +449,7 @@ pub fn records_tail(records: &[CaseRecord], count: u64) -> Vec<CaseRecord> {
 /// 读取 case 的全部原文副本（按 (time, sn) 升序）
 pub async fn read_case_records(dir: &Path) -> Result<Vec<CaseRecord>> {
     let mut records = Vec::new();
-    for kind in RecordKind::ALL {
+    for kind in RECORD_KINDS {
         let path = case_record_path(dir, kind);
         if !path.exists() {
             continue;
@@ -416,12 +470,13 @@ pub async fn read_case_records(dir: &Path) -> Result<Vec<CaseRecord>> {
     Ok(records)
 }
 
-fn parse_case_record(kind: RecordKind, text: &str) -> Result<CaseRecord> {
+fn parse_case_record(kind: &str, text: &str) -> Result<CaseRecord> {
     Ok(match kind {
-        RecordKind::Channel => CaseRecord::Channel(Arc::new(serde_json::from_str::<ChannelRecord>(text)?)),
-        RecordKind::Think => CaseRecord::Think(Arc::new(serde_json::from_str::<ThinkRecord>(text)?)),
-        RecordKind::ToolCall => CaseRecord::ToolCall(Arc::new(serde_json::from_str::<ToolCallRecord>(text)?)),
-        RecordKind::ToolResult => CaseRecord::ToolResult(Arc::new(serde_json::from_str::<ToolResultRecord>(text)?)),
+        RECORD_CHANNEL => CaseRecord::Channel(Arc::new(serde_json::from_str::<ChannelRecord>(text)?)),
+        RECORD_THINK => CaseRecord::Think(Arc::new(serde_json::from_str::<ThinkRecord>(text)?)),
+        RECORD_TOOL_CALL => CaseRecord::ToolCall(Arc::new(serde_json::from_str::<ToolCallRecord>(text)?)),
+        RECORD_TOOL_RESULT => CaseRecord::ToolResult(Arc::new(serde_json::from_str::<ToolResultRecord>(text)?)),
+        other => unreachable!("未知的记录类型段: {other}"),
     })
 }
 
@@ -471,7 +526,52 @@ fn think_text(record: &ThinkRecord) -> &str {
         .unwrap_or("")
 }
 
-/// 渲染公共消息内容
+/// 一条消息的原文文本：内容里的思考/工具占位按引用取出详情、用标签内嵌，整条消息合成一个 String。
+///
+/// 标签约定：`reasoning_content` → `<reasoning_content>…</reasoning_content>`、
+/// `thinking` → `<think>…</think>`、工具调用 → `<tool_call>…</tool_call>`、
+/// 工具结果 → `<tool_result>…</tool_result>`。引用不到详情（详情文件缺失）时该占位渲染为空。
+pub fn synthesize_content(content: &Content, details: &[RecordEntry]) -> String {
+    match content {
+        Content::Multi(items) => items
+            .iter()
+            .map(|item| synthesize_content(item, details))
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Content::Think(detail) => detail_text(details, RECORD_THINK, detail.key.as_str()),
+        Content::ToolCall(detail) => detail_text(details, RECORD_TOOL_CALL, detail.key.as_str()),
+        Content::ToolResult(detail) => detail_text(details, RECORD_TOOL_RESULT, detail.key.as_str()),
+        other => render_content(other),
+    }
+}
+
+/// 占位引用对应的详情文本（按类型 + key 找详情记录）
+fn detail_text(details: &[RecordEntry], kind: &str, key: &str) -> String {
+    let Some(entry) = details.iter().find(|entry| entry.kind() == kind && entry.key().is_some_and(|k| k.as_str() == key)) else {
+        return String::new();
+    };
+    match &entry.body {
+        RecordBody::Think(r) => {
+            let mut parts = Vec::new();
+            if let Some(reasoning) = r.reasoning_content.as_ref().filter(|text| !text.is_empty()) {
+                parts.push(format!("<reasoning_content>{reasoning}</reasoning_content>"));
+            }
+            if let Some(thinking) = r.thinking.as_ref().filter(|text| !text.is_empty()) {
+                parts.push(format!("<think>{thinking}</think>"));
+            }
+            parts.join("\n")
+        }
+        RecordBody::ToolCall(r) => format!("<tool_call>{} {}</tool_call>", r.tool_name, r.tool_params),
+        RecordBody::ToolResult(r) => {
+            let payload = serde_json::to_string(&r.tool_result).unwrap_or_else(|_| String::new());
+            format!("<tool_result>{}</tool_result>", payload)
+        }
+        RecordBody::Channel(_) => String::new(),
+    }
+}
+
+/// 渲染公共消息内容（思考/工具占位无法内嵌时退化为 JSON，供摘要等不解析详情的场景使用）
 pub fn render_content(content: &Content) -> String {
     match content {
         Content::Text(text) => text.as_str().to_string(),
@@ -490,11 +590,10 @@ pub fn now_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kissbot_api::ContentBlock;
+    use kissbot_api::{ContentBlock, RECORD_CHANNEL_ARC};
 
     fn channel_entry(time: &str, sn: u64, is_self: usize) -> RecordEntry {
         RecordEntry {
-            kind: RecordKind::Channel,
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Channel(Arc::new(ChannelRecord {
@@ -517,7 +616,6 @@ mod tests {
 
     fn think_entry(time: &str, sn: u64) -> RecordEntry {
         RecordEntry {
-            kind: RecordKind::Think,
             time: ArcStr::from(time),
             sn,
             body: RecordBody::Think(Arc::new(ThinkRecord {
@@ -538,9 +636,9 @@ mod tests {
         let content = Content::Multi(Arc::new(vec![think, tool_call, tool_result]));
         let refs = placeholder_refs(&content);
         assert_eq!(refs.len(), 3);
-        assert_eq!(refs[0].0, RecordKind::Think);
-        assert_eq!(refs[1].0, RecordKind::ToolCall);
-        assert_eq!(refs[2].0, RecordKind::ToolResult);
+        assert_eq!(refs[0].0, RECORD_THINK);
+        assert_eq!(refs[1].0, RECORD_TOOL_CALL);
+        assert_eq!(refs[2].0, RECORD_TOOL_RESULT);
         assert_eq!(refs[1].1.key.as_str(), "k2");
         assert_eq!(detail_date(refs[2].1.time.as_str()), Some("2026-09-22"));
         assert!(placeholder_refs(&Content::Text(ArcStr::from("普通消息"))).is_empty());
@@ -609,56 +707,127 @@ mod tests {
         append_store_line(root, "0", "dev", "tool-result", serde_json::json!({"tool_result": null, "key": "k4", "time": "2026-09-22 10:00:05", "sn": 1}), "2026-09-22 10:00:05").await;
 
         let view = read_store_records(root, "0", "dev").await.unwrap();
-        assert_eq!(view.records.len(), 7, "3 条通道记录 + 4 条被引用的详情；孤儿思考记录不读取");
-        assert!(view.channels.iter().all(|c| *c == channel));
-        let mut think_keys: Vec<&str> = view.records.iter().filter_map(|entry| match &entry.body {
-            RecordBody::Think(record) => Some(record.key.as_str()),
-            _ => None,
-        }).collect();
-        think_keys.sort();
-        assert_eq!(think_keys, vec!["k1", "k2"], "两条被引用的思考记录（含跨日期）");
-        assert_eq!(view.records.iter().filter(|entry| entry.kind == RecordKind::ToolCall).count(), 1);
-        assert_eq!(view.records.iter().filter(|entry| entry.kind == RecordKind::ToolResult).count(), 1);
+        assert_eq!(view.messages.len(), 3, "三条通道消息（思考/工具不单独成条）");
+        assert!(view.messages.iter().all(|message| message.channel == channel));
         assert_eq!(view.known_channels().len(), 1);
+        let detail_keys = |message: &StoreMessage| -> Vec<String> {
+            message.details.iter().filter_map(|entry| entry.key().map(|key| key.as_str().to_string())).collect()
+        };
+        assert!(view.messages[0].details.is_empty(), "第一条消息没有详情");
+        assert_eq!(detail_keys(&view.messages[1]), vec!["k4", "k4", "k1"], "按 (time, sn) 挂在该消息上（含跨日期）");
+        assert_eq!(detail_keys(&view.messages[2]), vec!["k2"], "详情日期与消息日期可以不同");
+        // 原文合成：占位按引用取出详情并用标签内嵌
+        let text = synthesize_content(
+            match &view.messages[1].record.body {
+                RecordBody::Channel(record) => &record.content,
+                _ => unreachable!(),
+            },
+            &view.messages[1].details,
+        );
+        assert!(text.contains("<tool_call>t {}</tool_call>"), "工具调用内嵌: {}", text);
+        assert!(text.contains("<tool_result>null</tool_result>"), "工具结果内嵌: {}", text);
+        assert!(text.contains("<reasoning_content>思考1</reasoning_content>"), "思考内容内嵌: {}", text);
+        assert!(!text.contains("k1"), "不再露出占位引用的 JSON");
+    }
+
+    /// 构造一条消息（通道记录 + 详情），时间取通道记录
+    fn store_message(time: &str, sn: u64, channel: &ChannelKey, details: Vec<RecordEntry>) -> StoreMessage {
+        let mut record = channel_entry(time, sn, 0);
+        let RecordBody::Channel(body) = &mut record.body else { unreachable!() };
+        let body = Arc::make_mut(body);
+        body.messenger_id = channel.messenger_id.clone();
+        body.self_user_id = channel.self_user_id.clone();
+        body.group_id = channel.group_id.clone();
+        StoreMessage { channel: channel.clone(), record, details }
     }
 
     #[test]
     fn store_view_pending_filters_by_channel_and_watermark() {
-        let records = vec![
-            channel_entry("2026-09-22 10:00:00", 1, 0),
-            think_entry("2026-09-22 10:00:01", 2),
-            channel_entry("2026-09-22 10:05:00", 3, 0),
-        ];
         let web_g1 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1"));
         let web_g2 = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
         let view = StoreView {
-            records,
-            channels: vec![web_g1.clone(), web_g1.clone(), web_g2.clone()],
+            messages: vec![
+                store_message("2026-09-22 10:00:00", 1, &web_g1, vec![think_entry("2026-09-22 10:00:01", 2)]),
+                store_message("2026-09-22 10:05:00", 3, &web_g2, Vec::new()),
+            ],
         };
         assert_eq!(
             view.known_channels().iter().map(|channel| channel.as_ref().clone()).collect::<Vec<_>>(),
             vec![web_g1.clone(), web_g2.clone()]
         );
 
-        // 无水位：该通道的全部记录
+        // 无水位：该通道的全部消息，每条消息带上自己的待归档记录
         let all = view.pending_for(&web_g1, &Watermark::default());
-        assert_eq!(all.len(), 2);
-        assert_eq!(all.iter().map(|e| e.sn).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].pending.iter().map(|entry| entry.sn).collect::<Vec<_>>(), vec![1, 2]);
 
-        // 通道水位推进过首条记录、思考水位未动：占位记录与其后的思考记录仍在
+        // 通道水位推进过通道记录、思考水位未动：消息仍在，只剩思考记录待归档
         let mut partial = Watermark::default();
-        partial.channel.time = ArcStr::from("2026-09-22 10:00:01");
+        partial.channel.time = ArcStr::from("2026-09-22 10:00:00");
         partial.channel.sn = 1;
-        assert_eq!(view.pending_for(&web_g1, &partial).len(), 1);
+        let pending = view.pending_for(&web_g1, &partial);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].pending.len(), 1);
+        assert_eq!(pending[0].pending[0].kind(), RECORD_THINK);
 
         // 两类水位都推进到末尾：该通道清空；另一通道不受影响
         let mut watermark = Watermark::default();
-        watermark.channel.time = ArcStr::from("2026-09-22 10:00:01");
-        watermark.channel.sn = 2;
+        watermark.channel.time = ArcStr::from("2026-09-22 10:00:00");
+        watermark.channel.sn = 1;
         watermark.think.time = ArcStr::from("2026-09-22 10:00:01");
         watermark.think.sn = 2;
         assert!(view.pending_for(&web_g1, &watermark).is_empty());
         assert_eq!(view.pending_for(&web_g2, &Watermark::default()).len(), 1);
+    }
+
+    #[test]
+    fn synthesize_content_inlines_think_and_tool_placeholders() {
+        let think = Content::Think(Arc::new(DetailRef::new(ArcStr::from("k1"), ArcStr::from("2026-09-22 10:00:00"))));
+        let call = Content::ToolCall(Arc::new(DetailRef::new(ArcStr::from("k2"), ArcStr::from("2026-09-22 10:00:01"))));
+        let result = Content::ToolResult(Arc::new(DetailRef::new(ArcStr::from("k2"), ArcStr::from("2026-09-22 10:00:02"))));
+        let content = Content::Multi(Arc::new(vec![think, call, result, Content::Text(ArcStr::from("回复"))]));
+
+        let thinking = RecordEntry {
+            time: ArcStr::from("2026-09-22 10:00:00"),
+            sn: 1,
+            body: RecordBody::Think(Arc::new(ThinkRecord {
+                reasoning_content: None,
+                thinking: Some(ArcStr::from("想法")),
+                key: ArcStr::from("k1"),
+                time: ArcStr::from("2026-09-22 10:00:00"),
+                sn: 1,
+            })),
+        };
+        let call_entry = RecordEntry {
+            time: ArcStr::from("2026-09-22 10:00:01"),
+            sn: 2,
+            body: RecordBody::ToolCall(Arc::new(ToolCallRecord {
+                tool_name: ArcStr::from("t"),
+                tool_params: Arc::new(serde_json::json!({"x": 1})),
+                key: ArcStr::from("k2"),
+                time: ArcStr::from("2026-09-22 10:00:01"),
+                sn: 2,
+            })),
+        };
+        let result_entry = RecordEntry {
+            time: ArcStr::from("2026-09-22 10:00:02"),
+            sn: 3,
+            body: RecordBody::ToolResult(Arc::new(ToolResultRecord {
+                tool_result: None,
+                key: ArcStr::from("k2"),
+                time: ArcStr::from("2026-09-22 10:00:02"),
+                sn: 3,
+            })),
+        };
+        let text = synthesize_content(&content, &[thinking, call_entry, result_entry]);
+        assert_eq!(
+            text,
+            "<think>想法</think>\n<tool_call>t {\"x\":1}</tool_call>\n<tool_result>null</tool_result>\n回复"
+        );
+
+        // 引用不到详情：占位渲染为空（不露 JSON），多层 Multi 递归合成
+        assert_eq!(synthesize_content(&content, &[]), "回复");
+        assert_eq!(synthesize_content(&Content::Text(ArcStr::from("你好")), &[]), "你好");
     }
 
     #[test]
@@ -667,7 +836,6 @@ mod tests {
         assert_eq!(render_entry(&think_entry("2026-09-22 13:48:38", 1)), "[2026-09-22 13:48:38] (思考) 推理");
 
         let result = RecordEntry {
-            kind: RecordKind::ToolResult,
             time: ArcStr::from("2026-09-22 13:48:40"),
             sn: 1,
             body: RecordBody::ToolResult(Arc::new(ToolResultRecord {
@@ -683,8 +851,8 @@ mod tests {
     #[test]
     fn case_record_path_is_per_kind_without_date() {
         let dir = Path::new("/root/0/memory-struct-abstract/dev/cases/e12");
-        assert_eq!(case_record_path(dir, RecordKind::Channel), dir.join("channel-records.jsonl"));
-        assert_eq!(case_record_path(dir, RecordKind::ToolCall), dir.join("tool-call-records.jsonl"));
+        assert_eq!(case_record_path(dir, RECORD_CHANNEL), dir.join("channel-records.jsonl"));
+        assert_eq!(case_record_path(dir, RECORD_TOOL_CALL), dir.join("tool-call-records.jsonl"));
     }
 
     fn case_records_fixture() -> Vec<CaseRecord> {
@@ -725,20 +893,20 @@ mod tests {
         let after = CaseCursor::of(&records[0]);
         let rest = records_after(&records, &after);
         assert_eq!(rest.len(), 2);
-        assert_eq!(rest[0].kind(), RecordKind::Think, "同一时刻的其他类型记录视为在其后");
-        assert_eq!(rest[1].kind(), RecordKind::Channel);
+        assert_eq!(rest[0].kind(), RECORD_THINK, "同一时刻的其他类型记录视为在其后");
+        assert_eq!(rest[1].kind(), RECORD_CHANNEL);
 
         // 游标为思考记录（10:00:00 sn1）：通道记录 sn1 视为在其后（跨类型不比 sn）
         let after = CaseCursor::of(&records[1]);
         let rest = records_after(&records, &after);
         assert_eq!(rest.len(), 2);
-        assert_eq!(rest[0].kind(), RecordKind::Channel);
+        assert_eq!(rest[0].kind(), RECORD_CHANNEL);
         assert_eq!(rest[0].sn(), 1);
 
         // 游标为最后一条：之后为空
         assert!(records_after(&records, &CaseCursor::of(&records[2])).is_empty());
         // 游标晚于全部记录：之后为空
-        let cursor = CaseCursor { time: ArcStr::from("2099-01-01 00:00:00"), sn: 1, record_type: RecordKind::Channel };
+        let cursor = CaseCursor { time: ArcStr::from("2099-01-01 00:00:00"), sn: 1, record_type: RECORD_CHANNEL_ARC.clone() };
         assert!(records_after(&records, &cursor).is_empty());
     }
 
@@ -775,8 +943,8 @@ mod tests {
         // 读回按 (time, sn) 升序，类型来自文件
         let records = read_case_records(&dir).await.unwrap();
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0].kind(), RecordKind::Think);
-        assert_eq!(records[1].kind(), RecordKind::Channel);
+        assert_eq!(records[0].kind(), RECORD_THINK);
+        assert_eq!(records[1].kind(), RECORD_CHANNEL);
         assert_eq!(records[1].time(), "2026-09-22 10:00:01");
         assert_eq!(records[2].sn(), 3);
         assert!(render_case_record(&records[0]).contains("(思考) 推理"));
@@ -838,16 +1006,16 @@ mod tests {
         tokio::fs::create_dir_all(&other).await.unwrap();
         tokio::fs::write(other.join("channel-records-2026-09-22.jsonl"), b"").await.unwrap();
 
-        let files = list_store_files(root, "0", "dev", RecordKind::Channel, "2026-09-22").await.unwrap();
+        let files = list_store_files(root, "0", "dev", RECORD_CHANNEL, "2026-09-22").await.unwrap();
         assert_eq!(files.len(), 1, "只取不早于起始日期且匹配类型/后缀的文件");
         assert_eq!(files[0].0, "2026-09-22");
         assert!(files[0].1.ends_with("2026-dev/channel-records-2026-09-22.jsonl"));
 
-        let files = list_store_files(root, "0", "dev", RecordKind::Channel, "2026-09-01").await.unwrap();
+        let files = list_store_files(root, "0", "dev", RECORD_CHANNEL, "2026-09-01").await.unwrap();
         assert_eq!(files.len(), 2, "起始日期之后的所有日期文件");
         assert_eq!(files[0].0, "2026-09-21", "按日期升序");
 
-        let empty = list_store_files(root, "none", "dev", RecordKind::Channel, "2026-09-01").await.unwrap();
+        let empty = list_store_files(root, "none", "dev", RECORD_CHANNEL, "2026-09-01").await.unwrap();
         assert!(empty.is_empty());
     }
 
