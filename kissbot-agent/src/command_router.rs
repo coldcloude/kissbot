@@ -13,7 +13,7 @@ impl CommandRouter {
     /// 执行管理命令（nexus 已校验管理员后调用）：内联解析命令参数 + 直接执行，返回回复文本
     /// 错误经 Result 返回：InvalidCommand（解析/格式错误）由调用方拼 "⚠️ {}"，其余拼 "❌ 命令执行失败: {}"
     /// bind/unbind 走 channel_manager.channel_command 队列串行（bind_users 回写）；bind-outgoing/unbind-outgoing 纯配置写；
-    /// agent/role/事件 走 channel_manager.change_channel_key 队列；model 改会话模型（运行态）。
+    /// agent/role/事件 走 channel_manager.change_channel_key 队列；model 改 pipeline 模型（运行态）。
     /// Nexus 一律从单例取（不传参数）
     pub async fn execute(content: &str, channel_id: ArcStr) -> Result<ArcStr> {
         let parts: Vec<ArcStr> = content.trim().split_whitespace().map(|s| {ArcStr::from(s)}).collect();
@@ -156,11 +156,11 @@ impl CommandRouter {
                 Ok(ArcStr::from("✅ 已取消发送通道（只存不回复）"))
             }
             "/model" => {
-                // /model <provider> <model>：切换当前会话模型（先拉模型列表校验，失败保持原模型）
+                // /model <provider> <model>：切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）
                 if parts.len() != 3 {
                     return Err(Error::InvalidCommand("格式: /model <provider> <model>".into()));
                 }
-                nexus.set_channel_session_model(channel_id.as_str(), parts[1].clone(), parts[1].clone()).await?;
+                nexus.set_channel_pipeline_model(channel_id.as_str(), parts[1].clone(), parts[2].clone()).await?;
                 Ok(ArcStr::from(format!("✅ 已切换模型为: {}/{}", parts[1], parts[2])))
             }
             _ => Err(Error::InvalidCommand(format!("未知命令: {}", parts[0]).into())),

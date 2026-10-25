@@ -5,7 +5,7 @@ Agent 是智能体组件，内部由两个模块组成——Nexus（LLM 通信�
 
 Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station MCP 服务端，可被远程 station 作为 sub 调用）；仅 nexus / 仅 station 的裁剪形态为后续能力。
 
-Nexus 的模型调用与会话上下文本体来自 **LLM 基础库（kissbot-llm）**：provider 实现与带重试调用、上下文的内存/缓存/归档由该库承担；Nexus 的 ProviderManager 负责 provider 实例复用（工厂去重）、分派与有效配置解析，会话集合由 SessionManager 管理。
+Nexus 的模型调用与 session 上下文本体来自 **LLM 基础库（kissbot-llm）**：provider 实现与带重试调用、上下文的内存/缓存/归档由该库承担；Nexus 的 ProviderManager 负责 provider 实例复用（工厂去重）、分派与有效配置解析，session 由 pipeline 决定、由 SessionManager 按 id 保存。
 
 
 ```mermaid
@@ -30,7 +30,7 @@ graph TB
 
 ### Nexus（LLM 通信枢纽）
 - 每个 nexus 实例连接多个 provider（按 provider 配置分派 OpenAI 兼容 / Anthropic 实现）
-- 负责会话定位与会话上下文构建，串接 pipeline 体系（输入处理 / 消息发送 / 工具调用 / 输出处理 / 系统提示词）
+- 负责 pipeline 定位与 session 上下文构建，串接 pipeline 体系（输入处理 / 消息发送 / 工具调用 / 输出处理 / 系统提示词）
 - 处理 LLM 输出，将 tool call 分派到 station
 - 支持两种记忆模式（角色记忆/事件记忆）
 
@@ -60,7 +60,7 @@ graph TB
 配置按三分结构管理：
 - **公共配置（静态）**：各组件共享的 `config.json`（kissbot-config 只读单例）。agent 相关段为 `agent`（`data_dir`、`mgmt_host`、`mgmt_port`、`station_host`、`station_port`、`ws_reconnect_interval_secs`）与 `api`（memory-store / memory-ego 地址）；密钥在 `security` 段
 - **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化。NexusRepo 存 channels / providers+models / memory_structs / (agent, role) 配置 / session 配置（见 [kissbot-agent-nexus 技术规格](../spec/agent-nexus.md)），StationRepo 存 groups / sub_stations（见 [kissbot-agent-station 技术规格](../spec/agent-station.md)）
-- **运行态（不落盘）**：会话上下文、pipeline 装配、channel 运行态（mode / client / 未回显 msg_id）等，由 Nexus 与其组件在内存中持有
+- **运行态（不落盘）**：session 上下文、pipeline 装配、channel 运行态（mode / client / 未回显 msg_id）等，由 Nexus 与其组件在内存中持有
 
 ## 组合模式
 
@@ -76,10 +76,10 @@ Agent 启用不同的内部模块和记忆模式，形成多种工作方式：
 
 Agent 组件内部包含两大模块：
 
-**Nexus 模块**：负责 LLM 通信、会话编排和记忆对接
+**Nexus 模块**：负责 LLM 通信、pipeline 编排和记忆对接
 - LLM 调用：ProviderManager 按 provider 名缓存实现实例（工厂去重）、按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，解析有效模型配置（超时/重试/token 上限）后经 kissbot-llm 的 call_with_retry 调用（请求构造、重试与响应归一化由该库完成）
-- pipeline 体系：按会话装配 pipeline（`default` / `default_memory` / `abstract_memory`，装配时注入会话），pipeline 负责消息接入与合批，并驱动 agentic loop；会话上下文由 pipeline 直接读写
-- 会话与上下文：SessionManager 按 (agent_id, role_event) 去重管理会话集合；单个会话的上下文（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担
+- pipeline 体系：按 pipeline 标识（agent + role_event）装配 pipeline（`default` / `default_memory` / `abstract_memory`），pipeline 自建 session、负责消息接入与合批，并驱动 agentic loop；session 上下文由 pipeline 直接读写
+- session 与上下文：session 的数量与 id 由 pipeline 决定，SessionManager 只按 id 保存/恢复/清理；单个 session 的上下文（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担
 - Tool 调用分派：把外置工具分派到 Station（工具分组白名单平铺查询 + 工具调用）
 - 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯
 - 消息接入：pipeline 对接消息通道（经通道适配层），管理命令由 Nexus 路由

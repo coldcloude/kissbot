@@ -53,6 +53,5 @@
       "roles": {}
     }
   },
-  "memory_sessions": [],
-  "raw_sessions": {}
+  "sessions": {}
 }

@@ -220,4 +220,4 @@ pub type Result<T> = std::result::Result<T, Error>;
 ## 验证
 
 - 单元测试：`cd kissbot-llm && cargo test`（消息/工具结构序列化、两种协议的请求构造与响应归一化、重试与永久性错误、provider/metric 参数合成、上下文缓存与归档）。
-- 使用方 kissbot-agent：`cd kissbot-agent && cargo test`（ProviderManager 的工厂去重与 provider_type 分派、有效配置解析、会话集合去重与清理，配置模板 schema 校验）。
+- 使用方 kissbot-agent：`cd kissbot-agent && cargo test`（ProviderManager 的工厂去重与 provider_type 分派、有效配置解析、按 session_id 的会话去重与清理，配置模板 schema 校验）。

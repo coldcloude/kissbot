@@ -87,11 +87,12 @@ kissbot-agent 使用三份配置：
       "roles": { "dev": { "llm": { "model": "deepseek-v4-pro" } } }
     }
   },
-  "sessions": [
-    [ { "agent_id": "0", "role_event": { "role_name": "" } },
-      { "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": null,
-                 "temperature": null, "thinking": null, "reasoning_effort": null } } ]
-  ]
+  "sessions": {
+    "0-": {
+      "llm": { "provider": "deepseek", "model": "deepseek-flash", "max_tokens": null,
+               "temperature": null, "thinking": null, "reasoning_effort": null }
+    }
+  }
 }
 ```
 
@@ -100,9 +101,9 @@ kissbot-agent 使用三份配置：
 - `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](llm.md)；agent 只负责其存储、落盘与 CRUD。
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
-- `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆回溯）或 `abstract_memory`（摘要记忆）；未配置时按会话类型取默认：Memory 会话用 `default_memory`，Raw 会话用 `default`。
-- `abstract_memory` 只适用于 Memory 会话：一个会话一条 pipeline，按 channel 分别攒批，触发时先 locate 再用 case 上下文重建会话。
-- `sessions` 的 key 是 `SessionKey`（结构体），JSON 不支持结构体作 map 键，故以 `[[key, value], ...]` 数组对承载。
+- `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆回溯）或 `abstract_memory`（摘要记忆）；从 agent/role 配置读取，未配置时默认 `default_memory`。pipeline 选择不做 session 级覆盖。
+- `abstract_memory`：一个 pipeline 身份（agent + role_event）一条 pipeline，按 channel 分别攒批，触发时先 locate，再按 case 上下文重建各自 session。
+- `sessions` 是普通 JSON 对象，key 为 session_id；条目在建立 session 时按 agent/role 配置合成一次，之后可由 session 级配置覆盖（如 `/model`）。
 
 ### 配置继承与合成
 
@@ -112,23 +113,29 @@ kissbot-agent 使用三份配置：
 |------|--------|----------|
 | 模型参数 | 全局常量 ← provider 默认（`default_model_config`）← model 覆盖（`model_configs`） | `EffectiveModelConfig`（max_tokens_usage / timeout_secs / retry_count） |
 | LLM 参数 | LLMConfig 默认 ← agent 级 ← role 级 ← session 覆盖 | `EffectiveLLMConfig`（provider / model / max_tokens / temperature / thinking / reasoning_effort） |
-| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / channel_batch / out_channel / group_set / pipeline） | 各自 Effective 形态 |
+| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / channel_batch / out_channel / group_set） | 各自 Effective 形态 |
+| pipeline 选择 | 默认值 ← agent 级 ← role 级（pipeline） | `PipelineConfig` |
 | 模型参数兜底 | 模型未在 `model_configs` 配置时直接用 provider 默认值合成 | — |
 
-查询入口：`ConfigManager::session_config::<C, E>(session_key)`（带缓存，首次按 agent+role 合成并写入 sessions）、`ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置（需 `set_session_config` 覆盖）。
+查询入口：`ConfigManager::session_config::<C, E>(session_id)` 直接读 `sessions[session_id]`；配置只在该 session 建立时由 `ensure_session_config(memory_key, session_id)` 按 agent/role 合成一次（已存在的条目只补齐缺失字段）；`set_session_config(session_id, config)` 写 session 级覆盖。另有 `ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置。
 
-例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的会话立即生效。
+例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的 pipeline 立即生效。
 
-## 会话集合与上下文本地缓存（session_manager）
+## 会话存储与上下文本地缓存（session_manager）
 
 | 项 | 约定 |
 |----|------|
-| 会话集合 | 按 (agent_id, role_event) 去重持有；绑定信息变化时仅保留仍在绑定集合中的会话 |
-| session_id 编码 | 角色模式 `{agent_id}-{role}`；事件模式 `{agent_id}-{role}-{event}`（作为 kissbot-llm 的会话标识，决定缓存/归档文件名） |
+| 会话存储 | 按 session_id（`ArcStr`）去重持有；session 的数量与 id 由 pipeline 决定，SessionManager 只负责保存/恢复/按 id 清理 |
+| session 配置 | 建立 session 时按 memory_key 的 agent/role 合成一次并写入 `sessions[session_id]`；运行期只按 session_id 读取 |
+| 默认 pipeline 的 session_id | `MemoryKey::encode()`：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}` |
+| 摘要记忆 case 的 session_id | `memory-abstract-{MemoryKey::encode()}-{case_name}`；基准（无 case）session 为 `memory-abstract-{encode}-none`，同时承担 pipeline 入口配置与 locate 失败批次 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
 | 恢复 | 新建会话时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
+| 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 pipeline，并把保留 pipeline 通过 `session_ids()` 报告的在用 id 交给 SessionManager retain |
 
 缓存文件、行序、归档文件命名与系统消息的待定/应用语义见 [kissbot-llm 技术规格](llm.md)。
+
+pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配置的键；session 是 pipeline 内部的执行资源。两者不再合并为同一个结构。
 
 ## 管理命令格式
 
@@ -153,7 +160,7 @@ kissbot-agent 使用三份配置：
 | mode | `/mode role` | 回到角色模式 |
 | bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | 设 (agent, role) 的回复通道（要求该身份已绑定来源 channel） |
 | unbind-outgoing | `/unbind-outgoing` | 清除回复通道（回到只存不回复） |
-| model | `/model <provider> <model>` | 切换当前会话模型（先拉模型列表校验，失败保持原模型） |
+| model | `/model <provider> <model>` | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；写入哪些 session 由 pipeline 决定 |
 
 agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；bind-outgoing/unbind-outgoing 为纯配置写。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
 
@@ -212,15 +219,16 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 | POST | `/abstract/case/summary` | 取 case 摘要（节点本身：摘要文本 + 层级 + 记录数 + 起止时间） |
 | POST | `/abstract/case/records-tail` | 取 case 结尾 count 条原文副本（升序） |
 
-- 请求里的 `role_event` 与会话写记忆用同一个 `RoleEvent`（项目级基础类型）：`event_id` 缺省为角色模式，给出事件标识为事件模式。拼接记忆后缀是 memory 内部的事（只在构造文件名时进行），agent 不再自己拼字符串。后缀决定原始记录读取、水位、当前 case 指针与模型会话，角色名（`role_name`）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
-- 触发策略：一个 pipeline 为每个 channel（messenger + 接收方用户 + 群组）维护一个 `BatchProducer`（DashMap 按 `ChannelKey` 索引），各 channel 有独立的合批队列与消费者，互不干扰；最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。
-- 批次处理与 case 执行分两级队列：各 channel 消费者把批次投递到批次队列，由唯一 worker 串行执行 `/abstract/locate` 与本批上行记录写入（同一会话的记忆写入只能串行），随后按消息所属 case 并入该 case 的待执行任务并投递 case 名（同一 case 至多一个待执行任务，后续批次的消息直接在任务里合并），随即返回，下一批可以接着处理；case 队列的 worker 按到达顺序一次只取一个 case，取走该 case 的全部待执行消息后执行 run，完成后取下一个。
-- 每个 case 一次 run：run 开头用「该 case 的摘要 + 该 case 结尾 `memory_recover.memory_count` 条通道原文副本」重置会话上下文，再把本次新增消息作为一条 user 消息运行 agentic loop。原文副本按摘要记忆返回的顺序组装，不做时间窗过滤、去重与重排；摘要为空时不加摘要块。同一 case 在排队等待执行期间又来的消息并入同一次 run；已经开始执行的 run 不受影响，其后的消息形成下一轮 run；还没轮到的 case 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
+- 请求里的 `role_event` 与写记忆用同一个 `RoleEvent`（项目级基础类型）：`event_id` 缺省为角色模式，给出事件标识为事件模式。拼接记忆后缀是 memory 内部的事（只在构造文件名时进行），agent 不再自己拼字符串。后缀决定原始记录读取、水位、当前 case 指针与模型会话，角色名（`role_name`）决定 case 树；因此同一角色的角色模式与事件模式共用一棵 case 树（不同角色之间相互隔离）。
+- 触发策略：一个 pipeline 为每个 channel（messenger + 接收方用户 + 群组）维护一个 `BatchProducer`（DashMap 按 `ChannelKey` 索引），各 channel 有独立的合批队列与消费者，互不干扰；最后一条消息超过 `channel_batch.channel_batch_interval_secs` 即触发该通道批次。入口阶段尚未 locate，合批配置从基准（无 case）session `memory-abstract-{encode}-none` 读取。
+- 批次处理与 case 执行分两级队列：各 channel 消费者把批次投递到批次队列，由唯一 worker 串行执行 `/abstract/locate` 与本批上行记录写入（同一记忆范围的写入只能串行），随后按消息所属 case 并入该 case 的待执行任务并投递 case 名（同一 case 至多一个待执行任务，后续批次的消息直接在任务里合并），随即返回，下一批可以接着处理；case 队列的 worker 按到达顺序一次只取一个 case，取走该 case 的全部待执行消息后执行 run，完成后取下一个。
+- 每个 case 维护独立 session（懒创建）：`memory-abstract-{encode}-{case_name}`；无 case 批次使用 `memory-abstract-{encode}-none`。每个 case 一次 run：run 开头用「该 case 的摘要 + 该 case 结尾 `memory_recover.memory_count` 条通道原文副本」重置该 case 的 session 上下文，再把本次新增消息作为一条 user 消息运行 agentic loop。原文副本按摘要记忆返回的顺序组装，不做时间窗过滤、去重与重排；摘要为空时不加摘要块。同一 case 在排队等待执行期间又来的消息并入同一次 run；已经开始执行的 run 不受影响，其后的消息形成下一轮 run；还没轮到的 case 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
 - 上行记忆写入由 pipeline 自己负责（Nexus 不再统一写入）：`default_memory` 在 `incoming_message` 收到消息时立即写入（meta 为 None）；`abstract_memory` 在 **locate 之后**写入，并带 `meta.abstract_memory.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。
 - 模型回复由 pipeline 调用 `pipelines.rs` 的自由函数 `send_outgoing` 发送并写下行记录；`abstract_memory` 带本次 run 所属 case 的 meta，`default_memory` 带 None。
-- channel 不再绑定本会话（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；Nexus 的 `rebind_session` 把「解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话」合成一次调用。
-- `memory_struct_abstract_url` 为空或 locate 调用失败：记 warn，整批作为一个无 case 任务运行（不重建上下文），本批上行记录不带 meta。
-- 上下文重建（case 摘要/原文查询）失败：记 warn，清空上下文后只用本次新增消息运行该 case（不沿用其他 case 的上下文）。
+- `/model` 由 pipeline 实现：摘要记忆 pipeline 保存模型覆盖、写入基准 session 与已有 case session，并在新建 case session 时应用（进程重启后从基准 session 的已存配置恢复）；默认 pipeline 写入自己的唯一 session。
+- channel 不再绑定本 pipeline（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；Nexus 的 `rebind_pipeline` 把「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」合成一次调用。
+- `memory_struct_abstract_url` 为空或 locate 调用失败：记 warn，整批作为一个无 case 任务运行（不重建上下文，使用无 case session），本批上行记录不带 meta。
+- 上下文重建（case 摘要/原文查询）失败：记 warn，清空该 case session 的上下文后只用本次新增消息运行该 case（不沿用其他 case 的上下文）。
 
 ## Memory-Ego API 交互
 
@@ -234,7 +242,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 ### agent_id 绑定与解析
 
-- channel 绑定直接使用 **agent_id**（配置字段 `ChannelConfig.agent_id`），会话 key、memory-store 目录与 ego 查询均直接用该值，无需二次解析
+- channel 绑定直接使用 **agent_id**（配置字段 `ChannelConfig.agent_id`），pipeline 标识、memory-store 目录与 ego 查询均直接用该值，无需二次解析
 - **保留 agent**：`agent_id == "0"` 表示保留 agent（不调 memory-ego，系统提示词回退默认值）
 - **校验**：`/agent` 设置前经 ego `/agent/get` 校验存在（`verify_agent_exists`），role 非空时另经 `/role/get` 校验（`verify_role_exists`）；失败保持原值并报错
 
@@ -255,12 +263,26 @@ provider 实现（OpenAI 兼容 / Anthropic）的构造（`create_*_provider`）
 // 上下文消息、工具调用与模型响应结构（Message / ToolData / ToolCall / ModelResponse / ToolConfig）
 // 由 kissbot-llm 定义（与 MCP 工具的互转在 agent 侧），见 [kissbot-llm 技术规格](llm.md)
 
-// 会话标识：agent_id + RoleEvent（所有绑定 channel 的信息按此去重）
-// 内部字段用 Arc，结构体实现 PartialEq / Hash，因此 Arc<SessionKey> 可直接作 Set / Map 键
-struct SessionKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
+// pipeline 标识：agent_id + RoleEvent（所有绑定 channel 的信息按此去重）
+// 内部字段用 Arc，结构体实现 PartialEq / Hash，因此 Arc<MemoryKey> 可直接作 Set / Map 键
+struct MemoryKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 
-// 会话标识 → kissbot-llm 会话标识（缓存/归档文件名段）：{agent_id}-{role}[-{event}]
-impl SessionKey { fn encode(&self) -> ArcStr; }
+// pipeline 的基准会话 id（缓存/归档文件名段）：{agent_id}-{role}[-{event}]
+impl MemoryKey { fn encode(&self) -> ArcStr; }
+
+// session 只按 ArcStr id 存取；id 由 pipeline 生成
+struct SessionManager { /* sessions: DashMap<ArcStr, Arc<Session>> */ }
+impl SessionManager {
+    async fn get_or_create(&self, session_id: ArcStr) -> (Arc<Session>, bool);
+    fn retain(&self, session_ids: &HashSet<ArcStr>);
+}
+
+// session 配置：建立 session 时按 memory_key 的 agent/role 合成一次，之后只按 session_id 读写
+impl ConfigManager {
+    async fn ensure_session_config(&self, memory_key: &MemoryKey, session_id: ArcStr) -> Result<()>;
+    async fn session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>;
+    async fn set_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>;
+}
 ```
 
 ## 错误类型
@@ -284,7 +306,7 @@ enum Error {
     WsError(kai_ws::Error),
     McpError(kissbot_mcp::McpError),
     InternalError(ArcStr),           // 预留
-    PipelineNotFound(ArcStr, SessionKey),  // (配置名, 会话 key)
+    PipelineNotFound(ArcStr, Arc<MemoryKey>),  // (配置名, pipeline key)
 }
 ```
 

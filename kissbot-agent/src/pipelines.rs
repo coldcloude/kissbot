@@ -27,12 +27,12 @@ use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
-use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, SessionKey, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, session_manager::SessionManager, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
 
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
 
-/// 根据 agent_id 获取系统提示词（新建会话时由 MemoryEgoSystemPrompter 调用）：
+/// 根据 agent_id 获取系统提示词（新建 pipeline 的 session 时由系统提示词重置调用）：
 /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
 /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
 /// 通过 ego_md 模块将 ego 结构转为 markdown，替代手写提示词片段
@@ -90,8 +90,8 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u6
 /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
 /// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序打包。
 /// 任一步失败（时间窗计算 / 查询）均返回空上下文（不阻塞消息发送）。
-pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<Message> {
-    let cfg = ConfigManager::get().memory_session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(memory_key.clone()).await;
+pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>, session_id: ArcStr) -> Vec<Message> {
+    let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_id).await;
     let nexus = Nexus::get();
 
     // 时间窗起点计算失败（checked_sub_signed 溢出）→ 空上下文，不静默回退到错误的时间窗
@@ -141,29 +141,29 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>) -> Vec<
     pack_memory_messages(&map.into_values().collect::<Vec<_>>())
 }
 
-pub async fn send_messages(session_key: SessionKey, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
+pub async fn send_messages(session_id: ArcStr, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
     let _ = session.context_append(messages).await;
     let full_messages = session.build_context_full().await;
-    let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(session_key).await;
+    let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(session_id).await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
 
-async fn send_messages_with_limit(session_key: SessionKey, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, tokens_usage: u64) -> Result<ModelResponse> {
+async fn send_messages_with_limit(session_id: ArcStr, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, tokens_usage: u64) -> Result<ModelResponse> {
     let cfg_mngr = ConfigManager::get();
-    let llm_cfg = cfg_mngr.session_config::<LLMConfig, EffectiveLLMConfig>(session_key.clone()).await;
-    let compress_cfg = cfg_mngr.session_config::<CompressConfig, EffectiveCompressConfig>(session_key.clone()).await;
+    let llm_cfg = cfg_mngr.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
+    let compress_cfg = cfg_mngr.session_config::<CompressConfig, EffectiveCompressConfig>(session_id.clone()).await;
     let provider = llm_cfg.provider.as_str();
     let model = llm_cfg.model.as_str();
     let model_cfg = cfg_mngr.provider_model_config(provider, model).await
     .ok_or_else(|| Error::ModelProviderNotFound(ArcStr::from(provider), ArcStr::from(model)))?;
 
     // 1. 检查上下文 token 占用超限
-    //    阈值来自会话模型的 max_tokens_usage
+    //    阈值来自 session 模型的 max_tokens_usage
     //    上次模型响应的 usage.total_tokens 超过阈值触发
     if model_cfg.max_tokens_usage > 0 {
         let max_tokens_usage = ((model_cfg.max_tokens_usage as f64) * compress_cfg.compress_threshold) as u64;
         if tokens_usage > max_tokens_usage {
-            (_, messages) = reducer.reduce(session_key, session, messages).await;
+            (_, messages) = reducer.reduce(session_id, session, messages).await;
         }
     }
     // 2. 正常的发送流程
@@ -180,10 +180,10 @@ pub fn retrieve_assistant_message(res: &mut ModelResponse) -> Message {
     }
 }
 
-/// 会话可用工具：会话配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
+/// session 可用工具：session 配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
 /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
-pub async fn tools_for_session(session_key: SessionKey) -> Vec<Arc<ToolConfig>> {
-    let cfg = ConfigManager::get().session_config::<GroupSetConfig, GroupSetConfig>(session_key).await;
+pub async fn tools_for_session(session_id: ArcStr) -> Vec<Arc<ToolConfig>> {
+    let cfg = ConfigManager::get().session_config::<GroupSetConfig, GroupSetConfig>(session_id).await;
     if cfg.group_set.is_empty() {
         return Vec::new();
     }
@@ -397,11 +397,11 @@ pub fn retrieve_tool_messages(tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Mes
 /// Agentic Loop 工具调用轮次上限（防死循环）
 const MAX_TOOL_ROUNDS: usize = 10;
 
-pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, tokens_usage: Option<u64>) -> Result<(bool,u64)> {
+pub async fn run_once(session_id: ArcStr, session: &Session, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, tokens_usage: Option<u64>) -> Result<(bool,u64)> {
     let mut res = if let Some(tokens_usage) = tokens_usage {
-        send_messages_with_limit(session_key.clone(), session, messages, tools, &CompressTokenReducer, tokens_usage).await?
+        send_messages_with_limit(session_id.clone(), session, messages, tools, &CompressTokenReducer, tokens_usage).await?
     } else {
-        send_messages(session_key.clone(), session, messages, tools).await?
+        send_messages(session_id, session, messages, tools).await?
     };
     // 保存回复的消息
     let _ = session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
@@ -428,21 +428,21 @@ pub async fn run_once(session_key: SessionKey, session: &Session, round: usize, 
     Ok((next, res.total_tokens))
 }
 
-pub async fn run(session_key: SessionKey, session: &Session, message: Message, tools: &Vec<Arc<ToolConfig>>, mut tokens_usage: Option<u64>) -> Result<u64> {
+pub async fn run(session_id: ArcStr, session: &Session, message: Message, tools: &Vec<Arc<ToolConfig>>, mut tokens_usage: Option<u64>) -> Result<u64> {
     let mut round = 1 as usize;
-    let (mut next, mut total_tokens) = run_once(session_key.clone(), session, round, vec![message], tools, tokens_usage).await?;
+    let (mut next, mut total_tokens) = run_once(session_id.clone(), session, round, vec![message], tools, tokens_usage).await?;
     while next {
         round = round + 1;
         if tokens_usage.is_some() {
             tokens_usage = Some(total_tokens);
         }
-        (next, total_tokens) = run_once(session_key.clone(), session, round, vec![], tools, tokens_usage).await?;
+        (next, total_tokens) = run_once(session_id.clone(), session, round, vec![], tools, tokens_usage).await?;
     }
     Ok(total_tokens)
 }
 
 pub struct DefaultAgenticLoopPipeline {
-    session_key: SessionKey,
+    session_id: ArcStr,
     session: Arc<Session>,
     last_total_tokens: AtomicU64,
     producer: BatchProducer,
@@ -453,12 +453,20 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
     async fn reset_system_prompt(&self) {
         self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
     }
+
+    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
+        set_session_model_config(self.session_id.clone(), provider, model).await
+    }
+
+    fn session_ids(&self) -> Vec<ArcStr> {
+        vec![self.session_id.clone()]
+    }
 }
 
 #[async_trait]
 impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
+        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_id.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
@@ -469,20 +477,22 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
         // 找到工具
-        let tools = tools_for_session(self.session_key.clone()).await;
+        let tools = tools_for_session(self.session_id.clone()).await;
         // 发送消息启动 agent 循环
         let token_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        if let Ok(total_tokens) = run(self.session_key.clone(), &self.session, content, &tools, Some(token_usage)).await {
+        if let Ok(total_tokens) = run(self.session_id.clone(), &self.session, content, &tools, Some(token_usage)).await {
             self.last_total_tokens.store(total_tokens, Ordering::Relaxed);
         }
     }
 }
 
 impl DefaultAgenticLoopPipeline {
-    pub fn new(session_key: SessionKey, session: Arc<Session>) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Arc<Self> {
+        let session_id = memory_key.encode();
+        let (session, _) = create_session(&memory_key, &session_manager, session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
         let result = Arc::new(DefaultAgenticLoopPipeline {
-            session_key,
+            session_id,
             session,
             last_total_tokens: AtomicU64::new(0),
             producer
@@ -494,9 +504,10 @@ impl DefaultAgenticLoopPipeline {
 }
 
 pub struct DefaultAgenticLoopPipelineWithMemory {
-    session_key: SessionKey,
+    memory_key: Arc<MemoryKey>,
+    session_id: ArcStr,
     session: Arc<Session>,
-    load_memory: bool,
+    reducer: MemoryRecoverTokenReducer,
     last_total_tokens: AtomicU64,
     producer: BatchProducer,
 }
@@ -504,13 +515,22 @@ pub struct DefaultAgenticLoopPipelineWithMemory {
 #[async_trait]
 impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
     async fn reset_system_prompt(&self) {
-        if let SessionKey::Memory(memory_key) = &self.session_key {
-            if let Some(prompt) = get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await {
-                self.session.set_system_message(prompt).await;
-                return;
-            }
+        if let Some(prompt) = get_ego_system_prompt(
+            self.memory_key.agent_id.clone(),
+            self.memory_key.role_event.role_name.clone(),
+        ).await {
+            self.session.set_system_message(prompt).await;
+            return;
         }
         self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
+    }
+
+    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
+        set_session_model_config(self.session_id.clone(), provider, model).await
+    }
+
+    fn session_ids(&self) -> Vec<ArcStr> {
+        vec![self.session_id.clone()]
     }
 }
 
@@ -518,11 +538,9 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
 impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
         // 记忆 pipeline 自己负责写入上行记录（Nexus 不再统一写入）
-        if let SessionKey::Memory(memory_key) = &self.session_key {
-            let request = channel_request_from_incoming(memory_key.as_ref(), event.as_ref(), None);
-            Nexus::get().memory_store_client.push_channel_record(request).await;
-        }
-        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_key.clone()).await;
+        let request = channel_request_from_incoming(self.memory_key.as_ref(), event.as_ref(), None);
+        Nexus::get().memory_store_client.push_channel_record(request).await;
+        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_id.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
@@ -533,19 +551,23 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
         // 找到工具
-        let tools = tools_for_session(self.session_key.clone()).await;
+        let tools = tools_for_session(self.session_id.clone()).await;
         // 发送消息
         let _ = self.run(content, &tools).await;
     }
 }
 
 impl DefaultAgenticLoopPipelineWithMemory {
-    pub fn new(session_key: SessionKey, session: Arc<Session>, load_memory: bool) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Arc<Self> {
+        let session_id = memory_key.encode();
+        let (session, _) = create_session(&memory_key, &session_manager, session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
+        let reducer = MemoryRecoverTokenReducer::new(memory_key.clone());
         let result = Arc::new(DefaultAgenticLoopPipelineWithMemory {
-            session_key,
+            memory_key,
+            session_id,
             session,
-            load_memory,
+            reducer,
             last_total_tokens: AtomicU64::new(0),
             producer
         });
@@ -563,35 +585,25 @@ impl DefaultAgenticLoopPipelineWithMemory {
     ) -> Result<bool> {
         // send message to llm
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        let mut res = if self.load_memory {
-            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &MemoryRecoverTokenReducer, tokens_usage).await?
-        } else {
-            send_messages_with_limit(self.session_key.clone(), self.session.as_ref(), messages, tools, &CompressTokenReducer, tokens_usage).await?
-        };
+        let mut res = send_messages_with_limit(
+            self.session_id.clone(), self.session.as_ref(),
+            messages, tools, &self.reducer, tokens_usage).await?;
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
         // 推送 think 到 memory-store（reasoning_content + thinking 双字段；详情落盘后把占位引用累积到本次 run）
-        if let SessionKey::Memory(mk) = &self.session_key {
-            // 任一有值才写，都 None 跳过
-            if res.reasoning_content.is_some() || res.thinking.is_some() {
-                let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-                let think_request = build_memory_think(mk.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone());
-                let think_ref = Arc::new(DetailRef::new(think_request.key.clone(), think_request.time.clone()));
-                Nexus::get().memory_store_client.push_think(think_request).await;
-                pending_contents.push(Content::Think(think_ref));
-            }
+        // 任一有值才写，都 None 跳过
+        if res.reasoning_content.is_some() || res.thinking.is_some() {
+            let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
+            let think_request = build_memory_think(self.memory_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone());
+            let think_ref = Arc::new(DetailRef::new(think_request.key.clone(), think_request.time.clone()));
+            Nexus::get().memory_store_client.push_think(think_request).await;
+            pending_contents.push(Content::Think(think_ref));
         }
         // 保存回复的消息
         let _ = self.session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, tool_placeholders, errors) = match &self.session_key {
-                SessionKey::Memory(memory_key) => call_tools_with_memory(tool_calls, memory_key.as_ref()).await,
-                _ => {
-                    let (tool_calls, errors) = call_tools(tool_calls).await;
-                    (tool_calls, Vec::new(), errors)
-                }
-            };
+            let (tool_calls, tool_placeholders, errors) = call_tools_with_memory(tool_calls, self.memory_key.as_ref()).await;
             pending_contents.extend(tool_placeholders);
             if !tool_calls.is_empty() {
                 next = true;
@@ -603,12 +615,11 @@ impl DefaultAgenticLoopPipelineWithMemory {
             vec![]
         };
         // output channel：只有本轮有文本才发送，本轮及之前累积的占位内容与文本一起作为下行记录写入
-        if let SessionKey::Memory(mk) = &self.session_key {
-            let out_channel = ConfigManager::get().out_channel_config(mk.agent_id.as_str(), mk.role_event.role_name.as_str()).await;
-            if let Some(out_channel) = out_channel {
-                if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
-                    send_outgoing(mk.as_ref(), out_channel.as_ref(), content, None).await;
-                }
+        let out_channel = ConfigManager::get().out_channel_config(
+            self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str()).await;
+        if let Some(out_channel) = out_channel {
+            if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
+                send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, None).await;
             }
         }
         if !errors.is_empty() {
@@ -636,92 +647,106 @@ impl DefaultAgenticLoopPipelineWithMemory {
 const PIPELINE_DEFAULT_STR: &str = "default";
 const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
-const PIPELINE_DEFAULT: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_STR);
-const PIPELINE_DEAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
+const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
-pub fn create_pipeline(pipeline_name: ArcStr, session_key: SessionKey, session: Arc<Session>) -> Result<Arc<dyn AgentPipeline>> {
+/// 建立 session 时按 memory_key 合成一次它的配置；返回 (会话, 是否新建)
+pub(crate) async fn create_session(memory_key: &Arc<MemoryKey>, session_manager: &SessionManager, session_id: ArcStr) -> (Arc<Session>, bool) {
+    let (session, new) = session_manager.get_or_create(session_id.clone()).await;
+    if new {
+        if let Err(e) = ConfigManager::get().ensure_session_config(memory_key, session_id).await {
+            warn!("session 配置创建失败: {:?}", e);
+        }
+    }
+    (session, new)
+}
+
+/// 给 session 写入模型覆盖（LLMConfig 的 provider/model；其余字段保留继承值）
+pub(crate) async fn set_session_model_config(session_id: ArcStr, provider: ArcStr, model: ArcStr) -> Result<()> {
+    let mut config = LLMConfig::default();
+    config.provider = Some(provider);
+    config.model = Some(model);
+    ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id, &config).await
+}
+
+pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(session_key, session)),
-        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(session_key, session, true)),
-        PIPELINE_ABSTRACT_MEMORY_STR => match session_key {
-            SessionKey::Memory(memory_key) => Ok(AbstractMemoryPipeline::new(memory_key, session)),
-            SessionKey::Raw(_) => Err(Error::PipelineNotFound(pipeline_name, session_key)),
-        },
-        _ => Err(Error::PipelineNotFound(pipeline_name, session_key))
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key, session_manager).await),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, session_manager).await),
+        PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key, session_manager)),
+        _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
     }
 }
 
-/// 会话 pipeline 注册表
+/// pipeline 注册表：key 为 pipeline 身份（agent_id + role_event）
 pub struct PipelineManager {
-    pipeline_map: DashMap<SessionKey, (Arc<PipelineConfig>, Arc<dyn AgentPipeline>)>,
+    pipeline_map: DashMap<Arc<MemoryKey>, Arc<dyn AgentPipeline>>,
+    session_manager: Arc<SessionManager>,
 }
 
 impl PipelineManager {
-    pub fn new() -> Self {
+    pub fn new(session_manager: Arc<SessionManager>) -> Self {
         Self {
             pipeline_map: DashMap::new(),
+            session_manager,
         }
     }
 
-    pub async fn sync_pipeline(&self, session_key: SessionKey, session: Arc<Session>) -> Result<()> {
-        let cfg = ConfigManager::get().session_config::<PipelineConfig, PipelineConfig>(session_key.clone()).await;
-        let pipeline_name = if let Some(name) = cfg.pipeline_name.as_ref() {
-            name.clone()
-        } else {
-            match &session_key {
-                SessionKey::Memory(_) => PIPELINE_DEAULT_MEMORY.clone(),
-                SessionKey::Raw(_) => PIPELINE_DEFAULT.clone(),
-            }
-        };
-        match self.pipeline_map.entry(session_key.clone()) {
-            Entry::Occupied(mut entry) => {
-                if cfg.as_ref() == entry.get().0.as_ref() {
-                    return Ok(())
-                }
-                let pipeline = create_pipeline(pipeline_name, session_key, session)?;
-                entry.insert((cfg, pipeline));
-            }
+    /// 定位 pipeline，不存在则按 agent/role 配置的 pipeline_name 装配（默认 default_memory）
+    /// 并初始化系统提示词；pipeline 需要哪些 session 由它自己的构造过程决定
+    pub async fn ensure_pipeline(&self, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
+        if let Some(pipeline) = self.pipeline_map.get(&memory_key) {
+            return Ok(pipeline.clone());
+        }
+        let cfg = ConfigManager::get()
+            .agent_role_config::<PipelineConfig>(memory_key.agent_id.as_str(), memory_key.role_event.role_name.as_str())
+            .await;
+        let pipeline_name = cfg.and_then(|cfg| cfg.pipeline_name)
+            .unwrap_or_else(|| PIPELINE_DEFAULT_MEMORY.clone());
+        let pipeline = create_pipeline(pipeline_name, memory_key.clone(), self.session_manager.clone()).await?;
+        pipeline.reset_system_prompt().await;
+        match self.pipeline_map.entry(memory_key) {
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
-                let pipeline = create_pipeline(pipeline_name, session_key, session)?;
-                entry.insert((cfg, pipeline));
+                entry.insert(pipeline.clone());
+                Ok(pipeline)
             }
         }
-        Ok(())
     }
 
-    /// 只保留仍在绑定集合中的会话的 trigger/pipeline（与 SessionManager::retain 成对调用，
-    /// 会话被清理后其 trigger/pipeline 一并丢弃；trigger 丢弃会触发输入处理器的 Drop → 合批任务退出）
-    pub fn retain(&self, keys: &HashSet<SessionKey>) {
-        self.pipeline_map.retain(|k, _| keys.contains(k));
+    /// 只保留仍在绑定集合中的 pipeline，返回保留 pipeline 当前持有的全部 session id
+    /// （调用方据此让 SessionManager 清理无 pipeline 持有的 session；pipeline 丢弃会触发
+    /// 输入处理器 Drop → 合批任务退出）
+    pub fn retain(&self, keys: &HashSet<Arc<MemoryKey>>) -> HashSet<ArcStr> {
+        let mut session_ids = HashSet::new();
+        self.pipeline_map.retain(|k, v| {
+            let keep = keys.contains(k);
+            if keep {
+                session_ids.extend(v.session_ids());
+            }
+            keep
+        });
+        session_ids
     }
 
-    pub async fn incoming_message(&self, session_key: SessionKey, event: Arc<IncomingMessageEvent>) {
-        // 输入处理器以 Arc<Self> 接收消息（便于把 Weak 交给批次消费者）：先克隆出 pipeline 再放掉 map 读锁
-        let pipeline = self.pipeline_map.get(&session_key).map(|entry| entry.1.clone());
-        if let Some(pipeline) = pipeline {
-            pipeline.incoming_message(event).await;
+    pub async fn incoming_message(&self, memory_key: Arc<MemoryKey>, event: Arc<IncomingMessageEvent>) {
+        match self.ensure_pipeline(memory_key).await {
+            Ok(pipeline) => pipeline.incoming_message(event).await,
+            Err(e) => warn!("pipeline 装配失败，丢弃消息: {:?}", e),
         }
     }
 
-    pub async fn reset_system_prompt(&self, session_key: SessionKey) {
-        let pipeline = self.pipeline_map.get(&session_key).map(|entry| entry.1.clone());
-        if let Some(pipeline) = pipeline {
-            pipeline.reset_system_prompt().await;
-        }
-    }
-
-    /// channel 不再绑定该会话：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态
-    pub async fn channel_unbound(&self, session_key: &SessionKey, messenger_id: &str, self_user_id: &str) {
-        let pipeline = self.pipeline_map.get(session_key).map(|entry| entry.1.clone());
+    /// channel 不再绑定该 pipeline：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态
+    pub async fn channel_unbound(&self, memory_key: &Arc<MemoryKey>, messenger_id: &str, self_user_id: &str) {
+        let pipeline = self.pipeline_map.get(memory_key).map(|entry| entry.clone());
         if let Some(pipeline) = pipeline {
             pipeline.channel_unbound(ArcStr::from(messenger_id), ArcStr::from(self_user_id)).await;
         }
     }
 
-    /// 单测用：会话是否已装配 pipeline（生产代码不依赖该查询）
+    /// 单测用：pipeline 是否已装配（生产代码不依赖该查询）
     #[cfg(test)]
-    pub fn contains(&self, session_key: &SessionKey) -> bool {
-        self.pipeline_map.contains_key(session_key)
+    pub fn contains(&self, memory_key: &MemoryKey) -> bool {
+        self.pipeline_map.contains_key(memory_key)
     }
 }
 

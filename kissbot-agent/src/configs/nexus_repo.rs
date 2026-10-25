@@ -14,8 +14,6 @@ use arcstr::ArcStr;
 use kissbot_llm::ProviderModelConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::types::MemoryKey;
-
 // ========== 配置数据结构 ==========
 
 /// nexus 可改配置，持久化到 <data_dir>/nexus.json
@@ -25,38 +23,10 @@ pub struct NexusRepo {
     pub providers: Arc<HashMap<ArcStr, Arc<ProviderModelConfig>>>, // key = provider 名
     pub memory_structs: Arc<HashMap<ArcStr, Arc<MemoryStructConfig>>>,
     pub agent_roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
-    /// session 运行配置（key = Arc<MemoryKey>，agent_id + role_event 结构体）：JSON 的 map 键必须是字符串，
-    /// 故经 sessions_serde 以 [[key, value], ...] 数组对承载（不是 JSON 对象）
-    #[serde(with = "sessions_serde")]
-    pub memory_sessions: Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
-    pub raw_sessions: Arc<HashMap<ArcStr, Arc<SessionConfigMap>>>,
-}
-
-/// sessions 字段的 (反)序列化：MemoryKey 是结构体，不能作 JSON map 键（serde_json 要求字符串键，
-/// 结构体作键会报 "key must be a string"），因此改用数组对承载 key/value。
-mod sessions_serde {
-    use super::*;
-
-    pub fn serialize<S>(
-        sessions: &Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        // Vec<(&Arc<MemoryKey>, &Arc<SessionConfigMap>)> → [[key, value], ...]
-        sessions.iter().collect::<Vec<_>>().serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<Arc<HashMap<Arc<MemoryKey>, Arc<SessionConfigMap>>>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let entries = Vec::<_>::deserialize(deserializer)?;
-        Ok(Arc::new(entries.into_iter().collect()))
-    }
+    /// session 运行配置（key = session_id）：首次读取时按 agent/role 配置合成并缓存，
+    /// 之后可由 session 级覆盖更新（如 /model）。缺省为空，兼容尚未写入该字段的旧配置。
+    #[serde(default)]
+    pub sessions: Arc<HashMap<ArcStr, Arc<SessionConfigMap>>>,
 }
 
 impl Default for NexusRepo {
@@ -66,8 +36,7 @@ impl Default for NexusRepo {
             providers: Arc::new(HashMap::new()),
             memory_structs: Arc::new(HashMap::new()),
             agent_roles: Arc::new(HashMap::new()),
-            memory_sessions: Arc::new(HashMap::new()),
-            raw_sessions: Arc::new(HashMap::new()),
+            sessions: Arc::new(HashMap::new()),
         }
     }
 }

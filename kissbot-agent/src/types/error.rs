@@ -1,8 +1,10 @@
 // ========== 错误类型 ==========
 
+use std::sync::Arc;
+
 use arcstr::ArcStr;
 
-use crate::types::SessionKey;
+use crate::types::MemoryKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,8 +53,8 @@ pub enum Error {
     #[error("Internal error: {0}")]
     InternalError(ArcStr),
 
-    #[error("Pipeline {0} not found for session {1:?}")]
-    PipelineNotFound(ArcStr, SessionKey),
+    #[error("Pipeline {0} not found for {1:?}")]
+    PipelineNotFound(ArcStr, Arc<MemoryKey>),
 
     #[error("Errors:\n{}", format_errors(.0))]
     MultiError(Vec<Error>),

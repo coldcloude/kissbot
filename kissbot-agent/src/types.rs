@@ -1,10 +1,10 @@
 pub mod error;
-pub mod session_api;
+pub mod memory_key;
 pub mod channel_api;
 pub mod memory_api;
 
 pub use error::*;
-pub use session_api::*;
+pub use memory_key::*;
 pub use channel_api::*;
 pub use memory_api::*;
 

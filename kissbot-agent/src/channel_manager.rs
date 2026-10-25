@@ -20,13 +20,13 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
 use crate::nexus::Nexus;
-use crate::types::{ChannelCommand, Error, MemoryKey, Result, SessionKey};
+use crate::types::{ChannelCommand, Error, MemoryKey, Result};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
 const CHANNEL_CONTEXT_TTL: Duration = Duration::from_secs(60);
 
 /// agent/role/event 变更任务（mpsc 队列串行处理，避免写-写竞态；读无需外部加锁）
-/// 统一为「应用新的会话三元组」：写 config + 运行态 mode + 会话重定位
+/// 统一为「应用新的 pipeline 三元组」：写 config + 运行态 event + pipeline 重定位
 struct ApplyChannelMemoryKey {
     channel_id: ArcStr,
     agent_id: Option<ArcStr>,
@@ -107,7 +107,7 @@ impl Channel {
 /// 内部 DashMap 无锁并发；Nexus 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 /// 另持 channel 变更串行队列（写-写竞态防护；读无需外部加锁）：入队与执行都在本结构
 /// （change_channel_key / channel_command → apply_channel_key / apply_channel_command），
-/// 其中会话重定位部分经 Nexus（prune_sessions / memory_key / ensure_session）
+/// 其中 pipeline 重定位部分经 Nexus（prune_pipelines / memory_key / ensure_pipeline）
 pub struct ChannelManager {
     channels: DashMap<ArcStr, Arc<Channel>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -192,8 +192,9 @@ impl ChannelManager {
 
     // ---- 变更执行体（队列消费者内串行调用，不对外） ----
 
-    /// 来源 channel 绑定信息变化后重定位会话：写 config + 运行态 mode + 清理无绑定会话 + 为新三元组创建会话
-    /// 运行态 mode 写 Channel.mode（/mode 切换不回写，重启回 Role）
+    /// 来源 channel 绑定信息变化后重定位 pipeline：写 config + 运行态 event + 清理无绑定 pipeline +
+    /// 为新三元组装配 pipeline
+    /// 运行态 event 写 Channel.event（/mode 切换不回写，重启回角色模式）
     /// None 字段 = 保持当前值：队列内结合当前状态合成新三元组（写-写串行，读-改-写无竞态）
     async fn apply_channel_key(
         &self,
@@ -203,9 +204,9 @@ impl ChannelManager {
         mut event_id: Option<Option<ArcStr>>,
     ) -> Result<()> {
         let cm = ConfigManager::get();
-        // 变化前的会话标识与绑定身份：写完新配置后旧会话/旧 channel 的批次状态需要按它们清理
+        // 变化前的 pipeline 标识与绑定身份：写完新配置后旧 pipeline/旧 channel 的批次状态需要按它们清理
         let c = self.get_or_create(channel_id);
-        let old_key = self.memory_key(channel_id).await.map(|key| SessionKey::Memory(Arc::new(key)));
+        let old_key = self.memory_key(channel_id).await;
         let old_bind_users = cm.channel(channel_id).await
             .map(|channel| channel.bind_users.clone())
             .unwrap_or_default();
@@ -227,15 +228,15 @@ impl ChannelManager {
         if let Some(event_id) = event_id.take() {
             c.event.store(Arc::new(event_id));
         }
-        // 会话/流水线重定位归 Nexus：解绑旧 channel + 清理无绑定会话/pipeline + 创建新会话
-        let new_key = SessionKey::Memory(Arc::new(MemoryKey {
+        // pipeline 重定位归 Nexus：解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline
+        let new_key = Arc::new(MemoryKey {
             agent_id: cc.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: cc.role_name.clone(),
                 event_id: c.event.load().as_ref().clone(),
             }),
-        }));
-        Nexus::get().rebind_session(old_key, new_key, old_bind_users.as_ref()).await;
+        });
+        Nexus::get().rebind_pipeline(old_key, new_key, old_bind_users.as_ref()).await;
         Ok(())
     }
 
@@ -261,18 +262,21 @@ impl ChannelManager {
             .clone()
     }
 
-    /// 按 channel 定位会话二元组（config agent_id/role_name + 运行态事件；channel 不存在返回 None）
-    pub async fn memory_key(&self, channel_id: &str) -> Option<MemoryKey> {
+    /// 按 channel 定位 pipeline 标识（config agent_id/role_name + 运行态事件；channel 不存在返回 None）。
+    /// 运行态条目缺失时按角色模式（event = None）合成，启动阶段尚未建立运行态也能定位 pipeline。
+    pub async fn memory_key(&self, channel_id: &str) -> Option<Arc<MemoryKey>> {
         let ch = ConfigManager::get().channel(channel_id).await?;
-        let c = self.channels.get(channel_id)?;
         // 运行态事件（未绑定/缺失回退角色模式，即 None）
-        Some(MemoryKey {
+        let event_id = self.channels.get(channel_id)
+            .map(|c| c.event.load().as_ref().clone())
+            .unwrap_or(None);
+        Some(Arc::new(MemoryKey {
             agent_id: ch.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
                 role_name: ch.role_name.clone(),
-                event_id: c.event.load().as_ref().clone(),
+                event_id,
             }),
-        })
+        }))
     }
 
     /// 绑定 channel 用户（/bind：bind_users 追加，HashSet 天然去重幂等）

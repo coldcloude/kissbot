@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use kissbot_api::IncomingMessageEvent;
 
 use kissbot_llm::{Message, Session};
-use crate::types::SessionKey;
+use crate::types::Result;
 
 #[async_trait]
 pub trait IncomingMessageProcessor: Send + Sync {
@@ -22,10 +22,16 @@ pub trait IncomingMessageBatchProcessor: Send + Sync {
 
 #[async_trait]
 pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
-    /// 重置会话系统提示词（存为待定，下次发送前应用）
+    /// 重置系统提示词（存为待定，下次发送前应用）；pipeline 决定应用到哪些 session
     async fn reset_system_prompt(&self);
 
-    /// channel 不再绑定本会话：清理该 channel（messenger + 绑定用户）在本会话中的资源。
+    /// 设置本 pipeline 的模型：pipeline 决定写入哪些 session 的配置
+    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()>;
+
+    /// 本 pipeline 当前持有的 session id（清理时由 PipelineManager 汇总交给 SessionManager）
+    fn session_ids(&self) -> Vec<ArcStr>;
+
+    /// channel 不再绑定本 pipeline：清理该 channel（messenger + 绑定用户）在本 pipeline 中的资源。
     ///
     /// 按 channel 攒批的 pipeline 覆写本方法丢弃对应 channel 的批次生产者与待处理消息；
     /// 其余 pipeline 无 channel 级状态，使用默认空实现。
@@ -34,5 +40,5 @@ pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
 
 #[async_trait]
 pub trait TokenReducer: Send + Sync + 'static {
-    async fn reduce(&self, session_key: SessionKey, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>);
+    async fn reduce(&self, session_id: ArcStr, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>);
 }
