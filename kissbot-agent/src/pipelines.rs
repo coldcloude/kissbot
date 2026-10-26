@@ -10,7 +10,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{Content, ContentBlock, DetailRef, IncomingMessageEvent, MergeBy, MergeEffectiveConfig, MergeSelf, MemoryMeta, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 
 use std::collections::{BTreeMap, HashSet};
@@ -21,7 +21,7 @@ use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 use tracing::warn;
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, PipelineConfig};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
@@ -85,17 +85,33 @@ fn parse_channel_groups(groups: QueryChannelData, map: &mut BTreeMap<(ArcStr, u6
     }
 }
 
+/// 取 session 配置项：session 配置表有该项时直接用，否则按 agent → role 继承合成有效配置。
+/// 只读，不写回 session 配置；需要把继承结果固化成 session 配置的 pipeline 自行调用
+/// `ConfigManager::set_session_config`。
+pub(crate) async fn session_config<C, E>(cfg: &ConfigManager, memory_key: &MemoryKey, session_id: &ArcStr) -> Arc<E>
+where
+    C: MergeSelf + Clone + MergeEffectiveConfig<E>,
+    SessionConfigMergeMap: OptionArcField<C>,
+    SessionConfigMap: OptionArcField<E>,
+{
+    if let Some(config) = cfg.session_config::<E>(session_id.as_str()).await {
+        return config;
+    }
+    let config = cfg.agent_role_config::<C>(
+        memory_key.agent_id.as_str(),
+        memory_key.role_event.role_name.as_str(),
+    ).await.unwrap_or_default();
+    Arc::new(config.get_effective_config())
+}
+
 /// 记忆打包（两次查询并集）→ 交替的 User/Assistant 消息：
 /// ① RecentQuery 最近 N 条（无时间参数）→ ln = 最旧一条 time；
 /// ② QueryRequest 时间范围 [M, ln]（M = min(时间窗起点, ln)，无 limit，M == ln 时退化为单点取 ln 同时间组）；
 /// 结果 = ① ∪ ②（两次解析共用同一 BTreeMap，键 (time, sn) → 去重 + 天然时间正序），升序打包。
 /// 任一步失败（时间窗计算 / 查询）均返回空上下文（不阻塞消息发送）。
 pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>, session_id: ArcStr) -> Vec<Message> {
-    let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
-        memory_key.agent_id.clone(),
-        memory_key.role_event.role_name.clone(),
-        session_id,
-    ).await;
+    let cfg = session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
+        ConfigManager::get(), memory_key.as_ref(), &session_id).await;
     let nexus = Nexus::get();
 
     // 时间窗起点计算失败（checked_sub_signed 溢出）→ 空上下文，不静默回退到错误的时间窗
@@ -148,20 +164,17 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>, session
 pub async fn send_messages(memory_key: &Arc<MemoryKey>, session_id: ArcStr, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
     let _ = session.context_append(messages).await;
     let full_messages = session.build_context_full().await;
-    let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(
-        memory_key.agent_id.clone(),
-        memory_key.role_event.role_name.clone(),
-        session_id,
-    ).await;
+    let llm_cfg = session_config::<LLMConfig, EffectiveLLMConfig>(
+        ConfigManager::get(), memory_key.as_ref(), &session_id).await;
     Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
 }
 
 async fn send_messages_with_limit(memory_key: &Arc<MemoryKey>, session_id: ArcStr, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, tokens_usage: u64) -> Result<ModelResponse> {
     let cfg_mngr = ConfigManager::get();
-    let agent_id = memory_key.agent_id.clone();
-    let role_name = memory_key.role_event.role_name.clone();
-    let llm_cfg = cfg_mngr.session_config::<LLMConfig, EffectiveLLMConfig>(agent_id.clone(), role_name.clone(), session_id.clone()).await;
-    let compress_cfg = cfg_mngr.session_config::<CompressConfig, EffectiveCompressConfig>(agent_id, role_name, session_id.clone()).await;
+    let llm_cfg = session_config::<LLMConfig, EffectiveLLMConfig>(
+        cfg_mngr, memory_key.as_ref(), &session_id).await;
+    let compress_cfg = session_config::<CompressConfig, EffectiveCompressConfig>(
+        cfg_mngr, memory_key.as_ref(), &session_id).await;
     let provider = llm_cfg.provider.as_str();
     let model = llm_cfg.model.as_str();
     let model_cfg = cfg_mngr.provider_model_config(provider, model).await
@@ -193,11 +206,8 @@ pub fn retrieve_assistant_message(res: &mut ModelResponse) -> Message {
 /// session 可用工具：session 配置的启用 group 白名单 → Station 平铺查询（本级 + 直接子递归）并按 group 本地过滤
 /// 结果转换为 LLM 侧工具定义；聚合为空则请求不携带 tools 字段（兼容无工具场景）
 pub async fn tools_for_session(memory_key: &Arc<MemoryKey>, session_id: ArcStr) -> Vec<Arc<ToolConfig>> {
-    let cfg = ConfigManager::get().session_config::<GroupSetConfig, GroupSetConfig>(
-        memory_key.agent_id.clone(),
-        memory_key.role_event.role_name.clone(),
-        session_id,
-    ).await;
+    let cfg = session_config::<GroupSetConfig, GroupSetConfig>(
+        ConfigManager::get(), memory_key.as_ref(), &session_id).await;
     if cfg.group_set.is_empty() {
         return Vec::new();
     }
@@ -478,11 +488,8 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
 #[async_trait]
 impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(
-            self.memory_key.agent_id.clone(),
-            self.memory_key.role_event.role_name.clone(),
-            self.session_id.clone(),
-        ).await;
+        let cfg = session_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            ConfigManager::get(), self.memory_key.as_ref(), &self.session_id).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
@@ -555,11 +562,8 @@ impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
         // 记忆 pipeline 自己负责写入上行记录（Nexus 不再统一写入）
         let request = channel_request_from_incoming(self.memory_key.as_ref(), event.as_ref(), None);
         Nexus::get().memory_store_client.push_channel_record(request).await;
-        let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(
-            self.memory_key.agent_id.clone(),
-            self.memory_key.role_event.role_name.clone(),
-            self.session_id.clone(),
-        ).await;
+        let cfg = session_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            ConfigManager::get(), self.memory_key.as_ref(), &self.session_id).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 }
@@ -676,24 +680,24 @@ const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
 const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
-/// 建立 session 时从本地缓存恢复；配置项在首次按 session_id 读取时按 agent/role 合成
+/// 建立 session 时从本地缓存恢复；session 配置项缺失时由 pipeline 按 agent/role 继承合成
 pub(crate) async fn create_session(session_id: ArcStr) -> Arc<Session> {
     let session = Arc::new(Session::new(ConfigManager::get().data_dir(), session_id));
     let _ = session.recover_from_cache().await;
     session
 }
 
-/// 给 session 写入模型覆盖（LLMConfig 的 provider/model；其余字段保留继承值）
+/// 给 session 写入模型覆盖（provider/model；其余字段保留当前有效值，即 session 覆盖或 agent/role 继承）
 pub(crate) async fn set_session_model_config(memory_key: &Arc<MemoryKey>, session_id: ArcStr, provider: ArcStr, model: ArcStr) -> Result<()> {
-    let mut config = LLMConfig::default();
-    config.provider = Some(provider);
-    config.model = Some(model);
-    ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(
-        memory_key.agent_id.clone(),
-        memory_key.role_event.role_name.clone(),
-        session_id,
-        &config,
-    ).await
+    let cfg_mngr = ConfigManager::get();
+    let effective = session_config::<LLMConfig, EffectiveLLMConfig>(
+        cfg_mngr, memory_key.as_ref(), &session_id).await;
+    let mut effective = (*effective).clone();
+    let mut over = LLMConfig::default();
+    over.provider = Some(provider);
+    over.model = Some(model);
+    effective.merge(&over);
+    cfg_mngr.set_session_config(session_id, Arc::new(effective)).await
 }
 
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {

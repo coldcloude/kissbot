@@ -47,7 +47,7 @@
     }
   },
   "memory_structs": {},
-  "agents": {
+  "agent_roles": {
     "0": {
       "config_map": {
         "llm": {
@@ -86,7 +86,7 @@
 
 - **channels**：`agent_id` 为绑定的 agent（空串/缺省归一化为保留 agent `"0"`），`bind_users` 为绑定的通道身份，`admins` 为可发管理命令的身份
 - **providers**：`provider_config` 承载 `provider_type`（`openai` / `anthropic`）、`base_url`、`api_key`；`default_model_config` 为 provider 默认模型参数（`max_tokens_usage` 必填，`timeout_secs` / `retry_count` 缺省回落全局默认 60 / 3）；`model_configs` 按模型名覆盖（未配置的模型直接用 provider 默认值合成）
-- **agents**：按 `agent_id` 配置，`config_map` 为 agent 级默认、`roles.<role_name>` 为 role 级覆盖（两级都缺省时回落内置默认）。可配项：
+- **agent_roles**：按 `agent_id` 配置，`config_map` 为 agent 级默认、`roles.<role_name>` 为 role 级覆盖（两级都缺省时回落内置默认）。可配项：
   - `llm`：`provider` / `model` / `max_tokens` / `temperature` / `thinking` / `reasoning_effort`；其中后四者带 `has_*` 标志——`set_*` 置 true（取值可为 null，用于显式置空），`unset_*` 置回 false（回落上一级），合并时只覆盖 `has_*` 为 true 的字段
   - `compress`：`compress_prompt`（默认压缩模板）/ `compress_threshold`（默认 0.8）
   - `memory_recover`：`memory_time_secs`（默认 3600）/ `memory_count`（默认 50）
@@ -94,17 +94,17 @@
   - `out_channel`：回复通道（`channel_id` + 绑定身份 + `group_id`）；也可用 `/bind-outgoing`、`/unbind-outgoing` 在运行期设置/清除；未配置 = 只存不回复
   - `group_set`：pipeline 启用的 group 白名单（工具聚合只考虑这些 group；空/缺省 = 无工具）
   - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `abstract_memory`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
-- **sessions**：运行期按 session_id 合成/覆盖的配置（普通 JSON 对象，一般无需手改）
+- **sessions**：pipeline 固化的 session 级值与 `/model` 等覆盖（普通 JSON 对象，一般无需手改）；缺失项由 pipeline 按 agent/role 合成
 - **memory_structs**：记忆结构组件配置（占位，本轮未实现）
 - **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）
 
 **与旧版的差异（旧配置需迁移，否则相关字段被忽略/解析失败）**：
 
 - `channels.<id>.agent_name` → `agent_id`（空串/缺省 = 保留 agent `"0"`）
-- `agent_contexts` → `agents`；`agent_contexts.<id>.default_context_config` → `agents.<id>.config_map`，其 `out_channel` 字段值外包一层 `{ "out_channel": … }`；`toolkits` → `group_set.group_set`；`memory_time_secs` / `memory_count` → `memory_recover.<字段>`；`compress_prompt` / `compress_threshold` → `compress.<字段>`
-- `providers.<name>` 旧的扁平 `provider_type` / `base_url` / `api_key` → 收进 `provider_config`；`default_model_config` 只保留 `max_tokens_usage` / `timeout_secs` / `retry_count`（`max_tokens` / `temperature` / `thinking` / `reasoning_effort` 移到 `agents.<id>.config_map.llm`）；`models` → `model_configs`
-- 顶层 `default_model` → `agents.<由该默认适用的 agent>.config_map.llm`（`provider` + `model`）；顶层 `default_system_prompt` → 不再可配（系统提示词由 `system_prompter` 决定：固定默认提示词，或从 memory-ego 读取自我认知信息）
-- 顶层 `context` → `agents`；`providers` 与 `agents` 必填，`sessions`（`{}`）/ `memory_structs`（`{}`）必填但可为空
+- `agent_contexts` → `agent_roles`；`agent_contexts.<id>.default_context_config` → `agent_roles.<id>.config_map`，其 `out_channel` 字段值外包一层 `{ "out_channel": … }`；`toolkits` → `group_set.group_set`；`memory_time_secs` / `memory_count` → `memory_recover.<字段>`；`compress_prompt` / `compress_threshold` → `compress.<字段>`
+- `providers.<name>` 旧的扁平 `provider_type` / `base_url` / `api_key` → 收进 `provider_config`；`default_model_config` 只保留 `max_tokens_usage` / `timeout_secs` / `retry_count`（`max_tokens` / `temperature` / `thinking` / `reasoning_effort` 移到 `agent_roles.<id>.config_map.llm`）；`models` → `model_configs`
+- 顶层 `default_model` → `agent_roles.<由该默认适用的 agent>.config_map.llm`（`provider` + `model`）；顶层 `default_system_prompt` → 不再可配（系统提示词由 `system_prompter` 决定：固定默认提示词，或从 memory-ego 读取自我认知信息）
+- 顶层 `context` → `agent_roles`；`providers` 与 `agent_roles` 必填，`sessions`（`{}`）/ `memory_structs`（`{}`）必填但可为空
 
 ### 2. 启动与验证步骤
 

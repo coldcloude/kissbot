@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
+        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, session_config, set_session_model_config, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -100,16 +100,10 @@ impl AbstractMemoryPipeline {
         } else {
             let base_id = self.case_session_id(None);
             let cfg = ConfigManager::get();
-            let base = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(
-                self.memory_key.agent_id.clone(),
-                self.memory_key.role_event.role_name.clone(),
-                base_id,
-            ).await;
-            let case = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(
-                self.memory_key.agent_id.clone(),
-                self.memory_key.role_event.role_name.clone(),
-                session_id.clone(),
-            ).await;
+            let base = session_config::<LLMConfig, EffectiveLLMConfig>(
+                cfg, self.memory_key.as_ref(), &base_id).await;
+            let case = session_config::<LLMConfig, EffectiveLLMConfig>(
+                cfg, self.memory_key.as_ref(), &session_id).await;
             if base.provider != case.provider || base.model != case.model {
                 let _ = set_session_model_config(&self.memory_key, session_id, base.provider.clone(), base.model.clone()).await;
             }
@@ -190,12 +184,8 @@ impl IncomingMessageProcessor for AbstractMemoryPipeline {
         // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
         let base_id = self.case_session_id(None);
         let _ = self.ensure_session(&None).await;
-        let interval = ConfigManager::get()
-            .session_config::<ChannelBatchConfig, ChannelBatchConfig>(
-                self.memory_key.agent_id.clone(),
-                self.memory_key.role_event.role_name.clone(),
-                base_id,
-            )
+        let interval = session_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            ConfigManager::get(), self.memory_key.as_ref(), &base_id)
             .await
             .channel_batch_interval_secs;
         self.enqueue(event, interval);
@@ -302,11 +292,8 @@ impl AbstractMemoryPipeline {
             Some(case_name) => {
                 // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
                 let rebuilt = async {
-                    let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
-                        self.memory_key.agent_id.clone(),
-                        self.memory_key.role_event.role_name.clone(),
-                        session_id.clone(),
-                    ).await;
+                    let cfg = session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
+                        ConfigManager::get(), self.memory_key.as_ref(), &session_id).await;
                     let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
                     let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
                     Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))

@@ -8,7 +8,7 @@
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
-| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；session 配置按配置项在首次读取时合成，pipeline 保存 memory_key 与 session_id 供后续配置项合成使用；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
+| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储，session 配置读写只按 session_id；session 配置缺失时由 pipeline 按 agent/role 合成，是否写回由 pipeline 决定；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、pipeline 定位与装配、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做 pipeline 重定位 |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`set_model` 与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |

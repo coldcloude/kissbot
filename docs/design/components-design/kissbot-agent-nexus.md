@@ -70,8 +70,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
-- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级覆盖
-- 每个配置项在首次按 session_id 读取时按 agent → role 继承合成；pipeline 保存 memory_key 与 session_id 供后续配置项合成；pipeline 选择按 agent/role 合成
+- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级值
+- 分开存储 agent/role 可继承配置与 session 级值：session 配置读写只按 session_id，不做隐式继承；缺失项由 pipeline 按 agent → role 合成，是否写回 session 配置由 pipeline 决定；pipeline 选择按 agent/role 合成
 - 支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）
@@ -92,12 +92,12 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - **agentic loop**：`default_memory` 与 `abstract_memory` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
 - **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经回复发送流程发送并写入（meta 为 None）；`abstract_memory` 在定位之后写入上行记录（带消息所属 case 的 meta），回复同样带本次 run 所属 case 的 meta。
 - **channel 解绑**：AgentPipeline 提供 channel 解绑入口。channel 切换 agent/role/mode 时，通道侧对旧 pipeline 调用它；摘要记忆 pipeline 据此丢弃该 channel 全部分组的生产者与待处理消息。Nexus 把「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」合成为一个重绑定流程。
-- **PipelineManager**：按 pipeline 标识（agent + role_event）持有 pipeline，提供装配、消息投递、channel 解绑通知与随绑定清理；装配哪些 session 由 pipeline 自己决定，清理时 pipeline 报告自己在用的 session id。pipeline 实现由 agent/role 配置的 `pipeline_name` 选择。
+- **PipelineManager**：按 pipeline 标识（agent + role_event）持有 pipeline，提供装配、消息投递、channel 解绑通知与随绑定清理；装配哪些 session 由 pipeline 自己决定，清理时直接丢弃 pipeline，session 随 Arc 释放。pipeline 实现由 agent/role 配置的 `pipeline_name` 选择。
 
 ### 6. 记忆读写
 - 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
 - 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
-- 首次合成 session 配置时也读取记忆回溯配置（时间窗、条数），与 LLM 参数独立
+- 记忆回溯配置（时间窗、条数）与 LLM 参数独立，由 pipeline 在读取时分别获取
 
 ### 7. 管理命令路由器
 - 识别以 `/` 开头的外部消息（且发送者在来源 channel 的 admins 中）

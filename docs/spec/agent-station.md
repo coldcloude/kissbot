@@ -142,7 +142,7 @@ station 自身作为 MCP 服务端，监听公共配置 `agent.station_host` / `
 ## group 白名单与会话对应关系
 
 - **会话 group 白名单（GroupSetConfig.group_set）**：`Arc<HashSet<ArcStr>>`，会话启用的 group 名集合；默认空集 = 无工具
-- 三层继承合并（默认 ← agent 级 ← role 级）后的 `group_set` 即为会话 group 白名单（与其它会话配置一样按 agent → role → session 逐层合成）
+- 继承合并（默认 ← agent 级 ← role 级）后再叠加 session 级值（如有）的 `group_set` 即为会话 group 白名单；session 级值缺失时由 pipeline 按 agent/role 合成
 - `Nexus::tools_for_session(memory_key, session_id)`：读该 session 的 group 白名单 → 为空直接返回空 → `Station::list_tools_local(Some(&group_set))` 平铺查询并按 group 本地过滤；结果由 `From<&kissbot_mcp::Tool> for ToolConfig` 转为 LLM 侧工具定义（`parameters` 取 `inputSchema`），随 LLM 请求的 tools 字段发送
 - 工具执行：pipeline 直接调用 `call_tool` / `call_tool_with_memory`（后者写 tool-call/tool-result 记忆并生成 key）→ `Station::call_tool_local(name, arguments)`；`CallToolResult` 还原为 `ToolData`——只承载 MCP `content` 字段转成的 `Value`（内容块数组，完整保留 text / image / audio / resource_link / resource 各类型）：成功进 `result`，失败进 `error`（`result` 留空）；`structuredContent` 不进入 Nexus
 - 工具结果进入 LLM 上下文前由输出处理器渲染：成功取 `result`、失败取 `error`，文本块取原文、字符串原样、其余块给紧凑占位（二进制内容不进入上下文）

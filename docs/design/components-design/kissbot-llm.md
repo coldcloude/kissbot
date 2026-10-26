@@ -7,7 +7,7 @@ kissbot-llm 是 kissbot 的 LLM 基础库（Rust lib），把「与模型服务�
 组件刻意不含三类能力，以保持边界清晰：
 
 - **不含会话集合管理**：按调用方给定的 session 标识创建、持有与清理会话属调用方（agent 中为 pipeline），组件只提供单个会话的上下文。
-- **不含配置存储与继承链**：provider 配置的持久化、agent → role → session 的配置继承与合成属调用方（agent 中为 ConfigManager）；组件的配置类型只定义结构、默认值与「provider 默认 ← model 覆盖」这一级合成。
+- **不含配置存储与继承链**：provider 配置的持久化、agent → role → session 的配置组合属调用方（agent 中 ConfigManager 负责两级存储，pipeline 负责读取时组合）；组件的配置类型只定义结构、默认值与「provider 默认 ← model 覆盖」这一级合成。
 - **不含工具宿主与协议转换**：工具执行（Station）、工具定义与 MCP 的互转留在调用方，组件不依赖 MCP。
 
 ## 核心功能

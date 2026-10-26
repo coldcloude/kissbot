@@ -1,5 +1,11 @@
 
-// ========== Context 配置（agent→role 三层继承） ==========
+// ========== 配置继承与 session 配置 ==========
+//
+// 两层存储，职责分开：
+// - AgentRoleConfig / SessionConfigMergeMap：agent → role 的可继承配置（含 pipeline 选择）
+// - SessionConfigMap：按 session_id 存的运行期有效配置（session 级覆盖或 pipeline 固化）
+//
+// 两者之间没有隐式继承：需要回退到 agent/role 时由 pipeline 自行组合。
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -7,7 +13,7 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use kissbot_api::{
-    MergeBy, MergeEffectiveConfig, MergeSelf, OptionArcField, impl_option_arc_field,
+    MergeSelf, OptionArcField, impl_option_arc_field,
     impl_option_arc_field_map,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
@@ -113,7 +119,6 @@ pub struct SessionConfigMap {
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
     group_set: Option<Arc<GroupSetConfig>>,
-    pipeline: Option<Arc<PipelineConfig>>,
 }
 
 impl_option_arc_field!(EffectiveLLMConfig => llm, SessionConfigMap);
@@ -122,52 +127,5 @@ impl_option_arc_field!(EffectiveMemoryRecoverConfig => memory_recover, SessionCo
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMap);
 impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMap);
-impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
-
-impl SessionConfigMap {
-    pub fn create_by_agent_role<C, E>(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, agent_id: &str, role_name: &str) -> E
-    where
-        C: MergeSelf + MergeEffectiveConfig<E>,
-        SessionConfigMergeMap: OptionArcField<C>,
-    {
-        let merge_config = if let Some(agent_role_config) = agent_roles.get(agent_id) {
-            agent_role_config.build::<C>(role_name)
-        } else {
-            C::default()
-        };
-        merge_config.get_effective_config()
-    }
-
-    pub fn get_or_insert<E>(&mut self, config: Arc<E>) -> Arc<E>
-    where
-        SessionConfigMap: kissbot_api::OptionArcField<E>,
-    {
-        if let Some(exist_config) = self.get::<E>() {
-            exist_config.clone()
-        } else {
-            self.insert::<E>(config.clone());
-            config
-        }
-    }
-
-    pub fn merge_or_insert_with<C, E, F>(&mut self, config: &C, creator: F)
-    where
-        E: MergeBy<C> + Clone,
-        F: FnOnce() -> E,
-        SessionConfigMap: OptionArcField<E>,
-    {
-        let eff_config = if let Some(mut eff_config) = self.take::<E>() {
-            let eff_config_mut = Arc::make_mut(&mut eff_config);
-            eff_config_mut.merge(config);
-            eff_config
-        } else {
-            // 新建 session 配置
-            let mut eff_config = creator();
-            eff_config.merge(config);
-            Arc::new(eff_config)
-        };
-        self.insert::<E>(eff_config);
-    }
-}
