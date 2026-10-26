@@ -503,6 +503,8 @@ pub struct DefaultAgenticLoopPipelineWithMemory {
     memory_key: Arc<MemoryKey>,
     session_id: ArcStr,
     session: Arc<Session>,
+    /// 是否读取记忆（决定超限时用记忆回溯还是压缩 reducer）；写记忆始终进行
+    load_memory: bool,
     reducer: MemoryRecoverTokenReducer,
     last_total_tokens: AtomicU64,
     producer: BatchProducer,
@@ -550,7 +552,7 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
 }
 
 impl DefaultAgenticLoopPipelineWithMemory {
-    pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>, load_memory: bool) -> Arc<Self> {
         let session_id = memory_key.encode();
         let session = create_session(&memory_key, session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
@@ -559,6 +561,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
             memory_key,
             session_id,
             session,
+            load_memory,
             reducer,
             last_total_tokens: AtomicU64::new(0),
             producer
@@ -577,9 +580,15 @@ impl DefaultAgenticLoopPipelineWithMemory {
     ) -> Result<bool> {
         // send message to llm
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        let mut res = send_messages_with_limit(
-            self.session_id.clone(), self.session.as_ref(),
-            messages, tools, &self.reducer, tokens_usage).await?;
+        let mut res = if self.load_memory {
+            send_messages_with_limit(
+                self.session_id.clone(), self.session.as_ref(),
+                messages, tools, &self.reducer, tokens_usage).await?
+        } else {
+            send_messages_with_limit(
+                self.session_id.clone(), self.session.as_ref(),
+                messages, tools, &CompressTokenReducer, tokens_usage).await?
+        };
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
         // 推送 think 到 memory-store（reasoning_content + thinking 双字段；详情落盘后把占位引用累积到本次 run）
         // 任一有值才写，都 None 跳过
@@ -663,7 +672,7 @@ pub(crate) async fn set_session_model_config(session_id: ArcStr, provider: ArcSt
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
         PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key).await),
-        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key).await),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, true).await),
         PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
     }
