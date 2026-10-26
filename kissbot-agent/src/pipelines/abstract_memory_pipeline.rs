@@ -22,13 +22,13 @@ use dashmap::DashMap;
 use kissbot_api::{
     CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
-use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig};
+use kissbot_llm::{EffectiveLLMConfig, Message, Session, ToolConfig};
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, session_config, set_session_model_config, tools_for_session,
+    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
+        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -96,16 +96,16 @@ impl AbstractMemoryPipeline {
         let session = self.create_case_session(case_name.clone()).await;
         let session_id = self.case_session_id(case_name.as_ref());
         if let Some(over) = self.model_override.load_full() {
-            let _ = set_session_model_config(&self.memory_key, session_id.clone(), over.0.clone(), over.1.clone()).await;
+            let _ = set_session_model_config(session_id.clone(), over.0.clone(), over.1.clone()).await;
         } else {
             let base_id = self.case_session_id(None);
             let cfg = ConfigManager::get();
-            let base = session_config::<LLMConfig, EffectiveLLMConfig>(
-                cfg, self.memory_key.as_ref(), &base_id).await;
-            let case = session_config::<LLMConfig, EffectiveLLMConfig>(
-                cfg, self.memory_key.as_ref(), &session_id).await;
+            let base = cfg.session_config::<EffectiveLLMConfig>(base_id.as_str()).await
+                .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
+            let case = cfg.session_config::<EffectiveLLMConfig>(session_id.as_str()).await
+                .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
             if base.provider != case.provider || base.model != case.model {
-                let _ = set_session_model_config(&self.memory_key, session_id, base.provider.clone(), base.model.clone()).await;
+                let _ = set_session_model_config(session_id, base.provider.clone(), base.model.clone()).await;
             }
         }
         session
@@ -119,7 +119,7 @@ impl AbstractMemoryPipeline {
         let base_session = self.create_case_session(None).await;
         if let Some(over) = self.model_override.load_full() {
             let base_id = self.case_session_id(None);
-            let _ = set_session_model_config(&self.memory_key, base_id, over.0.clone(), over.1.clone()).await;
+            let _ = set_session_model_config(base_id, over.0.clone(), over.1.clone()).await;
         }
         base_session
     }
@@ -127,7 +127,7 @@ impl AbstractMemoryPipeline {
     /// 创建并登记一个 case session（新建时应用当前系统提示词）
     async fn create_case_session(&self, case_name: Option<ArcStr>) -> Arc<Session> {
         let session_id = self.case_session_id(case_name.as_ref());
-        let session = create_session(session_id).await;
+        let session = create_session(self.memory_key.as_ref(), session_id).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session
         let session = self.sessions.entry(case_name)
             .or_insert(session)
@@ -184,9 +184,8 @@ impl IncomingMessageProcessor for AbstractMemoryPipeline {
         // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
         let base_id = self.case_session_id(None);
         let _ = self.ensure_session(&None).await;
-        let interval = session_config::<ChannelBatchConfig, ChannelBatchConfig>(
-            ConfigManager::get(), self.memory_key.as_ref(), &base_id)
-            .await
+        let interval = ConfigManager::get().session_config::<ChannelBatchConfig>(base_id.as_str()).await
+            .unwrap_or_else(|| Arc::new(ChannelBatchConfig::new()))
             .channel_batch_interval_secs;
         self.enqueue(event, interval);
     }
@@ -292,8 +291,8 @@ impl AbstractMemoryPipeline {
             Some(case_name) => {
                 // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
                 let rebuilt = async {
-                    let cfg = session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
-                        ConfigManager::get(), self.memory_key.as_ref(), &session_id).await;
+                    let cfg = ConfigManager::get().session_config::<EffectiveMemoryRecoverConfig>(session_id.as_str()).await
+                        .unwrap_or_else(|| Arc::new(EffectiveMemoryRecoverConfig::new()));
                     let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
                     let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
                     Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
@@ -313,7 +312,7 @@ impl AbstractMemoryPipeline {
             None => None,
         };
         let content = pack_batch(&events);
-        let tools = tools_for_session(&self.memory_key, session_id.clone()).await;
+        let tools = tools_for_session(session_id.clone()).await;
         let _ = self.run(session_id, &session, content, &tools, outgoing_meta).await;
     }
 }
@@ -340,7 +339,7 @@ impl AgentPipeline for AbstractMemoryPipeline {
         session_ids.sort();
         session_ids.dedup();
         for session_id in session_ids {
-            set_session_model_config(&self.memory_key, session_id, provider.clone(), model.clone()).await?;
+            set_session_model_config(session_id, provider.clone(), model.clone()).await?;
         }
         Ok(())
     }
@@ -376,7 +375,6 @@ impl AbstractMemoryPipeline {
     ) -> Result<bool> {
         // 摘要记忆的上下文已由 case 重建，不做超阈值判断
         let mut res = send_messages(
-            &self.memory_key,
             session_id,
             session,
             messages,

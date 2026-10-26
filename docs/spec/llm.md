@@ -113,7 +113,7 @@ impl Session {
 
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - 模型未在 `model_configs` 配置时用 provider 默认值合成。
-- 配置的存储、落盘与 agent → role → session 的配置组合由调用方实现（agent 中 ConfigManager 负责两级存储，pipeline 负责读取时组合，见 [kissbot-agent-nexus 技术规格](agent-nexus.md)）。
+- 配置的存储、落盘与 agent → role → session 的配置组合由调用方实现（agent 中 ConfigManager 负责两级存储，pipeline 在建立 session 时固化，见 [kissbot-agent-nexus 技术规格](agent-nexus.md)）。
 
 ## LLM API 适配
 

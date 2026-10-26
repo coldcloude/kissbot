@@ -94,7 +94,7 @@
   - `out_channel`：回复通道（`channel_id` + 绑定身份 + `group_id`）；也可用 `/bind-outgoing`、`/unbind-outgoing` 在运行期设置/清除；未配置 = 只存不回复
   - `group_set`：pipeline 启用的 group 白名单（工具聚合只考虑这些 group；空/缺省 = 无工具）
   - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `abstract_memory`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
-- **sessions**：pipeline 固化的 session 级值与 `/model` 等覆盖（普通 JSON 对象，一般无需手改）；缺失项由 pipeline 按 agent/role 合成
+- **sessions**：pipeline 建立 session 时按 agent/role 固化到 session 级的值，以及 `/model` 等覆盖（普通 JSON 对象，一般无需手改）
 - **memory_structs**：记忆结构组件配置（占位，本轮未实现）
 - **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）
 

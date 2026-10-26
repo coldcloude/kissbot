@@ -71,7 +71,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
 - 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级值
-- 分开存储 agent/role 可继承配置与 session 级值：session 配置读写只按 session_id，不做隐式继承；缺失项由 pipeline 按 agent → role 合成，是否写回 session 配置由 pipeline 决定；pipeline 选择按 agent/role 合成
+- 分开存储 agent/role 可继承配置与 session 级值：`memory_session_config` 在 pipeline 建立 session 时按 agent → role 合成并固化到 session 表（内存缓存），运行期只按 session_id 读；session 配置读写不做隐式继承；pipeline 选择按 agent/role 合成
 - 支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）
@@ -97,7 +97,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 6. 记忆读写
 - 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
 - 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
-- 记忆回溯配置（时间窗、条数）与 LLM 参数独立，由 pipeline 在读取时分别获取
+- 记忆回溯配置（时间窗、条数）与 LLM 参数独立，在建立 session 时一并固化到 session 配置
 
 ### 7. 管理命令路由器
 - 识别以 `/` 开头的外部消息（且发送者在来源 channel 的 admins 中）

@@ -13,7 +13,7 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use kissbot_api::{
-    MergeSelf, OptionArcField, impl_option_arc_field,
+    MergeEffectiveConfig, MergeSelf, OptionArcField, impl_option_arc_field,
     impl_option_arc_field_map,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
@@ -129,3 +129,30 @@ impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMap);
 impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
+
+impl SessionConfigMap {
+    pub fn create_by_agent_role<C, E>(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, agent_id: &str, role_name: &str) -> E
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        SessionConfigMergeMap: OptionArcField<C>,
+    {
+        let merge_config = if let Some(agent_role_config) = agent_roles.get(agent_id) {
+            agent_role_config.build::<C>(role_name)
+        } else {
+            C::default()
+        };
+        merge_config.get_effective_config()
+    }
+
+    pub fn get_or_insert<E>(&mut self, config: Arc<E>) -> Arc<E>
+    where
+        SessionConfigMap: OptionArcField<E>,
+    {
+        if let Some(exist_config) = self.get::<E>() {
+            exist_config
+        } else {
+            self.insert::<E>(config.clone());
+            config
+        }
+    }
+}

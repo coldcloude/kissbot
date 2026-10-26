@@ -5,7 +5,7 @@ use kissbot_api::OptionArcField;
 use kissbot_api::{ChannelUser, write_key_value};
 use tokio::sync::RwLock;
 
-use kissbot_api::MergeSelf;
+use kissbot_api::{MergeEffectiveConfig, MergeSelf};
 use kissbot_llm::{EffectiveModelConfig, ProviderConfig, ProviderModelConfig};
 
 use crate::configs::*;
@@ -215,6 +215,47 @@ impl ConfigManager {
         let repo = self.nexus_repo.read().await;
         let session_config_map = repo.sessions.get(session_id)?;
         session_config_map.as_ref().get::<E>()
+    }
+
+    /// 按 memory_key 取 session 配置项；session 表缺失该项时按 agent → role 合成，
+    /// 并缓存到内存 session 配置表（不落盘）。运行期读取走 `session_config`（只按 session_id）。
+    pub async fn memory_session_config<C, E>(&self, memory_key: &MemoryKey, session_id: &ArcStr) -> Arc<E>
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        SessionConfigMergeMap: OptionArcField<C>,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        // 先尝试获取 session 配置，只读 repo
+        {
+            let repo = self.nexus_repo.read().await;
+            if let Some(session_config_map) = repo.sessions.get(session_id) {
+                if let Some(session_config) = session_config_map.as_ref().get::<E>() {
+                    return session_config;
+                }
+            }
+        }
+
+        // 需要新建 session 配置，需要写权限
+        let mut repo = self.nexus_repo.write().await;
+        // 新建 session 配置
+        let mut config = Arc::new(SessionConfigMap::create_by_agent_role::<C, E>(
+            repo.agent_roles.as_ref(),
+            memory_key.agent_id.as_str(),
+            memory_key.role_event.role_name.as_str(),
+        ));
+        // 保存 session config
+        let sessions = Arc::make_mut(&mut repo.sessions);
+        let config_map = if let Some(mut config_map) = sessions.remove(session_id) {
+            let config_map_mut = Arc::make_mut(&mut config_map);
+            config = config_map_mut.get_or_insert(config);
+            config_map
+        } else {
+            let mut config_map = SessionConfigMap::default();
+            config_map.insert::<E>(config.clone());
+            Arc::new(config_map)
+        };
+        sessions.insert(session_id.clone(), config_map);
+        config
     }
 
     /// 设置 session 级配置项（整项覆盖并落盘）；配置值由调用方（pipeline）负责合成。
@@ -1105,8 +1146,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_session_config_falls_back_to_agent_role_then_prefers_session_value() {
-        // pipeline 层组合：session 配置优先；缺失时按 agent/role 合成
+    async fn memory_session_config_falls_back_to_agent_role_then_prefers_session_value() {
+        // session 配置优先；缺失时按 agent/role 合成
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         manager.set_agent_role_config::<LLMConfig>(
@@ -1118,13 +1159,13 @@ mod tests {
         };
         let sid = ArcStr::from("a1-r1");
 
-        let inherited = crate::pipelines::session_config::<LLMConfig, EffectiveLLMConfig>(
-            &manager, &key, &sid).await;
+        let inherited = manager.memory_session_config::<LLMConfig, EffectiveLLMConfig>(
+            &key, &sid).await;
         assert_eq!(inherited.model.as_str(), "deepseek-chat", "缺失时按 agent/role 合成");
 
         manager.set_session_config(sid.clone(), Arc::new(effective_llm("openai", "gpt-4o"))).await.unwrap();
-        let overridden = crate::pipelines::session_config::<LLMConfig, EffectiveLLMConfig>(
-            &manager, &key, &sid).await;
+        let overridden = manager.memory_session_config::<LLMConfig, EffectiveLLMConfig>(
+            &key, &sid).await;
         assert_eq!(overridden.provider.as_str(), "openai", "session 配置优先");
         assert_eq!(overridden.model.as_str(), "gpt-4o");
     }

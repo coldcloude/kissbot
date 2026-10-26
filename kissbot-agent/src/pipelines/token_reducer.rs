@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use arcstr::ArcStr;
-use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session};
+use kissbot_llm::{EffectiveLLMConfig, Message, Session};
 
-use crate::{config_manager::ConfigManager, configs::{CompressConfig, EffectiveCompressConfig}, nexus::Nexus, pipeline::TokenReducer, pipelines::{build_context_from_memory_store, session_config}, types::MemoryKey};
+use crate::{config_manager::ConfigManager, configs::{EffectiveCompressConfig}, nexus::Nexus, pipeline::TokenReducer, pipelines::build_context_from_memory_store, types::MemoryKey};
 
 pub fn end_by_trim_last_assistent(context: &Vec<Message>) -> usize {
     let mut curr = context.len() as i64 -1;
@@ -18,13 +18,11 @@ pub fn end_by_trim_last_assistent(context: &Vec<Message>) -> usize {
     context.len()
 }
 
-pub struct CompressTokenReducer {
-    memory_key: Arc<MemoryKey>,
-}
+pub struct CompressTokenReducer;
 
 impl CompressTokenReducer {
-    pub fn new(memory_key: Arc<MemoryKey>) -> Self {
-        Self { memory_key }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -32,10 +30,10 @@ impl CompressTokenReducer {
 impl TokenReducer for CompressTokenReducer {
     async fn reduce(&self, session_id: ArcStr, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>) {
         let cfg_mngr = ConfigManager::get();
-        let llm_cfg = session_config::<LLMConfig, EffectiveLLMConfig>(
-            cfg_mngr, self.memory_key.as_ref(), &session_id).await;
-        let compress_cfg = session_config::<CompressConfig, EffectiveCompressConfig>(
-            cfg_mngr, self.memory_key.as_ref(), &session_id).await;
+        let llm_cfg = cfg_mngr.session_config::<EffectiveLLMConfig>(session_id.as_str()).await
+            .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
+        let compress_cfg = cfg_mngr.session_config::<EffectiveCompressConfig>(session_id.as_str()).await
+            .unwrap_or_else(|| Arc::new(EffectiveCompressConfig::new()));
         let c_msg = Message::User { content: compress_cfg.compress_prompt.clone() };
 
         // 1. 只读 build_context（读锁）：以最后一条 assistant（不含）为界切出要保留的消息

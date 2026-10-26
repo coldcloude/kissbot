@@ -8,7 +8,7 @@
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
-| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储，session 配置读写只按 session_id；session 配置缺失时由 pipeline 按 agent/role 合成，是否写回由 pipeline 决定；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
+| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`memory_session_config` 在建立 session 时按 agent/role 合成并固化，session 配置读写只按 session_id；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、pipeline 定位与装配、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做 pipeline 重定位 |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`set_model` 与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
@@ -125,7 +125,7 @@ sequenceDiagram
     loop 每个 channel 绑定
         CO->>PLS: ensure_pipeline(Arc<MemoryKey>)（按 agent/role 的 pipeline_name 装配）
         PLS->>PLS: pipeline 创建自己的 session（新建时从缓存恢复）
-        Note over PLS: 首次读取配置项时按 agent/role 合成；建立 session 时设置系统提示词（存为待定）
+        Note over PLS: 建立 session 时通过 memory_session_config 按 agent/role 合成并固化配置；设置系统提示词（存为待定）
     end
     loop 每个 enabled channel
         CO->>CHM: connect_channel(channel_id)（创建 ChannelClient + spawn 重连循环）
@@ -189,9 +189,9 @@ sequenceDiagram
     participant MSC as MemoryStoreClient
     participant CHM as ChannelManager
 
-    Note over PL: pipeline 触发（合批 / 摘要记忆）→ 各自的 run(message, tools)；tools 由 tools_for_session 预取，会话在装配时已注入
+    Note over PL: pipeline 触发（合批 / 摘要记忆）→ 各自的 run(session_id, message, tools)；tools 由 tools_for_session(session_id) 预取
     loop 多轮（≤ MAX_TOOL_ROUNDS = 10）
-        PL->>MSN: send_messages(messages, tools)
+        PL->>MSN: send_messages(session_id, messages, tools)
         alt send_messages_with_limit（compress / memory_recover）
             MSN->>MSN: max_tokens_usage > 0 且上次 usage.total_tokens > max_tokens_usage × compress_threshold（默认 0.8）
             MSN->>MSN: 超阈值 → reducer 处理，返回仍需追加的消息
@@ -243,7 +243,7 @@ sequenceDiagram
         end
         PL->>SC: 新建时 recover_from_cache()（正序全量回读；缓存 System 首行 → 当前系统消息）
         PLS->>SP: reset_system_prompt()（对已有 session 生效）
-        Note over PL: 配置项在首次读取时按 agent/role 合成
+        Note over PL: 创建 session 时通过 memory_session_config 按 agent/role 合成并固化 session 配置
         alt memory-ego 可用
             SP->>MEC: system_prompt_for_agent（agent 元数据 + 个体识别 + 角色设定 → ego_md 转 markdown）
             Note over SP: 保留 agent（agent_id="0"）/ 查询失败 → 回退默认提示词
