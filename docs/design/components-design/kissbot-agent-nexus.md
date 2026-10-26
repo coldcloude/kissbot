@@ -71,7 +71,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
 - 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级覆盖
-- 建立 session 时按 agent → role 继承合成一次该 session 的有效配置；运行期读取只按 session_id；pipeline 选择按 agent/role 合成
+- 每个配置项在首次按 session_id 读取时按 agent → role 继承合成；pipeline 保存 memory_key 与 session_id 供后续配置项合成；pipeline 选择按 agent/role 合成
 - 支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）

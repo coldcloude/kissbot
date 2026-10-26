@@ -113,6 +113,7 @@ pub struct SessionConfigMap {
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
     group_set: Option<Arc<GroupSetConfig>>,
+    pipeline: Option<Arc<PipelineConfig>>,
 }
 
 impl_option_arc_field!(EffectiveLLMConfig => llm, SessionConfigMap);
@@ -121,51 +122,22 @@ impl_option_arc_field!(EffectiveMemoryRecoverConfig => memory_recover, SessionCo
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMap);
 impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMap);
+impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMap);
 
 impl_option_arc_field_map!(SessionConfigMap);
 
 impl SessionConfigMap {
-    /// 按 agent → role 继承合成一份完整的 session 配置（只在根据 memory_key 建立 session 时调用一次）
-    pub fn create_all_by_agent_role(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, agent_id: &str, role_name: &str) -> Self {
-        let agent_role = agent_roles.get(agent_id).map(|config| config.as_ref());
-        let mut map = Self::default();
-        map.insert::<EffectiveLLMConfig>(Arc::new(Self::build_effective::<LLMConfig, EffectiveLLMConfig>(agent_role, role_name)));
-        map.insert::<EffectiveCompressConfig>(Arc::new(Self::build_effective::<CompressConfig, EffectiveCompressConfig>(agent_role, role_name)));
-        map.insert::<EffectiveMemoryRecoverConfig>(Arc::new(Self::build_effective::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(agent_role, role_name)));
-        map.insert::<ChannelBatchConfig>(Arc::new(Self::build_effective::<ChannelBatchConfig, ChannelBatchConfig>(agent_role, role_name)));
-        map.insert::<OutChannelConfig>(Arc::new(Self::build_effective::<OutChannelConfig, OutChannelConfig>(agent_role, role_name)));
-        map.insert::<GroupSetConfig>(Arc::new(Self::build_effective::<GroupSetConfig, GroupSetConfig>(agent_role, role_name)));
-        map
-    }
-
-    fn build_effective<C, E>(agent_role: Option<&AgentRoleConfig>, role_name: &str) -> E
+    pub fn create_by_agent_role<C, E>(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, agent_id: &str, role_name: &str) -> E
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         SessionConfigMergeMap: OptionArcField<C>,
     {
-        agent_role
-            .map(|config| config.build::<C>(role_name))
-            .unwrap_or_default()
-            .get_effective_config()
-    }
-
-    /// 用 agent/role 合成的完整配置补齐缺失字段（保留已有的 session 级覆盖）
-    pub fn fill_missing(&mut self, base: &SessionConfigMap) {
-        Self::fill_field::<EffectiveLLMConfig>(self, base);
-        Self::fill_field::<EffectiveCompressConfig>(self, base);
-        Self::fill_field::<EffectiveMemoryRecoverConfig>(self, base);
-        Self::fill_field::<ChannelBatchConfig>(self, base);
-        Self::fill_field::<OutChannelConfig>(self, base);
-        Self::fill_field::<GroupSetConfig>(self, base);
-    }
-
-    fn fill_field<E>(target: &mut Self, base: &Self)
-    where
-        SessionConfigMap: OptionArcField<E>,
-    {
-        if let Some(value) = base.get::<E>() {
-            target.get_or_insert(value);
-        }
+        let merge_config = if let Some(agent_role_config) = agent_roles.get(agent_id) {
+            agent_role_config.build::<C>(role_name)
+        } else {
+            C::default()
+        };
+        merge_config.get_effective_config()
     }
 
     pub fn get_or_insert<E>(&mut self, config: Arc<E>) -> Arc<E>

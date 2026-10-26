@@ -7,7 +7,6 @@ use tokio::sync::RwLock;
 
 use kissbot_api::{MergeBy, MergeEffectiveConfig, MergeSelf};
 use kissbot_llm::{EffectiveModelConfig, ProviderConfig, ProviderModelConfig};
-use tracing::warn;
 
 use crate::configs::*;
 use crate::types::*;
@@ -207,54 +206,72 @@ impl ConfigManager {
         }
     }
 
-    /// 根据 memory_key 建立 session 时合成一次该 session 的完整配置：
-    /// 已存在的条目只补齐缺失字段，保留已有的 session 级覆盖。
-    pub async fn ensure_session_config(&self, memory_key: &MemoryKey, session_id: ArcStr) -> Result<()> {
-        self.write_nexus_config(|repo| {
-            let base = SessionConfigMap::create_all_by_agent_role(
-                repo.agent_roles.as_ref(),
-                memory_key.agent_id.as_str(),
-                memory_key.role_event.role_name.as_str(),
-            );
-            let sessions = Arc::make_mut(&mut repo.sessions);
-            let mut config_map = sessions.remove(&session_id).unwrap_or_default();
-            Arc::make_mut(&mut config_map).fill_missing(&base);
-            sessions.insert(session_id, config_map);
-            Ok(())
-        }).await
-    }
-
-    /// 按 session_id 直接读取 session 配置；不做 agent/role 合成。
-    /// 配置在建立 session 时由 `ensure_session_config` 写入；缺失时记 warn 并回落默认值。
-    pub async fn session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>
+    /// 按 session_id 取 session 运行配置；该 id 尚无该配置项时按 agent/role 继承合成并缓存。
+    /// 每个配置项独立读写，agent_id / role_name 只在首次合成该配置项时使用。
+    pub async fn session_config<C,E>(&self, agent_id: ArcStr, role_name: ArcStr, session_id: ArcStr) -> Arc<E>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C>,
+        SessionConfigMergeMap: OptionArcField<C>,
         SessionConfigMap: OptionArcField<E>,
     {
-        let repo = self.nexus_repo.read().await;
-        if let Some(session_config) = repo.sessions.get(&session_id)
-            .and_then(|config_map| config_map.as_ref().get::<E>())
+        // 先尝试获取 session 配置，只读repo
         {
-            return session_config;
+            let repo = self.nexus_repo.read().await;
+            if let Some(session_config_map) = repo.sessions.get(&session_id) {
+                if let Some(session_config) = session_config_map.as_ref().get::<E>() {
+                    return session_config;
+                }
+            }
         }
-        warn!("session 配置缺失，使用默认值: {}", session_id);
-        Arc::new(C::default().get_effective_config())
+
+        // 需要新建该配置项，需要写权限
+        let mut repo = self.nexus_repo.write().await;
+        // 只合成当前配置项
+        let mut config = Arc::new(SessionConfigMap::create_by_agent_role::<C, E>(
+            repo.agent_roles.as_ref(), agent_id.as_str(), role_name.as_str()));
+        // 保存 session config
+        let sessions = Arc::make_mut(&mut repo.sessions);
+        let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
+            let config_map_mut = Arc::make_mut(&mut config_map);
+            config = config_map_mut.get_or_insert(config);
+            config_map
+        } else {
+            let mut config_map = SessionConfigMap::default();
+            config_map.insert::<E>(config.clone());
+            Arc::new(config_map)
+        };
+        sessions.insert(session_id, config_map);
+        config
     }
 
-    /// 设置 session 级配置覆盖；session 配置条目必须已由 `ensure_session_config` 建立
-    pub async fn set_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>
+    /// 设置 session 级配置覆盖；该配置项不存在时先按 agent/role 继承合成再合并
+    pub async fn set_session_config<C, E>(&self, agent_id: ArcStr, role_name: ArcStr, session_id: ArcStr, config: &C) -> Result<()>
     where
         C: MergeSelf + MergeEffectiveConfig<E>,
         E: MergeBy<C> + Clone,
+        SessionConfigMergeMap: OptionArcField<C>,
         SessionConfigMap: OptionArcField<E>,
     {
         self.write_nexus_config(|repo| {
             let sessions = Arc::make_mut(&mut repo.sessions);
-            let Some(mut config_map) = sessions.remove(&session_id) else {
-                return Err(Error::ConfigNotFound(format!("session 配置不存在: {}", session_id).into()));
+            let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
+                let config_map_mut = Arc::make_mut(&mut config_map);
+                config_map_mut.merge_or_insert_with::<C,E,_>(config, || {
+                    SessionConfigMap::create_by_agent_role::<C, E>(
+                        repo.agent_roles.as_ref(), agent_id.as_str(), role_name.as_str())
+                });
+                config_map
+            } else {
+                // 新建该配置项
+                let mut eff_config = SessionConfigMap::create_by_agent_role::<C, E>(
+                    repo.agent_roles.as_ref(), agent_id.as_str(), role_name.as_str());
+                eff_config.merge(config);
+                // 新建 session map
+                let mut config_map = SessionConfigMap::default();
+                config_map.insert::<E>(Arc::new(eff_config));
+                Arc::new(config_map)
             };
-            let config_map_mut = Arc::make_mut(&mut config_map);
-            config_map_mut.merge_or_insert_with::<C, E, _>(config, || C::default().get_effective_config());
             sessions.insert(session_id, config_map);
             Ok(())
         }).await
@@ -379,7 +396,6 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use kissbot_api::RoleEvent;
     use kissbot_llm::{DEFAULT_RETRY_COUNT, DEFAULT_TIMEOUT_SECS, EffectiveLLMConfig, LLMConfig, ModelConfig};
     use tempfile::tempdir;
 
@@ -1036,12 +1052,8 @@ mod tests {
         assert_eq!(saved["agent_roles"]["a1"]["config_map"]["llm"]["model"], "deepseek-chat");
     }
 
-    fn memory_key(agent_id: &str, role_name: &str) -> MemoryKey {
-        MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))) }
-    }
-
     #[tokio::test]
-    async fn session_config_reads_synthesized_agent_role_config() {
+    async fn session_config_synthesizes_each_item_from_agent_role() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from(""), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
@@ -1049,28 +1061,41 @@ mod tests {
         role_llm.set_max_tokens(Some(4096));
         manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(role_llm)).await.unwrap();
 
-        // session 配置在建立时按 agent + role 合成一次，之后只按 session_id 读取
-        let session_id = ArcStr::from("a1-r1");
-        manager.ensure_session_config(&memory_key("a1", "r1"), session_id.clone()).await.unwrap();
-        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
+        // 按 session_id 取 LLM 配置：缺少该配置项时只合成当前项
+        let sid = ArcStr::from("a1-r1");
+        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
         assert_eq!(eff.provider.as_str(), "deepseek", "继承 agent 默认");
         assert_eq!(eff.model.as_str(), "deepseek-chat", "继承 agent 默认");
         assert_eq!(eff.max_tokens, Some(4096), "role 覆盖 agent");
-        // 第二次取到同一份（直接读表）
-        let again = manager.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
-        assert!(Arc::ptr_eq(&eff, &again), "同 session_id 返回同一份配置");
+        let again = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
+        assert!(Arc::ptr_eq(&eff, &again), "同 session_id + 同配置项返回同一份配置");
 
         // 未配置的 agent → 合成时使用默认值
-        let none_id = ArcStr::from("nope-r1");
-        manager.ensure_session_config(&memory_key("nope", "r1"), none_id.clone()).await.unwrap();
-        let none = manager.session_config::<LLMConfig, EffectiveLLMConfig>(none_id).await;
+        let none = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("nope"), ArcStr::from("r1"), ArcStr::from("nope-r1")).await;
         assert!(none.provider.is_empty() && none.model.is_empty(), "未知 agent 用默认值");
 
-        // 落盘：sessions 是普通对象，key 为 session_id
-        let saved = read_nexus_json(&dir);
-        let sessions = saved["sessions"].as_object().expect("sessions 应为对象");
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions["a1-r1"]["llm"]["model"], "deepseek-chat");
+        // 只写入了被读取的 llm 项，其它配置项尚未生成
+        let snapshot = manager.nexus_snapshot().await;
+        let value = serde_json::to_value(&snapshot).unwrap();
+        let entry = &value["sessions"]["a1-r1"];
+        assert_eq!(entry["llm"]["model"], "deepseek-chat");
+        assert!(entry["compress"].is_null(), "未读取的配置项不生成");
+    }
+
+    #[tokio::test]
+    async fn session_config_reads_pipeline_item() {
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        manager.set_agent_role_config::<PipelineConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("abstract_memory")) })).await.unwrap();
+
+        let cfg = manager.session_config::<PipelineConfig, PipelineConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), ArcStr::from("a1-r1")).await;
+        assert_eq!(cfg.pipeline_name.as_deref(), Some("abstract_memory"));
     }
 
     #[tokio::test]
@@ -1082,15 +1107,20 @@ mod tests {
         // 同一 agent/role 下两个 session：只覆盖其中一个
         let sid = ArcStr::from("a1-r1");
         let other = ArcStr::from("a1-r1-role-weather");
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        manager.ensure_session_config(&memory_key("a1", "r1"), other.clone()).await.unwrap();
+        manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
+        manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), other.clone()).await;
         let mut session_llm = LLMConfig::default();
         session_llm.model = Some(ArcStr::from("deepseek-reasoner"));
-        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(sid.clone(), &session_llm).await.unwrap();
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone(), &session_llm).await.unwrap();
 
-        let overridden = manager.session_config::<LLMConfig, EffectiveLLMConfig>(sid).await;
+        let overridden = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid).await;
         assert_eq!(overridden.model.as_str(), "deepseek-reasoner");
-        let untouched = manager.session_config::<LLMConfig, EffectiveLLMConfig>(other).await;
+        let untouched = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), other).await;
         assert_eq!(untouched.model.as_str(), "deepseek-chat", "另一个 session 不受影响");
     }
 
@@ -1100,8 +1130,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let sid = ArcStr::from("a1-r1");
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(sid.clone()).await;
+        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
         assert_eq!(eff.compress_threshold, DEFAULT_COMPRESS_THRESHOLD);
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT);
 
@@ -1109,9 +1139,8 @@ mod tests {
         let mut cfg = CompressConfig::default();
         cfg.compress_threshold = Some(0.5);
         manager.set_agent_role_config::<CompressConfig>(ArcStr::from("a2"), ArcStr::from(""), Arc::new(cfg)).await.unwrap();
-        let sid2 = ArcStr::from("a2-r1");
-        manager.ensure_session_config(&memory_key("a2", "r1"), sid2.clone()).await.unwrap();
-        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(sid2).await;
+        let eff = manager.session_config::<CompressConfig, EffectiveCompressConfig>(
+            ArcStr::from("a2"), ArcStr::from("r1"), ArcStr::from("a2-r1")).await;
         assert_eq!(eff.compress_threshold, 0.5, "agent 级覆盖生效");
         assert_eq!(eff.compress_prompt.as_str(), DEFAULT_COMPRESS_PROMPT, "未配字段保留默认");
     }
@@ -1121,9 +1150,8 @@ mod tests {
         // ChannelBatchConfig::default() 为零值 0，get_effective_config 回落 new() 的默认间隔
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        let sid = ArcStr::from("a1-r1");
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        let eff = manager.session_config::<ChannelBatchConfig, ChannelBatchConfig>(sid).await;
+        let eff = manager.session_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), ArcStr::from("a1-r1")).await;
         assert_eq!(eff.channel_batch_interval_secs, DEFAULT_CHANNEL_BATCH_INTERVAL_SECS, "未配回落默认间隔");
     }
 
@@ -1131,9 +1159,8 @@ mod tests {
     async fn session_config_memory_recover_uses_defaults() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        let sid = ArcStr::from("a1-r1");
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        let eff = manager.session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(sid).await;
+        let eff = manager.session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), ArcStr::from("a1-r1")).await;
         assert_eq!(eff.memory_time_secs, DEFAULT_MEMORY_TIME_SECS);
         assert_eq!(eff.memory_count, DEFAULT_MEMORY_COUNT);
     }
@@ -1144,45 +1171,55 @@ mod tests {
         let manager = test_manager(&dir);
         manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
         let sid = ArcStr::from("a1-r1");
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        let before = manager.session_config::<LLMConfig, EffectiveLLMConfig>(sid.clone()).await;
+        let before = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
         assert_eq!(before.model.as_str(), "deepseek-chat");
 
         // session 级覆盖 model（provider 未配 → 保留原值）
         let mut session_llm = LLMConfig::default();
         session_llm.model = Some(ArcStr::from("deepseek-reasoner"));
-        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(sid.clone(), &session_llm).await.unwrap();
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone(), &session_llm).await.unwrap();
 
-        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(sid).await;
+        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid).await;
         assert_eq!(after.model.as_str(), "deepseek-reasoner", "session 覆盖生效");
         assert_eq!(after.provider.as_str(), "deepseek", "未配字段保留原值");
     }
 
     #[tokio::test]
-    async fn ensure_session_config_keeps_existing_override() {
+    async fn set_session_config_creates_missing_item() {
+        // 该配置项不存在时：按 agent/role 合成当前项，再合并覆盖
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let sid = ArcStr::from("a1-r1");
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone(),
+            &llm_config("openai", "gpt-4o")).await.unwrap();
+        let eff = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid).await;
+        assert_eq!(eff.provider.as_str(), "openai");
+        assert_eq!(eff.model.as_str(), "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn session_config_keeps_existing_item_after_agent_role_change() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         let sid = ArcStr::from("a1-r1");
         manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
+        manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone()).await;
         let mut session_llm = LLMConfig::default();
         session_llm.model = Some(ArcStr::from("deepseek-reasoner"));
-        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(sid.clone(), &session_llm).await.unwrap();
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid.clone(), &session_llm).await.unwrap();
 
-        // agent/role 配置变化后再 ensure：已存在的 session 覆盖保留
+        // agent/role 配置变化后再次读取：已存在的 session 项保留
         manager.set_agent_role_config::<LLMConfig>(ArcStr::from("a1"), ArcStr::from("r1"), Arc::new(llm_config("openai", "gpt-4o"))).await.unwrap();
-        manager.ensure_session_config(&memory_key("a1", "r1"), sid.clone()).await.unwrap();
-        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(sid).await;
+        let after = manager.session_config::<LLMConfig, EffectiveLLMConfig>(
+            ArcStr::from("a1"), ArcStr::from("r1"), sid).await;
         assert_eq!(after.model.as_str(), "deepseek-reasoner", "已有 session 覆盖不被覆盖");
-    }
-
-    #[tokio::test]
-    async fn set_session_config_requires_existing_entry() {
-        let dir = tempdir().unwrap();
-        let manager = test_manager(&dir);
-        let err = manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
-            ArcStr::from("missing"), &llm_config("openai", "gpt-4o")).await.unwrap_err();
-        assert!(matches!(err, Error::ConfigNotFound(_)), "配置条目不存在时应报错: {:?}", err);
     }
 
     #[tokio::test]

@@ -103,7 +103,7 @@ kissbot-agent 使用三份配置：
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
 - `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆回溯）或 `abstract_memory`（摘要记忆）；从 agent/role 配置读取，未配置时默认 `default_memory`。pipeline 选择不做 session 级覆盖。
 - `abstract_memory`：一个 pipeline 身份（agent + role_event）一条 pipeline，按 channel 分别攒批，触发时先 locate，再按 case 上下文重建各自 session。
-- `sessions` 是普通 JSON 对象，key 为 session_id；条目在建立 session 时按 agent/role 配置合成一次，之后可由 session 级配置覆盖（如 `/model`）。
+- `sessions` 是普通 JSON 对象，key 为 session_id；每个配置项在首次按 session_id 读取时按 agent/role 配置合成并缓存，之后可由 session 级配置覆盖（如 `/model`）。
 
 ### 配置继承与合成
 
@@ -117,7 +117,7 @@ kissbot-agent 使用三份配置：
 | pipeline 选择 | 默认值 ← agent 级 ← role 级（pipeline） | `PipelineConfig` |
 | 模型参数兜底 | 模型未在 `model_configs` 配置时直接用 provider 默认值合成 | — |
 
-查询入口：`ConfigManager::session_config::<C, E>(session_id)` 直接读 `sessions[session_id]`；配置只在该 session 建立时由 `ensure_session_config(memory_key, session_id)` 按 agent/role 合成一次（已存在的条目只补齐缺失字段）；`set_session_config(session_id, config)` 写 session 级覆盖。另有 `ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置。
+查询入口：`ConfigManager::session_config::<C, E>(agent_id, role_name, session_id)`：先读 `sessions[session_id]` 的该配置项；缺失时只按 agent/role 合成这一项并缓存。`set_session_config::<C, E>(agent_id, role_name, session_id, config)` 写 session 级覆盖。另有 `ConfigManager::provider_model_config(provider, model)`。运行中修改 agent 级配置不会回刷已合成的 session 配置项。
 
 例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的 pipeline 立即生效。
 
@@ -126,7 +126,7 @@ kissbot-agent 使用三份配置：
 | 项 | 约定 |
 |----|------|
 | session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 各持有一个 `Arc<Session>`，`abstract_memory` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
-| session 配置 | 建立 session 时按 memory_key 的 agent/role 合成一次并写入 `sessions[session_id]`；运行期只按 session_id 读取 |
+| session 配置 | 每个配置项在首次按 session_id 读取时按 agent/role 合成并缓存；pipeline 保存 memory_key 与 session_id，供后续配置项合成使用 |
 | 默认 pipeline 的 session_id | `MemoryKey::encode()`：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}` |
 | 摘要记忆 case 的 session_id | 由 case_name 推导：`memory-abstract-{MemoryKey::encode()}-{case_name}`，pipeline 只保存 case → session；基准（无 case）session 为 `memory-abstract-{encode}-none`，同时承担 pipeline 入口配置与 locate 失败批次 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
@@ -271,13 +271,12 @@ struct MemoryKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 impl MemoryKey { fn encode(&self) -> ArcStr; }
 
 // session 由 pipeline 创建并持有（Arc<Session>），id 由 pipeline 生成；
-// 建立时从 <data_dir>/context/<session_id>.jsonl 恢复，并按 memory_key 合成一次配置
+// 建立时从 <data_dir>/context/<session_id>.jsonl 恢复；配置项在首次读取时按 agent/role 合成
 
-// session 配置：建立 session 时按 memory_key 的 agent/role 合成一次，之后只按 session_id 读写
+// session 配置：每个配置项在首次按 session_id 读取时按 agent/role 合成并缓存
 impl ConfigManager {
-    async fn ensure_session_config(&self, memory_key: &MemoryKey, session_id: ArcStr) -> Result<()>;
-    async fn session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>;
-    async fn set_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>;
+    async fn session_config<C, E>(&self, agent_id: ArcStr, role_name: ArcStr, session_id: ArcStr) -> Arc<E>;
+    async fn set_session_config<C, E>(&self, agent_id: ArcStr, role_name: ArcStr, session_id: ArcStr, config: &C) -> Result<()>;
 }
 ```
 
