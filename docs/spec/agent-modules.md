@@ -125,7 +125,7 @@ sequenceDiagram
         CO->>PLS: ensure_pipeline(Arc<MemoryKey>)（按 agent/role 的 pipeline_name 装配）
         PLS->>PLS: pipeline 创建自己的 session（新建时从缓存恢复）
         PLS->>CFG: ensure_session_config(memory_key, session_id)（新建时按 agent/role 合成一次）
-        Note over PLS: pipeline 初始化系统提示词（存为待定）
+        Note over PLS: 建立 session 时设置系统提示词（存为待定）
     end
     loop 每个 enabled channel
         CO->>CHM: connect_channel(channel_id)（创建 ChannelClient + spawn 重连循环）
@@ -241,10 +241,10 @@ sequenceDiagram
             PL->>PL: 创建 session(MemoryKey::encode()) 并 recover_from_cache
             PL->>CFG: 新建时 ensure_session_config(memory_key, session_id)
         else abstract_memory
-            Note over PL: 构造时不建 session；基准（-none）session 在入口/set_model 时创建，case session 在首次 run 时创建
+            Note over PL: 构造时不建 session；基准（-none）session 在入口/set_model 时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
         PL->>SC: 新建时 recover_from_cache()（正序全量回读；缓存 System 首行 → 当前系统消息）
-        PLS->>SP: reset_system_prompt()
+        PLS->>SP: reset_system_prompt()（对已有 session 生效）
         alt memory-ego 可用
             SP->>MEC: system_prompt_for_agent（agent 元数据 + 个体识别 + 角色设定 → ego_md 转 markdown）
             Note over SP: 保留 agent（agent_id="0"）/ 查询失败 → 回退默认提示词

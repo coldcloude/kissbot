@@ -15,7 +15,7 @@
 
 use std::{collections::{HashMap, LinkedList, hash_map}, sync::{Arc, Weak}};
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwapOption;
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -40,8 +40,6 @@ pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
     /// case（None = locate 不可用的降级任务）→ session；session_id 由 case_name 推导
     sessions: DashMap<Option<ArcStr>, Arc<Session>>,
-    /// 当前系统提示词（新建 case session 时应用）
-    system_prompt: ArcSwap<ArcStr>,
     /// /model 设置的模型覆盖（新建 case session 时应用）
     model_override: ArcSwapOption<(ArcStr, ArcStr)>,
     /// 各 channel 的批次生产者（按 ChannelKey 分桶）
@@ -62,7 +60,6 @@ impl AbstractMemoryPipeline {
         let pipeline = Arc::new(Self {
             memory_key,
             sessions: DashMap::new(),
-            system_prompt: ArcSwap::from_pointee(DEFAULT_SYSTEM_PROMPT.clone()),
             model_override: ArcSwapOption::new(None),
             producers: DashMap::new(),
             batch_tx,
@@ -134,8 +131,17 @@ impl AbstractMemoryPipeline {
             .or_insert(session)
             .value()
             .clone();
-        session.set_system_message(self.system_prompt.load().as_ref().clone()).await;
+        let prompt = self.assemble_system_prompt().await;
+        session.set_system_message(prompt).await;
         session
+    }
+
+    /// 现场组装系统提示词（不缓存，新建/重置 session 时各自计算）
+    async fn assemble_system_prompt(&self) -> ArcStr {
+        get_ego_system_prompt(
+            self.memory_key.agent_id.clone(),
+            self.memory_key.role_event.role_name.clone(),
+        ).await.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.clone())
     }
 
     /// 入批：按 channel 找（或惰性创建）批次生产者；每个 channel 有自己的队列与消费者。
@@ -312,12 +318,11 @@ impl AbstractMemoryPipeline {
 #[async_trait]
 impl AgentPipeline for AbstractMemoryPipeline {
     async fn reset_system_prompt(&self) {
-        let prompt = get_ego_system_prompt(
-            self.memory_key.agent_id.clone(),
-            self.memory_key.role_event.role_name.clone(),
-        ).await.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.clone());
-        self.system_prompt.store(Arc::new(prompt.clone()));
         let sessions: Vec<Arc<Session>> = self.sessions.iter().map(|entry| entry.value().clone()).collect();
+        if sessions.is_empty() {
+            return;
+        }
+        let prompt = self.assemble_system_prompt().await;
         for session in sessions {
             session.set_system_message(prompt.clone()).await;
         }
