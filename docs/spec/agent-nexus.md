@@ -128,7 +128,7 @@ kissbot-agent 使用三份配置：
 | session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 各持有一个 `Arc<Session>`，`abstract_memory` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
 | session 配置 | 建立 session 时按 memory_key 的 agent/role 合成一次并写入 `sessions[session_id]`；运行期只按 session_id 读取 |
 | 默认 pipeline 的 session_id | `MemoryKey::encode()`：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}` |
-| 摘要记忆 case 的 session_id | `memory-abstract-{MemoryKey::encode()}-{case_name}`；基准（无 case）session 为 `memory-abstract-{encode}-none`，同时承担 pipeline 入口配置与 locate 失败批次 |
+| 摘要记忆 case 的 session_id | 由 case_name 推导：`memory-abstract-{MemoryKey::encode()}-{case_name}`，pipeline 只保存 case → session；基准（无 case）session 为 `memory-abstract-{encode}-none`，同时承担 pipeline 入口配置与 locate 失败批次 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
 | 恢复 | 建立 session 时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
 | 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 pipeline；session 不单独清理，随 pipeline 的 Arc 释放自然回收 |

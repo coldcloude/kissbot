@@ -38,8 +38,8 @@ use crate::{
 /// 每个 case 维护独立 session（懒创建）。
 pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
-    /// case（None = locate 不可用的降级任务）→ (session_id, session)
-    sessions: DashMap<Option<ArcStr>, (ArcStr, Arc<Session>)>,
+    /// case（None = locate 不可用的降级任务）→ session；session_id 由 case_name 推导
+    sessions: DashMap<Option<ArcStr>, Arc<Session>>,
     /// 当前系统提示词（新建 case session 时应用）
     system_prompt: ArcSwap<ArcStr>,
     /// /model 设置的模型覆盖（新建 case session 时应用）
@@ -85,8 +85,8 @@ impl AbstractMemoryPipeline {
         ))
     }
 
-    /// 取（必要时创建）case 对应的 session
-    async fn ensure_session(&self, case_name: &Option<ArcStr>) -> (ArcStr, Arc<Session>) {
+    /// 取（必要时创建）case 对应的 session；session_id 由 case_name 推导，不额外保存
+    async fn ensure_session(&self, case_name: &Option<ArcStr>) -> Arc<Session> {
         if let Some(entry) = self.sessions.get(case_name) {
             return entry.value().clone();
         }
@@ -95,44 +95,47 @@ impl AbstractMemoryPipeline {
         }
 
         // 先确保基准 session，进程重启后从它的已存配置恢复 /model 的 pipeline 级覆盖
-        let (base_id, _) = self.ensure_base_session().await;
-        let (session_id, session) = self.create_case_session(case_name.clone()).await;
+        let _ = self.ensure_base_session().await;
+        let session = self.create_case_session(case_name.clone()).await;
+        let session_id = self.case_session_id(case_name.as_ref());
         if let Some(over) = self.model_override.load_full() {
             let _ = set_session_model_config(session_id.clone(), over.0.clone(), over.1.clone()).await;
         } else {
+            let base_id = self.case_session_id(None);
             let cfg = ConfigManager::get();
             let base = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(base_id).await;
             let case = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
             if base.provider != case.provider || base.model != case.model {
-                let _ = set_session_model_config(session_id.clone(), base.provider.clone(), base.model.clone()).await;
+                let _ = set_session_model_config(session_id, base.provider.clone(), base.model.clone()).await;
             }
         }
-        (session_id, session)
+        session
     }
 
     /// 基准（无 case）session：承担 pipeline 入口配置与无 case 批次
-    async fn ensure_base_session(&self) -> (ArcStr, Arc<Session>) {
+    async fn ensure_base_session(&self) -> Arc<Session> {
         if let Some(entry) = self.sessions.get(&None) {
             return entry.value().clone();
         }
-        let (base_id, base_session) = self.create_case_session(None).await;
+        let base_session = self.create_case_session(None).await;
         if let Some(over) = self.model_override.load_full() {
-            let _ = set_session_model_config(base_id.clone(), over.0.clone(), over.1.clone()).await;
+            let base_id = self.case_session_id(None);
+            let _ = set_session_model_config(base_id, over.0.clone(), over.1.clone()).await;
         }
-        (base_id, base_session)
+        base_session
     }
 
     /// 创建并登记一个 case session（新建时应用当前系统提示词）
-    async fn create_case_session(&self, case_name: Option<ArcStr>) -> (ArcStr, Arc<Session>) {
+    async fn create_case_session(&self, case_name: Option<ArcStr>) -> Arc<Session> {
         let session_id = self.case_session_id(case_name.as_ref());
-        let session = create_session(&self.memory_key, session_id.clone()).await;
+        let session = create_session(&self.memory_key, session_id).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session
-        let (session_id, session) = self.sessions.entry(case_name)
-            .or_insert((session_id, session))
+        let session = self.sessions.entry(case_name)
+            .or_insert(session)
             .value()
             .clone();
         session.set_system_message(self.system_prompt.load().as_ref().clone()).await;
-        (session_id, session)
+        session
     }
 
     /// 入批：按 channel 找（或惰性创建）批次生产者；每个 channel 有自己的队列与消费者。
@@ -171,7 +174,8 @@ impl AbstractMemoryPipeline {
 impl IncomingMessageProcessor for AbstractMemoryPipeline {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
         // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
-        let (base_id, _) = self.ensure_session(&None).await;
+        let base_id = self.case_session_id(None);
+        let _ = self.ensure_session(&None).await;
         let interval = ConfigManager::get()
             .session_config::<ChannelBatchConfig, ChannelBatchConfig>(base_id)
             .await
@@ -274,7 +278,8 @@ impl AbstractMemoryPipeline {
     /// 再运行 agentic loop；本次运行的出站记录带该 case 的 meta
     async fn run_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
         let client = Nexus::get().abstract_client.clone();
-        let (session_id, session) = self.ensure_session(&case_name).await;
+        let session_id = self.case_session_id(case_name.as_ref());
+        let session = self.ensure_session(&case_name).await;
         let outgoing_meta = match &case_name {
             Some(case_name) => {
                 // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
@@ -312,7 +317,7 @@ impl AgentPipeline for AbstractMemoryPipeline {
             self.memory_key.role_event.role_name.clone(),
         ).await.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.clone());
         self.system_prompt.store(Arc::new(prompt.clone()));
-        let sessions: Vec<Arc<Session>> = self.sessions.iter().map(|entry| entry.value().1.clone()).collect();
+        let sessions: Vec<Arc<Session>> = self.sessions.iter().map(|entry| entry.value().clone()).collect();
         for session in sessions {
             session.set_system_message(prompt.clone()).await;
         }
@@ -320,9 +325,10 @@ impl AgentPipeline for AbstractMemoryPipeline {
 
     async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
         self.model_override.store(Some(Arc::new((provider.clone(), model.clone()))));
-        let (base_id, _) = self.ensure_session(&None).await;
+        let base_id = self.case_session_id(None);
+        let _ = self.ensure_session(&None).await;
         let mut session_ids = vec![base_id];
-        session_ids.extend(self.sessions.iter().map(|entry| entry.value().0.clone()));
+        session_ids.extend(self.sessions.iter().map(|entry| self.case_session_id(entry.key().as_ref())));
         session_ids.sort();
         session_ids.dedup();
         for session_id in session_ids {
