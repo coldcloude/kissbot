@@ -166,7 +166,7 @@ impl Session {
 
 - 系统消息的 set 只写入待定值（多次 set 保留最近一次）；发送前对比应用：与当前一致仅清空待定，不一致则先归档并清空缓存再以新系统消息重建。
 - 归档与清空缓存文件配对执行；内存为空时不产生归档文件。
-- agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 SessionManager 的去重职责见 [kissbot-agent-nexus 技术规格](agent-nexus.md)。
+- agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 pipeline 的 session 持有方式见 [kissbot-agent-nexus 技术规格](agent-nexus.md)。
 
 ## 数据结构定义
 

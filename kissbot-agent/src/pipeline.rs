@@ -28,9 +28,6 @@ pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
     /// 设置本 pipeline 的模型：pipeline 决定写入哪些 session 的配置
     async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()>;
 
-    /// 本 pipeline 当前持有的 session id（清理时由 PipelineManager 汇总交给 SessionManager）
-    fn session_ids(&self) -> Vec<ArcStr>;
-
     /// channel 不再绑定本 pipeline：清理该 channel（messenger + 绑定用户）在本 pipeline 中的资源。
     ///
     /// 按 channel 攒批的 pipeline 覆写本方法丢弃对应 channel 的批次生产者与待处理消息；

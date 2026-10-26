@@ -27,7 +27,7 @@ use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
-use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, session_manager::SessionManager, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
 
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
@@ -457,10 +457,6 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
     async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
         set_session_model_config(self.session_id.clone(), provider, model).await
     }
-
-    fn session_ids(&self) -> Vec<ArcStr> {
-        vec![self.session_id.clone()]
-    }
 }
 
 #[async_trait]
@@ -487,9 +483,9 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
 }
 
 impl DefaultAgenticLoopPipeline {
-    pub async fn new(memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let session_id = memory_key.encode();
-        let (session, _) = create_session(&memory_key, &session_manager, session_id.clone()).await;
+        let session = create_session(&memory_key, session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
         let result = Arc::new(DefaultAgenticLoopPipeline {
             session_id,
@@ -528,10 +524,6 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
     async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
         set_session_model_config(self.session_id.clone(), provider, model).await
     }
-
-    fn session_ids(&self) -> Vec<ArcStr> {
-        vec![self.session_id.clone()]
-    }
 }
 
 #[async_trait]
@@ -558,9 +550,9 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
 }
 
 impl DefaultAgenticLoopPipelineWithMemory {
-    pub async fn new(memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let session_id = memory_key.encode();
-        let (session, _) = create_session(&memory_key, &session_manager, session_id.clone()).await;
+        let session = create_session(&memory_key, session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
         let reducer = MemoryRecoverTokenReducer::new(memory_key.clone());
         let result = Arc::new(DefaultAgenticLoopPipelineWithMemory {
@@ -649,15 +641,15 @@ const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
 const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
-/// 建立 session 时按 memory_key 合成一次它的配置；返回 (会话, 是否新建)
-pub(crate) async fn create_session(memory_key: &Arc<MemoryKey>, session_manager: &SessionManager, session_id: ArcStr) -> (Arc<Session>, bool) {
-    let (session, new) = session_manager.get_or_create(session_id.clone()).await;
-    if new {
-        if let Err(e) = ConfigManager::get().ensure_session_config(memory_key, session_id).await {
-            warn!("session 配置创建失败: {:?}", e);
-        }
+/// 建立 session 时从本地缓存恢复，并按 memory_key 合成一次它的配置
+pub(crate) async fn create_session(memory_key: &Arc<MemoryKey>, session_id: ArcStr) -> Arc<Session> {
+    let cfg = ConfigManager::get();
+    let session = Arc::new(Session::new(cfg.data_dir(), session_id.clone()));
+    let _ = session.recover_from_cache().await;
+    if let Err(e) = cfg.ensure_session_config(memory_key, session_id).await {
+        warn!("session 配置创建失败: {:?}", e);
     }
-    (session, new)
+    session
 }
 
 /// 给 session 写入模型覆盖（LLMConfig 的 provider/model；其余字段保留继承值）
@@ -668,11 +660,11 @@ pub(crate) async fn set_session_model_config(session_id: ArcStr, provider: ArcSt
     ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id, &config).await
 }
 
-pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Result<Arc<dyn AgentPipeline>> {
+pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key, session_manager).await),
-        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, session_manager).await),
-        PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key, session_manager)),
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key).await),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key).await),
+        PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
     }
 }
@@ -680,14 +672,12 @@ pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>, 
 /// pipeline 注册表：key 为 pipeline 身份（agent_id + role_event）
 pub struct PipelineManager {
     pipeline_map: DashMap<Arc<MemoryKey>, Arc<dyn AgentPipeline>>,
-    session_manager: Arc<SessionManager>,
 }
 
 impl PipelineManager {
-    pub fn new(session_manager: Arc<SessionManager>) -> Self {
+    pub fn new() -> Self {
         Self {
             pipeline_map: DashMap::new(),
-            session_manager,
         }
     }
 
@@ -702,7 +692,7 @@ impl PipelineManager {
             .await;
         let pipeline_name = cfg.and_then(|cfg| cfg.pipeline_name)
             .unwrap_or_else(|| PIPELINE_DEFAULT_MEMORY.clone());
-        let pipeline = create_pipeline(pipeline_name, memory_key.clone(), self.session_manager.clone()).await?;
+        let pipeline = create_pipeline(pipeline_name, memory_key.clone()).await?;
         pipeline.reset_system_prompt().await;
         match self.pipeline_map.entry(memory_key) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
@@ -713,19 +703,10 @@ impl PipelineManager {
         }
     }
 
-    /// 只保留仍在绑定集合中的 pipeline，返回保留 pipeline 当前持有的全部 session id
-    /// （调用方据此让 SessionManager 清理无 pipeline 持有的 session；pipeline 丢弃会触发
-    /// 输入处理器 Drop → 合批任务退出）
-    pub fn retain(&self, keys: &HashSet<Arc<MemoryKey>>) -> HashSet<ArcStr> {
-        let mut session_ids = HashSet::new();
-        self.pipeline_map.retain(|k, v| {
-            let keep = keys.contains(k);
-            if keep {
-                session_ids.extend(v.session_ids());
-            }
-            keep
-        });
-        session_ids
+    /// 只保留仍在绑定集合中的 pipeline（pipeline 丢弃会触发输入处理器 Drop → 合批任务退出；
+    /// 其持有的 session 随 pipeline 的 Arc 释放自然回收）
+    pub fn retain(&self, keys: &HashSet<Arc<MemoryKey>>) {
+        self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 
     pub async fn incoming_message(&self, memory_key: Arc<MemoryKey>, event: Arc<IncomingMessageEvent>) {

@@ -6,7 +6,7 @@ kissbot-llm 是 kissbot 的 LLM 基础库（Rust lib），把「与模型服务�
 
 组件刻意不含三类能力，以保持边界清晰：
 
-- **不含会话集合管理**：按调用方给定的 session 标识创建、持有与清理会话属调用方（agent 中为 SessionManager），组件只提供单个会话的上下文。
+- **不含会话集合管理**：按调用方给定的 session 标识创建、持有与清理会话属调用方（agent 中为 pipeline），组件只提供单个会话的上下文。
 - **不含配置存储与继承链**：provider 配置的持久化、agent → role → session 的配置继承与合成属调用方（agent 中为 ConfigManager）；组件的配置类型只定义结构、默认值与「provider 默认 ← model 覆盖」这一级合成。
 - **不含工具宿主与协议转换**：工具执行（Station）、工具定义与 MCP 的互转留在调用方，组件不依赖 MCP。
 
@@ -93,6 +93,6 @@ kissbot-llm 是 kissbot 的 LLM 基础库（Rust lib），把「与模型服务�
 agent 是本组件的首个使用方：
 
 - **provider**：agent 保留自己的 ProviderManager，承担「工厂去重 + provider_type 分派 + 有效模型配置解析」，实现与重试来自本组件（`create_*_provider` / `call_with_retry`）。
-- **session**：会话上下文本体改用本组件的 Session/SessionContext；SessionManager 仍在 agent，负责按会话三元组去重与清理，并把三元组编码为 session_id。
+- **session**：会话上下文本体改用本组件的 Session/SessionContext；agent 的 pipeline 负责按 session_id 创建/持有 session，并把 pipeline 身份编码为 session_id。
 
 详见 [kissbot-agent-nexus 模块设计](kissbot-agent-nexus.md) 与 [kissbot-llm 技术规格](../../spec/llm.md)。

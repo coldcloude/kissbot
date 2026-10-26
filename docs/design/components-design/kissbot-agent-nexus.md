@@ -64,7 +64,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 1. 协调器（Nexus）
 - 核心调度层：管理 nexus 的启动流程、pipeline 集合与全局单例装配
 - 按消息来源 channel 的绑定配置定位 pipeline，将输入路由到管理命令处理或该 pipeline
-- 装配 pipeline 时不注入 session；pipeline 自己按需要向 SessionManager 取得 session，运行期直接读写自己的 session 上下文
+- 装配 pipeline 时不注入 session；pipeline 自己按需要创建并持有 session，运行期直接读写自己的 session 上下文
 - 提供能力接口供 pipeline 回调：Provider 调用、Station 工具分组白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
 - pipeline 绑定（agent_id / role_name / event）变更走串行队列，避免写-写竞态
 
@@ -79,11 +79,11 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 归一化结果包含正文、思考内容（API 字段与 `<think>` 标签各自独立）、工具调用与 token 占用，供上下文与阈值判定使用
 - 支持模型列表查询（用于模型校验与管理命令）
 
-### 4. 会话存储与上下文（session_manager）
-- 会话按 session_id 去重创建，返回「会话 + 是否新建」；session 的数量与 id 由 pipeline 决定
+### 4. 会话与上下文（pipeline 内部）
+- session 的数量与 id 由 pipeline 决定，pipeline 自己创建、恢复并持有 session
 - 单个会话的上下文本体（内存消息序列 + 当前/待定 system 消息 + 本地缓存 + 历史归档）由 **kissbot-llm** 的 Session/SessionContext 承担
-- 恢复时正序全量回读本地缓存，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
-- SessionManager 只负责按 id 创建/恢复/保存/清理会话，不做 pipeline 装配，也不决定会话数量
+- 建立 session 时正序全量回读本地缓存，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
+- session 不单独注册到全局表；pipeline 丢弃时其 session 随 Arc 释放自然回收
 
 ### 5. pipeline 体系（执行流程）
 - **AgentPipeline**：执行流程本体，自己创建并持有需要的 session。当前三实现：`default`（无记忆的 agentic loop，一个 session）、`default_memory`（带记忆读写的 agentic loop，一个 session）、`abstract_memory`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session）。
@@ -107,7 +107,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 8. channel 运行态与 pipeline 定位
 - 维护各 channel 的运行态 event（缺省 = 角色模式，不回写配置）与运行态资源
 - 按 channel 绑定合成 pipeline 标识（agent_id + role_event），由 Nexus 定位/装配 pipeline
-- 绑定信息变化时清理无绑定 pipeline，并让 SessionManager 只保留这些 pipeline 仍在用的 session
+- 绑定信息变化时清理无绑定 pipeline；其 session 随 pipeline 释放自然回收
 - 事件模式按事件标识隔离 pipeline、上下文与记忆
 
 ### 9. Station 运行态

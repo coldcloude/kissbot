@@ -29,7 +29,7 @@ use tracing::warn;
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
         BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
-    }, session_manager::SessionManager, types::{
+    }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
 };
@@ -38,7 +38,6 @@ use crate::{
 /// 每个 case 维护独立 session（懒创建）。
 pub struct AbstractMemoryPipeline {
     memory_key: Arc<MemoryKey>,
-    session_manager: Arc<SessionManager>,
     /// case（None = locate 不可用的降级任务）→ (session_id, session)
     sessions: DashMap<Option<ArcStr>, (ArcStr, Arc<Session>)>,
     /// 当前系统提示词（新建 case session 时应用）
@@ -57,12 +56,11 @@ pub struct AbstractMemoryPipeline {
 }
 
 impl AbstractMemoryPipeline {
-    pub fn new(memory_key: Arc<MemoryKey>, session_manager: Arc<SessionManager>) -> Arc<Self> {
+    pub fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
         let (case_tx, case_rx) = mpsc::unbounded_channel();
         let pipeline = Arc::new(Self {
             memory_key,
-            session_manager,
             sessions: DashMap::new(),
             system_prompt: ArcSwap::from_pointee(DEFAULT_SYSTEM_PROMPT.clone()),
             model_override: ArcSwapOption::new(None),
@@ -127,15 +125,13 @@ impl AbstractMemoryPipeline {
     /// 创建并登记一个 case session（新建时应用当前系统提示词）
     async fn create_case_session(&self, case_name: Option<ArcStr>) -> (ArcStr, Arc<Session>) {
         let session_id = self.case_session_id(case_name.as_ref());
-        let (session, new) = create_session(&self.memory_key, &self.session_manager, session_id.clone()).await;
+        let session = create_session(&self.memory_key, session_id.clone()).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session
         let (session_id, session) = self.sessions.entry(case_name)
             .or_insert((session_id, session))
             .value()
             .clone();
-        if new {
-            session.set_system_message(self.system_prompt.load().as_ref().clone()).await;
-        }
+        session.set_system_message(self.system_prompt.load().as_ref().clone()).await;
         (session_id, session)
     }
 
@@ -333,10 +329,6 @@ impl AgentPipeline for AbstractMemoryPipeline {
             set_session_model_config(session_id, provider.clone(), model.clone()).await?;
         }
         Ok(())
-    }
-
-    fn session_ids(&self) -> Vec<ArcStr> {
-        self.sessions.iter().map(|entry| entry.value().0.clone()).collect()
     }
 
     /// channel 不再绑定本 pipeline：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃
@@ -555,7 +547,6 @@ mod tests {
                 agent_id: ArcStr::from("a1"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
             }),
-            SessionManager::new(""),
         )
     }
 

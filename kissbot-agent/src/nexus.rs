@@ -11,7 +11,6 @@ use crate::channel_manager::ChannelManager;
 use crate::pipelines::PipelineManager;
 use crate::provider::ProviderManager;
 use crate::types::{Error, MemoryKey, Result};
-use crate::session_manager::SessionManager;
 use crate::config_manager::ConfigManager;
 use crate::command_router::CommandRouter;
 use crate::memory_ego_client::MemoryEgoClient;
@@ -32,7 +31,6 @@ pub struct Nexus {
     pub memory_store_client: Arc<MemoryStoreClient>,
     pub memory_ego_client: Arc<MemoryEgoClient>,
     pub abstract_client: Arc<AbstractClient>,
-    pub session_manager: Arc<SessionManager>,
     pub provider_manager: Arc<ProviderManager>,
     pub pipeline_manager: Arc<PipelineManager>,
     pub channel_manager: Arc<ChannelManager>,
@@ -45,14 +43,11 @@ impl Nexus {
     }
 
     pub async fn new() -> Result<()> {
-        let config = ConfigManager::get();
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let memory_ego_client = Arc::new(MemoryEgoClient::new());
         let abstract_client = Arc::new(AbstractClient::new());
-        let data_dir = config.data_dir().to_string();
-        let session_manager = SessionManager::new(&data_dir);
         let provider_manager = Arc::new(ProviderManager::new());
-        let pipeline_manager = Arc::new(PipelineManager::new(session_manager.clone()));
+        let pipeline_manager = Arc::new(PipelineManager::new());
         // channel 运行态与 channel 变更串行队列（队列消费者在 ChannelManager::new 内启动）
         let channel_manager = ChannelManager::new();
 
@@ -60,7 +55,6 @@ impl Nexus {
             memory_store_client,
             memory_ego_client,
             abstract_client,
-            session_manager,
             provider_manager,
             pipeline_manager,
             channel_manager,
@@ -117,8 +111,8 @@ impl Nexus {
         }
     }
 
-    /// 按当前全部 channel 的绑定集合清理无绑定 pipeline，并让 SessionManager 只保留这些 pipeline
-    /// 仍在使用的 session；pub(crate)：channel 侧的 apply_channel_key 在 pipeline 重定位时调用
+    /// 按当前全部 channel 的绑定集合清理无绑定 pipeline；pipeline 持有的 session 随 Arc 释放回收。
+    /// pub(crate)：channel 侧的 apply_channel_key 在 pipeline 重定位时调用
     pub(crate) async fn prune_pipelines(&self) {
         let channels = ConfigManager::get().channels().await;
         let mut keys = HashSet::new();
@@ -127,8 +121,7 @@ impl Nexus {
                 keys.insert(key);
             }
         }
-        let session_ids = self.pipeline_manager.retain(&keys);
-        self.session_manager.retain(&session_ids);
+        self.pipeline_manager.retain(&keys);
     }
 
     /// channel 绑定变化后的 pipeline 重绑定（解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline），
@@ -295,7 +288,7 @@ mod tests {
 
     use kissbot_api::RoleEvent;
     use kissbot_api::channel::IncomingMessage;
-    use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig};
+    use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
     use crate::types::{ChannelCommand, MemoryKey};
@@ -313,14 +306,12 @@ mod tests {
         std::fs::write(&cfg_path, cfg_json).unwrap();
         // 2024 edition：设置环境变量需要 unsafe
         unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-        let session_manager = SessionManager::new(data_dir.to_str().unwrap());
         Nexus {
             memory_store_client: Arc::new(MemoryStoreClient::new()),
             memory_ego_client: Arc::new(MemoryEgoClient::new()),
             abstract_client: Arc::new(AbstractClient::new()),
-            session_manager: session_manager.clone(),
             provider_manager: Arc::new(ProviderManager::new()),
-            pipeline_manager: Arc::new(PipelineManager::new(session_manager)),
+            pipeline_manager: Arc::new(PipelineManager::new()),
             channel_manager: ChannelManager::new(),
         }
     }
@@ -347,7 +338,7 @@ mod tests {
     // 覆盖一整条链：ensure_pipeline（含 pipeline 装配、由 pipeline 创建 session 与系统提示词初始化）/
     // pipeline 分发 / 合批 flush / context_append
 
-    /// 进程级装配（幂等，与 session_manager 测试同模式）：ConfigManager/Station/Nexus 单例各注册一次。
+    /// 进程级装配（幂等）：ConfigManager/Station/Nexus 单例各注册一次。
     /// data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
     static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     static TEST_INIT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -434,9 +425,11 @@ mod tests {
 
         // 4. 等合批 flush + pipeline 运行：session 上下文应含系统消息（首条，由系统提示词初始化设置）
         //    与本条用户消息
-        let (session, _) = Nexus::get().session_manager.get_or_create(key.encode()).await;
+        // 只读回读本地缓存检查 pipeline 写入的上下文（session 由 pipeline 持有，测试不共享其实例）
+        let session = Session::new(ConfigManager::get().data_dir(), key.encode());
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
+            let _ = session.recover_from_cache().await;
             let ctx = session.build_context_full().await;
             let has_system = matches!(ctx.first(), Some(Message::System { .. }));
             let has_user = ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str().contains("链路测试消息")));
@@ -486,37 +479,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_retain_drops_unbound_sessions() {
-        // pipeline 被清理时其 session 应一并清理；
-        // 用本地 PipelineManager / SessionManager 实例验证 retain 语义，避免动到全局单例
+    async fn pipeline_retain_drops_unbound_pipelines() {
+        // pipeline 被清理后其 session 随 pipeline 的 Arc 释放自然回收；
+        // 用本地 PipelineManager 验证 retain 语义，避免动到全局单例
         ensure_test_globals().await;
         let agent_id = "prune-agent";
         let k1 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
         let k2 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1"))) });
         // agent 级未配置 pipeline_name → 默认 default_memory
 
-        let dir = tempfile::tempdir().unwrap();
-        let sm = SessionManager::new(dir.path().to_str().unwrap());
-        let pm = PipelineManager::new(sm.clone());
+        let pm = PipelineManager::new();
         pm.ensure_pipeline(k1.clone()).await.unwrap_or_else(|e| panic!("k1 应能注册: {:?}", e));
         pm.ensure_pipeline(k2.clone()).await.unwrap_or_else(|e| panic!("k2 应能注册: {:?}", e));
         assert!(pm.contains(k1.as_ref()), "注册后 k1 应有 pipeline");
         assert!(pm.contains(k2.as_ref()), "注册后 k2 应有 pipeline");
-        assert!(sm.contains(k1.encode().as_str()));
-        assert!(sm.contains(k2.encode().as_str()));
 
-        // 只保留 k1：k2 的 pipeline 被丢弃，其 session 随报告结果一并清理
-        let session_ids = pm.retain(&HashSet::from([k1.clone()]));
-        sm.retain(&session_ids);
+        // 只保留 k1：k2 的 pipeline 被丢弃
+        pm.retain(&HashSet::from([k1.clone()]));
         assert!(pm.contains(k1.as_ref()), "保留的 key 仍在");
         assert!(!pm.contains(k2.as_ref()), "被清理的 key 的 pipeline 应移除");
-        assert!(sm.contains(k1.encode().as_str()), "保留 pipeline 的 session 仍在");
-        assert!(!sm.contains(k2.encode().as_str()), "被清理 pipeline 的 session 应移除");
 
         // 重新装配即可恢复（pipeline 会重新创建自己的 session）
         pm.ensure_pipeline(k2.clone()).await.unwrap_or_else(|e| panic!("清理后可重新注册: {:?}", e));
         assert!(pm.contains(k2.as_ref()), "重新注册后 k2 恢复");
-        assert!(sm.contains(k2.encode().as_str()), "重新装配后 session 重建");
     }
 
     // ===== provider 分派（未知 provider 名 / 未知 provider_type） =====
@@ -552,11 +537,9 @@ mod tests {
         // pipeline_name 选择 pipeline 执行流程：显式 default / default_memory 均可装配，
         // 未配置时取 default_memory，未知名称返回 PipelineNotFound
         ensure_test_globals().await;
-        let dir = tempfile::tempdir().unwrap();
-        let sm = SessionManager::new(dir.path().to_str().unwrap());
-        let pm = PipelineManager::new(sm.clone());
+        let pm = PipelineManager::new();
 
-        // 1. 显式 default：系统提示词器应把默认提示词写入 pipeline 的 session
+        // 1. 显式 default 可装配
         let agent_default = "pipeline-default-agent";
         ConfigManager::get().set_agent_role_config::<PipelineConfig>(
             ArcStr::from(agent_default), ArcStr::from(""),
@@ -564,11 +547,9 @@ mod tests {
         let key_default = Arc::new(MemoryKey {
             agent_id: ArcStr::from(agent_default), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
         pm.ensure_pipeline(key_default.clone()).await.unwrap_or_else(|e| panic!("显式 default 应能装配 pipeline: {:?}", e));
-        let (session, _) = sm.get_or_create(key_default.encode()).await;
-        assert!(matches!(session.build_context_full().await.first(), Some(Message::System { .. })),
-            "default 应提供系统提示词器");
+        assert!(pm.contains(key_default.as_ref()), "显式 default 应已注册");
 
-        // 2. 显式 default_memory：ego 未配置 → 回退默认提示词，装配同样可用
+        // 2. 显式 default_memory 可装配
         let agent_memory = "pipeline-memory-agent";
         ConfigManager::get().set_agent_role_config::<PipelineConfig>(
             ArcStr::from(agent_memory), ArcStr::from(""),
@@ -576,9 +557,7 @@ mod tests {
         let key_memory = Arc::new(MemoryKey {
             agent_id: ArcStr::from(agent_memory), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
         pm.ensure_pipeline(key_memory.clone()).await.unwrap_or_else(|e| panic!("显式 default_memory 应能装配 pipeline: {:?}", e));
-        let (session, _) = sm.get_or_create(key_memory.encode()).await;
-        assert!(matches!(session.build_context_full().await.first(), Some(Message::System { .. })),
-            "default_memory 应提供系统提示词器");
+        assert!(pm.contains(key_memory.as_ref()), "显式 default_memory 应已注册");
 
         // 3. 未配置名称 → 默认 default_memory
         let agent_fallback = "pipeline-fallback-agent";

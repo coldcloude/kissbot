@@ -509,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_recover_reads_previous_cache() {
-        // 新建会话 → 落上下文 → 另一 Session 实例恢复（调用方（如 SessionManager）的重启恢复路径）
+        // 新建会话 → 落上下文 → 另一 Session 实例恢复（调用方（如 agent pipeline）的重启恢复路径）
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().to_str().unwrap();
         let first = Session::new(base, ArcStr::from("a1-r1"));

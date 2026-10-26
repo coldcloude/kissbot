@@ -121,21 +121,21 @@ kissbot-agent 使用三份配置：
 
 例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的 pipeline 立即生效。
 
-## 会话存储与上下文本地缓存（session_manager）
+## 会话与上下文本地缓存（pipeline 内部）
 
 | 项 | 约定 |
 |----|------|
-| 会话存储 | 按 session_id（`ArcStr`）去重持有；session 的数量与 id 由 pipeline 决定，SessionManager 只负责保存/恢复/按 id 清理 |
+| session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 各持有一个 `Arc<Session>`，`abstract_memory` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
 | session 配置 | 建立 session 时按 memory_key 的 agent/role 合成一次并写入 `sessions[session_id]`；运行期只按 session_id 读取 |
 | 默认 pipeline 的 session_id | `MemoryKey::encode()`：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}` |
 | 摘要记忆 case 的 session_id | `memory-abstract-{MemoryKey::encode()}-{case_name}`；基准（无 case）session 为 `memory-abstract-{encode}-none`，同时承担 pipeline 入口配置与 locate 失败批次 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 历史归档一体） |
-| 恢复 | 新建会话时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
-| 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 pipeline，并把保留 pipeline 通过 `session_ids()` 报告的在用 id 交给 SessionManager retain |
+| 恢复 | 建立 session 时从 `<data_dir>/context/<session_id>.jsonl` 正序全量回读；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
+| 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 pipeline；session 不单独清理，随 pipeline 的 Arc 释放自然回收 |
 
 缓存文件、行序、归档文件命名与系统消息的待定/应用语义见 [kissbot-llm 技术规格](llm.md)。
 
-pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配置的键；session 是 pipeline 内部的执行资源。两者不再合并为同一个结构。
+pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配置的键；session 是 pipeline 内部的执行资源，两者相互独立。
 
 ## 管理命令格式
 
@@ -270,12 +270,8 @@ struct MemoryKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 // pipeline 的基准会话 id（缓存/归档文件名段）：{agent_id}-{role}[-{event}]
 impl MemoryKey { fn encode(&self) -> ArcStr; }
 
-// session 只按 ArcStr id 存取；id 由 pipeline 生成
-struct SessionManager { /* sessions: DashMap<ArcStr, Arc<Session>> */ }
-impl SessionManager {
-    async fn get_or_create(&self, session_id: ArcStr) -> (Arc<Session>, bool);
-    fn retain(&self, session_ids: &HashSet<ArcStr>);
-}
+// session 由 pipeline 创建并持有（Arc<Session>），id 由 pipeline 生成；
+// 建立时从 <data_dir>/context/<session_id>.jsonl 恢复，并按 memory_key 合成一次配置
 
 // session 配置：建立 session 时按 memory_key 的 agent/role 合成一次，之后只按 session_id 读写
 impl ConfigManager {

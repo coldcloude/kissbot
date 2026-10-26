@@ -12,7 +12,6 @@ mod provider;
 mod memory_ego_client;
 mod memory_store_client;
 mod message;
-mod session_manager;
 mod station;
 mod station_http;
 mod types;
