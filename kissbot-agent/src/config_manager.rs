@@ -206,17 +206,6 @@ impl ConfigManager {
         }
     }
 
-    /// 按 session_id 取 session 级配置项；未设置返回 None。
-    /// 本方法只读 session 配置表，不按 agent/role 合成；是否用继承值由 pipeline 决定。
-    pub async fn session_config<E>(&self, session_id: &str) -> Option<Arc<E>>
-    where
-        SessionConfigMap: OptionArcField<E>,
-    {
-        let repo = self.nexus_repo.read().await;
-        let session_config_map = repo.sessions.get(session_id)?;
-        session_config_map.as_ref().get::<E>()
-    }
-
     /// 按 memory_key 取 session 配置项；session 表缺失该项时按 agent → role 合成，
     /// 并缓存到内存 session 配置表（不落盘）。运行期读取走 `session_config`（只按 session_id）。
     pub async fn memory_session_config<C, E>(&self, memory_key: &MemoryKey, session_id: &ArcStr) -> Arc<E>
@@ -258,27 +247,6 @@ impl ConfigManager {
         config
     }
 
-    /// 设置 session 级配置项（整项覆盖并落盘）；配置值由调用方（pipeline）负责合成。
-    pub async fn set_session_config<E>(&self, session_id: ArcStr, config: Arc<E>) -> Result<()>
-    where
-        SessionConfigMap: OptionArcField<E>,
-    {
-        self.write_nexus_config(|repo| {
-            let sessions = Arc::make_mut(&mut repo.sessions);
-            let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
-                let config_map_mut = Arc::make_mut(&mut config_map);
-                config_map_mut.insert::<E>(config);
-                config_map
-            } else {
-                let mut config_map = SessionConfigMap::default();
-                config_map.insert::<E>(config);
-                Arc::new(config_map)
-            };
-            sessions.insert(session_id, config_map);
-            Ok(())
-        }).await
-    }
-
     /// 设置 role 配置，role_name 为空时设置 agent配置
     pub async fn set_agent_role_config<C>(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<C>) -> Result<()>
     where
@@ -313,6 +281,38 @@ impl ConfigManager {
             return Some(agent_role_config.build::<C>(role_name))
         }
         None
+    }
+
+    /// 按 session_id 取 session 级配置项；未设置返回 None。
+    /// 本方法只读 session 配置表，不按 agent/role 合成；是否用继承值由 pipeline 决定。
+    pub async fn session_config<E>(&self, session_id: &str) -> Option<Arc<E>>
+    where
+        SessionConfigMap: OptionArcField<E>,
+    {
+        let repo = self.nexus_repo.read().await;
+        let session_config_map = repo.sessions.get(session_id)?;
+        session_config_map.as_ref().get::<E>()
+    }
+
+    /// 设置 session 级配置项（整项覆盖并落盘）；配置值由调用方（pipeline）负责合成。
+    pub async fn set_session_config<E>(&self, session_id: ArcStr, config: Arc<E>) -> Result<()>
+    where
+        SessionConfigMap: OptionArcField<E>,
+    {
+        self.write_nexus_config(|repo| {
+            let sessions = Arc::make_mut(&mut repo.sessions);
+            let config_map = if let Some(mut config_map) = sessions.remove(&session_id) {
+                let config_map_mut = Arc::make_mut(&mut config_map);
+                config_map_mut.insert::<E>(config);
+                config_map
+            } else {
+                let mut config_map = SessionConfigMap::default();
+                config_map.insert::<E>(config);
+                Arc::new(config_map)
+            };
+            sessions.insert(session_id, config_map);
+            Ok(())
+        }).await
     }
 
     /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
