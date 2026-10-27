@@ -367,14 +367,12 @@ mod tests {
         let agent_id = "a1";
         let channel_id = "nexus-chain-test";
         let key = MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) };
+        let session_id = key.encode();
 
         // 1. agent 级（role 空串）pipeline：显式指定 pipeline 名 default，
-        //    必须在 pipeline 首次装配前写入。default 的发送器先把消息写进 session 上下文再调模型
+        //    必须在 pipeline 首次装配前写入。default 不依赖 agent/role，配置直接写 session
         let pipeline = PipelineConfig { pipeline_name: Some(ArcStr::from("default")) };
         cm.set_agent_role_config::<PipelineConfig>(ArcStr::from(agent_id), ArcStr::from(""), Arc::new(pipeline)).await.unwrap();
-        // 合批间隔缩到 1 秒，让 flush 尽快发生
-        cm.set_agent_role_config::<ChannelBatchConfig>(
-            ArcStr::from(agent_id), ArcStr::from(""), Arc::new(ChannelBatchConfig { channel_batch_interval_secs: 1 })).await.unwrap();
         // provider/model 已配置但 provider_type 无法映射 → 发送器解析到模型配置、写入上下文后，
         // 模型调用返回 Err（不触网），不影响本用例断言上下文已增长
         let provider = "chain-test-provider";
@@ -388,10 +386,13 @@ mod tests {
             default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
-        cm.set_agent_role_config::<LLMConfig>(
-            ArcStr::from(agent_id), ArcStr::from(""),
-            Arc::new(LLMConfig { provider: Some(ArcStr::from(provider)), model: Some(ArcStr::from(model)), ..Default::default() }),
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            session_id.clone(),
+            &LLMConfig { provider: Some(ArcStr::from(provider)), model: Some(ArcStr::from(model)), ..Default::default() },
         ).await.unwrap();
+        // 合批间隔缩到 1 秒，让 flush 尽快发生
+        cm.set_session_config::<ChannelBatchConfig, ChannelBatchConfig>(
+            session_id.clone(), &ChannelBatchConfig { channel_batch_interval_secs: 1 }).await.unwrap();
 
         // 2. channel 绑定 (a1, "")；channel_id 用本用例专用名，避免与其他测试互相干扰
         let _ = cm.add_channel(ChannelConfig {

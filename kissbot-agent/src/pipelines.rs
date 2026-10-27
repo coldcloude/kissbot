@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
@@ -404,11 +404,20 @@ pub fn retrieve_tool_messages(tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Mes
 const MAX_TOOL_ROUNDS: usize = 10;
 
 pub async fn run_once(session_id: ArcStr, session: &Session, round: usize, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, tokens_usage: Option<u64>) -> Result<(bool,u64)> {
-    let mut res = if let Some(tokens_usage) = tokens_usage {
+    let result = if let Some(tokens_usage) = tokens_usage {
         let reducer = CompressTokenReducer::new();
-        send_messages_with_limit(session_id.clone(), session, messages, tools, &reducer, tokens_usage).await?
+        send_messages_with_limit(session_id.clone(), session, messages, tools, &reducer, tokens_usage).await
     } else {
-        send_messages(session_id, session, messages, tools).await?
+        send_messages(session_id, session, messages, tools).await
+    };
+    let mut res = match result {
+        Ok(res) => res,
+        // default pipeline 不依赖 agent/role；没有 session 级模型配置时记录错误并结束本次 run
+        Err(Error::ModelProviderNotFound(provider, model)) => {
+            error!("default pipeline 未找到模型配置，结束 run: provider={}, model={}", provider, model);
+            return Ok((false, 0));
+        }
+        Err(e) => return Err(e),
     };
     // 保存回复的消息
     let _ = session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
@@ -679,7 +688,8 @@ where
         session_id.clone(), Arc::new(cfg.get_effective_config())).await;
 }
 
-/// 建立 session 时从本地缓存恢复；配置由各 pipeline 在建立前从 agent/role 导入
+/// 建立 session 时从本地缓存恢复；default_memory / abstract_memory 在建立前从 agent/role 导入配置，
+/// default 只用 session 配置
 pub async fn create_session(session_id: ArcStr) -> Arc<Session> {
     let cfg = ConfigManager::get();
     let session = Arc::new(Session::new(cfg.data_dir(), session_id));
@@ -697,15 +707,7 @@ pub async fn set_session_model_config(session_id: ArcStr, provider: ArcStr, mode
 
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => {
-            let session_id = memory_key.encode();
-            import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
-            import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
-            import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
-            import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
-            import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
-            Ok(DefaultAgenticLoopPipeline::new(session_id).await)
-        }
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key.encode()).await),
         PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, true).await),
         PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
