@@ -19,7 +19,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
-use tracing::{error, warn};
 
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
@@ -213,15 +212,11 @@ pub async fn send_outgoing(
     meta: Option<Arc<MemoryMeta>>,
 ) {
     let nexus = Nexus::get();
-    let agent_id = memory_key.agent_id.clone();
-    let role_name = memory_key.role_event.role_name.clone();
-    // 1. 校验 out_channel 身份在目标 channel 仍绑定（未绑定 = 配置悬空，清理并跳过发送）
+    // 1. 校验 out_channel 身份在目标 channel 仍绑定
     let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
         .map(|c| c.bind_users.contains(&out_channel.user))
         .unwrap_or(false);
     if !bound {
-        warn!("send_outgoing: out_channel 身份未绑定，清理 {}/{} 的回复通道", agent_id, role_name);
-        let _ = ConfigManager::get().set_out_channel(agent_id, role_name, None).await;
         return;
     }
     // 2. 发送
@@ -237,9 +232,7 @@ pub async fn send_outgoing(
             let request = channel_request_from_outgoing(memory_key, out_channel, response.as_ref(), meta);
             nexus.memory_store_client.push_channel_record(request).await;
         }
-        Err(e) => {
-            warn!("send_outgoing 失败: {:?}", e);
-        }
+        Err(_) => {}
     }
 }
 
@@ -412,11 +405,6 @@ pub async fn run_once(session_id: ArcStr, session: &Session, round: usize, messa
     };
     let mut res = match result {
         Ok(res) => res,
-        // default pipeline 不依赖 agent/role；没有 session 级模型配置时记录错误并结束本次 run
-        Err(Error::ModelProviderNotFound(provider, model)) => {
-            error!("default pipeline 未找到模型配置，结束 run: provider={}, model={}", provider, model);
-            return Ok((false, 0));
-        }
         Err(e) => return Err(e),
     };
     // 保存回复的消息
@@ -754,11 +742,10 @@ impl PipelineManager {
         self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 
-    pub async fn incoming_message(&self, memory_key: Arc<MemoryKey>, event: Arc<IncomingMessageEvent>) {
-        match self.ensure_pipeline(memory_key).await {
-            Ok(pipeline) => pipeline.incoming_message(event).await,
-            Err(e) => warn!("pipeline 装配失败，丢弃消息: {:?}", e),
-        }
+    pub async fn incoming_message(&self, memory_key: Arc<MemoryKey>, event: Arc<IncomingMessageEvent>) -> Result<()> {
+        let pipeline = self.ensure_pipeline(memory_key).await?;
+        pipeline.incoming_message(event).await;
+        Ok(())
     }
 
     /// channel 不再绑定该 pipeline：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态

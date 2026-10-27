@@ -257,7 +257,7 @@ impl Nexus {
         }
 
         // 4. 普通消息：运行 pipeline（记忆写入由各 pipeline 自行完成；pipeline 内部按需创建 session）
-        self.pipeline_manager.incoming_message(key, event).await;
+        let _ = self.pipeline_manager.incoming_message(key, event).await;
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
