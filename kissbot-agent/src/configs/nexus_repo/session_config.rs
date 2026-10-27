@@ -13,12 +13,11 @@ use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
 use kissbot_api::{
-    MergeEffectiveConfig, MergeSelf, OptionArcField, impl_option_arc_field,
-    impl_option_arc_field_map,
+    MergeBy, MergeEffectiveConfig, MergeSelf, OptionArcField, impl_option_arc_field, impl_option_arc_field_map,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig};
 
-use crate::configs::nexus_repo::pipeline_config::*;
+use crate::{configs::nexus_repo::pipeline_config::*};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfigMergeMap {
@@ -131,19 +130,6 @@ impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMap);
 impl_option_arc_field_map!(SessionConfigMap);
 
 impl SessionConfigMap {
-    pub fn create_by_agent_role<C, E>(agent_roles: &HashMap<ArcStr, Arc<AgentRoleConfig>>, agent_id: &str, role_name: &str) -> E
-    where
-        C: MergeSelf + MergeEffectiveConfig<E>,
-        SessionConfigMergeMap: OptionArcField<C>,
-    {
-        let merge_config = if let Some(agent_role_config) = agent_roles.get(agent_id) {
-            agent_role_config.build::<C>(role_name)
-        } else {
-            C::default()
-        };
-        merge_config.get_effective_config()
-    }
-
     pub fn get_or_insert<E>(&mut self, config: Arc<E>) -> Arc<E>
     where
         SessionConfigMap: OptionArcField<E>,
@@ -154,5 +140,24 @@ impl SessionConfigMap {
             self.insert::<E>(config.clone());
             config
         }
+    }
+
+    pub fn merge<C, E>(&mut self, config: &C)
+    where
+        C: MergeSelf + MergeEffectiveConfig<E>,
+        E: MergeBy<C> + Clone,
+        SessionConfigMap: OptionArcField<E>,
+    {
+        let eff_config = if let Some(mut eff_config) = self.take::<E>() {
+            let eff_config_mut = Arc::make_mut(&mut eff_config);
+            eff_config_mut.merge(config);
+            eff_config
+        } else {
+            // 新建 session 配置
+            let mut def_config = C::default();
+            def_config.merge(config);
+            Arc::new(def_config.get_effective_config())
+        };
+        self.insert::<E>(eff_config);
     }
 }

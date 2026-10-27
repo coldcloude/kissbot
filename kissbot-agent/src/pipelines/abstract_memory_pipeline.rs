@@ -20,15 +20,15 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta,
+    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta, MergeEffectiveConfig,
 };
-use kissbot_llm::{EffectiveLLMConfig, Message, Session, ToolConfig};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig};
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, DEFAULT_SYSTEM_PROMPT, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
+    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
+        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -100,10 +100,8 @@ impl AbstractMemoryPipeline {
         } else {
             let base_id = self.case_session_id(None);
             let cfg = ConfigManager::get();
-            let base = cfg.session_config::<EffectiveLLMConfig>(base_id.as_str()).await
-                .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
-            let case = cfg.session_config::<EffectiveLLMConfig>(session_id.as_str()).await
-                .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
+            let base = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(base_id).await;
+            let case = cfg.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
             if base.provider != case.provider || base.model != case.model {
                 let _ = set_session_model_config(session_id, base.provider.clone(), base.model.clone()).await;
             }
@@ -127,23 +125,28 @@ impl AbstractMemoryPipeline {
     /// 创建并登记一个 case session（新建时应用当前系统提示词）
     async fn create_case_session(&self, case_name: Option<ArcStr>) -> Arc<Session> {
         let session_id = self.case_session_id(case_name.as_ref());
-        let session = create_session(self.memory_key.as_ref(), session_id).await;
+        // 从 agent role 配置导入
+        let cfg_mngr = ConfigManager::get();
+        let agent_id = self.memory_key.agent_id.as_str();
+        let role_name = self.memory_key.role_event.role_name.as_str();
+        let cfg = cfg_mngr.agent_role_config::<LLMConfig>(agent_id, role_name).await.unwrap_or_default();
+        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        let cfg = cfg_mngr.agent_role_config::<ChannelBatchConfig>(agent_id, role_name).await.unwrap_or_default();
+        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        let cfg = cfg_mngr.agent_role_config::<OutChannelConfig>(agent_id, role_name).await.unwrap_or_default();
+        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        let cfg = cfg_mngr.agent_role_config::<GroupSetConfig>(agent_id, role_name).await.unwrap_or_default();
+        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        // 建立 session
+        let session = create_session(session_id.clone()).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session
         let session = self.sessions.entry(case_name)
             .or_insert(session)
             .value()
             .clone();
-        let prompt = self.assemble_system_prompt().await;
+        let prompt = get_ego_system_prompt_or_default(self.memory_key.as_ref()).await;
         session.set_system_message(prompt).await;
         session
-    }
-
-    /// 现场组装系统提示词（不缓存，新建/重置 session 时各自计算）
-    async fn assemble_system_prompt(&self) -> ArcStr {
-        get_ego_system_prompt(
-            self.memory_key.agent_id.clone(),
-            self.memory_key.role_event.role_name.clone(),
-        ).await.unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.clone())
     }
 
     /// 入批：按 channel 找（或惰性创建）批次生产者；每个 channel 有自己的队列与消费者。
@@ -184,8 +187,7 @@ impl IncomingMessageProcessor for AbstractMemoryPipeline {
         // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
         let base_id = self.case_session_id(None);
         let _ = self.ensure_session(&None).await;
-        let interval = ConfigManager::get().session_config::<ChannelBatchConfig>(base_id.as_str()).await
-            .unwrap_or_else(|| Arc::new(ChannelBatchConfig::new()))
+        let interval = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(base_id).await
             .channel_batch_interval_secs;
         self.enqueue(event, interval);
     }
@@ -291,8 +293,7 @@ impl AbstractMemoryPipeline {
             Some(case_name) => {
                 // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
                 let rebuilt = async {
-                    let cfg = ConfigManager::get().session_config::<EffectiveMemoryRecoverConfig>(session_id.as_str()).await
-                        .unwrap_or_else(|| Arc::new(EffectiveMemoryRecoverConfig::new()));
+                    let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_id.clone()).await;
                     let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
                     let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
                     Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
@@ -324,7 +325,7 @@ impl AgentPipeline for AbstractMemoryPipeline {
         if sessions.is_empty() {
             return;
         }
-        let prompt = self.assemble_system_prompt().await;
+        let prompt = get_ego_system_prompt_or_default(self.memory_key.as_ref()).await;
         for session in sessions {
             session.set_system_message(prompt.clone()).await;
         }

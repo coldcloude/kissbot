@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use arcstr::ArcStr;
-use kissbot_llm::{EffectiveLLMConfig, Message, Session};
+use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session};
 
-use crate::{config_manager::ConfigManager, configs::{EffectiveCompressConfig}, nexus::Nexus, pipeline::TokenReducer, pipelines::build_context_from_memory_store, types::MemoryKey};
+use crate::{config_manager::ConfigManager, configs::{CompressConfig, EffectiveCompressConfig}, nexus::Nexus, pipeline::TokenReducer, pipelines::build_context_from_memory_store, types::MemoryKey};
 
 pub fn end_by_trim_last_assistent(context: &Vec<Message>) -> usize {
     let mut curr = context.len() as i64 -1;
@@ -30,10 +30,8 @@ impl CompressTokenReducer {
 impl TokenReducer for CompressTokenReducer {
     async fn reduce(&self, session_id: ArcStr, session: &Session, messages: Vec<Message>) -> (u64, Vec<Message>) {
         let cfg_mngr = ConfigManager::get();
-        let llm_cfg = cfg_mngr.session_config::<EffectiveLLMConfig>(session_id.as_str()).await
-            .unwrap_or_else(|| Arc::new(EffectiveLLMConfig::new()));
-        let compress_cfg = cfg_mngr.session_config::<EffectiveCompressConfig>(session_id.as_str()).await
-            .unwrap_or_else(|| Arc::new(EffectiveCompressConfig::new()));
+        let llm_cfg = cfg_mngr.session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone()).await;
+        let compress_cfg = cfg_mngr.session_config::<CompressConfig, EffectiveCompressConfig>(session_id).await;
         let c_msg = Message::User { content: compress_cfg.compress_prompt.clone() };
 
         // 1. 只读 build_context（读锁）：以最后一条 assistant（不含）为界切出要保留的消息
