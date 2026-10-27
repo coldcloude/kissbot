@@ -20,7 +20,7 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta, MergeEffectiveConfig,
+    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
+        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -126,17 +126,11 @@ impl AbstractMemoryPipeline {
     async fn create_case_session(&self, case_name: Option<ArcStr>) -> Arc<Session> {
         let session_id = self.case_session_id(case_name.as_ref());
         // 从 agent role 配置导入
-        let cfg_mngr = ConfigManager::get();
-        let agent_id = self.memory_key.agent_id.as_str();
-        let role_name = self.memory_key.role_event.role_name.as_str();
-        let cfg = cfg_mngr.agent_role_config::<LLMConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
-        let cfg = cfg_mngr.agent_role_config::<ChannelBatchConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
-        let cfg = cfg_mngr.agent_role_config::<OutChannelConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
-        let cfg = cfg_mngr.agent_role_config::<GroupSetConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&self.memory_key, &session_id).await;
+        import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&self.memory_key, &session_id).await;
+        import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&self.memory_key, &session_id).await;
+        import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&self.memory_key, &session_id).await;
+        import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&self.memory_key, &session_id).await;
         // 建立 session
         let session = create_session(session_id.clone()).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session

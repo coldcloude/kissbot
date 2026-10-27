@@ -142,6 +142,7 @@ impl SessionConfigMap {
         }
     }
 
+    /// 把 C 覆盖合并进 session 配置项；缺失时以 `C::default()` 为基底
     pub fn merge<C, E>(&mut self, config: &C)
     where
         C: MergeSelf + MergeEffectiveConfig<E>,

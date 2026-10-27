@@ -10,7 +10,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 
 use std::collections::{BTreeMap, HashSet};
@@ -21,7 +21,7 @@ use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 use tracing::warn;
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
@@ -555,24 +555,15 @@ impl DefaultAgenticLoopPipelineWithMemory {
     pub async fn new(memory_key: Arc<MemoryKey>, load_memory: bool) -> Arc<Self> {
         let session_id = memory_key.encode();
         // 从 agent role 配置导入
-        let cfg_mngr = ConfigManager::get();
-        let agent_id = memory_key.agent_id.as_str();
-        let role_name = memory_key.role_event.role_name.as_str();
-        let cfg = cfg_mngr.agent_role_config::<LLMConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
         if load_memory {
-            let cfg = cfg_mngr.agent_role_config::<MemoryRecoverConfig>(agent_id, role_name).await.unwrap_or_default();
-            let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+            import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
         } else {
-            let cfg = cfg_mngr.agent_role_config::<CompressConfig>(agent_id, role_name).await.unwrap_or_default();
-            let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+            import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
         }
-        let cfg = cfg_mngr.agent_role_config::<ChannelBatchConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
-        let cfg = cfg_mngr.agent_role_config::<OutChannelConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
-        let cfg = cfg_mngr.agent_role_config::<GroupSetConfig>(agent_id, role_name).await.unwrap_or_default();
-        let _ = cfg_mngr.set_session_config_if_not_exists(session_id.clone(), Arc::new(cfg.get_effective_config()));
+        import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
         // 建立 session
         let session = create_session(session_id.clone()).await;
         let (producer, mut consumer) = channel_batch_processor();
@@ -671,8 +662,24 @@ const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
 const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
-/// 建立 session 时把 agent/role 继承配置固化到 session 配置（内存缓存），此后运行期只按 session_id 读取；
-/// 同时从本地缓存恢复上下文。
+/// 把 (agent, role) 的某项配置导入 session 配置；已有 session 级值时不覆盖。
+pub(crate) async fn import_session_config_from_agent_role<C, E>(memory_key: &MemoryKey, session_id: &ArcStr)
+where
+    C: MergeSelf + Clone + MergeEffectiveConfig<E>,
+    E: Clone,
+    SessionConfigMergeMap: OptionArcField<C>,
+    SessionConfigMap: OptionArcField<E>,
+{
+    let cfg_mngr = ConfigManager::get();
+    let cfg = cfg_mngr.agent_role_config::<C>(
+        memory_key.agent_id.as_str(),
+        memory_key.role_event.role_name.as_str(),
+    ).await.unwrap_or_default();
+    let _ = cfg_mngr.set_session_config_if_not_exists(
+        session_id.clone(), Arc::new(cfg.get_effective_config())).await;
+}
+
+/// 建立 session 时从本地缓存恢复；配置由各 pipeline 在建立前从 agent/role 导入
 pub async fn create_session(session_id: ArcStr) -> Arc<Session> {
     let cfg = ConfigManager::get();
     let session = Arc::new(Session::new(cfg.data_dir(), session_id));
@@ -690,7 +697,15 @@ pub async fn set_session_model_config(session_id: ArcStr, provider: ArcStr, mode
 
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key.encode()).await),
+        PIPELINE_DEFAULT_STR => {
+            let session_id = memory_key.encode();
+            import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
+            import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
+            import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
+            import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
+            import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
+            Ok(DefaultAgenticLoopPipeline::new(session_id).await)
+        }
         PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, true).await),
         PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
