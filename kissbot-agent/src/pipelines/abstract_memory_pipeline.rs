@@ -27,8 +27,8 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_content, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, tools_for_session,
+    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, PipelineCommand}, pipelines::{
+        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, handle_outgoing_command, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -325,18 +325,15 @@ impl AgentPipeline for AbstractMemoryPipeline {
         }
     }
 
-    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
-        self.model_override.store(Some(Arc::new((provider.clone(), model.clone()))));
-        let base_id = self.case_session_id(None);
-        let _ = self.ensure_session(&None).await;
-        let mut session_ids = vec![base_id];
-        session_ids.extend(self.sessions.iter().map(|entry| self.case_session_id(entry.key().as_ref())));
-        session_ids.sort();
-        session_ids.dedup();
-        for session_id in session_ids {
-            set_session_model_config(session_id, provider.clone(), model.clone()).await?;
+    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>> {
+        if let Some(parsed) = parse_model_command(&command.content) {
+            return Some(match parsed {
+                Ok((provider, model)) => self.apply_model_command(provider, model).await,
+                Err(e) => Err(e),
+            });
         }
-        Ok(())
+        // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
+        handle_outgoing_command(&command.content, self.case_session_id(None), &command.channel_id).await
     }
 
     /// channel 不再绑定本 pipeline：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃
@@ -358,6 +355,18 @@ impl AgentPipeline for AbstractMemoryPipeline {
 }
 
 impl AbstractMemoryPipeline {
+    /// `/model`：校验后写入基准 session 与已有 case session，并保存覆盖供新建 case session 应用
+    async fn apply_model_command(&self, provider: ArcStr, model: ArcStr) -> Result<ArcStr> {
+        let _ = self.ensure_session(&None).await;
+        let mut session_ids = vec![self.case_session_id(None)];
+        session_ids.extend(self.sessions.iter().map(|entry| self.case_session_id(entry.key().as_ref())));
+        session_ids.sort();
+        session_ids.dedup();
+        let reply = switch_model(session_ids, provider.clone(), model.clone()).await?;
+        self.model_override.store(Some(Arc::new((provider, model))));
+        Ok(reply)
+    }
+
     async fn run_once(
         &self,
         session_id: ArcStr,
@@ -402,11 +411,10 @@ impl AbstractMemoryPipeline {
         } else {
             vec![]
         };
-        // 输出到 out_channel：只有本轮有文本才发送，本轮及之前累积的占位内容与文本一起作为下行记录写入
-        let out_channel = ConfigManager::get()
-            .out_channel_config(self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str())
-            .await;
-        if let Some(out_channel) = out_channel {
+        // 输出到 out_channel（pipeline 级配置存基准 session）：只有本轮有文本才发送，
+        // 本轮及之前累积的占位内容与文本一起作为下行记录写入
+        let base_id = self.case_session_id(None);
+        if let Some(out_channel) = outgoing_channel(&base_id).await {
             if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
                 send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
             }

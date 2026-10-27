@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use crate::abstract_client::AbstractClient;
 use crate::channel_manager::ChannelManager;
 use crate::pipelines::PipelineManager;
+use crate::pipeline::PipelineCommand;
 use crate::provider::ProviderManager;
 use crate::types::{Error, MemoryKey, Result};
 use crate::config_manager::ConfigManager;
@@ -157,34 +158,6 @@ impl Nexus {
         &self.channel_manager
     }
 
-    /// 校验模型有效性：从 API 拉模型列表，确认 pm.model 在列表中。
-    /// Err 表示校验失败（API 调用失败 / 模型不在列表），调用方决定如何处理。
-    async fn verify_model(&self, provider: &str, model: &str) -> Result<()> {
-        let models = self.provider_manager.list_models(provider).await
-            .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e).into()))?;
-        if !models.iter().any(|m| m.as_str() == model) {
-            return Err(Error::ModelProviderNotSupported(format!(
-                "模型 {} 不在 {} 的 API 模型列表", model, provider).into()));
-        }
-        Ok(())
-    }
-
-    /// 设置 pipeline 的模型（每次切换都从 API 拉模型列表校验）；写入哪些 session 由 pipeline 决定
-    pub async fn set_pipeline_model(&self, memory_key: Arc<MemoryKey>, provider: ArcStr, model: ArcStr) -> Result<()> {
-        // 每次切换都从 API 拉模型列表校验（失败拒绝，保持原模型）
-        self.verify_model(&provider, &model).await?;
-        let pipeline = self.pipeline_manager.ensure_pipeline(memory_key).await?;
-        pipeline.set_model(provider, model).await
-    }
-
-    /// 设置来源 channel 所属 pipeline 的模型（每次切换都从 API 拉模型列表校验）
-    pub async fn set_channel_pipeline_model(&self, channel_id: &str, provider: ArcStr, model: ArcStr) -> Result<()> {
-        let Some(key) = self.channel_manager.memory_key(channel_id).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
-        };
-        self.set_pipeline_model(key, provider, model).await
-    }
-
     /// 启动主循环（保持进程运行）：初始化 pipeline + 连接全部 channel
     pub async fn run(&self) {
         info!("Nexus 启动，等待外部输入...");
@@ -213,7 +186,7 @@ impl Nexus {
 
 impl Nexus {
     /// 业务消息入口（由 ChannelManager 的 Terminal 转发调用；回显已在通道层 consume_pending 过滤，此处不见自身回显）
-    /// 完整处理链：管理命令 → pipeline 定位 → 系统事件过滤 → 普通消息进 pipeline
+    /// 完整处理链：默认命令检测 → pipeline 命令检测 → pipeline 定位 → 系统事件过滤 → 普通消息进 pipeline
     /// （上行记忆写入由 pipeline 自己完成：default_memory 收到即写，abstract_memory 在 locate 后写）
     pub async fn incoming_message(&self, channel_id: ArcStr, event: Arc<IncomingMessageEvent>) {
         // 0. 先取 channel 配置（命令分支 admin 判断与普通分支 pipeline 定位复用，避免重复查询）
@@ -229,8 +202,18 @@ impl Nexus {
                     user_id: event.incoming_message.user_id.clone(),
                 });
                 if is_admin {
-                    // 3. 命令解析+执行（内联在 CommandRouter::execute）；回复始终发回来源 channel（不走 out_channel）
-                    match CommandRouter::execute(text.as_str(), channel_id.clone()).await {
+                    // 3. 先做默认命令检测，未命中再交给来源 channel 的 pipeline 识别执行；
+                    //    回复始终发回来源 channel（不走 out_channel）
+                    let command = PipelineCommand {
+                        content: text.clone(),
+                        channel_id: channel_id.clone(),
+                    };
+                    let result = match CommandRouter::execute(text.as_str(), channel_id.clone()).await {
+                        Ok(Some(reply)) => Ok(reply),
+                        Ok(None) => self.execute_pipeline_command(&command).await,
+                        Err(e) => Err(e),
+                    };
+                    match result {
                         Ok(reply) => self.send_admin_reply(channel_id.as_str(), event, reply).await,
                         Err(Error::InvalidCommand(msg)) => {
                             self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("⚠️ {}", msg))).await;
@@ -258,6 +241,23 @@ impl Nexus {
 
         // 4. 普通消息：运行 pipeline（记忆写入由各 pipeline 自行完成；pipeline 内部按需创建 session）
         let _ = self.pipeline_manager.incoming_message(key, event).await;
+    }
+
+    /// pipeline 级命令：默认命令检测未命中后，交给来源 channel 所属 pipeline 识别执行。
+    /// pipeline 不认识该命令 → InvalidCommand("未知命令: {命令}")（与默认层同文案）；
+    /// pipeline 尚未装配时按 agent/role 配置创建（/model 等命令可能先于普通消息到达）
+    async fn execute_pipeline_command(&self, command: &PipelineCommand) -> Result<ArcStr> {
+        let Some(key) = self.channel_manager.memory_key(command.channel_id.as_str()).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", command.channel_id).into()));
+        };
+        let pipeline = self.pipeline_manager.ensure_pipeline(key).await?;
+        match pipeline.execute_command(command).await {
+            Some(result) => result,
+            None => {
+                let unknown = command.content.split_whitespace().next().unwrap_or_default();
+                Err(Error::InvalidCommand(format!("未知命令: {}", unknown).into()))
+            }
+        }
     }
 
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
@@ -291,6 +291,8 @@ mod tests {
     use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
+    use crate::pipeline::AgentPipeline;
+    use crate::pipelines::{handle_outgoing_command, outgoing_channel, AbstractMemoryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, MemoryKey};
 
     // ===== verify_agent_exists：保留 id / 空串直接通过 =====
@@ -521,16 +523,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_command_validates_arguments() {
+    async fn model_command_is_handed_to_pipeline() {
         ensure_test_globals().await;
-        // 参数段固定为 provider + model：段数不符返回格式错误（不访问不存在的参数段）
-        for content in ["/model", "/model deepseek"] {
-            let err = CommandRouter::execute(content, ArcStr::from("no-such-channel")).await.unwrap_err();
-            assert!(matches!(err, Error::InvalidCommand(_)), "{} 应返回格式错误: {:?}", content, err);
+        // /model 不再是默认命令：默认层一律返回 Ok(None)，交给 pipeline 命令检测执行
+        // （参数校验与模型切换都在 pipeline 内完成，默认层不访问 channel / provider）
+        for content in ["/model", "/model deepseek", "/model deepseek deepseek-chat"] {
+            let reply = CommandRouter::execute(content, ArcStr::from("no-such-channel")).await.unwrap();
+            assert!(reply.is_none(), "{} 应交由 pipeline 处理", content);
         }
-        // 参数齐备 → 进入模型切换流程（channel 不存在 → ConfigNotFound；未知 provider 在模型校验处返回错误，不触网）
-        let err = CommandRouter::execute("/model deepseek deepseek-chat", ArcStr::from("no-such-channel")).await.unwrap_err();
-        assert!(matches!(err, Error::ConfigNotFound(_)), "参数齐备应进入切换流程: {:?}", err);
+        // 未知命令同样交回 pipeline（最终由 nexus 回复"未知命令"）
+        let reply = CommandRouter::execute("/send-channel on", ArcStr::from("no-such-channel")).await.unwrap();
+        assert!(reply.is_none(), "未知命令应交由 pipeline 处理");
+    }
+
+    #[tokio::test]
+    async fn pipeline_execute_command_parses_own_commands() {
+        ensure_test_globals().await;
+        let channel_id = ArcStr::from("cmd-detect-channel");
+        let cmd = |content: &str| PipelineCommand {
+            content: ArcStr::from(content),
+            channel_id: channel_id.clone(),
+        };
+
+        // default：只接 /model，不接 outgoing
+        let default = DefaultAgenticLoopPipeline::new(ArcStr::from("cmd-detect-default")).await;
+        assert!(default.execute_command(&cmd("/bind-outgoing web u1 g1")).await.is_none(),
+            "default 不接 outgoing 命令");
+        match default.execute_command(&cmd("/model deepseek deepseek-chat maybe")).await {
+            Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("/model <provider> <model>"), "参数错误文案: {}", msg),
+            other => panic!("default 应识别 /model 并返回参数错误: {:?}", other),
+        }
+
+        // default_memory / abstract_memory：接 /model 与 outgoing；不是自己的命令返回 None
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("cmd-detect-agent"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
+        });
+        let memory = DefaultAgenticLoopPipelineWithMemory::new(key.clone(), true).await;
+        assert!(memory.execute_command(&cmd("/send-channel on")).await.is_none(),
+            "未知命令应返回 None");
+        match memory.execute_command(&cmd("/bind-outgoing web u1")).await {
+            Some(Err(Error::InvalidCommand(_))) => {}
+            other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
+        }
+
+        let abstract_memory = AbstractMemoryPipeline::new(key);
+        assert!(abstract_memory.execute_command(&cmd("/send-channel on")).await.is_none(),
+            "未知命令应返回 None");
+        match abstract_memory.execute_command(&cmd("/unbind-outgoing extra")).await {
+            Some(Err(Error::InvalidCommand(_))) => {}
+            other => panic!("abstract_memory 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn outgoing_command_writes_pipeline_session_config() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let channel_id = ArcStr::from("cmd-outgoing-channel");
+        let user = ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u-out") };
+        let _ = cm.add_channel(ChannelConfig {
+            channel_id: channel_id.clone(),
+            ws_url: ArcStr::from("ws://127.0.0.1:8397"),
+            admins: Arc::new(HashSet::new()),
+            bind_users: Arc::new(HashSet::from([Arc::new(user)])),
+            agent_id: ArcStr::from("cmd-outgoing-agent"),
+            role_name: ArcStr::from(""),
+            enabled: true,
+        }).await;
+        let session_id = ArcStr::from("cmd-outgoing-session");
+
+        // 身份未绑定 → 拒绝
+        let err = handle_outgoing_command("/bind-outgoing web nobody g1", session_id.clone(), &channel_id).await
+            .expect("应识别 /bind-outgoing").unwrap_err();
+        assert!(matches!(err, Error::InvalidCommand(_)), "未绑定身份应拒绝: {:?}", err);
+
+        // 绑定成功 → 写入当前 pipeline 的 session 配置
+        let reply = handle_outgoing_command("/bind-outgoing web u-out g1", session_id.clone(), &channel_id).await
+            .expect("应识别 /bind-outgoing").unwrap();
+        assert!(reply.contains("已设发送通道"), "回复文案: {}", reply);
+        let out = outgoing_channel(&session_id).await.expect("out_channel 应已写入 session");
+        assert_eq!(out.channel_id, channel_id);
+        assert_eq!(out.user.user_id.as_str(), "u-out");
+        assert_eq!(out.group_id.as_str(), "g1");
+
+        // 解除 → 清空
+        handle_outgoing_command("/unbind-outgoing", session_id.clone(), &channel_id).await
+            .expect("应识别 /unbind-outgoing").unwrap();
+        assert!(outgoing_channel(&session_id).await.is_none(), "解除后为空");
     }
 
     #[tokio::test]

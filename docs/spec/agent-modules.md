@@ -11,9 +11,9 @@
 | config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`default_memory` / `abstract_memory` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、pipeline 定位与装配、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做 pipeline 重定位 |
-| pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`set_model` 与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
+| pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
 | pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
-| command_router | CommandRouter | 管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode、/bind-outgoing、/unbind-outgoing、/model） | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
+| command_router | CommandRouter | 默认管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode）；未命中返回 `Ok(None)`，由 nexus 交给 pipeline 的命令检测执行 | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
@@ -239,7 +239,7 @@ sequenceDiagram
         alt default / default_memory
             PL->>PL: 创建 session(MemoryKey::encode()) 并 recover_from_cache
         else abstract_memory
-            Note over PL: 构造时不建 session；基准（-none）session 在入口/set_model 时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
+            Note over PL: 构造时不建 session；基准（-none）session 在入口/命令处理时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
         PL->>SC: 新建时 recover_from_cache()（正序全量回读；缓存 System 首行 → 当前系统消息）
         PLS->>SP: reset_system_prompt()（对已有 session 生效）

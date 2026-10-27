@@ -20,13 +20,21 @@ pub trait IncomingMessageBatchProcessor: Send + Sync {
     async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>);
 }
 
+/// pipeline 级管理命令：默认命令检测未命中时交给 pipeline 自行识别与解析
+pub struct PipelineCommand {
+    /// 原始命令文本（含 "/" 前缀，参数以空白分隔）
+    pub content: ArcStr,
+    /// 来源 channel（outgoing 等命令据此校验来源身份）
+    pub channel_id: ArcStr,
+}
+
 #[async_trait]
 pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
     /// 重置系统提示词（存为待定，下次发送前应用）；pipeline 决定应用到哪些 session
     async fn reset_system_prompt(&self);
 
-    /// 设置本 pipeline 的模型：pipeline 决定写入哪些 session 的配置
-    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()>;
+    /// 识别并执行本 pipeline 支持的管理命令；不是本 pipeline 的命令返回 None
+    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>>;
 
     /// channel 不再绑定本 pipeline：清理该 channel（messenger + 绑定用户）在本 pipeline 中的资源。
     ///

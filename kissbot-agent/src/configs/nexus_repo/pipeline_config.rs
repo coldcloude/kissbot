@@ -165,8 +165,9 @@ impl MergeEffectiveConfig<ChannelBatchConfig> for ChannelBatchConfig {
     }
 }
 
-/// out_channel 配置（(agent, role) 级回复通道，持久化到 nexus.json；channel_id 为发送目标）
-/// 由 /bind-outgoing 在来源 channel 构造（channel_id = 来源 channel），Agentic Loop 回复经此发送
+/// out_channel 配置（回复通道；可作 (agent, role) 级初始值，运行期由 pipeline 命令写入 session 配置；
+/// channel_id 为发送目标）。由 /bind-outgoing 在来源 channel 构造（channel_id = 来源 channel），
+/// Agentic Loop 回复经此发送
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutChannel {
     pub channel_id: ArcStr,

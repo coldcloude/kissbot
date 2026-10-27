@@ -330,25 +330,6 @@ impl ConfigManager {
         }).await
     }
 
-    /// 设置 (agent, role) 的 out_channel（/bind-outgoing、/unbind-outgoing：role 空写 agent 默认，
-    /// 非空写 role 覆盖；None 清除；write_nexus_config 单次原子，无需串行队列；agent 条目懒建）
-    pub async fn set_out_channel(&self, agent_id: ArcStr, role_name: ArcStr, out: Option<Arc<OutChannel>>) -> Result<()> {
-        let config = OutChannelConfig {
-            out_channel: out,
-        };
-        self.set_agent_role_config::<OutChannelConfig>(agent_id, role_name, Arc::new(config)).await
-    }
-
-    /// 取 (agent, role) 级 out_channel 配置：每次按 agent+role 实时合成（不读 session 配置快照），
-    /// 使 /bind-outgoing、/unbind-outgoing 对已存在的 pipeline 立即生效
-    pub async fn out_channel_config(&self, agent_id: &str, role_name: &str) -> Option<Arc<OutChannel>> {
-        let config = self.agent_role_config::<OutChannelConfig>(agent_id, role_name).await;
-        if let Some(config) = config {
-            return config.out_channel.clone();
-        }
-        None
-    }
-
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
     pub async fn add_provider(&self, name: &str, cfg: ProviderModelConfig) -> Result<()> {
@@ -1206,30 +1187,5 @@ mod tests {
 
         let cfg = manager.agent_role_config::<PipelineConfig>("a1", "r1").await.expect("agent/role 应能读到 pipeline");
         assert_eq!(cfg.pipeline_name.as_deref(), Some("abstract_memory"));
-    }
-
-    #[tokio::test]
-    async fn set_out_channel_takes_effect_immediately() {
-        // out_channel 是 (agent, role) 级 OutChannelConfig 字段：运行态读取实时合成，改完立即生效
-        let dir = tempdir().unwrap();
-        let manager = test_manager(&dir);
-        let out = Arc::new(OutChannel {
-            channel_id: ArcStr::from("web-main"),
-            user: Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }),
-            group_id: ArcStr::from("g1"),
-        });
-        // role 级设置：role out1 命中，同 agent 的其他 role 不受影响
-        manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), Some(out)).await.unwrap();
-        let got = manager.out_channel_config("a1", "out1").await;
-        let got = got.as_ref().expect("role 级 out_channel 应生效");
-        assert_eq!(got.channel_id.as_str(), "web-main");
-        assert_eq!(got.user.user_id.as_str(), "u1");
-        assert!(manager.out_channel_config("a1", "r1").await.is_none(), "未设置的 role 应为空");
-        // 未配置的 agent 为空
-        assert!(manager.out_channel_config("nobody", "").await.is_none());
-
-        // 清除同一条 (agent, role)：无需换 session key，下一次读取即为空
-        manager.set_out_channel(ArcStr::from("a1"), ArcStr::from("out1"), None).await.unwrap();
-        assert!(manager.out_channel_config("a1", "out1").await.is_none(), "清除后立即为空");
     }
 }

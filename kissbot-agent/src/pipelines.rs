@@ -10,7 +10,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{ChannelUser, Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 
 use std::collections::{BTreeMap, HashSet};
@@ -23,7 +23,7 @@ use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
-use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
+use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, PipelineCommand, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
@@ -201,10 +201,10 @@ pub async fn tools_for_session(session_id: ArcStr) -> Vec<Arc<ToolConfig>> {
     }
 }
 
-/// Agentic Loop 产出回复：发到 out_channel（agent_id/role_name 定位、role_event 记忆编码），
+/// Agentic Loop 产出回复：发到 pipeline 的 out_channel（role_event 记忆编码），
 /// 成功后把下行消息写入记忆（is_self=1）；`meta` 由调用方给出（摘要记忆 pipeline 写入当前 case）。
 ///
-/// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 清理该 (agent, role) 的 out 配置并跳过。
+/// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 跳过发送。
 pub async fn send_outgoing(
     memory_key: &MemoryKey,
     out_channel: &OutChannel,
@@ -458,8 +458,8 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
         self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
     }
 
-    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
-        set_session_model_config(self.session_id.clone(), provider, model).await
+    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>> {
+        handle_model_command(&command.content, self.session_id.clone()).await
     }
 }
 
@@ -520,8 +520,11 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
         self.session.set_system_message(prompt).await
     }
 
-    async fn set_model(&self, provider: ArcStr, model: ArcStr) -> Result<()> {
-        set_session_model_config(self.session_id.clone(), provider, model).await
+    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>> {
+        if let Some(result) = handle_model_command(&command.content, self.session_id.clone()).await {
+            return Some(result);
+        }
+        handle_outgoing_command(&command.content, self.session_id.clone(), &command.channel_id).await
     }
 }
 
@@ -625,9 +628,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
             vec![]
         };
         // output channel：只有本轮有文本才发送，本轮及之前累积的占位内容与文本一起作为下行记录写入
-        let out_channel = ConfigManager::get().out_channel_config(
-            self.memory_key.agent_id.as_str(), self.memory_key.role_event.role_name.as_str()).await;
-        if let Some(out_channel) = out_channel {
+        if let Some(out_channel) = outgoing_channel(&self.session_id).await {
             if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
                 send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, None).await;
             }
@@ -691,6 +692,110 @@ pub async fn set_session_model_config(session_id: ArcStr, provider: ArcStr, mode
     over.provider = Some(provider);
     over.model = Some(model);
     ConfigManager::get().set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id, &over).await
+}
+
+// ==================== pipeline 命令 ====================
+
+/// 命令按空白切分（与默认命令检测一致）
+pub fn command_parts(content: &str) -> Vec<ArcStr> {
+    content.split_whitespace().map(ArcStr::from).collect()
+}
+
+/// 识别 `/model <provider> <model>`：不是本命令返回 None；参数个数不符返回 InvalidCommand
+pub fn parse_model_command(content: &str) -> Option<Result<(ArcStr, ArcStr)>> {
+    let parts = command_parts(content);
+    if parts.first()?.as_str() != "/model" {
+        return None;
+    }
+    if parts.len() != 3 {
+        return Some(Err(Error::InvalidCommand("格式: /model <provider> <model>".into())));
+    }
+    Some(Ok((parts[1].clone(), parts[2].clone())))
+}
+
+/// 校验模型有效性：从 API 拉模型列表，确认 model 在列表中（失败保持原模型）
+async fn verify_model(provider: &str, model: &str) -> Result<()> {
+    let models = Nexus::get().provider_manager.list_models(provider).await
+        .map_err(|e| Error::ModelApiError(format!("获取模型列表失败: {}", e).into()))?;
+    if !models.iter().any(|m| m.as_str() == model) {
+        return Err(Error::ModelProviderNotSupported(format!(
+            "模型 {} 不在 {} 的 API 模型列表", model, provider).into()));
+    }
+    Ok(())
+}
+
+/// 校验模型并写入多个 session（pipeline 决定写入哪些 session）；返回回复文案
+pub async fn switch_model(session_ids: Vec<ArcStr>, provider: ArcStr, model: ArcStr) -> Result<ArcStr> {
+    verify_model(&provider, &model).await?;
+    for session_id in session_ids {
+        set_session_model_config(session_id, provider.clone(), model.clone()).await?;
+    }
+    Ok(ArcStr::from(format!("✅ 已切换模型为: {}/{}", provider, model)))
+}
+
+/// 识别并执行单 session pipeline 的 `/model` 命令；不是本命令返回 None
+pub async fn handle_model_command(content: &str, session_id: ArcStr) -> Option<Result<ArcStr>> {
+    let parsed = parse_model_command(content)?;
+    Some(match parsed {
+        Ok((provider, model)) => switch_model(vec![session_id], provider, model).await,
+        Err(e) => Err(e),
+    })
+}
+
+/// 识别并执行记忆 pipeline 的 outgoing 命令（`/bind-outgoing`、`/unbind-outgoing`）；
+/// 不是这两条命令返回 None。outgoing 配置存于该 pipeline 的 session（session_id 由调用方给出）
+pub async fn handle_outgoing_command(content: &str, session_id: ArcStr, channel_id: &ArcStr) -> Option<Result<ArcStr>> {
+    let parts = command_parts(content);
+    match parts.first()?.as_str() {
+        "/bind-outgoing" => Some(bind_outgoing(session_id, channel_id, &parts).await),
+        "/unbind-outgoing" => Some(unbind_outgoing(session_id, &parts).await),
+        _ => None,
+    }
+}
+
+/// `/bind-outgoing <messenger_id> <user_id> <group_id>`：设 pipeline 的回复通道
+/// （先校验来源 channel 存在、该身份已绑定来源 channel）
+async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
+    if parts.len() < 4 {
+        return Err(Error::InvalidCommand(
+            "格式: /bind-outgoing <messenger_id> <user_id> <group_id>".into()
+        ));
+    }
+    let cfg_mngr = ConfigManager::get();
+    let Some(ch) = cfg_mngr.channel(channel_id.as_str()).await else {
+        return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+    };
+    let user = ChannelUser { messenger_id: parts[1].clone(), user_id: parts[2].clone() };
+    if !ch.bind_users.contains(&user) {
+        return Err(Error::InvalidCommand(format!(
+            "ChannelUser 未绑定: {} / {}", parts[1], parts[2]).into()));
+    }
+    // 存到 pipeline 的 session（channel_id = 来源 channel）
+    cfg_mngr.set_session_config::<OutChannelConfig, OutChannelConfig>(session_id, &OutChannelConfig {
+        out_channel: Some(Arc::new(OutChannel {
+            channel_id: channel_id.clone(),
+            user: Arc::new(user),
+            group_id: parts[3].clone(),
+        })),
+    }).await?;
+    Ok(ArcStr::from(format!("✅ 已设发送通道: {} / {} -> {}", parts[1], parts[2], parts[3])))
+}
+
+/// `/unbind-outgoing`：清空 pipeline 的回复通道（回到只存不回复模式）
+async fn unbind_outgoing(session_id: ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
+    if parts.len() > 1 {
+        return Err(Error::InvalidCommand("格式: /unbind-outgoing（无参数）".into()));
+    }
+    ConfigManager::get().set_session_config::<OutChannelConfig, OutChannelConfig>(
+        session_id, &OutChannelConfig { out_channel: None }).await?;
+    Ok(ArcStr::from("✅ 已取消发送通道（只存不回复）"))
+}
+
+/// 读 pipeline（session）的回复通道配置；未配置 = 只存不回复
+pub async fn outgoing_channel(session_id: &ArcStr) -> Option<Arc<OutChannel>> {
+    ConfigManager::get()
+        .session_config::<OutChannelConfig, OutChannelConfig>(session_id.clone()).await
+        .out_channel.clone()
 }
 
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {

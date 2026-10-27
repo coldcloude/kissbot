@@ -126,7 +126,7 @@ kissbot-agent 使用三份配置：
 
 `default_memory` / `abstract_memory` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress 或 memory_recover、channel_batch、out_channel、group_set）；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。另有 `ConfigManager::provider_model_config(provider, model)`。
 
-例外：`out_channel` 走 `ConfigManager::out_channel_config(agent_id, role_name)`，每次按 agent+role 实时合成而不读 session 快照——`/bind-outgoing`、`/unbind-outgoing` 对已存在的 pipeline 立即生效。
+`out_channel` 由 pipeline 命令写入 pipeline 自己的 session 配置（`default_memory` 写其唯一 session，`abstract_memory` 写基准 session `memory-abstract-{encode}-none`），运行期从同一 session 读取；agent/role 级 `out_channel` 只作为建立 session 时的初始值导入，之后以 session 级值为准。
 
 ## 会话与上下文本地缓存（pipeline 内部）
 
@@ -155,21 +155,21 @@ pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配
 
 ### 命令列表
 
-| 命令 | 语法 | 说明 |
-|------|------|------|
-| bind | `/bind messenger <messenger_id> <user_id>` | 绑定 channel 用户（bind_users 追加，幂等） |
-| unbind | `/unbind messenger <messenger_id> <user_id>` | 解绑 channel 用户 |
-| admin | `/admin <messenger_id> <user_id>` | 添加管理权限 |
-| unadmin | `/unadmin <messenger_id> <user_id>` | 移除管理权限 |
-| agent | `/agent [agent_id] [role]` | 设置 agent（缺省 = 保留 agent "0"）与角色（缺省 = 保留 role 空串）；经 ego 校验 |
-| role | `/role [role_name]` | 切换角色（缺省 = 保留 role） |
-| mode | `/mode event [event-id]` | 进入事件模式（缺省生成新 event-id） |
-| mode | `/mode role` | 回到角色模式 |
-| bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | 设 (agent, role) 的回复通道（要求该身份已绑定来源 channel） |
-| unbind-outgoing | `/unbind-outgoing` | 清除回复通道（回到只存不回复） |
-| model | `/model <provider> <model>` | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；写入哪些 session 由 pipeline 决定 |
+| 命令 | 语法 | 归属 | 说明 |
+|------|------|------|------|
+| bind | `/bind messenger <messenger_id> <user_id>` | 默认层 | 绑定 channel 用户（bind_users 追加，幂等） |
+| unbind | `/unbind messenger <messenger_id> <user_id>` | 默认层 | 解绑 channel 用户 |
+| admin | `/admin <messenger_id> <user_id>` | 默认层 | 添加管理权限 |
+| unadmin | `/unadmin <messenger_id> <user_id>` | 默认层 | 移除管理权限 |
+| agent | `/agent [agent_id] [role]` | 默认层 | 设置 agent（缺省 = 保留 agent "0"）与角色（缺省 = 保留 role 空串）；经 ego 校验 |
+| role | `/role [role_name]` | 默认层 | 切换角色（缺省 = 保留 role） |
+| mode | `/mode event [event-id]` | 默认层 | 进入事件模式（缺省生成新 event-id） |
+| mode | `/mode role` | 默认层 | 回到角色模式 |
+| bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | default_memory / abstract_memory | 设 pipeline 的回复通道（要求该身份已绑定来源 channel） |
+| unbind-outgoing | `/unbind-outgoing` | default_memory / abstract_memory | 清除 pipeline 的回复通道（回到只存不回复） |
+| model | `/model <provider> <model>` | default / default_memory / abstract_memory | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；写入哪些 session 由 pipeline 决定 |
 
-agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；bind-outgoing/unbind-outgoing 为纯配置写。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
+命令分两层检测：默认层（`CommandRouter`）处理上表的默认命令；默认层未命中时，Nexus 按来源 channel 定位 pipeline 并交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model` 与 outgoing 命令由 pipeline 处理，共享实现（解析、模型校验、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
 
 ### 命令处理结果
 
@@ -232,7 +232,9 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 - 每个 case 维护独立 session（懒创建）：`memory-abstract-{encode}-{case_name}`；无 case 批次使用 `memory-abstract-{encode}-none`。每个 case 一次 run：run 开头用「该 case 的摘要 + 该 case 结尾 `memory_recover.memory_count` 条通道原文副本」重置该 case 的 session 上下文，再把本次新增消息作为一条 user 消息运行 agentic loop。原文副本按摘要记忆返回的顺序组装，不做时间窗过滤、去重与重排；摘要为空时不加摘要块。同一 case 在排队等待执行期间又来的消息并入同一次 run；已经开始执行的 run 不受影响，其后的消息形成下一轮 run；还没轮到的 case 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
 - 上行记忆写入由 pipeline 自己负责（Nexus 不再统一写入）：`default_memory` 在 `incoming_message` 收到消息时立即写入（meta 为 None）；`abstract_memory` 在 **locate 之后**写入，并带 `meta.abstract_memory.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。
 - 模型回复由 pipeline 调用 `pipelines.rs` 的自由函数 `send_outgoing` 发送并写下行记录；`abstract_memory` 带本次 run 所属 case 的 meta，`default_memory` 带 None。
-- `/model` 由 pipeline 实现：摘要记忆 pipeline 保存模型覆盖、写入基准 session 与已有 case session，并在新建 case session 时应用（进程重启后从基准 session 的已存配置恢复）；默认 pipeline 写入自己的唯一 session。
+- pipeline 命令由各 pipeline 的 `AgentPipeline::execute_command` 识别执行：`default` 只接 `/model`；`default_memory` / `abstract_memory` 接 `/model` 与 outgoing 命令。共享实现（`handle_model_command` / `parse_model_command` / `switch_model` / `handle_outgoing_command` / `outgoing_channel`）在 pipelines.rs。
+- `/model`：写入 pipeline 自己的 session `LLMConfig`；摘要记忆 pipeline 写基准 session 与已有 case session，并保存模型覆盖供新建 case session 应用（进程重启后从基准 session 的已存配置恢复）。
+- outgoing：`/bind-outgoing`、`/unbind-outgoing` 写 pipeline 自己的 session `OutChannelConfig`（摘要记忆 pipeline 写基准 session）；运行期 `run_once` 从同一 session 读取发送。
 - channel 不再绑定本 pipeline（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；Nexus 的 `rebind_pipeline` 把「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」合成一次调用。
 - `memory_struct_abstract_url` 为空或 locate 调用失败：记 warn，整批作为一个无 case 任务运行（不重建上下文，使用无 case session），本批上行记录不带 meta。
 - 上下文重建（case 摘要/原文查询）失败：记 warn，清空该 case session 的上下文后只用本次新增消息运行该 case（不沿用其他 case 的上下文）。

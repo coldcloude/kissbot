@@ -5,7 +5,7 @@ Nexus — Agent 组件的编排中心。智能体的"思考"部分：负责将�
 
 Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消息收发，与 memory-store、memory-ego 和 station 通过请求-响应方式通信。一个系统内可运行多个 agent 实例，每个实例独立的 Nexus 与 Station 单例。
 
-一个 nexus 可同时管理多条 pipeline。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name 与运行期 event 合成项目级 `RoleEvent` 后去重，每个 agent_id + RoleEvent 组合为一条 pipeline；channel 定位到 pipeline，pipeline 再按自身需要创建 session（默认 pipeline 一个 session，摘要记忆 pipeline 每个 case 一个 session）。各 pipeline 拥有独立的记忆读写范围、配置与模式状态；session 拥有独立的 LLM 上下文。回复目标由 (agent, role) 级 out_channel 配置决定（未配置 = 只存不回复），而不取决于消息从哪个 channel 到达。
+一个 nexus 可同时管理多条 pipeline。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name 与运行期 event 合成项目级 `RoleEvent` 后去重，每个 agent_id + RoleEvent 组合为一条 pipeline；channel 定位到 pipeline，pipeline 再按自身需要创建 session（默认 pipeline 一个 session，摘要记忆 pipeline 每个 case 一个 session）。各 pipeline 拥有独立的记忆读写范围、配置与模式状态；session 拥有独立的 LLM 上下文。回复目标由 pipeline 的 out_channel 配置决定（未配置 = 只存不回复），而不取决于消息从哪个 channel 到达。
 
 ## 核心功能
 
@@ -99,9 +99,10 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
 - 记忆回溯配置（时间窗、条数）与 LLM 参数独立，在建立 session 时一并固化到 session 配置
 
-### 7. 管理命令路由器
+### 7. 管理命令处理
 - 识别以 `/` 开头的外部消息（且发送者在来源 channel 的 admins 中）
-- 解析并执行：绑定/解绑通道用户、管理权限增删、切换 agent/role、切换模式、设置/清除回复通道、切换 pipeline 模型
+- 先做默认命令检测与执行：绑定/解绑通道用户、管理权限增删、切换 agent/role、切换模式
+- 默认层未命中的命令交给来源 channel 的 pipeline 自行识别执行：设置/清除回复通道、切换 pipeline 模型；pipeline 不支持则回复未知命令
 - 命令与命令回复不入记忆、不进上下文
 
 ### 8. channel 运行态与 pipeline 定位
@@ -133,7 +134,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
   → 按 msg_id 查所属 channel 的未回显 outgoing 集合
     ├─ 命中 → 识别为自身发出的消息回显，丢弃（发送时已写入记忆）
     └─ 未命中 → 转发 Nexus：
-        → 管理命令（文本以 "/" 开头且在 admins 中）→ 命令路由器执行 → 回复发回来源通道
+        → 默认命令（文本以 "/" 开头且在 admins 中）→ 命令路由器执行 → 回复发回来源通道
+        → 默认命令未命中 → 定位 pipeline → pipeline 命令检测执行 → 回复发回来源通道
         → 系统事件（群组变更 / 用户移除）→ 不进 pipeline
         → 普通消息 → 定位 pipeline（按来源 channel 的绑定）→ 该 pipeline（记忆写入也在 pipeline 内）
 ```
@@ -198,19 +200,20 @@ kissbot-agent 启动
 
 ### 回复通道
 
-- 回复目标由 (agent, role) 级 out_channel 配置决定，经 `/bind-outgoing` 设置、`/unbind-outgoing` 清除；未配置 = 只存不回复
+- 回复目标由 pipeline 的 out_channel 配置决定，经 `/bind-outgoing` 设置、`/unbind-outgoing` 清除；未配置 = 只存不回复
+- out_channel 存放在 pipeline 自己的 session 配置（摘要记忆 pipeline 用基准 session）；agent/role 级配置只作为建立 session 时的初始值
 - 发送前校验该身份仍在目标 channel 的绑定集合中；已解绑（配置悬空）则清理配置并跳过发送
 
 ### 管理命令说明
 
-| 命令类别 | 用途 |
-|---------|------|
-| 绑定/解绑 | 绑定或解绑指定通道的用户 |
-| 管理权限管理 | 添加或移除用户的管理权限 |
-| agent/角色切换 | 修改指定通道绑定的 agent 与角色 |
-| 模式切换 | 修改指定通道绑定的记忆模式（角色/事件） |
-| 回复通道 | 设置或清除 (agent, role) 的回复通道 |
-| 模型切换 | 切换当前 pipeline 使用的 provider/model（校验后生效） |
+| 命令类别 | 归属 | 用途 |
+|---------|------|------|
+| 绑定/解绑 | 默认层 | 绑定或解绑指定通道的用户 |
+| 管理权限管理 | 默认层 | 添加或移除用户的管理权限 |
+| agent/角色切换 | 默认层 | 修改指定通道绑定的 agent 与角色 |
+| 模式切换 | 默认层 | 修改指定通道绑定的记忆模式（角色/事件） |
+| 回复通道 | default_memory / abstract_memory | 设置或清除 pipeline 的回复通道 |
+| 模型切换 | 三条 pipeline | 切换当前 pipeline 使用的 provider/model（校验后生效） |
 
 ### 自身发送消息识别
 
