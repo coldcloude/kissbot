@@ -23,7 +23,7 @@ use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
-use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, PipelineCommand, TokenReducer};
+use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::types::build_memory_think;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
@@ -458,8 +458,8 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
         self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
     }
 
-    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>> {
-        handle_model_command(&command.content, self.session_id.clone()).await
+    async fn execute_command(&self, _channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+        handle_model_command(&content, self.session_id.clone()).await
     }
 }
 
@@ -520,11 +520,11 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
         self.session.set_system_message(prompt).await
     }
 
-    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>> {
-        if let Some(result) = handle_model_command(&command.content, self.session_id.clone()).await {
+    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+        if let Some(result) = handle_model_command(&content, self.session_id.clone()).await {
             return Some(result);
         }
-        handle_outgoing_command(&command.content, self.session_id.clone(), &command.channel_id).await
+        handle_outgoing_command(&content, self.session_id.clone(), &channel_id).await
     }
 }
 

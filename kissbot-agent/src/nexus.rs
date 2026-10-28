@@ -9,7 +9,6 @@ use tracing::{info, warn};
 use crate::abstract_client::AbstractClient;
 use crate::channel_manager::ChannelManager;
 use crate::pipelines::PipelineManager;
-use crate::pipeline::PipelineCommand;
 use crate::provider::ProviderManager;
 use crate::types::{Error, MemoryKey, Result};
 use crate::config_manager::ConfigManager;
@@ -204,13 +203,9 @@ impl Nexus {
                 if is_admin {
                     // 3. 先做默认命令检测，未命中再交给来源 channel 的 pipeline 识别执行；
                     //    回复始终发回来源 channel（不走 out_channel）
-                    let command = PipelineCommand {
-                        content: text.clone(),
-                        channel_id: channel_id.clone(),
-                    };
                     let result = match CommandRouter::execute(text.as_str(), channel_id.clone()).await {
                         Ok(Some(reply)) => Ok(reply),
-                        Ok(None) => self.execute_pipeline_command(&command).await,
+                        Ok(None) => self.execute_pipeline_command(channel_id.clone(), text.clone()).await,
                         Err(e) => Err(e),
                     };
                     match result {
@@ -246,17 +241,15 @@ impl Nexus {
     /// pipeline 级命令：默认命令检测未命中后，交给来源 channel 所属 pipeline 识别执行。
     /// pipeline 不认识该命令 → InvalidCommand("未知命令: {命令}")（与默认层同文案）；
     /// pipeline 尚未装配时按 agent/role 配置创建（/model 等命令可能先于普通消息到达）
-    async fn execute_pipeline_command(&self, command: &PipelineCommand) -> Result<ArcStr> {
-        let Some(key) = self.channel_manager.memory_key(command.channel_id.as_str()).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", command.channel_id).into()));
+    async fn execute_pipeline_command(&self, channel_id: ArcStr, content: ArcStr) -> Result<ArcStr> {
+        let Some(key) = self.channel_manager.memory_key(channel_id.as_str()).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
         };
+        let unknown = ArcStr::from(content.split_whitespace().next().unwrap_or_default());
         let pipeline = self.pipeline_manager.ensure_pipeline(key).await?;
-        match pipeline.execute_command(command).await {
+        match pipeline.execute_command(channel_id, content).await {
             Some(result) => result,
-            None => {
-                let unknown = command.content.split_whitespace().next().unwrap_or_default();
-                Err(Error::InvalidCommand(format!("未知命令: {}", unknown).into()))
-            }
+            None => Err(Error::InvalidCommand(format!("未知命令: {}", unknown).into())),
         }
     }
 
@@ -540,16 +533,13 @@ mod tests {
     async fn pipeline_execute_command_parses_own_commands() {
         ensure_test_globals().await;
         let channel_id = ArcStr::from("cmd-detect-channel");
-        let cmd = |content: &str| PipelineCommand {
-            content: ArcStr::from(content),
-            channel_id: channel_id.clone(),
-        };
+        let cmd = |content: &str| ArcStr::from(content);
 
         // default：只接 /model，不接 outgoing
         let default = DefaultAgenticLoopPipeline::new(ArcStr::from("cmd-detect-default")).await;
-        assert!(default.execute_command(&cmd("/bind-outgoing web u1 g1")).await.is_none(),
+        assert!(default.execute_command(channel_id.clone(), cmd("/bind-outgoing web u1 g1")).await.is_none(),
             "default 不接 outgoing 命令");
-        match default.execute_command(&cmd("/model deepseek deepseek-chat maybe")).await {
+        match default.execute_command(channel_id.clone(), cmd("/model deepseek deepseek-chat maybe")).await {
             Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("/model <provider> <model>"), "参数错误文案: {}", msg),
             other => panic!("default 应识别 /model 并返回参数错误: {:?}", other),
         }
@@ -560,17 +550,17 @@ mod tests {
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
         });
         let memory = DefaultAgenticLoopPipelineWithMemory::new(key.clone(), true).await;
-        assert!(memory.execute_command(&cmd("/send-channel on")).await.is_none(),
+        assert!(memory.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
-        match memory.execute_command(&cmd("/bind-outgoing web u1")).await {
+        match memory.execute_command(channel_id.clone(), cmd("/bind-outgoing web u1")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
         }
 
         let abstract_memory = AbstractMemoryPipeline::new(key);
-        assert!(abstract_memory.execute_command(&cmd("/send-channel on")).await.is_none(),
+        assert!(abstract_memory.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
-        match abstract_memory.execute_command(&cmd("/unbind-outgoing extra")).await {
+        match abstract_memory.execute_command(channel_id.clone(), cmd("/unbind-outgoing extra")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("abstract_memory 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
         }

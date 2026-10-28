@@ -32,17 +32,11 @@ pipeline 层新增接口：
 
 ```rust
 // pipeline.rs
-pub struct PipelineCommand {
-    /// 原始命令文本（含 "/" 前缀，参数以空白分隔）
-    pub content: ArcStr,
-    /// 来源 channel（outgoing 等命令据此校验来源身份）
-    pub channel_id: ArcStr,
-}
-
 #[async_trait]
 pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
-    /// 识别并执行本 pipeline 支持的管理命令；不是本 pipeline 的命令返回 None
-    async fn execute_command(&self, command: &PipelineCommand) -> Option<Result<ArcStr>>;
+    /// 识别并执行本 pipeline 支持的管理命令；不是本 pipeline 的命令返回 None。
+    /// channel_id 为来源 channel（outgoing 等命令据此校验来源身份），content 为原始命令文本
+    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>>;
 }
 ```
 
