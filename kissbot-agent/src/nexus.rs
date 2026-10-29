@@ -150,13 +150,6 @@ impl Nexus {
         self.ensure_pipeline(new_key).await;
     }
 
-    // ==================== 运行状态修改（管理命令入口） ====================
-
-    /// channel 运行态与变更队列（channel 侧入口：change_channel_key / channel_command 都在 ChannelManager 上）
-    pub fn channel_manager(&self) -> &Arc<ChannelManager> {
-        &self.channel_manager
-    }
-
     /// 启动主循环（保持进程运行）：初始化 pipeline + 连接全部 channel
     pub async fn run(&self) {
         info!("Nexus 启动，等待外部输入...");
@@ -403,7 +396,7 @@ mod tests {
         // 3. 消息入口（非命令消息，直接进 pipeline）：首次 ensure_pipeline 时装配 pipeline、
         //    由 pipeline 创建 session 并初始化系统提示词，随后消息分发到合批输入处理器
         //    pipeline 定位与运行态事件都取自 ChannelManager 的 channel 运行态条目，先登记该 channel
-        Nexus::get().channel_manager().get_or_create(channel_id);
+        Nexus::get().channel_manager.get_or_create(channel_id);
         Nexus::get().incoming_message(ArcStr::from(channel_id), Arc::new(IncomingMessageEvent {
             recipient_user_id: ArcStr::from("self"),
             incoming_message: Arc::new(IncomingMessage {

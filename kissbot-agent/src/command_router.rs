@@ -30,7 +30,7 @@ impl CommandRouter {
                 }
                 let cu = ChannelUser { messenger_id: parts[2].clone(), user_id: parts[3].clone() };
                 // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
-                nexus.channel_manager().channel_command(ChannelCommand::BindUser { channel_id, user: cu }).await.map(Some)
+                nexus.channel_manager.channel_command(ChannelCommand::BindUser { channel_id, user: cu }).await.map(Some)
             }
             "/unbind" => {
                 if parts.len() < 4 || parts[1] != "messenger" {
@@ -40,7 +40,7 @@ impl CommandRouter {
                 }
                 let cu = ChannelUser { messenger_id: parts[2].clone(), user_id: parts[3].clone() };
                 // 统一走串行队列应用（防写-写竞态；移除 bind_users；回复文本队列内生成）
-                nexus.channel_manager().channel_command(ChannelCommand::UnbindUser { channel_id, user: cu }).await.map(Some)
+                nexus.channel_manager.channel_command(ChannelCommand::UnbindUser { channel_id, user: cu }).await.map(Some)
             }
             "/admin" => {
                 if parts.len() < 3 {
@@ -78,7 +78,7 @@ impl CommandRouter {
                     nexus.verify_role_exists(new_agent_id.clone(), new_role.clone()).await?;
                 }
                 // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
-                nexus.channel_manager().change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
+                nexus.channel_manager.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
                 Ok(Some(ArcStr::from(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))))
             }
             "/role" => {
@@ -88,7 +88,7 @@ impl CommandRouter {
                 // 经 channel_id 校验 role 存在（内部取当前 agent_id；空串保留 role 直接通过；channel 不存在报错）
                 nexus.verify_role_exists_for_channel(channel_id.as_str(), new_role.clone()).await?;
                 // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
-                nexus.channel_manager().change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
+                nexus.channel_manager.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(Some(ArcStr::from(format!("✅ 已设置 role: {}", new_role))))
             }
             "/mode" => {
@@ -101,12 +101,12 @@ impl CommandRouter {
                     "event" => {
                         // 缺省 event-id 生成新事件 ID；agent/role 保持当前值
                         let id = parts.get(2).cloned().unwrap_or_else(|| ArcStr::from(uuid::Uuid::new_v4().to_string()));
-                        nexus.channel_manager().change_channel_key(channel_id, None, None, Some(Some(id.clone()))).await?;
+                        nexus.channel_manager.change_channel_key(channel_id, None, None, Some(Some(id.clone()))).await?;
                         Ok(Some(ArcStr::from(format!("✅ 新事件 ID: {}", id))))
                     }
                     "role" => {
                         // agent/role 保持当前值
-                        nexus.channel_manager().change_channel_key(channel_id, None, None, Some(None)).await?;
+                        nexus.channel_manager.change_channel_key(channel_id, None, None, Some(None)).await?;
                         Ok(Some(ArcStr::from("✅ 已切换为角色模式")))
                     }
                     _ => Err(Error::InvalidCommand(format!("未知模式: {}", parts[1]).into())),
