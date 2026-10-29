@@ -121,7 +121,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - 本级工具：按工具名在本级工具索引中查找并执行（注册的工具必带原生实现）；子 Station 工具：本级未命中时按工具名路由到归属的直接子 Station，经 MCP 调用（不遍历全部子）
 
 ### 11. 边界组件（非 Nexus 内部模块）
-- **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 转发业务）、每 channel 运行态（pending msg_id、event、client、断线通知）、连接/重连/发送，并持有 channel 变更串行队列（其执行体之一即 pipeline 重定位，回调 Nexus）
+- **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 业务消息处理：默认命令 / pipeline 命令 / 普通消息）、每 channel 运行态（pending msg_id、event、client、断线通知）、连接/重连/发送，并持有 channel 变更串行队列（其执行体之一即 pipeline 重定位，内联在 apply_channel_key）
 - **管理 API（http_server）**：管理界面用的配置 CRUD，直接操作配置管理器
 - **station MCP 服务端（station_http）**：把全局 Station 作为 MCP 处理器对外提供 server/discover、tools/list、tools/call，供其他 station 作为 sub 使用
 
@@ -133,8 +133,8 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 通道适配层收到消息
   → 按 msg_id 查所属 channel 的未回显 outgoing 集合
     ├─ 命中 → 识别为自身发出的消息回显，丢弃（发送时已写入记忆）
-    └─ 未命中 → 转发 Nexus：
-        → 默认命令（文本以 "/" 开头且在 admins 中）→ 命令路由器执行 → 回复发回来源通道
+    └─ 未命中 → 通道适配层直接处理业务：
+        → 默认命令（文本以 "/" 开头且在 admins 中）→ 默认层执行 → 回复发回来源通道
         → 默认命令未命中 → 定位 pipeline → pipeline 命令检测执行 → 回复发回来源通道
         → 系统事件（群组变更 / 用户移除）→ 不进 pipeline
         → 普通消息 → 定位 pipeline（按来源 channel 的绑定）→ 该 pipeline（记忆写入也在 pipeline 内）

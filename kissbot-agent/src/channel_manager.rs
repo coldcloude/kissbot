@@ -1,7 +1,9 @@
 //! channel 运行态管理：Channel（单 channel 运行态）+ ChannelManager（全部 channel 的集合管理）
 //! Channel 维护「已发出但尚未收到回显」的 msg_id 集合 + 运行态事件 + 运行时绑定的 client；
-//! ChannelManager 持有全部 Channel（DashMap 无锁并发），Nexus 经 ChannelManager 访问各 channel 运行态。
+//! ChannelManager 持有全部 Channel（DashMap 无锁并发），并作为 Terminal 实现者处理上行消息
+//! （回显过滤 → 默认管理命令 → pipeline 命令 → 普通消息分发）。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,12 +12,12 @@ use async_trait::async_trait;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use dashmap::DashMap;
-use kissbot_api::RoleEvent;
+use kissbot_api::{RESERVED_AGENT_ID, RESERVED_ROLE_NAME, RoleEvent};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use kissbot_api::channel::{BindRequest, ChannelUser, IncomingMessageEvent, OutgoingMessage, OutgoingMessageResponse};
-use kissbot_api::message::{AttachmentInfoResponse, GroupChangeNotification, UserRemoveNotification};
+use kissbot_api::message::{AttachmentInfoResponse, Content, GroupChangeNotification, UserRemoveNotification};
 use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
@@ -103,11 +105,12 @@ impl Channel {
 }
 
 /// channel 集合管理器：通道适配层——持有全部 channel 运行态（Channel）与断线通知；
-/// 实现 Terminal（回显过滤 + 转发业务）；连接/重连/发送封装（connect_channel/send）
+/// 实现 Terminal（回显过滤 + 业务消息处理：默认命令 / pipeline 命令 / 普通消息）；
+/// 连接/重连/发送封装（connect_channel/send）
 /// 内部 DashMap 无锁并发；Nexus 持 Arc<ChannelManager>（connect_channel 需要 Arc<Self> 作为 Arc<dyn Terminal>）
 /// 另持 channel 变更串行队列（写-写竞态防护；读无需外部加锁）：入队与执行都在本结构
 /// （change_channel_key / channel_command → apply_channel_key / apply_channel_command），
-/// 其中 pipeline 重定位部分经 Nexus（prune_pipelines / memory_key / ensure_pipeline）
+/// 其中 pipeline 重定位（解绑旧 pipeline + 清理无绑定 + 装配新 pipeline）在 apply_channel_key 内联完成
 pub struct ChannelManager {
     channels: DashMap<ArcStr, Arc<Channel>>,
     /// agent/role/event 变更串行队列（写-写竞态防护；读无需外部加锁）
@@ -228,7 +231,7 @@ impl ChannelManager {
         if let Some(event_id) = event_id.take() {
             c.event.store(Arc::new(event_id));
         }
-        // pipeline 重定位归 Nexus：解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline
+        // pipeline 重定位：解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline
         let new_key = Arc::new(MemoryKey {
             agent_id: cc.agent_id.clone(),
             role_event: Arc::new(RoleEvent {
@@ -236,7 +239,30 @@ impl ChannelManager {
                 event_id: c.event.load().as_ref().clone(),
             }),
         });
-        Nexus::get().rebind_pipeline(old_key, new_key, old_bind_users.as_ref()).await;
+        let nexus = Nexus::get();
+        // 旧 pipeline 不再绑定该 channel：清理该 channel（messenger + 绑定用户）的批次生产者与待处理消息
+        if let Some(old_key) = old_key {
+            if old_key != new_key {
+                for user in old_bind_users.iter() {
+                    nexus.pipeline_manager
+                        .channel_unbound(&old_key, user.messenger_id.as_str(), user.user_id.as_str())
+                        .await;
+                }
+            }
+        }
+        // 清理无任何 channel 绑定的 pipeline（session 随 pipeline 一并清理）
+        let channels = ConfigManager::get().channels().await;
+        let mut keys = HashSet::new();
+        for (_, ch) in &channels {
+            if let Some(key) = self.memory_key(ch.channel_id.as_str()).await {
+                keys.insert(key);
+            }
+        }
+        nexus.pipeline_manager.retain(&keys);
+        // 为新三元组装配 pipeline
+        if let Err(e) = nexus.pipeline_manager.ensure_pipeline(new_key).await {
+            warn!("pipeline 装配失败: {:?}", e);
+        }
         Ok(())
     }
 
@@ -360,13 +386,176 @@ impl ChannelManager {
     }
 }
 
+// ==================== 业务消息处理（默认管理命令 / pipeline 命令 / 普通消息） ====================
+
+impl ChannelManager {
+    /// 默认管理命令检测与执行（incoming_message 已校验管理员后调用）：内联解析命令参数 + 直接执行，返回回复文本。
+    /// `Ok(None)` 表示不是默认命令，由调用方交给来源 channel 的 pipeline 识别执行。
+    /// 错误经 Result 返回：InvalidCommand（解析/格式错误）由调用方拼 "⚠️ {}"，其余拼 "❌ 命令执行失败: {}"。
+    /// bind/unbind 走本结构 channel_command 队列串行（bind_users 回写）；
+    /// agent/role/事件 走 change_channel_key 队列。Nexus 一律从单例取（不传参数）
+    async fn execute_default_command(&self, content: &str, channel_id: ArcStr) -> Result<Option<ArcStr>> {
+        let parts: Vec<ArcStr> = content.trim().split_whitespace().map(|s| {ArcStr::from(s)}).collect();
+        if parts.is_empty() {
+            return Err(Error::InvalidCommand("空命令".into()));
+        }
+        match parts[0].as_str() {
+            "/bind" => {
+                if parts.len() < 4 || parts[1] != "messenger" {
+                    return Err(Error::InvalidCommand(
+                        "格式: /bind messenger <messenger_id> <user_id>".into()
+                    ));
+                }
+                let cu = ChannelUser { messenger_id: parts[2].clone(), user_id: parts[3].clone() };
+                // 统一走串行队列应用（防写-写竞态；bind_users 追加，HashSet 天然去重幂等）
+                self.channel_command(ChannelCommand::BindUser { channel_id, user: cu }).await.map(Some)
+            }
+            "/unbind" => {
+                if parts.len() < 4 || parts[1] != "messenger" {
+                    return Err(Error::InvalidCommand(
+                        "格式: /unbind messenger <messenger_id> <user_id>".into()
+                    ));
+                }
+                let cu = ChannelUser { messenger_id: parts[2].clone(), user_id: parts[3].clone() };
+                // 统一走串行队列应用（防写-写竞态；移除 bind_users；回复文本队列内生成）
+                self.channel_command(ChannelCommand::UnbindUser { channel_id, user: cu }).await.map(Some)
+            }
+            "/admin" => {
+                if parts.len() < 3 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /admin <messenger_id> <user_id>".into()
+                    ));
+                }
+                ConfigManager::get().add_admin(channel_id.as_str(), Arc::new(ChannelUser {
+                    messenger_id: parts[1].clone(),
+                    user_id: parts[2].clone(),
+                })).await?;
+                Ok(Some(ArcStr::from(format!("✅ 已添加管理权限: {} / {}", parts[1], parts[2]))))
+            }
+            "/unadmin" => {
+                if parts.len() < 3 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /unadmin <messenger_id> <user_id>".into()
+                    ));
+                }
+                ConfigManager::get().remove_admin(channel_id.as_str(), &ChannelUser {
+                    messenger_id: parts[1].clone(),
+                    user_id: parts[2].clone()
+                }).await?;
+                Ok(Some(ArcStr::from(format!("✅ 已移除管理权限: {} / {}", parts[1], parts[2]))))
+            }
+            "/agent" => {
+                // /agent [agent_id] [role]：缺省 agent_id 用保留 agent（"0"），缺省 role 用保留 role（空）
+                let agent_id = parts.get(1);
+                let role = parts.get(2);
+                let new_agent_id = agent_id.filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| RESERVED_AGENT_ID);
+                let new_role = role.cloned().unwrap_or_else(|| RESERVED_ROLE_NAME);
+                // 校验 agent 存在（空/保留 id 直接通过）；role 非空时一并校验（agent+role 联合校验）
+                if !new_agent_id.is_empty() && new_agent_id != RESERVED_AGENT_ID {
+                    if Nexus::get().memory_ego_client.get_agent(new_agent_id.clone()).await?.is_none() {
+                        return Err(Error::MemoryEgoError(format!("agent 不存在: {}", new_agent_id).into()));
+                    }
+                }
+                if !new_role.is_empty() {
+                    verify_role_exists(new_agent_id.clone(), new_role.clone()).await?;
+                }
+                // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
+                self.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
+                Ok(Some(ArcStr::from(format!("✅ 已设置 agent: {} / role: {}", new_agent_id, new_role))))
+            }
+            "/role" => {
+                // /role [name]：缺省用保留 role（空）
+                let role = parts.get(1);
+                let new_role = role.cloned().unwrap_or_else(|| RESERVED_ROLE_NAME);
+                // 经来源 channel 取当前 agent_id 校验 role（role 变更保持 agent 不变；channel 不存在报错）
+                let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else {
+                    return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+                };
+                verify_role_exists(ch.agent_id.clone(), new_role.clone()).await?;
+                // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
+                self.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
+                Ok(Some(ArcStr::from(format!("✅ 已设置 role: {}", new_role))))
+            }
+            "/mode" => {
+                if parts.len() < 2 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /mode event [event-id] 或 /mode role".into()
+                    ));
+                }
+                match parts[1].as_str() {
+                    "event" => {
+                        // 缺省 event-id 生成新事件 ID；agent/role 保持当前值
+                        let id = parts.get(2).cloned().unwrap_or_else(|| ArcStr::from(uuid::Uuid::new_v4().to_string()));
+                        self.change_channel_key(channel_id, None, None, Some(Some(id.clone()))).await?;
+                        Ok(Some(ArcStr::from(format!("✅ 新事件 ID: {}", id))))
+                    }
+                    "role" => {
+                        // agent/role 保持当前值
+                        self.change_channel_key(channel_id, None, None, Some(None)).await?;
+                        Ok(Some(ArcStr::from("✅ 已切换为角色模式")))
+                    }
+                    _ => Err(Error::InvalidCommand(format!("未知模式: {}", parts[1]).into())),
+                }
+            }
+            // 不是默认命令：交给来源 channel 的 pipeline 识别执行（/model、outgoing 等）
+            _ => Ok(None),
+        }
+    }
+
+    /// pipeline 级命令：默认命令检测未命中后，交给来源 channel 所属 pipeline 识别执行。
+    /// pipeline 不认识该命令 → InvalidCommand("未知命令: {命令}")（与默认层同文案）；
+    /// pipeline 尚未装配时按 agent/role 配置创建（/model 等命令可能先于普通消息到达）
+    async fn execute_pipeline_command(&self, channel_id: ArcStr, content: ArcStr) -> Result<ArcStr> {
+        let Some(key) = self.memory_key(channel_id.as_str()).await else {
+            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+        };
+        let unknown = ArcStr::from(content.split_whitespace().next().unwrap_or_default());
+        let pipeline = Nexus::get().pipeline_manager.ensure_pipeline(key).await?;
+        match pipeline.execute_command(channel_id, content).await {
+            Some(result) => result,
+            None => Err(Error::InvalidCommand(format!("未知命令: {}", unknown).into())),
+        }
+    }
+
+    /// 系统命令回复：始终发回来源 channel（不走 out_channel）
+    /// 命令与命令回复不入记忆（管理命令不产生 session 上下文）：不找 memory_key、不推 ChannelRecord
+    /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
+    async fn send_admin_reply(&self, channel_id: &str, event: Arc<IncomingMessageEvent>, content: ArcStr) {
+        let msg = OutgoingMessage {
+            messenger_id: event.incoming_message.messenger_id.clone(),
+            user_id: event.recipient_user_id.clone(),
+            group_id: event.incoming_message.group_id.clone(),
+            content: Content::Text(content),
+        };
+
+        // 发送经本结构（内部取 client + 记录 pending msg_id 供回显判定）
+        if let Err(e) = self.send(channel_id, msg).await {
+            warn!("send_admin_reply 失败: {:?}", e);
+        }
+    }
+}
+
+/// 校验 role 存在：显式空串（保留 role）直接通过；其余必须 ego 中存在，否则 Err（调用方保持原 role 不变）
+async fn verify_role_exists(agent_id: ArcStr, role_name: ArcStr) -> Result<()> {
+    if role_name.is_empty() {
+        return Ok(());
+    }
+    if Nexus::get().memory_ego_client.get_role(agent_id, role_name.clone()).await?.is_some() {
+        Ok(())
+    } else {
+        Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name).into()))
+    }
+}
+
 // ==================== Terminal 回调（ChannelManager 实现：通道适配层） ====================
 
-/// ChannelManager 即 Terminal 实现者：回显过滤在通道层完成（Nexus 不见自身回显），
+/// ChannelManager 即 Terminal 实现者：回显过滤在通道层完成（业务处理不见自身回显），
 /// 有业务意义的事件（群组变更/用户移除等）已由服务端转化为 IncomingMessage 推送，其余回调不重复处理
 #[async_trait]
 impl Terminal for ChannelManager {
-    /// 收到上行消息：先做回显过滤（通道层），再转发 Nexus 业务处理
+    /// 收到上行消息：先做回显过滤（通道层），再做业务处理
+    /// 完整处理链：默认命令检测 → pipeline 命令检测 → pipeline 定位 → 系统事件过滤 → 普通消息进 pipeline
+    /// （上行记忆写入由 pipeline 自己完成：default_memory 收到即写，abstract_memory 在 locate 后写）
     async fn incoming_message(&self, channel_id: ArcStr, event: Arc<IncomingMessageEvent>) {
         // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务（无 channel 视为未命中）
         let echo = match self.channels.get(channel_id.as_str()) {
@@ -376,8 +565,55 @@ impl Terminal for ChannelManager {
         if echo {
             return;
         }
-        // 2. 转发业务处理
-        Nexus::get().incoming_message(channel_id, event).await;
+
+        // 2. 先取 channel 配置（命令分支 admin 判断与普通分支 pipeline 定位复用，避免重复查询）
+        let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else { return; };
+
+        // 3. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
+        //    命令与命令回复不找 memory_key、不入记忆（管理命令独立处理）
+        if let Content::Text(text) = &event.incoming_message.content {
+            if text.starts_with('/') {
+                // 4. 判断是否管理员（admins HashSet O(1) contains，ch 已保存）；非管理员忽略不回复
+                let is_admin = ch.admins.contains(&ChannelUser {
+                    messenger_id: event.incoming_message.messenger_id.clone(),
+                    user_id: event.incoming_message.user_id.clone(),
+                });
+                if is_admin {
+                    // 5. 先做默认命令检测，未命中再交给来源 channel 的 pipeline 识别执行；
+                    //    回复始终发回来源 channel（不走 out_channel）
+                    let result = match self.execute_default_command(text.as_str(), channel_id.clone()).await {
+                        Ok(Some(reply)) => Ok(reply),
+                        Ok(None) => self.execute_pipeline_command(channel_id.clone(), text.clone()).await,
+                        Err(e) => Err(e),
+                    };
+                    match result {
+                        Ok(reply) => self.send_admin_reply(channel_id.as_str(), event, reply).await,
+                        Err(Error::InvalidCommand(msg)) => {
+                            self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("⚠️ {}", msg))).await;
+                        }
+                        Err(e) => {
+                            self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("❌ 命令执行失败: {}", e))).await;
+                        }
+                    }
+                }
+                // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
+                return;
+            }
+        }
+
+        // 6. pipeline 定位（config agent_id/role_name + 运行态事件；channel 已存在，不重复查询）
+        let Some(key) = self.memory_key(channel_id.as_str()).await else {
+            return;
+        };
+
+        // 7. 系统事件（群组变更/用户移除）不进 agentic loop
+        match &event.incoming_message.content {
+            Content::GroupJoin(_) | Content::GroupLeave(_) | Content::UserRemove(_) => return,
+            _ => {}
+        }
+
+        // 8. 普通消息：运行 pipeline（记忆写入由各 pipeline 自行完成；pipeline 内部按需创建 session）
+        let _ = Nexus::get().pipeline_manager.incoming_message(key, event).await;
     }
 
     async fn join_group(&self, _id: ArcStr, _notification: Arc<GroupChangeNotification>) {
@@ -436,5 +672,22 @@ mod tests {
         ctx.pending_outgoing.insert(ArcStr::from("fresh"), Instant::now());
         ctx.evict(CHANNEL_CONTEXT_TTL);
         assert!(ctx.consume_pending("fresh"));
+    }
+
+    #[tokio::test]
+    async fn model_command_is_handed_to_pipeline() {
+        let channel_manager = ChannelManager::new();
+        // /model 与未知命令都不是默认命令：返回 Ok(None)，由 incoming_message 交给 pipeline 识别执行
+        for content in ["/model", "/model deepseek", "/model deepseek deepseek-chat", "/send-channel on"] {
+            let reply = channel_manager.execute_default_command(content, ArcStr::from("no-such-channel")).await.unwrap();
+            assert!(reply.is_none(), "{} 应交由 pipeline 处理", content);
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_role_exists_empty_passes() {
+        // 显式空串（保留 role）直接 Ok，提前返回不触 ego HTTP；
+        // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
+        assert!(verify_role_exists(ArcStr::from("a1"), ArcStr::new()).await.is_ok());
     }
 }

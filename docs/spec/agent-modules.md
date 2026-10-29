@@ -9,11 +9,10 @@
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
 | config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`default_memory` / `abstract_memory` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
-| nexus | Nexus | **编排中心**：消息业务处理（管理命令分发 / 普通消息路由）、pipeline 定位与装配、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager（Terminal 回调和变更消费者）、pipelines（回调 Nexus 单例）调用 |
-| channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 转发业务）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体） | 被 nexus 调用；被 channel-client 回调（Terminal）；队列消费者回经 Nexus 做 pipeline 重定位 |
+| nexus | Nexus | **装配与启动中心**：pipeline 定位与装配（run 时）、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager / pipelines 回调 Nexus 单例 |
+| channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 业务消息处理：默认管理命令 / pipeline 命令 / 普通消息路由）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体，pipeline 重定位内联在 apply_channel_key） | 被 nexus 调用；被 channel-client 回调（Terminal）；变更执行体经 Nexus 单例读写 pipeline/config |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
 | pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
-| command_router | CommandRouter | 默认管理命令解析与执行（/bind、/unbind、/admin、/unadmin、/agent、/role、/mode）；未命中返回 `Ok(None)`，由 nexus 交给 pipeline 的命令检测执行 | 被 nexus 调用；执行时读 config、调 nexus / channel_manager |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
@@ -47,7 +46,6 @@ graph TB
         CHM["channel_manager<br/>ChannelManager / Channel<br/>+ Terminal 实现 + 变更队列"]
         PL["pipeline<br/>AgentPipeline / 各执行体 trait"]
         PLS["pipelines<br/>PipelineManager / AgentPipeline 实现<br/>批次生产者 / reducer"]
-        CRT["command_router<br/>CommandRouter"]
         MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MEC["memory_ego_client<br/>MemoryEgoClient"]
@@ -78,20 +76,16 @@ graph TB
     PLS --> KLLM
     CO --> ST
     CO --> EGO
-    CO --> CRT
-    CRT --> CFG
-    CRT -->|命令执行回调| CO
-    CRT -->|channel 侧入口| CHM
     PLS --> PL
     PLS --> CFG
     PLS --> MSG
     PLS -->|pipeline / session / 记忆 / Provider / Station / 回复| CO
     CHM -. 创建 client / 重连循环 .-> CC
     CC -. Terminal 回调（incoming_message 等） .-> CHM
-    CHM -->|回显过滤后转发业务| CO
+    CHM -->|业务处理：命令检测 / pipeline 定位| CO
     CHM -->|变更队列执行体：pipeline 重定位| CO
     MSC --> MS
-    CO -->|system_prompt_for_agent / verify_agent_exists| MEC
+    CO -->|system_prompt_for_agent / 命令校验 agent/role| MEC
     MEC --> EG
     CO --> ABC
     ABC --> MSA
@@ -139,9 +133,7 @@ sequenceDiagram
 sequenceDiagram
     participant CC as ChannelClient
     participant CHM as ChannelManager（Terminal）
-    participant CO as Nexus
     participant MSC as MemoryStoreClient
-    participant CRT as CommandRouter
     participant PLS as PipelineManager
     participant IP as pipeline（合批 / 摘要记忆）
 
@@ -150,16 +142,15 @@ sequenceDiagram
     alt 命中回显（自身发出）
         Note over CHM: 消费并丢弃，不转发业务
     else 非回显
-        CHM->>CO: incoming_message(channel_id, event)（转发业务）
-        CO->>CO: config.channel(channel_id) 不存在则丢弃
+        CHM->>CHM: config.channel(channel_id) 不存在则丢弃
         alt 管理命令（Content::Text 以 "/" 开头 + admins 命中）
-            CO->>CRT: CommandRouter::execute(text, channel_id)
-            CRT-->>CO: reply
-            CO->>CHM: send（发回来源 channel + 记录 pending；命令不入记忆）
+            CHM->>CHM: execute_default_command → 未命中 execute_pipeline_command
+            CHM->>CHM: send（发回来源 channel + 记录 pending；命令不入记忆）
         else 系统事件（群组变更 / 用户移除）
-            Note over CO: 直接返回，不进 pipeline
+            Note over CHM: 直接返回，不进 pipeline
         else 普通消息
-            CO->>PLS: incoming_message(Arc<MemoryKey>, event)（不存在则先 ensure_pipeline）
+            CHM->>CHM: memory_key(channel_id)
+            CHM->>PLS: incoming_message(Arc<MemoryKey>, event)（不存在则先装配 pipeline）
             PLS->>IP: incoming_message(event)（该 pipeline 的实例）
             alt default_memory
                 IP->>MSC: push_channel_record(is_self=0, meta=None)
@@ -259,7 +250,7 @@ sequenceDiagram
 
 | 方向 | 组件 | 协议 | 说明 |
 |------|------|------|------|
-| agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 ChannelManager（Terminal 实现：incoming_message / join_group / leave_group / user_removed / download_chunk / closed）；ChannelManager 回显过滤后转 Nexus |
+| agent → channel | kissbot-channel-client | WSS | agent 作为客户端连接消息通道；ChannelClient 持 `Weak<dyn Terminal>` 回调 ChannelManager（Terminal 实现：incoming_message / join_group / leave_group / user_removed / download_chunk / closed）；ChannelManager 回显过滤后自行处理（默认命令 / pipeline 命令 / 普通消息，内部经 Nexus 单例取 pipeline、记忆与 Provider） |
 | agent → memory-store | kissbot-memory-store | HTTP | MemoryStoreClient 推记录（`/store/*`）+ 读记忆（`/store/query/channel*`） |
 | agent → memory-ego | kissbot-memory-ego | HTTP | MemoryEgoClient 查询（`/agent/get`、`/individual/get-all`、`/role/get`）；system_prompt_for_agent / verify_agent_exists 经它发请求 |
 | agent → LLM | 模型提供方 API | HTTP | ProviderManager 按 provider_type 取 kissbot-llm 的实现（openai: `/chat/completions`、anthropic: `/v1/messages`），经 `call_with_retry` 支持重试、工具调用、thinking/reasoning 回传 |

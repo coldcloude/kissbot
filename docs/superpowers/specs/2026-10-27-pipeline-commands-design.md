@@ -25,7 +25,7 @@ channel 文本命令目前只有默认一层：`Nexus::incoming_message` 校验�
 
 ### 1. 两层命令检测
 
-默认层（`CommandRouter`）继续处理 bind / unbind / admin / unadmin / agent / role / mode；
+默认层（`ChannelManager` 内）继续处理 bind / unbind / admin / unadmin / agent / role / mode；
 返回值改为 `Result<Option<ArcStr>>`，`Ok(None)` 表示「不是默认命令」。
 
 pipeline 层新增接口：
@@ -40,10 +40,10 @@ pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
 }
 ```
 
-Nexus 派发顺序：
+ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 
 1. 管理员判定不变（非管理员发送的命令忽略，不回复、不入 pipeline）。
-2. 默认层命中 → 回复；`Ok(None)` → 按来源 channel 定位 `MemoryKey`，`ensure_pipeline` 后调用
+2. 默认层命中 → 回复；`Ok(None)` → 按来源 channel 定位 `MemoryKey`，装配 pipeline 后调用
    `execute_command`。
 3. pipeline 返回 `None` → `⚠️ 未知命令: {命令}`；`InvalidCommand` → `⚠️ {描述}`；其余错误 →
    `❌ 命令执行失败: {描述}`。回复文案与现状一致。
