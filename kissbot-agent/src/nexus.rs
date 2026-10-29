@@ -103,7 +103,7 @@ mod tests {
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
     use crate::pipeline::AgentPipeline;
-    use crate::pipelines::{handle_outgoing_command, outgoing_channel, AbstractMemoryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
+    use crate::pipelines::{outgoing_channel, AbstractMemoryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
@@ -344,15 +344,20 @@ mod tests {
             role_name: ArcStr::from(""),
             enabled: true,
         }).await;
-        let session_id = ArcStr::from("cmd-outgoing-session");
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("cmd-outgoing-agent"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
+        });
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key.clone(), true).await;
+        let session_id = key.encode();
 
         // 身份未绑定 → 拒绝
-        let err = handle_outgoing_command("/bind-outgoing web nobody g1", session_id.clone(), &channel_id).await
+        let err = pipeline.execute_command(channel_id.clone(), ArcStr::from("/bind-outgoing web nobody g1")).await
             .expect("应识别 /bind-outgoing").unwrap_err();
         assert!(matches!(err, Error::InvalidCommand(_)), "未绑定身份应拒绝: {:?}", err);
 
         // 绑定成功 → 写入当前 pipeline 的 session 配置
-        let reply = handle_outgoing_command("/bind-outgoing web u-out g1", session_id.clone(), &channel_id).await
+        let reply = pipeline.execute_command(channel_id.clone(), ArcStr::from("/bind-outgoing web u-out g1")).await
             .expect("应识别 /bind-outgoing").unwrap();
         assert!(reply.contains("已设发送通道"), "回复文案: {}", reply);
         let out = outgoing_channel(&session_id).await.expect("out_channel 应已写入 session");
@@ -361,7 +366,7 @@ mod tests {
         assert_eq!(out.group_id.as_str(), "g1");
 
         // 解除 → 清空
-        handle_outgoing_command("/unbind-outgoing", session_id.clone(), &channel_id).await
+        pipeline.execute_command(channel_id.clone(), ArcStr::from("/unbind-outgoing")).await
             .expect("应识别 /unbind-outgoing").unwrap();
         assert!(outgoing_channel(&session_id).await.is_none(), "解除后为空");
     }

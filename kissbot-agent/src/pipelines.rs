@@ -459,7 +459,11 @@ impl AgentPipeline for DefaultAgenticLoopPipeline {
     }
 
     async fn execute_command(&self, _channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        handle_model_command(&content, self.session_id.clone()).await
+        let parts = command_parts(&content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => Some(handle_model_command(&parts, self.session_id.clone()).await),
+            _ => None,
+        }
     }
 }
 
@@ -521,10 +525,13 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
     }
 
     async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        if let Some(result) = handle_model_command(&content, self.session_id.clone()).await {
-            return Some(result);
+        let parts = command_parts(&content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => Some(handle_model_command(&parts, self.session_id.clone()).await),
+            Some("/bind-outgoing") => Some(bind_outgoing(self.session_id.clone(), &channel_id, &parts).await),
+            Some("/unbind-outgoing") => Some(unbind_outgoing(self.session_id.clone(), &parts).await),
+            _ => None,
         }
-        handle_outgoing_command(&content, self.session_id.clone(), &channel_id).await
     }
 }
 
@@ -701,16 +708,12 @@ pub fn command_parts(content: &str) -> Vec<ArcStr> {
     content.split_whitespace().map(ArcStr::from).collect()
 }
 
-/// 识别 `/model <provider> <model>`：不是本命令返回 None；参数个数不符返回 InvalidCommand
-pub fn parse_model_command(content: &str) -> Option<Result<(ArcStr, ArcStr)>> {
-    let parts = command_parts(content);
-    if parts.first()?.as_str() != "/model" {
-        return None;
-    }
+/// `/model` 参数解析（调用方已按命令名匹配）：参数个数不符返回 InvalidCommand
+pub fn parse_model_command(parts: &[ArcStr]) -> Result<(ArcStr, ArcStr)> {
     if parts.len() != 3 {
-        return Some(Err(Error::InvalidCommand("格式: /model <provider> <model>".into())));
+        return Err(Error::InvalidCommand("格式: /model <provider> <model>".into()));
     }
-    Some(Ok((parts[1].clone(), parts[2].clone())))
+    Ok((parts[1].clone(), parts[2].clone()))
 }
 
 /// 校验模型有效性：从 API 拉模型列表，确认 model 在列表中（失败保持原模型）
@@ -733,29 +736,15 @@ pub async fn switch_model(session_ids: Vec<ArcStr>, provider: ArcStr, model: Arc
     Ok(ArcStr::from(format!("✅ 已切换模型为: {}/{}", provider, model)))
 }
 
-/// 识别并执行单 session pipeline 的 `/model` 命令；不是本命令返回 None
-pub async fn handle_model_command(content: &str, session_id: ArcStr) -> Option<Result<ArcStr>> {
-    let parsed = parse_model_command(content)?;
-    Some(match parsed {
-        Ok((provider, model)) => switch_model(vec![session_id], provider, model).await,
-        Err(e) => Err(e),
-    })
-}
-
-/// 识别并执行记忆 pipeline 的 outgoing 命令（`/bind-outgoing`、`/unbind-outgoing`）；
-/// 不是这两条命令返回 None。outgoing 配置存于该 pipeline 的 session（session_id 由调用方给出）
-pub async fn handle_outgoing_command(content: &str, session_id: ArcStr, channel_id: &ArcStr) -> Option<Result<ArcStr>> {
-    let parts = command_parts(content);
-    match parts.first()?.as_str() {
-        "/bind-outgoing" => Some(bind_outgoing(session_id, channel_id, &parts).await),
-        "/unbind-outgoing" => Some(unbind_outgoing(session_id, &parts).await),
-        _ => None,
-    }
+/// 单 session pipeline 的 `/model` 执行（调用方已按命令名匹配）
+pub async fn handle_model_command(parts: &[ArcStr], session_id: ArcStr) -> Result<ArcStr> {
+    let (provider, model) = parse_model_command(parts)?;
+    switch_model(vec![session_id], provider, model).await
 }
 
 /// `/bind-outgoing <messenger_id> <user_id> <group_id>`：设 pipeline 的回复通道
 /// （先校验来源 channel 存在、该身份已绑定来源 channel）
-async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
+pub async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
     if parts.len() < 4 {
         return Err(Error::InvalidCommand(
             "格式: /bind-outgoing <messenger_id> <user_id> <group_id>".into()
@@ -782,7 +771,7 @@ async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[ArcStr]
 }
 
 /// `/unbind-outgoing`：清空 pipeline 的回复通道（回到只存不回复模式）
-async fn unbind_outgoing(session_id: ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
+pub async fn unbind_outgoing(session_id: ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
     if parts.len() > 1 {
         return Err(Error::InvalidCommand("格式: /unbind-outgoing（无参数）".into()));
     }

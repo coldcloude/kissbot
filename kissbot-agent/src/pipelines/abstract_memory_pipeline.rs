@@ -28,7 +28,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, MAX_TOOL_ROUNDS, call_tools_with_memory, create_session, get_ego_system_prompt_or_default, handle_outgoing_command, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session,
+        BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
     }, types::{
         Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
     },
@@ -326,14 +326,17 @@ impl AgentPipeline for AbstractMemoryPipeline {
     }
 
     async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        if let Some(parsed) = parse_model_command(&content) {
-            return Some(match parsed {
+        let parts = command_parts(&content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => Some(match parse_model_command(&parts) {
                 Ok((provider, model)) => self.apply_model_command(provider, model).await,
                 Err(e) => Err(e),
-            });
+            }),
+            // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
+            Some("/bind-outgoing") => Some(bind_outgoing(self.case_session_id(None), &channel_id, &parts).await),
+            Some("/unbind-outgoing") => Some(unbind_outgoing(self.case_session_id(None), &parts).await),
+            _ => None,
         }
-        // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
-        handle_outgoing_command(&content, self.case_session_id(None), &channel_id).await
     }
 
     /// channel 不再绑定本 pipeline：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃

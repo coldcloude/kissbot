@@ -72,16 +72,17 @@ ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 
 ### 4. pipelines.rs 共享函数
 
-- `handle_model_command(content, session_id) -> Option<Result<ArcStr>>`：识别 `/model`、解析参数、
-  校验模型、写入单 session；`default` 与 `default_memory` 共用。
-- `parse_model_command(content) -> Option<Result<(ArcStr, ArcStr)>>`：供多 session 的
-  `abstract_memory` 复用。
+- `command_parts(content) -> Vec<ArcStr>`：按空白切分一次，pipeline 的 `execute_command` 用
+  `match parts[0]` 分发（不再逐个尝试命令）。
+- `parse_model_command(parts) -> Result<(ArcStr, ArcStr)>`：`/model` 参数解析（参数个数不符报错）。
+- `handle_model_command(parts, session_id) -> Result<ArcStr>`：解析 + 校验 + 写入单 session；
+  `default` 与 `default_memory` 共用。
 - `switch_model(session_ids, provider, model) -> Result<ArcStr>`：拉模型列表校验后逐个 session
-  写入，返回回复文案。
-- `handle_outgoing_command(content, session_id, channel_id) -> Option<Result<ArcStr>>`：识别并执行
+  写入，返回回复文案；`abstract_memory` 多 session 复用。
+- `bind_outgoing(session_id, channel_id, parts)` / `unbind_outgoing(session_id, parts)`：执行
   `/bind-outgoing`、`/unbind-outgoing`；两条记忆 pipeline 共用（`abstract_memory` 传基准 session id）。
 - `outgoing_channel(session_id) -> Option<Arc<OutChannel>>`：发送前读取 pipeline 的 outgoing 配置。
-- 内部复用：`command_parts`（空白切分）、`verify_model`（从 Nexus 移入）。
+- 内部复用：`verify_model`（从 Nexus 移入）。
 
 ### 5. 删除项
 

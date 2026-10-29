@@ -456,8 +456,10 @@ impl ChannelManager {
                         return Err(Error::MemoryEgoError(format!("agent 不存在: {}", new_agent_id).into()));
                     }
                 }
-                if !new_role.is_empty() {
-                    verify_role_exists(new_agent_id.clone(), new_role.clone()).await?;
+                if !new_role.is_empty()
+                    && Nexus::get().memory_ego_client.get_role(new_agent_id.clone(), new_role.clone()).await?.is_none()
+                {
+                    return Err(Error::MemoryEgoError(format!("role 不存在: {}", new_role).into()));
                 }
                 // None = 保持当前值（mode 保持当前运行态；Arc clone 浅拷贝入队）
                 self.change_channel_key(channel_id, Some(new_agent_id.clone()), Some(new_role.clone()), None).await?;
@@ -471,7 +473,11 @@ impl ChannelManager {
                 let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else {
                     return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
                 };
-                verify_role_exists(ch.agent_id.clone(), new_role.clone()).await?;
+                if !new_role.is_empty()
+                    && Nexus::get().memory_ego_client.get_role(ch.agent_id.clone(), new_role.clone()).await?.is_none()
+                {
+                    return Err(Error::MemoryEgoError(format!("role 不存在: {}", new_role).into()));
+                }
                 // None = 保持当前值（agent/mode 不变；Arc clone 浅拷贝入队）
                 self.change_channel_key(channel_id, None, Some(new_role.clone()), None).await?;
                 Ok(Some(ArcStr::from(format!("✅ 已设置 role: {}", new_role))))
@@ -532,18 +538,6 @@ impl ChannelManager {
         if let Err(e) = self.send(channel_id, msg).await {
             warn!("send_admin_reply 失败: {:?}", e);
         }
-    }
-}
-
-/// 校验 role 存在：显式空串（保留 role）直接通过；其余必须 ego 中存在，否则 Err（调用方保持原 role 不变）
-async fn verify_role_exists(agent_id: ArcStr, role_name: ArcStr) -> Result<()> {
-    if role_name.is_empty() {
-        return Ok(());
-    }
-    if Nexus::get().memory_ego_client.get_role(agent_id, role_name.clone()).await?.is_some() {
-        Ok(())
-    } else {
-        Err(Error::MemoryEgoError(format!("role 不存在: {}", role_name).into()))
     }
 }
 
@@ -682,12 +676,5 @@ mod tests {
             let reply = channel_manager.execute_default_command(content, ArcStr::from("no-such-channel")).await.unwrap();
             assert!(reply.is_none(), "{} 应交由 pipeline 处理", content);
         }
-    }
-
-    #[tokio::test]
-    async fn verify_role_exists_empty_passes() {
-        // 显式空串（保留 role）直接 Ok，提前返回不触 ego HTTP；
-        // 非空分支依赖 ego 服务（memory_ego_url 为空返回 Err），暂不测
-        assert!(verify_role_exists(ArcStr::from("a1"), ArcStr::new()).await.is_ok());
     }
 }
