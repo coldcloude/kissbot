@@ -49,8 +49,7 @@ pub struct AbstractMemoryMeta {
 
 /// 记录元信息：各组件可选的附加信息（未识别的字段在反序列化时忽略）。
 ///
-/// 目前只有通道记录携带 meta；思考/工具记录通过通道记录内容中的占位引用（详情时间 + key）
-/// 归属到通道，其 case 随之确定，因此不需要单独记录。
+/// 只有通道记录携带 meta；思考/工具内容作为通道记录 `content` 的一部分随之归属，不需要单独记录。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemoryMeta {
     /// 摘要记忆信息
@@ -76,7 +75,7 @@ impl MemoryMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRequest {
-    /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具记录为空
+    /// 消息标识（来自 incoming_message / outgoing_message_response）
     #[serde(default)]
     pub msg_id: ArcStr,
     pub agent_id: ArcStr,
@@ -103,57 +102,6 @@ pub struct ChannelRequests {
     pub force: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkRequest {
-    pub agent_id: ArcStr,
-    pub role_event: Arc<RoleEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<ArcStr>,   // API 字段解析的内容
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ArcStr>,            // <think> 标签解析的内容（去标签）
-    pub key: ArcStr,
-    pub time: ArcStr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThinkRequests {
-    pub requests: Vec<ThinkRequest>,
-    pub force: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRequest {
-    pub agent_id: ArcStr,
-    pub role_event: Arc<RoleEvent>,
-    pub tool_name: ArcStr,
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub tool_params: Arc<Value>,
-    pub key: ArcStr,
-    pub time: ArcStr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRequests {
-    pub requests: Vec<ToolCallRequest>,
-    pub force: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRequest {
-    pub agent_id: ArcStr,
-    pub role_event: Arc<RoleEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_result: Option<Arc<Vec<ContentBlock>>>,
-    pub key: ArcStr,
-    pub time: ArcStr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultRequests {
-    pub requests: Vec<ToolResultRequest>,
-    pub force: usize,
-}
-
 // ========== Query requests ==========
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,7 +124,7 @@ pub struct RecentQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRecord {
-    /// 消息标识（来自 incoming_message / outgoing_message_response）；思考/工具占位记录为空。
+    /// 消息标识（来自 incoming_message / outgoing_message_response）。
     /// 消息与记录去重只按「通道三元组 + msg_id」判定，不比较内容。
     #[serde(default)]
     pub msg_id: ArcStr,
@@ -199,34 +147,28 @@ pub struct ChannelRecord {
     pub meta: Option<Arc<MemoryMeta>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 思考内容：作为 [`Content::Think`] 内嵌在通道记录中，不单独写入记忆文件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThinkRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<ArcStr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ArcStr>,
-    pub key: ArcStr,
-    pub time: ArcStr,
-    pub sn: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 工具调用：作为 [`Content::ToolCall`] 内嵌在通道记录中，不单独写入记忆文件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub tool_name: ArcStr,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub tool_params: Arc<Value>,
-    pub key: ArcStr,
-    pub time: ArcStr,
-    pub sn: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 工具调用结果：作为 [`Content::ToolResult`] 内嵌在通道记录中，不单独写入记忆文件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResultRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<Arc<Vec<ContentBlock>>>,
-    pub key: ArcStr,
-    pub time: ArcStr,
-    pub sn: u64,
 }
 
 pub trait MemoryRecord: Record {
@@ -243,33 +185,23 @@ pub trait MemoryRecord: Record {
     }
 }
 
-macro_rules! impl_record {
-    ($($t:ty),*) => {
-        $(impl Record for $t {
-            fn time(&self) -> &str {
-                self.time.as_str()
-            }
-        })*
-        $(impl MemoryRecord for $t {
-            fn sn(&self) -> u64 {
-                self.sn
-            }
-            fn set_sn(&mut self, sn: u64) {
-                self.sn = sn;
-            }
-            fn time_string(&self) -> ArcStr {
-                self.time.clone()
-            }
-        })*
-    };
+impl Record for ChannelRecord {
+    fn time(&self) -> &str {
+        self.time.as_str()
+    }
 }
 
-impl_record!(
-    ChannelRecord,
-    ThinkRecord,
-    ToolCallRecord,
-    ToolResultRecord
-);
+impl MemoryRecord for ChannelRecord {
+    fn sn(&self) -> u64 {
+        self.sn
+    }
+    fn set_sn(&mut self, sn: u64) {
+        self.sn = sn;
+    }
+    fn time_string(&self) -> ArcStr {
+        self.time.clone()
+    }
+}
 
 //===================== Record file key ======================
 
@@ -284,8 +216,8 @@ pub struct RecordKey {
 
 /// 通道标识：messenger + agent 在该通道绑定的用户 + 群组。
 ///
-/// 同一会话的 incoming、self、思考/工具占位三类通道记录由此三元组归入同一通道：
-/// incoming 记录的 `self_user_id` 是接收方身份，self 与占位记录取回复通道的绑定用户，二者一致。
+/// 同一会话的 incoming、self 两类通道记录由此三元组归入同一通道：
+/// incoming 记录的 `self_user_id` 是接收方身份，self 记录取回复通道的绑定用户，二者一致。
 /// 发送者 `user_id` 不参与：self 记录的 `user_id` 是绑定的用户身份，与对话对方的 `user_id` 不同。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChannelKey {
@@ -310,48 +242,58 @@ impl From<&ChannelRecord> for ChannelKey {
     }
 }
 
-// ========== 记录类型段 ==========
-
-// 四类原始记录的公共分类（通知、读取与文件命名共用）。不设枚举：读取阶段的记录类型由 body 判定，
-// 原文副本的类型由所在文件的类型段决定，这里只保留类型段本身。
-
-/// 记录文件名的类型段（`{stem}-records-{date}.jsonl`）与 case 原文副本的 `record_type`
-pub const RECORD_CHANNEL: &str = "channel";
-pub const RECORD_THINK: &str = "think";
-pub const RECORD_TOOL_CALL: &str = "tool-call";
-pub const RECORD_TOOL_RESULT: &str = "tool-result";
-
-/// 四类记录（遍历用；顺序与 [`crate::Watermark`] 字段一致）
-pub const RECORD_KINDS: [&str; 4] = [RECORD_CHANNEL, RECORD_THINK, RECORD_TOOL_CALL, RECORD_TOOL_RESULT];
-
-/// 上面四个类型段的 `ArcStr` 形态：需要持有类型段时直接克隆，避免每次从 `&str` 分配
-pub const RECORD_CHANNEL_ARC: ArcStr = arcstr::literal!("channel");
-pub const RECORD_THINK_ARC: ArcStr = arcstr::literal!("think");
-pub const RECORD_TOOL_CALL_ARC: ArcStr = arcstr::literal!("tool-call");
-pub const RECORD_TOOL_RESULT_ARC: ArcStr = arcstr::literal!("tool-result");
-
 //===================== New data notification ======================
 
 /// 新数据通知 payload_type：memory-store → memory-struct-*（0x3001xxxx）
 pub const TYPE_NOTIFY_CHANNEL: u32 = 0x3001_0001;
-pub const TYPE_NOTIFY_THINK: u32 = 0x3001_0002;
-pub const TYPE_NOTIFY_TOOL_CALL: u32 = 0x3001_0003;
-pub const TYPE_NOTIFY_TOOL_RESULT: u32 = 0x3001_0004;
 
-/// 新数据通知 payload：写入完成后广播的位置信息（记录类型见 payload_type，统一走 kai-ws 信封）
+/// 新数据通知 payload：写入完成后广播的位置信息（统一走 kai-ws 信封）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecordNotification {
     pub agent_id: ArcStr,
     /// 记忆后缀（角色模式 = 角色名；事件模式 = 角色名 + 事件标识）
     pub role_event: Arc<RoleEvent>,
     pub time: ArcStr,
-    /// 仅通道消息携带：是否 agent 实际发送
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_self: Option<usize>,
-    /// 仅通道消息携带：记录所属通道（平铺为 `messenger_id` / `self_user_id` / `group_id`）。
-    /// 收到通知后只评估该通道；思考/工具记录只有 key、写入侧无法确定通道，因此不带。
-    #[serde(default, flatten)]
-    pub channel: Option<ChannelKey>,
+    /// 是否 agent 实际发送
+    pub is_self: usize,
+    /// 记录所属通道（平铺为 `messenger_id` / `self_user_id` / `group_id`）
+    #[serde(flatten)]
+    pub channel: ChannelKey,
+}
+
+//===================== 记录位置 ======================
+
+/// 记录在文件内的位置（时间 + 序号）：水位与分页游标共用
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Watermark {
+    pub time: ArcStr,
+    pub sn: u64,
+}
+
+impl Default for Watermark {
+    fn default() -> Self {
+        Self {
+            time: WATERMARK_ZERO_TIME.clone(),
+            sn: 0,
+        }
+    }
+}
+
+/// 水位起点（早于任何真实记录）
+pub const WATERMARK_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
+
+impl Watermark {
+    /// 记录是否位于该位置之后
+    pub fn is_before(&self, time: &str, sn: u64) -> bool {
+        (self.time.as_str(), self.sn) < (time, sn)
+    }
+}
+
+/// 通道水位（watermark.json 的一条）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelWatermark {
+    pub channel: ChannelKey,
+    pub watermark: Arc<Watermark>,
 }
 
 #[cfg(test)]
@@ -522,117 +464,39 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_think_request_dual_fields() {
-        let obj = ThinkRequest {
-            agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-            reasoning_content: Some(ArcStr::from("推理")),
-            thinking: Some(ArcStr::from("思考")),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-01-01 00:00:00"),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let back: ThinkRequest = serde_json::from_value(json.clone()).unwrap();
-        assert_eq!(back.reasoning_content.unwrap(), "推理");
-        assert_eq!(back.thinking.unwrap(), "思考");
-        assert!(json.get("content").is_none(), "content 字段已拆分");
-    }
-
-    #[test]
-    fn test_serde_think_record_dual_fields() {
+    fn test_serde_think_record_without_position() {
         let obj = ThinkRecord {
             reasoning_content: Some(ArcStr::from("推理")),
             thinking: Some(ArcStr::from("思考")),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-01-01 00:00:00"),
-            sn: 1,
         };
         let json = serde_json::to_value(&obj).unwrap();
+        assert_eq!(json, serde_json::json!({"reasoning_content": "推理", "thinking": "思考"}));
         let back: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(back.reasoning_content.unwrap(), "推理");
-        assert_eq!(back.thinking.unwrap(), "思考");
-        assert_eq!(back.sn, 1);
+        assert_eq!(back, obj);
+        assert!(serde_json::to_value(ThinkRecord { reasoning_content: None, thinking: None }).unwrap().as_object().unwrap().is_empty());
     }
 
     #[test]
-    fn test_serde_think_request() {
-        let obj = ThinkRequest {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("admin"))),
-            reasoning_content: Some(ArcStr::from("thinking...")),
-            thinking: None,
-            key: ArcStr::from("key1"),
-            time: ArcStr::from("2026-01-01 00:00:00"),
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ThinkRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.reasoning_content.unwrap(), "thinking...");
-        assert_eq!(deserialized.thinking, None);
-    }
-
-    #[test]
-    fn test_serde_think_requests() {
-        let req = ThinkRequest {
-            agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-            reasoning_content: Some(ArcStr::from("thinking...")),
-            thinking: None,
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("t1"),
-        };
-        let obj = ThinkRequests { requests: vec![req], force: 0 };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ThinkRequests = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.requests.len(), 1);
-        assert_eq!(deserialized.force, 0);
-    }
-
-    #[test]
-    fn test_serde_tool_call_request() {
-        let obj = ToolCallRequest {
-            agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
+    fn test_serde_tool_call_record_without_position() {
+        let obj = ToolCallRecord {
             tool_name: ArcStr::from("get_weather"),
             tool_params: Arc::new(json!({"city": "Beijing"})),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolCallRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.tool_name, "get_weather");
-        assert_eq!(deserialized.tool_params["city"], "Beijing");
+        assert_eq!(json, serde_json::json!({"tool_name": "get_weather", "tool_params": {"city": "Beijing"}}));
+        let back: ToolCallRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(back, obj);
     }
 
     #[test]
-    fn test_serde_tool_call_requests() {
-        let obj = ToolCallRequests { requests: vec![], force: 1 };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolCallRequests = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.requests.len(), 0);
-        assert_eq!(deserialized.force, 1);
-    }
-
-    #[test]
-    fn test_serde_tool_result_request() {
-        let obj = ToolResultRequest {
-            agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
+    fn test_serde_tool_result_record_without_position() {
+        let obj = ToolResultRecord {
             tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("t1"),
         };
         let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolResultRequest = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.key, "k1");
-        assert_eq!(deserialized.tool_result.as_ref().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_serde_tool_result_requests() {
-        let obj = ToolResultRequests { requests: vec![], force: 0 };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolResultRequests = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.requests.len(), 0);
+        assert_eq!(json["tool_result"][0]["text"], r#"{"temp":25}"#);
+        let back: ToolResultRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(back, obj);
     }
 
     #[test]
@@ -650,9 +514,8 @@ mod tests {
 
     // ========== Record trait ==========
 
-    #[test]
-    fn test_record_impl() {
-        let mut channel = ChannelRecord {
+    fn channel(time: &str, sn: u64) -> ChannelRecord {
+        ChannelRecord {
             meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self1"),
@@ -664,66 +527,28 @@ mod tests {
             user_name: ArcStr::new(),
             group_name: ArcStr::new(),
             content: Content::Text(ArcStr::from("hello")),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 5,
-        };
+            time: ArcStr::from(time),
+            sn,
+        }
+    }
+
+    #[test]
+    fn test_record_impl() {
+        let mut channel = channel("2026-06-24 10:00:00", 5);
         assert_eq!(channel.sn(), 5);
         assert_eq!(channel.time(), "2026-06-24 10:00:00");
         channel.set_sn(10);
         assert_eq!(channel.sn(), 10);
-
-        let think = ThinkRecord {
-            reasoning_content: Some(ArcStr::from("think")),
-            thinking: None,
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:01"),
-            sn: 1,
-        };
-        assert_eq!(think.sn(), 1);
-        assert_eq!(think.time(), "2026-06-24 10:00:01");
     }
 
     #[test]
     fn test_record_cmp_time() {
-        let r1 = ChannelRecord {
-            meta: None,
-            user_id: ArcStr::from("u1"),
-            self_user_id: ArcStr::from("self1"),
-            messenger_id: ArcStr::from("telegram"),
-            group_id: ArcStr::from("g1"),
-            is_self: 0,
-            msg_id: ArcStr::new(),
-            messenger_name: ArcStr::new(),
-            user_name: ArcStr::new(),
-            group_name: ArcStr::new(),
-            content: Content::Text(ArcStr::from("hello")),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 1,
-        };
-        let r2 = ChannelRecord {
-            meta: None,
-            user_id: ArcStr::from("u1"),
-            self_user_id: ArcStr::from("self1"),
-            messenger_id: ArcStr::from("telegram"),
-            group_id: ArcStr::from("g1"),
-            is_self: 0,
-            msg_id: ArcStr::new(),
-            messenger_name: ArcStr::new(),
-            user_name: ArcStr::new(),
-            group_name: ArcStr::new(),
-            content: Content::Text(ArcStr::from("world")),
-            time: ArcStr::from("2026-06-24 10:00:01"),
-            sn: 1,
-        };
+        let r1 = channel("2026-06-24 10:00:00", 1);
+        let r2 = channel("2026-06-24 10:00:01", 1);
         assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
 
         // same time, different sn
-        let r3 = ChannelRecord {
-            meta: None,
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 2,
-            ..r1.clone()
-        };
+        let r3 = channel("2026-06-24 10:00:00", 2);
         assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
     }
 
@@ -761,48 +586,31 @@ mod tests {
     }
 
     #[test]
-    fn test_serde_think_record() {
-        let obj = ThinkRecord {
-            reasoning_content: Some(ArcStr::from("think content")),
-            thinking: None,
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 1,
+    fn test_channel_record_content_embeds_detail_records() {
+        // 思考/工具内容直接内嵌记录，序列化后随通道记录一起落盘
+        let record = ChannelRecord {
+            meta: None,
+            content: Content::Multi(Arc::new(vec![
+                Content::Think(Arc::new(ThinkRecord {
+                    reasoning_content: Some(ArcStr::from("推理")),
+                    thinking: None,
+                })),
+                Content::ToolCall(Arc::new(ToolCallRecord {
+                    tool_name: ArcStr::from("search"),
+                    tool_params: Arc::new(json!({"q": "weather"})),
+                })),
+                Content::ToolResult(Arc::new(ToolResultRecord { tool_result: None })),
+                Content::Text(ArcStr::from("回复")),
+            ])),
+            ..channel("2026-06-24 10:00:00", 1)
         };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ThinkRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.reasoning_content.unwrap(), "think content");
-        assert_eq!(deserialized.key, "k1");
-    }
-
-    #[test]
-    fn test_serde_tool_call_record() {
-        let obj = ToolCallRecord {
-            tool_name: ArcStr::from("get_weather"),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolCallRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.tool_name, "get_weather");
-        assert_eq!(deserialized.tool_params["city"], "Beijing");
-    }
-
-    #[test]
-    fn test_serde_tool_result_record() {
-        let obj = ToolResultRecord {
-            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-            sn: 1,
-        };
-        let json = serde_json::to_value(&obj).unwrap();
-        let deserialized: ToolResultRecord = serde_json::from_value(json).unwrap();
-        let blocks = deserialized.tool_result.unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], ContentBlock::Text { text, .. } if text.as_str() == r#"{"temp":25}"#));
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["content"]["msg_type"], "Multi");
+        assert_eq!(json["content"]["data"][0]["msg_type"], "Think");
+        assert_eq!(json["content"]["data"][0]["data"], json!({"reasoning_content": "推理"}));
+        assert_eq!(json["content"]["data"][1]["data"]["tool_name"], "search");
+        let back: ChannelRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(back.content, record.content);
     }
 
     // ========== Key serde ==========
@@ -820,51 +628,43 @@ mod tests {
         assert_eq!(deserialized.role_event, Arc::new(RoleEvent::new(ArcStr::from("default"))));
     }
 
-    // ========== 记录类型段 ==========
+    // ========== 水位与通知 ==========
 
     #[test]
-    fn test_record_kind_constants() {
-        assert_eq!(RECORD_KINDS, ["channel", "think", "tool-call", "tool-result"]);
-        // ArcStr 形态与 &str 形态一一对应
-        assert_eq!(RECORD_CHANNEL_ARC.as_str(), RECORD_CHANNEL);
-        assert_eq!(RECORD_THINK_ARC.as_str(), RECORD_THINK);
-        assert_eq!(RECORD_TOOL_CALL_ARC.as_str(), RECORD_TOOL_CALL);
-        assert_eq!(RECORD_TOOL_RESULT_ARC.as_str(), RECORD_TOOL_RESULT);
-        // 四类 payload_type 互不相同
-        let mut types = vec![TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL, TYPE_NOTIFY_TOOL_RESULT];
-        types.sort_unstable();
-        types.dedup();
-        assert_eq!(types.len(), 4);
+    fn test_watermark_serde_and_default() {
+        let wm = Watermark::default();
+        assert_eq!(wm.time, WATERMARK_ZERO_TIME);
+        assert_eq!(wm.sn, 0);
+        assert_eq!(serde_json::to_value(&wm).unwrap(), serde_json::json!({"time": "2000-01-01 00:00:00", "sn": 0}));
+        let back: Watermark = serde_json::from_value(serde_json::json!({"time": "2026-09-22 13:48:37", "sn": 128})).unwrap();
+        assert_eq!(back.time, "2026-09-22 13:48:37");
+        assert_eq!(back.sn, 128);
+        // 位置比较
+        assert!(Watermark::default().is_before("2026-09-22 13:48:37", 1));
+        let same = Watermark { time: ArcStr::from("2026-09-22 13:48:37"), sn: 1 };
+        assert!(!same.is_before("2026-09-22 13:48:37", 1));
+        assert!(same.is_before("2026-09-22 13:48:37", 2));
+        assert!(same.is_before("2026-09-22 13:48:38", 1));
     }
 
     #[test]
-    fn test_serde_record_notification_channel_and_think() {
-        // 通道消息通知带 is_self 与通道三元组（平铺在 payload 顶层）
-        let channel = RecordNotification {
+    fn test_serde_record_notification() {
+        let notification = RecordNotification {
             agent_id: ArcStr::from("0"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),
-            is_self: Some(0),
-            channel: Some(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))),
+            is_self: 0,
+            channel: ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1")),
         };
-        let v = serde_json::to_value(&channel).unwrap();
-        assert_eq!(v, json!({
+        let v = serde_json::to_value(&notification).unwrap();
+        assert_eq!(v, serde_json::json!({
             "agent_id": "0", "role_event": {"role_name": "dev"}, "time": "2026-09-22 13:48:37", "is_self": 0,
             "messenger_id": "web", "self_user_id": "self1", "group_id": "g1"
         }));
-        assert_eq!(serde_json::from_value::<RecordNotification>(v).unwrap(), channel);
-
-        // 其余类型不带 is_self 与通道（缺省为 None，可省略）
-        let think = RecordNotification {
-            agent_id: ArcStr::from("0"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
-            time: ArcStr::from("2026-09-22 13:48:37"),
-            is_self: None,
-            channel: None,
-        };
-        let v = serde_json::to_value(&think).unwrap();
-        assert!(v.get("is_self").is_none(), "None 不序列化");
-        assert!(v.get("messenger_id").is_none() && v.get("group_id").is_none(), "通道缺省不序列化");
-        assert_eq!(serde_json::from_value::<RecordNotification>(v).unwrap(), think);
+        assert_eq!(serde_json::from_value::<RecordNotification>(v).unwrap(), notification);
+        // 通道字段必填：缺通道的通知按格式错误处理
+        assert!(serde_json::from_value::<RecordNotification>(serde_json::json!({
+            "agent_id": "0", "role_event": {"role_name": "dev"}, "time": "2026-09-22 13:48:37", "is_self": 0
+        })).is_err());
     }
 }

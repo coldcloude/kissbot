@@ -20,7 +20,7 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    CaseRecord, ChannelKey, Content, DetailRef, IncomingMessageEvent, LocateMessage, MemoryMeta,
+    ChannelKey, ChannelRecord, Content, IncomingMessageEvent, LocateMessage, MemoryMeta,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -30,7 +30,7 @@ use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
         BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
     }, types::{
-        Error, MemoryKey, Result, build_memory_think, channel_request_from_incoming,
+        Error, MemoryKey, Result, build_think_record, channel_request_from_incoming,
     },
 };
 
@@ -387,24 +387,18 @@ impl AbstractMemoryPipeline {
             messages,
             tools,
         ).await?;
-        // 推送 think 到 memory-store（reasoning_content + thinking 双字段；详情落盘后把占位引用累积到本次 run）
+        // 思考内容累积到本次 run（reasoning_content + thinking 双字段）；随最终回复的通道记录一起落盘
         if res.reasoning_content.is_some() || res.thinking.is_some() {
-            let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-            let think_request = build_memory_think(self.memory_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone());
-            let think_ref = Arc::new(DetailRef::new(think_request.key.clone(), think_request.time.clone()));
-            Nexus::get().memory_store_client.push_think(think_request).await;
-            pending_contents.push(Content::Think(think_ref));
+            let record = build_think_record(res.reasoning_content.clone(), res.thinking.clone());
+            pending_contents.push(Content::Think(Arc::new(record)));
         }
         // 保存回复的消息
         let _ = session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, tool_placeholders, errors) = call_tools_with_memory(
-                tool_calls,
-                self.memory_key.as_ref(),
-            ).await;
-            pending_contents.extend(tool_placeholders);
+            let (tool_calls, tool_contents, errors) = call_tools_with_memory(tool_calls).await;
+            pending_contents.extend(tool_contents);
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -415,7 +409,7 @@ impl AbstractMemoryPipeline {
             vec![]
         };
         // 输出到 out_channel（pipeline 级配置存基准 session）：只有本轮有文本才发送，
-        // 本轮及之前累积的占位内容与文本一起作为下行记录写入
+        // 本轮及之前累积的思考/工具内容与文本一起作为下行记录写入
         let base_id = self.case_session_id(None);
         if let Some(out_channel) = outgoing_channel(&base_id).await {
             if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
@@ -467,18 +461,11 @@ fn locate_message(event: &IncomingMessageEvent) -> LocateMessage {
     }
 }
 
-/// 原文副本 → 对话消息内容：只保留通道记录（思考/工具记录不是对话消息），顺序与 client 返回一致
-fn record_contents(records: &[CaseRecord]) -> Vec<MessageContent> {
+/// 原文副本 → 对话消息内容：通道记录即原文副本（思考/工具内容内嵌在 content 里），顺序与 client 返回一致
+fn record_contents(records: &[Arc<ChannelRecord>]) -> Vec<MessageContent> {
     records
         .iter()
-        .filter_map(|record| match record {
-            CaseRecord::Channel(channel_record) => Some(extract_content(
-                &channel_record.content,
-                channel_record.user_name.clone(),
-                channel_record.is_self,
-            )),
-            _ => None,
-        })
+        .map(|record| extract_content(&record.content, record.user_name.clone(), record.is_self))
         .collect()
 }
 
@@ -505,7 +492,7 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-    use kissbot_api::{ChannelRecord, RoleEvent, ThinkRecord};
+    use kissbot_api::{ChannelRecord, RoleEvent};
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
@@ -625,18 +612,11 @@ mod tests {
     #[test]
     fn record_contents_keeps_channel_records_in_returned_order() {
         let records = vec![
-            CaseRecord::Channel(rec("u1", "second", 0, "2026-09-23 10:00:05", 2)),
-            CaseRecord::Think(Arc::new(ThinkRecord {
-                reasoning_content: Some(ArcStr::from("推理")),
-                thinking: None,
-                key: ArcStr::from("k1"),
-                time: ArcStr::from("2026-09-23 10:00:06"),
-                sn: 3,
-            })),
-            CaseRecord::Channel(rec("agent", "first", 1, "2026-09-23 10:00:01", 1)),
+            rec("u1", "second", 0, "2026-09-23 10:00:05", 2),
+            rec("agent", "first", 1, "2026-09-23 10:00:01", 1),
         ];
         let contents = record_contents(&records);
-        assert_eq!(contents.len(), 2, "思考记录不是对话消息，跳过");
+        assert_eq!(contents.len(), 2, "通道记录即原文副本，保持 client 返回的顺序");
         assert_eq!(contents[0].content[0].as_str(), "second", "保持 client 返回的顺序，不重排");
         assert_eq!(contents[1].content[0].as_str(), "first");
         assert!(contents[1].is_self);

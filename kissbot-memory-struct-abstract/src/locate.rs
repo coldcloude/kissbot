@@ -35,7 +35,7 @@ mod tests {
     use super::*;
     use crate::archive::Archiver;
     use crate::model::LevelDecision;
-    use crate::records::{RecordBody, RecordEntry, StoreMessage, PendingMessage};
+    use crate::records::{RecordEntry, StoreMessage};
     use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
     use kissbot_api::{ChannelKey, ChannelRecord, Content, LocateMessage, RoleEvent};
@@ -48,38 +48,26 @@ mod tests {
     }
 
     fn record_entry(time: &str, sn: u64, text: &str) -> RecordEntry {
-        RecordEntry {
-            time: ArcStr::from(time),
-            sn,
-            body: RecordBody::Channel(Arc::new(ChannelRecord {
-                meta: None,
-                user_id: ArcStr::from("u1"),
-                self_user_id: ArcStr::from("self1"),
-                messenger_id: ArcStr::from("web"),
-                group_id: ArcStr::from("g1"),
-                is_self: 0,
-                msg_id: ArcStr::new(),
-                messenger_name: ArcStr::new(),
-                user_name: ArcStr::from("alice"),
-                group_name: ArcStr::new(),
-                content: Content::Text(ArcStr::from(text)),
-                time: ArcStr::from(time),
-                sn,
-            })),
-        }
+        channel_in(&channel_key(), time, sn, text)
     }
 
     /// 某通道的记录（身份取通道三元组）
     fn channel_in(channel: &ChannelKey, time: &str, sn: u64, text: &str) -> RecordEntry {
-        let mut entry = record_entry(time, sn, text);
-        let RecordBody::Channel(record) = &mut entry.body else {
-            unreachable!("通道记录")
-        };
-        let record = Arc::make_mut(record);
-        record.messenger_id = channel.messenger_id.clone();
-        record.self_user_id = channel.self_user_id.clone();
-        record.group_id = channel.group_id.clone();
-        entry
+        Arc::new(ChannelRecord {
+            meta: None,
+            user_id: ArcStr::from("u1"),
+            self_user_id: channel.self_user_id.clone(),
+            messenger_id: channel.messenger_id.clone(),
+            group_id: channel.group_id.clone(),
+            is_self: 0,
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from(text)),
+            time: ArcStr::from(time),
+            sn,
+        })
     }
 
     fn channel_key() -> ChannelKey {
@@ -121,22 +109,13 @@ mod tests {
         channel: &ChannelKey,
         entries: &[RecordEntry],
     ) {
-        let pending: Vec<PendingMessage> = entries.iter().map(pending_of).collect();
+        let pending: Vec<StoreMessage> = entries
+            .iter()
+            .map(|record| StoreMessage { channel: ChannelKey::from(record.as_ref()), record: record.clone() })
+            .collect();
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
         archiver.archive(handle, &mut state, role_event.event_id.clone(), channel, &pending, &[]).await.unwrap();
-    }
-
-    /// 测试用：通道记录 → 待归档消息（无思考/工具详情）
-    fn pending_of(record: &RecordEntry) -> PendingMessage {
-        PendingMessage {
-            message: StoreMessage {
-                channel: record.channel_key().expect("测试只归档通道记录"),
-                record: record.clone(),
-                details: Vec::new(),
-            },
-            pending: vec![record.clone()],
-        }
     }
 
     /// 定位一批消息：走归档入口但只传消息（不落盘；新话题会建出记忆条数为 0 的 case）

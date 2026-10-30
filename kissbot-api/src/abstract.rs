@@ -9,69 +9,12 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    ChannelKey, ChannelRecord, Content, RoleEvent, ThinkRecord, ToolCallRecord, ToolResultRecord,
-    RECORD_CHANNEL, RECORD_CHANNEL_ARC, RECORD_KINDS, RECORD_THINK, RECORD_THINK_ARC,
-    RECORD_TOOL_CALL, RECORD_TOOL_CALL_ARC, RECORD_TOOL_RESULT, RECORD_TOOL_RESULT_ARC,
-};
+use crate::{ChannelKey, ChannelRecord, Content, RoleEvent};
 
 // ========== Case 原文副本 ==========
-
-/// Case 原文副本：按记录类型分文件的原始记录（行内容与记忆存储的记录格式一致，
-/// 类型由所在文件的类型段决定；API 上以 `record_type` 标签暴露）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "record_type", rename_all = "kebab-case")]
-pub enum CaseRecord {
-    Channel(Arc<ChannelRecord>),
-    Think(Arc<ThinkRecord>),
-    ToolCall(Arc<ToolCallRecord>),
-    ToolResult(Arc<ToolResultRecord>),
-}
-
-impl CaseRecord {
-    /// 记录类型段（与落盘文件的类型段一致）
-    pub fn kind(&self) -> &'static str {
-        match self {
-            CaseRecord::Channel(_) => RECORD_CHANNEL,
-            CaseRecord::Think(_) => RECORD_THINK,
-            CaseRecord::ToolCall(_) => RECORD_TOOL_CALL,
-            CaseRecord::ToolResult(_) => RECORD_TOOL_RESULT,
-        }
-    }
-
-    /// 记录类型段的 `ArcStr` 形态（需要持有的场合，如 [`CaseCursor`]）
-    pub fn kind_arc(&self) -> ArcStr {
-        match self {
-            CaseRecord::Channel(_) => RECORD_CHANNEL_ARC.clone(),
-            CaseRecord::Think(_) => RECORD_THINK_ARC.clone(),
-            CaseRecord::ToolCall(_) => RECORD_TOOL_CALL_ARC.clone(),
-            CaseRecord::ToolResult(_) => RECORD_TOOL_RESULT_ARC.clone(),
-        }
-    }
-
-    pub fn time(&self) -> &str {
-        match self {
-            CaseRecord::Channel(r) => r.time.as_str(),
-            CaseRecord::Think(r) => r.time.as_str(),
-            CaseRecord::ToolCall(r) => r.time.as_str(),
-            CaseRecord::ToolResult(r) => r.time.as_str(),
-        }
-    }
-
-    pub fn sn(&self) -> u64 {
-        match self {
-            CaseRecord::Channel(r) => r.sn,
-            CaseRecord::Think(r) => r.sn,
-            CaseRecord::ToolCall(r) => r.sn,
-            CaseRecord::ToolResult(r) => r.sn,
-        }
-    }
-
-    /// 排序键（时间 + 序号）
-    pub fn sort_key(&self) -> (&str, u64) {
-        (self.time(), self.sn())
-    }
-}
+//
+// Case 原文副本就是记忆存储的通道记录（`ChannelRecord`）：思考/工具内容内嵌在 `content` 里，
+// 不再按记录类型分文件，也不再单独读取。
 
 // ========== Case 与 case 树 ==========
 
@@ -191,37 +134,19 @@ pub struct CaseSummaryResponse {
     pub case: CaseNode,
 }
 
-/// Case 原文副本的位置（分页游标）：与某一条原文副本一一对应，
-/// 调用方把上一条记录的 `time` / `sn` / `record_type` 原样回传
+/// Case 原文副本的位置（分页游标）：与某一条通道记录一一对应，
+/// 调用方把上一条记录的 `time` / `sn` 原样回传
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaseCursor {
     pub time: ArcStr,
     pub sn: u64,
-    /// 记录类型段（`channel` / `think` / `tool-call` / `tool-result`）：
-    /// 各类型文件的 `sn` 相互独立，同一时刻的先后只在同类型内可比
-    #[serde(deserialize_with = "deserialize_record_type")]
-    pub record_type: ArcStr,
-}
-
-/// 反序列化记录类型段：只接受四个合法值（其余按请求格式错误处理）
-fn deserialize_record_type<'de, D>(deserializer: D) -> std::result::Result<ArcStr, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let record_type = ArcStr::deserialize(deserializer)?;
-    if RECORD_KINDS.contains(&record_type.as_str()) {
-        Ok(record_type)
-    } else {
-        Err(serde::de::Error::custom(format!("未知的记录类型: {record_type}")))
-    }
 }
 
 impl CaseCursor {
-    pub fn of(record: &CaseRecord) -> Self {
+    pub fn of(record: &ChannelRecord) -> Self {
         Self {
-            time: ArcStr::from(record.time()),
-            sn: record.sn(),
-            record_type: record.kind_arc(),
+            time: record.time.clone(),
+            sn: record.sn,
         }
     }
 }
@@ -253,8 +178,8 @@ pub struct CaseRecordsTailRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsResponse {
-    /// 原文副本（四类记录按 (time, sn) 升序）
-    pub records: Vec<CaseRecord>,
+    /// 原文副本（通道记录按 (time, sn) 升序；思考/工具内容内嵌在记录 content 里）
+    pub records: Vec<Arc<ChannelRecord>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,82 +197,14 @@ pub struct TreeGetResponse {
 }
 
 // ========== 状态与重建 ==========
-
-/// 各记录类型的已处理位置（时间 + 序号）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WatermarkPoint {
-    pub time: ArcStr,
-    pub sn: u64,
-}
-
-impl Default for WatermarkPoint {
-    fn default() -> Self {
-        Self {
-            time: WATERMARK_ZERO_TIME.clone(),
-            sn: 0,
-        }
-    }
-}
-
-/// 水位起点（早于任何真实记录）
-pub const WATERMARK_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Watermark {
-    pub channel: WatermarkPoint,
-    pub think: WatermarkPoint,
-    #[serde(rename = "tool-call")]
-    pub tool_call: WatermarkPoint,
-    #[serde(rename = "tool-result")]
-    pub tool_result: WatermarkPoint,
-}
-
-impl Default for Watermark {
-    fn default() -> Self {
-        Self {
-            channel: WatermarkPoint::default(),
-            think: WatermarkPoint::default(),
-            tool_call: WatermarkPoint::default(),
-            tool_result: WatermarkPoint::default(),
-        }
-    }
-}
-
-impl Watermark {
-    /// 某记录类型段的水位（`kind` 取 [`RECORD_CHANNEL`] 等四个常量）
-    pub fn point(&self, kind: &str) -> &WatermarkPoint {
-        match kind {
-            RECORD_CHANNEL => &self.channel,
-            RECORD_THINK => &self.think,
-            RECORD_TOOL_CALL => &self.tool_call,
-            RECORD_TOOL_RESULT => &self.tool_result,
-            other => unreachable!("未知的记录类型段: {other}"),
-        }
-    }
-
-    pub fn point_mut(&mut self, kind: &str) -> &mut WatermarkPoint {
-        match kind {
-            RECORD_CHANNEL => &mut self.channel,
-            RECORD_THINK => &mut self.think,
-            RECORD_TOOL_CALL => &mut self.tool_call,
-            RECORD_TOOL_RESULT => &mut self.tool_result,
-            other => unreachable!("未知的记录类型段: {other}"),
-        }
-    }
-}
+//
+// 记忆存储只有通道记录一类，水位即通道记录的位置（时间 + 序号）。
 
 /// 通道的当前 case 指针（current.json 的一条）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCasePointer {
     pub channel: ChannelKey,
     pub case_name: ArcStr,
-}
-
-/// 通道水位（watermark.json 的一条）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelWatermark {
-    pub channel: ChannelKey,
-    pub watermark: Arc<Watermark>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,9 +226,10 @@ pub struct RebuildResponse {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use super::*;
+    use crate::Watermark;
 
     fn message() -> LocateMessage {
         LocateMessage {
@@ -388,28 +246,9 @@ mod tests {
     fn test_watermark_serde_wire_shape() {
         let wm = Watermark::default();
         let v = serde_json::to_value(&wm).unwrap();
-        assert_eq!(
-            v,
-            json!({
-                "channel": {"time": "2000-01-01 00:00:00", "sn": 0},
-                "think": {"time": "2000-01-01 00:00:00", "sn": 0},
-                "tool-call": {"time": "2000-01-01 00:00:00", "sn": 0},
-                "tool-result": {"time": "2000-01-01 00:00:00", "sn": 0}
-            })
-        );
+        assert_eq!(v, json!({"time": "2000-01-01 00:00:00", "sn": 0}));
         let back: Watermark = serde_json::from_value(v).unwrap();
         assert_eq!(back, wm);
-    }
-
-    #[test]
-    fn test_watermark_point_accessors_cover_all_kinds() {
-        let mut wm = Watermark::default();
-        for (index, kind) in RECORD_KINDS.iter().enumerate() {
-            wm.point_mut(kind).sn = index as u64 + 1;
-        }
-        for (index, kind) in RECORD_KINDS.iter().enumerate() {
-            assert_eq!(wm.point(kind).sn, index as u64 + 1, "按类型读写水位");
-        }
     }
 
     #[test]
@@ -475,27 +314,35 @@ mod tests {
 
     #[test]
     fn test_case_cursor_and_records_requests_serde() {
-        let cursor = CaseCursor::of(&CaseRecord::Think(Arc::new(ThinkRecord {
-            reasoning_content: Some(ArcStr::from("推理")),
-            thinking: None,
-            key: ArcStr::from("k1"),
+        let cursor = CaseCursor::of(&ChannelRecord {
+            meta: None,
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
+            is_self: 0,
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("你好")),
             time: ArcStr::from("2026-09-22 13:48:37"),
             sn: 7,
-        })));
+        });
         assert_eq!(cursor.time.as_str(), "2026-09-22 13:48:37");
         assert_eq!(cursor.sn, 7);
-        assert_eq!(cursor.record_type.as_str(), RECORD_THINK);
         let v = serde_json::to_value(&cursor).unwrap();
-        assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "think"}));
+        assert_eq!(v, json!({"time": "2026-09-22 13:48:37", "sn": 7}));
 
         let after: CaseRecordsAfterRequest =
             serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "after": v})).unwrap();
-        assert_eq!(after.after.record_type.as_str(), RECORD_THINK);
-        // 未知记录类型按请求格式错误处理
-        assert!(serde_json::from_value::<CaseRecordsAfterRequest>(json!({
+        assert_eq!(after.after.sn, 7);
+        // 游标只按位置比较：未知字段不参与
+        let legacy: CaseRecordsAfterRequest = serde_json::from_value(json!({
             "agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1",
-            "after": {"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "unknown"}
-        })).is_err());
+            "after": {"time": "2026-09-22 13:48:37", "sn": 7, "record_type": "channel"}
+        })).unwrap();
+        assert_eq!(legacy.after.time.as_str(), "2026-09-22 13:48:37");
 
         let tail: CaseRecordsTailRequest =
             serde_json::from_value(json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "e1", "count": 5})).unwrap();
@@ -569,8 +416,8 @@ mod tests {
     }
 
     #[test]
-    fn test_case_record_tagged_shape() {
-        let record = CaseRecord::Channel(Arc::new(ChannelRecord {
+    fn test_case_record_is_channel_record() {
+        let record = Arc::new(ChannelRecord {
             meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self"),
@@ -581,51 +428,27 @@ mod tests {
             messenger_name: ArcStr::new(),
             user_name: ArcStr::from("alice"),
             group_name: ArcStr::new(),
-            content: Content::Text(ArcStr::from("你好")),
+            content: Content::Multi(Arc::new(vec![
+                Content::Think(Arc::new(crate::ThinkRecord {
+                    reasoning_content: Some(ArcStr::from("推理")),
+                    thinking: None,
+                })),
+                Content::Text(ArcStr::from("你好")),
+            ])),
             time: ArcStr::from("2026-09-22 10:00:00"),
             sn: 3,
-        }));
-        let value = serde_json::to_value(&record).unwrap();
-        // 内部标签：record_type 与记录字段平级，字段形状与记忆存储一致
-        assert_eq!(value["record_type"], "channel");
+        });
+        let value = serde_json::to_value(record.as_ref()).unwrap();
+        // 字段形状与记忆存储的通道记录一致：不再有 record_type 标签
+        assert!(value.get("record_type").is_none());
         assert_eq!(value["sn"], 3);
-        assert_eq!(value["content"]["msg_type"], "Text");
-        let back: CaseRecord = serde_json::from_value(value).unwrap();
-        assert_eq!(back.kind(), RECORD_CHANNEL);
-        assert_eq!(back.time(), "2026-09-22 10:00:00");
-        assert_eq!(back.sn(), 3);
-        assert_eq!(back.sort_key(), ("2026-09-22 10:00:00", 3));
-
-        // 四类类型标签
-        let records = [
-            (RECORD_CHANNEL, CaseRecord::Channel(Arc::new(ChannelRecord {
-                meta: None,
-                user_id: ArcStr::from("u"), self_user_id: ArcStr::from("s"),
-                messenger_id: ArcStr::from("m"), group_id: ArcStr::from("g"),
-                is_self: 0, msg_id: ArcStr::new(),
-                messenger_name: ArcStr::new(),
-                user_name: ArcStr::from("u"), group_name: ArcStr::new(),
-                content: Content::Text(ArcStr::from("t")),
-                time: ArcStr::from("t"), sn: 1,
-            }))),
-            (RECORD_THINK, CaseRecord::Think(Arc::new(ThinkRecord {
-                reasoning_content: None, thinking: None,
-                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-            }))),
-            (RECORD_TOOL_CALL, CaseRecord::ToolCall(Arc::new(ToolCallRecord {
-                tool_name: ArcStr::from("read"), tool_params: Arc::new(Value::Null),
-                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-            }))),
-            (RECORD_TOOL_RESULT, CaseRecord::ToolResult(Arc::new(ToolResultRecord {
-                tool_result: None,
-                key: ArcStr::from("k"), time: ArcStr::from("t"), sn: 1,
-            }))),
-        ];
-        for (label, record) in records {
-            assert_eq!(serde_json::to_value(&record).unwrap()["record_type"], label);
-            assert_eq!(record.kind(), label);
-            assert_eq!(record.kind_arc().as_str(), label);
-        }
+        assert_eq!(value["content"]["msg_type"], "Multi");
+        assert_eq!(value["content"]["data"][0]["msg_type"], "Think");
+        assert_eq!(value["content"]["data"][0]["data"]["reasoning_content"], "推理");
+        let back: ChannelRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(back.time, "2026-09-22 10:00:00");
+        assert_eq!(back.sn, 3);
+        assert_eq!(back.content, record.content);
     }
 
     #[test]

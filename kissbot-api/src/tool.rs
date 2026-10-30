@@ -6,7 +6,7 @@ use serde_json::Value;
 
 
 /// 内容块注解
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Annotations {
     /// 目标受众（user / assistant，可多个）
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -27,7 +27,7 @@ pub enum Audience {
 }
 
 /// 图标（ResourceLink 可选携带）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Icon {
     pub src: ArcStr,
     #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
@@ -39,7 +39,7 @@ pub struct Icon {
 }
 
 /// 图标主题
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum IconTheme {
     Light,
@@ -47,7 +47,7 @@ pub enum IconTheme {
 }
 
 /// 嵌入资源的内容（按有无 `text` / `blob` 区分两种形状，无 type 标签）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ResourceContents {
     Text {
@@ -69,7 +69,7 @@ pub enum ResourceContents {
 }
 
 /// 工具结果内容块：`type` 即枚举变体（内部标签序列化，`type` 与其他字段平级）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// 文本块

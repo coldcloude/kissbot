@@ -11,10 +11,7 @@
 │   ├── memory-ego/               # 自我认知数据
 │   ├── memory-store/
 │   │   └── {year}-{suffix}/
-│   │       ├── channel-records-{date}.jsonl
-│   │       ├── think-records-{date}.jsonl
-│   │       ├── tool-call-records-{date}.jsonl
-│   │       └── tool-result-records-{date}.jsonl
+│   │       └── channel-records-{date}.jsonl
 │   └── memory-struct-*/          # 各记忆结构实现的数据
 ```
 
@@ -25,11 +22,8 @@
 ├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
 ├── {角色名}/                      # 角色目录：case 树与原文副本
 │   ├── tree.jsonl                # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
-│   └── cases/{case 名}/          # case 原文副本，每类一个文件
-│       ├── channel-records.jsonl
-│       ├── think-records.jsonl
-│       ├── tool-call-records.jsonl
-│       └── tool-result-records.jsonl
+│   └── cases/{case 名}/          # case 原文副本（单文件）
+│       └── channel-records.jsonl
 └── {记忆后缀}/                    # 水位与当前 case 指针（后缀 = 角色名时就是上面的角色目录）
     ├── current.json              # 各通道的当前 case 指针（字段 case_name）
     └── watermark.json            # 各通道的已处理水位
@@ -52,10 +46,7 @@ case 树按**角色**共用；原始记录、水位、当前 case 指针、模�
 
 | 文件 | 内容 |
 |------|------|
-| channel-records-{date}.jsonl | 消息通道的文本记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id、messenger/group/self 身份与可选的 meta） |
-| think-records-{date}.jsonl | 思考内容记录 |
-| tool-call-records-{date}.jsonl | 工具调用记录 |
-| tool-result-records-{date}.jsonl | 工具调用结果记录 |
+| channel-records-{date}.jsonl | 通道记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id、messenger/group/self 身份与可选的 meta）。思考/工具内容内嵌在 `content` 里，不单独成记录 |
 
 ## ChannelRecord 身份字段与语义
 
@@ -73,7 +64,7 @@ channel 记录包含完整身份字段：
 
 > **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.abstract_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-abstract.md](memory-struct-abstract.md)。
 >
-> **占位引用与详情**：思考/工具记录是独立文件中的详情记录；回复的通道记录内容（`Multi`）中携带占位引用 `{"key": "…", "time": "YYYY-MM-DD HH:mm:ss"}`（`msg_type` 为 `Think` / `ToolCall` / `ToolResult`）。一次 run 内没有文本的轮次不写通道记录，占位引用累积到有文本的回复记录中。详情记录先于携带占位引用的通道记录写入并等待落盘，引用的 `time` 即详情记录的写入时间；读取方按 `time` 定位当天的详情文件、按 `key` 取出详情。
+> **内嵌的思考/工具内容**：`Content` 的 `Think` / `ToolCall` / `ToolResult` 分支直接保存对应的 `ThinkRecord` / `ToolCallRecord` / `ToolResultRecord`（不含 `key` / `time` / `sn`）。agent 在一次 run 内把思考与工具内容累积到回复通道记录的 `Multi` 中，随该通道记录一起写入并等待落盘；没有文本的轮次不写通道记录，累积的思考/工具内容随之丢弃。工具调用与结果按它们在 `Multi` 中的先后顺序配对。
 >
 > **is_self 与 self_user_id 不同**：is_self 只在 agent 实际发送消息时为 1（agent 经 msg_id 回显匹配识别并过滤自身回声后确定），不由 `user_id == self_user_id` 推导。其他人使用 agent 绑定的用户发送消息时，`user_id == self_user_id`，但 `is_self == 0`。
 

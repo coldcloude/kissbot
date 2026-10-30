@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use kissbot_api::{
     CaseCursor, CaseListResponse, CaseNode, CaseRecordsResponse, CaseSummaryResponse,
     ChannelCasePointer, ChannelKey, LocateMessage, LocateRequest, LocateResponse, LocatedGroup,
-    RebuildResponse, RecordNotification, TreeGetResponse, RECORD_CHANNEL,
+    RebuildResponse, RecordNotification, TreeGetResponse,
 };
 use tracing::{info, warn};
 
@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::locate::merge_located;
 use crate::model::DecisionModel;
 use crate::records::{
-    PendingMessage, StoreView, list_store_suffixes, read_case_records, read_store_records,
+    StoreMessage, StoreView, list_store_suffixes, read_case_records, read_store_records,
     records_after, records_tail,
 };
 use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager, AgentRoleState, role_event_of};
@@ -55,16 +55,12 @@ impl AbstractService {
 
     /// 处理一条新数据通知：只登记「哪个记忆后缀哪个通道有变化」，不做任何计算。
     ///
-    /// 通道消息通知携带通道，只标记该通道；思考/工具通知（以及未带通道的通知）无法确定通道，
-    /// 标记该记忆后缀的全部通道，查询时按它全部通道处理。
-    pub async fn on_notification(&self, kind: &str, notification: &RecordNotification) -> Result<()> {
+    /// 通知一定携带通道：只标记该通道，查询时按它处理。
+    pub async fn on_notification(&self, notification: &RecordNotification) -> Result<()> {
         let agent_role = AgentRole::new(notification.agent_id.clone(), notification.role_event.role_name.clone());
         let handle = self.open(&agent_role).await?;
         let mut state = handle.state.lock().await;
-        match notification.channel.as_ref().filter(|_| kind == RECORD_CHANNEL) {
-            Some(channel) => state.mark_channel(&notification.role_event, channel),
-            None => state.mark_role_event(&notification.role_event),
-        }
+        state.mark_channel(&notification.role_event, &notification.channel);
         Ok(())
     }
 
@@ -94,7 +90,7 @@ impl AbstractService {
         state: &mut AgentRoleState,
         event_id: Option<ArcStr>,
         channel: &ChannelKey,
-        pending: &[PendingMessage],
+        pending: &[StoreMessage],
         messages: &[LocateMessage],
     ) -> Result<(Vec<ArchiveOutcome>, Vec<LocatedGroup>)> {
         let channel_messages: Vec<&LocateMessage> = messages.iter().collect();
@@ -306,7 +302,7 @@ impl AbstractService {
     }
 
     /// 读取 case 原文副本（case 不存在时报错，与摘要查询一致）；只读，不触发归档
-    async fn read_case(&self, agent_role: &AgentRole, case_name: &str) -> Result<Vec<kissbot_api::CaseRecord>> {
+    async fn read_case(&self, agent_role: &AgentRole, case_name: &str) -> Result<Vec<Arc<kissbot_api::ChannelRecord>>> {
         let handle = self.open(agent_role).await?;
         {
             let state = handle.state.lock().await;
@@ -361,7 +357,7 @@ fn sum_outcomes(outcomes: Vec<ArchiveOutcome>) -> ArchiveOutcome {
 }
 
 /// 原文副本响应（统一装配成 Arc）
-fn response_of(records: Vec<kissbot_api::CaseRecord>) -> CaseRecordsResponse {
+fn response_of(records: Vec<Arc<kissbot_api::ChannelRecord>>) -> CaseRecordsResponse {
     CaseRecordsResponse { records }
 }
 
@@ -377,8 +373,7 @@ mod tests {
     use crate::agent_role::AgentRole;
     use crate::stub::StubModel;
     use kissbot_api::{
-        CaseRecord, ChannelCasePointer, Content, LocateMessage, RoleEvent, TreeGetResponse,
-        RECORD_THINK,
+        ChannelCasePointer, ChannelRecord, Content, LocateMessage, RoleEvent, TreeGetResponse,
     };
     use crate::tree::{EVENT_CASE_PREFIX, event_case_name, is_role_case};
     use std::collections::HashSet;
@@ -490,17 +485,10 @@ mod tests {
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
 
-    /// 追加一条思考记录：先写思考记录本体，再写引用它的占位通道记录
-    async fn append_store_think(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, key: &str, time: &str, sn: u64, text: &str) {
-        let think = serde_json::json!({
-            "reasoning_content": text,
-            "thinking": null,
-            "key": key,
-            "time": time,
-            "sn": sn
-        });
-        append_store_line(root, agent_id, suffix, "think", think, time).await;
-        let placeholder = serde_json::json!({
+    /// 追加一条带内嵌思考内容的通道记录（思考内容随通道记录保存，不再有独立文件）
+    async fn append_store_think(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, time: &str, sn: u64, text: &str) {
+        let record = serde_json::json!({
+            "msg_id": "",
             "user_id": channel.self_user_id.as_str(),
             "self_user_id": channel.self_user_id.as_str(),
             "messenger_id": channel.messenger_id.as_str(),
@@ -509,23 +497,11 @@ mod tests {
             "messenger_name": "",
             "user_name": "",
             "group_name": "",
-            "content": {"msg_type": "Think", "data": {"key": key, "time": time}},
+            "content": {"msg_type": "Think", "data": {"reasoning_content": text}},
             "time": time,
             "sn": sn
         });
-        append_store_line(root, agent_id, suffix, "channel", placeholder, time).await;
-    }
-
-    /// 追加一条没有占位通道记录的思考记录（key 无人认领）
-    async fn append_store_orphan_think(root: &Path, agent_id: &str, suffix: &str, time: &str, sn: u64, key: &str) {
-        let think = serde_json::json!({
-            "reasoning_content": "无占位记录",
-            "thinking": null,
-            "key": key,
-            "time": time,
-            "sn": sn
-        });
-        append_store_line(root, agent_id, suffix, "think", think, time).await;
+        append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
 
     struct Fixture {
@@ -553,31 +529,23 @@ mod tests {
             agent_id: ArcStr::from("0"),
             role_event: role_event.clone(),
             time: ArcStr::from("2026-09-22 00:00:00"),
-            is_self: Some(is_self),
-            channel: Some(channel.clone()),
+            is_self,
+            channel: channel.clone(),
         }
     }
 
     /// 登记某通道有新数据
     async fn notify(f: &Fixture, role_event: Arc<RoleEvent>, channel: &ChannelKey) {
         f.service
-            .on_notification(RECORD_CHANNEL, &channel_notification(role_event, channel, 0))
+            .on_notification(&channel_notification(role_event, channel, 0))
             .await
             .unwrap();
     }
 
-    /// 登记整个记忆后缀有新数据（思考/工具通知的形态）
+    /// 登记整个记忆后缀有新数据（启动恢复 / 通知重连的形态）
     async fn notify_role_event(f: &Fixture, role_event: Arc<RoleEvent>) {
-        f.service
-            .on_notification(RECORD_THINK, &RecordNotification {
-                agent_id: ArcStr::from("0"),
-                role_event: role_event.clone(),
-                time: ArcStr::from("2026-09-22 00:00:00"),
-                is_self: None,
-                channel: None,
-            })
-            .await
-            .unwrap();
+        let handle = f.service.manager().open(agent_role(role_event.as_ref())).await.unwrap();
+        handle.state.lock().await.mark_role_event(role_event.as_ref());
     }
 
     /// 手动归档一次（`/abstract/rebuild` 的 rebuild=false 路径）
@@ -608,7 +576,7 @@ mod tests {
         let handle = f.service.manager().get(&agent_role(role_event)).expect("角色已加载");
         let state = handle.state.lock().await;
         let watermark = state.watermark(role_event, channel);
-        (watermark.channel.time.as_str().to_string(), watermark.channel.sn)
+        (watermark.time.as_str().to_string(), watermark.sn)
     }
 
     /// 某通道待处理记录条数（水位之后、归属该通道）
@@ -633,7 +601,7 @@ mod tests {
     }
 
     /// case 原文副本
-    async fn records_of(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Vec<CaseRecord> {
+    async fn records_of(f: &Fixture, role_event: &RoleEvent, case_name: &str) -> Vec<Arc<ChannelRecord>> {
         f.service.case_records(&agent_role(role_event), case_name).await.unwrap().records
     }
 
@@ -985,33 +953,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn think_records_follow_their_channel_by_key() {
+    async fn think_content_follows_its_channel_message() {
         let f = fixture().await;
         let root = f.service.root();
         let (a, b) = (channel_a(), channel_b());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
-        append_store_think(&root, "0", "dev", &a, "keyA", "2099-01-01 10:01:00", 2, "A 的思考").await;
+        append_store_think(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, "A 的思考").await;
         append_store_channel(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "另一个通道").await;
-        append_store_think(&root, "0", "dev", &b, "keyB", "2099-01-01 11:01:00", 4, "B 的思考").await;
+        append_store_think(&root, "0", "dev", &b, "2099-01-01 11:01:00", 4, "B 的思考").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批");
-        let think_keys = |records: Vec<CaseRecord>| -> Vec<String> {
+        let think_texts = |records: Vec<Arc<ChannelRecord>>| -> Vec<String> {
             records
                 .iter()
-                .filter_map(|r| match r {
-                    CaseRecord::Think(t) => Some(t.key.as_str().to_string()),
+                .filter_map(|record| match &record.content {
+                    Content::Think(t) => t.reasoning_content.as_ref().map(|text| text.as_str().to_string()),
                     _ => None,
                 })
                 .collect()
         };
         let mut all = vec![
-            think_keys(records_of(&f, &role_event("dev", None), "role-case").await),
-            think_keys(records_of(&f, &role_event("dev", None), "role-case-2").await),
+            think_texts(records_of(&f, &role_event("dev", None), "role-case").await),
+            think_texts(records_of(&f, &role_event("dev", None), "role-case-2").await),
         ];
         all.sort();
-        assert_eq!(all, vec![vec!["keyA".to_string()], vec!["keyB".to_string()]]);
+        assert_eq!(all, vec![vec!["A 的思考".to_string()], vec!["B 的思考".to_string()]]);
 
         // 分组输入以消息为单位：思考内容内嵌在所属消息的 content 里，不作为独立条目送模型
         let prompts = f.model.prompts();
@@ -1022,23 +990,6 @@ mod tests {
             prompt_a
         );
         assert!(!prompt_a.contains("(思考)"), "思考不再作为独立条目参与分组");
-    }
-
-    #[tokio::test]
-    async fn unclaimed_think_records_stay_out_of_channel_batches() {
-        let f = fixture().await;
-        let root = f.service.root();
-        let a = channel_a();
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问一").await;
-        append_store_orphan_think(&root, "0", "dev", "2099-01-01 10:01:00", 2, "孤儿").await;
-        append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:02:00", 3, 1, "答").await;
-        notify(&f, Arc::new(role_event("dev", None)), &a).await;
-        query(&f, &role_event("dev", None)).await;
-
-        assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0, "该通道记录已处理完");
-        let records = records_of(&f, &role_event("dev", None), "role-case").await;
-        assert_eq!(records.len(), 2, "孤儿思考记录不属于任何通道，不进 case");
-        assert!(!records.iter().any(|r| matches!(r, CaseRecord::Think(_))));
     }
 
     /// 定位用消息（指定时间、is_self）
@@ -1431,22 +1382,22 @@ mod tests {
         // 全部原文
         let all = f.service.case_records(&agent_role(role_event("dev", None)), "role-case").await.unwrap();
         assert_eq!(all.records.len(), 2);
-        assert_eq!(all.records[0].sn(), 1);
-        assert_eq!(all.records[1].sn(), 2);
+        assert_eq!(all.records[0].sn, 1);
+        assert_eq!(all.records[1].sn, 2);
 
-        // 指定之后：把上一条记录的 time/sn/record_type 当游标回传
+        // 指定之后：把上一条记录的 time/sn 当游标回传
         let after = f
             .service
             .case_records_after(&agent_role(role_event("dev", None)), "role-case", &CaseCursor::of(&all.records[0]))
             .await
             .unwrap();
         assert_eq!(after.records.len(), 1);
-        assert_eq!(after.records[0].sn(), 2);
+        assert_eq!(after.records[0].sn, 2);
 
         // 结尾若干条（升序返回；0 条为空）
         let tail = f.service.case_records_tail(&agent_role(role_event("dev", None)), "role-case", 1).await.unwrap();
         assert_eq!(tail.records.len(), 1);
-        assert_eq!(tail.records[0].sn(), 2);
+        assert_eq!(tail.records[0].sn, 2);
         assert!(f.service.case_records_tail(&agent_role(role_event("dev", None)), "role-case", 0).await.unwrap().records.is_empty());
 
         // case 不存在：摘要与原文查询都报错

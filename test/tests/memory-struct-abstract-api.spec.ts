@@ -109,7 +109,7 @@ async function waitForWatermark(role: string, selfUser: string, channelTime: str
   await waitFor(() => {
     const file = watermarkFile(role);
     const entry = (file?.channels ?? []).find((c: any) => c.channel?.self_user_id === selfUser);
-    return entry?.watermark?.channel?.time === channelTime;
+    return entry?.watermark?.time === channelTime;
   });
   return watermarkFile(role);
 }
@@ -191,6 +191,21 @@ async function pushChannelIn(
   msgId = '',
   meta?: unknown,
 ) {
+  await pushChannelContent(request, role, channel, user, isSelf, { msg_type: 'Text', data: text }, time, msgId, meta);
+}
+
+/** 往指定通道推送一条任意内容的通道消息（思考/工具内容内嵌在 content 里） */
+async function pushChannelContent(
+  request: APIRequestContext,
+  role: string,
+  channel: TestChannel,
+  user: string,
+  isSelf: number,
+  content: unknown,
+  time: string,
+  msgId = '',
+  meta?: unknown,
+) {
   const resp = await apiPost(request, STORE_BASE, '/store/channel', {
     requests: [{
       msg_id: msgId,
@@ -204,7 +219,7 @@ async function pushChannelIn(
       messenger_name: '',
       user_name: user,
       group_name: '',
-      content: { msg_type: 'Text', data: text },
+      content,
       time,
       ...(meta === undefined ? {} : { meta }),
     }],
@@ -215,30 +230,14 @@ async function pushChannelIn(
 
 /**
  * 等待记录真正落盘：memory-store 的写入走批量刷盘（先入缓冲、后台任务延时落盘），
- * 推送接口返回不代表记录已可读；触发归档前必须先等到占位记录与思考记录出现在存储文件里。
+ * 推送接口返回不代表记录已可读；触发归档前必须先等到记录出现在存储文件里。
  */
-async function waitForStoreFile(role: string, kind: 'channel' | 'think', time: string, marker: string) {
+async function waitForStoreFile(role: string, time: string, marker: string) {
   const date = time.slice(0, 10);
   const year = date.slice(0, 4);
-  const path = join(WORKSPACE, 'memory-data', AGENT, 'memory-store', `${year}-${role}`, `${kind}-records-${date}.jsonl`);
+  const path = join(WORKSPACE, 'memory-data', AGENT, 'memory-store', `${year}-${role}`, `channel-records-${date}.jsonl`);
   await waitFor(() => Promise.resolve(existsSync(path) && readFileSync(path, 'utf8').includes(marker)));
 }
-
-/** 推送一条思考记录（key 关联同 key 的占位通道消息） */
-async function pushThink(request: APIRequestContext, role: string, key: string, text: string, time: string) {
-  const resp = await apiPost(request, STORE_BASE, '/store/think', {
-    requests: [{
-      agent_id: AGENT,
-      role_event: roleEventOf(role),
-      reasoning_content: text,
-      key,
-      time,
-    }],
-    force: 0,
-  });
-  expect(resp.success, `推送思考记录失败: ${JSON.stringify(resp)}`).toBe(true);
-}
-
 
 test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
 
@@ -274,7 +273,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     await pushChannel(request, 'bot', 1, '第一个回答', t1);
     await pushChannel(request, 'alice', 0, '下一个问题', t2);
     // 记录真正落盘后再断言（推送接口返回不代表已可读）
-    await waitForStoreFile(ROLE, 'channel', t2, '下一个问题');
+    await waitForStoreFile(ROLE, t2, '下一个问题');
 
     // 查询只读：不触发归档（case 树仍为空、没有水位状态文件）
     const before = await treeOf(request, ROLE);
@@ -302,7 +301,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const watermark = await waitForWatermark(ROLE, SELF_USER, t2);
     expect(watermark.channels).toHaveLength(1);
     expect(watermark.channels[0].channel.group_id).toBe(GROUP);
-    expect(watermark.channels[0].watermark.channel.sn).toBe(3);
+    expect(watermark.channels[0].watermark.sn).toBe(3);
   });
 
   // TC-03 定位：可带多条消息，返回消息涉及的全部 case（不返回摘要与原文）
@@ -339,11 +338,11 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(all.data.records).toHaveLength(3);
     expect(all.data.records.map((r: any) => r.is_self)).toEqual([0, 1, 0]);
 
-    // 指定之后：把上一条记录的 time / sn / record_type 当游标回传
+    // 指定之后：把上一条记录的 time / sn 当游标回传
     const first = all.data.records[0];
     const after = await apiPost(request, ABSTRACT_BASE, '/abstract/case/records-after', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
-      after: { time: first.time, sn: first.sn, record_type: first.record_type },
+      after: { time: first.time, sn: first.sn },
     });
     expect(after.success).toBe(true);
     expect(after.data.records).toHaveLength(2);
@@ -447,8 +446,8 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const watermark = await waitForWatermark(role, 'selfA', tA[2]);
     expect(watermark.channels).toHaveLength(2);
     const watermarkOf = (selfUser: string) => watermark.channels.find((c: any) => c.channel.self_user_id === selfUser);
-    expect(watermarkOf('selfA').watermark.channel.sn).toBe(3);
-    expect(watermarkOf('selfB').watermark.channel.sn).toBe(5, '两个通道共用同一个记录文件的 sn 序列');
+    expect(watermarkOf('selfA').watermark.sn).toBe(3);
+    expect(watermarkOf('selfB').watermark.sn).toBe(5, '两个通道共用同一个记录文件的 sn 序列');
 
     // 一次定位只针对一个通道：两个通道各定位一次，各自命中自己的当前 case
     const fromA = await locateMessages(request, role, channelA, [{ msgId: 'a-1', text: '继续 A 的话题' }]);
@@ -459,54 +458,49 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(fromB.groups[0].messages).toEqual(['b-1']);
   });
 
-  // TC-08 思考记录按 key 归属通道：key 关联的占位通道消息决定它属于哪个通道
-  test('TC-08: 思考记录按 key 归属所在通道', async ({ request }) => {
+  // TC-08 思考内容随所在通道记录保存：内嵌在回复消息的 content 里，不单独成记录
+  test('TC-08: 思考内容随所在通道记录保存', async ({ request }) => {
     const role = 'dev3';
     const channelA: TestChannel = { messenger: 'web', selfUser: 'selfA', group: 'gA' };
     const channelB: TestChannel = { messenger: 'web', selfUser: 'selfB', group: 'gB' };
 
-    /** 一段对话：本人消息 → 思考记录 + 回复消息（Multi 中带占位引用）→ 非本人消息 */
-    const pushConversation = async (channel: TestChannel, key: string, base: number) => {
+    /** 一段对话：提问 → 带内嵌思考内容的回复（Multi）→ 追问 */
+    const pushConversation = async (channel: TestChannel, marker: string, base: number) => {
       const t = (offset: number) => timeAt(base + offset);
       await pushChannelIn(request, role, channel, 'alice', 0, '提问', t(0));
-      await pushChannelIn(request, role, channel, 'bot', 1, '回答', t(1));
-      // 详情先写，带占位引用的回复记录后写（与 nexus 的写入顺序一致）
-      const thinkTime = t(2);
-      await pushThink(request, role, key, `${key} 的思考内容`, thinkTime);
-      const placeholder = await apiPost(request, STORE_BASE, '/store/channel', {
-        requests: [{
-          agent_id: AGENT, role_event: roleEventOf(role), messenger_id: channel.messenger,
-          user_id: channel.selfUser, self_user_id: channel.selfUser, group_id: channel.group,
-          is_self: 1, messenger_name: '', user_name: '', group_name: '',
-          content: {
-            msg_type: 'Multi',
-            data: [{ msg_type: 'Think', data: { key, time: thinkTime } }],
-          },
-          time: thinkTime,
-        }],
-        force: 0,
-      });
-      expect(placeholder.success, `推送占位记录失败: ${JSON.stringify(placeholder)}`).toBe(true);
-      await waitForStoreFile(role, 'channel', thinkTime, key);
-      await waitForStoreFile(role, 'think', thinkTime, key);
-      await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(3));
+      await pushChannelContent(request, role, channel, channel.selfUser, 1, {
+        msg_type: 'Multi',
+        data: [
+          { msg_type: 'Think', data: { reasoning_content: marker } },
+          { msg_type: 'Text', data: '回答' },
+        ],
+      }, t(1));
+      await waitForStoreFile(role, t(1), marker);
+      await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(2));
     };
 
-    await pushConversation(channelA, 'keyA', 100);
-    await pushConversation(channelB, 'keyB', 200);
+    await pushConversation(channelA, 'A 的思考内容', 100);
+    await pushConversation(channelB, 'B 的思考内容', 200);
 
-    // 每个通道：3 条通道消息 + 占位记录 + 思考记录
-    await waitForCaseRecords(request, role, 'role-case', 5);
-    await waitForCaseRecords(request, role, 'role-case-2', 5);
+    // 每个通道 3 条通道记录（提问、带思考的回复、追问），思考内容不再单独成记录
+    await waitForCaseRecords(request, role, 'role-case', 3);
+    await waitForCaseRecords(request, role, 'role-case-2', 3);
 
-    const thinkKeys = async (caseName: string): Promise<string[]> => {
+    const thinkTexts = async (caseName: string): Promise<string[]> => {
       const resp = await apiPost(request, ABSTRACT_BASE, '/abstract/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
       expect(resp.success).toBe(true);
-      return resp.data.records.filter((r: any) => r.record_type === 'think').map((r: any) => r.key);
+      const found: string[] = [];
+      for (const record of resp.data.records) {
+        const items = record.content.msg_type === 'Multi' ? record.content.data : [record.content];
+        for (const item of items) {
+          if (item.msg_type === 'Think' && item.data.reasoning_content) found.push(item.data.reasoning_content);
+        }
+      }
+      return found;
     };
-    const [keys1, keys2] = [await thinkKeys('role-case'), await thinkKeys('role-case-2')];
-    expect(keys1).toEqual(['keyA'], 'e1 只含 A 通道的思考记录');
-    expect(keys2).toEqual(['keyB'], 'e2 只含 B 通道的思考记录');
+    const [texts1, texts2] = [await thinkTexts('role-case'), await thinkTexts('role-case-2')];
+    expect(texts1).toEqual(['A 的思考内容'], 'role-case 只含 A 通道的思考内容');
+    expect(texts2).toEqual(['B 的思考内容'], 'role-case-2 只含 B 通道的思考内容');
   });
 
   // TC-09 定位即处理：新消息与该通道的待归档记录合并后一并分析（新消息在 locate 时尚未写入记忆，无需去重）
@@ -520,8 +514,8 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0, 'msg-1');
     await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1, 'msg-2');
     // 推送接口返回不代表记录已可读：先等记录真正落盘
-    await waitForStoreFile(role, 'channel', t0, '定位前的提问');
-    await waitForStoreFile(role, 'channel', t1, '定位前的回答');
+    await waitForStoreFile(role, t0, '定位前的提问');
+    await waitForStoreFile(role, t1, '定位前的回答');
 
     // 定位请求：前两条与该通道的待归档记录同 msg_id，第三条是新消息；三者都参与同一次分组。
     // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到 case。
@@ -545,7 +539,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     expect(records.map((r: any) => r.msg_id)).toEqual(['msg-1', 'msg-2']);
     // 水位推进到定位前最后一条记录（新消息不推进水位）
     const watermark = await waitForWatermark(role, 'self4', t1);
-    expect(watermark.channels[0].watermark.channel.sn).toBe(2);
+    expect(watermark.channels[0].watermark.sn).toBe(2);
   });
 
   // TC-10 定位新话题：角色树里还没有 case 时也建出 case（记忆条数 0，但名称与摘要当场就有）
@@ -578,7 +572,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     const t0 = timeAt(3000);
     const t1 = timeAt(3001);
     await pushChannelIn(request, role, channel, 'alice', 0, '初始话题', t0, 'meta-1');
-    await waitForStoreFile(role, 'channel', t0, '初始话题');
+    await waitForStoreFile(role, t0, '初始话题');
     // 先归档出 role-case
     const first = await waitForCaseRecords(request, role, 'role-case', 1);
     expect(first.map((r: any) => r.content.data)).toEqual(['初始话题']);
@@ -587,7 +581,7 @@ test.describe.serial('memory-struct-abstract 摘要记忆测试', () => {
     await pushChannelIn(request, role, channel, 'alice', 0, '完全不同的话题', t1, 'meta-2', {
       abstract_memory: { case_name: 'role-case' },
     });
-    await waitForStoreFile(role, 'channel', t1, '完全不同的话题');
+    await waitForStoreFile(role, t1, '完全不同的话题');
     const records = await waitForCaseRecords(request, role, 'role-case', 2);
     expect(records.map((r: any) => r.content.data)).toEqual(['初始话题', '完全不同的话题']);
     expect(records[1].meta, '原文副本保留 meta').toEqual({ abstract_memory: { case_name: 'role-case' } });

@@ -10,7 +10,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{ChannelUser, Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -25,8 +25,7 @@ use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
-use crate::types::build_memory_think;
-use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_memory_tool_call, build_memory_tool_result, channel_request_from_incoming, channel_request_from_outgoing}};
+use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_think_record, build_tool_call_record, build_tool_result_record, channel_request_from_incoming, channel_request_from_outgoing}};
 
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
@@ -236,8 +235,8 @@ pub async fn send_outgoing(
     }
 }
 
-/// 本次 run 的下行内容：本轮没有文本时返回 None（不发送，累积的占位内容留到下一轮）；
-/// 有文本时把累积的占位内容与文本合并为 `Multi`（没有占位内容则直接 `Text`），并清空累积。
+/// 本次 run 的下行内容：本轮没有文本时返回 None（不发送，累积的思考/工具内容留到下一轮）；
+/// 有文本时把累积的思考/工具内容与文本合并为 `Multi`（没有累积内容则直接 `Text`），并清空累积。
 pub fn outgoing_content(pending_contents: &mut Vec<Content>, text: Option<ArcStr>) -> Option<Content> {
     let text = text?;
     if pending_contents.is_empty() {
@@ -263,32 +262,24 @@ pub async fn call_tool(mut tool_call: ToolCall) -> (ToolCall, Option<Error>) {
     }
 }
 
-/// 带记忆写入的工具调用结果：详情落盘后返回引用它们的占位内容（ToolCall，成功时再跟 ToolResult）
+/// 带记忆内容的工具调用结果：ToolCall 内容在执行前构造，成功时在其后追加 ToolResult 内容
 struct MemoryToolCall {
     tool_call: ToolCall,
-    placeholders: Vec<Content>,
+    contents: Vec<Content>,
     error: Option<Error>,
 }
 
-async fn call_tool_with_memory(tool_call: ToolCall, memory_key: &MemoryKey) -> MemoryToolCall {
-    let nexus = Nexus::get();
-    // 1. 工具调用 key：UUID（ToolCall/ToolResult 详情与占位记录同 key 关联）
-    let tool_key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-    // 2. 记忆写入：ToolCallRequest.key 与 ToolResultRequest.key 用同一 key
-    let tool_call_request = build_memory_tool_call(memory_key, tool_key.clone(), &tool_call);
-    let call_ref = Arc::new(DetailRef::new(tool_call_request.key.clone(), tool_call_request.time.clone()));
-    nexus.memory_store_client.push_tool_call(tool_call_request).await;
-    // 3. 执行工具
+async fn call_tool_with_memory(tool_call: ToolCall) -> MemoryToolCall {
+    // 1. 工具调用内容：执行前构造，随回复的通道记录一起落盘
+    let contents = vec![Content::ToolCall(Arc::new(build_tool_call_record(&tool_call)))];
+    // 2. 执行工具
     let (tool_call, error) = call_tool(tool_call).await;
-    let mut placeholders = vec![Content::ToolCall(call_ref)];
-    // 4. 成功时记忆写入，并在 ToolCall 占位之后追加 ToolResult 占位
+    let mut contents = contents;
+    // 3. 成功时在 ToolCall 内容之后追加 ToolResult 内容（按 Multi 中的先后顺序配对）
     if error.is_none() {
-        let tool_result_request = build_memory_tool_result(memory_key, tool_key, &tool_call);
-        let result_ref = Arc::new(DetailRef::new(tool_result_request.key.clone(), tool_result_request.time.clone()));
-        nexus.memory_store_client.push_tool_result(tool_result_request).await;
-        placeholders.push(Content::ToolResult(result_ref));
+        contents.push(Content::ToolResult(Arc::new(build_tool_result_record(&tool_call))));
     }
-    MemoryToolCall { tool_call, placeholders, error }
+    MemoryToolCall { tool_call, contents, error }
 }
 
 pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>) {
@@ -305,27 +296,26 @@ pub async fn call_tools(tool_calls: Vec<ToolCall>) -> (Vec<ToolCall>, Vec<Error>
     (tool_calls, errors)
 }
 
-/// 并发执行带记忆写入的 tool calls；详情全部落盘后按返回顺序收集占位内容。
+/// 并发执行带记忆内容的 tool calls；按返回顺序收集 ToolCall/ToolResult 内容。
 ///
-/// 工具调用本身并发执行；占位内容统一在 join_all 完成后收集，避免并发写入。
+/// 工具调用本身并发执行；内容统一在 join_all 完成后收集，避免并发写入。
 pub async fn call_tools_with_memory(
     tool_calls: Vec<ToolCall>,
-    memory_key: &MemoryKey,
 ) -> (Vec<ToolCall>, Vec<Content>, Vec<Error>) {
     let results: Vec<MemoryToolCall> = future::join_all(
-        tool_calls.into_iter().map(|tool_call| call_tool_with_memory(tool_call, memory_key))
+        tool_calls.into_iter().map(call_tool_with_memory)
     ).await;
     let mut tool_calls = Vec::with_capacity(results.len());
-    let mut placeholders = Vec::new();
+    let mut contents = Vec::new();
     let mut errors = Vec::new();
     for result in results {
-        placeholders.extend(result.placeholders);
+        contents.extend(result.contents);
         if let Some(error) = result.error {
             errors.push(error);
         }
         tool_calls.push(result.tool_call);
     }
-    (tool_calls, placeholders, errors)
+    (tool_calls, contents, errors)
 }
 
 pub fn retrieve_tool_messages(tool_calls: Vec<ToolCall>, multi: bool) -> Vec<Message> {
@@ -609,22 +599,19 @@ impl DefaultAgenticLoopPipelineWithMemory {
                 messages, tools, &reducer, tokens_usage).await?
         };
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
-        // 推送 think 到 memory-store（reasoning_content + thinking 双字段；详情落盘后把占位引用累积到本次 run）
-        // 任一有值才写，都 None 跳过
+        // 思考内容累积到本次 run（reasoning_content + thinking 双字段）；任一有值才累积，都 None 跳过。
+        // 它随最终回复的通道记录一起落盘，不单独写入记忆。
         if res.reasoning_content.is_some() || res.thinking.is_some() {
-            let key = ArcStr::from(uuid::Uuid::new_v4().to_string());
-            let think_request = build_memory_think(self.memory_key.as_ref(), key, res.reasoning_content.clone(), res.thinking.clone());
-            let think_ref = Arc::new(DetailRef::new(think_request.key.clone(), think_request.time.clone()));
-            Nexus::get().memory_store_client.push_think(think_request).await;
-            pending_contents.push(Content::Think(think_ref));
+            let record = build_think_record(res.reasoning_content.clone(), res.thinking.clone());
+            pending_contents.push(Content::Think(Arc::new(record)));
         }
         // 保存回复的消息
         let _ = self.session.context_append(vec![retrieve_assistant_message(&mut res)]).await;
         // 遍历执行 tool call
         let mut next = false;
         let errors = if let Some(tool_calls) = res.tool_calls.take() {
-            let (tool_calls, tool_placeholders, errors) = call_tools_with_memory(tool_calls, self.memory_key.as_ref()).await;
-            pending_contents.extend(tool_placeholders);
+            let (tool_calls, tool_contents, errors) = call_tools_with_memory(tool_calls).await;
+            pending_contents.extend(tool_contents);
             if !tool_calls.is_empty() {
                 next = true;
                 let tool_messages = retrieve_tool_messages(tool_calls, false);
@@ -634,7 +621,7 @@ impl DefaultAgenticLoopPipelineWithMemory {
         } else {
             vec![]
         };
-        // output channel：只有本轮有文本才发送，本轮及之前累积的占位内容与文本一起作为下行记录写入
+        // output channel：只有本轮有文本才发送，本轮及之前累积的思考/工具内容与文本一起作为下行记录写入
         if let Some(out_channel) = outgoing_channel(&self.session_id).await {
             if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
                 send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, None).await;
@@ -909,13 +896,23 @@ impl PipelineManager {
 mod tests {
     use super::*;
 
-    fn detail_ref(key: &str) -> Arc<DetailRef> {
-        Arc::new(DetailRef::new(ArcStr::from(key), ArcStr::from("2026-09-22 10:00:00")))
+    fn think_content() -> Content {
+        Content::Think(Arc::new(kissbot_api::ThinkRecord {
+            reasoning_content: Some(ArcStr::from("推理")),
+            thinking: None,
+        }))
+    }
+
+    fn tool_call_content() -> Content {
+        Content::ToolCall(Arc::new(kissbot_api::ToolCallRecord {
+            tool_name: ArcStr::from("get_date"),
+            tool_params: Arc::new(serde_json::json!({})),
+        }))
     }
 
     #[test]
     fn outgoing_content_waits_for_text_and_drains_pending() {
-        let mut pending = vec![Content::Think(detail_ref("k1")), Content::ToolCall(detail_ref("k2"))];
+        let mut pending = vec![think_content(), tool_call_content()];
         assert!(outgoing_content(&mut pending, None).is_none(), "没有文本不发送");
         assert_eq!(pending.len(), 2, "累积内容保留到下一轮");
 

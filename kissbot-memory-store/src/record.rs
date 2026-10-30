@@ -15,7 +15,7 @@ use tokio::io::{AsyncBufReadExt};
 use tokio::sync::Mutex;
 use tracing::*;
 
-use kissbot_memory::data::{ChannelParser, FileHook, RequestParser, ThinkParser, ToolCallParser, ToolResultParser};
+use kissbot_memory::data::{ChannelParser, FileHook, RequestParser};
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::memory::*;
 use crate::error::{Error, Result};
@@ -221,51 +221,6 @@ impl FileHook<Arc<RecordKey>, ChannelRecord> for ChannelFileIndexHook {
     }
 }
 
-#[derive(Clone)]
-struct ThinkFileIndexHook;
-
-impl FileHook<Arc<RecordKey>, ThinkRecord> for ThinkFileIndexHook {
-    fn on_append(&self, key: &Arc<RecordKey>, records: &[ThinkRecord]) {
-        MemoryIndexer::get().mark_think_obsolete(key.clone());
-        crate::notify::publish_think(key, records);
-    }
-
-    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ThinkRecord]) {
-        MemoryIndexer::get().mark_think_all_obsolete(key.clone());
-        crate::notify::publish_think(key, records);
-    }
-}
-
-#[derive(Clone)]
-struct ToolCallFileIndexHook;
-
-impl FileHook<Arc<RecordKey>, ToolCallRecord> for ToolCallFileIndexHook {
-    fn on_append(&self, key: &Arc<RecordKey>, records: &[ToolCallRecord]) {
-        MemoryIndexer::get().mark_tool_call_obsolete(key.clone());
-        crate::notify::publish_tool_call(key, records);
-    }
-
-    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ToolCallRecord]) {
-        MemoryIndexer::get().mark_tool_call_all_obsolete(key.clone());
-        crate::notify::publish_tool_call(key, records);
-    }
-}
-
-#[derive(Clone)]
-struct ToolResultFileIndexHook;
-
-impl FileHook<Arc<RecordKey>, ToolResultRecord> for ToolResultFileIndexHook {
-    fn on_append(&self, key: &Arc<RecordKey>, records: &[ToolResultRecord]) {
-        MemoryIndexer::get().mark_tool_result_obsolete(key.clone());
-        crate::notify::publish_tool_result(key, records);
-    }
-
-    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ToolResultRecord]) {
-        MemoryIndexer::get().mark_tool_result_all_obsolete(key.clone());
-        crate::notify::publish_tool_result(key, records);
-    }
-}
-
 pub(crate) struct LogErrorHandler;
 
 #[async_trait]
@@ -344,24 +299,9 @@ where
 
 type ChannelAppender = RecordAppender<Arc<RecordKey>, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
 
-type ThinkAppender = RecordAppender<Arc<RecordKey>, ThinkRecord, ThinkParser, ThinkFileIndexHook>;
-
-type ToolCallAppender = RecordAppender<Arc<RecordKey>, ToolCallRecord, ToolCallParser, ToolCallFileIndexHook>;
-
-type ToolResultAppender = RecordAppender<Arc<RecordKey>, ToolResultRecord, ToolResultParser, ToolResultFileIndexHook>;
-
 pub struct RecordManager {
     channel_parser: Arc<ChannelParser>,
     channel_appender: Arc<ChannelAppender>,
-
-    think_parser: Arc<ThinkParser>,
-    think_appender: Arc<ThinkAppender>,
-
-    tool_call_parser: Arc<ToolCallParser>,
-    tool_call_appender: Arc<ToolCallAppender>,
-
-    tool_result_parser: Arc<ToolResultParser>,
-    tool_result_appender: Arc<ToolResultAppender>,
 }
 
 static RECORD_MANAGER: OnceLock<RecordManager> = OnceLock::new();
@@ -390,36 +330,9 @@ impl RecordManager {
         ));
         let channel_appender = Arc::new(create_record_appender(channel_writer.clone()));
 
-        let think_parser = Arc::new(ThinkParser);
-        let think_writer = Arc::new(RecordAppendWriter::new(
-            think_parser.clone(),
-            Arc::new(ThinkFileIndexHook),
-        ));
-        let think_appender = Arc::new(create_record_appender(think_writer.clone()));
-
-        let tool_call_parser = Arc::new(ToolCallParser);
-        let tool_call_writer = Arc::new(RecordAppendWriter::new(
-            tool_call_parser.clone(),
-            Arc::new(ToolCallFileIndexHook)
-        ));
-        let tool_call_appender = Arc::new(create_record_appender(tool_call_writer.clone()));
-
-        let tool_result_parser = Arc::new(ToolResultParser);
-        let tool_result_writer = Arc::new(RecordAppendWriter::new(
-            tool_result_parser.clone(),
-            Arc::new(ToolResultFileIndexHook),
-        ));
-        let tool_result_appender = Arc::new(create_record_appender(tool_result_writer.clone()));
-
         Self {
             channel_parser,
             channel_appender,
-            think_parser,
-            think_appender,
-            tool_call_parser,
-            tool_call_appender,
-            tool_result_parser,
-            tool_result_appender,
         }
     }
 
@@ -431,23 +344,12 @@ impl RecordManager {
         append_record(requests, force, self.channel_parser.clone(), self.channel_appender.clone()).await
     }
 
-    pub async fn append_think_record(&self, requests: Vec<ThinkRequest>, force: bool) -> Result<()> {
-        append_record(requests, force, self.think_parser.clone(), self.think_appender.clone()).await
-    }
 
-    pub async fn append_tool_call_record(&self, requests: Vec<ToolCallRequest>, force: bool) -> Result<()> {
-        append_record(requests, force, self.tool_call_parser.clone(), self.tool_call_appender.clone()).await
-    }
-
-    pub async fn append_tool_result_record(&self, requests: Vec<ToolResultRequest>, force: bool) -> Result<()> {
-        append_record(requests, force, self.tool_result_parser.clone(), self.tool_result_appender.clone()).await
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kissbot_api::ContentBlock;
 
     #[derive(Clone)]
     pub(crate) struct NoopFileHook;
@@ -755,144 +657,6 @@ mod tests {
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "first"));
         assert_eq!(r2.sn(), 2);
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "second"));
-    }
-
-    #[tokio::test]
-    async fn test_append_think_record() {
-        init_test_config();
-        let root = &MemoryConfig::get().root_dir;
-
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ThinkParser), Arc::new(NoopFileHook)));
-        let appender = FileObjectAppender::new(
-            writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(50),
-            100,
-        );
-
-        let requests = vec![ThinkRequest {
-            agent_id: ArcStr::from("test_think"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-            reasoning_content: Some(ArcStr::from("I think...")),
-            thinking: None,
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-25 10:00:00"),
-        }];
-
-        let mut records_map: HashMap<Arc<RecordKey>, Vec<ThinkRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ThinkParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            appender.append(key, records).await;
-        }
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let expected_path = root
-            .join("test_think")
-            .join("memory-store")
-            .join("2026-")
-            .join("think-records-2026-06-25.jsonl");
-        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
-
-        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
-        let record: ThinkRecord = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(record.sn(), 1);
-        assert_eq!(record.reasoning_content.unwrap(), "I think...");
-    }
-
-    #[tokio::test]
-    async fn test_append_tool_call_record() {
-        init_test_config();
-        let root = &MemoryConfig::get().root_dir;
-
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ToolCallParser), Arc::new(NoopFileHook)));
-        let appender = FileObjectAppender::new(
-            writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(50),
-            100,
-        );
-
-        let requests = vec![ToolCallRequest {
-            agent_id: ArcStr::from("test_tool_call"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-            tool_name: ArcStr::from("get_weather"),
-            tool_params: Arc::new(serde_json::json!({"city": "Beijing"})),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-25 10:00:00"),
-        }];
-
-        let mut records_map: HashMap<Arc<RecordKey>, Vec<ToolCallRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ToolCallParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            appender.append(key, records).await;
-        }
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let expected_path = root
-            .join("test_tool_call")
-            .join("memory-store")
-            .join("2026-")
-            .join("tool-call-records-2026-06-25.jsonl");
-        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
-
-        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
-        let record: ToolCallRecord = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(record.sn(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_append_tool_result_record() {
-        init_test_config();
-        let root = &MemoryConfig::get().root_dir;
-
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ToolResultParser), Arc::new(NoopFileHook)));
-        let appender = FileObjectAppender::new(
-            writer.clone(),
-            Arc::new(LogErrorHandler),
-            Duration::from_millis(50),
-            100,
-        );
-
-        let requests = vec![ToolResultRequest {
-            agent_id: ArcStr::from("test_tool_result"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-25 10:00:00"),
-        }];
-
-        let mut records_map: HashMap<Arc<RecordKey>, Vec<ToolResultRecord>> = HashMap::new();
-        for request in requests {
-            let (key, record) = ToolResultParser.parse_request(request);
-            records_map.entry(key).or_default().push(record);
-        }
-        for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
-            appender.append(key, records).await;
-        }
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let expected_path = root
-            .join("test_tool_result")
-            .join("memory-store")
-            .join("2026-")
-            .join("tool-result-records-2026-06-25.jsonl");
-        assert!(expected_path.exists(), "file should exist: {:?}", expected_path);
-
-        let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
-        let record: ToolResultRecord = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(record.sn(), 1);
     }
 
     #[tokio::test]

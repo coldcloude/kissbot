@@ -32,7 +32,7 @@ use crate::agent_role::{AgentRole, session_id, role_event_of};
 /// `<tool_call>` / `<tool_result>` 标签内嵌到 `content` 里，整条消息只占一个条目。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupItem {
-    /// 分组标识（消息的 `msg_id`；历史占位记录没有 msg_id 时由归档器给兜底标识），批次内唯一
+    /// 分组标识（消息的 `msg_id`；历史记录没有 msg_id 时由归档器给兜底标识），批次内唯一
     pub msg_id: ArcStr,
     pub time: ArcStr,
     /// 发送者身份

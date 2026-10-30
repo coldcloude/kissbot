@@ -231,31 +231,27 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::records::{RecordBody, RecordEntry};
+    use crate::records::RecordEntry;
     use kissbot_api::ChannelRecord;
 
     const NOW: ArcStr = arcstr::literal!("2026-09-22 13:49:00");
 
     fn entry(time: &str, sn: u64) -> RecordEntry {
-        RecordEntry {
+        Arc::new(ChannelRecord {
+            meta: None,
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
+            is_self: 0,
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: kissbot_api::Content::Text(ArcStr::from("hi")),
             time: ArcStr::from(time),
             sn,
-            body: RecordBody::Channel(Arc::new(ChannelRecord {
-                meta: None,
-                user_id: ArcStr::from("u1"),
-                self_user_id: ArcStr::from("self"),
-                messenger_id: ArcStr::from("web"),
-                group_id: ArcStr::from("g1"),
-                is_self: 0,
-                msg_id: ArcStr::new(),
-                messenger_name: ArcStr::new(),
-                user_name: ArcStr::from("alice"),
-                group_name: ArcStr::new(),
-                content: kissbot_api::Content::Text(ArcStr::from("hi")),
-                time: ArcStr::from(time),
-                sn,
-            })),
-        }
+        })
     }
 
     #[test]

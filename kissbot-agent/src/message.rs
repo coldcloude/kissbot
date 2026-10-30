@@ -126,11 +126,14 @@ pub fn pack_batch(events: &[Arc<IncomingMessageEvent>]) -> Message {
 mod tests {
     use super::*;
     use kissbot_api::channel::IncomingMessage;
-    use kissbot_api::message::{Content, DetailRef};
+    use kissbot_api::message::Content;
 
-    /// 思考/工具占位内容（非文本）
+    /// 思考/工具内容（非文本）
     fn tool_call_content() -> Content {
-        Content::ToolCall(Arc::new(DetailRef::new(ArcStr::from("k"), ArcStr::from("2026-09-22 10:00:00"))))
+        Content::ToolCall(Arc::new(kissbot_api::ToolCallRecord {
+            tool_name: ArcStr::from("get_date"),
+            tool_params: Arc::new(serde_json::json!({})),
+        }))
     }
 
     // 构造测试用 MessageContent

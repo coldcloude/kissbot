@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use chrono::Local;
 use kissbot_api::channel::{IncomingMessageEvent, OutgoingMessageResponse};
-use kissbot_api::{ChannelRequest, MemoryMeta, ThinkRequest, ToolCallRequest, ToolResultRequest};
+use kissbot_api::{
+    ChannelRequest, MemoryMeta, ThinkRecord, ToolCallRecord, ToolResultRecord,
+};
 use kissbot_llm::ToolCall;
 
 use crate::configs::OutChannel;
 use crate::types::MemoryKey;
-
-fn now() -> ArcStr {
-    ArcStr::from(Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
-}
 
 /// 上行消息 → 记忆写入请求（纯函数：身份全部取自消息本身）。
 ///
@@ -67,49 +64,32 @@ pub fn channel_request_from_outgoing(
     }
 }
 
-pub fn build_memory_think(memory_key: &MemoryKey, key: ArcStr, reasoning_content: Option<ArcStr>, thinking: Option<ArcStr>) -> ThinkRequest {
-    let time = now();
-    ThinkRequest {
-        agent_id: memory_key.agent_id.clone(),
-        role_event: memory_key.role_event.clone(),
-        reasoning_content,
-        thinking,
-        key,
-        time,
-    }
+/// 思考内容 → 内嵌记录（不单独写入记忆，随回复的通道记录一起落盘）
+pub fn build_think_record(reasoning_content: Option<ArcStr>, thinking: Option<ArcStr>) -> ThinkRecord {
+    ThinkRecord { reasoning_content, thinking }
 }
 
-pub fn build_memory_tool_call(memory_key: &MemoryKey, key: ArcStr, tool_call: &ToolCall) -> ToolCallRequest {
-    let time = now();
+/// 工具调用 → 内嵌记录（调用前构造；不单独写入记忆）
+pub fn build_tool_call_record(tool_call: &ToolCall) -> ToolCallRecord {
     let tool_params = match tool_call.result_arguments.as_ref() {
         Some(params) => params.clone(),
         None => Arc::new(tool_call.arguments.clone()),
     };
-    ToolCallRequest {
-        agent_id: memory_key.agent_id.clone(),
-        role_event: memory_key.role_event.clone(),
+    ToolCallRecord {
         tool_name: tool_call.name.clone(),
         tool_params,
-        key,
-        time,
     }
 }
 
-pub fn build_memory_tool_result(memory_key: &MemoryKey, key: ArcStr, tool_call: &ToolCall) -> ToolResultRequest {
-    let time = now();
-    ToolResultRequest {
-        agent_id: memory_key.agent_id.clone(),
-        role_event: memory_key.role_event.clone(),
-        tool_result: tool_call.result.clone(),
-        key,
-        time,
-    }
+/// 工具调用结果 → 内嵌记录（执行成功后构造；与调用按 Multi 中的先后顺序配对）
+pub fn build_tool_result_record(tool_call: &ToolCall) -> ToolResultRecord {
+    ToolResultRecord { tool_result: tool_call.result.clone() }
 }
 #[cfg(test)]
 mod tests {
     use kissbot_api::channel::{ChannelUser, IncomingMessage, OutgoingMessageResponse};
     use kissbot_api::message::Content;
-    use kissbot_api::{DetailRef, RoleEvent};
+    use kissbot_api::RoleEvent;
 
     use super::*;
 
@@ -190,11 +170,10 @@ mod tests {
     }
 
     #[test]
-    fn detail_ref_is_taken_from_the_request() {
-        let think = build_memory_think(&memory_key(), ArcStr::from("k1"), Some(ArcStr::from("推理")), None);
-        let think_ref = DetailRef::new(think.key.clone(), think.time.clone());
-        assert_eq!(think_ref.key, think.key);
-        assert_eq!(think_ref.time, think.time, "占位引用直接取详情请求的 key 与 time");
+    fn records_embed_detail_fields_without_position_or_key() {
+        let think = build_think_record(Some(ArcStr::from("推理")), None);
+        assert_eq!(think.reasoning_content.as_deref(), Some("推理"));
+        assert_eq!(think.thinking, None);
 
         let tool_call = ToolCall {
             id: ArcStr::from("c1"),
@@ -203,14 +182,11 @@ mod tests {
             result_arguments: None,
             result: Some(Arc::new(Vec::new())),
         };
-        let call = build_memory_tool_call(&memory_key(), ArcStr::from("k2"), &tool_call);
-        let result = build_memory_tool_result(&memory_key(), ArcStr::from("k2"), &tool_call);
-        let call_ref = DetailRef::new(call.key.clone(), call.time.clone());
-        let result_ref = DetailRef::new(result.key.clone(), result.time.clone());
-        assert_eq!(call_ref.key, call.key);
-        assert_eq!(call_ref.time, call.time);
-        assert_eq!(result_ref.key, result.key);
-        assert_eq!(result_ref.time, result.time);
-        assert_eq!(call.key, result.key, "工具调用与结果共用同一 key");
+        let call = build_tool_call_record(&tool_call);
+        assert_eq!(call.tool_name.as_str(), "get_date");
+        assert_eq!(&*call.tool_params, &serde_json::json!({}));
+
+        let result = build_tool_result_record(&tool_call);
+        assert!(result.tool_result.is_some());
     }
 }

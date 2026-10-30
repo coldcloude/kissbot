@@ -200,10 +200,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 
 | 方法 | 路径 | 请求体 |
 |------|------|--------|
-| POST | `/store/channel` | ChannelRequest（数组） |
-| POST | `/store/think` | ThinkRequest（数组） |
-| POST | `/store/tool-call` | ToolCallRequest（数组） |
-| POST | `/store/tool-result` | ToolResultRequest（数组） |
+| POST | `/store/channel` | ChannelRequest（数组；思考/工具内容内嵌在 `content` 里） |
 
 请求结构体定义在 kissbot-api；`base_url` 为空时写入直接跳过（Ok），鉴权用 `X-Api-Key`。
 

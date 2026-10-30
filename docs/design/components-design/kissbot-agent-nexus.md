@@ -234,7 +234,7 @@ kissbot-agent 启动
 
 ### 记忆写入
 
-- 上行消息（is_self=0）、下行回复（is_self=1，内容取发送响应）、思考内容（reasoning_content / thinking 任一有值）、tool call 与 tool result（同一 UUID key 关联）统一写入 memory-store
+- 上行消息（is_self=0）、下行回复（is_self=1，内容取发送响应）写入 memory-store；思考内容（reasoning_content / thinking 任一有值）与 tool call / tool result 作为下行通道记录的内嵌内容一起写入
 - 写入失败仅记录日志、不重试，避免阻塞后续操作
 
 ### 通道连接管理
@@ -248,7 +248,7 @@ kissbot-agent 启动
 - 工具定义按当前 session 的工具分组白名单聚合（平铺递归），转换为 LLM 侧工具定义后随每次 LLM 请求发送
 - 工具调用按工具名路由：本级原生实现在进程内执行，未命中查工具路由（工具名 → 直接子 station_id）经 MCP 调对应子；路由未命中返回错误结果
 - 工具结果作为工具消息追加回上下文，支持多轮嵌套（上限防死循环）
-- 每个工具调用生成 UUID key，相关记忆记录用同一 key 关联，经通道时间线可见工具调用锚点
+- tool call 与 tool result 按在通道记录 `Multi` 中的先后顺序配对，经通道时间线可见工具调用锚点
 
 ### LLM 调用重试
 

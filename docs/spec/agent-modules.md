@@ -14,7 +14,7 @@
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
 | pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
-| memory_store_client | MemoryStoreClient | memory-store 读写：推记录（channel / think / tool_call / tool_result，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
+| memory_store_client | MemoryStoreClient | memory-store 读写：推通道记录（思考/工具内容内嵌在记录里，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
 | abstract_client | AbstractClient | 摘要记忆（memory-struct-abstract）REST 客户端：case 定位、case 摘要、case 原文副本尾部查询 | Nexus 成员；AbstractMemoryPipeline 经 Nexus 单例调用 |
 | provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
@@ -194,20 +194,20 @@ sequenceDiagram
         PRV->>PRV: kissbot-llm call_with_retry（超时/重试来自有效模型配置）
         PRV-->>MSN: ModelResponse（content / reasoning_content / thinking / tool_calls / total_tokens）
         MSN->>MSN: 记录本次 usage.total_tokens（供下次阈值判定）
-        PL->>MSC: send_memory_think（reasoning_content / thinking 任一有值，每轮成功响应都推；等待详情落盘）
+        PL->>PL: 累积 Content::Think（reasoning_content / thinking 任一有值）
         PL->>OUT: accept(round, response)
         alt 有 tool_calls
             OUT->>CTX: 追加 Assistant（raw_content / raw_reasoning_content / raw_tool_calls）
-            loop 每个 tool call（并发 join；带记忆的 pipeline 在全部完成后收集详情引用）
-                PL->>MSC: send_memory_tool_call（UUID key，等待详情落盘）
+            loop 每个 tool call（并发 join；带记忆的 pipeline 在全部完成后收集内嵌记录）
+                PL->>PL: 构造 Content::ToolCall（执行前）
                 PL->>ST: Station::call_tool（本级原生实现 / 路由到子 Station 的 MCP tools/call）
-                PL->>MSC: send_memory_tool_result（同 key，等待详情落盘）
+                PL->>PL: 成功时追加 Content::ToolResult（紧跟对应调用）
                 OUT->>CTX: 追加 Tool（tool_call_id + content=result 或 error）
             end
-            Note over OUT: 本轮没有文本 → 不发送，占位内容留到有文本的轮次一起发送<br/>有 tool_calls 且未达上限 → next=true，进入下一轮
+            Note over OUT: 本轮没有文本 → 不发送，内嵌内容留到有文本的轮次一起发送<br/>有 tool_calls 且未达上限 → next=true，进入下一轮
         else 最终回复
             OUT->>CTX: 追加 Assistant
-            PL->>CO: send_outgoing（本次 run 累积的 think/tool 占位引用 + 本轮文本；详情已落盘，摘要记忆带当前 case 的 meta）
+            PL->>CO: send_outgoing（本次 run 累积的 Think/ToolCall/ToolResult 内容 + 本轮文本；随一条通道记录落盘，摘要记忆带当前 case 的 meta）
         end
     end
     PL->>CTX: 无下一轮时把本轮新消息追加进上下文

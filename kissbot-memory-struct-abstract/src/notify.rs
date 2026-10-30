@@ -1,7 +1,7 @@
 //! 通知订阅：作为 WS 客户端连接 memory-store 的通知服务，维护长连接与重连。
 //!
-//! 帧格式为 kai-ws 信封：记录类型由 `payload_type` 承载（见 kissbot-api 的
-//! `TYPE_NOTIFY_*` 常量），`payload` 为 `RecordNotification`。
+//! 帧格式为 kai-ws 信封：`payload_type` 为通道记录通知（见 kissbot-api 的
+//! `TYPE_NOTIFY_CHANNEL` 常量），`payload` 为 `RecordNotification`。
 
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -12,10 +12,7 @@ use kai_ws::{
     TYPE_HEARTBEAT, WsCloseProcessor, WsContext, WsHeartbeatHandler, WsJsonProcessor, WsMessage,
     WsProcessorContext,
 };
-use kissbot_api::{
-    RecordNotification, RECORD_CHANNEL, RECORD_THINK, RECORD_TOOL_CALL, RECORD_TOOL_RESULT,
-    TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL, TYPE_NOTIFY_TOOL_RESULT,
-};
+use kissbot_api::{RecordNotification, TYPE_NOTIFY_CHANNEL};
 use kissbot_security::HEADER_API_KEY;
 use tokio::sync::{Notify, RwLock};
 use tracing::{error, info, warn};
@@ -70,17 +67,10 @@ impl WsProcessorContext for NotifyClient {
 
         ws_context.set_close_processor(Arc::new(NotifyCloseProcessor { client: Arc::downgrade(&self) }));
 
-        for (kind, payload_type) in [
-            (RECORD_CHANNEL, TYPE_NOTIFY_CHANNEL),
-            (RECORD_THINK, TYPE_NOTIFY_THINK),
-            (RECORD_TOOL_CALL, TYPE_NOTIFY_TOOL_CALL),
-            (RECORD_TOOL_RESULT, TYPE_NOTIFY_TOOL_RESULT),
-        ] {
-            ws_context.set_json_processor(
-                payload_type,
-                Arc::new(RecordNotificationProcessor { service: self.service.clone(), kind }),
-            );
-        }
+        ws_context.set_json_processor(
+            TYPE_NOTIFY_CHANNEL,
+            Arc::new(RecordNotificationProcessor { service: self.service.clone() }),
+        );
 
         // 每次（重）连接后把已加载角色的全部后缀标记为待处理：断线期间的变更没有通知，
         // 通道未知，查询时按该后缀全部通道处理
@@ -104,15 +94,13 @@ impl WsCloseProcessor for NotifyCloseProcessor {
 
 struct RecordNotificationProcessor {
     service: Arc<AbstractService>,
-    /// 记录类型段（`channel` / `think` / `tool-call` / `tool-result`）
-    kind: &'static str,
 }
 
 #[async_trait]
 impl WsJsonProcessor for RecordNotificationProcessor {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         let Some(payload) = data.payload else {
-            warn!("[abstract] notification frame without payload: {}", self.kind);
+            warn!("[abstract] notification frame without payload");
             return;
         };
         let notification = match serde_json::from_value::<RecordNotification>(payload) {
@@ -122,10 +110,10 @@ impl WsJsonProcessor for RecordNotificationProcessor {
                 return;
             }
         };
-        if let Err(e) = self.service.on_notification(self.kind, &notification).await {
+        if let Err(e) = self.service.on_notification(&notification).await {
             error!(
-                "[abstract] handle notification ({}, {}/{:?}) failed: {}",
-                self.kind, notification.agent_id, notification.role_event, e
+                "[abstract] handle notification ({}/{:?}) failed: {}",
+                notification.agent_id, notification.role_event, e
             );
         }
     }
@@ -185,7 +173,7 @@ mod tests {
         }
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), lines).await.unwrap();
 
-        let processor = RecordNotificationProcessor { service: service.clone(), kind: RECORD_CHANNEL };
+        let processor = RecordNotificationProcessor { service: service.clone() };
         let ws_context = Arc::new(WsContext::new(4));
         let frame = WsMessage {
             sn: 0,
@@ -228,7 +216,7 @@ mod tests {
         assert_eq!(tree.current_cases[0].case_name.as_str(), "role-case");
 
         let state = handle.state.lock().await;
-        assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().channel.sn, 2);
+        assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().sn, 2);
         assert!(!state.is_dirty(&role), "处理成功后清除标记");
     }
 
@@ -236,10 +224,10 @@ mod tests {
     async fn processor_ignores_bad_payload() {
         let temp = tempfile::tempdir().unwrap();
         let service = service(temp.path());
-        let processor = RecordNotificationProcessor { service, kind: RECORD_THINK };
+        let processor = RecordNotificationProcessor { service };
         let frame = WsMessage {
             sn: 0,
-            payload_type: TYPE_NOTIFY_THINK,
+            payload_type: TYPE_NOTIFY_CHANNEL,
             status_code: kai_ws::CODE_SUCCESS,
             payload: Some(serde_json::json!({"unexpected": true})),
         };
@@ -251,10 +239,10 @@ mod tests {
     async fn processor_without_payload_is_noop() {
         let temp = tempfile::tempdir().unwrap();
         let service = service(temp.path());
-        let processor = RecordNotificationProcessor { service, kind: RECORD_TOOL_CALL };
+        let processor = RecordNotificationProcessor { service };
         let frame = WsMessage {
             sn: 0,
-            payload_type: TYPE_NOTIFY_TOOL_CALL,
+            payload_type: TYPE_NOTIFY_CHANNEL,
             status_code: kai_ws::CODE_SUCCESS,
             payload: None,
         };

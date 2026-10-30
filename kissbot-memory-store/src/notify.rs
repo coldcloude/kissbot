@@ -1,7 +1,7 @@
 //! 新数据通知服务：接受记忆结构实现模块的 WS 连接，写入完成后广播新数据。
 //!
 //! 帧格式复用 kai-ws 信封（`WsMessage`）：记录类型由 `payload_type` 承载
-//! （见 kissbot-api 的 `TYPE_NOTIFY_*` 常量），`payload` 为 [`RecordNotification`]。
+//! （见 kissbot-api 的 `TYPE_NOTIFY_CHANNEL` 常量），`payload` 为 [`RecordNotification`]。
 //! 客户端按自身水位从共享记忆文件读取，通知只传达位置信息。
 
 use std::collections::BTreeMap;
@@ -16,9 +16,7 @@ use kai_ws::{
     WsProcessorContext, ws_handle_connection_with_filter,
 };
 use kissbot_api::{
-    ChannelKey, ChannelRecord, RecordKey, RecordNotification, ThinkRecord, ToolCallRecord,
-    ToolResultRecord, TYPE_NOTIFY_CHANNEL, TYPE_NOTIFY_THINK, TYPE_NOTIFY_TOOL_CALL,
-    TYPE_NOTIFY_TOOL_RESULT,
+    ChannelKey, ChannelRecord, RecordKey, RecordNotification, TYPE_NOTIFY_CHANNEL,
 };
 use kissbot_security::{ApiKeyWsFilter, SecurityConfig, SimpleApiKeyValidator};
 use tokio::net::TcpListener;
@@ -69,46 +67,10 @@ pub fn channel_notifications(key: &RecordKey, records: &[ChannelRecord]) -> Vec<
             agent_id: key.agent_id.clone(),
             role_event: key.role_event.clone(),
             time: last.time.clone(),
-            is_self: Some(last.is_self),
-            channel: Some((*channel).clone()),
+            is_self: last.is_self,
+            channel: (*channel).clone(),
         })
         .collect()
-}
-
-pub fn publish_think(key: &RecordKey, records: &[ThinkRecord]) {
-    if let Some(last) = records.last() {
-        publish(TYPE_NOTIFY_THINK, RecordNotification {
-            agent_id: key.agent_id.clone(),
-            role_event: key.role_event.clone(),
-            time: last.time.clone(),
-            is_self: None,
-            channel: None,
-        });
-    }
-}
-
-pub fn publish_tool_call(key: &RecordKey, records: &[ToolCallRecord]) {
-    if let Some(last) = records.last() {
-        publish(TYPE_NOTIFY_TOOL_CALL, RecordNotification {
-            agent_id: key.agent_id.clone(),
-            role_event: key.role_event.clone(),
-            time: last.time.clone(),
-            is_self: None,
-            channel: None,
-        });
-    }
-}
-
-pub fn publish_tool_result(key: &RecordKey, records: &[ToolResultRecord]) {
-    if let Some(last) = records.last() {
-        publish(TYPE_NOTIFY_TOOL_RESULT, RecordNotification {
-            agent_id: key.agent_id.clone(),
-            role_event: key.role_event.clone(),
-            time: last.time.clone(),
-            is_self: None,
-            channel: None,
-        });
-    }
 }
 
 /// 通知服务：维护已连接客户端，新数据到达时广播
@@ -225,12 +187,12 @@ mod tests {
     #[test]
     fn test_publish_without_server_is_noop() {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
-        publish(TYPE_NOTIFY_THINK, RecordNotification {
+        publish(TYPE_NOTIFY_CHANNEL, RecordNotification {
             agent_id: ArcStr::from("0"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),
-            is_self: None,
-            channel: None,
+            is_self: 0,
+            channel: ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")),
         });
     }
 
@@ -266,16 +228,16 @@ mod tests {
         let of = |group: &str| {
             notifications
                 .iter()
-                .find(|n| n.channel.as_ref().unwrap().group_id.as_str() == group)
+                .find(|n| n.channel.group_id.as_str() == group)
                 .unwrap()
         };
         let a = of("gA");
         assert_eq!(a.time.as_str(), "2026-09-22 13:48:37", "取该通道的最后一条记录");
-        assert_eq!(a.is_self, Some(1));
-        assert_eq!(a.channel.as_ref().unwrap().self_user_id.as_str(), "selfA");
+        assert_eq!(a.is_self, 1);
+        assert_eq!(a.channel.self_user_id.as_str(), "selfA");
         let b = of("gB");
         assert_eq!(b.time.as_str(), "2026-09-22 13:00:01");
-        assert_eq!(b.is_self, Some(0));
+        assert_eq!(b.is_self, 0);
 
         // 无接收端时发布不 panic
         publish_channel(&key(), &records);

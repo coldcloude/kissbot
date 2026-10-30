@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use kissbot_api::{QueryRequest, RoleEvent};
 use tokio::sync::OnceCell;
 
-use crate::data::{ChannelParser, ThinkParser, ToolCallParser, ToolResultParser};
+use crate::data::ChannelParser;
 use crate::error::Result;
 use crate::data::role_event_suffix;
 use crate::DirectoryManager;
@@ -16,9 +16,6 @@ use kissbot_api::memory::*;
 
 pub struct MemoryIndexer {
     channel_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ChannelRecord, ChannelParser>,
-    think_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ThinkRecord, ThinkParser>,
-    tool_call_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ToolCallRecord, ToolCallParser>,
-    tool_result_indices: FileIndexContext<QueryRequest, Arc<RecordKey>, ToolResultRecord, ToolResultParser>,
     /// channel 文件日期缓存：(agent_id, 记忆后缀) → 已存在的日期（懒加载扫描 + append 钩子增量维护）
     channel_date_sets: DashMap<(ArcStr, ArcStr), BTreeSet<ArcStr>>,
     /// date_sets 懒加载守卫（首次 recent 查询前扫描一次存量文件）
@@ -31,9 +28,6 @@ impl MemoryIndexer {
     pub fn new() -> Self {
         Self {
             channel_indices: FileIndexContext::new(ChannelParser {}),
-            think_indices: FileIndexContext::new(ThinkParser {}),
-            tool_call_indices: FileIndexContext::new(ToolCallParser {}),
-            tool_result_indices: FileIndexContext::new(ToolResultParser {}),
             channel_date_sets: DashMap::new(),
             channel_dates_loaded: OnceCell::new(),
         }
@@ -57,30 +51,6 @@ impl MemoryIndexer {
         // 全量重写后文件仍存在（日期不变），同样补入 date_sets
         self.channel_date_sets.entry((key.agent_id.clone(), role_event_suffix(&key.role_event)))
             .or_default().insert(key.date.clone());
-    }
-
-    pub fn mark_think_obsolete(&self, key: Arc<RecordKey>) {
-        self.think_indices.mark_obsolete(&key);
-    }
-
-    pub fn mark_think_all_obsolete(&self, key: Arc<RecordKey>) {
-        self.think_indices.mark_all_obsolete(&key);
-    }
-
-    pub fn mark_tool_call_obsolete(&self, key: Arc<RecordKey>) {
-        self.tool_call_indices.mark_obsolete(&key);
-    }
-
-    pub fn mark_tool_call_all_obsolete(&self, key: Arc<RecordKey>) {
-        self.tool_call_indices.mark_all_obsolete(&key);
-    }
-
-    pub fn mark_tool_result_obsolete(&self, key: Arc<RecordKey>) {
-        self.tool_result_indices.mark_obsolete(&key);
-    }
-
-    pub fn mark_tool_result_all_obsolete(&self, key: Arc<RecordKey>) {
-        self.tool_result_indices.mark_all_obsolete(&key);
     }
 
     pub async fn query_channel_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ChannelRecord>)>)>> {
@@ -152,18 +122,6 @@ impl MemoryIndexer {
         }
         Ok(())
     }
-
-    pub async fn query_think_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ThinkRecord>)>)>> {
-        Ok(self.think_indices.query_all(query).await?)
-    }
-
-    pub async fn query_tool_call_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ToolCallRecord>)>)>> {
-        Ok(self.tool_call_indices.query_all(query).await?)
-    }
-
-    pub async fn query_tool_result_records(&self, query: QueryRequest) -> Result<Vec<(Arc<RecordKey>, Vec<(u32, Arc<ToolResultRecord>)>)>> {
-        Ok(self.tool_result_indices.query_all(query).await?)
-    }
 }
 
 #[cfg(test)]
@@ -211,6 +169,12 @@ mod tests {
         f.flush().await.unwrap();
     }
 
+    fn rec_json(time: &str, sn: u64, text: &str) -> String {
+        format!(
+            r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":{}}}"#,
+            text, time, sn)
+    }
+
     #[tokio::test]
     async fn test_mark_and_query_channel() {
         let agent_id = "agent1";
@@ -232,10 +196,8 @@ mod tests {
         };
 
         // timeline: 00:00:00 < A(08:00) < start(09:00) < B(10:00) < C(11:00) < end(13:00) < F(14:00)
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"A"},"time":"2026-06-24 08:00:00","sn":1}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"B"},"time":"2026-06-24 10:00:00","sn":2}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 08:00:00", 1, "A")).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 10:00:00", 2, "B")).await;
 
         let indexer = MemoryIndexer::new();
         // query range excludes A, includes B
@@ -244,8 +206,7 @@ mod tests {
         assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "B"));
 
         // write C (in range) after MemoryIndexer created
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"C"},"time":"2026-06-24 11:00:00","sn":3}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 11:00:00", 3, "C")).await;
 
         // mark + query — incremental load picks up C
         indexer.mark_channel_obsolete(Arc::new(key.clone()));
@@ -258,173 +219,15 @@ mod tests {
         let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
         let file_path = store_dir.join(&dir).join(&filename);
         tokio::fs::remove_file(&file_path).await.unwrap();
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"D"},"time":"2026-06-24 08:30:00","sn":4}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"E"},"time":"2026-06-24 10:30:00","sn":5}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"user_id":"u1","self_user_id":"self1","messenger_id":"telegram","group_id":"g1","is_self":0,"messenger_name":"","user_name":"","group_name":"","content":{"msg_type":"Text","data":"F"},"time":"2026-06-24 14:00:00","sn":6}"#).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 08:30:00", 4, "D")).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 10:30:00", 5, "E")).await;
+        append_jsonl(agent_id, role_name, &filename, date, &rec_json("2026-06-24 14:00:00", 6, "F")).await;
 
         // mark_all — full rebuild, only E in range
         indexer.mark_channel_all_obsolete(Arc::new(key.clone()));
         let results = indexer.query_channel_records(query_range("09:00:00", "13:00:00")).await.unwrap();
         assert_eq!(results[0].1.len(), 1);
         assert!(matches!(results[0].1[0].1.content.clone(), Content::Text(v) if v.as_str() == "E"));
-    }
-
-    #[tokio::test]
-    async fn test_mark_and_query_think() {
-        let agent_id = "agent1";
-        let role_name = "default";
-        let date = "2026-06-24";
-        let filename = format!("think-records-{}.jsonl", date);
-
-        let key = RecordKey {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            date: ArcStr::from(date),
-        };
-        let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            start_time: ArcStr::from(format!("{} {}", date, s)),
-            end_time: ArcStr::from(format!("{} {}", date, e)),
-        };
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"A","thinking":"","key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"B","thinking":"","key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
-
-        let indexer = MemoryIndexer::new();
-        let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "B");
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"C","thinking":"","key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_think_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "B");
-        assert_eq!(results[0].1[1].1.reasoning_content.as_deref().unwrap(), "C");
-
-        let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
-        let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
-        tokio::fs::remove_file(&file_path).await.unwrap();
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"D","thinking":"","key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"E","thinking":"","key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"reasoning_content":"F","thinking":"","key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
-
-        indexer.mark_think_all_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_think_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.reasoning_content.as_deref().unwrap(), "E");
-    }
-
-    #[tokio::test]
-    async fn test_mark_and_query_tool_call() {
-        let agent_id = "agent1";
-        let role_name = "default";
-        let date = "2026-06-24";
-        let filename = format!("tool-call-records-{}.jsonl", date);
-
-        let key = RecordKey {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            date: ArcStr::from(date),
-        };
-        let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            start_time: ArcStr::from(format!("{} {}", date, s)),
-            end_time: ArcStr::from(format!("{} {}", date, e)),
-        };
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"A","tool_params":{},"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"B","tool_params":{},"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
-
-        let indexer = MemoryIndexer::new();
-        let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.tool_name.as_str(), "B");
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"C","tool_params":{},"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_tool_call_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 2);
-        assert_eq!(results[0].1[0].1.tool_name.as_str(), "B");
-        assert_eq!(results[0].1[1].1.tool_name.as_str(), "C");
-
-        let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
-        let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
-        tokio::fs::remove_file(&file_path).await.unwrap();
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"D","tool_params":{},"key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"E","tool_params":{},"key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_name":"F","tool_params":{},"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
-
-        indexer.mark_tool_call_all_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_tool_call_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
-        assert_eq!(results[0].1[0].1.tool_name.as_str(), "E");
-    }
-
-    #[tokio::test]
-    async fn test_mark_and_query_tool_result() {
-        let agent_id = "agent1";
-        let role_name = "default";
-        let date = "2026-06-24";
-        let filename = format!("tool-result-records-{}.jsonl", date);
-
-        let key = RecordKey {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            date: ArcStr::from(date),
-        };
-        let query_range = |s: &str, e: &str| QueryRequest {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(role_name))),
-            start_time: ArcStr::from(format!("{} {}", date, s)),
-            end_time: ArcStr::from(format!("{} {}", date, e)),
-        };
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"A"}],"key":"k1","time":"2026-06-24 08:00:00","sn":1}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"B"}],"key":"k1","time":"2026-06-24 10:00:00","sn":2}"#).await;
-
-        let indexer = MemoryIndexer::new();
-        let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
-
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"C"}],"key":"k1","time":"2026-06-24 11:00:00","sn":3}"#).await;
-        indexer.mark_tool_result_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 2);
-
-        let store_dir = crate::DirectoryManager::get().ensure_agent_store_dir(agent_id).await.unwrap();
-        let file_path = store_dir.join(format!("{}-{}", &date[..4], role_name)).join(&filename);
-        tokio::fs::remove_file(&file_path).await.unwrap();
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"D"}],"key":"k1","time":"2026-06-24 08:30:00","sn":4}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"E"}],"key":"k1","time":"2026-06-24 10:30:00","sn":5}"#).await;
-        append_jsonl(agent_id, role_name, &filename, date,
-            r#"{"tool_result":[{"type":"text","text":"F"}],"key":"k1","time":"2026-06-24 14:00:00","sn":6}"#).await;
-
-        indexer.mark_tool_result_all_obsolete(Arc::new(key.clone()));
-        let results = indexer.query_tool_result_records(query_range("09:00:00", "13:00:00")).await.unwrap();
-        assert_eq!(results[0].1.len(), 1);
     }
 
     // 提取 ChannelRecord 的 Text 内容（测试断言用）
@@ -441,9 +244,7 @@ mod tests {
         // 用独立 agent id 避免与其他测试共享全局 temp root 时相互污染
         let agent_id = ArcStr::from("recent_agent");
         let role_name = ArcStr::from("r1");
-        let rec = |time: &str, text: &str| format!(
-            r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
-            text, time);
+        let rec = |time: &str, text: &str| rec_json(time, 1, text);
         append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
         append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 10:00:00", "b")).await;
         append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-02.jsonl", "2026-08-02", &rec("2026-08-02 09:00:00", "c")).await;
@@ -470,9 +271,7 @@ mod tests {
         init_test_config();
         let agent_id = ArcStr::from("recent_agent2");
         let role_name = ArcStr::from("r1");
-        let rec = |time: &str, text: &str| format!(
-            r#"{{"user_id":"u1","self_user_id":"self1","messenger_id":"web","group_id":"g1","is_self":0,"messenger_name":"","user_name":"u","group_name":"","content":{{"msg_type":"Text","data":"{}"}},"time":"{}","sn":1}}"#,
-            text, time);
+        let rec = |time: &str, text: &str| rec_json(time, 1, text);
         append_jsonl(agent_id.as_str(), role_name.as_str(), "channel-records-2026-08-01.jsonl", "2026-08-01", &rec("2026-08-01 09:00:00", "a")).await;
 
         let indexer = MemoryIndexer::new();

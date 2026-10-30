@@ -94,14 +94,25 @@ test.describe.serial('memory-store API 测试', () => {
     expect(record.time).toBe(time);
   });
 
-  // TC-02 追加 think 记录并查询
-  test('TC-02: 追加并查询 think 记录', async ({ request }) => {
+  // TC-02 通道记录内容内嵌思考/工具记录，随通道记录一起查询
+  test('TC-02: 通道记录内嵌思考/工具内容', async ({ request }) => {
     const time = nowTime();
     const date = time.slice(0, 10); // 单一时间源
-    const resp = await apiPost(request, '/store/think', {
+    const content = {
+      msg_type: 'Multi',
+      data: [
+        { msg_type: 'Think', data: { reasoning_content: '思考内容' } },
+        { msg_type: 'ToolCall', data: { tool_name: 'get_weather', tool_params: { city: 'Beijing' } } },
+        { msg_type: 'ToolResult', data: { tool_result: [{ type: 'text', text: '{"temp":25}' }] } },
+        { msg_type: 'Text', data: '回复' },
+      ],
+    };
+    const resp = await apiPost(request, '/store/channel', {
       requests: [{
-        agent_id: AGENT, role_event: { role_name: ROLE },
-        reasoning_content: '思考内容', thinking: '', key: 'think_key_1', time,
+        agent_id: AGENT, role_event: { role_name: ROLE }, messenger_id: MESSENGER,
+        user_id: SELF_USER, self_user_id: SELF_USER, group_id: GROUP, is_self: 1,
+        messenger_name: 'Web', user_name: 'agent', group_name: '群组1',
+        content, time,
       }],
       force: 1,
     });
@@ -109,76 +120,34 @@ test.describe.serial('memory-store API 测试', () => {
 
     await sleep(1000);
 
-    const q = await apiPost(request, '/store/query/think', {
+    const q = await apiPost(request, '/store/query/channel', {
       agent_id: AGENT, role_event: { role_name: ROLE },
       start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
     });
     expect(q.success).toBe(true);
-    expect(q.data.length).toBeGreaterThanOrEqual(1);
-    const records = q.data[0][1];
-    expect(records.length).toBeGreaterThanOrEqual(1);
+    const records = q.data.flatMap((group: any[]) => group[1]);
     const record = records[records.length - 1][1];
-    expect(record.reasoning_content).toBe('思考内容');
-    expect(record.key).toBe('think_key_1');
-    expect(record.time).toBe(time);
+    expect(record.content).toEqual(content);
+    // 记录本身没有 key/time 之外的详情位置字段；思考/工具内容不单独成记录
+    expect(record.content.data[0].data.key).toBeUndefined();
+    expect(record.content.data[0].data.time).toBeUndefined();
   });
 
-  // TC-03 追加 tool-call 记录并查询
-  test('TC-03: 追加并查询 tool-call 记录', async ({ request }) => {
-    const time = nowTime();
-    const date = time.slice(0, 10); // 单一时间源
-    const resp = await apiPost(request, '/store/tool-call', {
-      requests: [{
-        agent_id: AGENT, role_event: { role_name: ROLE },
-        tool_name: 'get_weather', tool_params: { city: 'Beijing' }, key: 'tool_call_key_1', time,
-      }],
-      force: 1,
-    });
-    expect(resp.success).toBe(true);
-
-    await sleep(1000);
-
-    const q = await apiPost(request, '/store/query/tool-call', {
-      agent_id: AGENT, role_event: { role_name: ROLE },
-      start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
-    });
-    expect(q.success).toBe(true);
-    expect(q.data.length).toBeGreaterThanOrEqual(1);
-    const records = q.data[0][1];
-    expect(records.length).toBeGreaterThanOrEqual(1);
-    const record = records[records.length - 1][1];
-    expect(record.tool_name).toBe('get_weather');
-    expect(record.tool_params).toEqual({ city: 'Beijing' });
-    expect(record.key).toBe('tool_call_key_1');
-    expect(record.time).toBe(time);
-  });
-
-  // TC-04 追加 tool-result 记录并查询
-  test('TC-04: 追加并查询 tool-result 记录', async ({ request }) => {
-    const time = nowTime();
-    const date = time.slice(0, 10); // 单一时间源
-    const resp = await apiPost(request, '/store/tool-result', {
-      requests: [{
-        agent_id: AGENT, role_event: { role_name: ROLE },
-        tool_result: [{ type: 'text', text: '{"temp":25}' }], key: 'tool_result_key_1', time,
-      }],
-      force: 1,
-    });
-    expect(resp.success).toBe(true);
-
-    await sleep(1000);
-
-    const q = await apiPost(request, '/store/query/tool-result', {
-      agent_id: AGENT, role_event: { role_name: ROLE },
-      start_time: `${date} 00:00:00`, end_time: `${date} 23:59:59`,
-    });
-    expect(q.success).toBe(true);
-    expect(q.data.length).toBeGreaterThanOrEqual(1);
-    const records = q.data[0][1];
-    expect(records.length).toBeGreaterThanOrEqual(1);
-    const record = records[records.length - 1][1];
-    expect(record.tool_result).toEqual([{ type: 'text', text: '{"temp":25}' }]);
-    expect(record.key).toBe('tool_result_key_1');
-    expect(record.time).toBe(time);
+  // TC-03 独立的思考/工具记录端点已移除
+  test('TC-03: 独立记录端点已移除', async ({ request }) => {
+    for (const path of ['/store/think', '/store/tool-call', '/store/tool-result']) {
+      const resp = await request.post(`${BASE}${path}`, {
+        headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+        data: { requests: [], force: 0 },
+      });
+      expect(resp.status(), `${path} 应返回 404`).toBe(404);
+    }
+    for (const path of ['/store/query/think', '/store/query/tool-call', '/store/query/tool-result']) {
+      const resp = await request.post(`${BASE}${path}`, {
+        headers: { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+        data: { agent_id: AGENT, role_event: { role_name: ROLE }, start_time: '2026-01-01', end_time: '2026-12-31' },
+      });
+      expect(resp.status(), `${path} 应返回 404`).toBe(404);
+    }
   });
 });

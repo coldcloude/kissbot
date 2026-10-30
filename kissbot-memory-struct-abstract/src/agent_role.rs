@@ -455,29 +455,25 @@ async fn read_tree_nodes(path: &Path) -> Result<Vec<CaseNode>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::records::{RecordBody, RecordEntry};
+    use crate::records::RecordEntry;
     use kissbot_api::{ChannelKey, ChannelRecord, Content};
 
     fn channel(time: &str, sn: u64) -> RecordEntry {
-        RecordEntry {
+        Arc::new(ChannelRecord {
+            meta: None,
+            user_id: ArcStr::from("u1"),
+            self_user_id: ArcStr::from("self"),
+            messenger_id: ArcStr::from("web"),
+            group_id: ArcStr::from("g1"),
+            is_self: 0,
+            msg_id: ArcStr::new(),
+            messenger_name: ArcStr::new(),
+            user_name: ArcStr::from("alice"),
+            group_name: ArcStr::new(),
+            content: Content::Text(ArcStr::from("hi")),
             time: ArcStr::from(time),
             sn,
-            body: RecordBody::Channel(Arc::new(ChannelRecord {
-                meta: None,
-                user_id: ArcStr::from("u1"),
-                self_user_id: ArcStr::from("self"),
-                messenger_id: ArcStr::from("web"),
-                group_id: ArcStr::from("g1"),
-                is_self: 0,
-                msg_id: ArcStr::new(),
-                messenger_name: ArcStr::new(),
-                user_name: ArcStr::from("alice"),
-                group_name: ArcStr::new(),
-                content: Content::Text(ArcStr::from("hi")),
-                time: ArcStr::from(time),
-                sn,
-            })),
-        }
+        })
     }
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
@@ -530,8 +526,8 @@ mod tests {
             state.tree.set_summary("role-1", "聊了天气", "2026-09-22 10:06:00");
             state.current_cases.insert((role_event.clone(), key.clone()), "role-1".into());
             let watermark = state.watermarks.entry((role_event.clone(), key.clone())).or_default();
-            watermark.channel.time = ArcStr::from("2026-09-22 10:00:00");
-            watermark.channel.sn = 1;
+            watermark.time = ArcStr::from("2026-09-22 10:00:00");
+            watermark.sn = 1;
             handle.save_state(&role_event, &state).await.unwrap();
         }
 
@@ -540,7 +536,7 @@ mod tests {
         let mut state = reloaded.state.lock().await;
         reloaded.ensure_role_event(&mut state, &role_event).await.unwrap();
         assert_eq!(state.current_of(&role_event).get(&key).map(|id| id.as_str()), Some("role-1"));
-        assert_eq!(state.watermark(&role_event, &key).channel.sn, 1);
+        assert_eq!(state.watermark(&role_event, &key).sn, 1);
         let node = state.tree.get("role-1").unwrap();
         assert_eq!(node.summary.as_str(), "聊了天气");
         assert_eq!(node.record_count, 1);
@@ -562,7 +558,7 @@ mod tests {
         assert_eq!(raw["channels"][0]["case_name"], "role-1");
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.watermark_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["messenger_id"], "web");
-        assert_eq!(raw["channels"][0]["watermark"]["channel"]["sn"], 1);
+        assert_eq!(raw["channels"][0]["watermark"]["sn"], 1);
     }
 
     #[tokio::test]

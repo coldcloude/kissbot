@@ -3,6 +3,8 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
+use crate::memory::{ThinkRecord, ToolCallRecord, ToolResultRecord};
+
 // ========== 通知类型 ==========
 
 /// 群组变更通知
@@ -27,21 +29,6 @@ pub struct UserRemoveNotification {
 
 // ========== 内容类型枚举 ==========
 
-/// 思考/工具占位内容引用的详情记录：详情的 `key` 与详情记录的写入时间。
-///
-/// 详情记录先于引用它的占位通道记录写入；读取方按 `time` 定位当天的记录文件、按 `key` 取出详情。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DetailRef {
-    pub key: ArcStr,
-    pub time: ArcStr,
-}
-
-impl DetailRef {
-    pub fn new(key: ArcStr, time: ArcStr) -> Self {
-        Self { key, time }
-    }
-}
-
 /// content 的类型化表示。
 /// 各变体自身即携带类型信息，无需外部 msg_type 字段。
 /// 序列化格式：{"msg_type": "Text", "data": "hello"}
@@ -55,11 +42,11 @@ pub enum Content {
     GroupJoin(Arc<GroupChangeNotification>),
     GroupLeave(Arc<GroupChangeNotification>),
     UserRemove(Arc<UserRemoveNotification>),
-    // 思考/工具占位：内容为详情记录引用（key + 记录时间），关联对应详情记录
+    // 思考/工具内容：直接内嵌对应记录，随所属通道记录一起保存
     // （agent 直接生成 ChannelRecord，不用于 IncomingMessage/OutgoingMessage）
-    Think(Arc<DetailRef>),
-    ToolCall(Arc<DetailRef>),
-    ToolResult(Arc<DetailRef>),
+    Think(Arc<ThinkRecord>),
+    ToolCall(Arc<ToolCallRecord>),
+    ToolResult(Arc<ToolResultRecord>),
 }
 
 // ========== 附件消息相关类型 ==========
@@ -178,26 +165,30 @@ mod tests {
 
     #[test]
     fn test_serde_content_think_tool_variants() {
-        let think_ref = Arc::new(DetailRef::new(ArcStr::from("uuid-1"), ArcStr::from("2026-09-22 10:00:00")));
-        let think = Content::Think(think_ref.clone());
+        let think = Content::Think(Arc::new(ThinkRecord {
+            reasoning_content: Some(ArcStr::from("推理")),
+            thinking: None,
+        }));
         let json = serde_json::to_value(&think).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"msg_type":"Think","data":{"key":"uuid-1","time":"2026-09-22 10:00:00"}})
+            serde_json::json!({"msg_type":"Think","data":{"reasoning_content":"推理"}})
         );
         assert_eq!(serde_json::from_value::<Content>(json).unwrap(), think);
 
-        let call_ref = Arc::new(DetailRef::new(ArcStr::from("uuid-2"), ArcStr::from("2026-09-22 10:00:01")));
-        let call = Content::ToolCall(call_ref.clone());
+        let call = Content::ToolCall(Arc::new(ToolCallRecord {
+            tool_name: ArcStr::from("get_weather"),
+            tool_params: Arc::new(serde_json::json!({"city":"Beijing"})),
+        }));
         let j = serde_json::to_value(&call).unwrap();
         assert_eq!(j["msg_type"], "ToolCall");
-        assert_eq!(j["data"], serde_json::json!({"key":"uuid-2","time":"2026-09-22 10:00:01"}));
+        assert_eq!(j["data"], serde_json::json!({"tool_name":"get_weather","tool_params":{"city":"Beijing"}}));
         assert_eq!(serde_json::from_value::<Content>(j).unwrap(), call);
 
-        let result = Content::ToolResult(Arc::new(DetailRef::new(ArcStr::from("uuid-3"), ArcStr::from("2026-09-22 10:00:02"))));
+        let result = Content::ToolResult(Arc::new(ToolResultRecord { tool_result: None }));
         let j = serde_json::to_value(&result).unwrap();
         assert_eq!(j["msg_type"], "ToolResult");
-        assert_eq!(j["data"]["key"], "uuid-3");
+        assert_eq!(j["data"], serde_json::json!({}));
         assert_eq!(serde_json::from_value::<Content>(j).unwrap(), result);
     }
 

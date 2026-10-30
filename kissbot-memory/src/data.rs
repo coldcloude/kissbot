@@ -113,118 +113,11 @@ impl QueryParser<QueryRequest, Arc<RecordKey>> for ChannelParser {
     }
 }
 
-#[derive(Clone)]
-pub struct ThinkParser;
-
-#[async_trait]
-impl FilePathGenerator<Arc<RecordKey>> for ThinkParser {
-    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
-        let file_name = format!("think-records-{}.jsonl", key.date);
-        Ok(year_role_dir.join(file_name))
-    }
-}
-
-impl RequestParser<ThinkRequest, Arc<RecordKey>, ThinkRecord> for ThinkParser {
-    fn parse_request(&self, request: ThinkRequest) -> (Arc<RecordKey>, ThinkRecord) {
-        let key = Arc::new(RecordKey {
-            agent_id: request.agent_id.clone(),
-            role_event: request.role_event.clone(),
-            date: ArcStr::from(as_date(&request.time)),
-        });
-        let record = ThinkRecord {
-            reasoning_content: request.reasoning_content,
-            thinking: request.thinking,
-            key: request.key,
-            time: request.time,
-            sn: 0,
-        };
-        (key, record)
-    }
-}
-
-impl QueryParser<QueryRequest, Arc<RecordKey>> for ThinkParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
-        parse_query(query)
-    }
-}
-
-#[derive(Clone)]
-pub struct ToolCallParser;
-
-#[async_trait]
-impl FilePathGenerator<Arc<RecordKey>> for ToolCallParser {
-    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
-        let file_name = format!("tool-call-records-{}.jsonl", key.date);
-        Ok(year_role_dir.join(file_name))
-    }
-}
-
-impl RequestParser<ToolCallRequest, Arc<RecordKey>, ToolCallRecord> for ToolCallParser {
-    fn parse_request(&self, request: ToolCallRequest) -> (Arc<RecordKey>, ToolCallRecord) {
-        let key = Arc::new(RecordKey {
-            agent_id: request.agent_id.clone(),
-            role_event: request.role_event.clone(),
-            date: ArcStr::from(as_date(&request.time)),
-        });
-        let record = ToolCallRecord {
-            tool_name: request.tool_name,
-            tool_params: request.tool_params,
-            key: request.key,
-            time: request.time,
-            sn: 0,
-        };
-        (key, record)
-    }
-}
-
-impl QueryParser<QueryRequest, Arc<RecordKey>> for ToolCallParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
-        parse_query(query)
-    }
-}
-
-#[derive(Clone)]
-pub struct ToolResultParser;
-
-#[async_trait]
-impl FilePathGenerator<Arc<RecordKey>> for ToolResultParser {
-    async fn get_path(&self, key: &Arc<RecordKey>) -> std::result::Result<PathBuf,kai_file::Error> {
-        let year_role_dir = ensure_year_role_dir(key.agent_id.as_str(), &role_event_suffix(&key.role_event), key.date.as_str()).await?;
-        let file_name = format!("tool-result-records-{}.jsonl", key.date);
-        Ok(year_role_dir.join(file_name))
-    }
-}
-
-impl RequestParser<ToolResultRequest, Arc<RecordKey>, ToolResultRecord> for ToolResultParser {
-    fn parse_request(&self, request: ToolResultRequest) -> (Arc<RecordKey>, ToolResultRecord) {
-        let key = Arc::new(RecordKey {
-            agent_id: request.agent_id.clone(),
-            role_event: request.role_event.clone(),
-            date: ArcStr::from(as_date(&request.time)),
-        });
-        let record = ToolResultRecord {
-            tool_result: request.tool_result,
-            key: request.key,
-            time: request.time,
-            sn: 0,
-        };
-        (key, record)
-    }
-}
-
-impl QueryParser<QueryRequest, Arc<RecordKey>> for ToolResultParser {
-    fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
-        parse_query(query)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use kissbot_api::{Content, ContentBlock};
+    use kissbot_api::{Content, ContentBlock, ThinkRecord, ToolCallRecord, ToolResultRecord};
 
 use super::*;
 
@@ -286,46 +179,25 @@ use super::*;
         assert_eq!(dir_name, "2026-");
     }
 
-    #[tokio::test]
-    async fn test_think_file_name() {
-        let key = Arc::new(RecordKey {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            date: ArcStr::from("2026-06-24"),
-        });
-        let parser = ThinkParser;
-        let path = parser.get_path(&key).await.unwrap();
-        let file_name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(file_name, "think-records-2026-06-24.jsonl");
-    }
-
-    #[tokio::test]
-    async fn test_tool_call_file_name() {
-        let key = Arc::new(RecordKey {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            date: ArcStr::from("2026-06-24"),
-        });
-        let parser = ToolCallParser;
-        let path = parser.get_path(&key).await.unwrap();
-        let file_name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(file_name, "tool-call-records-2026-06-24.jsonl");
-    }
-
-    #[tokio::test]
-    async fn test_tool_result_file_name() {
-        let key = Arc::new(RecordKey {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            date: ArcStr::from("2026-06-24"),
-        });
-        let parser = ToolResultParser;
-        let path = parser.get_path(&key).await.unwrap();
-        let file_name = path.file_name().unwrap().to_str().unwrap();
-        assert_eq!(file_name, "tool-result-records-2026-06-24.jsonl");
-    }
-
     // ========== RequestParser ==========
+
+    fn detail_content() -> Content {
+        // 思考/工具内容直接内嵌记录，随通道记录一起写入
+        Content::Multi(Arc::new(vec![
+            Content::Think(Arc::new(ThinkRecord {
+                reasoning_content: Some(ArcStr::from("推理")),
+                thinking: None,
+            })),
+            Content::ToolCall(Arc::new(ToolCallRecord {
+                tool_name: ArcStr::from("search"),
+                tool_params: Arc::new(serde_json::json!({"q": "weather"})),
+            })),
+            Content::ToolResult(Arc::new(ToolResultRecord {
+                tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
+            })),
+            Content::Text(ArcStr::from("回复")),
+        ]))
+    }
 
     #[test]
     fn test_channel_request_parser() {
@@ -342,7 +214,7 @@ use super::*;
             messenger_name: ArcStr::from("TelegramName"),
             user_name: ArcStr::from("U1Name"),
             group_name: ArcStr::from("G1Name"),
-            content: Content::Text(ArcStr::from("hello")),
+            content: detail_content(),
             time: ArcStr::from("2026-06-24 10:00:00"),
         };
         let parser = ChannelParser;
@@ -358,63 +230,13 @@ use super::*;
         assert_eq!(record.group_id, "g1");
         assert_eq!(record.is_self, 1);
         assert_eq!(record.msg_id, "m-1001", "消息标识原样带入记录（消息与记录去重用）");
-        assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
-        assert_eq!(record.sn, 0);
-    }
-
-    #[test]
-    fn test_think_request_parser() {
-        let request = ThinkRequest {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            reasoning_content: Some(ArcStr::from("thinking...")),
-            thinking: None,
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-        };
-        let parser = ThinkParser;
-        let (key, record) = parser.parse_request(request);
-        assert_eq!(key.agent_id, "agent1");
-        assert_eq!(key.date, "2026-06-24");
-        assert_eq!(record.reasoning_content.unwrap(), "thinking...");
-        assert_eq!(record.key, "k1");
-        assert_eq!(record.sn, 0);
-    }
-
-    #[test]
-    fn test_tool_call_request_parser() {
-        let request = ToolCallRequest {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            tool_name: ArcStr::from("get_weather"),
-            tool_params: serde_json::json!({"city": "Beijing"}).into(),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-        };
-        let parser = ToolCallParser;
-        let (key, record) = parser.parse_request(request);
-        assert_eq!(key.agent_id, "agent1");
-        assert_eq!(record.tool_name, "get_weather");
-        assert_eq!(record.tool_params["city"], "Beijing");
-        assert_eq!(record.sn, 0);
-    }
-
-    #[test]
-    fn test_tool_result_request_parser() {
-        let request = ToolResultRequest {
-            agent_id: ArcStr::from("agent1"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("default"))),
-            tool_result: Some(Arc::new(vec![ContentBlock::text(ArcStr::from(r#"{"temp":25}"#))])),
-            key: ArcStr::from("k1"),
-            time: ArcStr::from("2026-06-24 10:00:00"),
-        };
-        let parser = ToolResultParser;
-        let (key, record) = parser.parse_request(request);
-        assert_eq!(key.agent_id, "agent1");
-        let blocks = record.tool_result.unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(&blocks[0], ContentBlock::Text { text, .. } if text.as_str() == r#"{"temp":25}"#));
-        assert_eq!(record.key, "k1");
+        // 思考/工具内容随通道记录原样保留，不解析成独立记录
+        let Content::Multi(items) = &record.content else { panic!("应为 Multi 内容") };
+        assert_eq!(items.len(), 4);
+        assert!(matches!(&items[0], Content::Think(r) if r.reasoning_content.as_deref() == Some("推理")));
+        assert!(matches!(&items[1], Content::ToolCall(r) if r.tool_name.as_str() == "search"));
+        assert!(matches!(&items[2], Content::ToolResult(r) if r.tool_result.is_some()));
+        assert!(matches!(&items[3], Content::Text(v) if v.as_str() == "回复"));
         assert_eq!(record.sn, 0);
     }
 }
