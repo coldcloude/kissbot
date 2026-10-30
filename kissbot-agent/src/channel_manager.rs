@@ -517,7 +517,10 @@ impl ChannelManager {
                 if ch.role_name.is_empty() {
                     return Err(Error::InvalidCommand("默认 role 不可设置 pipeline".into()));
                 }
-                verify_pipeline_name(&parts[1])?;
+                if !is_supported_pipeline_name(parts[1].as_str()) {
+                    return Err(Error::InvalidCommand(format!(
+                        "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", parts[1]).into()));
+                }
                 Nexus::get().pipeline_manager
                     .set_pipeline_config(ch.agent_id.clone(), ch.role_name.clone(), parts[1].clone()).await?;
                 Ok(Some(ArcStr::from(format!(
@@ -536,7 +539,10 @@ impl ChannelManager {
                 if ch.agent_id.is_empty() || ch.agent_id == RESERVED_AGENT_ID {
                     return Err(Error::InvalidCommand("默认 agent 不可设置 pipeline".into()));
                 }
-                verify_pipeline_name(&parts[1])?;
+                if !is_supported_pipeline_name(parts[1].as_str()) {
+                    return Err(Error::InvalidCommand(format!(
+                        "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", parts[1]).into()));
+                }
                 Nexus::get().pipeline_manager
                     .set_pipeline_config(ch.agent_id.clone(), RESERVED_ROLE_NAME, parts[1].clone()).await?;
                 Ok(Some(ArcStr::from(format!(
@@ -577,16 +583,6 @@ impl ChannelManager {
         if let Err(e) = self.send(channel_id, msg).await {
             warn!("send_admin_reply 失败: {:?}", e);
         }
-    }
-}
-
-/// `/pipeline`、`/agent-pipeline` 的 pipeline 名称校验（与 create_pipeline 的注册表一致）
-fn verify_pipeline_name(name: &ArcStr) -> Result<()> {
-    if is_supported_pipeline_name(name.as_str()) {
-        Ok(())
-    } else {
-        Err(Error::InvalidCommand(format!(
-            "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", name).into()))
     }
 }
 
