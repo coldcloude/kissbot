@@ -24,7 +24,7 @@
 {根目录}/{agent-id}/memory-struct-abstract/
 ├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
 ├── {角色名}/                      # 角色目录：case 树与原文副本
-│   ├── tree.json                 # 一棵 case 树（角色模式与事件模式共用）
+│   ├── tree.jsonl                # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
 │   └── cases/{case 名}/          # case 原文副本，每类一个文件
 │       ├── channel-records.jsonl
 │       ├── think-records.jsonl

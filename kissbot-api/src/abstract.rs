@@ -75,7 +75,7 @@ impl CaseRecord {
 
 // ========== Case 与 case 树 ==========
 
-/// Case 节点（tree.json 的节点形状）：只描述 case 本身，不带模式/事件信息
+/// Case 节点（case 树文件的一行）：只描述 case 本身，不带模式/事件信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseNode {
     pub case_name: ArcStr,
@@ -538,11 +538,11 @@ mod tests {
         };
         let v = serde_json::to_value(&node).unwrap();
         assert!(v.get("mode").is_none(), "case 节点不带模式/事件信息");
-        assert!(v["parent_id"].is_null(), "parent_id 为 null 时序列化为 null（tree.json 形状）");
+        assert!(v.get("parent_id").is_none(), "顶层节点省略 parent_id，读取时按 null 处理");
         assert!(!node.is_leaf());
         assert_eq!(CaseBrief::from(&node).case_name.as_str(), "e12");
 
-        // 旧 tree.json 里的 mode 字段被忽略，不影响加载
+        // 节点里的未知字段（如 mode）被忽略，不影响加载
         let leaf: CaseNode = serde_json::from_value(json!({
             "case_name": "e13", "mode": "event", "summary": "s", "record_count": 0,
             "start_time": "t", "end_time": "t", "created_at": "t", "updated_at": "t"

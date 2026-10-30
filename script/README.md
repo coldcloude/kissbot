@@ -225,7 +225,7 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 
 验证点：
 
-1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.json` 与 `cases/{case 名}/{channel|think|tool-call|tool-result}-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
+1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.jsonl` 与 `cases/{case 名}/{channel|think|tool-call|tool-result}-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
 2. **归档不重复**：没有新数据时反复手动触发不会重复归档（`archived` 为 0，日志不再出现新的记录数）
 3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_name`，新话题会建出记忆条数为 0 的 case——名称与摘要当场由模型给出（原文副本等这些消息写入记忆并归档后补上）。摘要与原文再用 `case/summary`、`case/records*` 取
 4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（case 的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留

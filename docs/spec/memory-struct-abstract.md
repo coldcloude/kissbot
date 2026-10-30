@@ -320,7 +320,7 @@
 │   ├── context/{session-id}.jsonl
 │   └── context-history/{session-id}-{时间戳}.jsonl
 ├── {角色名}/                              # 角色目录：case 树与原文副本
-│   ├── tree.json                         # 一棵 case 树（角色模式与事件模式共用）
+│   ├── tree.jsonl                        # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
 │   └── cases/{case 名}/                  # 原文副本，每类一个文件
 │       ├── channel-records.jsonl
 │       ├── think-records.jsonl
@@ -332,39 +332,22 @@
 ```
 
 - `{角色名}` 为 RoleEvent 里的角色名；`{记忆后缀}` 为完整 role-event 后缀：角色模式等于角色名（此时后缀目录即角色目录），事件模式为 `{角色名}-{事件标识}`。
-- **case 树按 AgentRole 共用**：`tree.json` 在角色目录下，同一 AgentRole 的角色模式与事件模式看到的是同一棵树（查询 `tree/get` 时 `nodes` 相同）；case 节点不记录模式/事件字段。
+- **case 树按 AgentRole 共用**：`tree.jsonl` 在角色目录下，同一 AgentRole 的角色模式与事件模式看到的是同一棵树（查询 `tree/get` 时 `nodes` 相同）；case 节点不记录模式/事件字段，节点自带 `case_name`，不另存外层键。
 - **原始记录、水位、当前指针、模型会话按记忆后缀分开**：原文副本目录在角色目录下按 `case 名` 命名，水位/当前指针在各自的后缀目录下，模型会话按后缀的净化形式（session_id，非字母数字与 `-`/`_`/`.` 的字符替换为 `_`，空后缀用 `_default`）分开。
 - 事件模式的 case 是 AgentRole 树里固定的顶层叶子，由组件内部的 `event_id` 参数直接定位，case 名为 `event-{事件标识}`（命名约定与查找键）；角色模式新建 case 的 case 名为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…）。
 - **新建 case 的名称与摘要都在新建当次给出**：名称非法（含中文、空格或其他字符，或超过 64 字符）或缺摘要都按模型失败处理（保留状态、下次重试）。
 - 原文副本按类型分文件、按时间顺序追加，行内容与记忆存储的记录格式一致；不按日期分文件（日期切分只用于 memory-store 的原始记录文件，case 副本按时间顺序单文件累积）。
 - 记忆存储侧的原始记录仍是 `{根目录}/{agent-id}/memory-store/{year}-{记忆后缀}/…`。
 
-### tree.json
+### tree.jsonl
 
 ```jsonc
-{
-  "nodes": {
-    "role-weather-chat": {
-      "case_name": "role-weather-chat",
-      "parent_id": null,               // 顶层为 null（序列化时该字段省略，反序列化缺省即 null）
-      "children": ["role-work-plan"],
-      "summary": "…",
-      "record_count": 42,
-      "start_time": "2026-09-22 10:00:00",
-      "end_time": "2026-09-22 13:48:37",
-      "created_at": "2026-09-22 10:05:00",
-      "updated_at": "2026-09-22 13:49:00"
-    },
-    "event-e1": {
-      "case_name": "event-e1",
-      "children": [],
-      "summary": "…",
-      "record_count": 3,
-      "start_time": "…", "end_time": "…", "created_at": "…", "updated_at": "…"
-    }
-  }
-}
+{"case_name":"role-weather-chat","children":["role-work-plan"],"summary":"…","record_count":42,"start_time":"2026-09-22 10:00:00","end_time":"2026-09-22 13:48:37","created_at":"2026-09-22 10:05:00","updated_at":"2026-09-22 13:49:00"}
+{"case_name":"role-work-plan","parent_id":"role-weather-chat","children":[],"summary":"…","record_count":8,"start_time":"…","end_time":"…","created_at":"…","updated_at":"…"}
+{"case_name":"event-e1","children":[],"summary":"…","record_count":3,"start_time":"…","end_time":"…","created_at":"…","updated_at":"…"}
 ```
+
+- 每行一个 case 节点，节点自带 `case_name`；`parent_id` 为顶层时省略该字段（反序列化缺省即 null）。整树写盘时按创建时间、`case_name` 顺序逐行覆盖。
 
 ### current.json / watermark.json
 
@@ -465,5 +448,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 ## 验证
 
-- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组按 `msg_id` 覆盖校验（允许话题交错、不要求有序）、分组输入固定字段与思考/工具标签内嵌（一条 multi 消息只占一个条目）、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.json 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、msg_id 必填且唯一、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
+- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组按 `msg_id` 覆盖校验（允许话题交错、不要求有序）、分组输入固定字段与思考/工具标签内嵌（一条 multi 消息只占一个条目）、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.jsonl 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、msg_id 必填且唯一、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
 - 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条消息定位（pending + 消息一次处理，按 msg_id 标识消息，同一 case 的多组合并）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入 `event-{事件标识}` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考记录按占位引用归属」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。

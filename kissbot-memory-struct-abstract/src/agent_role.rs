@@ -18,11 +18,15 @@ use dashmap::DashMap;
 use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, RoleEvent, Watermark};
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use crate::config::STRUCT_DIR_NAME;
 use crate::error::{Error, Result};
 use crate::records::list_store_suffixes;
 use crate::tree::CaseTree;
+
+/// case 树文件：每行一个 [`CaseNode`]（节点自带 `case_name`）
+const TREE_FILE: &str = "tree.jsonl";
 
 /// 角色：case 树的归属者（`agent_id + 角色名`，**不含 event**）。一个 AgentRole 一棵 case 树。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -180,7 +184,7 @@ pub struct AgentRoleHandle {
 
 impl AgentRoleHandle {
     pub fn tree_path(&self) -> PathBuf {
-        self.dir.join("tree.json")
+        self.dir.join(TREE_FILE)
     }
 
     /// 记忆后缀目录（`{root}/{agent}/memory-struct-abstract/{后缀}`）：水位与当前指针。
@@ -208,14 +212,14 @@ impl AgentRoleHandle {
         crate::records::case_dir(&self.dir, case_name)
     }
 
-    /// 持久化 case 树
+    /// 持久化 case 树：每行一个 [`CaseNode`]（`case_name` 在节点内，不另存键）
     pub async fn save_tree(&self, tree: &CaseTree) -> Result<()> {
-        let nodes: BTreeMap<ArcStr, CaseNode> = tree
-            .nodes()
-            .into_iter()
-            .map(|n| (n.case_name.clone(), n.clone()))
-            .collect();
-        write_json(&self.tree_path(), &serde_json::json!({ "nodes": nodes })).await
+        let mut body = String::new();
+        for node in tree.nodes() {
+            body.push_str(&serde_json::to_string(node)?);
+            body.push('\n');
+        }
+        write_atomic(&self.tree_path(), body.as_bytes()).await
     }
 
     /// 持久化某后缀各通道的当前 case 指针（无通道时删除文件）
@@ -292,11 +296,16 @@ impl AgentRoleHandle {
 }
 
 async fn write_json(path: &Path, value: &Value) -> Result<()> {
+    write_atomic(path, &serde_json::to_vec_pretty(value)?).await
+}
+
+/// 先写临时文件再原子替换：读侧不会看到写了一半的内容
+async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let tmp = path.with_extension("tmp");
-    tokio::fs::write(&tmp, serde_json::to_vec_pretty(value)?).await?;
+    tokio::fs::write(&tmp, bytes).await?;
     tokio::fs::rename(&tmp, path).await?;
     Ok(())
 }
@@ -345,21 +354,7 @@ impl AgentRoleManager {
 
     async fn load(&self, id: AgentRole) -> Result<AgentRoleHandle> {
         let dir = self.role_dir(&id);
-        let tree = match read_json(&dir.join("tree.json")).await? {
-            Some(value) => {
-                let nodes = value
-                    .get("nodes")
-                    .and_then(|n| n.as_object())
-                    .map(|map| {
-                        map.values()
-                            .filter_map(|v| serde_json::from_value::<CaseNode>(v.clone()).ok())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                CaseTree::from_nodes(nodes)
-            }
-            None => CaseTree::new(),
-        };
+        let tree = CaseTree::from_nodes(read_tree_nodes(&dir.join(TREE_FILE)).await?);
 
         let mut state = AgentRoleState { tree, ..AgentRoleState::default() };
         // 首次加载：磁盘上的原始记录与水位的关系未知，按「记忆存储里出现过的后缀全部通道待处理」处理
@@ -373,8 +368,8 @@ impl AgentRoleManager {
         })
     }
 
-    /// 扫描磁盘上已有的角色（服务启动时恢复）：角色目录即角色名（含 `tree.json` 的目录），
-    /// 事件后缀目录只放水位/指针、没有 `tree.json`，不会作为角色被打开
+    /// 扫描磁盘上已有的角色（服务启动时恢复）：角色目录即角色名（含 `tree.jsonl` 的目录），
+    /// 事件后缀目录只放水位/指针、没有 `tree.jsonl`，不会作为角色被打开
     pub async fn load_all(&self) -> Result<Vec<Arc<AgentRoleHandle>>> {
         let mut handles = Vec::new();
         let mut agents = match tokio::fs::read_dir(&self.root).await {
@@ -393,8 +388,8 @@ impl AgentRoleManager {
                 Err(_) => continue,
             };
             while let Some(role_entry) = roles.next_entry().await? {
-                if !role_entry.file_type().await?.is_dir() || !role_entry.path().join("tree.json").exists() {
-                    // 模型会话目录与事件后缀目录都没有 tree.json，不是角色目录
+                if !role_entry.file_type().await?.is_dir() || !role_entry.path().join(TREE_FILE).exists() {
+                    // 模型会话目录与事件后缀目录都没有 tree.jsonl，不是角色目录
                     continue;
                 }
                 let role = role_entry.file_name().to_string_lossy().to_string();
@@ -431,6 +426,30 @@ async fn read_json(path: &Path) -> Result<Option<Value>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// 逐行读取 `tree.jsonl`：文件不存在返回空；空行跳过；解析失败的行告警后跳过，
+/// 避免一行损坏拖垮整棵树。
+async fn read_tree_nodes(path: &Path) -> Result<Vec<CaseNode>> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|e| Error::StateError(format!("case 树文件不是 UTF-8 {}: {}", path.display(), e).into()))?;
+    let mut nodes = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<CaseNode>(line) {
+            Ok(node) => nodes.push(node),
+            Err(e) => warn!("[abstract] skip unparsable tree line {} in {}: {}", index + 1, path.display(), e),
+        }
+    }
+    Ok(nodes)
 }
 
 #[cfg(test)]
@@ -527,10 +546,15 @@ mod tests {
         assert_eq!(node.record_count, 1);
         assert_eq!(node.start_time.as_str(), "2026-09-22 10:00:00");
 
-        // tree.json 形状符合文档
-        let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.tree_path()).await.unwrap()).unwrap();
-        assert!(raw["nodes"]["role-1"].get("mode").is_none(), "tree.json 的节点不带模式/事件信息");
-        assert_eq!(raw["nodes"]["role-1"]["children"], serde_json::json!([]));
+        // tree.jsonl 形状符合文档：每行一个节点，case_name 在节点内，没有外层键
+        let raw = tokio::fs::read_to_string(reloaded.tree_path()).await.unwrap();
+        let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "一个节点一行");
+        let node: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(node["case_name"], "role-1");
+        assert!(node.get("nodes").is_none(), "tree.jsonl 没有外层 nodes 键");
+        assert!(node.get("mode").is_none(), "case 树节点不带模式/事件信息");
+        assert_eq!(node["children"], serde_json::json!([]));
 
         // current.json / watermark.json 按通道分组，放在记忆后缀目录下
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.current_path(&role_event)).await.unwrap()).unwrap();
@@ -539,6 +563,38 @@ mod tests {
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.watermark_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["messenger_id"], "web");
         assert_eq!(raw["channels"][0]["watermark"]["channel"]["sn"], 1);
+    }
+
+    #[tokio::test]
+    async fn tree_jsonl_roundtrip_keeps_parent_children_and_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AgentRoleManager::new(temp.path());
+        let id = AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"));
+        let handle = manager.open(id.clone()).await.unwrap();
+        {
+            let mut state = handle.state.lock().await;
+            state.tree.create_node("role-1", None, "2026-09-22 10:00:00");
+            state.tree.set_summary("role-1", "顶层摘要", "2026-09-22 10:00:00");
+            state.tree.create_node("role-2", Some("role-1"), "2026-09-22 10:01:00");
+            state.tree.set_summary("role-2", "子摘要", "2026-09-22 10:01:00");
+            state.tree.create_node("event-e1", None, "2026-09-22 10:02:00");
+            handle.save_tree(&state.tree).await.unwrap();
+        }
+
+        let raw = tokio::fs::read_to_string(handle.tree_path()).await.unwrap();
+        assert_eq!(raw.lines().count(), 3, "每个节点一行");
+        for line in raw.lines() {
+            let node: CaseNode = serde_json::from_str(line).unwrap();
+            assert!(!node.case_name.is_empty(), "节点自带 case_name");
+        }
+
+        let reloaded = AgentRoleManager::new(temp.path()).open(id).await.unwrap();
+        let state = reloaded.state.lock().await;
+        assert_eq!(state.tree.len(), 3);
+        assert_eq!(state.tree.children_ids("role-1"), vec![ArcStr::from("role-2")]);
+        assert_eq!(state.tree.get("role-2").unwrap().parent_id.as_deref(), Some("role-1"));
+        assert_eq!(state.tree.get("role-2").unwrap().summary.as_str(), "子摘要");
+        assert!(state.tree.event_case("e1").is_some());
     }
 
     #[tokio::test]
