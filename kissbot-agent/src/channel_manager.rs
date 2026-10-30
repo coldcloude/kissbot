@@ -22,6 +22,7 @@ use kissbot_channel_client::{ChannelClient, Terminal};
 
 use crate::config_manager::ConfigManager;
 use crate::nexus::Nexus;
+use crate::pipelines::is_supported_pipeline_name;
 use crate::types::{ChannelCommand, Error, MemoryKey, Result};
 
 /// 每 channel 运行时：已发未回显的 outgoing msg_id 集合的 TTL（秒）
@@ -394,7 +395,7 @@ impl ChannelManager {
     /// 错误经 Result 返回：InvalidCommand（解析/格式错误）由调用方拼 "⚠️ {}"，其余拼 "❌ 命令执行失败: {}"。
     /// bind/unbind 走本结构 channel_command 队列串行（bind_users 回写）；
     /// agent/role/事件 走 change_channel_key 队列。Nexus 一律从单例取（不传参数）
-    async fn execute_default_command(&self, content: &str, channel_id: ArcStr) -> Result<Option<ArcStr>> {
+    pub(crate) async fn execute_default_command(&self, content: &str, channel_id: ArcStr) -> Result<Option<ArcStr>> {
         let parts: Vec<ArcStr> = content.trim().split_whitespace().map(|s| {ArcStr::from(s)}).collect();
         if parts.is_empty() {
             return Err(Error::InvalidCommand("空命令".into()));
@@ -503,6 +504,44 @@ impl ChannelManager {
                     _ => Err(Error::InvalidCommand(format!("未知模式: {}", parts[1]).into())),
                 }
             }
+            "/pipeline" => {
+                // /pipeline <pipeline_name>：设置来源 channel 的 (agent, role) 级 pipeline（默认 role 不可设置）
+                if parts.len() != 2 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /pipeline <pipeline_name>".into()
+                    ));
+                }
+                let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else {
+                    return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+                };
+                if ch.role_name.is_empty() {
+                    return Err(Error::InvalidCommand("默认 role 不可设置 pipeline".into()));
+                }
+                verify_pipeline_name(&parts[1])?;
+                Nexus::get().pipeline_manager
+                    .set_pipeline_config(ch.agent_id.clone(), ch.role_name.clone(), parts[1].clone()).await?;
+                Ok(Some(ArcStr::from(format!(
+                    "✅ 已设置 pipeline: {}（agent: {} / role: {}）", parts[1], ch.agent_id, ch.role_name))))
+            }
+            "/agent-pipeline" => {
+                // /agent-pipeline <pipeline_name>：设置来源 channel 的 agent 级 pipeline（默认 agent 不可设置）
+                if parts.len() != 2 {
+                    return Err(Error::InvalidCommand(
+                        "格式: /agent-pipeline <pipeline_name>".into()
+                    ));
+                }
+                let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else {
+                    return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
+                };
+                if ch.agent_id.is_empty() || ch.agent_id == RESERVED_AGENT_ID {
+                    return Err(Error::InvalidCommand("默认 agent 不可设置 pipeline".into()));
+                }
+                verify_pipeline_name(&parts[1])?;
+                Nexus::get().pipeline_manager
+                    .set_pipeline_config(ch.agent_id.clone(), RESERVED_ROLE_NAME, parts[1].clone()).await?;
+                Ok(Some(ArcStr::from(format!(
+                    "✅ 已设置 agent pipeline: {}（agent: {}）", parts[1], ch.agent_id))))
+            }
             // 不是默认命令：交给来源 channel 的 pipeline 识别执行（/model、outgoing 等）
             _ => Ok(None),
         }
@@ -538,6 +577,16 @@ impl ChannelManager {
         if let Err(e) = self.send(channel_id, msg).await {
             warn!("send_admin_reply 失败: {:?}", e);
         }
+    }
+}
+
+/// `/pipeline`、`/agent-pipeline` 的 pipeline 名称校验（与 create_pipeline 的注册表一致）
+fn verify_pipeline_name(name: &ArcStr) -> Result<()> {
+    if is_supported_pipeline_name(name.as_str()) {
+        Ok(())
+    } else {
+        Err(Error::InvalidCommand(format!(
+            "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", name).into()))
     }
 }
 

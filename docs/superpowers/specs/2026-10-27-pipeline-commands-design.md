@@ -88,8 +88,20 @@ ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 
 - `Nexus::set_pipeline_model`、`Nexus::set_channel_pipeline_model`、`Nexus::verify_model`。
 - `AgentPipeline::set_model`。
-- `CommandRouter` 中的 `/model`、`/bind-outgoing`、`/unbind-outgoing` 分支及相关 imports。
+- `CommandRouter` 整体删除：默认命令处理迁入 `ChannelManager::execute_default_command`。
 - `default` pipeline 的 outgoing 相关内容：命令检测只认 `/model`，不导入 outgoing 配置。
+
+### 6. 通用 pipeline 配置命令
+
+在默认命令层（先于 pipeline 命令检测）增加两条通用命令：
+
+- `/pipeline <pipeline_name>`：设置来源 channel 的 (agent, role) 级 `pipeline_name`；默认 role（空）不可设置。
+- `/agent-pipeline <pipeline_name>`：设置来源 channel 的 agent（role 空）级 `pipeline_name`；默认 agent "0" 不可设置。
+- 名称校验：仅接受 `default` / `default_memory` / `abstract_memory`。
+- 清理：修改前保存受影响 role（当前已装配 pipeline 的 role）merge 后的配置，写入后重新 merge；
+  pipeline 名称变化的已装配 pipeline 从 `PipelineManager` 移除，下次按新配置装配。
+- 实现：`ChannelManager::execute_default_command` 负责解析与校验，`PipelineManager::set_pipeline_config`
+  负责保存 / 比较 / 失效。
 
 ## 测试与文档
 

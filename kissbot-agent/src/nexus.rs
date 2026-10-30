@@ -418,4 +418,101 @@ mod tests {
         };
         assert!(matches!(err, Error::PipelineNotFound(_, _)), "未知 pipeline 名应返回 PipelineNotFound: {:?}", err);
     }
+    // ===== /pipeline、/agent-pipeline：修改 pipeline 配置并让受影响的已装配 pipeline 失效 =====
+
+    /// 构造测试用 channel 配置（仅填命令所需字段）
+    fn pipeline_test_channel(channel_id: &str, agent_id: &str, role_name: &str, ws_port: u16) -> ChannelConfig {
+        ChannelConfig {
+            channel_id: ArcStr::from(channel_id),
+            ws_url: ArcStr::from(format!("ws://127.0.0.1:{}", ws_port)),
+            admins: Arc::new(HashSet::new()),
+            bind_users: Arc::new(HashSet::new()),
+            agent_id: ArcStr::from(agent_id),
+            role_name: ArcStr::from(role_name),
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_commands_write_agent_and_role_config() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let channel_manager = Nexus::get().channel_manager.clone();
+
+        // /pipeline：写来源 channel 的 (agent, role) 级配置
+        let role_channel = ArcStr::from("cmd-pipeline-role");
+        let _ = cm.add_channel(pipeline_test_channel(role_channel.as_str(), "cmd-pipeline-agent", "r1", 8396)).await;
+        let reply = channel_manager.execute_default_command("/pipeline abstract_memory", role_channel).await
+            .expect("应命中 /pipeline").expect("应有回复");
+        assert!(reply.contains("已设置 pipeline"), "回复文案: {}", reply);
+        let cfg = cm.agent_role_config::<PipelineConfig>("cmd-pipeline-agent", "r1").await.expect("role 配置应存在");
+        assert_eq!(cfg.pipeline_name.as_deref(), Some("abstract_memory"));
+
+        // /agent-pipeline：写来源 channel 的 agent（role 空）级配置
+        let agent_channel = ArcStr::from("cmd-agent-pipeline");
+        let _ = cm.add_channel(pipeline_test_channel(agent_channel.as_str(), "cmd-agent-pipeline-agent", "r2", 8395)).await;
+        let reply = channel_manager.execute_default_command("/agent-pipeline default", agent_channel).await
+            .expect("应命中 /agent-pipeline").expect("应有回复");
+        assert!(reply.contains("agent pipeline"), "回复文案: {}", reply);
+        let cfg = cm.agent_role_config::<PipelineConfig>("cmd-agent-pipeline-agent", "").await.expect("agent 配置应存在");
+        assert_eq!(cfg.pipeline_name.as_deref(), Some("default"));
+    }
+
+    #[tokio::test]
+    async fn pipeline_commands_reject_default_identity_and_unknown_name() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let channel_manager = Nexus::get().channel_manager.clone();
+
+        // 默认 role（空）不可设置
+        let default_role_channel = ArcStr::from("cmd-pipeline-default-role");
+        let _ = cm.add_channel(pipeline_test_channel(default_role_channel.as_str(), "cmd-pipeline-default-agent", "", 8394)).await;
+        let err = channel_manager.execute_default_command("/pipeline default", default_role_channel).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidCommand(ref msg) if msg.contains("默认 role")), "默认 role 应拒绝: {:?}", err);
+
+        // 默认 agent（"0"）不可设置
+        let default_agent_channel = ArcStr::from("cmd-pipeline-default-agent");
+        let _ = cm.add_channel(pipeline_test_channel(default_agent_channel.as_str(), "0", "r9", 8393)).await;
+        let err = channel_manager.execute_default_command("/agent-pipeline default", default_agent_channel).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidCommand(ref msg) if msg.contains("默认 agent")), "默认 agent 应拒绝: {:?}", err);
+
+        // 未知 pipeline 名称
+        let unknown_channel = ArcStr::from("cmd-pipeline-unknown");
+        let _ = cm.add_channel(pipeline_test_channel(unknown_channel.as_str(), "cmd-pipeline-unknown-agent", "r1", 8392)).await;
+        let err = channel_manager.execute_default_command("/pipeline no-such-pipeline", unknown_channel).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidCommand(ref msg) if msg.contains("未知 pipeline")), "未知名称应拒绝: {:?}", err);
+    }
+
+    #[tokio::test]
+    async fn pipeline_config_change_invalidates_affected_pipelines() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let agent = "cmd-pipe-inval-agent";
+        // agent 级默认 default_memory；r2 用 role 覆盖 default
+        cm.set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent), ArcStr::from(""),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default_memory")) })).await.unwrap();
+        cm.set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent), ArcStr::from("r2"),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default")) })).await.unwrap();
+
+        let pm = PipelineManager::new();
+        let k1 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))) });
+        let k1e = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))) });
+        let k2 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from("r2"))) });
+        for key in [&k1, &k1e, &k2] {
+            pm.ensure_pipeline(key.clone()).await.unwrap_or_else(|e| panic!("应能装配 pipeline: {:?}", e));
+        }
+        assert!(pm.contains(k1.as_ref()) && pm.contains(k1e.as_ref()) && pm.contains(k2.as_ref()));
+
+        // 改 agent 级为 default：r1 合并值变化（default_memory → default）失效；r2 的 role 覆盖不变，保留
+        pm.set_pipeline_config(ArcStr::from(agent), ArcStr::new(), ArcStr::from("default")).await.unwrap();
+        assert!(!pm.contains(k1.as_ref()), "r1 合并配置变化，pipeline 应失效");
+        assert!(!pm.contains(k1e.as_ref()), "r1 的事件 pipeline 同样失效");
+        assert!(pm.contains(k2.as_ref()), "r2 合并配置未变，pipeline 保留");
+
+        // 改 r2 的 role 级为 abstract_memory：合并值变化，r2 pipeline 失效
+        pm.set_pipeline_config(ArcStr::from(agent), ArcStr::from("r2"), ArcStr::from("abstract_memory")).await.unwrap();
+        assert!(!pm.contains(k2.as_ref()), "r2 合并配置变化，pipeline 应失效");
+    }
 }

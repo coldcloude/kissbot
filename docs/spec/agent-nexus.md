@@ -165,11 +165,13 @@ pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配
 | role | `/role [role_name]` | 默认层 | 切换角色（缺省 = 保留 role） |
 | mode | `/mode event [event-id]` | 默认层 | 进入事件模式（缺省生成新 event-id） |
 | mode | `/mode role` | 默认层 | 回到角色模式 |
+| pipeline | `/pipeline <pipeline_name>` | 默认层 | 设置来源 channel 的 (agent, role) 级 pipeline（默认 role 不可设置）；名称变化的已装配 pipeline 失效；可选 default / default_memory / abstract_memory |
+| agent-pipeline | `/agent-pipeline <pipeline_name>` | 默认层 | 设置来源 channel 的 agent 级 pipeline（默认 agent "0" 不可设置）；pipeline 名称变化的已装配 pipeline 失效 |
 | bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | default_memory / abstract_memory | 设 pipeline 的回复通道（要求该身份已绑定来源 channel） |
 | unbind-outgoing | `/unbind-outgoing` | default_memory / abstract_memory | 清除 pipeline 的回复通道（回到只存不回复） |
 | model | `/model <provider> <model>` | default / default_memory / abstract_memory | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；写入哪些 session 由 pipeline 决定 |
 
-命令分两层检测：默认层（`ChannelManager::execute_default_command`）处理上表的默认命令；默认层未命中时，ChannelManager 按来源 channel 定位 pipeline 并交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model` 与 outgoing 命令由 pipeline 处理，共享实现（解析、模型校验、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
+命令分两层检测：默认层（`ChannelManager::execute_default_command`）处理上表的默认命令（含 `/pipeline`、`/agent-pipeline`，先于 pipeline 命令检测）；默认层未命中时，ChannelManager 按来源 channel 定位 pipeline 并交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model` 与 outgoing 命令由 pipeline 处理，共享实现（解析、模型校验、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
 
 ### 命令处理结果
 
@@ -233,6 +235,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 - 上行记忆写入由 pipeline 自己负责（Nexus 不再统一写入）：`default_memory` 在 `incoming_message` 收到消息时立即写入（meta 为 None）；`abstract_memory` 在 **locate 之后**写入，并带 `meta.abstract_memory.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。
 - 模型回复由 pipeline 调用 `pipelines.rs` 的自由函数 `send_outgoing` 发送并写下行记录；`abstract_memory` 带本次 run 所属 case 的 meta，`default_memory` 带 None。
 - pipeline 命令由各 pipeline 的 `AgentPipeline::execute_command` 识别执行：`default` 只接 `/model`；`default_memory` / `abstract_memory` 接 `/model` 与 outgoing 命令。共享实现（`command_parts` / `parse_model_command` / `handle_model_command` / `switch_model` / `bind_outgoing` / `unbind_outgoing` / `outgoing_channel`）在 pipelines.rs，各 pipeline 先按命令名 match 再调用。
+- `/pipeline`、`/agent-pipeline`：修改 (agent, role) 或 (agent, "") 的 `pipeline_name`。修改前保存受影响 role 当前 merge 后的配置，修改后重新 merge；pipeline 名称变化的已装配 pipeline 从 PipelineManager 移除（下次按新配置装配）。默认 role / 默认 agent "0" 不可设置。
 - `/model`：写入 pipeline 自己的 session `LLMConfig`；摘要记忆 pipeline 写基准 session 与已有 case session，并保存模型覆盖供新建 case session 应用（进程重启后从基准 session 的已存配置恢复）。
 - outgoing：`/bind-outgoing`、`/unbind-outgoing` 写 pipeline 自己的 session `OutChannelConfig`（摘要记忆 pipeline 写基准 session）；运行期 `run_once` 从同一 session 读取发送。
 - channel 不再绑定本 pipeline（`/agent`、`/role`、`/mode` 切换）时，channel 侧对旧 pipeline 调用 `AgentPipeline::channel_unbound(messenger_id, self_user_id)`：摘要记忆 pipeline 丢弃该 channel 全部 group 的生产者与待处理消息；channel 侧 `apply_channel_key` 内联完成「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」。

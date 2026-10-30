@@ -13,7 +13,7 @@ use futures_util::future;
 use kissbot_api::{ChannelUser, Content, ContentBlock, DetailRef, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -667,6 +667,11 @@ const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
 const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
+/// pipeline 名称是否受支持（与 create_pipeline 的注册表一致）
+pub fn is_supported_pipeline_name(name: &str) -> bool {
+    matches!(name, PIPELINE_DEFAULT_STR | PIPELINE_DEFAULT_MEMORY_STR | PIPELINE_ABSTRACT_MEMORY_STR)
+}
+
 /// 把 (agent, role) 的某项配置导入 session 配置；已有 session 级值时不覆盖。
 pub(crate) async fn import_session_config_from_agent_role<C, E>(memory_key: &MemoryKey, session_id: &ArcStr)
 where
@@ -828,6 +833,49 @@ impl PipelineManager {
                 Ok(pipeline)
             }
         }
+    }
+
+    /// 修改 agent（role 空）或 agent+role 的 pipeline 配置：
+    /// 先保存受影响 pipeline 当前 merge 后的配置，写新配置后重新 merge；
+    /// pipeline 名称变化的已装配 pipeline 从注册表移除（下次按新配置重建，session 随 Arc 释放回收）
+    pub async fn set_pipeline_config(&self, agent_id: ArcStr, role_name: ArcStr, pipeline_name: ArcStr) -> Result<()> {
+        let cfg = ConfigManager::get();
+        // 受影响的已装配 pipeline：agent 级（role 空）= 该 agent 全部 role；role 级 = 该 (agent, role)
+        let affected: Vec<Arc<MemoryKey>> = self.pipeline_map.iter()
+            .filter(|entry| {
+                let key = entry.key();
+                key.agent_id == agent_id
+                    && (role_name.is_empty() || key.role_event.role_name == role_name)
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+        // 提前保存受影响 role 的当前 merge 配置（同 role 的多个 event pipeline 共用一份配置）
+        let mut roles: Vec<ArcStr> = affected.iter().map(|key| key.role_event.role_name.clone()).collect();
+        roles.sort();
+        roles.dedup();
+        let mut old_names = HashMap::new();
+        for role in &roles {
+            let old_name = cfg.agent_role_config::<PipelineConfig>(agent_id.as_str(), role.as_str()).await
+                .and_then(|config| config.pipeline_name);
+            old_names.insert(role.clone(), old_name);
+        }
+        // 写新配置（role 空 = agent 级）
+        cfg.set_agent_role_config::<PipelineConfig>(
+            agent_id.clone(), role_name, Arc::new(PipelineConfig { pipeline_name: Some(pipeline_name) }),
+        ).await?;
+        // 重新生成 merge 后的配置；名称变化的 role 下已装配 pipeline 失效
+        for role in roles {
+            let new_name = cfg.agent_role_config::<PipelineConfig>(agent_id.as_str(), role.as_str()).await
+                .and_then(|config| config.pipeline_name);
+            if old_names.get(&role) != Some(&new_name) {
+                for key in &affected {
+                    if key.role_event.role_name == role {
+                        self.pipeline_map.remove(key);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 只保留仍在绑定集合中的 pipeline（pipeline 丢弃会触发输入处理器 Drop → 合批任务退出；

@@ -212,6 +212,7 @@ kissbot-agent 启动
 | 管理权限管理 | 默认层 | 添加或移除用户的管理权限 |
 | agent/角色切换 | 默认层 | 修改指定通道绑定的 agent 与角色 |
 | 模式切换 | 默认层 | 修改指定通道绑定的记忆模式（角色/事件） |
+| pipeline 配置 | 默认层 | 修改 (agent, role) 或 agent 级 pipeline（`/pipeline`、`/agent-pipeline`）；名称变化的已装配 pipeline 失效 |
 | 回复通道 | default_memory / abstract_memory | 设置或清除 pipeline 的回复通道 |
 | 模型切换 | 三条 pipeline | 切换当前 pipeline 使用的 provider/model（校验后生效） |
 
