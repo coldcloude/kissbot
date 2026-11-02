@@ -1183,9 +1183,9 @@ mod tests {
         let manager = test_manager(&dir);
         manager.set_agent_role_config::<PipelineConfig>(
             ArcStr::from("a1"), ArcStr::from("r1"),
-            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("summary_memory")) })).await.unwrap();
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("memory_summary")) })).await.unwrap();
 
         let cfg = manager.agent_role_config::<PipelineConfig>("a1", "r1").await.expect("agent/role 应能读到 pipeline");
-        assert_eq!(cfg.pipeline_name.as_deref(), Some("summary_memory"));
+        assert_eq!(cfg.pipeline_name.as_deref(), Some("memory_summary"));
     }
 }

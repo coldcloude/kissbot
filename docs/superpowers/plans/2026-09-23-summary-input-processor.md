@@ -4,7 +4,7 @@
 
 **Goal:** 在 kissbot-agent 中新增一个 pipeline 输入处理器：按 channel（messenger + 接收方用户 + 群组）攒批，每秒定时检测，某 channel 的最后一条消息超时即触发；触发时经摘要记忆（kissbot-memory-struct-summary）定位事件、取事件摘要与事件结尾原文副本重建会话上下文，再把本批新消息（与历史去重后剩下的部分）交给 pipeline 运行。
 
-**Architecture:** 新增 `SummaryClient`（REST 客户端，仿 `memory_ego_client`）与 `SummaryAgentInputProcessor`（输入处理器，仿 `BatchAgentInputProcessor` 的 per-session 构造与 Drop 退出模式）。处理器在首次 `accept` 时惰性启动一个 1 秒 tick 任务；tick 任务取走已超时 channel 的批次并串行 flush（避免同会话上下文并发写）。flush 顺序：`/summary/locate` → 逐事件 `/summary/event/summary` + `/summary/event/records-tail` → 时间窗过滤 + 与本批新消息去重 → `pack_memory_messages` 组装 → `Session::context_archive_and_clear_cache_and_reset_messages` → `Nexus::run_pipeline`。任何摘要记忆调用失败都降级为「不重置上下文，直接合批进 pipeline」。
+**Architecture:** 新增 `MemorySummaryClient`（REST 客户端，仿 `memory_ego_client`）与 `SummaryAgentInputProcessor`（输入处理器，仿 `BatchAgentInputProcessor` 的 per-session 构造与 Drop 退出模式）。处理器在首次 `accept` 时惰性启动一个 1 秒 tick 任务；tick 任务取走已超时 channel 的批次并串行 flush（避免同会话上下文并发写）。flush 顺序：`/summary/locate` → 逐事件 `/summary/event/summary` + `/summary/event/records-tail` → 时间窗过滤 + 与本批新消息去重 → `pack_memory_messages` 组装 → `Session::context_archive_and_clear_cache_and_reset_messages` → `Nexus::run_pipeline`。任何摘要记忆调用失败都降级为「不重置上下文，直接合批进 pipeline」。
 
 **Tech Stack:** Rust 2024 / tokio / reqwest / serde / chrono / dashmap / async-trait；复用 kissbot-api 的 `LocateRequest`/`EventSummaryRequest`/`EventRecordsTailRequest` 与 kissbot-llm 的 `Session`/`Message`。
 
@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: `kissbot_config::Config::get().get_section("api")`（既有）
-- Produces: `ApiConfig { memory_store_url: String, memory_ego_url: String, memory_struct_summary_url: String }`——Task 2 的 `SummaryClient` 读它
+- Produces: `ApiConfig { memory_store_url: String, memory_ego_url: String, memory_struct_summary_url: String }`——Task 2 的 `MemorySummaryClient` 读它
 
 - [ ] **Step 1: 写失败测试**
 
@@ -118,22 +118,22 @@ git commit -m "kissbot-api 的 api 段新增摘要记忆服务地址 memory_stru
 
 **Files:**
 - Modify: `kissbot-agent/src/types/error.rs`
-- Create: `kissbot-agent/src/summary_client.rs`
+- Create: `kissbot-agent/src/memory_summary_client.rs`
 - Modify: `kissbot-agent/src/main.rs`（`mod` 声明）
 
 **Interfaces:**
 - Consumes: Task 1 的 `ApiConfig.memory_struct_summary_url`；`kissbot_security::{HEADER_API_KEY, SecurityConfig}`（同 `memory_ego_client`）
 - Produces:
-  - `Error::SummaryError(String)`
-  - `SummaryClient::new() -> SummaryClient`
-  - `SummaryClient::with_url(base_url: String, api_key: String) -> SummaryClient`
-  - `SummaryClient::locate(&self, agent_id: &str, role: &str, messages: Vec<LocateMessage>) -> Result<LocateResponse>`
-  - `SummaryClient::event_summary(&self, agent_id: &str, role: &str, event_id: &str) -> Result<EventNode>`
-  - `SummaryClient::event_records_tail(&self, agent_id: &str, role: &str, event_id: &str, count: u64) -> Result<EventRecordsResponse>`
+  - `Error::MemorySummaryError(String)`
+  - `MemorySummaryClient::new() -> MemorySummaryClient`
+  - `MemorySummaryClient::with_url(base_url: String, api_key: String) -> MemorySummaryClient`
+  - `MemorySummaryClient::locate(&self, agent_id: &str, role: &str, messages: Vec<LocateMessage>) -> Result<LocateResponse>`
+  - `MemorySummaryClient::event_summary(&self, agent_id: &str, role: &str, event_id: &str) -> Result<EventNode>`
+  - `MemorySummaryClient::event_records_tail(&self, agent_id: &str, role: &str, event_id: &str, count: u64) -> Result<EventRecordsResponse>`
 
 - [ ] **Step 1: 写失败测试（客户端文件内的空地址用例）**
 
-创建 `kissbot-agent/src/summary_client.rs`，先只写文件头与测试模块：
+创建 `kissbot-agent/src/memory_summary_client.rs`，先只写文件头与测试模块：
 
 ```rust
 //! 摘要记忆（memory-struct-summary）REST 客户端，与 memory_ego_client 同模式：
@@ -145,32 +145,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn empty_base_url_returns_summary_error() {
+    async fn empty_base_url_returns_memory_summary_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
-        let client = SummaryClient::with_url(String::new(), String::new());
+        let client = MemorySummaryClient::with_url(String::new(), String::new());
         let err = client.locate("0", "dev", vec![]).await.unwrap_err();
-        assert!(matches!(err, Error::SummaryError(_)), "未配置地址应返回 SummaryError: {:?}", err);
+        assert!(matches!(err, Error::MemorySummaryError(_)), "未配置地址应返回 MemorySummaryError: {:?}", err);
     }
 }
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd kissbot-agent && cargo test summary_client`
-Expected: 编译失败——`SummaryClient` / `Error::SummaryError` 未定义。
+Run: `cd kissbot-agent && cargo test memory_summary_client`
+Expected: 编译失败——`MemorySummaryClient` / `Error::MemorySummaryError` 未定义。
 
 - [ ] **Step 3: 加错误变体**
 
 `kissbot-agent/src/types/error.rs` 在 `MemoryEgoError` 之后插入：
 
 ```rust
-    #[error("Summary memory error: {0}")]
-    SummaryError(String),
+    #[error("Memory summary error: {0}")]
+    MemorySummaryError(String),
 ```
 
 - [ ] **Step 4: 实现客户端**
 
-把 `kissbot-agent/src/summary_client.rs` 补全为：
+把 `kissbot-agent/src/memory_summary_client.rs` 补全为：
 
 ```rust
 //! 摘要记忆（memory-struct-summary）REST 客户端，与 memory_ego_client 同模式：
@@ -189,13 +189,13 @@ use crate::types::{Error, Result};
 
 /// 摘要记忆 REST 客户端：请求走 `X-Api-Key`；`memory_struct_summary_url` 为空时
 /// 所有调用在发请求前返回 Err（调用方降级为普通合批）
-pub struct SummaryClient {
+pub struct MemorySummaryClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
 }
 
-impl SummaryClient {
+impl MemorySummaryClient {
     /// 从进程级单例读取配置构造（ApiConfig.memory_struct_summary_url / SecurityConfig.api_key）
     pub fn new() -> Self {
         Self::with_url(
@@ -262,7 +262,7 @@ impl SummaryClient {
         Resp: DeserializeOwned,
     {
         if self.base_url.is_empty() {
-            return Err(Error::SummaryError(
+            return Err(Error::MemorySummaryError(
                 "摘要记忆未配置（api.memory_struct_summary_url 为空）".to_string(),
             ));
         }
@@ -273,13 +273,13 @@ impl SummaryClient {
             .json(request)
             .send()
             .await
-            .map_err(|e| Error::SummaryError(format!("{} 请求失败: {}", path, e)))?;
+            .map_err(|e| Error::MemorySummaryError(format!("{} 请求失败: {}", path, e)))?;
         let envelope = resp
             .json::<ApiResponse<Resp>>()
             .await
-            .map_err(|e| Error::SummaryError(format!("{} 响应解析失败: {}", path, e)))?;
+            .map_err(|e| Error::MemorySummaryError(format!("{} 响应解析失败: {}", path, e)))?;
         envelope.data.ok_or_else(|| {
-            Error::SummaryError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()))
+            Error::MemorySummaryError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()))
         })
     }
 }
@@ -289,11 +289,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn empty_base_url_returns_summary_error() {
+    async fn empty_base_url_returns_memory_summary_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
-        let client = SummaryClient::with_url(String::new(), String::new());
+        let client = MemorySummaryClient::with_url(String::new(), String::new());
         let err = client.locate("0", "dev", vec![]).await.unwrap_err();
-        assert!(matches!(err, Error::SummaryError(_)), "未配置地址应返回 SummaryError: {:?}", err);
+        assert!(matches!(err, Error::MemorySummaryError(_)), "未配置地址应返回 MemorySummaryError: {:?}", err);
     }
 }
 ```
@@ -303,19 +303,19 @@ mod tests {
 `kissbot-agent/src/main.rs` 在 `mod channel_manager;` 之前插入：
 
 ```rust
-mod summary_client;
+mod memory_summary_client;
 ```
 
 - [ ] **Step 6: 跑测试确认通过**
 
-Run: `cd kissbot-agent && cargo test summary_client`
+Run: `cd kissbot-agent && cargo test memory_summary_client`
 Expected: 1 passed。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add kissbot-agent/src/types/error.rs kissbot-agent/src/summary_client.rs kissbot-agent/src/main.rs
-git commit -m "kissbot-agent 新增摘要记忆 REST 客户端 summary_client（定位/事件摘要/事件原文尾部查询），错误类型新增 SummaryError"
+git add kissbot-agent/src/types/error.rs kissbot-agent/src/memory_summary_client.rs kissbot-agent/src/main.rs
+git commit -m "kissbot-agent 新增摘要记忆 REST 客户端 memory_summary_client（定位/事件摘要/事件原文尾部查询），错误类型新增 MemorySummaryError"
 ```
 
 ---
@@ -334,7 +334,7 @@ git commit -m "kissbot-agent 新增摘要记忆 REST 客户端 summary_client（
 type MessageKey = (String, String, String, bool);
 struct PendingBatch { events: Vec<Arc<IncomingMessageEvent>>, last_at: Instant }
 pub struct SummaryAgentInputProcessor {
-    session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<SummaryClient>,
+    session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<MemorySummaryClient>,
     batches: Arc<DashMap<ChannelKey, PendingBatch>>, notify: Arc<Notify>,
 }
 fn event_channel(event: &IncomingMessageEvent) -> ChannelKey
@@ -346,7 +346,7 @@ fn join_text(mc: &MessageContent) -> String
 fn filter_history(records: &[Arc<ChannelRecord>], cutoff: &str, new_keys: &HashSet<MessageKey>) -> Vec<MessageContent>
 fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Message>
 impl SummaryAgentInputProcessor {
-    fn assemble(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<SummaryClient>) -> Self
+    fn assemble(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<MemorySummaryClient>) -> Self
     fn enqueue(&self, event: Arc<IncomingMessageEvent>)
 }
 ```
@@ -516,7 +516,7 @@ mod tests {
         SummaryAgentInputProcessor::assemble(
             Arc::new(SessionKey { agent_id: "a1".into(), role_name: "r1".into(), mode: Mode::Role }),
             Arc::new(Session::new("", "test-session")),
-            Arc::new(SummaryClient::with_url(String::new(), String::new())),
+            Arc::new(MemorySummaryClient::with_url(String::new(), String::new())),
         )
     }
 }
@@ -544,7 +544,7 @@ use kissbot_llm::{Message, Session};
 use tokio::sync::Notify;
 
 use crate::{
-    summary_client::SummaryClient,
+    memory_summary_client::MemorySummaryClient,
     message::{MessageContent, extract_content, pack_memory_messages},
     types::SessionKey,
 };
@@ -565,7 +565,7 @@ pub struct SummaryAgentInputProcessor {
     /// 会话实例（装配时注入；触发时用于重置上下文）
     session: Arc<Session>,
     /// 摘要记忆客户端（装配时注入；单测可传空地址实例）
-    client: Arc<SummaryClient>,
+    client: Arc<MemorySummaryClient>,
     /// 各 channel 的待处理批次（accept 写入，tick 任务取走）
     batches: Arc<DashMap<ChannelKey, PendingBatch>>,
     /// 会话销毁通知（Drop 时 notify_one → tick 任务退出）
@@ -673,7 +673,7 @@ fn compose_context(summaries: &[String], history: &[MessageContent]) -> Vec<Mess
 
 impl SummaryAgentInputProcessor {
     /// 只搭状态、不启动 tick 任务（生产构造与单测共用；单测不启动可避开进程级单例）
-    fn assemble(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<SummaryClient>) -> Self {
+    fn assemble(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<MemorySummaryClient>) -> Self {
         Self {
             session_key,
             session,
@@ -715,7 +715,7 @@ git commit -m "新增摘要记忆输入处理器的攒批与上下文装配纯�
 - Modify: `kissbot-agent/src/pipelines.rs`
 
 **Interfaces:**
-- Consumes: Task 2 的 `SummaryClient`；Task 3 的 `event_channel` / `due_channels` / `locate_message` / `new_message_key` / `filter_history` / `compose_context` / `enqueue` / `PendingBatch`
+- Consumes: Task 2 的 `MemorySummaryClient`；Task 3 的 `event_channel` / `due_channels` / `locate_message` / `new_message_key` / `filter_history` / `compose_context` / `enqueue` / `PendingBatch`
 - Produces:
   - `SummaryAgentInputProcessor::new(session_key: Arc<SessionKey>, session: Arc<Session>) -> Self`
   - `impl AgentInputProcessor for SummaryAgentInputProcessor`（`accept`）
@@ -749,7 +749,7 @@ git commit -m "新增摘要记忆输入处理器的攒批与上下文装配纯�
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, Error::SummaryError(_)), "未配置摘要记忆应返回 SummaryError: {:?}", err);
+        assert!(matches!(err, Error::MemorySummaryError(_)), "未配置摘要记忆应返回 MemorySummaryError: {:?}", err);
     }
 ```
 
@@ -771,11 +771,11 @@ const TICK_INTERVAL_SECS: u64 = 1;
 impl SummaryAgentInputProcessor {
     /// 生产构造：从进程级配置构造摘要记忆客户端，并启动 tick 任务（装配期在异步上下文中调用）
     pub fn new(session_key: Arc<SessionKey>, session: Arc<Session>) -> Self {
-        Self::with_client(session_key, session, Arc::new(SummaryClient::new()))
+        Self::with_client(session_key, session, Arc::new(MemorySummaryClient::new()))
     }
 
     /// 显式客户端构造：搭状态并启动 tick 任务
-    pub fn with_client(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<SummaryClient>) -> Self {
+    pub fn with_client(session_key: Arc<SessionKey>, session: Arc<Session>, client: Arc<MemorySummaryClient>) -> Self {
         let processor = Self::assemble(session_key, session, client);
         tokio::spawn(tick_loop(
             processor.session_key.clone(),
@@ -793,7 +793,7 @@ impl SummaryAgentInputProcessor {
 async fn tick_loop(
     session_key: Arc<SessionKey>,
     session: Arc<Session>,
-    client: Arc<SummaryClient>,
+    client: Arc<MemorySummaryClient>,
     batches: Arc<DashMap<ChannelKey, PendingBatch>>,
     notify: Arc<Notify>,
 ) {
@@ -822,7 +822,7 @@ async fn tick_loop(
 async fn flush_batch(
     session_key: &Arc<SessionKey>,
     session: &Arc<Session>,
-    client: &Arc<SummaryClient>,
+    client: &Arc<MemorySummaryClient>,
     channel: &ChannelKey,
     events: Vec<Arc<IncomingMessageEvent>>,
 ) {
@@ -839,7 +839,7 @@ async fn flush_batch(
 /// 用摘要记忆重建上下文：定位事件 → 各事件摘要 + 事件结尾原文副本 → 时间窗与去重 → 组装消息
 async fn build_context(
     session_key: &SessionKey,
-    client: &Arc<SummaryClient>,
+    client: &Arc<MemorySummaryClient>,
     events: &[Arc<IncomingMessageEvent>],
 ) -> Result<Vec<Message>> {
     let agent_id = session_key.agent_id.as_str();
@@ -977,7 +977,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
 - Modify: `docs/design/components-design/kissbot-agent-nexus.md`
 
 **Interfaces:**
-- Consumes: Task 1~4 的最终行为与命名（`summary_input_processor` / `api.memory_struct_summary_url` / `SummaryClient` / `Error::SummaryError`）
+- Consumes: Task 1~4 的最终行为与命名（`summary_input_processor` / `api.memory_struct_summary_url` / `MemorySummaryClient` / `Error::MemorySummaryError`）
 - Produces: 与代码一致的文档
 
 - [ ] **Step 1: agent-nexus.md 补 api 段字段**
@@ -1005,7 +1005,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
 ````markdown
 ## Memory-Struct-Summary API 交互
 
-摘要记忆输入处理器（`summary_input_processor`，需在 `pipeline.input_processor` 显式启用）经 `SummaryClient` 调用摘要记忆，鉴权用 `X-Api-Key`：
+摘要记忆输入处理器（`summary_input_processor`，需在 `pipeline.input_processor` 显式启用）经 `MemorySummaryClient` 调用摘要记忆，鉴权用 `X-Api-Key`：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -1024,7 +1024,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
 `## 错误类型` 的 `enum Error` 代码块里，在 `MemoryEgoError(String),          // 预留` 之后插入：
 
 ```rust
-    SummaryError(String),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
+    MemorySummaryError(String),           // 摘要记忆客户端（未配置 / 请求 / 解析 / 业务失败）
 ```
 
 - [ ] **Step 4: agent-modules.md 补模块与调用关系**
@@ -1032,7 +1032,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
 组件清单表格在 `memory_ego_client` 行之后插入：
 
 ```markdown
-| summary_client | SummaryClient | 摘要记忆（memory-struct-summary）REST 客户端：事件定位、事件摘要、事件原文副本尾部查询 | 被 pipelines（summary_input_processor）调用 |
+| memory_summary_client | MemorySummaryClient | 摘要记忆（memory-struct-summary）REST 客户端：事件定位、事件摘要、事件原文副本尾部查询 | 被 pipelines（summary_input_processor）调用 |
 ```
 
 `pipelines` 行的职责列，把「合批输入（mpsc + DelayQueue）在 flush 时回调 `Nexus::run_pipeline`」改为：
@@ -1047,7 +1047,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
         MSA["kissbot-memory-struct-summary"]
 ```
 ```
-    ABC["summary_client<br/>SummaryClient"]
+    ABC["memory_summary_client<br/>MemorySummaryClient"]
 ```
 ```
     PLS --> ABC
@@ -1072,7 +1072,7 @@ git commit -m "摘要记忆输入处理器接入 pipeline：按 channel 攒批�
 
 ```bash
 git add docs/spec/agent-nexus.md docs/spec/agent-modules.md docs/design/components-design/kissbot-agent-nexus.md
-git commit -m "同步摘要记忆输入处理器文档：api 段新增 memory_struct_summary_url、摘要记忆接口交互与触发策略、summary_client 模块与调用关系、错误类型新增 SummaryError"
+git commit -m "同步摘要记忆输入处理器文档：api 段新增 memory_struct_summary_url、摘要记忆接口交互与触发策略、memory_summary_client 模块与调用关系、错误类型新增 MemorySummaryError"
 ```
 
 ---
@@ -1133,6 +1133,6 @@ git commit -m "摘要记忆输入处理器全量验证修正"
 
 - Task 3 同时把 `pub mod summary_input_processor;` 加进 `pipelines.rs`（计划遗漏）：否则新文件不参与编译，`cargo test` 会跑 0 条用例而不是编译失败。
 - Task 4 的 tick 任务改为**构造时启动**（`new` / `with_client` 里 `tokio::spawn`），去掉了计划中的 `started` 惰性启动：惰性启动会让单测里的 tick 任务读到未初始化的进程级单例而 panic。单测统一用私有 `assemble`（只搭状态、不启动任务），并新增 `with_client` 作为显式客户端的生产构造。
-- `build_context` 里会话配置（`memory_recover`）的读取移到 `locate` 之后、取尾部之前：摘要记忆未配置的单测在触达进程级单例前就拿到 `SummaryError`，避免 panic。
+- `build_context` 里会话配置（`memory_recover`）的读取移到 `locate` 之后、取尾部之前：摘要记忆未配置的单测在触达进程级单例前就拿到 `MemorySummaryError`，避免 panic。
 - 去重修正：`(time, sn)` 去重改为**仅在事件内部**（新增 `merge_tail_records`）。`sn` 在各事件自己的记录文件里独立编号，跨事件相同 `(time, sn)` 是不同记录，原计划的跨事件去重会误删。
 - 单测由 9 个变为 11 个（新增 `merge_tail_records_keeps_channel_only_and_dedups_per_event`，`filter_history` 用例拆开）。

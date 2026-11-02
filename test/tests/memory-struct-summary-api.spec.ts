@@ -16,7 +16,7 @@ import {
 } from './helpers/server';
 
 const STORE_BASE = 'http://127.0.0.1:8082';
-const SUMMARY_BASE = 'http://127.0.0.1:8083';
+const MEMORY_STRUCT_SUMMARY_BASE = 'http://127.0.0.1:8083';
 const API_KEY = 'user-key-456'; // security.api_key
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,7 +33,7 @@ const GROUP = 'g1';
 const ROLE_CHANNEL = { messenger: MESSENGER, selfUser: SELF_USER, group: GROUP };
 
 let store: ChildProcess;
-let summaryService: ChildProcess;
+let memorySummaryService: ChildProcess;
 
 function pad(n: number): string {
   return String(n).padStart(2, '0');
@@ -85,7 +85,7 @@ async function pushChannel(request: APIRequestContext, user: string, isSelf: num
 
 /** case 树查询（含本次记忆后缀各通道的当前 case 指针）：状态观测面之一 */
 async function treeOf(request: APIRequestContext, role: string) {
-  const resp = await apiPost(request, SUMMARY_BASE, '/summary/tree/get', { agent_id: AGENT, role_event: roleEventOf(role) });
+  const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/tree/get', { agent_id: AGENT, role_event: roleEventOf(role) });
   expect(resp.success).toBe(true);
   return { nodes: resp.data.nodes ?? [], current_cases: resp.data.current_cases ?? [] } as {
     nodes: any[];
@@ -119,7 +119,7 @@ async function waitForWatermark(role: string, selfUser: string, channelTime: str
  * 查询接口（tree/get、case/*）本身只读，不触发归档；locate 会带上本批消息一起处理。
  */
 async function flushRole(request: APIRequestContext, role: string) {
-  const resp = await apiPost(request, SUMMARY_BASE, '/summary/rebuild', { agent_id: AGENT, role_event: roleEventOf(role), rebuild: false });
+  const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/rebuild', { agent_id: AGENT, role_event: roleEventOf(role), rebuild: false });
   expect(resp.success, `手动触发归档失败: ${JSON.stringify(resp)}`).toBe(true);
   return resp.data;
 }
@@ -131,10 +131,10 @@ async function flushRole(request: APIRequestContext, role: string) {
 async function waitForCaseRecords(request: APIRequestContext, role: string, caseName: string, count: number) {
   await waitFor(async () => {
     await flushRole(request, role);
-    const resp = await apiPost(request, SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
+    const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
     return resp.success === true && (resp.data.records ?? []).length === count;
   });
-  return (await apiPost(request, SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName })).data.records;
+  return (await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName })).data.records;
 }
 
 /** 轮询等待条件成立（通知、手动触发与定位都是异步链路） */
@@ -155,7 +155,7 @@ async function locateMessages(
   channel: TestChannel,
   messages: { text: string; msgId: string; user?: string; isSelf?: number; time?: string }[],
 ) {
-  const resp = await apiPost(request, SUMMARY_BASE, '/summary/locate', {
+  const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/locate', {
     agent_id: AGENT,
     role_event: roleEventOf(role),
     channel: { messenger_id: channel.messenger, self_user_id: channel.selfUser, group_id: channel.group },
@@ -247,12 +247,12 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     store = startMemoryStore(WORKSPACE);
     await waitForPort(8082, '127.0.0.1', 30000);
     await waitForPort(MEMORY_STORE_NOTIFY_PORT, '127.0.0.1', 30000);
-    summaryService = startMemoryStructSummary(WORKSPACE);
+    memorySummaryService = startMemoryStructSummary(WORKSPACE);
     await waitForPort(MEMORY_STRUCT_SUMMARY_PORT, '127.0.0.1', 30000);
   });
 
   test.afterAll(() => {
-    stopMemoryStructSummary(summaryService);
+    stopMemoryStructSummary(memorySummaryService);
     stopMemoryStore(store);
   });
 
@@ -322,7 +322,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
   // TC-04 case 查询：摘要 / 全部原文 / 指定之后 / 结尾若干条
   test('TC-04: 摘要与原文副本按需查询', async ({ request }) => {
-    const summary = await apiPost(request, SUMMARY_BASE, '/summary/case/summary', {
+    const summary = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/summary', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
     });
     expect(summary.success).toBe(true);
@@ -331,7 +331,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(summary.data.case.summary).toContain('桩摘要');
     expect(summary.data.records).toBeUndefined();
 
-    const all = await apiPost(request, SUMMARY_BASE, '/summary/case/records', {
+    const all = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
     });
     expect(all.success).toBe(true);
@@ -340,7 +340,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
     // 指定之后：把上一条记录的 time / sn 当游标回传
     const first = all.data.records[0];
-    const after = await apiPost(request, SUMMARY_BASE, '/summary/case/records-after', {
+    const after = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-after', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
       after: { time: first.time, sn: first.sn },
     });
@@ -349,14 +349,14 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(after.data.records.map((r: any) => r.is_self)).toEqual([1, 0]);
 
     // 结尾若干条（升序；0 条为空）
-    const tail = await apiPost(request, SUMMARY_BASE, '/summary/case/records-tail', {
+    const tail = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-tail', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case', count: 1,
     });
     expect(tail.success).toBe(true);
     expect(tail.data.records).toHaveLength(1);
     expect(tail.data.records[0].is_self).toBe(0);
     expect(tail.data.records[0].time).toBe(all.data.records[2].time, '取结尾一条');
-    const none = await apiPost(request, SUMMARY_BASE, '/summary/case/records-tail', {
+    const none = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-tail', {
       agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case', count: 0,
     });
     expect(none.data.records).toHaveLength(0);
@@ -364,7 +364,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
   // TC-05 重建：清空角色子树后按共享记忆文件重新构建
   test('TC-05: 重建按共享记忆文件重新构建 case 树', async ({ request }) => {
-    const resp = await apiPost(request, SUMMARY_BASE, '/summary/rebuild', {
+    const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/rebuild', {
       agent_id: AGENT,
       role_event: roleEventOf(ROLE),
       rebuild: true,
@@ -487,7 +487,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     await waitForCaseRecords(request, role, 'role-case-2', 3);
 
     const thinkTexts = async (caseName: string): Promise<string[]> => {
-      const resp = await apiPost(request, SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
+      const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
       expect(resp.success).toBe(true);
       const found: string[] = [];
       for (const record of resp.data.records) {
@@ -561,7 +561,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(node.record_count).toBe(0);
     // 新建 case 的名称与摘要当场就有（不等到后续归档再调模型）
     expect(node.summary, '新建 case 立刻带摘要').toContain('桩摘要');
-    const records = await apiPost(request, SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
+    const records = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
     expect(records.success).toBe(true);
     expect(records.data.records).toHaveLength(0);
   });
@@ -579,12 +579,12 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
     // 第二条记录自带 case 名：直接追加到 role-case，不因内容不同而新建 case
     await pushChannelIn(request, role, channel, 'alice', 0, '完全不同的话题', t1, 'meta-2', {
-      summary_memory: { case_name: 'role-case' },
+      memory_summary: { case_name: 'role-case' },
     });
     await waitForStoreFile(role, t1, '完全不同的话题');
     const records = await waitForCaseRecords(request, role, 'role-case', 2);
     expect(records.map((r: any) => r.content.data)).toEqual(['初始话题', '完全不同的话题']);
-    expect(records[1].meta, '原文副本保留 meta').toEqual({ summary_memory: { case_name: 'role-case' } });
+    expect(records[1].meta, '原文副本保留 meta').toEqual({ memory_summary: { case_name: 'role-case' } });
 
     const tree = await treeOf(request, role);
     expect(tree.nodes).toHaveLength(1, '带 meta 的记录不新建 case');

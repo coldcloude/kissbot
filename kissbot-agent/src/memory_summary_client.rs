@@ -16,13 +16,13 @@ use crate::types::{Error, MemoryKey, Result};
 
 /// 摘要记忆 REST 客户端：请求走 `X-Api-Key`；`memory_struct_summary_url` 为空时
 /// 所有调用在发请求前返回 Err（调用方降级为普通合批）
-pub struct SummaryClient {
+pub struct MemorySummaryClient {
     client: reqwest::Client,
     base_url: ArcStr,
     api_key: ArcStr,
 }
 
-impl SummaryClient {
+impl MemorySummaryClient {
     /// 从进程级单例读取配置构造（ApiConfig.memory_struct_summary_url / SecurityConfig.api_key）
     pub fn new() -> Self {
         Self::with_url(
@@ -90,7 +90,7 @@ impl SummaryClient {
         Resp: DeserializeOwned,
     {
         if self.base_url.is_empty() {
-            return Err(Error::SummaryError(
+            return Err(Error::MemorySummaryError(
                 "摘要记忆未配置（api.memory_struct_summary_url 为空）".into(),
             ));
         }
@@ -101,13 +101,13 @@ impl SummaryClient {
             .json(request)
             .send()
             .await
-            .map_err(|e| Error::SummaryError(format!("{} 请求失败: {}", path, e).into()))?;
+            .map_err(|e| Error::MemorySummaryError(format!("{} 请求失败: {}", path, e).into()))?;
         let envelope = resp
             .json::<ApiResponse<Resp>>()
             .await
-            .map_err(|e| Error::SummaryError(format!("{} 响应解析失败: {}", path, e).into()))?;
+            .map_err(|e| Error::MemorySummaryError(format!("{} 响应解析失败: {}", path, e).into()))?;
         envelope.data.ok_or_else(|| {
-            Error::SummaryError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()).into())
+            Error::MemorySummaryError(format!("{} 返回失败: {}", path, envelope.error.unwrap_or_default()).into())
         })
     }
 }
@@ -119,12 +119,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn empty_base_url_returns_summary_error() {
+    async fn empty_base_url_returns_memory_summary_error() {
         // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
-        let client = SummaryClient::with_url(ArcStr::new(), ArcStr::new());
+        let client = MemorySummaryClient::with_url(ArcStr::new(), ArcStr::new());
         let channel = Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
         let memory_key = MemoryKey { agent_id: ArcStr::from("0"), role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))) };
         let err = client.locate(&memory_key, channel, vec![]).await.unwrap_err();
-        assert!(matches!(err, Error::SummaryError(_)), "未配置地址应返回 SummaryError: {:?}", err);
+        assert!(matches!(err, Error::MemorySummaryError(_)), "未配置地址应返回 MemorySummaryError: {:?}", err);
     }
 }

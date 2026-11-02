@@ -60,9 +60,9 @@ channel 记录包含完整身份字段：
 | messenger_id | 消息来源通道标识 |
 | group_id | 群组标识（单聊可为空） |
 | is_self | 是否 agent 实际发送（1 / 0） |
-| meta | 可选的记录元信息；摘要记忆使用 `meta.summary_memory.case_name` 记录所属 case，缺省不序列化 |
+| meta | 可选的记录元信息；摘要记忆使用 `meta.memory_summary.case_name` 记录所属 case，缺省不序列化 |
 
-> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.summary_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-summary.md](memory-struct-summary.md)。
+> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.memory_summary.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-summary.md](memory-struct-summary.md)。
 >
 > **内嵌的思考/工具内容**：`Content` 的 `Think` / `ToolCall` / `ToolResult` 分支直接保存对应的 `ThinkRecord` / `ToolCallRecord` / `ToolResultRecord`（不含 `key` / `time` / `sn`）。agent 在一次 run 内把思考与工具内容累积到回复通道记录的 `Multi` 中，随该通道记录一起写入并等待落盘；没有文本的轮次不写通道记录，累积的思考/工具内容随之丢弃。工具调用与结果按它们在 `Multi` 中的先后顺序配对。
 >

@@ -154,4 +154,4 @@ case 之间的关联关系、关系描述，以及关联 case 摘要纳入上下
 后续定时程序负责：建立 case 间的关联关系；把多个 case 合并为一个大 case（父子层级由此产生）。
 
 ### 与 nexus 的边界
-组件提供归档与定位能力，不接入 agent 的 agentic loop。定位结果的消费方是 agent 的摘要记忆 pipeline（`summary_memory`）：它用 case 摘要与结尾原文重建上下文，并在写入记忆时填入 `meta.summary_memory.case_name`；agentic loop 内的记忆搜索工具仍为后续独立实现。
+组件提供归档与定位能力，不接入 agent 的 agentic loop。定位结果的消费方是 agent 的摘要记忆 pipeline（`memory_summary`）：它用 case 摘要与结尾原文重建上下文，并在写入记忆时填入 `meta.memory_summary.case_name`；agentic loop 内的记忆搜索工具仍为后续独立实现。

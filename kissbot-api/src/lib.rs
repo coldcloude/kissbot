@@ -5,7 +5,7 @@ pub mod memory;
 pub mod channel;
 pub mod message;
 pub mod tool;
-pub mod summary;
+pub mod memory_summary;
 
 pub use common::*;
 pub use config::*;
@@ -14,4 +14,4 @@ pub use memory::*;
 pub use channel::*;
 pub use message::*;
 pub use tool::*;
-pub use summary::*;
+pub use memory_summary::*;

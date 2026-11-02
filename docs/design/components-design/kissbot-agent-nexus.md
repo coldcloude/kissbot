@@ -71,7 +71,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
 - 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级值
-- 分开存储 agent/role 可继承配置与 session 级值：`default_memory` / `summary_memory` 建立 session 前用 `set_session_config_if_not_exists` 从 agent → role 导入配置；`default` 不依赖 agent/role；运行期只按 session_id 读；pipeline 选择按 agent/role 合成
+- 分开存储 agent/role 可继承配置与 session 级值：`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent → role 导入配置；`default` 不依赖 agent/role；运行期只按 session_id 读；pipeline 选择按 agent/role 合成
 - 支持管理命令与管理 API 回写
 
 ### 3. LLM 客户端（provider 体系）
@@ -86,11 +86,11 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - session 不单独注册到全局表；pipeline 丢弃时其 session 随 Arc 释放自然回收
 
 ### 5. pipeline 体系（执行流程）
-- **AgentPipeline**：执行流程本体，自己创建并持有需要的 session。当前三实现：`default`（无记忆的 agentic loop，一个 session）、`default_memory`（带记忆读写的 agentic loop，一个 session）、`summary_memory`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session）。
-- **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个 pipeline 一个合批队列；`summary_memory` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的批次生产者，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline。
-- **case 拆分与执行**：`summary_memory` 的批次先做一次定位并写入本批上行记录，然后按消息所属 case 并入该 case 的待执行任务，批次处理随即结束，下一批可以接着处理。待执行任务由另一个队列串行执行：worker 一次只取一个 case，每个 case 一次 run；每个 case 维护独立 session，run 开头用该 case 的摘要与结尾原文副本重置该 session 的上下文，再把本次新增消息打包为一条 user 消息进入 agentic loop。还没开始执行的 case 继续等待，期间到达的同 case 消息并入同一次 run；正在执行的 case 的新消息形成下一轮 run。
-- **agentic loop**：`default_memory` 与 `summary_memory` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
-- **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经回复发送流程发送并写入（meta 为 None）；`summary_memory` 在定位之后写入上行记录（带消息所属 case 的 meta），回复同样带本次 run 所属 case 的 meta。
+- **AgentPipeline**：执行流程本体，自己创建并持有需要的 session。当前三实现：`default`（无记忆的 agentic loop，一个 session）、`default_memory`（带记忆读写的 agentic loop，一个 session）、`memory_summary`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session）。
+- **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个 pipeline 一个合批队列；`memory_summary` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的批次生产者，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline。
+- **case 拆分与执行**：`memory_summary` 的批次先做一次定位并写入本批上行记录，然后按消息所属 case 并入该 case 的待执行任务，批次处理随即结束，下一批可以接着处理。待执行任务由另一个队列串行执行：worker 一次只取一个 case，每个 case 一次 run；每个 case 维护独立 session，run 开头用该 case 的摘要与结尾原文副本重置该 session 的上下文，再把本次新增消息打包为一条 user 消息进入 agentic loop。还没开始执行的 case 继续等待，期间到达的同 case 消息并入同一次 run；正在执行的 case 的新消息形成下一轮 run。
+- **agentic loop**：`default_memory` 与 `memory_summary` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
+- **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经回复发送流程发送并写入（meta 为 None）；`memory_summary` 在定位之后写入上行记录（带消息所属 case 的 meta），回复同样带本次 run 所属 case 的 meta。
 - **channel 解绑**：AgentPipeline 提供 channel 解绑入口。channel 切换 agent/role/mode 时，通道侧对旧 pipeline 调用它；摘要记忆 pipeline 据此丢弃该 channel 全部分组的生产者与待处理消息。Nexus 把「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」合成为一个重绑定流程。
 - **PipelineManager**：按 pipeline 标识（agent + role_event）持有 pipeline，提供装配、消息投递、channel 解绑通知与随绑定清理；装配哪些 session 由 pipeline 自己决定，清理时直接丢弃 pipeline，session 随 Arc 释放。pipeline 实现由 agent/role 配置的 `pipeline_name` 选择。
 
@@ -213,7 +213,7 @@ kissbot-agent 启动
 | agent/角色切换 | 默认层 | 修改指定通道绑定的 agent 与角色 |
 | 模式切换 | 默认层 | 修改指定通道绑定的记忆模式（角色/事件） |
 | pipeline 配置 | 默认层 | 修改 (agent, role) 或 agent 级 pipeline（`/pipeline`、`/agent-pipeline`）；名称变化的已装配 pipeline 失效 |
-| 回复通道 | default_memory / summary_memory | 设置或清除 pipeline 的回复通道 |
+| 回复通道 | default_memory / memory_summary | 设置或清除 pipeline 的回复通道 |
 | 模型切换 | 三条 pipeline | 切换当前 pipeline 使用的 provider/model（校验后生效） |
 
 ### 自身发送消息识别

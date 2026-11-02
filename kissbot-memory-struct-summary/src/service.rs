@@ -480,7 +480,7 @@ mod tests {
             "content": {"msg_type": "Text", "data": text},
             "time": time,
             "sn": sn,
-            "meta": {"summary_memory": {"case_name": case_name}}
+            "meta": {"memory_summary": {"case_name": case_name}}
         });
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }

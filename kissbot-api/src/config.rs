@@ -7,7 +7,7 @@ use serde::Deserialize;
 pub struct ApiConfig {
     pub memory_store_url: ArcStr,
     pub memory_ego_url: ArcStr,
-    /// 摘要记忆（memory-struct-summary）服务地址；缺省为空 = 未部署（输入处理器降级为普通合批）
+    /// 摘要记忆（memory-struct-summary）服务地址；缺省为空 = 未部署（pipeline 降级为普通合批）
     #[serde(default)]
     pub memory_struct_summary_url: ArcStr,
 }
@@ -26,7 +26,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_url_defaults_to_empty_when_absent() {
+    fn memory_struct_summary_url_defaults_to_empty_when_absent() {
         // 旧配置没有该字段 → 缺省为空串（表示摘要记忆未部署）
         let cfg: ApiConfig = serde_json::from_value(serde_json::json!({
             "memory_store_url": "http://127.0.0.1:8082",
@@ -38,7 +38,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_url_is_read_when_present() {
+    fn memory_struct_summary_url_is_read_when_present() {
         let cfg: ApiConfig = serde_json::from_value(serde_json::json!({
             "memory_store_url": "",
             "memory_ego_url": "",

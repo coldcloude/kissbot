@@ -42,7 +42,7 @@ impl RoleEvent {
 /// 由摘要记忆的使用方（agent 侧的摘要记忆 pipeline）在写入记忆时填入：摘要记忆组件读到带该信息的
 /// 记录时直接按 case 名称定位，不再走分组/逐层判定流程。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SummaryMemoryMeta {
+pub struct MemorySummaryMeta {
     /// 这条记录所属的 case 名称
     pub case_name: ArcStr,
 }
@@ -54,20 +54,20 @@ pub struct SummaryMemoryMeta {
 pub struct MemoryMeta {
     /// 摘要记忆信息
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary_memory: Option<SummaryMemoryMeta>,
+    pub memory_summary: Option<MemorySummaryMeta>,
 }
 
 impl MemoryMeta {
     /// 只带摘要记忆 case 名的元信息
     pub fn with_case_name(case_name: ArcStr) -> Self {
         Self {
-            summary_memory: Some(SummaryMemoryMeta { case_name }),
+            memory_summary: Some(MemorySummaryMeta { case_name }),
         }
     }
 
     /// 摘要记忆 case 名（没有该信息时为 None）
     pub fn case_name(&self) -> Option<&ArcStr> {
-        self.summary_memory.as_ref().map(|meta| &meta.case_name)
+        self.memory_summary.as_ref().map(|meta| &meta.case_name)
     }
 }
 
@@ -390,7 +390,7 @@ mod tests {
             time: ArcStr::from("2026-01-01 00:00:00"),
         };
         let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["meta"], serde_json::json!({"summary_memory": {"case_name": "role-weather"}}));
+        assert_eq!(json["meta"], serde_json::json!({"memory_summary": {"case_name": "role-weather"}}));
         assert_eq!(meta.case_name().map(|name| name.as_str()), Some("role-weather"));
         let back: ChannelRequest = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back.meta, Some(meta));

@@ -45,11 +45,11 @@
 
 ## 记录 meta 与直接定位
 
-通道记录可以带可选的 `meta`（kissbot-api 的 `MemoryMeta`）。摘要记忆的使用方（agent 侧摘要记忆 pipeline）在写入记录时填入 `meta.summary_memory.case_name`：
+通道记录可以带可选的 `meta`（kissbot-api 的 `MemoryMeta`）。摘要记忆的使用方（agent 侧摘要记忆 pipeline）在写入记录时填入 `meta.memory_summary.case_name`：
 
 ```jsonc
 { "msg_id": "m-1001", "…": "…",
-  "meta": { "summary_memory": { "case_name": "role-weather-chat" } } }
+  "meta": { "memory_summary": { "case_name": "role-weather-chat" } } }
 ```
 
 - 归档读到带该信息的记录时**直接按 case 名定位**，不再走分组轮与逐层判定；该 case 不存在（例如重建后树里还没有该节点）时退回正常分组流程，记录不丢。
@@ -79,7 +79,7 @@
 定位一批消息涉及的 case：一次只针对**一个通道**（通道由请求给出），可带多条消息。执行只有一条路径，分三步：
 
 1. **提取**：读一次该记忆后缀的共享记忆，取出各通道水位之后的待归档记录（pending），其中请求通道的 pending 与本批消息一起分析（pending 与本批消息都可以为空）；
-2. **定位（只读）**：带 `meta.summary_memory.case_name` 的 pending 记录直接落到该 case（不调模型）；其余 pending 消息与本批消息按时间升序合并成一个批次（不再按 `msg_id` 去重），角色模式下做第 1 轮分组并**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 `event-{事件标识}`。判定不改 case 树、不落盘；
+2. **定位（只读）**：带 `meta.memory_summary.case_name` 的 pending 记录直接落到该 case（不调模型）；其余 pending 消息与本批消息按时间升序合并成一个批次（不再按 `msg_id` 去重），角色模式下做第 1 轮分组并**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 `event-{事件标识}`。判定不改 case 树、不落盘；
 3. **存储 + 返回**：只有组里确实有待归档记录的，才真正落地——需要新建的此刻建出 case、记录追加为该 case 的原文副本、重算摘要、推进水位、更新当前 case 指针；其余组只把判定结果作为消息的 case 返回。最后把同一 case 的多个组按消息 `msg_id` 取并合并成一组返回。
 
 没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（`/summary/rebuild` 的 rebuild=false 手动触发 / rebuild=true 重建）即原来的归档，不产出分组。

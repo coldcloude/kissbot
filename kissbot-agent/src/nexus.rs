@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::summary_client::SummaryClient;
+use crate::memory_summary_client::MemorySummaryClient;
 use crate::channel_manager::ChannelManager;
 use crate::config_manager::ConfigManager;
 use crate::memory_ego_client::MemoryEgoClient;
@@ -24,7 +24,7 @@ static SINGLETON: OnceLock<Nexus> = OnceLock::new();
 pub struct Nexus {
     pub memory_store_client: Arc<MemoryStoreClient>,
     pub memory_ego_client: Arc<MemoryEgoClient>,
-    pub summary_client: Arc<SummaryClient>,
+    pub memory_summary_client: Arc<MemorySummaryClient>,
     pub provider_manager: Arc<ProviderManager>,
     pub pipeline_manager: Arc<PipelineManager>,
     pub channel_manager: Arc<ChannelManager>,
@@ -39,7 +39,7 @@ impl Nexus {
     pub async fn new() -> Result<()> {
         let memory_store_client = Arc::new(MemoryStoreClient::new());
         let memory_ego_client = Arc::new(MemoryEgoClient::new());
-        let summary_client = Arc::new(SummaryClient::new());
+        let memory_summary_client = Arc::new(MemorySummaryClient::new());
         let provider_manager = Arc::new(ProviderManager::new());
         let pipeline_manager = Arc::new(PipelineManager::new());
         // channel 运行态与 channel 变更串行队列（队列消费者在 ChannelManager::new 内启动）
@@ -48,7 +48,7 @@ impl Nexus {
         let nexus = Self {
             memory_store_client,
             memory_ego_client,
-            summary_client,
+            memory_summary_client,
             provider_manager,
             pipeline_manager,
             channel_manager,
@@ -103,7 +103,7 @@ mod tests {
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
     use crate::pipeline::AgentPipeline;
-    use crate::pipelines::{outgoing_channel, SummaryMemoryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
+    use crate::pipelines::{outgoing_channel, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
@@ -307,7 +307,7 @@ mod tests {
             other => panic!("default 应识别 /model 并返回参数错误: {:?}", other),
         }
 
-        // default_memory / summary_memory：接 /model 与 outgoing；不是自己的命令返回 None
+        // default_memory / memory_summary：接 /model 与 outgoing；不是自己的命令返回 None
         let key = Arc::new(MemoryKey {
             agent_id: ArcStr::from("cmd-detect-agent"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
@@ -320,12 +320,12 @@ mod tests {
             other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
         }
 
-        let summary_memory = SummaryMemoryPipeline::new(key);
-        assert!(summary_memory.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
+        let memory_summary = MemorySummaryPipeline::new(key);
+        assert!(memory_summary.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
-        match summary_memory.execute_command(channel_id.clone(), cmd("/unbind-outgoing extra")).await {
+        match memory_summary.execute_command(channel_id.clone(), cmd("/unbind-outgoing extra")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
-            other => panic!("summary_memory 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
+            other => panic!("memory_summary 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
         }
     }
 
@@ -442,11 +442,11 @@ mod tests {
         // /pipeline：写来源 channel 的 (agent, role) 级配置
         let role_channel = ArcStr::from("cmd-pipeline-role");
         let _ = cm.add_channel(pipeline_test_channel(role_channel.as_str(), "cmd-pipeline-agent", "r1", 8396)).await;
-        let reply = channel_manager.execute_default_command("/pipeline summary_memory", role_channel).await
+        let reply = channel_manager.execute_default_command("/pipeline memory_summary", role_channel).await
             .expect("应命中 /pipeline").expect("应有回复");
         assert!(reply.contains("已设置 pipeline"), "回复文案: {}", reply);
         let cfg = cm.agent_role_config::<PipelineConfig>("cmd-pipeline-agent", "r1").await.expect("role 配置应存在");
-        assert_eq!(cfg.pipeline_name.as_deref(), Some("summary_memory"));
+        assert_eq!(cfg.pipeline_name.as_deref(), Some("memory_summary"));
 
         // /agent-pipeline：写来源 channel 的 agent（role 空）级配置
         let agent_channel = ArcStr::from("cmd-agent-pipeline");
@@ -511,8 +511,8 @@ mod tests {
         assert!(!pm.contains(k1e.as_ref()), "r1 的事件 pipeline 同样失效");
         assert!(pm.contains(k2.as_ref()), "r2 合并配置未变，pipeline 保留");
 
-        // 改 r2 的 role 级为 summary_memory：合并值变化，r2 pipeline 失效
-        pm.set_pipeline_config(ArcStr::from(agent), ArcStr::from("r2"), ArcStr::from("summary_memory")).await.unwrap();
+        // 改 r2 的 role 级为 memory_summary：合并值变化，r2 pipeline 失效
+        pm.set_pipeline_config(ArcStr::from(agent), ArcStr::from("r2"), ArcStr::from("memory_summary")).await.unwrap();
         assert!(!pm.contains(k2.as_ref()), "r2 合并配置变化，pipeline 应失效");
     }
 }
