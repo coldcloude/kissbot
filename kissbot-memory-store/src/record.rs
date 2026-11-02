@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use futures_util::future;
 use kai_file::index::FilePathGenerator;
+use tokio::fs::{File, OpenOptions};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -9,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::*;
 
@@ -17,6 +18,7 @@ use kissbot_memory::data::ChannelParser;
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::memory::*;
 use crate::error::{Error, Result};
+use crate::notify::publish_channel;
 use kai_file::ReverseLineReader;
 use kai_file::{FileAppendWriter, FileAppendWriterContext, ErrorHandler, FileObjectAppender};
 
@@ -89,8 +91,8 @@ impl FileAppendWriterContext<Arc<RecordKey>, ChannelRecord> for ChannelWriterCon
         if file_state.time.as_str() > records[0].time.as_str() {
             // 乱序 → 全量重写
             let mut all_records: Vec<ChannelRecord> = Vec::new();
-            let file = tokio::fs::File::open(&file_path).await?;
-            let reader = tokio::io::BufReader::new(file);
+            let file = File::open(&file_path).await?;
+            let reader = BufReader::new(file);
             let mut lines = reader.lines();
             while let Some(line) = lines.next_line().await? {
                 all_records.push(serde_json::from_str(&line)?);
@@ -98,7 +100,7 @@ impl FileAppendWriterContext<Arc<RecordKey>, ChannelRecord> for ChannelWriterCon
             all_records.extend(records);
             all_records.sort_by(record_order);
 
-            let mut file = tokio::fs::OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .create(true).write(true).open(&file_path).await?;
 
             file_state.sn = 0;
@@ -106,34 +108,34 @@ impl FileAppendWriterContext<Arc<RecordKey>, ChannelRecord> for ChannelWriterCon
                 file_state.sn += 1;
                 record.sn = file_state.sn;
                 let line = serde_json::to_string(record)? + "\n";
-                tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
+                file.write_all(line.as_bytes()).await?;
             }
             if let Some(last) = all_records.last() {
                 file_state.time = last.time.clone();
             }
             // tokio::fs::File 的 write_all 可能只把数据交给后台阻塞任务就返回：flush 等到这次写入
             // 真正落盘，否则紧接着的索引标记与通知会让读方看到不完整的数据
-            tokio::io::AsyncWriteExt::flush(&mut file).await?;
+            file.flush().await?;
 
             MemoryIndexer::get().mark_channel_all_obsolete(key.clone());
-            crate::notify::publish_channel(key, &all_records);
+            publish_channel(key, &all_records);
         } else {
             // 有序 → 追加
-            let mut file = tokio::fs::OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .create(true).append(true).open(&file_path).await?;
 
             for record in &mut records {
                 file_state.sn += 1;
                 record.sn = file_state.sn;
                 let line = serde_json::to_string(record)? + "\n";
-                tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
+                file.write_all(line.as_bytes()).await?;
                 file_state.time = record.time.clone();
             }
             // 同上：flush 保证索引标记与通知触发时数据已可被读方看到
-            tokio::io::AsyncWriteExt::flush(&mut file).await?;
+            file.flush().await?;
 
             MemoryIndexer::get().mark_channel_obsolete(key.clone());
-            crate::notify::publish_channel(key, &records);
+            publish_channel(key, &records);
         }
 
         Ok(())
