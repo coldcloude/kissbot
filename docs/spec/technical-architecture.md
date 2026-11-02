@@ -48,7 +48,7 @@
 | kissbot-memory-ego | cargo run |
 | kissbot-channel-web | cargo run |
 | kissbot-channel-client-cli | cargo run（命令行通道客户端） |
-| kissbot-memory-struct-abstract | cargo run |
+| kissbot-memory-struct-summary | cargo run |
 
 ### 库模块（Rust lib）
 | 模块 | 被谁使用 |
@@ -57,13 +57,13 @@
 | kissbot-config | kissbot-agent、kissbot-api、kissbot-memory-*、kissbot-channel-web、kissbot-security（公共配置读取） |
 | kissbot-security | kissbot-agent、kissbot-memory-store、kissbot-memory-ego、kissbot-channel-*、kissbot-memory-struct-* |
 | kissbot-mcp | kissbot-agent（station 的 MCP 服务端与客户端） |
-| kissbot-llm | kissbot-agent、kissbot-memory-struct-abstract（provider 调用与会话上下文；后续供笔记工具等模块复用） |
+| kissbot-llm | kissbot-agent、kissbot-memory-struct-summary（provider 调用与会话上下文；后续供笔记工具等模块复用） |
 | kissbot-channel | kissbot-channel-* |
 | kissbot-channel-client | kissbot-agent、kissbot-channel-client-cli（通道客户端与 Terminal 回调抽象） |
 | kissbot-memory | kissbot-memory-store、kissbot-memory-ego、kissbot-memory-struct-* |
 | kissbot-memory-struct | kissbot-memory-struct-* |
-| kai-ws | kissbot-api、kissbot-channel、kissbot-security、kissbot-agent、kissbot-channel-web、kissbot-channel-client、kissbot-memory-struct-abstract |
-| kai-file | kissbot-memory、kissbot-memory-store、kissbot-agent、kissbot-memory-struct-abstract |
+| kai-ws | kissbot-api、kissbot-channel、kissbot-security、kissbot-agent、kissbot-channel-web、kissbot-channel-client、kissbot-memory-struct-summary |
+| kai-file | kissbot-memory、kissbot-memory-store、kissbot-agent、kissbot-memory-struct-summary |
 | kai-index | kissbot-memory-ego |
 | kai-date | kai-file、kissbot-memory、kissbot-channel-web |
 | kai-codegen | 构建期（Rust struct → TypeScript 类型） |

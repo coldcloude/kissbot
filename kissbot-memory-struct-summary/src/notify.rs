@@ -18,20 +18,20 @@ use tokio::sync::{Notify, RwLock};
 use tracing::{error, info, warn};
 
 use crate::error::Result;
-use crate::service::AbstractService;
+use crate::service::SummaryService;
 
 const QUEUE_SIZE: usize = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// 通知客户端：把新数据通知交给服务层
 pub struct NotifyClient {
-    service: Arc<AbstractService>,
+    service: Arc<SummaryService>,
     ws_context: RwLock<Option<Arc<WsContext>>>,
     disconnected: Arc<Notify>,
 }
 
 impl NotifyClient {
-    pub fn new(service: Arc<AbstractService>) -> Arc<Self> {
+    pub fn new(service: Arc<SummaryService>) -> Arc<Self> {
         Arc::new(Self {
             service,
             ws_context: RwLock::new(None),
@@ -45,8 +45,8 @@ impl NotifyClient {
         let interval = Duration::from_secs(reconnect_interval_secs.max(1));
         loop {
             match kai_ws::ws_connect(url, &headers, QUEUE_SIZE, self.clone()).await {
-                Ok(()) => info!("[abstract] connected to memory-store notify server: {}", url),
-                Err(e) => warn!("[abstract] connect notify server {} failed: {}", url, e),
+                Ok(()) => info!("[summary] connected to memory-store notify server: {}", url),
+                Err(e) => warn!("[summary] connect notify server {} failed: {}", url, e),
             }
             // 连接建立后等待关闭通知（notify_one 的 permit 语义保证不丢唤醒）
             self.disconnected.notified().await;
@@ -93,26 +93,26 @@ impl WsCloseProcessor for NotifyCloseProcessor {
 }
 
 struct RecordNotificationProcessor {
-    service: Arc<AbstractService>,
+    service: Arc<SummaryService>,
 }
 
 #[async_trait]
 impl WsJsonProcessor for RecordNotificationProcessor {
     async fn process_json(&self, data: WsMessage, _context: Arc<WsContext>) {
         let Some(payload) = data.payload else {
-            warn!("[abstract] notification frame without payload");
+            warn!("[summary] notification frame without payload");
             return;
         };
         let notification = match serde_json::from_value::<RecordNotification>(payload) {
             Ok(notification) => notification,
             Err(e) => {
-                error!("[abstract] parse notification failed: {}", e);
+                error!("[summary] parse notification failed: {}", e);
                 return;
             }
         };
         if let Err(e) = self.service.on_notification(&notification).await {
             error!(
-                "[abstract] handle notification ({}/{:?}) failed: {}",
+                "[summary] handle notification ({}/{:?}) failed: {}",
                 notification.agent_id, notification.role_event, e
             );
         }
@@ -120,9 +120,9 @@ impl WsJsonProcessor for RecordNotificationProcessor {
 }
 
 /// 订阅器入场点：未配置通知地址时不订阅（仅手动触发/重建可用）
-pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<ArcStr>, reconnect_interval_secs: u64) -> Result<()> {
+pub async fn subscribe(service: Arc<SummaryService>, notify_url: Option<ArcStr>, reconnect_interval_secs: u64) -> Result<()> {
     let Some(url) = notify_url else {
-        warn!("[abstract] notify_url not configured, notification subscription disabled");
+        warn!("[summary] notify_url not configured, notification subscription disabled");
         return Ok(());
     };
     let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
@@ -135,14 +135,14 @@ pub async fn subscribe(service: Arc<AbstractService>, notify_url: Option<ArcStr>
 mod tests {
     use super::*;
     use crate::agent_role::{AgentRole, AgentRoleManager};
-    use crate::service::AbstractService;
+    use crate::service::SummaryService;
     use crate::stub::StubModel;
     use kissbot_api::RoleEvent;
 
-    fn service(root: &std::path::Path) -> Arc<AbstractService> {
+    fn service(root: &std::path::Path) -> Arc<SummaryService> {
         let manager = Arc::new(AgentRoleManager::new(root));
         let model = Arc::new(StubModel::new());
-        Arc::new(AbstractService::new(manager, model, 4))
+        Arc::new(SummaryService::new(manager, model, 4))
     }
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {

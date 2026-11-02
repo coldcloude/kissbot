@@ -16,7 +16,7 @@
       "listen_port": 3001
     }
   },
-  "memory_struct_abstract": {
+  "memory_struct_summary": {
     "listen_addr": "127.0.0.1",
     "listen_port": 8083,
     "notify_url": "ws://127.0.0.1:8182",
@@ -50,7 +50,7 @@
   "api": {
     "memory_store_url": "",
     "memory_ego_url": "",
-    "memory_struct_abstract_url": ""
+    "memory_struct_summary_url": ""
   },
   "channel-web": {
     "messenger_id": "web",

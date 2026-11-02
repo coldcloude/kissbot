@@ -8,15 +8,15 @@
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
-| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`default_memory` / `abstract_memory` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
+| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`default_memory` / `summary_memory` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **装配与启动中心**：pipeline 定位与装配（run 时）、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager / pipelines 回调 Nexus 单例 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 业务消息处理：默认管理命令 / pipeline 命令 / 普通消息路由）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体，pipeline 重定位内联在 apply_channel_key） | 被 nexus 调用；被 channel-client 回调（Terminal）；变更执行体经 Nexus 单例读写 pipeline/config |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
-| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / AbstractMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `abstract_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / SummaryMemoryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `summary_memory`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推通道记录（思考/工具内容内嵌在记录里，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
-| abstract_client | AbstractClient | 摘要记忆（memory-struct-abstract）REST 客户端：case 定位、case 摘要、case 原文副本尾部查询 | Nexus 成员；AbstractMemoryPipeline 经 Nexus 单例调用 |
+| summary_client | SummaryClient | 摘要记忆（memory-struct-summary）REST 客户端：case 定位、case 摘要、case 原文副本尾部查询 | Nexus 成员；SummaryMemoryPipeline 经 Nexus 单例调用 |
 | provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
 | kissbot-llm（库依赖） | Provider / Session / SessionContext / Message / ToolConfig / ProviderModelConfig… | provider 实现构造（`create_*_provider`）与带重试调用（`call_with_retry`）、模型列表；单会话上下文（内存 + 本地缓存 + 历史归档一体）；LLM 配置与消息类型 | 被 provider（构造实现 / 带重试调用）、nexus 与 pipelines（会话上下文）使用 |
 | station | Station / NativeTool / Group / ToolImplement / SubStation / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
@@ -32,7 +32,7 @@ graph TB
     subgraph Ext["外部组件"]
         CC["kissbot-channel-client<br/>ChannelClient（WSS）"]
         MS["kissbot-memory-store"]
-        MSA["kissbot-memory-struct-abstract"]
+        MSA["kissbot-memory-struct-summary"]
         EG["kissbot-memory-ego"]
         LLM["LLM API"]
         UI["管理界面 / HTTP"]
@@ -49,7 +49,7 @@ graph TB
         MSG["message<br/>MessageContent<br/>pack_memory_messages / pack_batch"]
         MSC["memory_store_client<br/>MemoryStoreClient"]
         MEC["memory_ego_client<br/>MemoryEgoClient"]
-        ABC["abstract_client<br/>AbstractClient"]
+        ABC["summary_client<br/>SummaryClient"]
         PRV["provider<br/>ProviderManager（工厂 + 分派）"]
         KLLM["kissbot-llm（库）<br/>provider 实现 / Session<br/>LLM 配置与消息类型"]
         ST["station<br/>Station / SubStation<br/>NativeTool"]
@@ -155,7 +155,7 @@ sequenceDiagram
             alt default_memory
                 IP->>MSC: push_channel_record(is_self=0, meta=None)
                 Note over IP: 合批（mpsc + deadline）→ pack_batch → agentic loop
-            else abstract_memory
+            else summary_memory
                 Note over IP: 按 channel 独立攒批（BatchProducer DashMap）
                 IP->>IP: locate → 写上行记录(meta=case) → 按 case 拆任务入队
                 Note over IP: 每个 case 一个 session（懒创建）；case 队列串行 run（同一 case 排队中合并）：该 case 摘要+tail 重建自己的 session → pack_batch → agentic loop（回复记录 meta=case）
@@ -229,7 +229,7 @@ sequenceDiagram
         PLS->>PLS: 按 agent/role 的 pipeline_name 创建 pipeline
         alt default / default_memory
             PL->>PL: 创建 session(MemoryKey::encode()) 并 recover_from_cache
-        else abstract_memory
+        else summary_memory
             Note over PL: 构造时不建 session；基准（-none）session 在入口/命令处理时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
         PL->>SC: 新建时 recover_from_cache()（正序全量回读；缓存 System 首行 → 当前系统消息）
@@ -260,7 +260,7 @@ sequenceDiagram
 ## 八、未接线 / 预留
 
 - **无手动触发的 trigger**：当前没有独立 trigger 集合；pipeline 自己维护批次生产者，channel 解绑与 pipeline 销毁时退出消费者任务。
-- **memory-struct**：`NexusRepo.memory_structs` 与 `MemoryStructConfig` 仅建结构，无消费方；摘要记忆的上下文由 `AbstractMemoryPipeline` 经 memory-struct-abstract 提供，其余会话的上下文回溯走 memory-store 的两查询并集。
+- **memory-struct**：`NexusRepo.memory_structs` 与 `MemoryStructConfig` 仅建结构，无消费方；摘要记忆的上下文由 `SummaryMemoryPipeline` 经 memory-struct-summary 提供，其余会话的上下文回溯走 memory-store 的两查询并集。
 - **Terminal（ChannelManager）的 join_group / leave_group / user_removed / download_chunk**：回调为 no-op / 未使用，业务逻辑预留。
 - **`ModelResponse.finish_reason`**：已解析但无消费方（截断等停止原因不触发额外处理）。
 - **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。

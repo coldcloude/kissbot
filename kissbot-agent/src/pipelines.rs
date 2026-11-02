@@ -1,8 +1,8 @@
-pub mod abstract_memory_pipeline;
+pub mod summary_memory_pipeline;
 pub mod channel_batch_processor;
 pub mod token_reducer;
 
-pub use abstract_memory_pipeline::*;
+pub use summary_memory_pipeline::*;
 pub use channel_batch_processor::*;
 use dashmap::{DashMap, Entry};
 use serde_json::Value;
@@ -651,12 +651,12 @@ impl DefaultAgenticLoopPipelineWithMemory {
 
 const PIPELINE_DEFAULT_STR: &str = "default";
 const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
-const PIPELINE_ABSTRACT_MEMORY_STR: &str = "abstract_memory";
+const PIPELINE_SUMMARY_MEMORY_STR: &str = "summary_memory";
 const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
 /// pipeline 名称是否受支持（与 create_pipeline 的注册表一致）
 pub fn is_supported_pipeline_name(name: &str) -> bool {
-    matches!(name, PIPELINE_DEFAULT_STR | PIPELINE_DEFAULT_MEMORY_STR | PIPELINE_ABSTRACT_MEMORY_STR)
+    matches!(name, PIPELINE_DEFAULT_STR | PIPELINE_DEFAULT_MEMORY_STR | PIPELINE_SUMMARY_MEMORY_STR)
 }
 
 /// 把 (agent, role) 的某项配置导入 session 配置；已有 session 级值时不覆盖。
@@ -676,7 +676,7 @@ where
         session_id.clone(), Arc::new(cfg.get_effective_config())).await;
 }
 
-/// 建立 session 时从本地缓存恢复；default_memory / abstract_memory 在建立前从 agent/role 导入配置，
+/// 建立 session 时从本地缓存恢复；default_memory / summary_memory 在建立前从 agent/role 导入配置，
 /// default 只用 session 配置
 pub async fn create_session(session_id: ArcStr) -> Arc<Session> {
     let cfg = ConfigManager::get();
@@ -783,7 +783,7 @@ pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) 
     match pipeline_name.as_str() {
         PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key.encode()).await),
         PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, true).await),
-        PIPELINE_ABSTRACT_MEMORY_STR => Ok(AbstractMemoryPipeline::new(memory_key)),
+        PIPELINE_SUMMARY_MEMORY_STR => Ok(SummaryMemoryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
     }
 }

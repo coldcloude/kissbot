@@ -1,7 +1,7 @@
-//! 摘要记忆实现模块（memory-struct-abstract）的请求/响应类型。
+//! 摘要记忆实现模块（memory-struct-summary）的请求/响应类型。
 //!
 //! Case 与 case 树查询、定位、归档状态与重建；接口路径与字段约定见
-//! [memory-struct-abstract 技术规格](../../docs/spec/memory-struct-abstract.md)。
+//! [memory-struct-summary 技术规格](../../docs/spec/memory-struct-summary.md)。
 
 use std::collections::HashSet;
 use std::sync::Arc;

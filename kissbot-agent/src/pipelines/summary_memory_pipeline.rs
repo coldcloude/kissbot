@@ -36,7 +36,7 @@ use crate::{
 
 /// 摘要记忆 pipeline：每个 channel 一个批次生产者（DashMap 持有），channel 之间互不干扰；
 /// 每个 case 维护独立 session（懒创建）。
-pub struct AbstractMemoryPipeline {
+pub struct SummaryMemoryPipeline {
     memory_key: Arc<MemoryKey>,
     /// case（None = locate 不可用的降级任务）→ session；session_id 由 case_name 推导
     sessions: DashMap<Option<ArcStr>, Arc<Session>>,
@@ -53,7 +53,7 @@ pub struct AbstractMemoryPipeline {
     case_tx: mpsc::UnboundedSender<Option<ArcStr>>,
 }
 
-impl AbstractMemoryPipeline {
+impl SummaryMemoryPipeline {
     pub fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
         let (case_tx, case_rx) = mpsc::unbounded_channel();
@@ -72,11 +72,11 @@ impl AbstractMemoryPipeline {
         pipeline
     }
 
-    /// case 的 session id：memory-abstract-{pipeline 基准 id}-{case_name}；None 用 -none。
+    /// case 的 session id：memory-summary-{pipeline 基准 id}-{case_name}；None 用 -none。
     /// `-none` 同时作为 pipeline 入口配置与无 case 批次使用的基准 session。
     fn case_session_id(&self, case_name: Option<&ArcStr>) -> ArcStr {
         ArcStr::from(format!(
-            "memory-abstract-{}-{}",
+            "memory-summary-{}-{}",
             self.memory_key.encode(),
             case_name.map(|name| name.as_str()).unwrap_or("none"),
         ))
@@ -151,7 +151,7 @@ impl AbstractMemoryPipeline {
         match self.producers.entry(channel) {
             dashmap::Entry::Occupied(entry) => entry.get().send(event, interval),
             dashmap::Entry::Vacant(entry) => {
-                let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<AbstractMemoryPipeline>();
+                let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<SummaryMemoryPipeline>();
                 consumer.processor = Arc::downgrade(&self);
                 tokio::spawn(consumer.run());
                 producer.send(event, interval);
@@ -176,7 +176,7 @@ impl AbstractMemoryPipeline {
 }
 
 #[async_trait]
-impl IncomingMessageProcessor for AbstractMemoryPipeline {
+impl IncomingMessageProcessor for SummaryMemoryPipeline {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
         // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
         let base_id = self.case_session_id(None);
@@ -188,7 +188,7 @@ impl IncomingMessageProcessor for AbstractMemoryPipeline {
 }
 
 #[async_trait]
-impl IncomingMessageBatchProcessor for AbstractMemoryPipeline {
+impl IncomingMessageBatchProcessor for SummaryMemoryPipeline {
     async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
         if events.is_empty() {
             return;
@@ -202,7 +202,7 @@ impl IncomingMessageBatchProcessor for AbstractMemoryPipeline {
 
 /// 批次队列 worker：顺序 locate 各通道批次（同一会话的记忆写入只能串行），pipeline 销毁后队列清空即退出
 async fn run_batch_queue(
-    pipeline: Weak<AbstractMemoryPipeline>,
+    pipeline: Weak<SummaryMemoryPipeline>,
     mut rx: mpsc::UnboundedReceiver<Vec<Arc<IncomingMessageEvent>>>,
 ) {
     while let Some(events) = rx.recv().await {
@@ -215,7 +215,7 @@ async fn run_batch_queue(
 ///
 /// 取 case 时整条取走该 case 的待执行消息：执行期间到达的同 case 消息留在任务表里形成下一轮；
 /// 还没轮到的 case 的任务表条目不动，继续与后续批次的消息合并。
-async fn run_case_queue(pipeline: Weak<AbstractMemoryPipeline>, mut rx: mpsc::UnboundedReceiver<Option<ArcStr>>) {
+async fn run_case_queue(pipeline: Weak<SummaryMemoryPipeline>, mut rx: mpsc::UnboundedReceiver<Option<ArcStr>>) {
     while let Some(case_name) = rx.recv().await {
         let Some(pipeline) = pipeline.upgrade() else { break };
         let Some((_, events)) = pipeline.pending.remove(&case_name) else { continue };
@@ -223,13 +223,13 @@ async fn run_case_queue(pipeline: Weak<AbstractMemoryPipeline>, mut rx: mpsc::Un
     }
 }
 
-impl AbstractMemoryPipeline {
+impl SummaryMemoryPipeline {
     /// 处理一个批次：locate → 写上行记录（带 case meta）→ 按消息所属 case 并入待执行任务，随即返回。
     ///
     /// case 的实际执行在 case 队列里串行进行，因此本批入队后即可处理下一批。
     async fn process_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         let nexus = Nexus::get();
-        let client = nexus.abstract_client.clone();
+        let client = nexus.summary_client.clone();
         let channel = Arc::new(event_channel(&events[0]));
         let memory_key = self.memory_key.as_ref();
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
@@ -280,7 +280,7 @@ impl AbstractMemoryPipeline {
     /// 执行一个 case 任务：run 开头用该 case 的摘要与结尾原文副本重建该 case 的 session 上下文，
     /// 再运行 agentic loop；本次运行的出站记录带该 case 的 meta
     async fn run_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
-        let client = Nexus::get().abstract_client.clone();
+        let client = Nexus::get().summary_client.clone();
         let session_id = self.case_session_id(case_name.as_ref());
         let session = self.ensure_session(&case_name).await;
         let outgoing_meta = match &case_name {
@@ -313,7 +313,7 @@ impl AbstractMemoryPipeline {
 }
 
 #[async_trait]
-impl AgentPipeline for AbstractMemoryPipeline {
+impl AgentPipeline for SummaryMemoryPipeline {
     async fn reset_system_prompt(&self) {
         let sessions: Vec<Arc<Session>> = self.sessions.iter().map(|entry| entry.value().clone()).collect();
         if sessions.is_empty() {
@@ -357,7 +357,7 @@ impl AgentPipeline for AbstractMemoryPipeline {
     }
 }
 
-impl AbstractMemoryPipeline {
+impl SummaryMemoryPipeline {
     /// `/model`：校验后写入基准 session 与已有 case session，并保存覆盖供新建 case session 应用
     async fn apply_model_command(&self, provider: ArcStr, model: ArcStr) -> Result<ArcStr> {
         let _ = self.ensure_session(&None).await;
@@ -547,8 +547,8 @@ mod tests {
         }
     }
 
-    fn pipeline() -> Arc<AbstractMemoryPipeline> {
-        AbstractMemoryPipeline::new(
+    fn pipeline() -> Arc<SummaryMemoryPipeline> {
+        SummaryMemoryPipeline::new(
             Arc::new(MemoryKey {
                 agent_id: ArcStr::from("a1"),
                 role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
@@ -560,8 +560,8 @@ mod tests {
     async fn case_session_ids_are_prefixed_and_case_scoped() {
         let p = pipeline();
         assert_eq!(p.case_session_id(Some(&ArcStr::from("role-weather"))).as_str(),
-            "memory-abstract-a1-r1-role-weather");
-        assert_eq!(p.case_session_id(None).as_str(), "memory-abstract-a1-r1-none");
+            "memory-summary-a1-r1-role-weather");
+        assert_eq!(p.case_session_id(None).as_str(), "memory-summary-a1-r1-none");
     }
 
     #[test]

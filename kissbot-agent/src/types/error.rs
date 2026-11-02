@@ -26,8 +26,8 @@ pub enum Error {
     #[error("Memory ego error: {0}")]
     MemoryEgoError(ArcStr),
 
-    #[error("Abstract memory error: {0}")]
-    AbstractError(ArcStr),
+    #[error("Summary memory error: {0}")]
+    SummaryError(ArcStr),
 
     #[error("Invalid command: {0}")]
     InvalidCommand(ArcStr),

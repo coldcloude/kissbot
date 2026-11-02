@@ -1,7 +1,7 @@
 use arcstr::ArcStr;
 use thiserror::Error;
 
-/// 摘要记忆组件错误类型（见 spec memory-struct-abstract 错误类型）
+/// 摘要记忆组件错误类型（见 spec memory-struct-summary 错误类型）
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Notify error: {0}")]

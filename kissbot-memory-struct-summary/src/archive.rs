@@ -69,7 +69,7 @@ pub struct BatchItem {
     content: Content,
     /// 待归档记录（通道记录本身）；新消息为空
     record: Option<RecordEntry>,
-    /// 写入方已给出的所属 case 名（`meta.abstract_memory.case_name`，只来自已存记录）
+    /// 写入方已给出的所属 case 名（`meta.summary_memory.case_name`，只来自已存记录）
     meta_case: Option<ArcStr>,
 }
 

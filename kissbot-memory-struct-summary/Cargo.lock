@@ -884,7 +884,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kissbot-memory-struct-abstract"
+name = "kissbot-memory-struct-summary"
 version = "0.1.0"
 dependencies = [
  "arcstr",

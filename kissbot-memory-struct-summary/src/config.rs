@@ -11,7 +11,7 @@ use kissbot_llm::{
 use serde::Deserialize;
 
 /// 组件数据目录名（记忆根目录下各 agent 目录内的子目录）
-pub const STRUCT_DIR_NAME: ArcStr = arcstr::literal!("memory-struct-abstract");
+pub const STRUCT_DIR_NAME: ArcStr = arcstr::literal!("memory-struct-summary");
 
 pub const DEFAULT_LISTEN_ADDR: ArcStr = arcstr::literal!("127.0.0.1");
 /// HTTP 服务默认端口（memory-store 8082 / memory-ego 3001 之外）
@@ -42,7 +42,7 @@ fn default_session_max_messages() -> usize {
     DEFAULT_SESSION_MAX_MESSAGES
 }
 
-/// 摘要记忆组件配置（`memory_struct_abstract` 段）
+/// 摘要记忆组件配置（`memory_struct_summary` 段）
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default = "default_listen_addr")]
@@ -77,7 +77,7 @@ impl Config {
     pub fn get() -> &'static Self {
         static INSTANCE: OnceLock<Config> = OnceLock::new();
         INSTANCE.get_or_init(|| {
-            kissbot_config::Config::get().get_section("memory_struct_abstract")
+            kissbot_config::Config::get().get_section("memory_struct_summary")
         })
     }
 

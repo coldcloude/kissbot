@@ -26,7 +26,7 @@ pub fn case_record_path(case_dir: &Path) -> PathBuf {
     case_dir.join(CASE_RECORD_FILE)
 }
 
-/// Case 目录：`{root}/{agent}/memory-struct-abstract/{角色名}/cases/{case_name}`
+/// Case 目录：`{root}/{agent}/memory-struct-summary/{角色名}/cases/{case_name}`
 pub fn case_dir(role_dir: &Path, case_name: &str) -> PathBuf {
     role_dir.join("cases").join(case_name)
 }
@@ -157,7 +157,7 @@ pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Re
                 Ok(record) => record,
                 Err(e) => {
                     // 写入侧可能正在追加（半行）、历史脏数据或旧格式：跳过不影响后续记录
-                    warn!("[abstract] skip unparsable channel record in {}: {}", path.display(), e);
+                    warn!("[summary] skip unparsable channel record in {}: {}", path.display(), e);
                     continue;
                 }
             };
@@ -222,7 +222,7 @@ pub async fn read_case_records(dir: &Path) -> Result<Vec<RecordEntry>> {
         }
         match serde_json::from_str::<ChannelRecord>(text) {
             Ok(record) => records.push(Arc::new(record)),
-            Err(e) => warn!("[abstract] skip unparsable case record in {}: {}", path.display(), e),
+            Err(e) => warn!("[summary] skip unparsable case record in {}: {}", path.display(), e),
         }
     }
     records.sort_by(|a, b| (a.time.as_str(), a.sn).cmp(&(b.time.as_str(), b.sn)));
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn case_record_path_is_single_channel_file() {
-        let dir = Path::new("/root/0/memory-struct-abstract/dev/cases/e12");
+        let dir = Path::new("/root/0/memory-struct-summary/dev/cases/e12");
         assert_eq!(case_record_path(dir), dir.join("channel-records.jsonl"));
     }
 
@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn case_dir_layout() {
-        let dir = case_dir(Path::new("/root/0/memory-struct-abstract/dev"), "event-e12");
-        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-abstract/dev/cases/event-e12"));
+        let dir = case_dir(Path::new("/root/0/memory-struct-summary/dev"), "event-e12");
+        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-summary/dev/cases/event-e12"));
     }
 
     #[tokio::test]

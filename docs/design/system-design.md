@@ -33,7 +33,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 
 **记忆结构框架**：定义记忆结构构建的标准接口。具体实现由独立的记忆结构实现组件完成。
 
-**记忆结构实现组件**：读取记忆存储组件中的原始记忆记录，构建特定索引结构（如摘要索引、最近记忆索引等）。摘要记忆实现组件把记忆切分为 case（专案）、生成 case 摘要，并按新消息定位 case 提供上下文，详见 [kissbot-memory-struct-abstract](components-design/kissbot-memory-struct-abstract.md)；记忆搜索工具供 nexus 通过 tool call 调用（预留）。
+**记忆结构实现组件**：读取记忆存储组件中的原始记忆记录，构建特定索引结构（如摘要索引、最近记忆索引等）。摘要记忆实现组件把记忆切分为 case（专案）、生成 case 摘要，并按新消息定位 case 提供上下文，详见 [kissbot-memory-struct-summary](components-design/kissbot-memory-struct-summary.md)；记忆搜索工具供 nexus 通过 tool call 调用（预留）。
 
 ### 5. 自我认知组件（Memory-Ego）
 管理和获取 agent 的自我认知设定。提供 agent 元数据、个体识别信息、角色设定等数据的存储和查询能力。
@@ -72,7 +72,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 | station | 子 station | MCP 请求-响应：工具列表查询、工具调用（↔） | 级联查询工具与远程工具调用时 |
 | nexus | 模型提供方 API（经 kissbot-llm） | 模型调用请求（→）、模型响应（←） | agentic loop 每轮；/model 校验模型列表时 |
 | nexus | memory-store | 推送记忆记录（→） | 每条消息产生时（含收发的通道消息） |
-| nexus | memory-struct-* | case 定位请求（→）、上下文（←）；记忆查询请求（→）、查询结果（←） | 预留：新消息定位与 LLM 记忆搜索工具均未接入（实现模块为 kissbot-memory-struct-abstract） |
+| nexus | memory-struct-* | case 定位请求（→）、上下文（←）；记忆查询请求（→）、查询结果（←） | 预留：新消息定位与 LLM 记忆搜索工具均未接入（实现模块为 kissbot-memory-struct-summary） |
 | nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | 新建会话设置系统提示词时；/agent、/role 校验时 |
 | memory-store | memory-struct-* | 新数据通知（→） | 新数据到达时 |
 | memory-store / memory-struct-* | 文件系统 | 共享读写记忆文件（↔） | 持续 |

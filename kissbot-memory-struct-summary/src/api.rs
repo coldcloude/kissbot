@@ -13,18 +13,18 @@ use axum::{
 use kissbot_api::*;
 
 use crate::agent_role::AgentRole;
-use crate::service::AbstractService;
+use crate::service::SummaryService;
 
-pub fn create_router(service: Arc<AbstractService>) -> Router {
+pub fn create_router(service: Arc<SummaryService>) -> Router {
     Router::new()
-        .route("/abstract/locate", post(locate))
-        .route("/abstract/case/list", post(case_list))
-        .route("/abstract/case/summary", post(case_summary))
-        .route("/abstract/case/records", post(case_records))
-        .route("/abstract/case/records-after", post(case_records_after))
-        .route("/abstract/case/records-tail", post(case_records_tail))
-        .route("/abstract/tree/get", post(tree_get))
-        .route("/abstract/rebuild", post(rebuild))
+        .route("/summary/locate", post(locate))
+        .route("/summary/case/list", post(case_list))
+        .route("/summary/case/summary", post(case_summary))
+        .route("/summary/case/records", post(case_records))
+        .route("/summary/case/records-after", post(case_records_after))
+        .route("/summary/case/records-tail", post(case_records_tail))
+        .route("/summary/tree/get", post(tree_get))
+        .route("/summary/rebuild", post(rebuild))
         .with_state(service)
 }
 
@@ -43,14 +43,14 @@ fn err<T>(message: ArcStr) -> ApiResult<T> {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(message)))
 }
 
-async fn locate(State(service): State<Arc<AbstractService>>, Json(req): Json<LocateRequest>) -> impl IntoResponse {
+async fn locate(State(service): State<Arc<SummaryService>>, Json(req): Json<LocateRequest>) -> impl IntoResponse {
     match service.locate(&req).await {
         Ok(response) => ok(response),
         Err(e) => err(ArcStr::from(e.to_string())),
     }
 }
 
-async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseListRequest>) -> impl IntoResponse {
+async fn case_list(State(service): State<Arc<SummaryService>>, Json(req): Json<CaseListRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
         .case_list(&agent_role, req.parent_id.as_ref().map(|id| id.as_str()))
@@ -61,7 +61,7 @@ async fn case_list(State(service): State<Arc<AbstractService>>, Json(req): Json<
     }
 }
 
-async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
+async fn case_summary(State(service): State<Arc<SummaryService>>, Json(req): Json<CaseSummaryRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.case_summary(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
@@ -69,7 +69,7 @@ async fn case_summary(State(service): State<Arc<AbstractService>>, Json(req): Js
     }
 }
 
-async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
+async fn case_records(State(service): State<Arc<SummaryService>>, Json(req): Json<CaseRecordsRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.case_records(&agent_role, req.case_name.as_str()).await {
         Ok(response) => ok(response),
@@ -77,7 +77,7 @@ async fn case_records(State(service): State<Arc<AbstractService>>, Json(req): Js
     }
 }
 
-async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
+async fn case_records_after(State(service): State<Arc<SummaryService>>, Json(req): Json<CaseRecordsAfterRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
         .case_records_after(&agent_role, req.case_name.as_str(), &req.after)
@@ -88,7 +88,7 @@ async fn case_records_after(State(service): State<Arc<AbstractService>>, Json(re
     }
 }
 
-async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
+async fn case_records_tail(State(service): State<Arc<SummaryService>>, Json(req): Json<CaseRecordsTailRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service
         .case_records_tail(&agent_role, req.case_name.as_str(), req.count)
@@ -99,7 +99,7 @@ async fn case_records_tail(State(service): State<Arc<AbstractService>>, Json(req
     }
 }
 
-async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<TreeGetRequest>) -> impl IntoResponse {
+async fn tree_get(State(service): State<Arc<SummaryService>>, Json(req): Json<TreeGetRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     match service.tree_get(&agent_role, req.role_event.event_id.clone()).await {
         Ok(response) => ok(response),
@@ -107,7 +107,7 @@ async fn tree_get(State(service): State<Arc<AbstractService>>, Json(req): Json<T
     }
 }
 
-async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<RebuildRequest>) -> impl IntoResponse {
+async fn rebuild(State(service): State<Arc<SummaryService>>, Json(req): Json<RebuildRequest>) -> impl IntoResponse {
     let agent_role = agent_role_of(&req.agent_id, &req.role_event);
     let event_id = req.role_event.event_id.clone();
     if req.rebuild {
@@ -130,18 +130,18 @@ async fn rebuild(State(service): State<Arc<AbstractService>>, Json(req): Json<Re
 mod tests {
     use super::*;
     use crate::agent_role::AgentRoleManager;
-    use crate::service::AbstractService;
+    use crate::service::SummaryService;
     use crate::stub::StubModel;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    fn test_service() -> (tempfile::TempDir, Arc<AbstractService>) {
+    fn test_service() -> (tempfile::TempDir, Arc<SummaryService>) {
         let temp = tempfile::tempdir().unwrap();
         let manager = Arc::new(AgentRoleManager::new(temp.path()));
         let model = Arc::new(StubModel::new());
-        let service = Arc::new(AbstractService::new(manager, model, 4));
+        let service = Arc::new(SummaryService::new(manager, model, 4));
         (temp, service)
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let router = create_router(service);
 
         // 空角色定位：新话题也建出 case（记忆条数 0），分组一定带 case_name
-        let (status, body) = post_json(router.clone(), "/abstract/locate", serde_json::json!({
+        let (status, body) = post_json(router.clone(), "/summary/locate", serde_json::json!({
             "agent_id": "0", "role_event": {"role_name": "dev"},
             "channel": {"messenger_id": "web", "self_user_id": "self1", "group_id": "g1"},
             "messages": [{"msg_id": "m1", "time": "2026-09-22 13:48:37", "user_id": "u1", "user_name": "alice", "is_self": 0,
@@ -181,21 +181,21 @@ mod tests {
         assert_eq!(body["data"]["groups"][0]["messages"], serde_json::json!(["m1"]));
 
         // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
-        let (status, body) = post_json(router.clone(), "/abstract/tree/get", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
+        let (status, body) = post_json(router.clone(), "/summary/tree/get", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["nodes"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
         assert_eq!(body["data"]["nodes"][0]["summary"], "新 case 摘要");
 
         // case 不存在 → 失败响应（摘要与原文一致）
-        for path in ["/abstract/case/summary", "/abstract/case/records"] {
+        for path in ["/summary/case/summary", "/summary/case/records"] {
             let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "role-9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
 
         // 手动触发（无记录 → 0）
-        let (status, body) = post_json(router, "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
+        let (status, body) = post_json(router, "/summary/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["archived"], 0);
     }
@@ -214,12 +214,12 @@ mod tests {
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), format!("{}\n", record)).await.unwrap();
 
         let router = create_router(service);
-        let (status, body) = post_json(router.clone(), "/abstract/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "rebuild": true})).await;
+        let (status, body) = post_json(router.clone(), "/summary/rebuild", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "rebuild": true})).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["data"]["archived"], 1);
         assert_eq!(body["data"]["case_count"], 1);
 
-        let (_, body) = post_json(router, "/abstract/case/list", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
+        let (_, body) = post_json(router, "/summary/case/list", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
         assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }

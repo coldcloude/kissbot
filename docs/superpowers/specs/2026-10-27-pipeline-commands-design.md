@@ -11,7 +11,7 @@ channel 文本命令目前只有默认一层：`Nexus::incoming_message` 校验�
 这带来两个问题：
 
 - 模型与 outgoing 属于具体 pipeline 的执行资源，却由 Nexus 与默认命令路由器固定处理；
-- 不同 pipeline（`default` / `default_memory` / `abstract_memory`）需要各自决定支持哪些命令、
+- 不同 pipeline（`default` / `default_memory` / `summary_memory`）需要各自决定支持哪些命令、
   写到哪些 session，现有接口无法表达。
 
 ## 目标
@@ -54,15 +54,15 @@ ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 |----------|----------|--------------------------------------|
 | `default` | ✓ | — |
 | `default_memory` | ✓ | ✓ |
-| `abstract_memory` | ✓ | ✓ |
+| `summary_memory` | ✓ | ✓ |
 
 ### 3. 配置与存储
 
-- `/model`：写入当前 pipeline 的 session `LLMConfig`。`abstract_memory` 继续写基准 session 与
+- `/model`：写入当前 pipeline 的 session `LLMConfig`。`summary_memory` 继续写基准 session 与
   已有 case session，并保存 `model_override` 供新建 case session 应用。
 - `out_channel`：从 (agent, role) 级下沉到 pipeline/session 级。
   - `default_memory`：写自己的 `session_id`。
-  - `abstract_memory`：写基准 session `memory-abstract-{encode}-none`，即该 pipeline 的
+  - `summary_memory`：写基准 session `memory-summary-{encode}-none`，即该 pipeline 的
     pipeline 级配置存放处；运行期从同一 session 读取，不为每个 case session 各存一份。
   - agent/role 继承表中的 `out_channel` **保留**，两条记忆 pipeline 建立 session 时仍从
     agent/role 初始化 `out_channel`（现有 `import_session_config_from_agent_role` 不变）。
@@ -78,9 +78,9 @@ ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 - `handle_model_command(parts, session_id) -> Result<ArcStr>`：解析 + 校验 + 写入单 session；
   `default` 与 `default_memory` 共用。
 - `switch_model(session_ids, provider, model) -> Result<ArcStr>`：拉模型列表校验后逐个 session
-  写入，返回回复文案；`abstract_memory` 多 session 复用。
+  写入，返回回复文案；`summary_memory` 多 session 复用。
 - `bind_outgoing(session_id, channel_id, parts)` / `unbind_outgoing(session_id, parts)`：执行
-  `/bind-outgoing`、`/unbind-outgoing`；两条记忆 pipeline 共用（`abstract_memory` 传基准 session id）。
+  `/bind-outgoing`、`/unbind-outgoing`；两条记忆 pipeline 共用（`summary_memory` 传基准 session id）。
 - `outgoing_channel(session_id) -> Option<Arc<OutChannel>>`：发送前读取 pipeline 的 outgoing 配置。
 - 内部复用：`verify_model`（从 Nexus 移入）。
 
@@ -97,7 +97,7 @@ ChannelManager 的 `Terminal::incoming_message` 派发顺序：
 
 - `/pipeline <pipeline_name>`：设置来源 channel 的 (agent, role) 级 `pipeline_name`；默认 role（空）不可设置。
 - `/agent-pipeline <pipeline_name>`：设置来源 channel 的 agent（role 空）级 `pipeline_name`；默认 agent "0" 不可设置。
-- 名称校验：仅接受 `default` / `default_memory` / `abstract_memory`。
+- 名称校验：仅接受 `default` / `default_memory` / `summary_memory`。
 - 清理：修改前保存受影响 role（当前已装配 pipeline 的 role）merge 后的配置，写入后重新 merge；
   pipeline 名称变化的已装配 pipeline 从 `PipelineManager` 移除，下次按新配置装配。
 - 实现：`ChannelManager::execute_default_command` 负责解析与校验，`PipelineManager::set_pipeline_config`

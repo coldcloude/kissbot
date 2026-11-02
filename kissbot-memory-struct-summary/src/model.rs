@@ -319,7 +319,7 @@ pub struct LlmModel {
     provider: ProviderKind,
     llm_cfg: EffectiveLLMConfig,
     model_cfg: EffectiveModelConfig,
-    /// 记忆根目录（会话上下文按 `{root}/{agent}/memory-struct-abstract/llm` 落盘）
+    /// 记忆根目录（会话上下文按 `{root}/{agent}/memory-struct-summary/llm` 落盘）
     root: PathBuf,
     session_max_messages: usize,
     /// 会话表：键为（角色 + event_id），即一个记忆后缀一个会话
@@ -415,7 +415,7 @@ impl LlmModel {
             return;
         }
         warn!(
-            "[abstract] session context of {}/{:?} exceeds {} messages, archive and keep recent",
+            "[summary] session context of {}/{:?} exceeds {} messages, archive and keep recent",
             agent_role, event_id, self.session_max_messages
         );
         let keep = non_system[non_system.len() - self.session_max_messages..].to_vec();

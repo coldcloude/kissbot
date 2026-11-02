@@ -519,7 +519,7 @@ impl ChannelManager {
                 }
                 if !is_supported_pipeline_name(parts[1].as_str()) {
                     return Err(Error::InvalidCommand(format!(
-                        "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", parts[1]).into()));
+                        "未知 pipeline: {}（可选 default / default_memory / summary_memory）", parts[1]).into()));
                 }
                 Nexus::get().pipeline_manager
                     .set_pipeline_config(ch.agent_id.clone(), ch.role_name.clone(), parts[1].clone()).await?;
@@ -541,7 +541,7 @@ impl ChannelManager {
                 }
                 if !is_supported_pipeline_name(parts[1].as_str()) {
                     return Err(Error::InvalidCommand(format!(
-                        "未知 pipeline: {}（可选 default / default_memory / abstract_memory）", parts[1]).into()));
+                        "未知 pipeline: {}（可选 default / default_memory / summary_memory）", parts[1]).into()));
                 }
                 Nexus::get().pipeline_manager
                     .set_pipeline_config(ch.agent_id.clone(), RESERVED_ROLE_NAME, parts[1].clone()).await?;
@@ -594,7 +594,7 @@ impl ChannelManager {
 impl Terminal for ChannelManager {
     /// 收到上行消息：先做回显过滤（通道层），再做业务处理
     /// 完整处理链：默认命令检测 → pipeline 命令检测 → pipeline 定位 → 系统事件过滤 → 普通消息进 pipeline
-    /// （上行记忆写入由 pipeline 自己完成：default_memory 收到即写，abstract_memory 在 locate 后写）
+    /// （上行记忆写入由 pipeline 自己完成：default_memory 收到即写，summary_memory 在 locate 后写）
     async fn incoming_message(&self, channel_id: ArcStr, event: Arc<IncomingMessageEvent>) {
         // 1. msg_id 回显判定：命中（已发未回显）则消费并丢弃，不转发业务（无 channel 视为未命中）
         let echo = match self.channels.get(channel_id.as_str()) {

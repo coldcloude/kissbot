@@ -78,7 +78,7 @@ Agent 组件内部包含两大模块：
 
 **Nexus 模块**：负责 LLM 通信、pipeline 编排和记忆对接
 - LLM 调用：ProviderManager 按 provider 名缓存实现实例（工厂去重）、按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，解析有效模型配置（超时/重试/token 上限）后经 kissbot-llm 的 call_with_retry 调用（请求构造、重试与响应归一化由该库完成）
-- pipeline 体系：按 pipeline 标识（agent + role_event）装配 pipeline（`default` / `default_memory` / `abstract_memory`），pipeline 自建 session、负责消息接入与合批，并驱动 agentic loop；session 上下文由 pipeline 直接读写
+- pipeline 体系：按 pipeline 标识（agent + role_event）装配 pipeline（`default` / `default_memory` / `summary_memory`），pipeline 自建 session、负责消息接入与合批，并驱动 agentic loop；session 上下文由 pipeline 直接读写
 - session 与上下文：session 的数量与 id 由 pipeline 决定，pipeline 负责创建/恢复/持有；单个 session 的上下文（内存 + 本地缓存 + 历史归档）由 kissbot-llm 的 Session 承担
 - Tool 调用分派：把外置工具分派到 Station（工具分组白名单平铺查询 + 工具调用）
 - 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯

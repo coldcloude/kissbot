@@ -177,7 +177,7 @@ struct WatermarkFile {
 /// 角色句柄：目录与状态互斥（归档/定位按角色串行）
 pub struct AgentRoleHandle {
     pub id: AgentRole,
-    /// 角色目录（`{root}/{agent}/memory-struct-abstract/{角色名}`）：case 树与原文副本
+    /// 角色目录（`{root}/{agent}/memory-struct-summary/{角色名}`）：case 树与原文副本
     pub dir: PathBuf,
     pub state: Mutex<AgentRoleState>,
 }
@@ -187,7 +187,7 @@ impl AgentRoleHandle {
         self.dir.join(TREE_FILE)
     }
 
-    /// 记忆后缀目录（`{root}/{agent}/memory-struct-abstract/{后缀}`）：水位与当前指针。
+    /// 记忆后缀目录（`{root}/{agent}/memory-struct-summary/{后缀}`）：水位与当前指针。
     /// 角色模式下后缀即角色名，与角色目录相同。
     pub fn role_event_dir(&self, role_event: &RoleEvent) -> PathBuf {
         let suffix = kissbot_memory::role_event_suffix(role_event);
@@ -333,7 +333,7 @@ impl AgentRoleManager {
         &self.root
     }
 
-    /// 角色目录：`{root}/{agent}/memory-struct-abstract/{role}`
+    /// 角色目录：`{root}/{agent}/memory-struct-summary/{role}`
     pub fn role_dir(&self, id: &AgentRole) -> PathBuf {
         self.root.join(id.agent_id.as_str()).join(STRUCT_DIR_NAME.as_str()).join(id.role.as_str())
     }
@@ -446,7 +446,7 @@ async fn read_tree_nodes(path: &Path) -> Result<Vec<CaseNode>> {
         }
         match serde_json::from_str::<CaseNode>(line) {
             Ok(node) => nodes.push(node),
-            Err(e) => warn!("[abstract] skip unparsable tree line {} in {}: {}", index + 1, path.display(), e),
+            Err(e) => warn!("[summary] skip unparsable tree line {} in {}: {}", index + 1, path.display(), e),
         }
     }
     Ok(nodes)

@@ -15,10 +15,10 @@
 │   └── memory-struct-*/          # 各记忆结构实现的数据
 ```
 
-`memory-struct-*` 下由各实现模块自行组织数据。摘要记忆实现模块（kissbot-memory-struct-abstract）的目录布局：
+`memory-struct-*` 下由各实现模块自行组织数据。摘要记忆实现模块（kissbot-memory-struct-summary）的目录布局：
 
 ```
-{根目录}/{agent-id}/memory-struct-abstract/
+{根目录}/{agent-id}/memory-struct-summary/
 ├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
 ├── {角色名}/                      # 角色目录：case 树与原文副本
 │   ├── tree.jsonl                # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
@@ -29,7 +29,7 @@
     └── watermark.json            # 各通道的已处理水位
 ```
 
-case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 名就是 case 的唯一标识**：角色模式为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…），事件模式为 `event-{事件标识}`（顶层叶子）；前缀不同，两种模式天然不会重名。详见 [memory-struct-abstract.md](memory-struct-abstract.md)。
+case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 名就是 case 的唯一标识**：角色模式为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…），事件模式为 `event-{事件标识}`（顶层叶子）；前缀不同，两种模式天然不会重名。详见 [memory-struct-summary.md](memory-struct-summary.md)。
 
 ## 记忆后缀（RoleEvent）
 
@@ -60,9 +60,9 @@ channel 记录包含完整身份字段：
 | messenger_id | 消息来源通道标识 |
 | group_id | 群组标识（单聊可为空） |
 | is_self | 是否 agent 实际发送（1 / 0） |
-| meta | 可选的记录元信息；摘要记忆使用 `meta.abstract_memory.case_name` 记录所属 case，缺省不序列化 |
+| meta | 可选的记录元信息；摘要记忆使用 `meta.summary_memory.case_name` 记录所属 case，缺省不序列化 |
 
-> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.abstract_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-abstract.md](memory-struct-abstract.md)。
+> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.summary_memory.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-summary.md](memory-struct-summary.md)。
 >
 > **内嵌的思考/工具内容**：`Content` 的 `Think` / `ToolCall` / `ToolResult` 分支直接保存对应的 `ThinkRecord` / `ToolCallRecord` / `ToolResultRecord`（不含 `key` / `time` / `sn`）。agent 在一次 run 内把思考与工具内容累积到回复通道记录的 `Multi` 中，随该通道记录一起写入并等待落盘；没有文本的轮次不写通道记录，累积的思考/工具内容随之丢弃。工具调用与结果按它们在 `Multi` 中的先后顺序配对。
 >

@@ -1,12 +1,12 @@
-# kissbot-memory-struct-abstract 技术规格
+# kissbot-memory-struct-summary 技术规格
 
 > 说明摘要记忆实现模块的对外接口、通知协议、懒处理与分组、配置结构与存储格式。
 > 摘要记忆的树节点称为 **Case（专案）**，与 agent 侧 role-event 的 **Event（事件）** 区分：case 是本组件对记忆切分/归并的产物，event 是 agent 侧的记忆模式标识（role-event 后缀）。文中的「事件模式 / 事件标识 / role-event」指 agent 侧 event，「case / 专案」指本组件的树节点。
-> 组件设计与职责边界见 [kissbot-memory-struct-abstract 组件设计](../design/components-design/kissbot-memory-struct-abstract.md)，框架接口见 [kissbot-memory-struct 组件设计](../design/components-design/kissbot-memory-struct.md)，原始记录格式见 [memory-directory.md](memory-directory.md)。
+> 组件设计与职责边界见 [kissbot-memory-struct-summary 组件设计](../design/components-design/kissbot-memory-struct-summary.md)，框架接口见 [kissbot-memory-struct 组件设计](../design/components-design/kissbot-memory-struct.md)，原始记录格式见 [memory-directory.md](memory-directory.md)。
 
 ## 位置与依赖
 
-代码位置：`kissbot-memory-struct-abstract/`。
+代码位置：`kissbot-memory-struct-summary/`。
 
 | 依赖 | 用途 |
 |------|------|
@@ -45,11 +45,11 @@
 
 ## 记录 meta 与直接定位
 
-通道记录可以带可选的 `meta`（kissbot-api 的 `MemoryMeta`）。摘要记忆的使用方（agent 侧摘要记忆 pipeline）在写入记录时填入 `meta.abstract_memory.case_name`：
+通道记录可以带可选的 `meta`（kissbot-api 的 `MemoryMeta`）。摘要记忆的使用方（agent 侧摘要记忆 pipeline）在写入记录时填入 `meta.summary_memory.case_name`：
 
 ```jsonc
 { "msg_id": "m-1001", "…": "…",
-  "meta": { "abstract_memory": { "case_name": "role-weather-chat" } } }
+  "meta": { "summary_memory": { "case_name": "role-weather-chat" } } }
 ```
 
 - 归档读到带该信息的记录时**直接按 case 名定位**，不再走分组轮与逐层判定；该 case 不存在（例如重建后树里还没有该节点）时退回正常分组流程，记录不丢。
@@ -63,14 +63,14 @@
 
 | 接口 | 用途 | 触发归档 |
 |------|------|----------|
-| `POST /abstract/locate` | 传入 agent、记忆后缀与新消息，返回命中 case 的标识 | 是（pending + 本批消息一次处理） |
-| `POST /abstract/case/list` | 按记忆后缀与父 case 查询 case 节点 | 否（只读） |
-| `POST /abstract/case/summary` | 取 case 摘要（节点：摘要文本、层级、记录数、起止时间） | 否（只读） |
-| `POST /abstract/case/records` | 取 case 全部原文副本 | 否（只读） |
-| `POST /abstract/case/records-after` | 取 case 中指定位置之后的原文副本（分页续读） | 否（只读） |
-| `POST /abstract/case/records-tail` | 取 case 结尾若干条原文副本 | 否（只读） |
-| `POST /abstract/tree/get` | 取某 AgentRole 的 case 树与该记忆后缀各通道的当前 case 指针 | 否（只读） |
-| `POST /abstract/rebuild` | `rebuild=false` 手动触发归档；`rebuild=true` 清空后重建 | 是 |
+| `POST /summary/locate` | 传入 agent、记忆后缀与新消息，返回命中 case 的标识 | 是（pending + 本批消息一次处理） |
+| `POST /summary/case/list` | 按记忆后缀与父 case 查询 case 节点 | 否（只读） |
+| `POST /summary/case/summary` | 取 case 摘要（节点：摘要文本、层级、记录数、起止时间） | 否（只读） |
+| `POST /summary/case/records` | 取 case 全部原文副本 | 否（只读） |
+| `POST /summary/case/records-after` | 取 case 中指定位置之后的原文副本（分页续读） | 否（只读） |
+| `POST /summary/case/records-tail` | 取 case 结尾若干条原文副本 | 否（只读） |
+| `POST /summary/tree/get` | 取某 AgentRole 的 case 树与该记忆后缀各通道的当前 case 指针 | 否（只读） |
+| `POST /summary/rebuild` | `rebuild=false` 手动触发归档；`rebuild=true` 清空后重建 | 是 |
 
 请求与响应类型作为模块专属类型定义在 kissbot-api（见 [system-design-api](../design/system-design-api.md)）。请求里的 `role_event` 字段为项目级基础类型 **`RoleEvent`**（`{ role_name, event_id }`，`event_id` 缺省即角色模式）；所有 memory 组件的对外通信统一使用它，文件/目录后缀由 memory 内部拼接。
 
@@ -79,10 +79,10 @@
 定位一批消息涉及的 case：一次只针对**一个通道**（通道由请求给出），可带多条消息。执行只有一条路径，分三步：
 
 1. **提取**：读一次该记忆后缀的共享记忆，取出各通道水位之后的待归档记录（pending），其中请求通道的 pending 与本批消息一起分析（pending 与本批消息都可以为空）；
-2. **定位（只读）**：带 `meta.abstract_memory.case_name` 的 pending 记录直接落到该 case（不调模型）；其余 pending 消息与本批消息按时间升序合并成一个批次（不再按 `msg_id` 去重），角色模式下做第 1 轮分组并**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 `event-{事件标识}`。判定不改 case 树、不落盘；
+2. **定位（只读）**：带 `meta.summary_memory.case_name` 的 pending 记录直接落到该 case（不调模型）；其余 pending 消息与本批消息按时间升序合并成一个批次（不再按 `msg_id` 去重），角色模式下做第 1 轮分组并**逐组判定落点**：归入某个已有 case，或「需要新建在某个父 case 之下」；事件模式跳过分组与判定、固定归入 `event-{事件标识}`。判定不改 case 树、不落盘；
 3. **存储 + 返回**：只有组里确实有待归档记录的，才真正落地——需要新建的此刻建出 case、记录追加为该 case 的原文副本、重算摘要、推进水位、更新当前 case 指针；其余组只把判定结果作为消息的 case 返回。最后把同一 case 的多个组按消息 `msg_id` 取并合并成一组返回。
 
-没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（`/abstract/rebuild` 的 rebuild=false 手动触发 / rebuild=true 重建）即原来的归档，不产出分组。
+没有「先归档待处理记录、再定位消息」的两段式，也没有第二轮补齐循环：只要调用 locate，输入就是「pending + 消息」，两者都可为空。`messages` 为空时（`/summary/rebuild` 的 rebuild=false 手动触发 / rebuild=true 重建）即原来的归档，不产出分组。
 
 - 没有待处理标记且 `messages` 为空时不读盘、不调模型；带消息时总会读一次共享记忆以提取 pending。
 - 判定阶段一律只读：不建 case、不改 case 树，也不落盘；新建 case、追加原文副本、重算摘要、推进水位都只发生在第 3 步（存储），且只针对组里有待归档记录的组。判定为「需要新建」的组无论有没有记录都对应一个 case：有记录时新建并落地，只定位时同样新建、只是记忆条数为 0。
@@ -152,24 +152,24 @@
 四个接口都以 `{ agent_id, role, case_name }` 定位同一个 case，区别是取回的内容：
 
 ```jsonc
-// /abstract/case/summary 的请求与响应 data
+// /summary/case/summary 的请求与响应 data
 { "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat" }
 { "case": { "case_name": "role-weather-chat", "parent_id": null, "children": ["role-work-plan"],
             "summary": "…", "record_count": 42,
             "start_time": "…", "end_time": "…", "created_at": "…", "updated_at": "…" } }
 
-// /abstract/case/records 的请求与响应 data（全部原文副本，按 (time, sn) 升序）
+// /summary/case/records 的请求与响应 data（全部原文副本，按 (time, sn) 升序）
 { "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat" }
 { "records": [ { "msg_id": "m-1001", "user_id": "u1",
                  "content": { "msg_type": "Text", "data": "…" },
                  "time": "2026-09-22 13:40:00", "sn": 127, "…": "…" } ] }
 
-// /abstract/case/records-after 的请求与响应 data（指定位置之后的原文副本）
+// /summary/case/records-after 的请求与响应 data（指定位置之后的原文副本）
 { "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat",
   "after": { "time": "2026-09-22 13:40:00", "sn": 127 } }
 { "records": [ /* 该位置之后的原文副本 */ ] }
 
-// /abstract/case/records-tail 的请求与响应 data（结尾若干条原文副本）
+// /summary/case/records-tail 的请求与响应 data（结尾若干条原文副本）
 { "agent_id": "0", "role_event": { "role_name": "dev" }, "case_name": "role-weather-chat", "count": 10 }
 { "records": [ /* 结尾 count 条原文副本，升序 */ ] }
 ```
@@ -243,7 +243,7 @@
 
 ## 懒处理与分组
 
-**懒处理**：收到通知只登记待处理标记；**只有两种入口**会统一计算——`locate`（pending + 本批消息）、`/abstract/rebuild`（rebuild=false 手动触发，messages 为空；rebuild=true 重建）。case 树/摘要/原文查询**只读**，不触发归档、也不清除待处理标记。计算时把该记忆后缀**每个通道**水位之后的记录各自成批处理一次，通道之间互不影响。
+**懒处理**：收到通知只登记待处理标记；**只有两种入口**会统一计算——`locate`（pending + 本批消息）、`/summary/rebuild`（rebuild=false 手动触发，messages 为空；rebuild=true 重建）。case 树/摘要/原文查询**只读**，不触发归档、也不清除待处理标记。计算时把该记忆后缀**每个通道**水位之后的记录各自成批处理一次，通道之间互不影响。
 
 - 待处理标记是内存态（不落盘），按「**记忆后缀 + 通道**」登记：通道级（通道消息通知）或后缀级全部通道（首次加载、通知重连）。后缀级标记按该后缀全部通道处理。
 - 没有待处理标记时，不带消息的查询不做任何读盘与模型调用；**定位请求**即使没有标记也会提取 pending 并定位本批消息（pending 可空）。
@@ -270,13 +270,13 @@
 - 处理完一批后，该通道的当前 case 指针指向本批**最晚一条消息落入的 case**（含本次新建、记忆条数为 0 的空 case；与组在模型输出里的顺序无关）；水位推进到该批待归档通道记录的最晚位置（只有定位的批次不动水位）。
 - **事件模式**不分组、不做逐层判定：整个记忆后缀固定归入 `event-{事件标识}` 顶层叶子 case（由 `event_id` 直接定位，不存在则建出）。
 
-**重建（`/abstract/rebuild` 的 rebuild=true）只清空本次记忆后缀自己的那部分 case**：角色模式清空该 AgentRole 树里全部 `role-` 前缀的角色 case，事件模式只清本后缀固定的 `event-{事件标识}` 叶子；同时复位该后缀的当前 case 指针与水位。另一种模式不受影响。
+**重建（`/summary/rebuild` 的 rebuild=true）只清空本次记忆后缀自己的那部分 case**：角色模式清空该 AgentRole 树里全部 `role-` 前缀的角色 case，事件模式只清本后缀固定的 `event-{事件标识}` 叶子；同时复位该后缀的当前 case 指针与水位。另一种模式不受影响。
 
 ## 配置结构
 
 ```jsonc
 {
-  "memory_struct_abstract": {
+  "memory_struct_summary": {
     "listen_addr": "127.0.0.1",              // 本组件 HTTP 服务监听地址
     "listen_port": 8083,
     "notify_url": "ws://127.0.0.1:8182",     // memory-store 通知服务地址；缺省则不订阅通知
@@ -307,10 +307,10 @@
 
 ## 存储格式
 
-摘要记忆数据位于记忆根目录下各 agent 目录的 `memory-struct-abstract/`：
+摘要记忆数据位于记忆根目录下各 agent 目录的 `memory-struct-summary/`：
 
 ```
-{根目录}/{agent-id}/memory-struct-abstract/
+{根目录}/{agent-id}/memory-struct-summary/
 ├── llm/                                  # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
 │   ├── context/{session-id}.jsonl
 │   └── context-history/{session-id}-{时间戳}.jsonl
@@ -435,5 +435,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 ## 验证
 
-- 单元测试：`cd kissbot-memory-struct-abstract && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组按 `msg_id` 覆盖校验（允许话题交错、不要求有序）、分组输入固定字段与思考/工具标签内嵌（一条 multi 消息只占一个条目）、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.jsonl 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、msg_id 必填且唯一、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
-- 集成测试：`test/tests/memory-struct-abstract-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条消息定位（pending + 消息一次处理，按 msg_id 标识消息，同一 case 的多组合并）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入 `event-{事件标识}` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考内容随所在通道记录保存」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。
+- 单元测试：`cd kissbot-memory-struct-summary && cargo test`（角色/记忆后缀解析与同一 AgentRole 的角色模式与事件模式共用 case 树、靠名称前缀区分（节点不带模式字段）、懒处理与待处理标记按后缀隔离、分组落位与分层下探只取 `role-` 前缀的角色 case、分组按 `msg_id` 覆盖校验（允许话题交错、不要求有序）、分组输入固定字段与思考/工具标签内嵌（一条 multi 消息只占一个条目）、通道归属与通道隔离、摘要级联、水位推进、case 树读写与 tree.jsonl 形状、case 定位匹配、定位即「pending + 消息」的一次处理（无待处理标记时也定位、每通道只归档一次、msg_id 必填且唯一、同 case 的多组合并成一组、记录与新消息合并分析、判定与落地分开：每个组都命中或建出 case、只有有记录的组写原文副本与推进水位、新话题建出记忆条数为 0 的 case、带 meta 的记录直接落 case 不调分组/逐层判定、meta 指向缺失 case 时退回分组）、事件模式由 `event_id` 定位 `event-{事件标识}` 顶层叶子且不调分组/逐层判定、新建 case 当场拿到名称与摘要（名称字符集校验、重名追加 `-2`）、空树定位仍调一次逐层判定、重建只清本后缀自己的 case、通知帧解析、写入可见性、模型失败后的状态保留）。
+- 集成测试：`test/tests/memory-struct-summary-api.spec.ts` 用固定记忆数据目录验证「通知只登记 → 查询只读（不触发归档）→ 手动触发归档 → 多条消息定位（pending + 消息一次处理，按 msg_id 标识消息，同一 case 的多组合并）→ 定位新话题建出空 case → 摘要/原文分页查询 → 重建 → 事件模式固定归入 `event-{事件标识}` 顶层叶子且与角色模式共用一棵树、定位新话题建出的 case 当场带名称与摘要 → 通道隔离 → 思考内容随所在通道记录保存」全流程，模型调用以桩实现替换（`test/workspace-template/config.json` 配置 `provider_type = "stub"`）。

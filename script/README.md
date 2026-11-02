@@ -4,8 +4,8 @@
 
 - `reset-agent.sh`：按 `template/nexus.json`、`template/station.json` 生成 `../workspace/agent-data/` 下的运行配置（并注入 API key）
 - `reset-workspace.sh`：重置工作区（由 `template/config.json` 生成 `../workspace/config.json`，并重建 `channel-data/`）
-- `start-memory-store.sh` / `start-memory-ego.sh` / `start-memory-struct-abstract.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
-- `restart-memory-all.sh`：一键重启 memory-store + memory-ego + memory-struct-abstract（清理 `../workspace/memory-data`）
+- `start-memory-store.sh` / `start-memory-ego.sh` / `start-memory-struct-summary.sh` / `start-channel-web.sh` / `start-agent.sh`：依次启动各组件
+- `restart-memory-all.sh`：一键重启 memory-store + memory-ego + memory-struct-summary（清理 `../workspace/memory-data`）
 - `inject-key.mjs`：向 nexus.json 与 config.json 注入 API key（`node inject-key.mjs <key文件> <nexus.json|-> [config.json]`）
 
 ## 模型上下文系统本地模式验证（手动）
@@ -93,7 +93,7 @@
   - `channel_batch`：`channel_batch_interval_secs`（合批间隔，默认 3）
   - `out_channel`：回复通道（`channel_id` + 绑定身份 + `group_id`）；也可用 `/bind-outgoing`、`/unbind-outgoing` 在运行期设置/清除；未配置 = 只存不回复
   - `group_set`：pipeline 启用的 group 白名单（工具聚合只考虑这些 group；空/缺省 = 无工具）
-  - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `abstract_memory`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
+  - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `summary_memory`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
 - **sessions**：pipeline 建立 session 时按 agent/role 固化到 session 级的值，以及 `/model` 等覆盖（普通 JSON 对象，一般无需手改）
 - **memory_structs**：记忆结构组件配置（占位，本轮未实现）
 - **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）
@@ -141,7 +141,7 @@ node inject-key.mjs
 
 ## 摘要记忆系统本地验证（手动）
 
-摘要记忆组件（kissbot-memory-struct-abstract）订阅 memory-store 的新数据通知，把记忆切分为 case（专案）并生成摘要，按新消息定位 case 提供上下文。
+摘要记忆组件（kissbot-memory-struct-summary）订阅 memory-store 的新数据通知，把记忆切分为 case（专案）并生成摘要，按新消息定位 case 提供上下文。
 
 ### 1. 配置（`../workspace/config.json`）
 
@@ -154,7 +154,7 @@ node inject-key.mjs
       "notify_listen_addr": "127.0.0.1", "notify_listen_port": 8182   // 新数据通知 WS 服务
     }
   },
-  "memory_struct_abstract": {
+  "memory_struct_summary": {
     "listen_addr": "127.0.0.1", "listen_port": 8083,   // 本组件 HTTP 服务
     "notify_url": "ws://127.0.0.1:8182",               // memory-store 通知服务地址；缺省则不订阅
     "max_batch_records": 200,                          // 单通道单次处理的消息条数上限
@@ -166,7 +166,7 @@ node inject-key.mjs
 }
 ```
 
-`./reset-workspace.sh` 从模板生成该文件；`./start-memory-struct-abstract.sh` 会用 `../key.local.json` 按 `llm.provider` 的名字注入 `api_key`。
+`./reset-workspace.sh` 从模板生成该文件；`./start-memory-struct-summary.sh` 会用 `../key.local.json` 按 `llm.provider` 的名字注入 `api_key`。
 
 说明：
 
@@ -184,11 +184,11 @@ node inject-key.mjs
 ```bash
 # case 树（整棵角色树）与本次记忆后缀各通道的当前 case 指针
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev"}' http://127.0.0.1:8083/abstract/tree/get | jq
+  -d '{"agent_id":"0","role":"dev"}' http://127.0.0.1:8083/summary/tree/get | jq
 
 # 排障：各记忆后缀的已处理水位与当前 case 指针直接看状态文件
-cat ../workspace/memory-data/0/memory-struct-abstract/dev/watermark.json | jq
-cat ../workspace/memory-data/0/memory-struct-abstract/dev/current.json | jq
+cat ../workspace/memory-data/0/memory-struct-summary/dev/watermark.json | jq
+cat ../workspace/memory-data/0/memory-struct-summary/dev/current.json | jq
 
 # 定位：一批消息（可跨通道）涉及哪些 case（只返回 case 标识与分组）
 # 每条消息的通道三元组（messenger_id / self_user_id / group_id）决定用哪个通道的当前 case 指针
@@ -197,37 +197,37 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","messages":[
         {"msg_id":"m-1","time":"2026-09-22 13:48:37","user_name":"alice","is_self":0,"messenger_id":"web","self_user_id":"self1","group_id":"g1","content":{"msg_type":"Text","data":"之前聊到哪了"}},
         {"msg_id":"m-2","time":"2026-09-22 13:49:02","user_name":"bob","is_self":0,"messenger_id":"web","self_user_id":"self2","group_id":"g2","content":{"msg_type":"Text","data":"另一个通道问一句"}}]}' \
-  http://127.0.0.1:8083/abstract/locate | jq
+  http://127.0.0.1:8083/summary/locate | jq
 
 # 摘要 / 全部原文 / 指定之后 / 结尾若干条（用定位拿到的 case 名；角色模式为模型给出的名称如 weather-chat，事件模式为事件标识如 e1）
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/abstract/case/summary | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/summary/case/summary | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/abstract/case/records | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/summary/case/records | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","count":5}' http://127.0.0.1:8083/abstract/case/records-tail | jq
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","count":5}' http://127.0.0.1:8083/summary/case/records-tail | jq
 # 指定之后：after 传上一条记录的 time / sn
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","after":{"time":"2026-09-22 13:40:00","sn":127}}' \
-  http://127.0.0.1:8083/abstract/case/records-after | jq
+  http://127.0.0.1:8083/summary/case/records-after | jq
 # 事件模式：记忆后缀含 `-`（前半为角色名、后半为事件标识），整个后缀固定归入名称为该事件标识的顶层叶子 case
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev-e1","case_name":"e1"}' http://127.0.0.1:8083/abstract/case/summary | jq
+  -d '{"agent_id":"0","role":"dev-e1","case_name":"e1"}' http://127.0.0.1:8083/summary/case/summary | jq
 
 # 手动触发归档：把本次记忆后缀各通道水位之后的记录处理一次（查询接口只读，不会触发归档）
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","rebuild":false}' http://127.0.0.1:8083/abstract/rebuild | jq
+  -d '{"agent_id":"0","role":"dev","rebuild":false}' http://127.0.0.1:8083/summary/rebuild | jq
 
 # 重建：只清空本次记忆后缀所属模式的子树（角色模式清角色子树、事件模式清该后缀固定的事件 case）后按共享记忆文件重新构建
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","rebuild":true}' http://127.0.0.1:8083/abstract/rebuild | jq
+  -d '{"agent_id":"0","role":"dev","rebuild":true}' http://127.0.0.1:8083/summary/rebuild | jq
 ```
 
 验证点：
 
-1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.jsonl` 与 `cases/{case 名}/channel-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
+1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/summary/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-summary 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-summary/{角色名}/` 下生成 `tree.jsonl` 与 `cases/{case 名}/channel-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
 2. **归档不重复**：没有新数据时反复手动触发不会重复归档（`archived` 为 0，日志不再出现新的记录数）
-3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_name`，新话题会建出记忆条数为 0 的 case——名称与摘要当场由模型给出（原文副本等这些消息写入记忆并归档后补上）。摘要与原文再用 `case/summary`、`case/records*` 取
+3. **定位**：对一批消息调用 `/summary/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_name`，新话题会建出记忆条数为 0 的 case——名称与摘要当场由模型给出（原文副本等这些消息写入记忆并归档后补上）。摘要与原文再用 `case/summary`、`case/records*` 取
 4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（case 的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
 5. **事件模式**：`role` 含 `-`（按第一个 `-` 拆分，前半为角色名、后半为事件标识，如 `dev-e1`）时，整个后缀固定归入该角色树里的顶层叶子 case `e1`，不分组、不做定位判定，也不参与角色模式的判定
-6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-abstract/llm/context/{session_id}.jsonl` 累积该记忆后缀的判定上下文（session_id 为后缀的净化形式）
+6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-summary/llm/context/{session_id}.jsonl` 累积该记忆后缀的判定上下文（session_id 为后缀的净化形式）

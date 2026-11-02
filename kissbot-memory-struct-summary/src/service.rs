@@ -22,13 +22,13 @@ use crate::records::{
 use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager, AgentRoleState, role_event_of};
 
 /// 摘要记忆服务
-pub struct AbstractService {
+pub struct SummaryService {
     manager: Arc<AgentRoleManager>,
     /// 归档器：按通道归档待处理记录，并（可选）一并定位本批新消息
     archiver: Arc<Archiver>,
 }
 
-impl AbstractService {
+impl SummaryService {
     pub fn new(manager: Arc<AgentRoleManager>, model: Arc<dyn DecisionModel>, max_batch_records: usize) -> Self {
         Self {
             manager,
@@ -70,7 +70,7 @@ impl AbstractService {
             let suffixes = match list_store_suffixes(self.manager.root(), &handle.id.agent_id, &handle.id.role).await {
                 Ok(suffixes) => suffixes,
                 Err(e) => {
-                    warn!("[abstract] list store suffixes for {} failed: {}", handle.id, e);
+                    warn!("[summary] list store suffixes for {} failed: {}", handle.id, e);
                     continue;
                 }
             };
@@ -100,7 +100,7 @@ impl AbstractService {
             let case_names: Vec<&str> =
                 result.outcomes.iter().flat_map(|outcome| outcome.case_names.iter().map(|name| name.as_str())).collect();
             info!(
-                "[abstract] process {}/{:?} [{}]: archived {} records into {:?} (+{} new messages)",
+                "[summary] process {}/{:?} [{}]: archived {} records into {:?} (+{} new messages)",
                 handle.id,
                 event_id,
                 render_channel(channel),
@@ -201,7 +201,7 @@ impl AbstractService {
         let archived = outcomes.iter().map(|outcome| outcome.archived).sum();
         let case_count = state.tree.len() as u64;
         drop(state);
-        info!("[abstract] rebuild {}/{:?}: {} records, {} cases", agent_role, event_id, archived, case_count);
+        info!("[summary] rebuild {}/{:?}: {} records, {} cases", agent_role, event_id, archived, case_count);
         Ok(RebuildResponse { archived, case_count })
     }
 
@@ -245,7 +245,7 @@ impl AbstractService {
     // ========== 查询 ==========
 
     /// Case 列表：只读角色的 case 树（角色 case 与事件叶子都在一棵树上），
-    /// 不触发归档（要处理待归档记录请用 `/abstract/rebuild` 的 rebuild=false）
+    /// 不触发归档（要处理待归档记录请用 `/summary/rebuild` 的 rebuild=false）
     pub async fn case_list(&self, agent_role: &AgentRole, parent_id: Option<&str>) -> Result<CaseListResponse> {
         let handle = self.open(agent_role).await?;
         let state = handle.state.lock().await;
@@ -480,7 +480,7 @@ mod tests {
             "content": {"msg_type": "Text", "data": text},
             "time": time,
             "sn": sn,
-            "meta": {"abstract_memory": {"case_name": case_name}}
+            "meta": {"summary_memory": {"case_name": case_name}}
         });
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
@@ -506,7 +506,7 @@ mod tests {
 
     struct Fixture {
         _temp: tempfile::TempDir,
-        service: AbstractService,
+        service: SummaryService,
         model: Arc<StubModel>,
     }
 
@@ -519,7 +519,7 @@ mod tests {
         let root = temp.path().to_path_buf();
         let manager = Arc::new(AgentRoleManager::new(root));
         let model = Arc::new(StubModel::new());
-        let service = AbstractService::new(manager, model.clone(), max_batch_records);
+        let service = SummaryService::new(manager, model.clone(), max_batch_records);
         Fixture { _temp: temp, service, model }
     }
 
@@ -548,7 +548,7 @@ mod tests {
         handle.state.lock().await.mark_role_event(role_event.as_ref());
     }
 
-    /// 手动归档一次（`/abstract/rebuild` 的 rebuild=false 路径）
+    /// 手动归档一次（`/summary/rebuild` 的 rebuild=false 路径）
     async fn process(f: &Fixture, role_event: &RoleEvent) -> ArchiveOutcome {
         f.service.manual_trigger(&agent_role(role_event), role_event.event_id.clone()).await.unwrap()
     }
@@ -672,7 +672,7 @@ mod tests {
         process(&f, &role_event("dev", None)).await;
 
         // 重启：同一根目录上新建 manager 与 service（内存态为空，只剩磁盘状态）
-        let restarted = AbstractService::new(Arc::new(AgentRoleManager::new(root)), Arc::new(StubModel::new()), 200);
+        let restarted = SummaryService::new(Arc::new(AgentRoleManager::new(root)), Arc::new(StubModel::new()), 200);
         let tree = restarted.tree_get(&agent_role(role_event("dev", None)), None).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "case 树来自磁盘");
         assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "当前 case 指针来自磁盘");

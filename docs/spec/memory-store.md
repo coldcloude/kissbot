@@ -35,4 +35,4 @@
 - 写入完成后向所有已连接客户端广播新数据，不区分写入方式；通道记录按通道分组逐条通知（同一批可能混合多个通道）
 - 通知携带位置信息：`payload_type` 为通道记录通知（`0x3001_0001`），payload 为时间、agent、记忆后缀（项目级 `RoleEvent { role_name, event_id }`）、发送者身份 `is_self` 与**通道三元组** `messenger_id` / `self_user_id` / `group_id`（平铺在 payload 顶层），订阅方据此只评估该通道
 - 单个连接的握手/读写失败只记录日志，不影响服务继续接受连接
-- 客户端按自身水位从共享文件读取；通知帧格式与消费方式见 [kissbot-memory-struct-abstract](memory-struct-abstract.md)
+- 客户端按自身水位从共享文件读取；通知帧格式与消费方式见 [kissbot-memory-struct-summary](memory-struct-summary.md)
