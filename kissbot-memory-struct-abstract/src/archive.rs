@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_api::{CaseBrief, ChannelKey, Content, LocateMessage, LocatedGroup, RoleEvent};
+use kissbot_api::{CaseBrief, ChannelKey, Content, LocateMessage, LocatedGroup, RecordPosition, RoleEvent};
 
 use crate::error::{Error, Result};
 use crate::model::{DecisionModel, GroupItem, LevelDecision};
@@ -614,10 +614,10 @@ fn pending_records(items: &[BatchItem], indices: &[usize]) -> Vec<RecordEntry> {
 }
 
 /// 水位推进到已归档范围末尾
-pub fn advance_watermark(watermark: &mut kissbot_api::Watermark, batch: &[RecordEntry]) {
+pub fn advance_watermark(watermark: &mut RecordPosition, batch: &[RecordEntry]) {
     for entry in batch {
         if watermark.is_before(entry.time.as_str(), entry.sn) {
-            *watermark = kissbot_api::Watermark { time: entry.time.clone(), sn: entry.sn };
+            *watermark = RecordPosition { time: entry.time.clone(), sn: entry.sn };
         }
     }
 }
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn advance_watermark_uses_batch_max() {
-        let mut watermark = kissbot_api::Watermark::default();
+        let mut watermark = RecordPosition::default();
         let batch = vec![
             channel("2026-09-22 10:00:00", 1, 0, "a"),
             channel("2026-09-22 10:05:00", 2, 1, "b"),

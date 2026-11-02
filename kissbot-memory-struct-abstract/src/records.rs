@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-use kissbot_api::{CaseCursor, ChannelKey, ChannelRecord, Content, Watermark};
+use kissbot_api::{ChannelKey, ChannelRecord, Content, RecordPosition};
 use kai_file::LineReader;
 use tracing::warn;
 
@@ -129,7 +129,7 @@ impl StoreView {
     }
 
     /// 某通道水位之后的待归档消息（按通道记录 `(time, sn)` 升序）
-    pub fn pending_for(&self, channel: &ChannelKey, watermark: &Watermark) -> Vec<StoreMessage> {
+    pub fn pending_for(&self, channel: &ChannelKey, watermark: &RecordPosition) -> Vec<StoreMessage> {
         self.messages
             .iter()
             .filter(|message| message.channel == *channel)
@@ -143,7 +143,7 @@ impl StoreView {
 ///
 /// 不做水位过滤：按通道判定批次需要看到全部记录；水位过滤由 [`StoreView::pending_for`] 按通道完成。
 pub async fn read_store_records(root: &Path, agent_id: &str, suffix: &str) -> Result<StoreView> {
-    let from_date = kissbot_api::WATERMARK_ZERO_TIME[..10].to_string();
+    let from_date = kissbot_api::RECORD_ZERO_TIME[..10].to_string();
     let files = list_store_files(root, agent_id, suffix, &from_date).await?;
     let mut messages: Vec<StoreMessage> = Vec::new();
     for (_, path) in files {
@@ -193,7 +193,7 @@ pub async fn append_case_records(dir: &Path, entries: &[RecordEntry]) -> Result<
 
 /// 取游标之后的原文副本（按 `(time, sn)` 比较；游标与记录一一对应）。
 /// 调用方把上一条记录的 `time` / `sn` 原样回传即可连续分页。
-pub fn records_after(records: &[RecordEntry], after: &CaseCursor) -> Vec<RecordEntry> {
+pub fn records_after(records: &[RecordEntry], after: &RecordPosition) -> Vec<RecordEntry> {
     records
         .iter()
         .filter(|record| (record.time.as_str(), record.sn) > (after.time.as_str(), after.sn))
@@ -416,14 +416,14 @@ mod tests {
         );
 
         // 无水位：该通道的全部消息
-        let all = view.pending_for(&web_g1, &Watermark::default());
+        let all = view.pending_for(&web_g1, &RecordPosition::default());
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].record.sn, 1);
 
         // 水位推进到该记录：该通道清空；另一通道不受影响
-        let watermark = Watermark { time: ArcStr::from("2026-09-22 10:00:00"), sn: 1 };
+        let watermark = RecordPosition { time: ArcStr::from("2026-09-22 10:00:00"), sn: 1 };
         assert!(view.pending_for(&web_g1, &watermark).is_empty());
-        assert_eq!(view.pending_for(&web_g2, &Watermark::default()).len(), 1);
+        assert_eq!(view.pending_for(&web_g2, &RecordPosition::default()).len(), 1);
     }
 
     #[test]
@@ -445,15 +445,15 @@ mod tests {
     fn records_after_uses_cursor_rule() {
         let records = case_records_fixture();
         // 游标为第一条：同位置的记录不算在其后
-        let after = CaseCursor::of(records[0].as_ref());
+        let after = RecordPosition::of(records[0].as_ref());
         let rest = records_after(&records, &after);
         assert_eq!(rest.len(), 2);
         assert_eq!(rest[0].sn, 2);
 
         // 游标为最后一条：之后为空
-        assert!(records_after(&records, &CaseCursor::of(records[2].as_ref())).is_empty());
+        assert!(records_after(&records, &RecordPosition::of(records[2].as_ref())).is_empty());
         // 游标晚于全部记录：之后为空
-        let cursor = CaseCursor { time: ArcStr::from("2099-01-01 00:00:00"), sn: 1 };
+        let cursor = RecordPosition { time: ArcStr::from("2099-01-01 00:00:00"), sn: 1 };
         assert!(records_after(&records, &cursor).is_empty());
     }
 

@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use arcstr::ArcStr;
 use kissbot_api::{
-    CaseCursor, CaseListResponse, CaseNode, CaseRecordsResponse, CaseSummaryResponse,
+    CaseListResponse, CaseNode, CaseRecordsResponse, CaseSummaryResponse,
     ChannelCasePointer, ChannelKey, LocateMessage, LocateRequest, LocateResponse, LocatedGroup,
-    RebuildResponse, RecordNotification, TreeGetResponse,
+    RebuildResponse, RecordNotification, RecordPosition, TreeGetResponse,
 };
 use tracing::{info, warn};
 
@@ -284,7 +284,7 @@ impl AbstractService {
         &self,
         agent_role: &AgentRole,
         case_name: &str,
-        after: &CaseCursor,
+        after: &RecordPosition,
     ) -> Result<CaseRecordsResponse> {
         let records = records_after(&self.read_case(agent_role, case_name).await?, after);
         Ok(response_of(records))
@@ -1388,7 +1388,7 @@ mod tests {
         // 指定之后：把上一条记录的 time/sn 当游标回传
         let after = f
             .service
-            .case_records_after(&agent_role(role_event("dev", None)), "role-case", &CaseCursor::of(&all.records[0]))
+            .case_records_after(&agent_role(role_event("dev", None)), "role-case", &RecordPosition::of(&all.records[0]))
             .await
             .unwrap();
         assert_eq!(after.records.len(), 1);
@@ -1405,7 +1405,7 @@ mod tests {
         assert!(f.service.case_records(&agent_role(role_event("dev", None)), "role-9").await.is_err());
         assert!(f
             .service
-            .case_records_after(&agent_role(role_event("dev", None)), "role-9", &CaseCursor::of(&all.records[0]))
+            .case_records_after(&agent_role(role_event("dev", None)), "role-9", &RecordPosition::of(&all.records[0]))
             .await
             .is_err());
     }

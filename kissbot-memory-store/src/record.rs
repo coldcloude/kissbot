@@ -30,7 +30,7 @@ struct FileState {
 async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     let mut result = FileState {
         sn: 0,
-        time: WATERMARK_ZERO_TIME.clone(),
+        time: RECORD_ZERO_TIME.clone(),
     };
 
     if !file_path.exists() {

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use arcstr::ArcStr;
 use dashmap::DashMap;
-use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, RoleEvent, Watermark};
+use kissbot_api::{CaseNode, ChannelCasePointer, ChannelKey, ChannelWatermark, RecordPosition, RoleEvent};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -75,7 +75,7 @@ pub struct AgentRoleState {
     /// 各 `(记忆后缀, 通道)` 的当前 case 指针
     pub current_cases: BTreeMap<RoleEventChannel, ArcStr>,
     /// 各 `(记忆后缀, 通道)` 的已处理水位
-    pub watermarks: BTreeMap<RoleEventChannel, Watermark>,
+    pub watermarks: BTreeMap<RoleEventChannel, RecordPosition>,
     /// 已从磁盘加载过状态文件的 role_event（避免重复读盘）
     loaded_role_events: BTreeSet<Arc<RoleEvent>>,
     /// 待处理标记：通知只登记「哪个后缀哪个通道变了」，不计算。
@@ -133,7 +133,7 @@ impl AgentRoleState {
     }
 
     /// 某后缀的水位（按通道）
-    pub fn watermarks_of(&self, role_event: &RoleEvent) -> BTreeMap<Arc<ChannelKey>, Watermark> {
+    pub fn watermarks_of(&self, role_event: &RoleEvent) -> BTreeMap<Arc<ChannelKey>, RecordPosition> {
         self.watermarks
             .iter()
             .filter(|((key, _), _)| key == role_event)
@@ -147,7 +147,7 @@ impl AgentRoleState {
     }
 
     /// 某后缀某通道的水位
-    pub fn watermark(&self, role_event: &RoleEvent, channel: &ChannelKey) -> Watermark {
+    pub fn watermark(&self, role_event: &RoleEvent, channel: &ChannelKey) -> RecordPosition {
         self.watermarks.get(&(role_event.clone(), channel.clone())).cloned().unwrap_or_default()
     }
 
@@ -238,7 +238,7 @@ impl AgentRoleHandle {
     }
 
     /// 持久化某后缀各通道水位
-    pub async fn save_watermark(&self, role_event: &RoleEvent, watermarks: &BTreeMap<Arc<ChannelKey>, Watermark>) -> Result<()> {
+    pub async fn save_watermark(&self, role_event: &RoleEvent, watermarks: &BTreeMap<Arc<ChannelKey>, RecordPosition>) -> Result<()> {
         let channels: Vec<ChannelWatermark> = watermarks
             .iter()
             .map(|(channel, watermark)| ChannelWatermark {

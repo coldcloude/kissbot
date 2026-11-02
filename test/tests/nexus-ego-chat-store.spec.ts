@@ -81,14 +81,14 @@ function textOfContent(content: any): string | null {
   return null;
 }
 
-/** 递归取 Content 中的思考/工具占位引用（Multi 内的 Think/ToolCall/ToolResult） */
-function detailRefsOfContent(content: any): any[] {
+/** 递归取 Content 中的内嵌思考/工具记录（Multi 内的 Think/ToolCall/ToolResult） */
+function detailRecordsOfContent(content: any): any[] {
   if (!content) return [];
   if (content.msg_type === 'Think' || content.msg_type === 'ToolCall' || content.msg_type === 'ToolResult') {
-    return [{ msgType: content.msg_type, key: content.data?.key, time: content.data?.time }];
+    return [{ msgType: content.msg_type, data: content.data }];
   }
   if (content.msg_type === 'Multi') {
-    return (content.data as any[]).flatMap(detailRefsOfContent);
+    return (content.data as any[]).flatMap(detailRecordsOfContent);
   }
   return [];
 }
@@ -119,7 +119,7 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   const userMsgs = recs.filter((r) => r.is_self === 0);
   expect(userMsgs.length).toBeGreaterThanOrEqual(1);
   expect(userMsgs[userMsgs.length - 1].user_id).toBe('u2');
-  // agent 回复：以绑定用户 u1 身份发送，is_self=1（内容可能是 Multi，其中包含思考/工具占位引用）
+  // agent 回复：以绑定用户 u1 身份发送，is_self=1（内容可能是 Multi，其中内嵌思考/工具记录）
   const selfMsgs = recs.filter((r) => r.is_self === 1);
   expect(selfMsgs.length).toBeGreaterThanOrEqual(1);
   const selfTexts = selfMsgs
@@ -133,10 +133,11 @@ async function assertChannelRecords(request: APIRequestContext, roleName: string
   expect(userMsgId, '上行记录的 msg_id 应非空').toBeTruthy();
   expect(selfMsgId, '下行记录的 msg_id 应非空').toBeTruthy();
   expect(userMsgId).not.toBe(selfMsgId);
-  // 思考/工具占位引用随回复记录写入：引用带 key 与详情时间
-  for (const ref of selfMsgs.flatMap((record) => detailRefsOfContent(record.content))) {
-    expect(ref.key, `占位引用 ${ref.msgType} 应带 key`).toBeTruthy();
-    expect(ref.time, `占位引用 ${ref.msgType} 应带详情时间`).toBeTruthy();
+  // 思考/工具记录随回复记录写入：直接内嵌完整内容，不再有 key 与详情时间
+  for (const detail of selfMsgs.flatMap((record) => detailRecordsOfContent(record.content))) {
+    expect(detail.data, `内嵌记录 ${detail.msgType} 应带内容`).toBeTruthy();
+    expect(detail.data.key, `内嵌记录 ${detail.msgType} 不应带 key`).toBeUndefined();
+    expect(detail.data.time, `内嵌记录 ${detail.msgType} 不应带详情时间`).toBeUndefined();
   }
 }
 

@@ -247,14 +247,14 @@ pub struct RecordPosition {
 impl Default for RecordPosition {
     fn default() -> Self {
         Self {
-            time: WATERMARK_ZERO_TIME.clone(),
+            time: RECORD_ZERO_TIME.clone(),
             sn: 0,
         }
     }
 }
 
-/// 水位起点（早于任何真实记录）
-pub const WATERMARK_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
+/// 位置起点（早于任何真实记录）
+pub const RECORD_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
 
 impl RecordPosition {
     /// 某条通道记录的位置
@@ -267,9 +267,6 @@ impl RecordPosition {
         (self.time.as_str(), self.sn) < (time, sn)
     }
 }
-
-/// 已处理水位（`RecordPosition` 的语义化别名）
-pub type Watermark = RecordPosition;
 
 /// 通道水位（watermark.json 的一条）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -601,16 +598,16 @@ mod tests {
 
     #[test]
     fn test_watermark_serde_and_default() {
-        let wm = Watermark::default();
-        assert_eq!(wm.time, WATERMARK_ZERO_TIME);
+        let wm = RecordPosition::default();
+        assert_eq!(wm.time, RECORD_ZERO_TIME);
         assert_eq!(wm.sn, 0);
         assert_eq!(serde_json::to_value(&wm).unwrap(), serde_json::json!({"time": "2000-01-01 00:00:00", "sn": 0}));
-        let back: Watermark = serde_json::from_value(serde_json::json!({"time": "2026-09-22 13:48:37", "sn": 128})).unwrap();
+        let back: RecordPosition = serde_json::from_value(serde_json::json!({"time": "2026-09-22 13:48:37", "sn": 128})).unwrap();
         assert_eq!(back.time, "2026-09-22 13:48:37");
         assert_eq!(back.sn, 128);
         // 位置比较
-        assert!(Watermark::default().is_before("2026-09-22 13:48:37", 1));
-        let same = Watermark { time: ArcStr::from("2026-09-22 13:48:37"), sn: 1 };
+        assert!(RecordPosition::default().is_before("2026-09-22 13:48:37", 1));
+        let same = RecordPosition { time: ArcStr::from("2026-09-22 13:48:37"), sn: 1 };
         assert!(!same.is_before("2026-09-22 13:48:37", 1));
         assert!(same.is_before("2026-09-22 13:48:37", 2));
         assert!(same.is_before("2026-09-22 13:48:38", 1));

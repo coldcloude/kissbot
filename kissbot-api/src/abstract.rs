@@ -9,7 +9,7 @@ use std::sync::Arc;
 use arcstr::ArcStr;
 use serde::{Deserialize, Serialize};
 
-use crate::{ChannelKey, ChannelRecord, Content, RoleEvent};
+use crate::{ChannelKey, ChannelRecord, Content, RecordPosition, RoleEvent};
 
 // ========== Case 原文副本 ==========
 //
@@ -134,10 +134,6 @@ pub struct CaseSummaryResponse {
     pub case: CaseNode,
 }
 
-/// Case 原文副本的位置（分页游标）：与某一条通道记录一一对应，
-/// 调用方把上一条记录的 `time` / `sn` 原样回传（与水位共用 [`crate::RecordPosition`]）
-pub type CaseCursor = crate::RecordPosition;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsRequest {
     pub agent_id: ArcStr,
@@ -150,8 +146,8 @@ pub struct CaseRecordsAfterRequest {
     pub agent_id: ArcStr,
     pub role_event: Arc<RoleEvent>,
     pub case_name: ArcStr,
-    /// 只返回该位置之后的原文副本
-    pub after: CaseCursor,
+    /// 只返回该位置之后的原文副本（游标即 [`RecordPosition`]）
+    pub after: RecordPosition,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,7 +212,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::Watermark;
 
     fn message() -> LocateMessage {
         LocateMessage {
@@ -231,10 +226,10 @@ mod tests {
 
     #[test]
     fn test_watermark_serde_wire_shape() {
-        let wm = Watermark::default();
+        let wm = RecordPosition::default();
         let v = serde_json::to_value(&wm).unwrap();
         assert_eq!(v, json!({"time": "2000-01-01 00:00:00", "sn": 0}));
-        let back: Watermark = serde_json::from_value(v).unwrap();
+        let back: RecordPosition = serde_json::from_value(v).unwrap();
         assert_eq!(back, wm);
     }
 
@@ -301,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_case_cursor_and_records_requests_serde() {
-        let cursor = CaseCursor::of(&ChannelRecord {
+        let cursor = RecordPosition::of(&ChannelRecord {
             meta: None,
             user_id: ArcStr::from("u1"),
             self_user_id: ArcStr::from("self"),

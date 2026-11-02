@@ -130,7 +130,7 @@ node inject-key.mjs
 3. **上下文缓存**：`../workspace/agent-data/context/` 下生成按 session_id 命名的 `.jsonl`，随对话逐条追加（含 user/assistant/tool 消息，System 行在最前）
 4. **上下文超长处理**：当上一次模型响应的 `usage.total_tokens` 超过 `max_tokens_usage × compress_threshold`（默认 0.8）时，下次请求前由消息发送器处理——`memory_recover_message_sender` 从 memory-store 回溯打包重建、`compress_message_sender` 用 LLM 总结压缩；旧上下文归档到 `../workspace/agent-data/context-history/<key编码>-<时间戳>.jsonl`
 5. **记忆打包（memory_recover）**：触发回溯时，重建上下文的首条为记忆打包的 user 消息——内容为最近 N 条（默认 50）与时间窗（默认 1h）并集、时间正序的 `user_name: 消息` 逐行（同时间组不拆散；不足 N 条返回全部）
-6. **工具占位记录与 key 关联**：多轮工具调用后，channel 时间线出现 `ToolCall(key)`/`ToolResult(key)` 占位记录，且 `tool-call-records` / `tool-result-records` 文件中 ToolCallRequest 与 ToolResultRequest 的 key 相同
+6. **工具内容内嵌**：多轮工具调用后，agent 回复的通道记录 `content`（`Multi`）中直接内嵌 ToolCall / ToolResult 记录；不再有独立的工具记录文件与 key 关联
 7. **路径安全**：让模型尝试读取 cwd（`../workspace/`）之外的路径（如 `../test/out-of-cwd/sample.txt`，该目录由 `test/global-setup.ts` 生成），`read` 工具返回路径越界错误，不实际读取
 
 ### 3. 清理
@@ -206,9 +206,9 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat"}' http://127.0.0.1:8083/abstract/case/records | jq
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
   -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","count":5}' http://127.0.0.1:8083/abstract/case/records-tail | jq
-# 指定之后：after 传上一条记录的 time / sn / record_type
+# 指定之后：after 传上一条记录的 time / sn
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
-  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","after":{"time":"2026-09-22 13:40:00","sn":127,"record_type":"channel"}}' \
+  -d '{"agent_id":"0","role":"dev","case_name":"role-weather-chat","after":{"time":"2026-09-22 13:40:00","sn":127}}' \
   http://127.0.0.1:8083/abstract/case/records-after | jq
 # 事件模式：记忆后缀含 `-`（前半为角色名、后半为事件标识），整个后缀固定归入名称为该事件标识的顶层叶子 case
 curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
@@ -225,7 +225,7 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 
 验证点：
 
-1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.jsonl` 与 `cases/{case 名}/{channel|think|tool-call|tool-result}-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
+1. **通知 → 手动触发归档**：通过 agent 对话（或直接 POST `memory-store` 的 `/store/channel`）写入记录后，查询接口（`tree/get`、`case/*`）**只读、不触发归档**；调用 `/abstract/rebuild` 的 `rebuild=false`（或对一批消息调 `locate`）才处理 → memory-struct-abstract 日志出现 `process … archived N records`，`../workspace/memory-data/{agent}/memory-struct-abstract/{角色名}/` 下生成 `tree.jsonl` 与 `cases/{case 名}/channel-records.jsonl`（`current.json` / `watermark.json` 在该记忆后缀目录下，角色模式下后缀即角色名、与角色目录相同）
 2. **归档不重复**：没有新数据时反复手动触发不会重复归档（`archived` 为 0，日志不再出现新的记录数）
 3. **定位**：对一批消息调用 `/abstract/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_name`，新话题会建出记忆条数为 0 的 case——名称与摘要当场由模型给出（原文副本等这些消息写入记忆并归档后补上）。摘要与原文再用 `case/summary`、`case/records*` 取
 4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（case 的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
