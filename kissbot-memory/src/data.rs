@@ -18,16 +18,9 @@ pub fn role_event_suffix(role_event: &RoleEvent) -> ArcStr {
     }
 }
 
-pub trait FileHook<K, R> {
-    /// 追加写入完成后回调（records 为该批次实际写入的记录，按写入顺序）
-    fn on_append(&self, key: &K, records: &[R]);
-    /// 全量重写完成后回调（records 为文件内全部记录，按时间顺序）
-    fn on_force_append(&self, key: &K, records: &[R]);
-}
-
 //===================== functions ======================
 
-pub async fn ensure_year_role_dir(agent_id: &str, suffix: &str, date: &str) -> std::result::Result<PathBuf,kai_file::Error> {
+async fn ensure_year_role_dir(agent_id: &str, suffix: &str, date: &str) -> std::result::Result<PathBuf,kai_file::Error> {
     let year = as_year(date);
     match DirectoryManager::get().ensure_agent_store_dir(agent_id).await {
         Ok(store_dir) => {
@@ -45,29 +38,6 @@ pub async fn ensure_year_role_dir(agent_id: &str, suffix: &str, date: &str) -> s
     }
 }
 
-pub trait RequestParser<Q,K,R>
-where
-    R: MemoryRecord,
-{
-    fn parse_request(&self, request: Q) -> (K, R);
-}
-
-pub fn parse_query(query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
-    let mut results = Vec::new();
-    if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
-        for time in date_times {
-            let date = as_date(&time.0);
-            results.push((Arc::new(RecordKey {
-                agent_id: query.agent_id.clone(),
-                role_event: query.role_event.clone(),
-                date: ArcStr::from(date),
-            }), time));
-        }
-    }
-    results
-}
-
-#[derive(Clone)]
 pub struct ChannelParser;
 
 #[async_trait]
@@ -79,8 +49,9 @@ impl FilePathGenerator<Arc<RecordKey>> for ChannelParser {
     }
 }
 
-impl RequestParser<ChannelRequest, Arc<RecordKey>, ChannelRecord> for ChannelParser {
-    fn parse_request(&self, request: ChannelRequest) -> (Arc<RecordKey>, ChannelRecord) {
+impl ChannelParser {
+    /// 写入请求 → (记录文件 key, 通道记录)
+    pub fn parse_request(&self, request: ChannelRequest) -> (Arc<RecordKey>, ChannelRecord) {
         // 所有 channel 记录归入同一文件（每 agent+role+date）；
         // record 保存完整身份：user_id=发送者、self_user_id=agent 绑定用户（接收方）、messenger_id/group_id
         let key = Arc::new(RecordKey {
@@ -109,7 +80,17 @@ impl RequestParser<ChannelRequest, Arc<RecordKey>, ChannelRecord> for ChannelPar
 
 impl QueryParser<QueryRequest, Arc<RecordKey>> for ChannelParser {
     fn parse_query(&self, query: QueryRequest) -> Vec<(Arc<RecordKey>, (String, String))> {
-        parse_query(query)
+        let mut results = Vec::new();
+        if let Ok(date_times) = get_date_time_segments(&query.start_time, &query.end_time) {
+            for time in date_times {
+                results.push((Arc::new(RecordKey {
+                    agent_id: query.agent_id.clone(),
+                    role_event: query.role_event.clone(),
+                    date: ArcStr::from(as_date(&time.0)),
+                }), time));
+            }
+        }
+        results
     }
 }
 
@@ -179,7 +160,7 @@ use super::*;
         assert_eq!(dir_name, "2026-");
     }
 
-    // ========== RequestParser ==========
+    // ========== ChannelParser::parse_request ==========
 
     fn detail_content() -> Content {
         // 思考/工具内容直接内嵌记录，随通道记录一起写入

@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, sync::Arc};
+use std::sync::Arc;
 
 use arcstr::ArcStr;
 use kai_file::index::Record;
@@ -171,35 +171,9 @@ pub struct ToolResultRecord {
     pub tool_result: Option<Arc<Vec<ContentBlock>>>,
 }
 
-pub trait MemoryRecord: Record {
-    fn sn(&self) -> u64;
-    fn set_sn(&mut self, sn: u64);
-    fn time_string(&self) -> ArcStr;
-    fn cmp(&self, other: &Self) -> Ordering {
-        let sign = self.time().cmp(other.time());
-        if sign == Ordering::Equal {
-            self.sn().cmp(&other.sn())
-        } else {
-            sign
-        }
-    }
-}
-
 impl Record for ChannelRecord {
     fn time(&self) -> &str {
         self.time.as_str()
-    }
-}
-
-impl MemoryRecord for ChannelRecord {
-    fn sn(&self) -> u64 {
-        self.sn
-    }
-    fn set_sn(&mut self, sn: u64) {
-        self.sn = sn;
-    }
-    fn time_string(&self) -> ArcStr {
-        self.time.clone()
     }
 }
 
@@ -265,12 +239,12 @@ pub struct RecordNotification {
 
 /// 记录在文件内的位置（时间 + 序号）：水位与分页游标共用
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Watermark {
+pub struct RecordPosition {
     pub time: ArcStr,
     pub sn: u64,
 }
 
-impl Default for Watermark {
+impl Default for RecordPosition {
     fn default() -> Self {
         Self {
             time: WATERMARK_ZERO_TIME.clone(),
@@ -282,18 +256,26 @@ impl Default for Watermark {
 /// 水位起点（早于任何真实记录）
 pub const WATERMARK_ZERO_TIME: ArcStr = arcstr::literal!("2000-01-01 00:00:00");
 
-impl Watermark {
+impl RecordPosition {
+    /// 某条通道记录的位置
+    pub fn of(record: &ChannelRecord) -> Self {
+        Self { time: record.time.clone(), sn: record.sn }
+    }
+
     /// 记录是否位于该位置之后
     pub fn is_before(&self, time: &str, sn: u64) -> bool {
         (self.time.as_str(), self.sn) < (time, sn)
     }
 }
 
+/// 已处理水位（`RecordPosition` 的语义化别名）
+pub type Watermark = RecordPosition;
+
 /// 通道水位（watermark.json 的一条）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelWatermark {
     pub channel: ChannelKey,
-    pub watermark: Arc<Watermark>,
+    pub watermark: Arc<RecordPosition>,
 }
 
 #[cfg(test)]
@@ -534,22 +516,9 @@ mod tests {
 
     #[test]
     fn test_record_impl() {
-        let mut channel = channel("2026-06-24 10:00:00", 5);
-        assert_eq!(channel.sn(), 5);
+        let channel = channel("2026-06-24 10:00:00", 5);
+        assert_eq!(channel.sn, 5);
         assert_eq!(channel.time(), "2026-06-24 10:00:00");
-        channel.set_sn(10);
-        assert_eq!(channel.sn(), 10);
-    }
-
-    #[test]
-    fn test_record_cmp_time() {
-        let r1 = channel("2026-06-24 10:00:00", 1);
-        let r2 = channel("2026-06-24 10:00:01", 1);
-        assert_eq!(r1.cmp(&r2), std::cmp::Ordering::Less);
-
-        // same time, different sn
-        let r3 = channel("2026-06-24 10:00:00", 2);
-        assert_eq!(r1.cmp(&r3), std::cmp::Ordering::Less);
     }
 
     // ========== Record serde ==========

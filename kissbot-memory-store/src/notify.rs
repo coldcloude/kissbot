@@ -28,29 +28,22 @@ use crate::error::Result;
 const MSG_QUEUE_SIZE: usize = 100;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// 广播事件：通知帧的 payload_type + 通知负载
-#[derive(Debug, Clone)]
-pub struct NotifyEvent {
-    pub payload_type: u32,
-    pub payload: RecordNotification,
-}
+static SENDER: OnceLock<UnboundedSender<RecordNotification>> = OnceLock::new();
 
-static SENDER: OnceLock<UnboundedSender<NotifyEvent>> = OnceLock::new();
-
-/// 发布一条新数据通知（写入完成后由 FileHook 调用；未启动通知服务时静默丢弃）
-pub fn publish(payload_type: u32, payload: RecordNotification) {
+/// 发布一条新数据通知（写入完成后由写入路径调用；未启动通知服务时静默丢弃）
+fn publish(payload: RecordNotification) {
     let Some(sender) = SENDER.get() else {
         return;
     };
-    if sender.send(NotifyEvent { payload_type, payload }).is_err() {
-        warn!("[memory-store] notify receiver gone, drop notification: payload_type {:#x}", payload_type);
+    if sender.send(payload).is_err() {
+        warn!("[memory-store] notify receiver gone, drop notification");
     }
 }
 
 /// 通道消息通知：按通道分组，每个通道一条（订阅方据此只评估该通道）
 pub fn publish_channel(key: &RecordKey, records: &[ChannelRecord]) {
     for notification in channel_notifications(key, records) {
-        publish(TYPE_NOTIFY_CHANNEL, notification);
+        publish(notification);
     }
 }
 
@@ -83,7 +76,7 @@ impl NotifyServer {
     /// 启动通知服务：绑定监听地址并进入接受循环（阻塞；调用方 spawn）。
     /// 首次调用时注册全局广播通道，此后 `publish*` 生效。
     pub async fn start(addr: &str) -> Result<()> {
-        let (sender, mut receiver) = unbounded_channel::<NotifyEvent>();
+        let (sender, mut receiver) = unbounded_channel::<RecordNotification>();
         if SENDER.set(sender).is_err() {
             warn!("[memory-store] notify server already started, ignore duplicate start");
         }
@@ -96,8 +89,8 @@ impl NotifyServer {
         // 广播任务：串行消费事件，避免写入路径上的同步回调阻塞
         let broadcaster = server.clone();
         tokio::spawn(async move {
-            while let Some(event) = receiver.recv().await {
-                let payload = match serde_json::to_value(&event.payload) {
+            while let Some(notification) = receiver.recv().await {
+                let payload = match serde_json::to_value(&notification) {
                     Ok(payload) => payload,
                     Err(e) => {
                         error!("[memory-store] serialize notification failed: {}", e);
@@ -106,7 +99,7 @@ impl NotifyServer {
                 };
                 let message = WsMessage {
                     sn: 0,
-                    payload_type: event.payload_type,
+                    payload_type: TYPE_NOTIFY_CHANNEL,
                     status_code: CODE_SUCCESS,
                     payload: Some(payload),
                 };
@@ -187,7 +180,7 @@ mod tests {
     #[test]
     fn test_publish_without_server_is_noop() {
         // 未启动通知服务时发布不 panic（SENDER 未注册）
-        publish(TYPE_NOTIFY_CHANNEL, RecordNotification {
+        publish(RecordNotification {
             agent_id: ArcStr::from("0"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))),
             time: ArcStr::from("2026-09-22 13:48:37"),

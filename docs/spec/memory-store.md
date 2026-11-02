@@ -23,7 +23,7 @@
 
 ## 索引联动
 
-- 写入完成后通过 FileHook 通知索引模块（见 [memory-index.md](memory-index.md)）：
+- 写入完成后由写入路径直接通知索引模块（见 [memory-index.md](memory-index.md)）：
   - 追加写入 → 追加级别变更标记
   - 全量重写 → 重建级别变更标记
 - 写入失败仅记录日志，不中断后续写入

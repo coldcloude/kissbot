@@ -21,9 +21,9 @@ const RECORD_QUEUE_SIZE: usize = 10;
 const RECORD_MAX_DELAY: Duration = Duration::from_millis(100);
 const CHANNEL_KEY: ArcStr = arcstr::literal!("1");
 
-// ========== 共享发送段（各记录类型复用，只写一遍） ==========
+// ========== HTTP 发送段（写入与查询共用） ==========
 
-/// 共享的 HTTP 配置（client / base_url / api_key，各类型 context 经 Arc 同源引用）
+/// 共享的 HTTP 配置（client / base_url / api_key）
 pub struct MemoryStoreHttpClient {
     client: Client,
     base_url: ArcStr,
@@ -94,35 +94,33 @@ where
     }
 }
 
-// ========== 泛型 sender（各记录类型复用 FileAppendWriter，只写一遍） ==========
+// ========== 通道记录 sender（批量投递到 memory-store） ==========
 
-pub struct StoreSender<C> {
-    context: Arc<Mutex<C>>,
+/// 所有通道记录请求共用一个上下文，串行发往 memory-store
+struct ChannelStoreWriter {
+    context: Arc<Mutex<ChannelStoreContext>>,
 }
 
-impl<C> StoreSender<C> {
-    pub fn new(context: C) -> Self {
+impl ChannelStoreWriter {
+    fn new(context: ChannelStoreContext) -> Self {
         Self { context: Arc::new(Mutex::new(context)) }
     }
 }
 
 #[async_trait]
-impl<K, R, C> FileAppendWriter<K, R, C> for StoreSender<C>
-where
-    C: FileAppendWriterContext<K, R>,
-{
-    async fn get_lock(&self, _key: &K) -> Arc<Mutex<C>> {
+impl FileAppendWriter<ArcStr, ChannelRequest, ChannelStoreContext> for ChannelStoreWriter {
+    async fn get_lock(&self, _key: &ArcStr) -> Arc<Mutex<ChannelStoreContext>> {
         self.context.clone()
     }
-    async fn remove_lock(&self, _key: &K) {}
+    async fn remove_lock(&self, _key: &ArcStr) {}
 }
 
-// ========== MemoryStoreClient（push 直接用 kissbot-api 的 *Request） ==========
+// ========== MemoryStoreClient ==========
 
 pub struct MemoryStoreClient {
     /// 共享 HTTP 配置（与各 context 同一 Arc；读路径 build_context_from_memory_store 也经它发请求）
     http_client: Arc<MemoryStoreHttpClient>,
-    channel_appender: FileObjectAppender<ArcStr, ChannelRequest, StoreSender<ChannelStoreContext>, ChannelStoreContext, LoggingErrorHandler>,
+    channel_appender: FileObjectAppender<ArcStr, ChannelRequest, ChannelStoreWriter, ChannelStoreContext, LoggingErrorHandler>,
 }
 
 /// query/channel 响应 data 类型：Vec<(RecordKey, Vec<(sn, ChannelRecord)>)>（组 → 记录列表）
@@ -131,7 +129,7 @@ pub type QueryChannelData = Vec<(RecordKey, Vec<(u32, ChannelRecord)>)>;
 impl MemoryStoreClient {
     /// 指定共享 HTTP 配置构造（new() 内部走此路径；测试注入 mock store 地址用）
     fn with_config(base_url: ArcStr, api_key: ArcStr) -> Self {
-        // 共享 HTTP 配置：self 与各类型 context 经 Arc 同源引用（client / base_url / api_key 一份）
+        // 共享 HTTP 配置：client / base_url / api_key 一份
         let http_client = Arc::new(MemoryStoreHttpClient {
             client: Client::new(),
             base_url,
@@ -140,7 +138,7 @@ impl MemoryStoreClient {
         Self {
             http_client: http_client.clone(),
             channel_appender: FileObjectAppender::new(
-                Arc::new(StoreSender::new(ChannelStoreContext { http_client: http_client.clone() })),
+                Arc::new(ChannelStoreWriter::new(ChannelStoreContext { http_client: http_client.clone() })),
                 Arc::new(LoggingErrorHandler),
                 RECORD_MAX_DELAY,
                 RECORD_QUEUE_SIZE,

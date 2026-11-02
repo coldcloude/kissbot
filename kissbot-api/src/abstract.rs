@@ -135,21 +135,8 @@ pub struct CaseSummaryResponse {
 }
 
 /// Case 原文副本的位置（分页游标）：与某一条通道记录一一对应，
-/// 调用方把上一条记录的 `time` / `sn` 原样回传
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CaseCursor {
-    pub time: ArcStr,
-    pub sn: u64,
-}
-
-impl CaseCursor {
-    pub fn of(record: &ChannelRecord) -> Self {
-        Self {
-            time: record.time.clone(),
-            sn: record.sn,
-        }
-    }
-}
+/// 调用方把上一条记录的 `time` / `sn` 原样回传（与水位共用 [`crate::RecordPosition`]）
+pub type CaseCursor = crate::RecordPosition;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseRecordsRequest {

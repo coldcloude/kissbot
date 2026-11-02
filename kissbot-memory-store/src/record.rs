@@ -1,21 +1,19 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 use futures_util::future;
-use kai_file::index::{FilePathGenerator};
+use kai_file::index::FilePathGenerator;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::hash::Hash;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arcstr::ArcStr;
-use tokio::io::{AsyncBufReadExt};
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::Mutex;
 use tracing::*;
 
-use kissbot_memory::data::{ChannelParser, FileHook, RequestParser};
+use kissbot_memory::data::ChannelParser;
 use kissbot_memory::index::MemoryIndexer;
 use kissbot_api::memory::*;
 use crate::error::{Error, Result};
@@ -30,7 +28,7 @@ struct FileState {
 async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     let mut result = FileState {
         sn: 0,
-        time: ArcStr::from("2000-01-01 00:00:00"),
+        time: WATERMARK_ZERO_TIME.clone(),
     };
 
     if !file_path.exists() {
@@ -58,39 +56,20 @@ async fn load_existing_file_state(file_path: &PathBuf) -> Result<FileState> {
     Ok(result)
 }
 
-struct RecordWriterContext<K, R, P, H> {
-    _marker: PhantomData<(K, R)>,
-    state: Option<FileState>,
-    parser: Arc<P>,
-    hook: Arc<H>,
+/// 通道记录按 (time, sn) 排序
+fn record_order(a: &ChannelRecord, b: &ChannelRecord) -> std::cmp::Ordering {
+    (a.time.as_str(), a.sn).cmp(&(b.time.as_str(), b.sn))
 }
 
-impl<K, R, P, H> RecordWriterContext<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync,
-    R: MemoryRecord,
-    P: FilePathGenerator<K>,
-    H: FileHook<K, R>,
-{
-    pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
-        Self {
-            _marker: PhantomData,
-            state: None,
-            parser,
-            hook,
-        }
-    }
+/// 单个通道记录文件的写入上下文：文件状态 + 路径解析
+struct ChannelWriterContext {
+    state: Option<FileState>,
+    parser: Arc<ChannelParser>,
 }
 
 #[async_trait]
-impl<K, R, P, H> FileAppendWriterContext<K, R> for RecordWriterContext<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
-    R: MemoryRecord + Send + Sync + 'static,
-    P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K, R> + Send + Sync + 'static,
-{
-    async fn write(&mut self, key: &K, records: Vec<R>) -> std::result::Result<(), kai_file::Error> {
+impl FileAppendWriterContext<Arc<RecordKey>, ChannelRecord> for ChannelWriterContext {
+    async fn write(&mut self, key: &Arc<RecordKey>, records: Vec<ChannelRecord>) -> std::result::Result<(), kai_file::Error> {
         let file_path = self.parser.get_path(key).await?;
 
         let file_state = self.state.get_or_insert(
@@ -101,24 +80,23 @@ where
         // 分配 SN
         let mut records = records;
         for (i, record) in records.iter_mut().enumerate() {
-            record.set_sn(file_state.sn + 1 + i as u64);
+            record.sn = file_state.sn + 1 + i as u64;
         }
 
         // 按 time 排序（相同 time 按 sn）
-        records.sort_by(|a, b| a.cmp(b));
+        records.sort_by(record_order);
 
-        if file_state.time.as_str() > records[0].time() {
+        if file_state.time.as_str() > records[0].time.as_str() {
             // 乱序 → 全量重写
-            let mut all_records: Vec<R> = Vec::new();
+            let mut all_records: Vec<ChannelRecord> = Vec::new();
             let file = tokio::fs::File::open(&file_path).await?;
             let reader = tokio::io::BufReader::new(file);
             let mut lines = reader.lines();
             while let Some(line) = lines.next_line().await? {
-                let record: R = serde_json::from_str(&line)?;
-                all_records.push(record);
+                all_records.push(serde_json::from_str(&line)?);
             }
             all_records.extend(records);
-            all_records.sort_by(|a, b| a.cmp(b));
+            all_records.sort_by(record_order);
 
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true).write(true).open(&file_path).await?;
@@ -126,18 +104,19 @@ where
             file_state.sn = 0;
             for record in &mut all_records {
                 file_state.sn += 1;
-                record.set_sn(file_state.sn);
+                record.sn = file_state.sn;
                 let line = serde_json::to_string(record)? + "\n";
                 tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
             }
             if let Some(last) = all_records.last() {
-                file_state.time = last.time_string();
+                file_state.time = last.time.clone();
             }
             // tokio::fs::File 的 write_all 可能只把数据交给后台阻塞任务就返回：flush 等到这次写入
-            // 真正落盘，否则紧接着的 hook（发布通知、更新索引）会让读方看到不完整的数据
+            // 真正落盘，否则紧接着的索引标记与通知会让读方看到不完整的数据
             tokio::io::AsyncWriteExt::flush(&mut file).await?;
 
-            self.hook.on_force_append(key, &all_records);
+            MemoryIndexer::get().mark_channel_all_obsolete(key.clone());
+            crate::notify::publish_channel(key, &all_records);
         } else {
             // 有序 → 追加
             let mut file = tokio::fs::OpenOptions::new()
@@ -145,79 +124,48 @@ where
 
             for record in &mut records {
                 file_state.sn += 1;
-                record.set_sn(file_state.sn);
+                record.sn = file_state.sn;
                 let line = serde_json::to_string(record)? + "\n";
                 tokio::io::AsyncWriteExt::write_all(&mut file, line.as_bytes()).await?;
-                file_state.time = record.time_string();
+                file_state.time = record.time.clone();
             }
-            // 同上：flush 保证 hook（发布通知）触发时数据已可被读方看到
+            // 同上：flush 保证索引标记与通知触发时数据已可被读方看到
             tokio::io::AsyncWriteExt::flush(&mut file).await?;
 
-            self.hook.on_append(key, &records);
+            MemoryIndexer::get().mark_channel_obsolete(key.clone());
+            crate::notify::publish_channel(key, &records);
         }
 
         Ok(())
     }
 }
 
-struct RecordAppendWriter<K, R, P, H>
-{
-    map: DashMap<K, Arc<Mutex<RecordWriterContext<K, R, P, H>>>>,
-    parser: Arc<P>,
-    hook: Arc<H>,
+/// 通道记录写入器：每个记录文件一把写锁
+struct ChannelRecordWriter {
+    map: DashMap<Arc<RecordKey>, Arc<Mutex<ChannelWriterContext>>>,
+    parser: Arc<ChannelParser>,
 }
 
-impl<K, R, P, H> RecordAppendWriter<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync,
-    R: MemoryRecord,
-    P: FilePathGenerator<K>,
-    H: FileHook<K, R>,
-{
-    pub fn new(parser: Arc<P>, hook: Arc<H>) -> Self {
-        Self {
-            map: DashMap::new(),
-            parser,
-            hook,
-        }
+impl ChannelRecordWriter {
+    fn new(parser: Arc<ChannelParser>) -> Self {
+        Self { map: DashMap::new(), parser }
     }
 }
 
 #[async_trait]
-impl<K, R, P, H> FileAppendWriter<K, R, RecordWriterContext<K, R, P, H>> for RecordAppendWriter<K, R, P, H>
-where
-    K: Eq + Hash + Clone + Send + Sync + 'static,
-    R: MemoryRecord + Send + Sync + 'static,
-    P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K, R> + Send + Sync + 'static,
-{
-    async fn get_lock(&self, key: &K) -> Arc<Mutex<RecordWriterContext<K, R, P, H>>> {
+impl FileAppendWriter<Arc<RecordKey>, ChannelRecord, ChannelWriterContext> for ChannelRecordWriter {
+    async fn get_lock(&self, key: &Arc<RecordKey>) -> Arc<Mutex<ChannelWriterContext>> {
         if let Some(ctx) = self.map.get(key) {
             return ctx.value().clone();
         }
         self.map.entry(key.clone()).or_insert_with(|| {
-            let ctx = RecordWriterContext::new(self.parser.clone(), self.hook.clone());
+            let ctx = ChannelWriterContext { state: None, parser: self.parser.clone() };
             Arc::new(Mutex::new(ctx))
         }).value().clone()
     }
 
-    async fn remove_lock(&self, _key: &K) {
+    async fn remove_lock(&self, _key: &Arc<RecordKey>) {
         // no op
-    }
-}
-
-#[derive(Clone)]
-struct ChannelFileIndexHook;
-
-impl FileHook<Arc<RecordKey>, ChannelRecord> for ChannelFileIndexHook {
-    fn on_append(&self, key: &Arc<RecordKey>, records: &[ChannelRecord]) {
-        MemoryIndexer::get().mark_channel_obsolete(key.clone());
-        crate::notify::publish_channel(key, records);
-    }
-
-    fn on_force_append(&self, key: &Arc<RecordKey>, records: &[ChannelRecord]) {
-        MemoryIndexer::get().mark_channel_all_obsolete(key.clone());
-        crate::notify::publish_channel(key, records);
     }
 }
 
@@ -234,106 +182,26 @@ where
     }
 }
 
-type RecordAppender<K,R,P,H> = FileObjectAppender<K, R, RecordAppendWriter<K, R, P, H>, RecordWriterContext<K, R, P, H>, LogErrorHandler>;
-
-async fn append_record<Q,K,R,P,H>(requests: Vec<Q>, force: bool, parser: Arc<P>, appender: Arc<RecordAppender<K, R, P, H>>) -> Result<()>
-where
-    Q: Send + Sync + 'static,
-    K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
-    R: MemoryRecord + Send + Sync + Clone + 'static,
-    P: RequestParser<Q, K, R> + FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K, R> + Send + Sync + 'static,
-{
-    let mut records_map: HashMap<K, Vec<R>> = HashMap::new();
-    for request in requests {
-        let (key, record) = parser.parse_request(request);
-        records_map.entry(key).or_default().push(record);
-    }
-
-    for (key, records) in records_map.iter() {
-        let lock = appender.get_lock(&key).await;
-        let mut gaurd = lock.lock().await;
-
-        let file_path = parser.get_path(&key).await?;
-
-        let state = if let Some(old_state) = gaurd.state.take() {
-            old_state
-        } else {
-            load_existing_file_state(&file_path).await?
-        };
-        let time = state.time.clone();
-        gaurd.state = Some(state);
-
-        // 根据records生成方式，records非空
-        let mut min_time = records[0].time();
-        for record in records {
-            if record.time() < min_time {
-                min_time = record.time();
-            }
-        }
-
-        if time.as_str() > min_time && !force {
-            return Err(Error::RecordNotInOrder(
-                ArcStr::from(format!("{:?}", key)),
-                ArcStr::from(time.as_str()),
-                ArcStr::from(records[0].time()),
-            ));
-        }
-    }
-
-    let mut futs = Vec::new();
-    for (key, records) in records_map.into_iter() {
-        let f = appender.append(key, records);
-        futs.push(f);
-    }
-    // 等待写入后再返回
-    let promises = future::join_all(futs).await;
-    let results = future::join_all(promises).await;
-    for result in results {
-        if let Ok(Err(e)) = result {
-            return Err(Error::from(e));
-        }
-    }
-    Ok(())
-}
-
-type ChannelAppender = RecordAppender<Arc<RecordKey>, ChannelRecord, ChannelParser, ChannelFileIndexHook>;
+type ChannelAppender = FileObjectAppender<Arc<RecordKey>, ChannelRecord, ChannelRecordWriter, ChannelWriterContext, LogErrorHandler>;
 
 pub struct RecordManager {
-    channel_parser: Arc<ChannelParser>,
-    channel_appender: Arc<ChannelAppender>,
+    parser: Arc<ChannelParser>,
+    appender: Arc<ChannelAppender>,
 }
 
 static RECORD_MANAGER: OnceLock<RecordManager> = OnceLock::new();
 
-fn create_record_appender<K,R,P,H>(writer: Arc<RecordAppendWriter<K, R, P, H>>) -> RecordAppender<K, R, P, H>
-where
-    K: Debug + Eq + Hash + Send + Sync + Clone + 'static,
-    R: MemoryRecord + Send + Sync + Clone + 'static,
-    P: FilePathGenerator<K> + Send + Sync + 'static,
-    H: FileHook<K, R> + Send + Sync + 'static,
-{
-    FileObjectAppender::new(
-        writer.clone(),
-        Arc::new(LogErrorHandler),
-        Duration::from_millis(100),
-        10,
-    )
-}
-
 impl RecordManager {
     pub fn new() -> Self {
-        let channel_parser = Arc::new(ChannelParser);
-        let channel_writer = Arc::new(RecordAppendWriter::new(
-            channel_parser.clone(),
-            Arc::new(ChannelFileIndexHook)
+        let parser = Arc::new(ChannelParser);
+        let writer = Arc::new(ChannelRecordWriter::new(parser.clone()));
+        let appender = Arc::new(FileObjectAppender::new(
+            writer,
+            Arc::new(LogErrorHandler),
+            Duration::from_millis(100),
+            10,
         ));
-        let channel_appender = Arc::new(create_record_appender(channel_writer.clone()));
-
-        Self {
-            channel_parser,
-            channel_appender,
-        }
+        Self { parser, appender }
     }
 
     pub fn get() -> &'static Self {
@@ -341,23 +209,56 @@ impl RecordManager {
     }
 
     pub async fn append_channel_record(&self, requests: Vec<ChannelRequest>, force: bool) -> Result<()> {
-        append_record(requests, force, self.channel_parser.clone(), self.channel_appender.clone()).await
+        let mut records_map: HashMap<Arc<RecordKey>, Vec<ChannelRecord>> = HashMap::new();
+        for request in requests {
+            let (key, record) = self.parser.parse_request(request);
+            records_map.entry(key).or_default().push(record);
+        }
+        if records_map.is_empty() {
+            return Ok(());
+        }
+
+        // 乱序检查：在写锁内读取文件状态，避免与并发写入竞争
+        for (key, records) in &records_map {
+            let lock = self.appender.get_lock(key).await;
+            let mut guard = lock.lock().await;
+
+            let file_path = self.parser.get_path(key).await?;
+            let state = match guard.state.take() {
+                Some(old_state) => old_state,
+                None => load_existing_file_state(&file_path).await?,
+            };
+            let last_time = state.time.clone();
+            guard.state = Some(state);
+
+            let min_time = records.iter().map(|record| record.time.as_str()).min().unwrap_or("");
+            if last_time.as_str() > min_time && !force {
+                return Err(Error::RecordNotInOrder(
+                    ArcStr::from(format!("{:?}", key)),
+                    last_time,
+                    ArcStr::from(min_time),
+                ));
+            }
+        }
+
+        let futs: Vec<_> = records_map
+            .into_iter()
+            .map(|(key, records)| self.appender.append(key, records))
+            .collect();
+        // 等待写入后再返回
+        let promises = future::join_all(futs).await;
+        for result in future::join_all(promises).await {
+            if let Ok(Err(e)) = result {
+                return Err(Error::from(e));
+            }
+        }
+        Ok(())
     }
-
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Clone)]
-    pub(crate) struct NoopFileHook;
-
-    impl<K, R> FileHook<K, R> for NoopFileHook {
-        fn on_append(&self, _key: &K, _records: &[R]) {}
-        fn on_force_append(&self, _key: &K, _records: &[R]) {}
-    }
 
     #[tokio::test]
     async fn test_load_state_file_not_exists() {
@@ -424,7 +325,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
+        let writer = Arc::new(ChannelRecordWriter::new(Arc::new(ChannelParser)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -457,7 +358,7 @@ mod tests {
             records_map.entry(key).or_default().push(record);
         }
         for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
+            records.sort_by(record_order);
             appender.append(key, records).await;
         }
 
@@ -474,7 +375,7 @@ mod tests {
         // 读取文件内容验证
         let content = tokio::fs::read_to_string(&expected_path).await.unwrap();
         let record: ChannelRecord = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(record.sn(), 1);
+        assert_eq!(record.sn, 1);
         assert!(matches!(record.content, Content::Text(v) if v.as_str() == "hello"));
     }
 
@@ -483,7 +384,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
+        let writer = Arc::new(ChannelRecordWriter::new(Arc::new(ChannelParser)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -548,7 +449,7 @@ mod tests {
             records_map.entry(key).or_default().push(record);
         }
         for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
+            records.sort_by(record_order);
             appender.append(key, records).await;
         }
 
@@ -566,7 +467,7 @@ mod tests {
         // 验证 sn 顺序
         for (i, line) in lines.iter().enumerate() {
             let record: ChannelRecord = serde_json::from_str(line).unwrap();
-            assert_eq!(record.sn(), (i + 1) as u64);
+            assert_eq!(record.sn, (i + 1) as u64);
         }
     }
 
@@ -575,7 +476,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
+        let writer = Arc::new(ChannelRecordWriter::new(Arc::new(ChannelParser)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -606,7 +507,7 @@ mod tests {
             records_map.entry(key).or_default().push(record);
         }
         for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
+            records.sort_by(record_order);
             appender.append(key, records).await;
         }
 
@@ -635,7 +536,7 @@ mod tests {
             records_map.entry(key).or_default().push(record);
         }
         for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
+            records.sort_by(record_order);
             appender.append(key, records).await;
         }
 
@@ -653,9 +554,9 @@ mod tests {
         // 第一条 sn=1，第二条 sn=2
         let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
         let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(r1.sn(), 1);
+        assert_eq!(r1.sn, 1);
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "first"));
-        assert_eq!(r2.sn(), 2);
+        assert_eq!(r2.sn, 2);
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "second"));
     }
 
@@ -772,12 +673,12 @@ mod tests {
 
         // 第一条 sn=1, time=10:00:00, content=earlier
         let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(r1.sn(), 1);
+        assert_eq!(r1.sn, 1);
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "earlier"));
 
         // 第二条 sn=2, time=10:02:00, content=later
         let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(r2.sn(), 2);
+        assert_eq!(r2.sn, 2);
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "later"));
     }
 
@@ -893,7 +794,7 @@ mod tests {
         let expected_order = ["first", "first-half", "second", "third", "fourth"];
         for (i, line) in lines.iter().enumerate() {
             let record: ChannelRecord = serde_json::from_str(line).unwrap();
-            assert_eq!(record.sn(), (i + 1) as u64, "sn mismatch at line {}", i);
+            assert_eq!(record.sn, (i + 1) as u64, "sn mismatch at line {}", i);
             assert!(matches!(&record.content, Content::Text(v) if v.as_str() == expected_order[i]), "content mismatch at line {}", i);
         }
     }
@@ -903,7 +804,7 @@ mod tests {
         init_test_config();
         let root = &MemoryConfig::get().root_dir;
 
-        let writer = Arc::new(RecordAppendWriter::new(Arc::new(ChannelParser), Arc::new(NoopFileHook)));
+        let writer = Arc::new(ChannelRecordWriter::new(Arc::new(ChannelParser)));
         let appender = FileObjectAppender::new(
             writer.clone(),
             Arc::new(LogErrorHandler),
@@ -953,7 +854,7 @@ mod tests {
             records_map.entry(key).or_default().push(record);
         }
         for (key, mut records) in records_map {
-            records.sort_by(|a, b| a.cmp(b));
+            records.sort_by(record_order);
             appender.append(key, records).await;
         }
 
@@ -976,8 +877,8 @@ mod tests {
 
         let r1: ChannelRecord = serde_json::from_str(tokio::fs::read_to_string(&path1).await.unwrap().trim()).unwrap();
         let r2: ChannelRecord = serde_json::from_str(tokio::fs::read_to_string(&path2).await.unwrap().trim()).unwrap();
-        assert_eq!(r1.sn(), 1);
-        assert_eq!(r2.sn(), 1);
+        assert_eq!(r1.sn, 1);
+        assert_eq!(r2.sn, 1);
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "agent1-msg"));
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "agent2-msg"));
     }
@@ -1041,8 +942,8 @@ mod tests {
 
         let r1: ChannelRecord = serde_json::from_str(lines[0]).unwrap();
         let r2: ChannelRecord = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(r1.sn(), 1);
-        assert_eq!(r2.sn(), 2);
+        assert_eq!(r1.sn, 1);
+        assert_eq!(r2.sn, 2);
         assert!(matches!(r1.content, Content::Text(v) if v.as_str() == "msg1"));
         assert!(matches!(r2.content, Content::Text(v) if v.as_str() == "msg2"));
         // 各记录保留自身身份字段
