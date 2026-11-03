@@ -12,6 +12,7 @@ Keep It Simple Stupid BOT - kissbot
 - 前台typescript+react+vite
 
 ## 目录结构
+- **blog** 人工编写的文档说明，禁止修改
 - **docs** 项目文档
   - **index.md** 文档目录索引
   - **design** 设计文档
@@ -24,7 +25,6 @@ Keep It Simple Stupid BOT - kissbot
   - **docs** kai-rs各组件文档
   - **kai-\*** kai-rs各组件实现
 - **kai** （未建立）本地TypeScript基础库
-- **blog** 一些形而上的思考
 - **test** 自动化测试用例
   - **workspace** 自动化测试中使用的配置和数据目录
 - **script** 手动测试用启动脚本和配置文件
