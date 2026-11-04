@@ -77,6 +77,7 @@ kissbot-agent 使用三份配置：
                  "reasoning_effort": "low", "has_reasoning_effort": true },
         "compress": { "compress_prompt": "…", "compress_threshold": 0.8 },
         "memory_recover": { "memory_time_secs": 3600, "memory_count": 50 },
+        "memory_pipeline": { "load_memory": true },
         "channel_batch": { "channel_batch_interval_secs": 3 },
         "out_channel": { "out_channel": { "channel_id": "web1",
                                           "user": { "messenger_id": "web", "user_id": "u1" },
@@ -101,7 +102,7 @@ kissbot-agent 使用三份配置：
 - `providers` 段的配置结构（`provider_config` / `default_model_config` / `model_configs`）与「provider 默认 ← model 覆盖」的合成由 kissbot-llm 定义，结构与合成规则见 [kissbot-llm 技术规格](llm.md)；agent 只负责其存储、落盘与 CRUD。
 - `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
 - session 条目里未覆盖的配置项序列化为 `null`（`SessionConfigMap` 各字段均为 `Option`）。
-- `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆回溯）或 `memory_summary`（摘要记忆）；从 agent/role 配置读取，未配置时默认 `default_memory`。pipeline 选择不做 session 级覆盖。
+- `pipeline` 段只有一个 `pipeline_name`，取值为 `default`（无记忆）、`default_memory`（记忆读写：角色模式按开关决定是否读取，事件模式只写不读）或 `memory_summary`（摘要记忆）；从 agent/role 配置读取，未配置时默认 `default_memory`。pipeline 选择不做 session 级覆盖。
 - `memory_summary`：一个 pipeline 身份（agent + role_event）一条 pipeline，按 channel 分别攒批，触发时先 locate，再按 case 上下文重建各自 session。
 - `sessions` 是普通 JSON 对象，key 为 session_id；表中只存 session 级值（pipeline 从 agent/role 导入的有效配置或 `/model` 等覆盖）。
 
@@ -113,7 +114,7 @@ kissbot-agent 使用三份配置：
 |------|--------|----------|
 | 模型参数 | 全局常量 ← provider 默认（`default_model_config`）← model 覆盖（`model_configs`） | `EffectiveModelConfig`（max_tokens_usage / timeout_secs / retry_count） |
 | LLM 参数 | LLMConfig 默认 ← agent 级 ← role 级；session 覆盖优先 | `EffectiveLLMConfig`（provider / model / max_tokens / temperature / thinking / reasoning_effort） |
-| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / channel_batch / out_channel / group_set）；session 覆盖优先 | 各自 Effective 形态 |
+| 其它会话配置 | 默认值 ← agent 级 ← role 级（compress / memory_recover / memory_pipeline / channel_batch / out_channel / group_set）；session 覆盖优先 | 各自 Effective 形态 |
 | pipeline 选择 | 默认值 ← agent 级 ← role 级（pipeline） | `PipelineConfig` |
 | 模型参数兜底 | 模型未在 `model_configs` 配置时直接用 provider 默认值合成 | — |
 
@@ -124,9 +125,17 @@ kissbot-agent 使用三份配置：
 - `set_session_config::<C, E>(session_id, config)`：把 `C` 覆盖合并进 session 有效配置并落盘；缺失时以 `C::default()` 为基底。
 - `set_session_config_if_not_exists::<E>(session_id, config)`：session 配置项已存在则保留，否则写入并落盘。
 
-`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress 或 memory_recover、channel_batch、out_channel、group_set）；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。另有 `ConfigManager::provider_model_config(provider, model)`。
+`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress、memory_recover、memory_pipeline、channel_batch、out_channel、group_set）；`default_memory` 同时导入 memory_recover 与 compress 两套降阈值配置，运行期切换 `load_memory` 后立即生效；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。另有 `ConfigManager::provider_model_config(provider, model)`。
 
 `out_channel` 由 pipeline 命令写入 pipeline 自己的 session 配置（`default_memory` 写其唯一 session，`memory_summary` 写基准 session `memory-summary-{encode}-none`），运行期从同一 session 读取；agent/role 级 `out_channel` 只作为建立 session 时的初始值导入，之后以 session 级值为准。
+
+#### `default_memory` 的记忆读取策略
+
+- `memory_pipeline.load_memory` 是 session 级开关，agent/role 级值只作为建立 session 时的初始值，之后以 session 级值为准；默认 `true`。
+- **事件模式**（`RoleEvent.event_id` 有值）：忽略 `load_memory`，永远不读取记忆（不调用 memory-store 查询），只写上行/下行记忆；上下文超阈值时用压缩。
+- **角色模式**（`RoleEvent.event_id` 缺省）+ `load_memory=true`：保持记忆回溯（`MemoryRecoverTokenReducer`）。
+- **角色模式 + `load_memory=false`**：上下文超阈值时用压缩；每批 run 前先用当前完整 session + 本批新消息询问 LLM 是否同一件事。第一套提示词要求只回答 `YES`/`NO`；失败或无法解析时换第二套更强措辞重试；两次都失败按同一件事处理。判断为不同时归档旧上下文、清空 session，只保留本批新消息后运行；判断为相同时保持上下文正常追加。
+- `/load-memory <on|off>` 修改当前 pipeline session 的开关；事件模式下写入但不生效。
 
 ## 会话与上下文本地缓存（pipeline 内部）
 
@@ -169,9 +178,10 @@ pipeline 身份（`MemoryKey` = agent_id + role_event）是 channel 定位与配
 | agent-pipeline | `/agent-pipeline <pipeline_name>` | 默认层 | 设置来源 channel 的 agent 级 pipeline（默认 agent "0" 不可设置）；pipeline 名称变化的已装配 pipeline 失效 |
 | bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | default_memory / memory_summary | 设 pipeline 的回复通道（要求该身份已绑定来源 channel） |
 | unbind-outgoing | `/unbind-outgoing` | default_memory / memory_summary | 清除 pipeline 的回复通道（回到只存不回复） |
+| load-memory | `/load-memory <on\|off>` | default_memory | 设置当前 pipeline 是否读取记忆（事件模式固定不读取，配置写入但不生效） |
 | model | `/model <provider> <model>` | default / default_memory / memory_summary | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；写入哪些 session 由 pipeline 决定 |
 
-命令分两层检测：默认层（`ChannelManager::execute_default_command`）处理上表的默认命令（含 `/pipeline`、`/agent-pipeline`，先于 pipeline 命令检测）；默认层未命中时，ChannelManager 按来源 channel 定位 pipeline 并交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model` 与 outgoing 命令由 pipeline 处理，共享实现（解析、模型校验、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
+命令分两层检测：默认层（`ChannelManager::execute_default_command`）处理上表的默认命令（含 `/pipeline`、`/agent-pipeline`，先于 pipeline 命令检测）；默认层未命中时，ChannelManager 按来源 channel 定位 pipeline 并交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role/mode 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model`、outgoing 与 `/load-memory` 命令由 pipeline 处理，共享实现（解析、模型校验、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`。
 
 ### 命令处理结果
 
@@ -231,7 +241,7 @@ agent 通过 `kissbot-channel-client` 连接消息通道（kai-ws 客户端，JS
 - 每个 case 维护独立 session（懒创建）：`memory-summary-{encode}-{case_name}`；无 case 批次使用 `memory-summary-{encode}-none`。每个 case 一次 run：run 开头用「该 case 的摘要 + 该 case 结尾 `memory_recover.memory_count` 条通道原文副本」重置该 case 的 session 上下文，再把本次新增消息作为一条 user 消息运行 agentic loop。原文副本按摘要记忆返回的顺序组装，不做时间窗过滤、去重与重排；摘要为空时不加摘要块。同一 case 在排队等待执行期间又来的消息并入同一次 run；已经开始执行的 run 不受影响，其后的消息形成下一轮 run；还没轮到的 case 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
 - 上行记忆写入由 pipeline 自己负责（Nexus 不再统一写入）：`default_memory` 在 `incoming_message` 收到消息时立即写入（meta 为 None）；`memory_summary` 在 **locate 之后**写入，并带 `meta.memory_summary.case_name`（定位结果里该消息所属的 case），摘要记忆组件下次归档时直接按 case 名落位，不再走分组/逐层判定。
 - 模型回复由 pipeline 调用 `pipelines.rs` 的自由函数 `send_outgoing` 发送并写下行记录；`memory_summary` 带本次 run 所属 case 的 meta，`default_memory` 带 None。
-- pipeline 命令由各 pipeline 的 `AgentPipeline::execute_command` 识别执行：`default` 只接 `/model`；`default_memory` / `memory_summary` 接 `/model` 与 outgoing 命令。共享实现（`command_parts` / `parse_model_command` / `handle_model_command` / `switch_model` / `bind_outgoing` / `unbind_outgoing` / `outgoing_channel`）在 pipelines.rs，各 pipeline 先按命令名 match 再调用。
+- pipeline 命令由各 pipeline 的 `AgentPipeline::execute_command` 识别执行：`default` 只接 `/model`；`default_memory` / `memory_summary` 接 `/model` 与 outgoing 命令，`default_memory` 另接 `/load-memory`。共享实现（`command_parts` / `parse_model_command` / `handle_model_command` / `switch_model` / `bind_outgoing` / `unbind_outgoing` / `outgoing_channel`）在 pipelines.rs，各 pipeline 先按命令名 match 再调用。
 - `/pipeline`、`/agent-pipeline`：修改 (agent, role) 或 (agent, "") 的 `pipeline_name`。修改前保存受影响 role 当前 merge 后的配置，修改后重新 merge；pipeline 名称变化的已装配 pipeline 从 PipelineManager 移除（下次按新配置装配）。默认 role / 默认 agent "0" 不可设置。
 - `/model`：写入 pipeline 自己的 session `LLMConfig`；摘要记忆 pipeline 写基准 session 与已有 case session，并保存模型覆盖供新建 case session 应用（进程重启后从基准 session 的已存配置恢复）。
 - outgoing：`/bind-outgoing`、`/unbind-outgoing` 写 pipeline 自己的 session `OutChannelConfig`（摘要记忆 pipeline 写基准 session）；运行期 `run_once` 从同一 session 读取发送。

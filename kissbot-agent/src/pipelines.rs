@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use futures_util::future;
 use kissbot_api::{ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
 use tokio::spawn;
+use tracing::warn;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, GroupSetConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, EffectiveMemoryPipelineConfig, GroupSetConfig, MemoryPipelineConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
@@ -143,6 +144,83 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>, session
     parse_channel_groups(groups, &mut map);
 
     pack_memory_messages(&map.into_values().collect::<Vec<_>>())
+}
+
+/// 同话题判定结果（YES/NO 解析后的业务含义）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopicDecision {
+    /// 新消息延续当前会话的同一件事
+    Same,
+    /// 新消息开启了另一件事
+    Changed,
+}
+
+/// 默认记忆 pipeline 是否读取记忆：事件模式恒不读取（忽略配置）；角色模式取配置
+fn effective_load_memory(memory_key: &MemoryKey, load_memory: bool) -> bool {
+    memory_key.role_event.event_id.is_none() && load_memory
+}
+
+/// `/load-memory` 参数解析（调用方已按命令名匹配）：只接受 on/off（兼容 true/false）
+fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
+    if parts.len() != 2 {
+        return Err(Error::InvalidCommand("格式: /load-memory <on|off>".into()));
+    }
+    match parts[1].to_ascii_lowercase().as_str() {
+        "on" | "true" => Ok(true),
+        "off" | "false" => Ok(false),
+        _ => Err(Error::InvalidCommand("格式: /load-memory <on|off>".into())),
+    }
+}
+
+/// 同话题判定第一套提示词：要求只回答 YES/NO
+const TOPIC_CHECK_PROMPT: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）：YES = 同一件事，NO = 不是同一件事。只回答 YES 或 NO，不要输出其他内容。";
+/// 同话题判定第二套提示词：第一次未给出明确回答时使用，措辞更强
+const TOPIC_CHECK_PROMPT_RETRY: &str = "必须且只能回答 YES 或 NO（YES = 同一件事，NO = 不是同一件事）。禁止输出解释、标点、前后缀或任何其他文字。";
+
+/// 消息文本（判断请求只关心内容文本）：Assistant/Tool 的 content 为 JSON 值时转成字符串
+fn message_text(message: &Message) -> String {
+    match message {
+        Message::System { content } | Message::User { content } => content.to_string(),
+        Message::Assistant { content, .. } | Message::Tool { content, .. } => match content {
+            Value::String(text) => text.clone(),
+            Value::Null => String::new(),
+            other => other.to_string(),
+        },
+    }
+}
+
+/// 组装同话题判定请求：当前完整会话（含 System）+ 一条包含新消息与判定指令的 User 消息。
+/// 历史以 User 结尾时把新消息并入该条，避免连续两条 User。
+fn build_topic_check_messages(history: &[Message], new_message: &Message, prompt: &str) -> Vec<Message> {
+    let mut messages = history.to_vec();
+    let new_text = format!("【新消息】\n{}\n\n{}", message_text(new_message), prompt);
+    match messages.last_mut() {
+        Some(Message::User { content }) => {
+            *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), new_text));
+        }
+        _ => messages.push(Message::User { content: ArcStr::from(new_text) }),
+    }
+    messages
+}
+
+/// 解析同话题判定的回答：返回 None 表示无法判定（调用方据此换提示词重试）。
+/// 优先按 YES/NO 出现位置判断；没有英文答案时接受常见中文整句。
+fn parse_topic_decision(answer: &str) -> Option<TopicDecision> {
+    let trimmed = answer.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let upper = trimmed.to_ascii_uppercase();
+    match (upper.find("YES"), upper.find("NO")) {
+        (Some(yes), Some(no)) => Some(if yes < no { TopicDecision::Same } else { TopicDecision::Changed }),
+        (Some(_), None) => Some(TopicDecision::Same),
+        (None, Some(_)) => Some(TopicDecision::Changed),
+        (None, None) => match trimmed {
+            "是" | "相同" | "同一件事" => Some(TopicDecision::Same),
+            "否" | "不同" | "不是同一件事" => Some(TopicDecision::Changed),
+            _ => None,
+        },
+    }
 }
 
 pub async fn send_messages(session_id: ArcStr, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
@@ -500,8 +578,6 @@ pub struct DefaultAgenticLoopPipelineWithMemory {
     memory_key: Arc<MemoryKey>,
     session_id: ArcStr,
     session: Arc<Session>,
-    /// 是否读取记忆（决定超限时用记忆回溯还是压缩 reducer）；写记忆始终进行
-    load_memory: bool,
     reducer: MemoryRecoverTokenReducer,
     last_total_tokens: AtomicU64,
     producer: BatchProducer,
@@ -520,6 +596,7 @@ impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
             Some("/model") => Some(handle_model_command(&parts, self.session_id.clone()).await),
             Some("/bind-outgoing") => Some(bind_outgoing(self.session_id.clone(), &channel_id, &parts).await),
             Some("/unbind-outgoing") => Some(unbind_outgoing(self.session_id.clone(), &parts).await),
+            Some("/load-memory") => Some(self.handle_load_memory_command(&parts).await),
             _ => None,
         }
     }
@@ -543,21 +620,36 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         let content = pack_batch(&events);
         // 找到工具
         let tools = tools_for_session(self.session_id.clone()).await;
+        // 角色模式且不读取记忆：先判断新消息是否延续同一件事；不同则归档清空，只保留本批新消息
+        if !self.should_load_memory().await && self.memory_key.role_event.event_id.is_none() {
+            if self.topic_changed(&content).await {
+                if self.session
+                    .context_archive_and_clear_cache_and_reset_messages(vec![content.clone()])
+                    .await
+                    .is_ok()
+                {
+                    // 上下文已重建为只含本批新消息，token 占用随之清零
+                    self.last_total_tokens.store(0, Ordering::Relaxed);
+                    let _ = self.run_messages(Vec::new(), &tools).await;
+                    return;
+                }
+                warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
+            }
+        }
         // 发送消息
         let _ = self.run(content, &tools).await;
     }
 }
 
 impl DefaultAgenticLoopPipelineWithMemory {
-    pub async fn new(memory_key: Arc<MemoryKey>, load_memory: bool) -> Arc<Self> {
+    pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let session_id = memory_key.encode();
-        // 从 agent role 配置导入
+        // 从 agent role 配置导入；记忆读取开关与读/压缩两种降到阈值的配置都导入，
+        // 运行期切换 load_memory 后立即生效
         import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
-        if load_memory {
-            import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
-        } else {
-            import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
-        }
+        import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(&memory_key, &session_id).await;
         import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
         import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
         import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
@@ -569,7 +661,6 @@ impl DefaultAgenticLoopPipelineWithMemory {
             memory_key,
             session_id,
             session,
-            load_memory,
             reducer,
             last_total_tokens: AtomicU64::new(0),
             producer
@@ -579,16 +670,72 @@ impl DefaultAgenticLoopPipelineWithMemory {
         result
     }
 
+    /// 当前是否读取记忆：事件模式恒 false（忽略配置）；角色模式按 session 配置（默认 true）
+    async fn should_load_memory(&self) -> bool {
+        let cfg = ConfigManager::get()
+            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone())
+            .await;
+        effective_load_memory(self.memory_key.as_ref(), cfg.load_memory)
+    }
+
+    /// 判断本批新消息是否开启了另一件事：先按完整会话 + 第一套提示词询问，未得到明确 YES/NO
+    /// 时换第二套更强措辞重试；两次都失败按同一件事处理（不丢上下文）。
+    async fn topic_changed(&self, new_message: &Message) -> bool {
+        let history = self.session.build_context().await;
+        if !history.iter().any(|message| !matches!(message, Message::System { .. })) {
+            return false;
+        }
+        let llm_cfg = ConfigManager::get()
+            .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
+            .await;
+        for prompt in [TOPIC_CHECK_PROMPT, TOPIC_CHECK_PROMPT_RETRY] {
+            let messages = build_topic_check_messages(&history, new_message, prompt);
+            match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
+                Ok(res) => {
+                    if let Some(decision) = parse_topic_decision(res.content.as_deref().unwrap_or("")) {
+                        return decision == TopicDecision::Changed;
+                    }
+                    warn!("同话题判断未给出明确 YES/NO，换提示词重试");
+                }
+                Err(e) => warn!("同话题判断调用失败，换提示词重试: {:?}", e),
+            }
+        }
+        warn!("同话题判断两次均失败，按同一件事处理");
+        false
+    }
+
+    /// `/load-memory`：写当前 session 的记忆读取开关（事件模式下写入但不生效）
+    async fn handle_load_memory_command(&self, parts: &[ArcStr]) -> Result<ArcStr> {
+        let load_memory = parse_load_memory_command(parts)?;
+        ConfigManager::get()
+            .set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+                self.session_id.clone(),
+                &MemoryPipelineConfig { load_memory: Some(load_memory) },
+            )
+            .await?;
+        let mode_note = if self.memory_key.role_event.event_id.is_some() {
+            "（事件模式固定不读取记忆，该配置不生效）"
+        } else {
+            ""
+        };
+        Ok(ArcStr::from(format!(
+            "✅ 已设置 load_memory: {}{}",
+            if load_memory { "on" } else { "off" },
+            mode_note
+        )))
+    }
+
     async fn run_once(
         &self,
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
         pending_contents: &mut Vec<Content>,
+        load_memory: bool,
     ) -> Result<bool> {
         // send message to llm
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        let mut res = if self.load_memory {
+        let mut res = if load_memory {
             send_messages_with_limit(
                 self.session_id.clone(), self.session.as_ref(),
                 messages, tools, &self.reducer, tokens_usage).await?
@@ -638,12 +785,18 @@ impl DefaultAgenticLoopPipelineWithMemory {
     }
 
     pub async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
+        self.run_messages(vec![message], tools).await
+    }
+
+    /// 用给定的消息启动一次 run；messages 为空表示上下文已由调用方准备好（如归档后只保留新消息）
+    async fn run_messages(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
+        let load_memory = self.should_load_memory().await;
         let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, vec![message], tools, &mut pending_contents).await?;
+        let mut next = self.run_once(round, messages, tools, &mut pending_contents, load_memory).await?;
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools, &mut pending_contents).await?;
+            next = self.run_once(round, vec![], tools, &mut pending_contents, load_memory).await?;
         }
         Ok(())
     }
@@ -782,7 +935,7 @@ pub async fn outgoing_channel(session_id: &ArcStr) -> Option<Arc<OutChannel>> {
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
         PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key.encode()).await),
-        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key, true).await),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key).await),
         PIPELINE_MEMORY_SUMMARY_STR => Ok(MemorySummaryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
     }
@@ -928,6 +1081,99 @@ mod tests {
                 assert!(matches!(&items[2], Content::Text(text) if text.as_str() == "回复"));
             }
             other => panic!("有累积内容时应为 Multi: {:?}", other),
+        }
+    }
+
+    fn memory_key(agent_id: &str, role: &str, event: Option<&str>) -> MemoryKey {
+        MemoryKey {
+            agent_id: ArcStr::from(agent_id),
+            role_event: Arc::new(match event {
+                Some(event_id) => kissbot_api::RoleEvent::with_event(ArcStr::from(role), ArcStr::from(event_id)),
+                None => kissbot_api::RoleEvent::new(ArcStr::from(role)),
+            }),
+        }
+    }
+
+    #[test]
+    fn event_mode_ignores_load_memory_config() {
+        let key = memory_key("a", "r", Some("e1"));
+        assert!(!effective_load_memory(&key, true), "事件模式即便配置为 true 也不读取记忆");
+        assert!(!effective_load_memory(&key, false));
+    }
+
+    #[test]
+    fn role_mode_uses_load_memory_config() {
+        let key = memory_key("a", "r", None);
+        assert!(effective_load_memory(&key, true));
+        assert!(!effective_load_memory(&key, false));
+    }
+
+    #[test]
+    fn parse_load_memory_command_accepts_on_off_and_rejects_others() {
+        assert!(parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("on")]).unwrap());
+        assert!(parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("true")]).unwrap());
+        assert!(!parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("off")]).unwrap());
+        assert!(!parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("false")]).unwrap());
+        assert!(matches!(
+            parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("maybe")]),
+            Err(Error::InvalidCommand(_))));
+        assert!(matches!(
+            parse_load_memory_command(&[ArcStr::from("/load-memory")]),
+            Err(Error::InvalidCommand(_))));
+    }
+
+    #[test]
+    fn parse_topic_decision_recognizes_yes_and_no() {
+        assert_eq!(parse_topic_decision("YES"), Some(TopicDecision::Same));
+        assert_eq!(parse_topic_decision(" yes "), Some(TopicDecision::Same));
+        assert_eq!(parse_topic_decision("YES, same topic"), Some(TopicDecision::Same));
+        assert_eq!(parse_topic_decision("NO"), Some(TopicDecision::Changed));
+        assert_eq!(parse_topic_decision("NO, different topic"), Some(TopicDecision::Changed));
+        assert_eq!(parse_topic_decision("否"), Some(TopicDecision::Changed));
+        assert_eq!(parse_topic_decision("是"), Some(TopicDecision::Same));
+        assert_eq!(parse_topic_decision("maybe"), None);
+        assert_eq!(parse_topic_decision(""), None);
+    }
+
+    #[test]
+    fn topic_check_messages_keep_full_session_and_append_new_message() {
+        let history = vec![
+            Message::System { content: ArcStr::from("系统提示词") },
+            Message::User { content: ArcStr::from("旧问题") },
+            Message::Assistant {
+                content: serde_json::json!("旧回答"),
+                reasoning_content: serde_json::Value::Null,
+                tool_calls: serde_json::Value::Null,
+            },
+        ];
+        let new_message = Message::User { content: ArcStr::from("新问题") };
+        let messages = build_topic_check_messages(&history, &new_message, "判断提示词");
+        assert_eq!(messages.len(), 4, "完整保留历史（含 System），再追加一条带新消息的 User");
+        assert!(matches!(&messages[0], Message::System { content } if content.as_str() == "系统提示词"));
+        assert!(matches!(&messages[1], Message::User { content } if content.as_str() == "旧问题"));
+        assert!(matches!(&messages[2], Message::Assistant { .. }));
+        match &messages[3] {
+            Message::User { content } => {
+                assert!(content.contains("新问题"));
+                assert!(content.contains("判断提示词"));
+            }
+            other => panic!("最后一条应为 User: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn topic_check_messages_merge_when_history_ends_with_user() {
+        let history = vec![Message::User { content: ArcStr::from("旧问题") }];
+        let new_message = Message::User { content: ArcStr::from("新问题") };
+        let messages = build_topic_check_messages(&history, &new_message, "判断提示词");
+        assert_eq!(messages.len(), 1, "历史以 User 结尾时合并为一条，避免连续 User");
+        match &messages[0] {
+            Message::User { content } => {
+                assert!(content.contains("旧问题"));
+                assert!(content.contains("新问题"));
+                assert!(content.contains("判断提示词"));
+            }
+            other => panic!("应为 User: {:?}", other),
         }
     }
 

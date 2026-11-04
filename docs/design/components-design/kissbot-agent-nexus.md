@@ -70,7 +70,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 2. 配置管理器
 - 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
-- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、合批、回复通道、工具分组白名单、pipeline）与 session 级值
+- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、记忆读取开关、合批、回复通道、工具分组白名单、pipeline）与 session 级值
 - 分开存储 agent/role 可继承配置与 session 级值：`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent → role 导入配置；`default` 不依赖 agent/role；运行期只按 session_id 读；pipeline 选择按 agent/role 合成
 - 支持管理命令与管理 API 回写
 
@@ -86,18 +86,19 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 - session 不单独注册到全局表；pipeline 丢弃时其 session 随 Arc 释放自然回收
 
 ### 5. pipeline 体系（执行流程）
-- **AgentPipeline**：执行流程本体，自己创建并持有需要的 session。当前三实现：`default`（无记忆的 agentic loop，一个 session）、`default_memory`（带记忆读写的 agentic loop，一个 session）、`memory_summary`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session）。
+- **AgentPipeline**：执行流程本体，自己创建并持有需要的 session。当前三实现：`default`（无记忆的 agentic loop，一个 session）、`default_memory`（带记忆读写的 agentic loop，一个 session；事件模式只写不读，角色模式按 session 开关决定是否读取）、`memory_summary`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session）。
 - **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个 pipeline 一个合批队列；`memory_summary` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的批次生产者，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline。
 - **case 拆分与执行**：`memory_summary` 的批次先做一次定位并写入本批上行记录，然后按消息所属 case 并入该 case 的待执行任务，批次处理随即结束，下一批可以接着处理。待执行任务由另一个队列串行执行：worker 一次只取一个 case，每个 case 一次 run；每个 case 维护独立 session，run 开头用该 case 的摘要与结尾原文副本重置该 session 的上下文，再把本次新增消息打包为一条 user 消息进入 agentic loop。还没开始执行的 case 继续等待，期间到达的同 case 消息并入同一次 run；正在执行的 case 的新消息形成下一轮 run。
-- **agentic loop**：`default_memory` 与 `memory_summary` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
+- **agentic loop**：`default_memory` 与 `memory_summary` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。`default_memory` 在角色模式且 `load_memory=false` 时，每批 run 前先用 LLM 判断新消息与完整会话是否同一件事；不同则归档旧上下文、清空 session、只保留新消息后运行。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
 - **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经回复发送流程发送并写入（meta 为 None）；`memory_summary` 在定位之后写入上行记录（带消息所属 case 的 meta），回复同样带本次 run 所属 case 的 meta；定位失败时直接丢弃本批消息（不写记忆、也不进入待执行任务）。
 - **channel 解绑**：AgentPipeline 提供 channel 解绑入口。channel 切换 agent/role/mode 时，通道侧对旧 pipeline 调用它；摘要记忆 pipeline 据此丢弃该 channel 全部分组的生产者与待处理消息。Nexus 把「解绑旧 channel + 清理无绑定 pipeline/session + 装配新 pipeline」合成为一个重绑定流程。
 - **PipelineManager**：按 pipeline 标识（agent + role_event）持有 pipeline，提供装配、消息投递、channel 解绑通知与随绑定清理；装配哪些 session 由 pipeline 自己决定，清理时直接丢弃 pipeline，session 随 Arc 释放。pipeline 实现由 agent/role 配置的 `pipeline_name` 选择。
 
 ### 6. 记忆读写
 - 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
-- 上下文超长时的回溯读取由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
-- 记忆回溯配置（时间窗、条数）与 LLM 参数独立，在建立 session 时一并固化到 session 配置
+- 上下文超长时的处理：事件模式恒用压缩；角色模式按 `memory_pipeline.load_memory` 选择压缩或回溯。回溯由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
+- 角色模式且 `load_memory=false` 时不查询记忆；每批 run 前用两套提示词询问 LLM 是否同一件事（YES/NO），两次都失败按同一件事处理。判定为不同时归档旧上下文、清空 session，只保留本批新消息
+- 记忆回溯配置（时间窗、条数）、记忆读取开关与 LLM 参数独立，在建立 session 时一并固化到 session 配置
 
 ### 7. 管理命令处理
 - 识别以 `/` 开头的外部消息（且发送者在来源 channel 的 admins 中）
@@ -214,6 +215,7 @@ kissbot-agent 启动
 | 模式切换 | 默认层 | 修改指定通道绑定的记忆模式（角色/事件） |
 | pipeline 配置 | 默认层 | 修改 (agent, role) 或 agent 级 pipeline（`/pipeline`、`/agent-pipeline`）；名称变化的已装配 pipeline 失效 |
 | 回复通道 | default_memory / memory_summary | 设置或清除 pipeline 的回复通道 |
+| 记忆读取开关 | default_memory | `/load-memory <on\|off>` 设置是否读取记忆（事件模式固定不读取） |
 | 模型切换 | 三条 pipeline | 切换当前 pipeline 使用的 provider/model（校验后生效） |
 
 ### 自身发送消息识别
@@ -224,7 +226,7 @@ kissbot-agent 启动
 
 ### 自动上下文处理
 
-最近一次模型响应的 token 占用超过「当前 session 模型上限 × 压缩阈值」时，下次请求前由消息发送器触发处理：压缩（LLM 总结后重建上下文）或记忆回溯（从 memory-store 打包重建），随后更新占用记录，防止上下文无限增长。阈值为 0（或上限为 0）时不启用该机制。
+最近一次模型响应的 token 占用超过「当前 session 模型上限 × 压缩阈值」时，下次请求前由消息发送器触发处理：压缩（LLM 总结后重建上下文）或记忆回溯（从 memory-store 打包重建），随后更新占用记录，防止上下文无限增长。事件模式只用压缩；角色模式 `load_memory=false` 只用压缩，并在每批 run 前判断是否同一件事，不同则先归档清空。阈值为 0（或上限为 0）时不启用该机制。
 
 ### 初始上下文构建
 

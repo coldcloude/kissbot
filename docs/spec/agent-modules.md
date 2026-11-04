@@ -8,11 +8,11 @@
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
-| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储；`default_memory` / `memory_summary` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
+| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储（含 memory_pipeline.load_memory）；`default_memory` / `memory_summary` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **装配与启动中心**：pipeline 定位与装配（run 时）、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager / pipelines 回调 Nexus 单例 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 业务消息处理：默认管理命令 / pipeline 命令 / 普通消息路由）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体，pipeline 重定位内联在 apply_channel_key） | 被 nexus 调用；被 channel-client 回调（Terminal）；变更执行体经 Nexus 单例读写 pipeline/config |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
-| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / MemorySummaryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `memory_summary`）、保留/清理；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / MemorySummaryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `memory_summary`）、保留/清理；`default_memory` 按事件/角色模式与 `memory_pipeline.load_memory` 决定是否回溯，角色模式关闭读取时每批 run 前用 LLM 判断是否同一件事、不同则归档清空并只保留新消息；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推通道记录（思考/工具内容内嵌在记录里，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
@@ -243,7 +243,7 @@ sequenceDiagram
     else 已装配
         Note over CO: 直接复用（不重复恢复/装配）
     end
-    Note over CO: 系统消息存待定；下次 build_context_full 时 apply_pending_system 对比应用，重建/压缩时由 context_archive_and_clear_cache_and_reset_messages 一并应用<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）
+    Note over CO: 系统消息存待定；下次 build_context_full 时 apply_pending_system 对比应用，重建/压缩时由 context_archive_and_clear_cache_and_reset_messages 一并应用<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）；事件模式恒用压缩，角色模式 load_memory=false 时同话题判断为不同会先归档清空再以新消息运行
 ```
 
 ## 七、对外交互边界

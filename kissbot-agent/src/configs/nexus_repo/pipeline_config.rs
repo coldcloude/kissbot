@@ -243,3 +243,89 @@ impl MergeEffectiveConfig<PipelineConfig> for PipelineConfig {
         self.clone()
     }
 }
+
+// ========== 记忆 pipeline 配置 ==========
+
+/// 默认记忆 pipeline（default_memory）的记忆读取开关：
+/// 只存 agent/role 可继承值与会话级覆盖，建立 session 时导入；事件模式忽略该开关。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemoryPipelineConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_memory: Option<bool>,
+}
+
+impl MergeBy<MemoryPipelineConfig> for MemoryPipelineConfig {
+    fn merge(&mut self, other: &Self) {
+        if let Some(load_memory) = other.load_memory {
+            self.load_memory = Some(load_memory);
+        }
+    }
+}
+
+impl MergeSelf for MemoryPipelineConfig {}
+
+/// 默认读取记忆
+pub const DEFAULT_LOAD_MEMORY: bool = true;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveMemoryPipelineConfig {
+    pub load_memory: bool,
+}
+
+impl EffectiveMemoryPipelineConfig {
+    pub fn new() -> Self {
+        Self { load_memory: DEFAULT_LOAD_MEMORY }
+    }
+}
+
+impl Default for EffectiveMemoryPipelineConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MergeBy<MemoryPipelineConfig> for EffectiveMemoryPipelineConfig {
+    fn merge(&mut self, other: &MemoryPipelineConfig) {
+        if let Some(load_memory) = other.load_memory {
+            self.load_memory = load_memory;
+        }
+    }
+}
+
+impl MergeEffectiveConfig<EffectiveMemoryPipelineConfig> for MemoryPipelineConfig {
+    fn get_effective_config(&self) -> EffectiveMemoryPipelineConfig {
+        let mut result = EffectiveMemoryPipelineConfig::new();
+        result.merge(self);
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kissbot_api::{MergeBy, MergeEffectiveConfig};
+
+    #[test]
+    fn memory_pipeline_config_defaults_to_load_memory() {
+        let effective = MemoryPipelineConfig::default().get_effective_config();
+        assert!(effective.load_memory, "未配置时默认读取记忆");
+    }
+
+    #[test]
+    fn memory_pipeline_config_merges_only_configured_value() {
+        let mut config = MemoryPipelineConfig::default();
+        config.merge(&MemoryPipelineConfig { load_memory: Some(false) });
+        assert_eq!(config.load_memory, Some(false));
+        // 未配置（None）不覆盖已有值
+        config.merge(&MemoryPipelineConfig { load_memory: None });
+        assert_eq!(config.load_memory, Some(false));
+        assert!(!config.get_effective_config().load_memory);
+    }
+
+    #[test]
+    fn memory_pipeline_config_serde_skips_absent_field() {
+        assert_eq!(serde_json::to_string(&MemoryPipelineConfig::default()).unwrap(), "{}");
+        let config: MemoryPipelineConfig = serde_json::from_str(r#"{"load_memory":false}"#).unwrap();
+        assert_eq!(config.load_memory, Some(false));
+    }
+}

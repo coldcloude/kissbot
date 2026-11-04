@@ -92,7 +92,10 @@ mod tests {
     use super::*;
 
     use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
+
+    use axum::{Json, Router, extract::State, routing::post};
 
     use arcstr::ArcStr;
     use kissbot_api::RoleEvent;
@@ -101,8 +104,8 @@ mod tests {
     use kissbot_channel_client::Terminal;
     use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
-    use crate::configs::{ChannelBatchConfig, ChannelConfig, PipelineConfig};
-    use crate::pipeline::AgentPipeline;
+    use crate::configs::{ChannelBatchConfig, ChannelConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
+    use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
     use crate::pipelines::{outgoing_channel, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
@@ -312,13 +315,23 @@ mod tests {
             agent_id: ArcStr::from("cmd-detect-agent"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
         });
-        let memory = DefaultAgenticLoopPipelineWithMemory::new(key.clone(), true).await;
+        let memory = DefaultAgenticLoopPipelineWithMemory::new(key.clone()).await;
         assert!(memory.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
         match memory.execute_command(channel_id.clone(), cmd("/bind-outgoing web u1")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
         }
+        match memory.execute_command(channel_id.clone(), cmd("/load-memory maybe")).await {
+            Some(Err(Error::InvalidCommand(_))) => {}
+            other => panic!("default_memory 应识别 /load-memory 并返回参数错误: {:?}", other),
+        }
+        let reply = memory.execute_command(channel_id.clone(), cmd("/load-memory off")).await
+            .expect("应识别 /load-memory").unwrap();
+        assert!(reply.contains("load_memory"), "回复文案: {}", reply);
+        let cfg = ConfigManager::get()
+            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(key.encode()).await;
+        assert!(!cfg.load_memory, "/load-memory off 应写入 session 配置");
 
         let memory_summary = MemorySummaryPipeline::new(key);
         assert!(memory_summary.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
@@ -348,7 +361,7 @@ mod tests {
             agent_id: ArcStr::from("cmd-outgoing-agent"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
         });
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key.clone(), true).await;
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key.clone()).await;
         let session_id = key.encode();
 
         // 身份未绑定 → 拒绝
@@ -514,5 +527,252 @@ mod tests {
         // 改 r2 的 role 级为 memory_summary：合并值变化，r2 pipeline 失效
         pm.set_pipeline_config(ArcStr::from(agent), ArcStr::from("r2"), ArcStr::from("memory_summary")).await.unwrap();
         assert!(!pm.contains(k2.as_ref()), "r2 合并配置变化，pipeline 应失效");
+    }
+
+    fn incoming_event(msg_id: &str, text: &str) -> Arc<IncomingMessageEvent> {
+        Arc::new(IncomingMessageEvent {
+            recipient_user_id: ArcStr::from("self"),
+            incoming_message: Arc::new(IncomingMessage {
+                msg_id: ArcStr::from(msg_id),
+                messenger_id: ArcStr::from("web"),
+                user_id: ArcStr::from("u1"),
+                group_id: ArcStr::from("g1"),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("u1"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from(text)),
+                time: ArcStr::from("2026-11-04 10:00:00"),
+            }),
+        })
+    }
+
+    /// 同话题判定请求返回 NO，正常对话/压缩请求返回固定回复；total_tokens 固定 100 便于触发阈值
+    async fn mock_topic_chat(
+        State(calls): State<Arc<AtomicUsize>>,
+        body: String,
+    ) -> Json<serde_json::Value> {
+        calls.fetch_add(1, Ordering::Relaxed);
+        let is_topic_check = body.contains("只回答 YES 或 NO") || body.contains("必须且只能回答");
+        let content = if is_topic_check { "NO" } else { "新回复" };
+        Json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "usage": {"total_tokens": 100}
+        }))
+    }
+
+    /// 启动本地 mock OpenAI 服务并返回 base_url
+    async fn start_mock_chat(calls: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/chat/completions", post(mock_topic_chat))
+            .with_state(calls);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        base_url
+    }
+
+    /// 第一套提示词返回无法解析的 MAYBE，第二套提示词返回 NO，正式运行返回固定回复
+    async fn mock_retry_chat(
+        State(calls): State<Arc<AtomicUsize>>,
+        body: String,
+    ) -> Json<serde_json::Value> {
+        calls.fetch_add(1, Ordering::Relaxed);
+        let second_prompt = body.contains("必须且只能回答");
+        let first_prompt = body.contains("只回答 YES 或 NO") && !second_prompt;
+        let content = if second_prompt {
+            "NO"
+        } else if first_prompt {
+            "MAYBE"
+        } else {
+            "新回复"
+        };
+        Json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "usage": {"total_tokens": 1}
+        }))
+    }
+
+    async fn start_mock_retry_chat(calls: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/chat/completions", post(mock_retry_chat))
+            .with_state(calls);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        base_url
+    }
+
+    #[tokio::test]
+    async fn role_mode_without_load_memory_archives_context_when_topic_changes() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+
+        // 本地 mock OpenAI 服务：判定请求 → NO，正式运行 → 固定回复
+        let calls = Arc::new(AtomicUsize::new(0));
+        let base_url = start_mock_chat(calls.clone()).await;
+
+        // 唯一 provider / session，避免与其他用例共享
+        let provider = "topic-switch-provider";
+        let model = "topic-switch-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from(base_url),
+                api_key: ArcStr::from("k"),
+            }),
+            default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("a-topic-switch"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-switch"))),
+        });
+        let session_id = key.encode();
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
+            ..Default::default()
+        }).await.unwrap();
+        cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            session_id.clone(),
+            &MemoryPipelineConfig { load_memory: Some(false) },
+        ).await.unwrap();
+
+        // 预置上一件事的上下文
+        let old = Session::new(cm.data_dir(), session_id.clone());
+        old.context_append(vec![
+            Message::User { content: ArcStr::from("旧问题") },
+            Message::Assistant {
+                content: serde_json::json!("旧回复"),
+                reasoning_content: serde_json::Value::Null,
+                tool_calls: serde_json::Value::Null,
+            },
+        ]).await.unwrap();
+
+        // 触发新一批消息：判定为不同 → 归档旧上下文，只保留新消息后运行
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        pipeline.incoming_message_batch(vec![incoming_event("topic-m1", "新问题")]).await;
+
+        // 当前上下文只剩新消息与本次回复
+        let current = Session::new(cm.data_dir(), session_id.clone());
+        current.recover_from_cache().await.unwrap();
+        let ctx = current.build_context_full().await;
+        assert!(
+            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "旧上下文应被归档清空: {:?}", ctx);
+        assert!(
+            ctx.iter().any(|m| matches!(m, Message::User { content } if content.contains("新问题"))),
+            "新消息应保留: {:?}", ctx);
+        assert!(
+            ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复"))),
+            "本次回复应写入: {:?}", ctx);
+
+        // 旧上下文进入历史归档
+        let history_dir = std::path::Path::new(cm.data_dir()).join("context-history");
+        let archived = std::fs::read_dir(&history_dir).unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(session_id.as_str()))
+            .any(|entry| std::fs::read_to_string(entry.path()).map(|text| text.contains("旧问题")).unwrap_or(false));
+        assert!(archived, "旧上下文应归档到 context-history");
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "一次话题判定 + 一次正式运行");
+    }
+
+    #[tokio::test]
+    async fn role_mode_topic_check_retries_with_second_prompt_on_ambiguous_answer() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let base_url = start_mock_retry_chat(calls.clone()).await;
+        let provider = "topic-retry-provider";
+        let model = "topic-retry-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from(base_url),
+                api_key: ArcStr::from("k"),
+            }),
+            default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("a-topic-retry"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-retry"))),
+        });
+        let session_id = key.encode();
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
+            ..Default::default()
+        }).await.unwrap();
+        cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            session_id.clone(),
+            &MemoryPipelineConfig { load_memory: Some(false) },
+        ).await.unwrap();
+        let old = Session::new(cm.data_dir(), session_id.clone());
+        old.context_append(vec![
+            Message::User { content: ArcStr::from("旧问题") },
+            Message::Assistant {
+                content: serde_json::json!("旧回复"),
+                reasoning_content: serde_json::Value::Null,
+                tool_calls: serde_json::Value::Null,
+            },
+        ]).await.unwrap();
+
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        pipeline.incoming_message_batch(vec![incoming_event("retry-m1", "新问题")]).await;
+
+        // 第一套提示词 → MAYBE（无法解析）→ 第二套提示词 → NO（不同）→ 正式运行
+        assert_eq!(calls.load(Ordering::Relaxed), 3, "第一套失败后应换第二套提示词重试");
+        let current = Session::new(cm.data_dir(), session_id);
+        current.recover_from_cache().await.unwrap();
+        let ctx = current.build_context_full().await;
+        assert!(
+            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "第二套提示词确认不同后应归档清空旧上下文: {:?}", ctx);
+    }
+
+    #[tokio::test]
+    async fn event_mode_never_reads_memory_even_when_load_memory_enabled() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let base_url = start_mock_chat(calls.clone()).await;
+        let provider = "event-no-read-provider";
+        let model = "event-no-read-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from(base_url),
+                api_key: ArcStr::from("k"),
+            }),
+            // max_tokens_usage = 1：第一次响应的 100 tokens 必然超过阈值，触发降级处理
+            default_model_config: ModelConfig { max_tokens_usage: 1, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("a-event-no-read"),
+            role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r-event"), ArcStr::from("e1"))),
+        });
+        let session_id = key.encode();
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
+            ..Default::default()
+        }).await.unwrap();
+        // 故意开启 load_memory：事件模式应忽略它
+        cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            session_id,
+            &MemoryPipelineConfig { load_memory: Some(true) },
+        ).await.unwrap();
+
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        pipeline.clone().incoming_message_batch(vec![incoming_event("event-m1", "第一件事")]).await;
+        pipeline.clone().incoming_message_batch(vec![incoming_event("event-m2", "第二件事")]).await;
+
+        // 第一次：1 次正式调用；第二次超阈值：压缩 1 次 + 正式调用 1 次
+        assert_eq!(calls.load(Ordering::Relaxed), 3,
+            "事件模式应使用压缩（多一次压缩调用）而不是读取记忆");
     }
 }

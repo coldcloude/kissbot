@@ -1188,4 +1188,34 @@ mod tests {
         let cfg = manager.agent_role_config::<PipelineConfig>("a1", "r1").await.expect("agent/role 应能读到 pipeline");
         assert_eq!(cfg.pipeline_name.as_deref(), Some("memory_summary"));
     }
+
+    #[tokio::test]
+    async fn memory_pipeline_config_inherits_agent_and_role_then_session_overrides() {
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let agent_id = ArcStr::from("a-memory");
+        let role_name = ArcStr::from("r-memory");
+        // agent 关、role 开：role 覆盖 agent
+        manager.set_agent_role_config::<MemoryPipelineConfig>(
+            agent_id.clone(), ArcStr::from(""),
+            Arc::new(MemoryPipelineConfig { load_memory: Some(false) })).await.unwrap();
+        manager.set_agent_role_config::<MemoryPipelineConfig>(
+            agent_id.clone(), role_name.clone(),
+            Arc::new(MemoryPipelineConfig { load_memory: Some(true) })).await.unwrap();
+        let inherited = manager.agent_role_config::<MemoryPipelineConfig>(agent_id.as_str(), role_name.as_str())
+            .await.expect("agent/role 应能读到 memory_pipeline");
+        assert_eq!(inherited.load_memory, Some(true), "role 覆盖 agent");
+        assert!(inherited.get_effective_config().load_memory);
+
+        // 建立 session 时按 agent/role 导入；之后 session 级覆盖优先
+        let session_id = ArcStr::from("a-memory-r-memory");
+        manager.set_session_config_if_not_exists(
+            session_id.clone(), Arc::new(inherited.get_effective_config())).await.unwrap();
+        assert!(manager.session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(session_id.clone())
+            .await.load_memory, "新建 session 继承 agent/role");
+        manager.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            session_id.clone(), &MemoryPipelineConfig { load_memory: Some(false) }).await.unwrap();
+        assert!(!manager.session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(session_id)
+            .await.load_memory, "session 覆盖优先");
+    }
 }
