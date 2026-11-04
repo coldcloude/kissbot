@@ -571,32 +571,25 @@ mod tests {
         base_url
     }
 
-    /// 第一套提示词返回无法解析的 MAYBE，第二套提示词返回 NO，正式运行返回固定回复
-    async fn mock_retry_chat(
+    /// 判定请求返回无法解析的 MAYBE，正式运行返回固定回复
+    async fn mock_ambiguous_chat(
         State(calls): State<Arc<AtomicUsize>>,
         body: String,
     ) -> Json<serde_json::Value> {
         calls.fetch_add(1, Ordering::Relaxed);
-        let second_prompt = body.contains("必须且只能回答");
-        let first_prompt = body.contains("只回答 YES 或 NO") && !second_prompt;
-        let content = if second_prompt {
-            "NO"
-        } else if first_prompt {
-            "MAYBE"
-        } else {
-            "新回复"
-        };
+        let is_topic_check = body.contains("只回答 YES 或 NO");
+        let content = if is_topic_check { "MAYBE" } else { "新回复" };
         Json(serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
             "usage": {"total_tokens": 1}
         }))
     }
 
-    async fn start_mock_retry_chat(calls: Arc<AtomicUsize>) -> String {
+    async fn start_mock_ambiguous_chat(calls: Arc<AtomicUsize>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let app = Router::new()
-            .route("/chat/completions", post(mock_retry_chat))
+            .route("/chat/completions", post(mock_ambiguous_chat))
             .with_state(calls);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         base_url
@@ -678,14 +671,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn role_mode_topic_check_retries_with_second_prompt_on_ambiguous_answer() {
+    async fn role_mode_topic_check_ambiguous_answer_calls_llm_once_and_keeps_context() {
         ensure_test_globals().await;
         let cm = ConfigManager::get();
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let base_url = start_mock_retry_chat(calls.clone()).await;
-        let provider = "topic-retry-provider";
-        let model = "topic-retry-model";
+        let base_url = start_mock_ambiguous_chat(calls.clone()).await;
+        let provider = "topic-ambiguous-provider";
+        let model = "topic-ambiguous-model";
         cm.add_provider(provider, ProviderModelConfig {
             provider_config: Arc::new(ProviderConfig {
                 provider_type: ArcStr::from("openai"),
@@ -696,8 +689,8 @@ mod tests {
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
         let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a-topic-retry"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-retry"))),
+            agent_id: ArcStr::from("a-topic-ambiguous"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-ambiguous"))),
         });
         let session_id = key.encode();
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
@@ -720,16 +713,16 @@ mod tests {
         ]).await.unwrap();
 
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
-        pipeline.incoming_message_batch(vec![incoming_event("retry-m1", "新问题")]).await;
+        pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
-        // 第一套提示词 → MAYBE（无法解析）→ 第二套提示词 → NO（不同）→ 正式运行
-        assert_eq!(calls.load(Ordering::Relaxed), 3, "第一套失败后应换第二套提示词重试");
+        // 判定只调用一次（MAYBE 无法解析 → 按同一件事处理），随后正式运行一次
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "不循环重试，只调用一次判定");
         let current = Session::new(cm.data_dir(), session_id);
         current.recover_from_cache().await.unwrap();
         let ctx = current.build_context_full().await;
         assert!(
-            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
-            "第二套提示词确认不同后应归档清空旧上下文: {:?}", ctx);
+            ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "无法判定时按同一件事处理，旧上下文应保留: {:?}", ctx);
     }
 
     #[tokio::test]

@@ -97,7 +97,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 ### 6. 记忆读写
 - 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
 - 上下文超长时的处理：事件模式恒用压缩；角色模式按 `memory_pipeline.load_memory` 选择压缩或回溯。回溯由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
-- 角色模式且 `load_memory=false` 时不查询记忆；每批 run 前用两套提示词询问 LLM 是否同一件事（YES/NO）：第一套失败或无法解析后，第二套仍先要求判断是否同一件事、再强制只回答 YES/NO；两次都失败按同一件事处理。判定为不同时归档旧上下文、清空 session，只保留本批新消息
+- 角色模式且 `load_memory=false` 时不查询记忆；每批 run 前用当前完整 session + 新消息直接调用一次 LLM 判断是否同一件事（只回答 YES/NO，不经过 run_once、不读取 memory-store）；调用失败或无法解析按同一件事处理。判定为不同时归档旧上下文、清空 session，只保留本批新消息
 - 记忆回溯配置（时间窗、条数）、记忆读取开关与 LLM 参数独立，在建立 session 时一并固化到 session 配置
 
 ### 7. 管理命令处理

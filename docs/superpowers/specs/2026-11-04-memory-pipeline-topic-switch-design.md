@@ -35,29 +35,33 @@ pub struct EffectiveMemoryPipelineConfig {
 
 ## 读取判定
 
+判定在 `incoming_message_batch` 内联完成：
+
 ```text
-effective_load_memory = (role_event.event_id == None) && config.load_memory
+role_mode = (role_event.event_id == None)
+load_memory = role_mode && config.load_memory
 ```
 
-- 事件模式恒为 `false`：`run_once` 使用 `CompressTokenReducer`，不调用
-  `build_context_from_memory_store`。
-- 角色模式按配置：`true` 用 `MemoryRecoverTokenReducer`；`false` 用 `CompressTokenReducer`。
-- 判定在每批 run 开始时读取 session 配置，因此 `/load-memory` 修改后下一批即生效。
+- 事件模式恒为 `false`，且不读取 `load_memory` 配置：`run_once` 使用
+  `CompressTokenReducer`，不调用 `build_context_from_memory_store`。
+- 角色模式读一次 session 配置并得到 `load_memory`：`true` 用
+  `MemoryRecoverTokenReducer`；`false` 用 `CompressTokenReducer`。
+- 判定结果作为 `run` 的参数传入，`run` 内部不再重复读取配置或判断。
+- 每批 run 开始时读取一次配置，因此 `/load-memory` 修改后下一批即生效。
 
 ## 同话题判断（角色模式 + load_memory=false）
 
 每批消息打包完成后、进入 agentic loop 之前：
 
-1. 取当前完整 session（含 System）与本批新消息，调用当前 session 的 LLM（不执行工具）。
-2. 第一套提示词要求只回答 `YES`（同一件事）或 `NO`（不是同一件事）。
-3. 若调用失败或回答无法解析，换第二套措辞更强的提示词重试：仍然先要求判断是否同一件事，再要求必须且只能给出 `YES`/`NO`。
-4. 两次都失败按「同一件事」处理，记 warn，不丢上下文。
-5. 判定为 `NO`（不同）：
+1. 取当前完整 session（含 System）与本批新消息，直接调用当前 session 的 LLM：
+   不执行工具、不读取 memory-store、不经过 `run_once`。
+2. 只调用一次，提示词要求判断是否同一件事，并只回答 `YES`（同一件事）或 `NO`（不是同一件事）。
+3. 判定为 `NO`（不同）：
    - `Session::context_archive_and_clear_cache_and_reset_messages(vec![新消息])`：
      归档旧上下文、清空缓存、上下文只保留新消息；
    - `last_total_tokens` 归零；
    - 以空消息列表进入 run（新消息已在上下文中，避免重复追加）。
-6. 判定为 `YES`（相同）：保持上下文，按正常流程追加新消息并运行。
+4. 判定为 `YES`（相同），或调用失败、回答无法解析：按同一件事处理，保持上下文正常追加。
 
 判断请求本身不写入 session 上下文，也不计入会话 token 占用。
 
@@ -86,6 +90,6 @@ effective_load_memory = (role_event.event_id == None) && config.load_memory
 - agent/role 继承与 session 覆盖；
 - 事件模式忽略配置、角色模式读取配置；
 - `/load-memory` 参数解析与 session 写入；
-- `YES`/`NO` 解析与两套提示词请求组装；
+- `YES`/`NO` 解析与单次判断请求组装；
 - 集成测试：角色模式 `load_memory=false` 时，判定为 `NO` 后旧上下文进入
   `context-history`，当前上下文只保留新消息与本次回复，且 LLM 被调用两次（判定 + 正式运行）。

@@ -155,11 +155,6 @@ enum TopicDecision {
     Changed,
 }
 
-/// 默认记忆 pipeline 是否读取记忆：事件模式恒不读取（忽略配置）；角色模式取配置
-fn effective_load_memory(memory_key: &MemoryKey, load_memory: bool) -> bool {
-    memory_key.role_event.event_id.is_none() && load_memory
-}
-
 /// `/load-memory` 参数解析（调用方已按命令名匹配）：只接受 on/off（兼容 true/false）
 fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
     if parts.len() != 2 {
@@ -172,10 +167,8 @@ fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
     }
 }
 
-/// 同话题判定第一套提示词：要求只回答 YES/NO
+/// 同话题判定提示词：要求判断是否同一件事并只回答 YES/NO
 const TOPIC_CHECK_PROMPT: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）：YES = 同一件事，NO = 不是同一件事。只回答 YES 或 NO，不要输出其他内容。";
-/// 同话题判定第二套提示词：第一次未给出明确回答时使用，措辞更强
-const TOPIC_CHECK_PROMPT_RETRY: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）。必须且只能回答 YES 或 NO（YES = 同一件事，NO = 不是同一件事），禁止输出解释、标点、前后缀或任何其他文字。";
 
 /// 消息文本（判断请求只关心内容文本）：Assistant/Tool 的 content 为 JSON 值时转成字符串
 fn message_text(message: &Message) -> String {
@@ -620,24 +613,55 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         let content = pack_batch(&events);
         // 找到工具
         let tools = tools_for_session(self.session_id.clone()).await;
-        // 角色模式且不读取记忆：先判断新消息是否延续同一件事；不同则归档清空，只保留本批新消息
-        if !self.should_load_memory().await && self.memory_key.role_event.event_id.is_none() {
-            if self.topic_changed(&content).await {
-                if self.session
-                    .context_archive_and_clear_cache_and_reset_messages(vec![content.clone()])
-                    .await
-                    .is_ok()
-                {
-                    // 上下文已重建为只含本批新消息，token 占用随之清零
-                    self.last_total_tokens.store(0, Ordering::Relaxed);
-                    let _ = self.run_messages(Vec::new(), &tools).await;
-                    return;
+        // 事件模式恒不读取记忆；角色模式读一次 session 配置，判定结果直接传给 run，避免重复判断
+        let role_mode = self.memory_key.role_event.event_id.is_none();
+        let load_memory = if role_mode {
+            ConfigManager::get()
+                .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone())
+                .await
+                .load_memory
+        } else {
+            false
+        };
+        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；不同则归档清空，只保留本批新消息
+        if role_mode && !load_memory {
+            let history = self.session.build_context().await;
+            if history.iter().any(|message| !matches!(message, Message::System { .. })) {
+                let llm_cfg = ConfigManager::get()
+                    .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
+                    .await;
+                let messages = build_topic_check_messages(&history, &content, TOPIC_CHECK_PROMPT);
+                let changed = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
+                    Ok(res) => match parse_topic_decision(res.content.as_deref().unwrap_or("")) {
+                        Some(TopicDecision::Changed) => true,
+                        Some(TopicDecision::Same) => false,
+                        None => {
+                            warn!("同话题判断未给出明确 YES/NO，按同一件事处理");
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        warn!("同话题判断调用失败，按同一件事处理: {:?}", e);
+                        false
+                    }
+                };
+                if changed {
+                    if self.session
+                        .context_archive_and_clear_cache_and_reset_messages(vec![content.clone()])
+                        .await
+                        .is_ok()
+                    {
+                        // 上下文已重建为只含本批新消息，token 占用随之清零
+                        self.last_total_tokens.store(0, Ordering::Relaxed);
+                        let _ = self.run(Vec::new(), &tools, load_memory).await;
+                        return;
+                    }
+                    warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
                 }
-                warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
             }
         }
         // 发送消息
-        let _ = self.run(content, &tools).await;
+        let _ = self.run(vec![content], &tools, load_memory).await;
     }
 }
 
@@ -668,40 +692,6 @@ impl DefaultAgenticLoopPipelineWithMemory {
         consumer.processor = Arc::downgrade(&result);
         spawn(consumer.run());
         result
-    }
-
-    /// 当前是否读取记忆：事件模式恒 false（忽略配置）；角色模式按 session 配置（默认 true）
-    async fn should_load_memory(&self) -> bool {
-        let cfg = ConfigManager::get()
-            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone())
-            .await;
-        effective_load_memory(self.memory_key.as_ref(), cfg.load_memory)
-    }
-
-    /// 判断本批新消息是否开启了另一件事：先按完整会话 + 第一套提示词询问，未得到明确 YES/NO
-    /// 时换第二套更强措辞重试；两次都失败按同一件事处理（不丢上下文）。
-    async fn topic_changed(&self, new_message: &Message) -> bool {
-        let history = self.session.build_context().await;
-        if !history.iter().any(|message| !matches!(message, Message::System { .. })) {
-            return false;
-        }
-        let llm_cfg = ConfigManager::get()
-            .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
-            .await;
-        for prompt in [TOPIC_CHECK_PROMPT, TOPIC_CHECK_PROMPT_RETRY] {
-            let messages = build_topic_check_messages(&history, new_message, prompt);
-            match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
-                Ok(res) => {
-                    if let Some(decision) = parse_topic_decision(res.content.as_deref().unwrap_or("")) {
-                        return decision == TopicDecision::Changed;
-                    }
-                    warn!("同话题判断未给出明确 YES/NO，换提示词重试");
-                }
-                Err(e) => warn!("同话题判断调用失败，换提示词重试: {:?}", e),
-            }
-        }
-        warn!("同话题判断两次均失败，按同一件事处理");
-        false
     }
 
     /// `/load-memory`：写当前 session 的记忆读取开关（事件模式下写入但不生效）
@@ -784,13 +774,9 @@ impl DefaultAgenticLoopPipelineWithMemory {
         Ok(next)
     }
 
-    pub async fn run(&self, message: Message, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
-        self.run_messages(vec![message], tools).await
-    }
-
-    /// 用给定的消息启动一次 run；messages 为空表示上下文已由调用方准备好（如归档后只保留新消息）
-    async fn run_messages(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<()> {
-        let load_memory = self.should_load_memory().await;
+    /// 用给定消息启动一次 run；messages 为空表示上下文已由调用方准备好（如归档后只保留新消息）。
+    /// load_memory 由批次入口按事件/角色模式与 session 配置判定后传入，run 内部不再重复判断。
+    pub async fn run(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, load_memory: bool) -> Result<()> {
         let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
         let mut next = self.run_once(round, messages, tools, &mut pending_contents, load_memory).await?;
@@ -1084,30 +1070,6 @@ mod tests {
         }
     }
 
-    fn memory_key(agent_id: &str, role: &str, event: Option<&str>) -> MemoryKey {
-        MemoryKey {
-            agent_id: ArcStr::from(agent_id),
-            role_event: Arc::new(match event {
-                Some(event_id) => kissbot_api::RoleEvent::with_event(ArcStr::from(role), ArcStr::from(event_id)),
-                None => kissbot_api::RoleEvent::new(ArcStr::from(role)),
-            }),
-        }
-    }
-
-    #[test]
-    fn event_mode_ignores_load_memory_config() {
-        let key = memory_key("a", "r", Some("e1"));
-        assert!(!effective_load_memory(&key, true), "事件模式即便配置为 true 也不读取记忆");
-        assert!(!effective_load_memory(&key, false));
-    }
-
-    #[test]
-    fn role_mode_uses_load_memory_config() {
-        let key = memory_key("a", "r", None);
-        assert!(effective_load_memory(&key, true));
-        assert!(!effective_load_memory(&key, false));
-    }
-
     #[test]
     fn parse_load_memory_command_accepts_on_off_and_rejects_others() {
         assert!(parse_load_memory_command(&[ArcStr::from("/load-memory"), ArcStr::from("on")]).unwrap());
@@ -1136,11 +1098,10 @@ mod tests {
     }
 
     #[test]
-    fn topic_check_retry_prompt_keeps_task_and_strict_format() {
+    fn topic_check_prompt_keeps_task_and_answer_format() {
         assert!(TOPIC_CHECK_PROMPT.contains("是否在延续当前会话中的同一件事"));
-        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("是否在延续当前会话中的同一件事"),
-            "重试提示词也必须重复判断任务，不能只有格式要求");
-        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("必须且只能回答 YES 或 NO"));
+        assert!(TOPIC_CHECK_PROMPT.contains("YES = 同一件事"));
+        assert!(TOPIC_CHECK_PROMPT.contains("只回答 YES 或 NO"));
     }
 
     #[test]
