@@ -5,11 +5,12 @@
 //!    落到该 case，没有 meta 的直接跳过；meta 指向非叶子 case 时跳过（不更新当前指针）。全部
 //!    pending 处理完后统一推进一次水位；
 //! 2. **再定位新消息**：第 1 轮按 case 分组并标记属于当前 case 的组，当前 case 组直接并入
-//!    当前 case；其余组以组为单位自顶层逐层归并（非叶子继续下潜），或在本层新增叶子 case。
+//!    当前 case；其余组以组为单位自顶层逐层归并：模型只返回一个名称，命中当层叶子即归入、
+//!    命中复合 case 则下潜、未命中则在当层新建叶子 case（不再下钻）。
 //!
-//! 事件模式（给出 `event_id`）不调分组轮：新消息归入事件根 `event-{event_id}`（叶子直接归入，
-//! 非叶子时以它为根继续下潜；case 名即查找键，节点本身不带事件字段）。两种 case 共用一片森林、靠名称
-//! 前缀区分（角色 `role-`、事件 `event-`），角色模式的逐层判定候选只取 `role-` 前缀，看不到事件叶子。
+//! 事件模式（给出 `event_id`）不调分组轮：新消息归入事件根 `[event]{event_id}`（叶子直接归入，
+//! 非叶子时以它为父层继续逐层判定；case 名即查找键，节点本身不带事件字段）。角色树与事件树靠
+//! 路径首段区分（角色 case 是模型名，事件根是 `[event]` 前缀），角色模式的候选看不到事件树。
 //!
 //! 批次条目是**通道消息**（见 [`BatchItem`]）：归档阶段只包含已存记录，定位阶段只包含新消息。
 //! 一条消息对应一条原文（`msg_id` 是分组标识），内容里的思考/工具记录直接内嵌、不单独成条；新消息不与已存
@@ -25,11 +26,12 @@ use arcstr::ArcStr;
 use kissbot_api::{CaseBrief, ChannelKey, Content, LocateMessage, LocatedGroup, RecordPosition, RoleEvent};
 
 use crate::error::{Error, Result};
-use crate::model::{DecisionModel, GroupItem, LevelDecision};
+use crate::model::{DecisionModel, GroupItem};
 use crate::records::{
     RecordEntry, StoreMessage, append_case_records, render_entry, synthesize_content,
 };
 use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleState, role_event_of};
+use crate::case_name::{leaf_name, valid_case_path, valid_event_id};
 use crate::tree::{CaseTree, event_case_name, is_role_root};
 
 /// 归档结果
@@ -139,54 +141,17 @@ impl BatchItem {
 /// 一个组的落点判定（只读结论，尚未落地）
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GroupVerdict {
-    /// 组里的内容归入该已有 case
+    /// 组里的内容归入该已有叶子 case
     Case(ArcStr),
-    /// 角色模式新建叶子 case：名称与摘要同一次判定就由模型给出（id 为 `role-{名称}`）
-    NewRole { parent: Option<ArcStr>, name: ArcStr, summary: ArcStr },
-    /// 事件模式新建：id 由记忆后缀固定（`event-{事件标识}`），摘要按内容生成
-    NewEvent,
-    /// 事件根非叶子、下潜遍历时新建子 case：`event-{事件标识}-{名称}`，摘要由判定给出
-    NewEventChild { parent: ArcStr, name: ArcStr, summary: ArcStr },
+    /// 在当前层新建叶子 case：`parent` 为 None 表示角色顶层（或事件根），
+    /// `name` 是模型给出的最后一段 / 事件根固定名；不生成摘要。
+    New { parent: Option<ArcStr>, name: ArcStr },
 }
 
 /// 分组落位（内部）：落点判定 + 批次内条目下标
 struct Placement {
     verdict: GroupVerdict,
     items: Vec<usize>,
-}
-
-/// 逐层判定的两种候选集：角色模式只看 `role-` case，事件模式看事件根下的全部子 case。
-#[derive(Clone, Copy)]
-enum PlacementMode {
-    Role,
-    Event,
-}
-
-impl PlacementMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Role => "角色模式",
-            Self::Event => "事件模式",
-        }
-    }
-
-    fn children(self, tree: &CaseTree, parent: &str) -> Vec<ArcStr> {
-        match self {
-            Self::Role => tree.role_children_ids(parent),
-            Self::Event => tree.children_ids(parent),
-        }
-    }
-
-    fn new_verdict(self, parent: Option<ArcStr>, name: ArcStr, summary: ArcStr) -> Result<GroupVerdict> {
-        match self {
-            Self::Role => Ok(GroupVerdict::NewRole { parent, name, summary }),
-            Self::Event => {
-                let parent =
-                    parent.ok_or_else(|| Error::StateError("事件模式逐层判定缺少父 case".into()))?;
-                Ok(GroupVerdict::NewEventChild { parent, name, summary })
-            }
-        }
-    }
 }
 
 /// 待归档记录的处理结果。
@@ -278,11 +243,11 @@ impl Archiver {
         if pending.is_empty() && messages.is_empty() {
             return Ok(ArchiveResult::default());
         }
-        // 事件标识同样要能用作 case 名（只允许英文字母、数字与 `-`）
-        if let Some(event_id) = event_id.as_ref().filter(|id| !crate::model::valid_case_name(id)) {
+        // 事件标识用于事件根 `[event]{event_id}`（只允许英文字母、数字与 `-`）
+        if let Some(event_id) = event_id.as_ref().filter(|id| !valid_event_id(id)) {
             return Err(Error::StateError(format!(
                 "事件标识不能用于 case 名（只允许英文字母、数字与 '-'，且不超过 {} 字符）: {}",
-                crate::model::MAX_CASE_NAME_LEN,
+                crate::case_name::MAX_CASE_NAME_LEN,
                 event_id
             ).into()));
         }
@@ -368,7 +333,7 @@ impl Archiver {
         let mut item_case: Vec<Option<ArcStr>> = vec![None; items.len()];
         let mut skipped: BTreeSet<ArcStr> = BTreeSet::new();
         for (index, item) in items.iter().enumerate() {
-            let Some(case_name) = item.meta_case.as_ref().filter(|name| usable_meta_case(name)) else {
+            let Some(case_name) = item.meta_case.as_ref().filter(|name| valid_case_path(name)) else {
                 continue;
             };
             if state.tree.contains(case_name) && !state.tree.is_leaf(case_name) {
@@ -381,10 +346,11 @@ impl Archiver {
             new_records.entry(case_name.clone()).or_default().extend(item.record.iter().cloned());
         }
 
-        // meta 指向的 case 可能还不存在（例如重建后森林里还没有该节点）：按 meta 建出叶子 case。
+        // meta 指向的 case 可能还不存在（例如重建后森林里还没有该节点）：按 meta 的完整路径
+        // 逐段建出，缺的祖先建成复合 case，最后一段建成叶子。
         for case_name in new_records.keys() {
             if !state.tree.contains(case_name) {
-                state.tree.create_node(case_name, None, &now);
+                state.tree.ensure_path(case_name, &now);
             }
         }
 
@@ -461,11 +427,11 @@ impl Archiver {
                 let root_case = event_case_name(event_id.as_str());
                 let indices: Vec<usize> = (0..items.len()).collect();
                 let verdict = match state.tree.event_case(event_id.as_str()) {
-                    // 事件根还不存在：由落地阶段建出（只含消息时记忆条数为 0）
-                    None => GroupVerdict::NewEvent,
+                    // 事件根还不存在：由落地阶段按固定名建出（只含消息时记忆条数为 0）
+                    None => GroupVerdict::New { parent: None, name: root_case.clone() },
                     // 事件根是叶子：直接命中（按 event_id 定位，不看层级）
                     Some(_) if state.tree.is_leaf(&root_case) => GroupVerdict::Case(root_case),
-                    // 事件根非叶子：以它为根继续遍历（新 case 用 `event-{事件标识}-*`）
+                    // 事件根非叶子：以它为父层继续逐层判定（新 case 是它的子 case）
                     Some(_) => {
                         let text = render_group(items, &indices);
                         self.decide_placement(
@@ -474,7 +440,6 @@ impl Archiver {
                             &state.tree,
                             &text,
                             Some(root_case.clone()),
-                            PlacementMode::Event,
                         )
                         .await?
                     }
@@ -488,7 +453,7 @@ impl Archiver {
             }
         };
 
-        // 2. 落地 + 建出/命中 case；新建 case 的摘要由这次判定一并给出。
+        // 2. 落地 + 建出/命中 case；定位阶段不生成摘要（等消息归档时按记录生成）。
         let mut item_case: Vec<Option<ArcStr>> = vec![None; items.len()];
         let mut groups: Vec<LocatedGroup> = Vec::with_capacity(placements.len());
         for placement in &placements {
@@ -501,45 +466,20 @@ impl Archiver {
                         continue;
                     }
                     // 当前 case 可能还没落盘（例如本批带 meta 的待归档记录指向它，或状态指针陈旧）：
-                    // 定位结果必须是叶子，此时按顶层叶子建出。
+                    // 定位结果必须是叶子，此时按路径建出。
                     if !state.tree.contains(case_name) {
-                        state.tree.create_node(case_name, None, &now);
+                        state.tree.ensure_path(case_name, &now);
                     }
                     case_name.clone()
                 }
-                GroupVerdict::NewRole { parent, name, summary } => {
-                    let case_name = state.tree.unique_role_case_name(name);
-                    state.tree.create_node(&case_name, parent.as_deref(), &now);
-                    state.tree.set_summary(&case_name, summary, &now);
-                    case_name
-                }
-                GroupVerdict::NewEventChild { parent, name, summary } => {
-                    let Some(event_id) = event_id.as_ref() else {
-                        return Err(Error::StateError("事件模式缺少事件标识".into()));
+                GroupVerdict::New { parent, name } => {
+                    let case_name = match parent {
+                        Some(parent) => state.tree.create_child(parent, name, &now),
+                        None => state.tree.create_top_level(name, &now),
                     };
-                    let case_name = state.tree.unique_event_child_case_name(event_id, name);
-                    if case_name.len() > 128 {
-                        return Err(Error::StateError(format!(
-                            "事件子 case 名过长（超过 128 字符）: {}",
-                            case_name
-                        ).into()));
-                    }
-                    state.tree.create_node(&case_name, Some(parent.as_str()), &now);
-                    state.tree.set_summary(&case_name, summary, &now);
-                    case_name
-                }
-                GroupVerdict::NewEvent => {
-                    // 名称由 event_id 固定，可能已被建出（并发/重复请求）
-                    let Some(event_id) = event_id.as_ref() else {
-                        return Err(Error::StateError("事件模式缺少事件标识".into()));
-                    };
-                    let case_name = event_case_name(event_id.as_str());
-                    if state.tree.event_case(event_id.as_str()).is_none() {
-                        state.tree.create_node(&case_name, None, &now);
-                        // 只有消息、还没有记录：立刻按本组内容生成摘要（有记录时交给归档阶段按记录生成）
-                        let text = render_group(items, &placement.items);
-                        let summary = self.model.summarize(&handle.id, Some(event_id.clone()), &text).await?;
-                        state.tree.set_summary(&case_name, &summary, &now);
+                    if !state.tree.is_leaf(&case_name) {
+                        tracing::warn!("跳过定位结果指向的非叶子 case: {}", case_name);
+                        continue;
                     }
                     case_name
                 }
@@ -550,7 +490,7 @@ impl Archiver {
             groups.push(LocatedGroup { messages: messages.into_iter().collect(), case_name: case_name.clone() });
         }
 
-        // 3. 新建 case 的摘要已由判定给出；祖先复合 case 的摘要留到归档阶段，
+        // 3. 定位阶段只建出叶子 case，不生成摘要；祖先复合 case 的摘要留到归档阶段，
         //    等这些消息真正写入并归档后再按受影响分支重算。
         //
         // 4. 当前 case 指针指向本批最晚一条消息落入的 case（被跳过的组不算）。
@@ -617,11 +557,11 @@ impl Archiver {
                     Some(current) => GroupVerdict::Case(current),
                     // 没有当前 case：只定位的组容忍该不一致，退回逐层判定
                     None => self
-                        .decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None, PlacementMode::Role)
+                        .decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None)
                         .await?,
                 }
             } else {
-                self.decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None, PlacementMode::Role)
+                self.decide_placement(agent_role, role_event.event_id.clone(), &state.tree, &text, None)
                     .await?
             };
             placements.push(Placement { verdict, items: group_items });
@@ -629,11 +569,12 @@ impl Archiver {
         Ok(placements)
     }
 
-    /// 逐层判定一个组的落点（只读）：命中叶子 case 即 [`GroupVerdict::Case`]；
-    /// 当层未命中（或命中非叶子后其子层都未命中）即新建叶子 case——名称与摘要
-    /// 由这次判定一并给出，因此**即使当层没有候选 case 也要调用模型**（空候选提示词里会说明）。
+    /// 逐层判定一个组的落点（只读）：模型只返回一个名称（当层已有 case 的名称或新名称）。
     ///
-    /// `PlacementMode` 决定候选集：角色模式只取 `role-` case；事件模式取事件根下的全部子 case。
+    /// - 名称等于当层某个候选的最后一段：叶子即 [`GroupVerdict::Case`]，复合则下潜到它的子层；
+    /// - 名称不等于任何候选：在当层新建叶子 case（[`GroupVerdict::New`]），不再下钻。
+    ///
+    /// 即使当层没有候选也要调用模型（空候选提示词里要求必须给新名称）。
     /// 事件模式由调用方把 `parent` 设为事件根，角色模式顶层为 `None`。
     ///
     /// 没有层数上限：每判定一次要么落在当层（并入叶子 / 新建），要么下潜一层；
@@ -645,41 +586,24 @@ impl Archiver {
         tree: &CaseTree,
         text: &str,
         parent: Option<ArcStr>,
-        mode: PlacementMode,
     ) -> Result<GroupVerdict> {
         let mut parent = parent;
-        let mut level = match (&parent, mode) {
-            (Some(id), PlacementMode::Role) => tree.role_children_ids(id),
-            (None, PlacementMode::Role) => tree.role_top_level_ids(),
-            (Some(id), PlacementMode::Event) => tree.children_ids(id),
-            (None, PlacementMode::Event) => {
-                return Err(Error::StateError("事件模式逐层判定缺少事件根".into()));
-            }
-        };
-
         loop {
+            let level = match parent.as_deref() {
+                None => tree.role_top_level_ids(),
+                Some(parent) => tree.children_ids(parent),
+            };
             let briefs: Vec<CaseBrief> = tree.briefs(&level);
-            match self.model.decide_level(agent_role, event_id.clone(), text, &briefs).await? {
-                LevelDecision::New { name, summary } => return mode.new_verdict(parent, name, summary),
-                LevelDecision::Merge(case_name) => {
-                    if !level.contains(&case_name) {
-                        return Err(Error::ModelApiError(format!(
-                            "{}当层判定给出的 case {} 不在当层候选里（角色 {}，事件 {:?}，候选 {:?}）",
-                            mode.label(),
-                            case_name,
-                            agent_role,
-                            event_id,
-                            level
-                        ).into()));
-                    }
-                    if tree.is_leaf(&case_name) {
-                        return Ok(GroupVerdict::Case(case_name));
-                    }
-                    // 非叶子：下潜到其子层继续判定
-                    level = mode.children(tree, &case_name);
-                    parent = Some(case_name);
+            let name = self.model.decide_level(agent_role, event_id.clone(), text, &briefs).await?;
+            if let Some(child) = tree.child_id(parent.as_deref(), &name) {
+                if tree.is_leaf(&child) {
+                    return Ok(GroupVerdict::Case(child));
                 }
+                // 复合 case：下潜到它的子层继续判定
+                parent = Some(child);
+                continue;
             }
+            return Ok(GroupVerdict::New { parent, name });
         }
     }
 
@@ -756,7 +680,7 @@ impl Archiver {
                     .cloned()
                     .or_else(|| state.tree.brief(&child).map(|b| b.summary.clone()))
                     .unwrap_or_default();
-                content.push_str(&format!("- {}: {}\n", child, summary));
+                content.push_str(&format!("- {}: {}\n", leaf_name(&child), summary));
             }
         }
 
@@ -767,14 +691,6 @@ impl Archiver {
 /// 组内条目文本：每条消息一行 `[时间] 说话人: 原文`（思考/工具已内嵌在原文里）
 fn render_group(items: &[BatchItem], indices: &[usize]) -> String {
     indices.iter().map(|index| items[*index].render()).collect::<Vec<_>>().join("\n")
-}
-
-/// 写入方给出的 case 名能否直接用作节点/目录名：只允许英文字母、数字与 `-`（与组件生成的
-/// `role-` / `event-` case 名一致），并限制长度以避免异常 meta 造成路径穿越或超长目录名。
-fn usable_meta_case(case_name: &str) -> bool {
-    !case_name.is_empty()
-        && case_name.len() <= 128
-        && case_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// 水位推进到已归档范围末尾
@@ -903,13 +819,13 @@ mod tests {
     #[test]
     fn recompute_order_puts_descendants_first() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, "t");
-        tree.create_node("role-2", Some("role-1"), "t");
-        tree.create_node("role-3", Some("role-2"), "t");
-        let touched: BTreeSet<ArcStr> = [ArcStr::from("role-3")].into_iter().collect();
+        tree.create_node("a", None, "t");
+        tree.create_node("a/b", Some("a"), "t");
+        tree.create_node("a/b/c", Some("a/b"), "t");
+        let touched: BTreeSet<ArcStr> = [ArcStr::from("a/b/c")].into_iter().collect();
         let archiver = Archiver::new(Arc::new(crate::stub::StubModel::new()), 200);
         let order = archiver.recompute_order(&tree, &touched);
-        assert_eq!(order, vec![ArcStr::from("role-3"), ArcStr::from("role-2"), ArcStr::from("role-1")]);
+        assert_eq!(order, vec![ArcStr::from("a/b/c"), ArcStr::from("a/b"), ArcStr::from("a")]);
     }
 
 }

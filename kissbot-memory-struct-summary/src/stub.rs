@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
 use crate::error::Result;
-use crate::model::{DecisionModel, GroupItem, LevelDecision, MessageGroup};
+use crate::model::{DecisionModel, GroupItem, MessageGroup};
 use crate::agent_role::AgentRole;
 
 /// 预置分组：批次下标（组内消息在本批中的位置）+ 是否当前 case
@@ -19,7 +19,7 @@ pub type StubGroup = (Vec<usize>, bool);
 pub struct StubModel {
     /// 第 1 轮（分组轮）结果；队列为空时默认整批一组（有当前 case 即标记为当前 case 组）
     pub group_decisions: Mutex<VecDeque<Vec<StubGroup>>>,
-    pub level_decisions: Mutex<VecDeque<LevelDecision>>,
+    pub level_decisions: Mutex<VecDeque<ArcStr>>,
     /// 每次 summarize 的输入（断言级联时父 case 能看到子 case 摘要）
     pub summary_inputs: Mutex<Vec<ArcStr>>,
     /// 每次判定调用收到的提示词（断言调用顺序与候选集合）
@@ -45,8 +45,9 @@ impl StubModel {
         self.push_groups(vec![(messages.to_vec(), is_current)])
     }
 
-    pub fn push_level(&self, decision: LevelDecision) -> &Self {
-        self.level_decisions.lock().unwrap().push_back(decision);
+    /// 预置第 2 轮逐层判定的返回名称
+    pub fn push_level(&self, name: &str) -> &Self {
+        self.level_decisions.lock().unwrap().push_back(ArcStr::from(name));
         self
     }
 
@@ -110,10 +111,10 @@ impl DecisionModel for StubModel {
         }])
     }
 
-    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, level: &[CaseBrief]) -> Result<LevelDecision> {
+    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, batch: &str, level: &[CaseBrief]) -> Result<ArcStr> {
         self.prompts.lock().unwrap().push(ArcStr::from(crate::model::level_prompt(batch, level)));
-        // 默认新开叶子 case：名称固定 "case"（重名时组件追加 -2、-3…），摘要一并给出
-        Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or_else(|| LevelDecision::new_case("case", "新 case 摘要")))
+        // 默认新开叶子 case：名称固定 "case"；同名兄弟由组件复用同一个节点
+        Ok(self.level_decisions.lock().unwrap().pop_front().unwrap_or_else(|| ArcStr::from("case")))
     }
 
     async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, content: &str) -> Result<ArcStr> {

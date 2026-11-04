@@ -177,19 +177,19 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
         assert!(body["data"].get("cases").is_none(), "响应只有分组");
-        assert_eq!(body["data"]["groups"][0]["case_name"], "role-case");
+        assert_eq!(body["data"]["groups"][0]["case_name"], "case");
         assert_eq!(body["data"]["groups"][0]["messages"], serde_json::json!(["m1"]));
 
-        // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要来自逐层判定）
+        // 查询只读：能看到刚由定位建出的 case（记忆条数 0，摘要为空）
         let (status, body) = post_json(router.clone(), "/summary/tree/get", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["data"]["nodes"][0]["case_name"], "role-case");
+        assert_eq!(body["data"]["nodes"][0]["case_name"], "case");
         assert_eq!(body["data"]["nodes"][0]["record_count"], 0);
-        assert_eq!(body["data"]["nodes"][0]["summary"], "新 case 摘要");
+        assert_eq!(body["data"]["nodes"][0]["summary"], "");
 
         // case 不存在 → 失败响应（摘要与原文一致）
         for path in ["/summary/case/summary", "/summary/case/records"] {
-            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "role-9"})).await;
+            let (status, body) = post_json(router.clone(), path, serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}, "case_name": "9"})).await;
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(body["success"], false);
         }
@@ -210,7 +210,7 @@ mod tests {
             "user_id": "self", "self_user_id": "self", "messenger_id": "web", "group_id": "g1",
             "is_self": 1, "messenger_name": "", "user_name": "alice", "group_name": "",
             "content": {"msg_type": "Text", "data": "你好"}, "time": "2026-09-22 10:00:00", "sn": 1,
-            "meta": {"memory_summary": {"case_name": "role-case"}}
+            "meta": {"memory_summary": {"case_name": "case"}}
         });
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), format!("{}\n", record)).await.unwrap();
 
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(body["data"]["case_count"], 1);
 
         let (_, body) = post_json(router, "/summary/case/list", serde_json::json!({"agent_id": "0", "role_event": {"role_name": "dev"}})).await;
-        assert_eq!(body["data"]["cases"][0]["case_name"], "role-case");
+        assert_eq!(body["data"]["cases"][0]["case_name"], "case");
         assert_eq!(body["data"]["cases"][0]["record_count"], 1);
     }
 }

@@ -167,7 +167,7 @@ mod tests {
                 "messenger_name": "", "user_name": "alice", "group_name": "",
                 "content": {"msg_type": "Text", "data": "内容"},
                 "time": format!("2026-09-22 10:0{}:00", sn), "sn": sn,
-                "meta": {"memory_summary": {"case_name": "role-case"}}
+                "meta": {"memory_summary": {"case_name": "case"}}
             });
             lines.push_str(&serde_json::to_string(&record).unwrap());
             lines.push('\n');
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(tree.nodes[0].record_count, 2, "该通道全部待处理记录一起处理");
         assert_eq!(tree.current_cases.len(), 1);
         assert_eq!(tree.current_cases[0].channel, channel);
-        assert_eq!(tree.current_cases[0].case_name.as_str(), "role-case");
+        assert_eq!(tree.current_cases[0].case_name.as_str(), "case");
 
         let state = handle.state.lock().await;
         assert_eq!(state.watermarks.get(&(role.clone(), channel.clone())).unwrap().sn, 2);
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(AgentRole::new(ArcStr::from("0"), role_event.role_name.clone()), AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "dev-e1 属于角色 dev");
         assert_eq!(
             crate::tree::event_case_name(role_event.event_id.as_deref().unwrap()).as_str(),
-            "event-e1"
+            "[event]e1"
         );
     }
 }
