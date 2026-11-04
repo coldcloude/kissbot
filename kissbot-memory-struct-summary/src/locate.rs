@@ -38,7 +38,7 @@ mod tests {
     use crate::records::{RecordEntry, StoreMessage};
     use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
-    use kissbot_api::{ChannelKey, ChannelRecord, Content, LocateMessage, RoleEvent};
+    use kissbot_api::{ChannelKey, ChannelRecord, Content, LocateMessage, MemoryMeta, RoleEvent};
 
     fn role_event(role_name: &str, event_id: Option<&str>) -> RoleEvent {
         RoleEvent {
@@ -101,17 +101,23 @@ mod tests {
         manager.open(AgentRole::new(ArcStr::from("0"), role_event.role_name.clone())).await.unwrap()
     }
 
-    /// 归档一批记录（不带新消息 = 原来的归档）
+    /// 归档一批记录（带 meta 直接落到指定 case；不带新消息 = 原来的归档）
     async fn archive(
         handle: &AgentRoleHandle,
         model: &Arc<StubModel>,
         role_event: &RoleEvent,
         channel: &ChannelKey,
         entries: &[RecordEntry],
+        case_name: &str,
     ) {
         let pending: Vec<StoreMessage> = entries
             .iter()
-            .map(|record| StoreMessage { channel: ChannelKey::from(record.as_ref()), record: record.clone() })
+            .map(|record| {
+                let mut record = record.as_ref().clone();
+                record.meta = Some(Arc::new(MemoryMeta::with_case_name(ArcStr::from(case_name))));
+                let record = Arc::new(record);
+                StoreMessage { channel: ChannelKey::from(record.as_ref()), record }
+            })
             .collect();
         let archiver = Archiver::new(model.clone(), 200);
         let mut state = handle.state.lock().await;
@@ -182,7 +188,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
 
         // 第 1 轮把整批标记为当前 case 组 → 命中该通道当前 case
         model.push_group(&[0, 1], true);
@@ -200,7 +206,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
 
         // 组未标记当前 case → 逐层判定给出名称与摘要 → 建出记忆条数为 0 的新 case
         model.push_group(&[0], false);
@@ -223,10 +229,8 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "case 一")]).await;
-        // 第二批未标记当前 case → 顶层归并新建 case-2
-        model.push_group(&[0], false);
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 11:00:00", 2, "case 二")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "case 一")], "role-case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 11:00:00", 2, "case 二")], "role-case-2").await;
         {
             let state = handle.state.lock().await;
             assert_eq!(state.tree.len(), 2);
@@ -259,7 +263,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "父 case 内容")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "父 case 内容")], "role-case").await;
         // 构造 case（父）/ role-2（子）结构
         {
             let mut state = handle.state.lock().await;
@@ -293,9 +297,8 @@ mod tests {
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         let other = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")]).await;
-        model.push_group(&[0], false);
-        archive(&handle, &model, &role, &other, &[channel_in(&other, "2099-01-01 11:00:00", 2, "通道二")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")], "role-case").await;
+        archive(&handle, &model, &role, &other, &[channel_in(&other, "2099-01-01 11:00:00", 2, "通道二")], "role-case-2").await;
         let (current_first, current_other) = {
             let state = handle.state.lock().await;
             (
@@ -324,7 +327,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
 
         // 两组都标记为当前 case 的延续，中间隔着一条别的话题 → 两组落点相同
         model.push_groups(vec![
@@ -354,7 +357,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
         // 删掉原文副本目录：定位不读原文，仍应命中
         tokio::fs::remove_dir_all(handle.cases_dir()).await.unwrap();
 
@@ -370,7 +373,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", Some("e1"))).await;
         let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")]).await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")], "event-e1").await;
 
         let response = locate(&handle, &model, &role, &channel_key(), &[message("任意消息"), message("又一条")]).await;
         assert_eq!(case_names(&response), vec!["event-e1"], "事件模式固定归入事件标识本身");

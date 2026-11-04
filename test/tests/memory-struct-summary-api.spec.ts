@@ -61,7 +61,7 @@ async function apiPost(request: APIRequestContext, base: string, path: string, b
 }
 
 /** 推送一条通道消息到 memory-store（is_self 为 1 表示 agent 实际发送） */
-async function pushChannel(request: APIRequestContext, user: string, isSelf: number, text: string, time: string, msgId = '') {
+async function pushChannel(request: APIRequestContext, user: string, isSelf: number, text: string, time: string, msgId = '', meta?: unknown) {
   const resp = await apiPost(request, STORE_BASE, '/store/channel', {
     requests: [{
       msg_id: msgId,
@@ -77,6 +77,7 @@ async function pushChannel(request: APIRequestContext, user: string, isSelf: num
       group_name: '',
       content: { msg_type: 'Text', data: text },
       time,
+      ...(meta === undefined ? {} : { meta }),
     }],
     force: 0,
   });
@@ -269,9 +270,10 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const t0 = timeAt(0);
     const t1 = timeAt(1);
     const t2 = timeAt(2);
-    await pushChannel(request, 'alice', 0, '第一个问题', t0);
-    await pushChannel(request, 'bot', 1, '第一个回答', t1);
-    await pushChannel(request, 'alice', 0, '下一个问题', t2);
+    const meta = { memory_summary: { case_name: 'role-case' } };
+    await pushChannel(request, 'alice', 0, '第一个问题', t0, '', meta);
+    await pushChannel(request, 'bot', 1, '第一个回答', t1, '', meta);
+    await pushChannel(request, 'alice', 0, '下一个问题', t2, '', meta);
     // 记录真正落盘后再断言（推送接口返回不代表已可读）
     await waitForStoreFile(ROLE, t2, '下一个问题');
 
@@ -290,6 +292,8 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const tree = await treeOf(request, ROLE);
     expect(tree.nodes).toHaveLength(1);
     expect(tree.nodes[0].case_name).toBe('role-case');
+    expect(tree.nodes[0].parent_id).toBeUndefined();
+    expect(tree.nodes.some((n: any) => n.case_name === '__role_root__')).toBe(false, '隐藏的角色根不出现在 tree/get');
     expect(tree.nodes[0].record_count).toBe(3);
     expect(tree.nodes[0].summary).toContain('桩摘要');
     // 当前 case 指针按通道保存：通道 = messenger + self_user_id + group
@@ -395,6 +399,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
           self_user_id: SELF_USER, group_id: GROUP, is_self: item.isSelf,
           messenger_name: '', user_name: item.user, group_name: '',
           content: { msg_type: 'Text', data: item.text }, time: item.time,
+          meta: { memory_summary: { case_name: caseName } },
         }],
         force: 0,
       });
@@ -425,11 +430,13 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     // 时间一次算好（同一记录/断言必须用同一时间串）
     const tA = [timeAt(100), timeAt(101), timeAt(102)];
     const tB = [timeAt(3600), timeAt(3601)];
-    await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的问题', tA[0]);
-    await pushChannelIn(request, role, channelA, 'bot', 1, 'A 的回答', tA[1]);
-    await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的追问', tA[2]);
-    await pushChannelIn(request, role, channelB, 'carol', 0, 'B 的消息', tB[0]);
-    await pushChannelIn(request, role, channelB, 'dave', 0, 'B 的另一条', tB[1]);
+    const metaA = { memory_summary: { case_name: 'role-case' } };
+    const metaB = { memory_summary: { case_name: 'role-case-2' } };
+    await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的问题', tA[0], '', metaA);
+    await pushChannelIn(request, role, channelA, 'bot', 1, 'A 的回答', tA[1], '', metaA);
+    await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的追问', tA[2], '', metaA);
+    await pushChannelIn(request, role, channelB, 'carol', 0, 'B 的消息', tB[0], '', metaB);
+    await pushChannelIn(request, role, channelB, 'dave', 0, 'B 的另一条', tB[1], '', metaB);
 
     // 手动触发一次，把两个通道各算一次
     const recordsA = await waitForCaseRecords(request, role, 'role-case', 3);
@@ -465,22 +472,23 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const channelB: TestChannel = { messenger: 'web', selfUser: 'selfB', group: 'gB' };
 
     /** 一段对话：提问 → 带内嵌思考内容的回复（Multi）→ 追问 */
-    const pushConversation = async (channel: TestChannel, marker: string, base: number) => {
+    const pushConversation = async (channel: TestChannel, marker: string, base: number, caseName: string) => {
       const t = (offset: number) => timeAt(base + offset);
-      await pushChannelIn(request, role, channel, 'alice', 0, '提问', t(0));
+      const meta = { memory_summary: { case_name: caseName } };
+      await pushChannelIn(request, role, channel, 'alice', 0, '提问', t(0), '', meta);
       await pushChannelContent(request, role, channel, channel.selfUser, 1, {
         msg_type: 'Multi',
         data: [
           { msg_type: 'Think', data: { reasoning_content: marker } },
           { msg_type: 'Text', data: '回答' },
         ],
-      }, t(1));
+      }, t(1), '', meta);
       await waitForStoreFile(role, t(1), marker);
-      await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(2));
+      await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(2), '', meta);
     };
 
-    await pushConversation(channelA, 'A 的思考内容', 100);
-    await pushConversation(channelB, 'B 的思考内容', 200);
+    await pushConversation(channelA, 'A 的思考内容', 100, 'role-case');
+    await pushConversation(channelB, 'B 的思考内容', 200, 'role-case-2');
 
     // 每个通道 3 条通道记录（提问、带思考的回复、追问），思考内容不再单独成记录
     await waitForCaseRecords(request, role, 'role-case', 3);
@@ -511,14 +519,15 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const t1 = timeAt(1001);
     const t2 = timeAt(1002);
     const t3 = timeAt(1003);
-    await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0, 'msg-1');
-    await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1, 'msg-2');
+    const meta = { memory_summary: { case_name: 'role-case' } };
+    await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0, 'msg-1', meta);
+    await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1, 'msg-2', meta);
     // 推送接口返回不代表记录已可读：先等记录真正落盘
     await waitForStoreFile(role, t0, '定位前的提问');
     await waitForStoreFile(role, t1, '定位前的回答');
 
-    // 定位请求：前两条与该通道的待归档记录同 msg_id，第三条是新消息；三者都参与同一次分组。
-    // 通知可能还在路上（未到则本次定位走只读路径、不涉及归档），重复直到定位拿到 case。
+    // 定位请求：前两条与该通道的待归档记录同 msg_id，第三条是新消息；三条新消息一起分组。
+    // 待归档记录带 meta，定位时直接落 case（不参与分组）；通知可能还在路上，重复直到定位拿到 case。
     let data: any = null;
     await waitFor(async () => {
       data = await locateMessages(request, role, channel, [
@@ -571,7 +580,9 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const channel: TestChannel = { messenger: 'web', selfUser: 'self6', group: 'g6' };
     const t0 = timeAt(3000);
     const t1 = timeAt(3001);
-    await pushChannelIn(request, role, channel, 'alice', 0, '初始话题', t0, 'meta-1');
+    await pushChannelIn(request, role, channel, 'alice', 0, '初始话题', t0, 'meta-1', {
+      memory_summary: { case_name: 'role-case' },
+    });
     await waitForStoreFile(role, t0, '初始话题');
     // 先归档出 role-case
     const first = await waitForCaseRecords(request, role, 'role-case', 1);

@@ -215,7 +215,7 @@ impl AgentRoleHandle {
     /// 持久化 case 树：每行一个 [`CaseNode`]（`case_name` 在节点内，不另存键）
     pub async fn save_tree(&self, tree: &CaseTree) -> Result<()> {
         let mut body = String::new();
-        for node in tree.nodes() {
+        for node in tree.all_nodes() {
             body.push_str(&serde_json::to_string(node)?);
             body.push('\n');
         }
@@ -545,8 +545,9 @@ mod tests {
         // tree.jsonl 形状符合文档：每行一个节点，case_name 在节点内，没有外层键
         let raw = tokio::fs::read_to_string(reloaded.tree_path()).await.unwrap();
         let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
-        assert_eq!(lines.len(), 1, "一个节点一行");
-        let node: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(lines.len(), 2, "角色根 + 角色 case 各一行");
+        let role_line = lines.iter().find(|line| line.contains("\"role-1\"")).expect("角色 case 行");
+        let node: Value = serde_json::from_str(role_line).unwrap();
         assert_eq!(node["case_name"], "role-1");
         assert!(node.get("nodes").is_none(), "tree.jsonl 没有外层 nodes 键");
         assert!(node.get("mode").is_none(), "case 树节点不带模式/事件信息");
@@ -578,7 +579,7 @@ mod tests {
         }
 
         let raw = tokio::fs::read_to_string(handle.tree_path()).await.unwrap();
-        assert_eq!(raw.lines().count(), 3, "每个节点一行");
+        assert_eq!(raw.lines().count(), 4, "角色根 + 角色父/子 + 事件根各一行");
         for line in raw.lines() {
             let node: CaseNode = serde_json::from_str(line).unwrap();
             assert!(!node.case_name.is_empty(), "节点自带 case_name");

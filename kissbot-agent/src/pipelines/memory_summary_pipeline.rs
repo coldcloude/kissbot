@@ -7,8 +7,9 @@
 //! 同一 case 至多一个待执行任务，排队等待执行期间又来的消息并入同一次 run；已开始执行的 run 不受影响，
 //! 其后的消息形成下一轮。还没轮到的 case 的待执行任务不受其他 case 执行的影响，继续与后续批次的消息合并。
 //!
-//! 本批上行消息在 locate 之后才写入记忆，并带上所属 case 的 meta，摘要记忆组件下次归档时直接按 case
-//! 名落位；模型回复也带当前 run 所属 case 的 meta，无需再次 locate。
+//! 本批上行消息在 locate 之后才写入记忆，并带上所属 case 的 meta，摘要记忆组件下次归档时直接按
+//! case 名落位；模型回复也带当前 run 所属 case 的 meta，无需再次 locate。locate 失败时直接丢弃本批
+//! 消息（不写无 meta 的记忆、也不入队），避免产生无法归档的记录。
 //!
 //! 本 pipeline 与 `default_memory` 共用 pipelines.rs 中的发送、工具调用、提示词等函数，
 //! 但批次接入、locate、case 拆分与带 meta 的记忆写入都在本文件内完成。
@@ -38,7 +39,7 @@ use crate::{
 /// 每个 case 维护独立 session（懒创建）。
 pub struct MemorySummaryPipeline {
     memory_key: Arc<MemoryKey>,
-    /// case（None = locate 不可用的降级任务）→ session；session_id 由 case_name 推导
+    /// case（None = pipeline 基准 session，承担入口配置）→ session；session_id 由 case_name 推导
     sessions: DashMap<Option<ArcStr>, Arc<Session>>,
     /// /model 设置的模型覆盖（新建 case session 时应用）
     model_override: ArcSwapOption<(ArcStr, ArcStr)>,
@@ -46,11 +47,11 @@ pub struct MemorySummaryPipeline {
     producers: DashMap<Arc<ChannelKey>, BatchProducer>,
     /// 批次队列：各 channel 消费者把批次投递到这里，由唯一 worker 串行 locate 并写入上行记录
     batch_tx: mpsc::UnboundedSender<Vec<Arc<IncomingMessageEvent>>>,
-    /// 待执行任务表：case 名（None 表示 locate 不可用的降级任务）→ 尚未开始 run 的消息。
+    /// 待执行任务表：case 名 → 尚未开始 run 的消息。
     /// 同一 case 的消息在这里合并，run 开始时整条取走；执行期间到达的消息形成下一轮
-    pending: DashMap<Option<ArcStr>, Vec<Arc<IncomingMessageEvent>>>,
+    pending: DashMap<ArcStr, Vec<Arc<IncomingMessageEvent>>>,
     /// case 队列：只投递 case 名（同一 case 至多一个），worker 按到达顺序取 case 执行
-    case_tx: mpsc::UnboundedSender<Option<ArcStr>>,
+    case_tx: mpsc::UnboundedSender<ArcStr>,
 }
 
 impl MemorySummaryPipeline {
@@ -73,7 +74,7 @@ impl MemorySummaryPipeline {
     }
 
     /// case 的 session id：memory-summary-{pipeline 基准 id}-{case_name}；None 用 -none。
-    /// `-none` 同时作为 pipeline 入口配置与无 case 批次使用的基准 session。
+    /// `-none` 是 pipeline 入口配置使用的基准 session。
     fn case_session_id(&self, case_name: Option<&ArcStr>) -> ArcStr {
         ArcStr::from(format!(
             "memory-summary-{}-{}",
@@ -109,7 +110,7 @@ impl MemorySummaryPipeline {
         session
     }
 
-    /// 基准（无 case）session：承担 pipeline 入口配置与无 case 批次
+    /// 基准（无 case）session：承担 pipeline 入口配置与 /model 等 pipeline 级设置
     async fn ensure_base_session(&self) -> Arc<Session> {
         if let Some(entry) = self.sessions.get(&None) {
             return entry.value().clone();
@@ -162,7 +163,7 @@ impl MemorySummaryPipeline {
 
     /// 把一个 batch 的消息并入所属 case 的待执行任务：该 case 还没有待执行任务时同时投递 case 名，
     /// 已有（还没开始 run）时只合并消息，不再重复投递
-    fn enqueue_case(&self, case_name: Option<ArcStr>, events: impl IntoIterator<Item = Arc<IncomingMessageEvent>>) {
+    fn enqueue_case(&self, case_name: ArcStr, events: impl IntoIterator<Item = Arc<IncomingMessageEvent>>) {
         match self.pending.entry(case_name.clone()) {
             dashmap::Entry::Occupied(mut entry) => {
                 entry.get_mut().extend(events);
@@ -215,7 +216,7 @@ async fn run_batch_queue(
 ///
 /// 取 case 时整条取走该 case 的待执行消息：执行期间到达的同 case 消息留在任务表里形成下一轮；
 /// 还没轮到的 case 的任务表条目不动，继续与后续批次的消息合并。
-async fn run_case_queue(pipeline: Weak<MemorySummaryPipeline>, mut rx: mpsc::UnboundedReceiver<Option<ArcStr>>) {
+async fn run_case_queue(pipeline: Weak<MemorySummaryPipeline>, mut rx: mpsc::UnboundedReceiver<ArcStr>) {
     while let Some(case_name) = rx.recv().await {
         let Some(pipeline) = pipeline.upgrade() else { break };
         let Some((_, events)) = pipeline.pending.remove(&case_name) else { continue };
@@ -226,7 +227,8 @@ async fn run_case_queue(pipeline: Weak<MemorySummaryPipeline>, mut rx: mpsc::Unb
 impl MemorySummaryPipeline {
     /// 处理一个批次：locate → 写上行记录（带 case meta）→ 按消息所属 case 并入待执行任务，随即返回。
     ///
-    /// case 的实际执行在 case 队列里串行进行，因此本批入队后即可处理下一批。
+    /// locate 失败时直接丢弃本批消息：没有 case 就不写记忆（无 meta 的记录会被摘要记忆跳过），
+    /// 也不进入待执行任务。case 的实际执行在 case 队列里串行进行，因此本批入队后即可处理下一批。
     async fn process_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         let nexus = Nexus::get();
         let client = nexus.memory_summary_client.clone();
@@ -234,26 +236,40 @@ impl MemorySummaryPipeline {
         let memory_key = self.memory_key.as_ref();
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
-        // 1. 定位本批消息涉及的 case（摘要记忆未配置/调用失败时降级：整批作为一个无 case 任务）
-        let mut case_map = HashMap::new();
-        if let Ok(located) =
-            client.locate(memory_key, channel, messages).await
-        {
-            for group in located.groups.into_iter() {
-                for msg_id in group.messages.iter() {
-                    case_map.insert(msg_id.clone(), group.case_name.clone());
-                }
+        // 1. 定位本批消息涉及的 case：失败直接返回，不写记忆、不入队
+        let located = match client.locate(memory_key, channel, messages).await {
+            Ok(located) => located,
+            Err(e) => {
+                warn!("摘要记忆定位失败，丢弃本批消息: {:?}", e);
+                return;
             }
         };
+        let mut case_map = HashMap::new();
+        for group in located.groups.into_iter() {
+            for msg_id in group.messages.iter() {
+                case_map.insert(msg_id.clone(), group.case_name.clone());
+            }
+        }
+        // 定位必须覆盖本批全部消息：缺 case 的消息写进记忆后无法归档，按定位失败处理
+        if let Some(missing) = events
+            .iter()
+            .map(|event| event.incoming_message.msg_id.as_str())
+            .find(|msg_id| !case_map.contains_key(*msg_id))
+        {
+            warn!("摘要记忆定位结果未覆盖消息 {}，丢弃本批消息", missing);
+            return;
+        }
 
-        // 2. 写入本批上行记录：定位成功的消息带上所属 case，摘要记忆组件下次归档时直接按 case 名落位
+        // 2. 写入本批上行记录：每条记录都带所属 case，摘要记忆归档时直接按 case 名落位
         let mut case_order = LinkedList::new();
-        let mut case_msgs: HashMap<Option<ArcStr>, LinkedList<Arc<IncomingMessageEvent>>> = HashMap::new();
+        let mut case_msgs: HashMap<ArcStr, LinkedList<Arc<IncomingMessageEvent>>> = HashMap::new();
         for event in events.into_iter() {
-            let case_name = case_map.get(&event.incoming_message.msg_id).cloned();
-            // 带 meta 加入记忆
-            let meta = case_name.as_ref().map(|n| Arc::new(MemoryMeta::with_case_name(n.clone())));
-            let request = channel_request_from_incoming(memory_key, event.as_ref(), meta);
+            let case_name = case_map
+                .get(&event.incoming_message.msg_id)
+                .cloned()
+                .expect("定位结果已校验覆盖本批全部消息");
+            let meta = Arc::new(MemoryMeta::with_case_name(case_name.clone()));
+            let request = channel_request_from_incoming(memory_key, event.as_ref(), Some(meta));
             nexus.memory_store_client.push_channel_record(request).await;
             // 加入 case 分析
             match case_msgs.entry(case_name) {
@@ -279,33 +295,28 @@ impl MemorySummaryPipeline {
 
     /// 执行一个 case 任务：run 开头用该 case 的摘要与结尾原文副本重建该 case 的 session 上下文，
     /// 再运行 agentic loop；本次运行的出站记录带该 case 的 meta
-    async fn run_case(&self, case_name: Option<ArcStr>, events: Vec<Arc<IncomingMessageEvent>>) {
+    async fn run_case(&self, case_name: ArcStr, events: Vec<Arc<IncomingMessageEvent>>) {
         let client = Nexus::get().memory_summary_client.clone();
-        let session_id = self.case_session_id(case_name.as_ref());
-        let session = self.ensure_session(&case_name).await;
-        let outgoing_meta = match &case_name {
-            Some(case_name) => {
-                // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
-                let rebuilt = async {
-                    let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_id.clone()).await;
-                    let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
-                    let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
-                    Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
-                }.await;
-                match rebuilt {
-                    Ok(messages) => {
-                        let _ = session.context_archive_and_clear_cache_and_reset_messages(messages).await;
-                    }
-                    Err(e) => {
-                        // 不沿用上一个 case 的上下文：清空后只用本次新增消息运行
-                        warn!("摘要记忆上下文重建失败，清空上下文后继续运行（case={}）: {:?}", case_name, e);
-                        let _ = session.context_archive_and_clear_cache_and_reset_messages(Vec::new()).await;
-                    }
-                }
-                Some(Arc::new(MemoryMeta::with_case_name(case_name.clone())))
+        let session_id = self.case_session_id(Some(&case_name));
+        let session = self.ensure_session(&Some(case_name.clone())).await;
+        // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
+        let rebuilt = async {
+            let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_id.clone()).await;
+            let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
+            let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
+            Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
+        }.await;
+        match rebuilt {
+            Ok(messages) => {
+                let _ = session.context_archive_and_clear_cache_and_reset_messages(messages).await;
             }
-            None => None,
-        };
+            Err(e) => {
+                // 不沿用上一个 case 的上下文：清空后只用本次新增消息运行
+                warn!("摘要记忆上下文重建失败，清空上下文后继续运行（case={}）: {:?}", case_name, e);
+                let _ = session.context_archive_and_clear_cache_and_reset_messages(Vec::new()).await;
+            }
+        }
+        let outgoing_meta = Some(Arc::new(MemoryMeta::with_case_name(case_name)));
         let content = pack_batch(&events);
         let tools = tools_for_session(session_id.clone()).await;
         let _ = self.run(session_id, &session, content, &tools, outgoing_meta).await;
@@ -585,28 +596,18 @@ mod tests {
     async fn enqueue_case_merges_waiting_case_into_one_run() {
         // 用例内不 await：spawn 出来的 case worker 不会被执行（只要不影响待执行任务表的断言）
         let pipeline = pipeline();
-        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
-        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
-        pipeline.enqueue_case(Some(ArcStr::from("role-b")), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
+        pipeline.enqueue_case(ArcStr::from("role-a"), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
+        pipeline.enqueue_case(ArcStr::from("role-a"), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
+        pipeline.enqueue_case(ArcStr::from("role-b"), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
         assert_eq!(pipeline.pending.len(), 2, "同 case 只有一个待执行任务，不同 case 分开");
-        let a = pipeline.pending.get(&Some(ArcStr::from("role-a"))).unwrap();
+        let a = pipeline.pending.get(&ArcStr::from("role-a")).unwrap();
         assert_eq!(a.len(), 2, "排队中的同 case 消息合并为一次 run");
         drop(a);
         // worker 取 case 时只取走被取到的 case 的消息，其他 case 的任务表条目不动、继续等待合并
-        let (_, b) = pipeline.pending.remove(&Some(ArcStr::from("role-b"))).unwrap();
+        let (_, b) = pipeline.pending.remove(&ArcStr::from("role-b")).unwrap();
         assert_eq!(b.len(), 1);
         assert_eq!(pipeline.pending.len(), 1);
-        assert!(pipeline.pending.contains_key(&Some(ArcStr::from("role-a"))), "其他 case 继续等待合并");
-    }
-
-    #[tokio::test]
-    async fn enqueue_case_keeps_ungrouped_task_separate() {
-        let pipeline = pipeline();
-        pipeline.enqueue_case(None, vec![ev("u1", "a", "2026-09-23 10:00:00")]);
-        pipeline.enqueue_case(None, vec![ev("u1", "b", "2026-09-23 10:00:01")]);
-        pipeline.enqueue_case(Some(ArcStr::from("role-a")), vec![ev("u1", "c", "2026-09-23 10:00:02")]);
-        assert_eq!(pipeline.pending.len(), 2, "无 case 的降级任务与 case 任务分开");
-        assert_eq!(pipeline.pending.get(&None).unwrap().len(), 2, "降级任务同样按 key 合并");
+        assert!(pipeline.pending.contains_key(&ArcStr::from("role-a")), "其他 case 继续等待合并");
     }
 
     #[test]

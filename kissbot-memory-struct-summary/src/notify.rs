@@ -166,7 +166,8 @@ mod tests {
                 "messenger_id": "web", "group_id": "g1", "is_self": is_self,
                 "messenger_name": "", "user_name": "alice", "group_name": "",
                 "content": {"msg_type": "Text", "data": "内容"},
-                "time": format!("2026-09-22 10:0{}:00", sn), "sn": sn
+                "time": format!("2026-09-22 10:0{}:00", sn), "sn": sn,
+                "meta": {"memory_summary": {"case_name": "role-case"}}
             });
             lines.push_str(&serde_json::to_string(&record).unwrap());
             lines.push('\n');

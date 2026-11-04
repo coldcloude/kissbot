@@ -209,7 +209,8 @@ mod tests {
         let record = serde_json::json!({
             "user_id": "self", "self_user_id": "self", "messenger_id": "web", "group_id": "g1",
             "is_self": 1, "messenger_name": "", "user_name": "alice", "group_name": "",
-            "content": {"msg_type": "Text", "data": "你好"}, "time": "2026-09-22 10:00:00", "sn": 1
+            "content": {"msg_type": "Text", "data": "你好"}, "time": "2026-09-22 10:00:00", "sn": 1,
+            "meta": {"memory_summary": {"case_name": "role-case"}}
         });
         tokio::fs::write(dir.join("channel-records-2026-09-22.jsonl"), format!("{}\n", record)).await.unwrap();
 

@@ -15,7 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::types::{Error, MemoryKey, Result};
 
 /// 摘要记忆 REST 客户端：请求走 `X-Api-Key`；`memory_struct_summary_url` 为空时
-/// 所有调用在发请求前返回 Err（调用方降级为普通合批）
+/// 所有调用在发请求前返回 Err（调用方按定位失败处理）
 pub struct MemorySummaryClient {
     client: reqwest::Client,
     base_url: ArcStr,
@@ -120,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_base_url_returns_memory_summary_error() {
-        // 摘要记忆未配置：请求前直接返回 Err（调用方降级为普通合批），不发网络请求
+        // 摘要记忆未配置：请求前直接返回 Err（调用方按定位失败丢弃本批），不发网络请求
         let client = MemorySummaryClient::with_url(ArcStr::new(), ArcStr::new());
         let channel = Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")));
         let memory_key = MemoryKey { agent_id: ArcStr::from("0"), role_event: Arc::new(RoleEvent::new(ArcStr::from("dev"))) };
