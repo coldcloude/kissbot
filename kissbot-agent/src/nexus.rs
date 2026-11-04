@@ -577,7 +577,7 @@ mod tests {
         body: String,
     ) -> Json<serde_json::Value> {
         calls.fetch_add(1, Ordering::Relaxed);
-        let is_topic_check = body.contains("只回答 YES 或 NO");
+        let is_topic_check = body.contains("YES 或 NO");
         let content = if is_topic_check { "NO, different topic" } else { "新回复" };
         Json(serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
@@ -590,6 +590,37 @@ mod tests {
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let app = Router::new()
             .route("/chat/completions", post(mock_non_exact_chat))
+            .with_state(calls);
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        base_url
+    }
+
+    /// 第一次判定返回非精确的 MAYBE，重试提示词返回 NO，正式运行返回固定回复
+    async fn mock_retry_chat(
+        State(calls): State<Arc<AtomicUsize>>,
+        body: String,
+    ) -> Json<serde_json::Value> {
+        calls.fetch_add(1, Ordering::Relaxed);
+        let retry_prompt = body.contains("必须且只能回答");
+        let first_prompt = body.contains("只回答 YES 或 NO") && !retry_prompt;
+        let content = if retry_prompt {
+            "NO"
+        } else if first_prompt {
+            "MAYBE"
+        } else {
+            "新回复"
+        };
+        Json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "usage": {"total_tokens": 1}
+        }))
+    }
+
+    async fn start_mock_retry_chat(calls: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/chat/completions", post(mock_retry_chat))
             .with_state(calls);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         base_url
@@ -715,14 +746,69 @@ mod tests {
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
         pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
-        // 判定只调用一次；回答不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
-        assert_eq!(calls.load(Ordering::Relaxed), 2, "不循环重试，只调用一次判定");
+        // 两次判定回答都不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
+        assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 写死重试一次 + 正式运行");
         let current = Session::new(cm.data_dir(), session_id);
         current.recover_from_cache().await.unwrap();
         let ctx = current.build_context_full().await;
         assert!(
             ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题")),
             "无法判定时按同一件事处理，旧上下文应保留: {:?}", ctx);
+    }
+
+    #[tokio::test]
+    async fn role_mode_topic_check_retries_once_with_retry_prompt() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let base_url = start_mock_retry_chat(calls.clone()).await;
+        let provider = "topic-retry-once-provider";
+        let model = "topic-retry-once-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from(base_url),
+                api_key: ArcStr::from("k"),
+            }),
+            default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        let key = Arc::new(MemoryKey {
+            agent_id: ArcStr::from("a-topic-retry-once"),
+            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-retry-once"))),
+        });
+        let session_id = key.encode();
+        cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
+            provider: Some(ArcStr::from(provider)),
+            model: Some(ArcStr::from(model)),
+            ..Default::default()
+        }).await.unwrap();
+        cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            session_id.clone(),
+            &MemoryPipelineConfig { load_memory: Some(false) },
+        ).await.unwrap();
+        let old = Session::new(cm.data_dir(), session_id.clone());
+        old.context_append(vec![
+            Message::User { content: ArcStr::from("旧问题") },
+            Message::Assistant {
+                content: serde_json::json!("旧回复"),
+                reasoning_content: serde_json::Value::Null,
+                tool_calls: serde_json::Value::Null,
+            },
+        ]).await.unwrap();
+
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        pipeline.incoming_message_batch(vec![incoming_event("retry-once-m1", "新问题")]).await;
+
+        // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 正式运行
+        assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 重试一次 + 正式运行");
+        let current = Session::new(cm.data_dir(), session_id);
+        current.recover_from_cache().await.unwrap();
+        let ctx = current.build_context_full().await;
+        assert!(
+            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "重试确认不同后应归档清空旧上下文: {:?}", ctx);
     }
 
     #[tokio::test]

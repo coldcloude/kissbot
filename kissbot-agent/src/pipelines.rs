@@ -160,6 +160,8 @@ fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
 
 /// 同话题判定提示词：要求判断是否同一件事并只回答 YES/NO
 const TOPIC_CHECK_PROMPT: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）：YES = 同一件事，NO = 不是同一件事。只回答 YES 或 NO，不要输出其他内容。";
+/// 同话题判定重试提示词：第一次未精确回答 YES/NO 时，写死用它再问一次
+const TOPIC_CHECK_PROMPT_RETRY: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）。必须且只能回答 YES 或 NO（YES = 同一件事，NO = 不是同一件事），禁止输出解释、标点、前后缀或任何其他文字。";
 
 pub async fn send_messages(session_id: ArcStr, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
     let _ = session.context_append(messages).await;
@@ -568,9 +570,9 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         } else {
             false
         };
-        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；不同则归档清空上下文
+        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；未精确回答则用重试提示词再问一次
         if role_mode && !load_memory {
-            let mut history = self.session.build_context().await;
+            let history = self.session.build_context().await;
             if history.iter().any(|message| !matches!(message, Message::System { .. })) {
                 let llm_cfg = ConfigManager::get()
                     .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
@@ -579,28 +581,59 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
                     Message::User { content } => content.as_str(),
                     _ => "",
                 };
+                // 第一次判定
+                let mut messages = history.clone();
                 let final_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT);
-                match history.last_mut() {
+                match messages.last_mut() {
                     Some(Message::User { content }) => {
                         *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), final_text));
                     }
-                    _ => history.push(Message::User { content: ArcStr::from(final_text) }),
+                    _ => messages.push(Message::User { content: ArcStr::from(final_text) }),
                 }
-                let changed = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), history, &Vec::new()).await {
+                let first = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
                     Ok(res) => {
                         let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
                         match answer.as_str() {
-                            "YES" => false,
-                            "NO" => true,
-                            _ => {
-                                warn!("同话题判断未精确回答 YES/NO，按同一件事处理");
-                                false
-                            }
+                            "YES" => Some(false),
+                            "NO" => Some(true),
+                            _ => None,
                         }
                     }
                     Err(e) => {
-                        warn!("同话题判断调用失败，按同一件事处理: {:?}", e);
-                        false
+                        warn!("同话题判断首次调用失败，用重试提示词再问一次: {:?}", e);
+                        None
+                    }
+                };
+                let changed = match first {
+                    Some(changed) => changed,
+                    None => {
+                        // 写死用 RETRY_PROMPT 重试一次（不循环）
+                        warn!("同话题判断未得到精确 YES/NO，用重试提示词再问一次");
+                        let mut messages = history.clone();
+                        let retry_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT_RETRY);
+                        match messages.last_mut() {
+                            Some(Message::User { content }) => {
+                                *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), retry_text));
+                            }
+                            _ => messages.push(Message::User { content: ArcStr::from(retry_text) }),
+                        }
+                        match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
+                            Ok(res) => {
+                                let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
+                                match answer.as_str() {
+                                    "YES" => false,
+                                    "NO" => true,
+                                    _ => {
+                                        warn!("同话题判断重试后仍未精确回答 YES/NO，按同一件事处理");
+                                        false
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("同话题判断重试调用失败，按同一件事处理: {:?}", e);
+                                false
+                            }
+                        }
                     }
                 };
                 if changed {
@@ -1042,10 +1075,12 @@ mod tests {
     }
 
     #[test]
-    fn topic_check_prompt_keeps_task_and_answer_format() {
+    fn topic_check_prompts_keep_task_and_answer_format() {
         assert!(TOPIC_CHECK_PROMPT.contains("是否在延续当前会话中的同一件事"));
         assert!(TOPIC_CHECK_PROMPT.contains("YES = 同一件事"));
         assert!(TOPIC_CHECK_PROMPT.contains("只回答 YES 或 NO"));
+        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("是否在延续当前会话中的同一件事"));
+        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("必须且只能回答 YES 或 NO"));
     }
 
     #[test]

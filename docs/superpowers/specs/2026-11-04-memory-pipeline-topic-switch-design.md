@@ -55,14 +55,17 @@ load_memory = role_mode && config.load_memory
 
 1. 取当前完整 session（含 System）与本批新消息，直接调用当前 session 的 LLM：
    不执行工具、不读取 memory-store、不经过 `run_once`。
-2. 只调用一次，提示词要求判断是否同一件事，并只回答 `YES`（同一件事）或 `NO`（不是同一件事）。
+2. 首次使用 `TOPIC_CHECK_PROMPT`，要求判断是否同一件事并只回答 `YES`/`NO`。
    回答先 `trim` 再转大写，然后精确匹配 `YES` / `NO`；不做包含匹配、不解析整句、不识别中文。
-3. 判定为 `NO`（不同）：
+3. 首次调用失败，或回答不是精确的 `YES`/`NO`：写死用 `TOPIC_CHECK_PROMPT_RETRY`
+   再调用一次（不使用循环），重试回答仍精确匹配 `YES` / `NO`。
+4. 判定为 `NO`（不同）：
    - `Session::context_archive_and_clear_cache_and_reset_messages(Vec::new())`：
      归档旧上下文、清空缓存、上下文变为空；
    - `last_total_tokens` 归零。
-4. 精确匹配 `YES`（相同），或调用失败、回答不是精确的 `YES`/`NO`：按同一件事处理，保持原上下文。
-5. 无论是否切换，批次末尾统一调用一次 `run`，由 `run` 追加本批新消息：
+5. 精确匹配 `YES`（相同），或两次都失败、两次都不是精确 `YES`/`NO`：
+   按同一件事处理，保持原上下文。
+6. 无论是否切换，批次末尾统一调用一次 `run`，由 `run` 追加本批新消息：
    不提前把新消息写入上下文，也不在切换分支额外调用 `run`。
 
 判断请求本身不写入 session 上下文，也不计入会话 token 占用。
@@ -92,6 +95,6 @@ load_memory = role_mode && config.load_memory
 - agent/role 继承与 session 覆盖；
 - 事件模式忽略配置、角色模式读取配置；
 - `/load-memory` 参数解析与 session 写入；
-- `YES`/`NO` 解析与单次判断请求组装；
+- `YES`/`NO` 精确匹配、首次与写死重试的请求组装；
 - 集成测试：角色模式 `load_memory=false` 时，判定为 `NO` 后旧上下文进入
   `context-history`，当前上下文只保留新消息与本次回复，且 LLM 被调用两次（判定 + 正式运行）。
