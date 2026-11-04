@@ -146,15 +146,6 @@ pub async fn build_context_from_memory_store(memory_key: Arc<MemoryKey>, session
     pack_memory_messages(&map.into_values().collect::<Vec<_>>())
 }
 
-/// 同话题判定结果（YES/NO 解析后的业务含义）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TopicDecision {
-    /// 新消息延续当前会话的同一件事
-    Same,
-    /// 新消息开启了另一件事
-    Changed,
-}
-
 /// `/load-memory` 参数解析（调用方已按命令名匹配）：只接受 on/off（兼容 true/false）
 fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
     if parts.len() != 2 {
@@ -169,52 +160,6 @@ fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
 
 /// 同话题判定提示词：要求判断是否同一件事并只回答 YES/NO
 const TOPIC_CHECK_PROMPT: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）：YES = 同一件事，NO = 不是同一件事。只回答 YES 或 NO，不要输出其他内容。";
-
-/// 消息文本（判断请求只关心内容文本）：Assistant/Tool 的 content 为 JSON 值时转成字符串
-fn message_text(message: &Message) -> String {
-    match message {
-        Message::System { content } | Message::User { content } => content.to_string(),
-        Message::Assistant { content, .. } | Message::Tool { content, .. } => match content {
-            Value::String(text) => text.clone(),
-            Value::Null => String::new(),
-            other => other.to_string(),
-        },
-    }
-}
-
-/// 组装同话题判定请求：当前完整会话（含 System）+ 一条包含新消息与判定指令的 User 消息。
-/// 历史以 User 结尾时把新消息并入该条，避免连续两条 User。
-fn build_topic_check_messages(history: &[Message], new_message: &Message, prompt: &str) -> Vec<Message> {
-    let mut messages = history.to_vec();
-    let new_text = format!("【新消息】\n{}\n\n{}", message_text(new_message), prompt);
-    match messages.last_mut() {
-        Some(Message::User { content }) => {
-            *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), new_text));
-        }
-        _ => messages.push(Message::User { content: ArcStr::from(new_text) }),
-    }
-    messages
-}
-
-/// 解析同话题判定的回答：返回 None 表示无法判定（调用方据此换提示词重试）。
-/// 优先按 YES/NO 出现位置判断；没有英文答案时接受常见中文整句。
-fn parse_topic_decision(answer: &str) -> Option<TopicDecision> {
-    let trimmed = answer.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let upper = trimmed.to_ascii_uppercase();
-    match (upper.find("YES"), upper.find("NO")) {
-        (Some(yes), Some(no)) => Some(if yes < no { TopicDecision::Same } else { TopicDecision::Changed }),
-        (Some(_), None) => Some(TopicDecision::Same),
-        (None, Some(_)) => Some(TopicDecision::Changed),
-        (None, None) => match trimmed {
-            "是" | "相同" | "同一件事" => Some(TopicDecision::Same),
-            "否" | "不同" | "不是同一件事" => Some(TopicDecision::Changed),
-            _ => None,
-        },
-    }
-}
 
 pub async fn send_messages(session_id: ArcStr, session: &Session, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
     let _ = session.context_append(messages).await;
@@ -623,23 +568,41 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         } else {
             false
         };
-        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；不同则归档清空，只保留本批新消息
+        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；不同则归档清空上下文
         if role_mode && !load_memory {
-            let history = self.session.build_context().await;
+            let mut history = self.session.build_context().await;
             if history.iter().any(|message| !matches!(message, Message::System { .. })) {
                 let llm_cfg = ConfigManager::get()
                     .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
                     .await;
-                let messages = build_topic_check_messages(&history, &content, TOPIC_CHECK_PROMPT);
-                let changed = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
-                    Ok(res) => match parse_topic_decision(res.content.as_deref().unwrap_or("")) {
-                        Some(TopicDecision::Changed) => true,
-                        Some(TopicDecision::Same) => false,
-                        None => {
-                            warn!("同话题判断未给出明确 YES/NO，按同一件事处理");
-                            false
+                let new_text = match &content {
+                    Message::User { content } => content.as_str(),
+                    _ => "",
+                };
+                let final_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT);
+                match history.last_mut() {
+                    Some(Message::User { content }) => {
+                        *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), final_text));
+                    }
+                    _ => history.push(Message::User { content: ArcStr::from(final_text) }),
+                }
+                let changed = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), history, &Vec::new()).await {
+                    Ok(res) => {
+                        let answer = res.content.as_deref().unwrap_or("").trim();
+                        let upper = answer.to_ascii_uppercase();
+                        match (upper.find("YES"), upper.find("NO")) {
+                            (Some(yes), Some(no)) => no < yes,
+                            (Some(_), None) => false,
+                            (None, Some(_)) => true,
+                            (None, None) => {
+                                let changed = matches!(answer, "否" | "不同" | "不是同一件事");
+                                if !changed && !matches!(answer, "是" | "相同" | "同一件事") {
+                                    warn!("同话题判断未给出明确 YES/NO，按同一件事处理");
+                                }
+                                changed
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         warn!("同话题判断调用失败，按同一件事处理: {:?}", e);
                         false
@@ -647,20 +610,19 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
                 };
                 if changed {
                     if self.session
-                        .context_archive_and_clear_cache_and_reset_messages(vec![content.clone()])
+                        .context_archive_and_clear_cache_and_reset_messages(Vec::new())
                         .await
                         .is_ok()
                     {
-                        // 上下文已重建为只含本批新消息，token 占用随之清零
+                        // 上下文已清空，token 占用随之清零；本批新消息在末尾统一 run 时追加
                         self.last_total_tokens.store(0, Ordering::Relaxed);
-                        let _ = self.run(Vec::new(), &tools, load_memory).await;
-                        return;
+                    } else {
+                        warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
                     }
-                    warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
                 }
             }
         }
-        // 发送消息
+        // 统一在末尾运行：清空后的上下文只会在这一处追加本批新消息
         let _ = self.run(vec![content], &tools, load_memory).await;
     }
 }
@@ -1085,65 +1047,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_topic_decision_recognizes_yes_and_no() {
-        assert_eq!(parse_topic_decision("YES"), Some(TopicDecision::Same));
-        assert_eq!(parse_topic_decision(" yes "), Some(TopicDecision::Same));
-        assert_eq!(parse_topic_decision("YES, same topic"), Some(TopicDecision::Same));
-        assert_eq!(parse_topic_decision("NO"), Some(TopicDecision::Changed));
-        assert_eq!(parse_topic_decision("NO, different topic"), Some(TopicDecision::Changed));
-        assert_eq!(parse_topic_decision("否"), Some(TopicDecision::Changed));
-        assert_eq!(parse_topic_decision("是"), Some(TopicDecision::Same));
-        assert_eq!(parse_topic_decision("maybe"), None);
-        assert_eq!(parse_topic_decision(""), None);
-    }
-
-    #[test]
     fn topic_check_prompt_keeps_task_and_answer_format() {
         assert!(TOPIC_CHECK_PROMPT.contains("是否在延续当前会话中的同一件事"));
         assert!(TOPIC_CHECK_PROMPT.contains("YES = 同一件事"));
         assert!(TOPIC_CHECK_PROMPT.contains("只回答 YES 或 NO"));
-    }
-
-    #[test]
-    fn topic_check_messages_keep_full_session_and_append_new_message() {
-        let history = vec![
-            Message::System { content: ArcStr::from("系统提示词") },
-            Message::User { content: ArcStr::from("旧问题") },
-            Message::Assistant {
-                content: serde_json::json!("旧回答"),
-                reasoning_content: serde_json::Value::Null,
-                tool_calls: serde_json::Value::Null,
-            },
-        ];
-        let new_message = Message::User { content: ArcStr::from("新问题") };
-        let messages = build_topic_check_messages(&history, &new_message, "判断提示词");
-        assert_eq!(messages.len(), 4, "完整保留历史（含 System），再追加一条带新消息的 User");
-        assert!(matches!(&messages[0], Message::System { content } if content.as_str() == "系统提示词"));
-        assert!(matches!(&messages[1], Message::User { content } if content.as_str() == "旧问题"));
-        assert!(matches!(&messages[2], Message::Assistant { .. }));
-        match &messages[3] {
-            Message::User { content } => {
-                assert!(content.contains("新问题"));
-                assert!(content.contains("判断提示词"));
-            }
-            other => panic!("最后一条应为 User: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn topic_check_messages_merge_when_history_ends_with_user() {
-        let history = vec![Message::User { content: ArcStr::from("旧问题") }];
-        let new_message = Message::User { content: ArcStr::from("新问题") };
-        let messages = build_topic_check_messages(&history, &new_message, "判断提示词");
-        assert_eq!(messages.len(), 1, "历史以 User 结尾时合并为一条，避免连续 User");
-        match &messages[0] {
-            Message::User { content } => {
-                assert!(content.contains("旧问题"));
-                assert!(content.contains("新问题"));
-                assert!(content.contains("判断提示词"));
-            }
-            other => panic!("应为 User: {:?}", other),
-        }
     }
 
     #[test]
