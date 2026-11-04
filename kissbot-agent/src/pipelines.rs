@@ -588,18 +588,13 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
                 }
                 let changed = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), history, &Vec::new()).await {
                     Ok(res) => {
-                        let answer = res.content.as_deref().unwrap_or("").trim();
-                        let upper = answer.to_ascii_uppercase();
-                        match (upper.find("YES"), upper.find("NO")) {
-                            (Some(yes), Some(no)) => no < yes,
-                            (Some(_), None) => false,
-                            (None, Some(_)) => true,
-                            (None, None) => {
-                                let changed = matches!(answer, "否" | "不同" | "不是同一件事");
-                                if !changed && !matches!(answer, "是" | "相同" | "同一件事") {
-                                    warn!("同话题判断未给出明确 YES/NO，按同一件事处理");
-                                }
-                                changed
+                        let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
+                        match answer.as_str() {
+                            "YES" => false,
+                            "NO" => true,
+                            _ => {
+                                warn!("同话题判断未精确回答 YES/NO，按同一件事处理");
+                                false
                             }
                         }
                     }

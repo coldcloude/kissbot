@@ -134,7 +134,7 @@ kissbot-agent 使用三份配置：
 - `memory_pipeline.load_memory` 是 session 级开关，agent/role 级值只作为建立 session 时的初始值，之后以 session 级值为准；默认 `true`。
 - **事件模式**（`RoleEvent.event_id` 有值）：忽略 `load_memory`，永远不读取记忆（不调用 memory-store 查询），只写上行/下行记忆；上下文超阈值时用压缩。
 - **角色模式**（`RoleEvent.event_id` 缺省）+ `load_memory=true`：保持记忆回溯（`MemoryRecoverTokenReducer`）。
-- **角色模式 + `load_memory=false`**：上下文超阈值时用压缩；每批 run 前用当前完整 session + 本批新消息直接调用一次 LLM（不执行工具、不读取 memory-store、不经过 `run_once`），提示词要求判断是否同一件事并只回答 `YES`/`NO`；调用失败或无法解析按同一件事处理。判断为不同时归档旧上下文、清空 session（空上下文），随后统一在批次末尾由 run 追加本批新消息；判断为相同时保持上下文正常追加。
+- **角色模式 + `load_memory=false`**：上下文超阈值时用压缩；每批 run 前用当前完整 session + 本批新消息直接调用一次 LLM（不执行工具、不读取 memory-store、不经过 `run_once`），提示词要求判断是否同一件事并只回答 `YES`/`NO`；回答先 `trim` 再转大写，精确匹配 `YES`/`NO`，调用失败或其他回答按同一件事处理。判断为不同时归档旧上下文、清空 session（空上下文），随后统一在批次末尾由 run 追加本批新消息；判断为相同时保持上下文正常追加。
 - `/load-memory <on|off>` 修改当前 pipeline session 的开关；事件模式下写入但不生效。
 
 ## 会话与上下文本地缓存（pipeline 内部）

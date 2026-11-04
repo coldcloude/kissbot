@@ -571,25 +571,25 @@ mod tests {
         base_url
     }
 
-    /// 判定请求返回无法解析的 MAYBE，正式运行返回固定回复
-    async fn mock_ambiguous_chat(
+    /// 判定请求返回带解释的 NO（非精确 YES/NO），正式运行返回固定回复
+    async fn mock_non_exact_chat(
         State(calls): State<Arc<AtomicUsize>>,
         body: String,
     ) -> Json<serde_json::Value> {
         calls.fetch_add(1, Ordering::Relaxed);
         let is_topic_check = body.contains("只回答 YES 或 NO");
-        let content = if is_topic_check { "MAYBE" } else { "新回复" };
+        let content = if is_topic_check { "NO, different topic" } else { "新回复" };
         Json(serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
             "usage": {"total_tokens": 1}
         }))
     }
 
-    async fn start_mock_ambiguous_chat(calls: Arc<AtomicUsize>) -> String {
+    async fn start_mock_non_exact_chat(calls: Arc<AtomicUsize>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let app = Router::new()
-            .route("/chat/completions", post(mock_ambiguous_chat))
+            .route("/chat/completions", post(mock_non_exact_chat))
             .with_state(calls);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         base_url
@@ -671,12 +671,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn role_mode_topic_check_ambiguous_answer_calls_llm_once_and_keeps_context() {
+    async fn role_mode_topic_check_non_exact_answer_keeps_context() {
         ensure_test_globals().await;
         let cm = ConfigManager::get();
 
         let calls = Arc::new(AtomicUsize::new(0));
-        let base_url = start_mock_ambiguous_chat(calls.clone()).await;
+        let base_url = start_mock_non_exact_chat(calls.clone()).await;
         let provider = "topic-ambiguous-provider";
         let model = "topic-ambiguous-model";
         cm.add_provider(provider, ProviderModelConfig {
@@ -715,7 +715,7 @@ mod tests {
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
         pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
-        // 判定只调用一次（MAYBE 无法解析 → 按同一件事处理），随后正式运行一次
+        // 判定只调用一次；回答不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
         assert_eq!(calls.load(Ordering::Relaxed), 2, "不循环重试，只调用一次判定");
         let current = Session::new(cm.data_dir(), session_id);
         current.recover_from_cache().await.unwrap();

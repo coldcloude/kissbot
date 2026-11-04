@@ -56,11 +56,12 @@ load_memory = role_mode && config.load_memory
 1. 取当前完整 session（含 System）与本批新消息，直接调用当前 session 的 LLM：
    不执行工具、不读取 memory-store、不经过 `run_once`。
 2. 只调用一次，提示词要求判断是否同一件事，并只回答 `YES`（同一件事）或 `NO`（不是同一件事）。
+   回答先 `trim` 再转大写，然后精确匹配 `YES` / `NO`；不做包含匹配、不解析整句、不识别中文。
 3. 判定为 `NO`（不同）：
    - `Session::context_archive_and_clear_cache_and_reset_messages(Vec::new())`：
      归档旧上下文、清空缓存、上下文变为空；
    - `last_total_tokens` 归零。
-4. 判定为 `YES`（相同），或调用失败、回答无法解析：按同一件事处理，保持原上下文。
+4. 精确匹配 `YES`（相同），或调用失败、回答不是精确的 `YES`/`NO`：按同一件事处理，保持原上下文。
 5. 无论是否切换，批次末尾统一调用一次 `run`，由 `run` 追加本批新消息：
    不提前把新消息写入上下文，也不在切换分支额外调用 `run`。
 
