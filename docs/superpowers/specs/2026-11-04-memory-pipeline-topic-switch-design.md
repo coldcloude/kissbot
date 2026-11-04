@@ -50,7 +50,7 @@ effective_load_memory = (role_event.event_id == None) && config.load_memory
 
 1. 取当前完整 session（含 System）与本批新消息，调用当前 session 的 LLM（不执行工具）。
 2. 第一套提示词要求只回答 `YES`（同一件事）或 `NO`（不是同一件事）。
-3. 若调用失败或回答无法解析，换第二套措辞更强的提示词重试，仍要求必须给出 `YES`/`NO`。
+3. 若调用失败或回答无法解析，换第二套措辞更强的提示词重试：仍然先要求判断是否同一件事，再要求必须且只能给出 `YES`/`NO`。
 4. 两次都失败按「同一件事」处理，记 warn，不丢上下文。
 5. 判定为 `NO`（不同）：
    - `Session::context_archive_and_clear_cache_and_reset_messages(vec![新消息])`：

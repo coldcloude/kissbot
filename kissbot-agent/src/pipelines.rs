@@ -175,7 +175,7 @@ fn parse_load_memory_command(parts: &[ArcStr]) -> Result<bool> {
 /// 同话题判定第一套提示词：要求只回答 YES/NO
 const TOPIC_CHECK_PROMPT: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）：YES = 同一件事，NO = 不是同一件事。只回答 YES 或 NO，不要输出其他内容。";
 /// 同话题判定第二套提示词：第一次未给出明确回答时使用，措辞更强
-const TOPIC_CHECK_PROMPT_RETRY: &str = "必须且只能回答 YES 或 NO（YES = 同一件事，NO = 不是同一件事）。禁止输出解释、标点、前后缀或任何其他文字。";
+const TOPIC_CHECK_PROMPT_RETRY: &str = "请判断【新消息】是否在延续当前会话中的同一件事（同一话题）。必须且只能回答 YES 或 NO（YES = 同一件事，NO = 不是同一件事），禁止输出解释、标点、前后缀或任何其他文字。";
 
 /// 消息文本（判断请求只关心内容文本）：Assistant/Tool 的 content 为 JSON 值时转成字符串
 fn message_text(message: &Message) -> String {
@@ -1133,6 +1133,14 @@ mod tests {
         assert_eq!(parse_topic_decision("是"), Some(TopicDecision::Same));
         assert_eq!(parse_topic_decision("maybe"), None);
         assert_eq!(parse_topic_decision(""), None);
+    }
+
+    #[test]
+    fn topic_check_retry_prompt_keeps_task_and_strict_format() {
+        assert!(TOPIC_CHECK_PROMPT.contains("是否在延续当前会话中的同一件事"));
+        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("是否在延续当前会话中的同一件事"),
+            "重试提示词也必须重复判断任务，不能只有格式要求");
+        assert!(TOPIC_CHECK_PROMPT_RETRY.contains("必须且只能回答 YES 或 NO"));
     }
 
     #[test]
