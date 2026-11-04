@@ -1,4 +1,4 @@
-# Channel Web 设计
+# Channel Web
 
 ## 目标
 
