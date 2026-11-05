@@ -39,7 +39,7 @@ impl ProviderManager {
     }
 
     /// 调用 LLM：按 (provider, model) 取有效模型配置 → 按 provider_type 取实现 → kissbot-llm 带重试调用
-    pub async fn call(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Result<ModelResponse> {
+    pub async fn call<'a>(&self, llm_cfg: &EffectiveLLMConfig, messages: &'a [Message], tools: &'a [Arc<ToolConfig>]) -> Result<ModelResponse> {
         let provider = llm_cfg.provider.as_str();
         let model = llm_cfg.model.as_str();
         let pm_cfg = ConfigManager::get().provider_model_config(provider, model).await
@@ -140,7 +140,7 @@ mod tests {
         let mut llm_cfg = EffectiveLLMConfig::new();
         llm_cfg.provider = ArcStr::from("no-such-provider");
         llm_cfg.model = ArcStr::from("m");
-        let err = ProviderManager::new().call(&llm_cfg, vec![], &vec![]).await.err().expect("provider 不存在应返回 Err");
+        let err = ProviderManager::new().call(&llm_cfg, &vec![], &vec![]).await.err().expect("provider 不存在应返回 Err");
         assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider 应返回 ModelProviderNotFound");
     }
 

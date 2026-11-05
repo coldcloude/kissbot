@@ -383,10 +383,10 @@ impl LlmModel {
         let tools = Vec::new();
         let response = match &self.provider {
             ProviderKind::OpenAi(provider) => {
-                call_with_retry(provider, &self.llm_cfg, &self.model_cfg, messages, &tools).await?
+                call_with_retry(provider, &self.llm_cfg, &self.model_cfg, &messages, &tools).await?
             }
             ProviderKind::Anthropic(provider) => {
-                call_with_retry(provider, &self.llm_cfg, &self.model_cfg, messages, &tools).await?
+                call_with_retry(provider, &self.llm_cfg, &self.model_cfg, &messages, &tools).await?
             }
         };
 

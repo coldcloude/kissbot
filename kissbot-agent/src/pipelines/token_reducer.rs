@@ -41,7 +41,7 @@ impl TokenReducer for CompressTokenReducer {
 
         // 2. 剩余上下文 + 压缩指令 → 模型总结
         context.push(c_msg.clone());
-        let response = Nexus::get().provider_manager.call(&llm_cfg, context, &vec![]).await;
+        let response = Nexus::get().provider_manager.call(&llm_cfg, &context, &vec![]).await;
         let mut tokens = 0 as u64;
         if let Ok(mut model_resp) = response {
             let sum_msg = Message::Assistant {

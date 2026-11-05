@@ -16,9 +16,9 @@ use crate::types::{Message, ModelResponse, ToolCall, ToolConfig};
 #[async_trait]
 pub trait Provider: Send + Sync {
     // 可复用 request 类型
-    type Request;
-    fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Self::Request;
-    async fn send_request(&self, request: &Self::Request, timeout: u64) -> Result<Value>;
+    type Request<'x>;
+    fn build_request<'a>(&self, llm_cfg: &EffectiveLLMConfig, messages: &'a [Message], tools: &'a [Arc<ToolConfig>]) -> Self::Request<'a>;
+    async fn send_request<'a>(&self, request: &Self::Request<'a>, timeout: u64) -> Result<Value>;
     fn parse_response(&self, data: Value) -> ModelResponse;
     /// 从服务商 API 获取全部可用模型名（GET /models）
     async fn list_models(&self) -> Result<Vec<ArcStr>>;
@@ -48,8 +48,8 @@ pub async fn call_with_retry<P: Provider>(
     provider: &P,
     llm_cfg: &EffectiveLLMConfig,
     pm_cfg: &EffectiveModelConfig,
-    messages: Vec<Message>,
-    tools: &Vec<Arc<ToolConfig>>,
+    messages: &[Message],
+    tools: &[Arc<ToolConfig>],
 ) -> Result<ModelResponse> {
     let mut last_error = None;
     let request = provider.build_request(llm_cfg, messages, tools);
@@ -79,7 +79,7 @@ pub struct OpenAiProvider {
 }
 
 /// OpenAI 兼容上下文消息：type 即枚举变体（内部标签序列化，type 与其他字段平级）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum OpenAiRequestToolCall {
     Function { function: Arc<ToolConfig> },
@@ -94,10 +94,10 @@ enum OpenAiRequestThinking {
 }
 
 /// OpenAI 兼容请求体（`Provider::Request`，字段私有：调用方不直接构造）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenAiRequest {
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenAiRequest<'a> {
     model: ArcStr,
-    messages: Vec<Message>,
+    messages: &'a [Message],
     stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiRequestToolCall>>,
@@ -127,9 +127,9 @@ fn strip_think_tag(content: &str) -> (Option<ArcStr>, Option<ArcStr>) {
 
 #[async_trait]
 impl Provider for OpenAiProvider {
-    type Request = OpenAiRequest;
+    type Request<'x> = OpenAiRequest<'x>;
 
-    fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> OpenAiRequest {
+    fn build_request<'a>(&self, llm_cfg: &EffectiveLLMConfig, messages: &'a [Message], tools: &[Arc<ToolConfig>]) -> OpenAiRequest<'a> {
         // Tools 需要转化
         let result_tools = if !tools.is_empty() {
             let mut results = Vec::new();
@@ -208,7 +208,7 @@ impl Provider for OpenAiProvider {
         }
     }
 
-    async fn send_request(&self, request: &OpenAiRequest, timeout: u64) -> Result<Value> {
+    async fn send_request<'a>(&self, request: &OpenAiRequest<'a>, timeout: u64) -> Result<Value> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(timeout))
@@ -257,9 +257,9 @@ pub struct AnthropicProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
-    type Request = Value;
+    type Request<'x> = Value;
 
-    fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, _tools: &Vec<Arc<ToolConfig>>) -> Value {
+    fn build_request<'a>(&self, llm_cfg: &EffectiveLLMConfig, messages: &'a [Message], _tools: &'a [Arc<ToolConfig>]) -> Value {
         // 分离 system 消息
         let system_parts: Vec<ArcStr> = messages.iter()
             .filter_map(|m| match m {
@@ -342,7 +342,7 @@ impl Provider for AnthropicProvider {
         }
     }
 
-    async fn send_request(&self, request: &Value, timeout: u64) -> Result<Value> {
+    async fn send_request<'a>(&self, request: &Value, timeout: u64) -> Result<Value> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let resp = self.client.post(&url)
             .timeout(Duration::from_secs(timeout))
@@ -506,13 +506,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for FlakyProvider {
-        type Request = Value;
+        type Request<'x> = Value;
 
-        fn build_request(&self, _llm_cfg: &EffectiveLLMConfig, _messages: Vec<Message>, _tools: &Vec<Arc<ToolConfig>>) -> Value {
+        fn build_request<'a>(&self, _llm_cfg: &EffectiveLLMConfig, _messages: &'a [Message], _tools: &'a [Arc<ToolConfig>]) -> Value {
             json!({})
         }
 
-        async fn send_request(&self, _request: &Value, _timeout: u64) -> Result<Value> {
+        async fn send_request<'a>(&self, _request: &Value, _timeout: u64) -> Result<Value> {
             let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
             if attempt < self.fail_times {
                 return if self.permanent {
@@ -539,7 +539,7 @@ mod tests {
         let provider = FlakyProvider { attempts: AtomicU32::new(0), fail_times: 1, permanent: false };
         let mut pm_cfg = sample_pm_cfg();
         pm_cfg.retry_count = 1;
-        let resp = call_with_retry(&provider, &sample_llm_cfg(), &pm_cfg, vec![usr("你好")], &vec![]).await
+        let resp = call_with_retry(&provider, &sample_llm_cfg(), &pm_cfg, &vec![usr("你好")], &vec![]).await
             .expect("重试后应成功");
         assert_eq!(text(&resp.content), Some("答案"));
         assert_eq!(provider.attempts.load(Ordering::Relaxed), 2, "共发起两次请求");
@@ -549,7 +549,7 @@ mod tests {
     async fn call_with_retry_returns_last_error_after_exhausting_retries() {
         // 重试次数用尽：返回最后一次错误（retry_count = 0 不重试，避免退避等待）
         let provider = FlakyProvider { attempts: AtomicU32::new(0), fail_times: u32::MAX, permanent: false };
-        let err = call_with_retry(&provider, &sample_llm_cfg(), &sample_pm_cfg(), vec![usr("你好")], &vec![]).await
+        let err = call_with_retry(&provider, &sample_llm_cfg(), &sample_pm_cfg(), &vec![usr("你好")], &vec![]).await
             .err().expect("应返回错误");
         assert!(matches!(err, Error::ModelApiError(_)));
         assert_eq!(provider.attempts.load(Ordering::Relaxed), 1, "retry_count = 0 只发一次");
@@ -561,7 +561,7 @@ mod tests {
         let provider = FlakyProvider { attempts: AtomicU32::new(0), fail_times: u32::MAX, permanent: true };
         let mut pm_cfg = sample_pm_cfg();
         pm_cfg.retry_count = 3;
-        let err = call_with_retry(&provider, &sample_llm_cfg(), &pm_cfg, vec![usr("你好")], &vec![]).await
+        let err = call_with_retry(&provider, &sample_llm_cfg(), &pm_cfg, &vec![usr("你好")], &vec![]).await
             .err().expect("应返回错误");
         assert!(matches!(err, Error::ModelProviderNotSupported(_)));
         assert_eq!(provider.attempts.load(Ordering::Relaxed), 1, "永久性错误不重试");
@@ -571,7 +571,8 @@ mod tests {
     fn openai_build_request_includes_params_and_messages() {
         let llm_cfg = sample_llm_cfg();
         let msgs = vec![sys("你是助手"), usr("你好")];
-        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body.model.as_str(), "deepseek-4-flash");
         assert_eq!(body.max_tokens, Some(2048));
         // temperature 为 f32 字段，直接按 f32 精确值比较
@@ -591,7 +592,9 @@ mod tests {
         llm_cfg.temperature = None;
         llm_cfg.thinking = None;
         llm_cfg.reasoning_effort = None;
-        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let msgs = vec![usr("你好")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         assert!(body.get("max_tokens").is_none(), "max_tokens 未配置不应传");
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
@@ -606,7 +609,9 @@ mod tests {
         let mut llm_cfg = sample_llm_cfg();
         llm_cfg.thinking = Some(ArcStr::from("enabled"));
         llm_cfg.reasoning_effort = Some(ArcStr::from("high"));
-        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let msgs = vec![usr("你好")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         // thinking 由字符串映射为协议枚举（内部标签 type）
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -618,7 +623,9 @@ mod tests {
     fn openai_build_request_maps_disabled_thinking() {
         let mut llm_cfg = sample_llm_cfg();
         llm_cfg.thinking = Some(ArcStr::from("disabled"));
-        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let msgs = vec![usr("你好")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         assert_eq!(body["thinking"]["type"], "disabled");
     }
@@ -628,7 +635,9 @@ mod tests {
         // 非 enabled/disabled 的取值无法映射到协议枚举 → 不发送 thinking 字段（而非原样透传）
         let mut llm_cfg = sample_llm_cfg();
         llm_cfg.thinking = Some(ArcStr::from("bogus"));
-        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let msgs = vec![usr("你好")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         assert!(body.thinking.is_none(), "未知取值不构造 thinking");
         let body = serde_json::to_value(&body).unwrap();
         assert!(body.get("thinking").is_none());
@@ -638,7 +647,8 @@ mod tests {
     fn openai_build_request_includes_tools_when_present() {
         let llm_cfg = sample_llm_cfg();
         let tools = vec![read_tool()];
-        let body = openai().build_request(&llm_cfg, vec![usr("查一下")], &tools);
+        let msgs = vec![usr("查一下")];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         assert_eq!(body["tools"][0]["type"], "function", "工具以 function 类型包装");
         assert_eq!(body["tools"][0]["function"]["name"], "read");
@@ -649,7 +659,9 @@ mod tests {
     #[test]
     fn openai_build_request_omits_tools_when_empty() {
         let llm_cfg = sample_llm_cfg();
-        let body = openai().build_request(&llm_cfg, vec![usr("你好")], &vec![]);
+        let msgs = vec![usr("你好")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         assert!(body.tools.is_none(), "无工具不构造 tools");
         let body = serde_json::to_value(&body).unwrap();
         assert!(body.get("tools").is_none(), "无工具不应发送 tools 字段");
@@ -664,7 +676,8 @@ mod tests {
             assistant(Value::Null, Value::Null, wire_tool_calls()),
             tool_msg("c1", "内容"),
         ];
-        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         assert_eq!(body["messages"][0]["role"], "assistant");
         assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "c1");
@@ -688,7 +701,8 @@ mod tests {
             sys("设定"),
             assistant(Value::String("回答".into()), Value::String("思考".into()), Value::Null),
         ];
-        let body = openai().build_request(&llm_cfg, msgs, &vec![]);
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = openai().build_request(&llm_cfg, &msgs, &tools);
         let body = serde_json::to_value(&body).unwrap();
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
         assert_eq!(body["messages"][1]["role"], "assistant");
@@ -765,7 +779,8 @@ mod tests {
     fn anthropic_build_request_separates_system_messages() {
         let llm_cfg = sample_llm_cfg();
         let msgs = vec![sys("设定"), usr("hi")];
-        let body = anthropic().build_request(&llm_cfg, msgs, &vec![]);
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body["system"], "设定");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1, "system 不应出现在 messages");
         assert_eq!(body["messages"][0]["role"], "user");
@@ -777,7 +792,9 @@ mod tests {
     #[test]
     fn anthropic_build_request_joins_multiple_system_messages() {
         let llm_cfg = sample_llm_cfg();
-        let body = anthropic().build_request(&llm_cfg, vec![sys("第一段"), sys("第二段"), usr("hi")], &vec![]);
+        let msgs = vec![sys("第一段"), sys("第二段"), usr("hi")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body["system"], "第一段\n第二段", "多段 system 以换行拼接");
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
     }
@@ -787,7 +804,9 @@ mod tests {
         // Anthropic API 要求 max_tokens 必填：未配置时用默认常量
         let mut llm_cfg = sample_llm_cfg();
         llm_cfg.max_tokens = None;
-        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        let msgs = vec![usr("hi")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body["max_tokens"], DEFFAULT_ANTTHROPIC_MAX_TOKENS);
     }
 
@@ -797,7 +816,9 @@ mod tests {
         llm_cfg.temperature = None;
         llm_cfg.thinking = None;
         llm_cfg.reasoning_effort = None;
-        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        let msgs = vec![usr("hi")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert!(body.get("temperature").is_none(), "temperature 未配置不应传");
         assert!(body.get("thinking").is_none(), "thinking 未配置不应传");
         assert!(body.get("output_config").is_none(), "reasoning_effort 未配置不应传 output_config");
@@ -806,7 +827,9 @@ mod tests {
     #[test]
     fn anthropic_build_request_omits_system_when_absent() {
         let llm_cfg = sample_llm_cfg();
-        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        let msgs = vec![usr("hi")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert!(body.get("system").is_none(), "无 system 消息不应发送 system 字段");
     }
 
@@ -819,7 +842,8 @@ mod tests {
             tool_msg("c1", "内容"),
             assistant(Value::String("回答".into()), Value::Null, wire_tool_calls()),
         ];
-        let body = anthropic().build_request(&llm_cfg, msgs, &vec![]);
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body["messages"].as_array().unwrap().len(), 2, "Tool 消息被丢弃");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][1]["role"], "assistant");
@@ -831,7 +855,9 @@ mod tests {
         let mut llm_cfg = sample_llm_cfg();
         llm_cfg.thinking = Some(ArcStr::from("enabled"));
         llm_cfg.reasoning_effort = Some(ArcStr::from("high"));
-        let body = anthropic().build_request(&llm_cfg, vec![usr("hi")], &vec![]);
+        let msgs = vec![usr("hi")];
+        let tools: Vec<Arc<ToolConfig>>= vec![];
+        let body = anthropic().build_request(&llm_cfg, &msgs, &tools);
         assert_eq!(body["thinking"]["type"], "enabled", "thinking 原样作为 type");
         assert_eq!(body["output_config"]["effort"], "high", "reasoning_effort 映射为 output_config.effort");
         assert_eq!(body["temperature"].as_f64().unwrap() as f32, 0.3_f32);

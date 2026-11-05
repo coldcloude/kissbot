@@ -280,21 +280,6 @@ mod tests {
         assert!(pm.contains(k2.as_ref()), "重新注册后 k2 恢复");
     }
 
-    // ===== provider 分派（未知 provider 名 / 未知 provider_type） =====
-    // 分派与工厂去重由 ProviderManager 承担，其单测见 provider.rs；此处覆盖 Nexus 的委托链路
-
-    #[tokio::test]
-    async fn provider_manager_call_delegates_unknown_provider_to_error() {
-        ensure_test_globals().await;
-        // provider 未配置 → ProviderManager 解析有效模型配置失败 → ModelProviderNotFound（不触网）
-        let mut llm_cfg = EffectiveLLMConfig::new();
-        llm_cfg.provider = ArcStr::from("no-such-provider");
-        llm_cfg.model = ArcStr::from("m");
-        let err = Nexus::get().provider_manager.call(&llm_cfg, vec![], &vec![]).await
-            .err().expect("未配置的 provider 应返回 Err");
-        assert!(matches!(err, Error::ModelProviderNotFound(_, _)), "未配置的 provider: {:?}", err);
-    }
-
     #[tokio::test]
     async fn pipeline_execute_command_parses_own_commands() {
         ensure_test_globals().await;

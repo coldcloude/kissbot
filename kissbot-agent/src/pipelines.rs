@@ -167,7 +167,7 @@ pub async fn send_messages(session_id: ArcStr, session: &Session, messages: Vec<
     let _ = session.context_append(messages).await;
     let full_messages = session.build_context_full().await;
     let llm_cfg = ConfigManager::get().session_config::<LLMConfig, EffectiveLLMConfig>(session_id).await;
-    Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
+    Nexus::get().provider_manager.call(llm_cfg.as_ref(), &full_messages, tools).await
 }
 
 async fn send_messages_with_limit(session_id: ArcStr, session: &Session, mut messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, reducer: &impl TokenReducer, tokens_usage: u64) -> Result<ModelResponse> {
@@ -191,7 +191,7 @@ async fn send_messages_with_limit(session_id: ArcStr, session: &Session, mut mes
     // 2. 正常的发送流程
     let _ = session.context_append(messages).await;
     let full_messages = session.build_context_full().await;
-    Nexus::get().provider_manager.call(llm_cfg.as_ref(), full_messages, tools).await
+    Nexus::get().provider_manager.call(llm_cfg.as_ref(), &full_messages, tools).await
 }
 
 pub fn retrieve_assistant_message(res: &mut ModelResponse) -> Message {
@@ -572,8 +572,8 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
         };
         // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；未精确回答则用重试提示词再问一次
         if role_mode && !load_memory {
-            let history = self.session.build_context().await;
-            if history.iter().any(|message| !matches!(message, Message::System { .. })) {
+            let mut messages = self.session.build_context().await;
+            if messages.iter().any(|message| !matches!(message, Message::System { .. })) {
                 let llm_cfg = ConfigManager::get()
                     .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
                     .await;
@@ -582,15 +582,9 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
                     _ => "",
                 };
                 // 第一次判定
-                let mut messages = history.clone();
                 let final_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT);
-                match messages.last_mut() {
-                    Some(Message::User { content }) => {
-                        *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), final_text));
-                    }
-                    _ => messages.push(Message::User { content: ArcStr::from(final_text) }),
-                }
-                let first = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
+                messages.push(Message::User { content: ArcStr::from(final_text) });
+                let first = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
                     Ok(res) => {
                         let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
                         match answer.as_str() {
@@ -607,17 +601,12 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
                 let changed = match first {
                     Some(changed) => changed,
                     None => {
-                        // 写死用 RETRY_PROMPT 重试一次（不循环）
+                        // 用 RETRY_PROMPT 重试一次
                         warn!("同话题判断未得到精确 YES/NO，用重试提示词再问一次");
-                        let mut messages = history.clone();
+                        messages.pop();
                         let retry_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT_RETRY);
-                        match messages.last_mut() {
-                            Some(Message::User { content }) => {
-                                *content = ArcStr::from(format!("{}\n\n{}", content.as_str(), retry_text));
-                            }
-                            _ => messages.push(Message::User { content: ArcStr::from(retry_text) }),
-                        }
-                        match Nexus::get().provider_manager.call(llm_cfg.as_ref(), messages, &Vec::new()).await {
+                        messages.push(Message::User { content: ArcStr::from(retry_text) });
+                        match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
                             Ok(res) => {
                                 let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
                                 match answer.as_str() {
