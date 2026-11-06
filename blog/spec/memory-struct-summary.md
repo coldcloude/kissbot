@@ -5,8 +5,7 @@
 ### 总体设计
 
 - 为了和 agent 的 Event 模式区分，记忆摘要中的事件称为 case，用 case_name 作为标识
-- 对应 agent 的 Role 和 Event 两种模式，Role 模式的 case_name 以“role-”作为前缀，Event 模式的 case_name 以“event-”作为前缀
-- 每个 agent role 形成一个 case 森林，Role 模式对应一个根，每个 Event 对应一个根
+- 每个 agent role 形成一个 case 森林，Role 模式对应一个根，根 case_name 为 "[role]"，每个 Event 对应一个根，根 case_name 为 "[event]{event_id}"
 - case 树每个节点包括 case_name、摘要，如果为叶子 case 则包含原始记录列表，否则为复合 case，包含子 case列表
 - Event case 树的根节点可以为叶子节点，Role case 树根节点固定为复合 case，并且固定摘要为空
 
