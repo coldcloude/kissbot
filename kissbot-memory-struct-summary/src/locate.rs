@@ -34,7 +34,6 @@ mod tests {
 
     use super::*;
     use crate::archive::Archiver;
-    use crate::model::LevelDecision;
     use crate::records::{RecordEntry, StoreMessage};
     use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager};
     use crate::stub::StubModel;
@@ -163,22 +162,22 @@ mod tests {
         assert!(response.groups.is_empty());
         assert_eq!(model.prompts().len(), 0, "没有消息不调用模型");
 
-        // 空树 + 消息：整批一组；当层没有候选也调一次逐层判定，由它给出名称与摘要
+        // 空树 + 消息：整批一组；当层没有候选也调一次逐层判定，由它给出新名称
         let response = locate(&handle, &model, &role, &channel_key(), &[message("你好"), message("在吗")]).await;
-        assert_eq!(case_names(&response), vec!["role-case"]);
+        assert_eq!(case_names(&response), vec!["case"]);
         assert_eq!(response.groups.len(), 1, "同一通道归一组");
-        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
-        assert_eq!(model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称与摘要）");
+        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称）");
         assert!(model.prompts()[0].contains("\"groups\""));
         assert!(model.prompts()[1].contains("当层 case"), "第二次是逐层判定");
         let (tree_len, record_count, summary) = {
             let state = handle.state.lock().await;
-            let node = state.tree.get("role-case").unwrap();
+            let node = state.tree.get("case").unwrap();
             (state.tree.len(), node.record_count, node.summary.as_str().to_string())
         };
         assert_eq!(tree_len, 1, "定位为新话题建出 case");
         assert_eq!(record_count, 0, "case 记忆条数为 0");
-        assert_eq!(summary, "新 case 摘要", "case 建立当次就带上模型给出的摘要");
+        assert_eq!(summary, "", "定位阶段不生成摘要");
     }
 
     #[tokio::test]
@@ -188,15 +187,15 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "case").await;
 
         // 第 1 轮把整批标记为当前 case 组 → 命中该通道当前 case
         model.push_group(&[0, 1], true);
         let response = locate(&handle, &model, &role, &channel_key(), &[message("今天下雨吗"), message("带伞吗")]).await;
-        assert_eq!(case_names(&response), vec!["role-case"]);
+        assert_eq!(case_names(&response), vec!["case"]);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["今天下雨吗", "带伞吗"]));
-        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
+        assert_eq!(response.groups[0].case_name.as_str(), "case");
     }
 
     #[tokio::test]
@@ -206,19 +205,19 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "case").await;
 
-        // 组未标记当前 case → 逐层判定给出名称与摘要 → 建出记忆条数为 0 的新 case
+        // 组未标记当前 case → 逐层判定给出新名称 → 建出记忆条数为 0 的新 case
         model.push_group(&[0], false);
-        model.push_level(LevelDecision::new_case("topic", "话题摘要"));
+        model.push_level("topic");
         let response = locate(&handle, &model, &role, &channel_key(), &[message("换个话题")]).await;
-        assert_eq!(case_names(&response), vec!["role-topic"], "新话题也建出 case");
+        assert_eq!(case_names(&response), vec!["topic"], "新话题也建出 case");
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].case_name.as_str(), "role-topic");
+        assert_eq!(response.groups[0].case_name.as_str(), "topic");
         let state = handle.state.lock().await;
-        let created = state.tree.get("role-topic").unwrap();
+        let created = state.tree.get("topic").unwrap();
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
-        assert_eq!(created.summary.as_str(), "话题摘要", "新 case 摘要来自逐层判定");
+        assert_eq!(created.summary.as_str(), "", "定位阶段不生成摘要");
         assert_eq!(state.tree.len(), 2);
     }
 
@@ -229,31 +228,31 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "case 一")], "role-case").await;
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 11:00:00", 2, "case 二")], "role-case-2").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "case 一")], "case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 11:00:00", 2, "case 二")], "case2").await;
         {
             let state = handle.state.lock().await;
             assert_eq!(state.tree.len(), 2);
-            assert_eq!(state.current_case(&role, &channel_key()).as_deref(), Some("role-case-2"));
+            assert_eq!(state.current_case(&role, &channel_key()).as_deref(), Some("case2"));
         }
 
-        // 4 条消息分成三组：前两条延续当前 case case-2；第三条命中已有 case case；第四条是新话题
+        // 4 条消息分成三组：前两条延续当前 case case2；第三条命中已有 case case；第四条是新话题
         model.push_groups(vec![
             (vec![0, 1], true),
             (vec![2], false),
             (vec![3], false),
         ]);
-        model.push_level(LevelDecision::Merge("role-case".into())); // 第三条：顶层命中 case（叶子）
-        model.push_level(LevelDecision::new_case("third", "第三摘要")); // 第四条：顶层未命中 → 新话题
+        model.push_level("case"); // 第三条：顶层命中已有 case（叶子）
+        model.push_level("third"); // 第四条：顶层未命中 → 新话题
         let response = locate(&handle, &model, &role, &channel_key(), &[message("a"), message("b"), message("c"), message("d")]).await;
 
         assert_eq!(response.groups.len(), 3);
         let mut names = case_names(&response);
         names.sort_unstable();
-        assert_eq!(names, vec!["role-case", "role-case-2", "role-third"], "涉及三个 case（新话题建出 third）");
-        assert_eq!(group_of(&response, "role-case-2").messages, ids(&["a", "b"]));
-        assert_eq!(group_of(&response, "role-case").messages, ids(&["c"]));
-        assert_eq!(group_of(&response, "role-third").messages, ids(&["d"]), "新话题组建出新 case");
+        assert_eq!(names, vec!["case", "case2", "third"], "涉及三个 case（新话题建出 third）");
+        assert_eq!(group_of(&response, "case2").messages, ids(&["a", "b"]));
+        assert_eq!(group_of(&response, "case").messages, ids(&["c"]));
+        assert_eq!(group_of(&response, "third").messages, ids(&["d"]), "新话题组建出新 case");
     }
 
     #[tokio::test]
@@ -263,30 +262,76 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "父 case 内容")], "role-case").await;
-        // 构造 case（父）/ role-2（子）结构
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "父 case 内容")], "case").await;
+        // 构造 case（父）/ case/child（子）结构
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("role-case"), "t");
+            state.tree.create_role_case(Some("case"), "child", "t");
         }
 
-        // 第三条消息：顶层命中 case（非叶子）→ 下探子层命中 role-2
+        // 第 3 条消息：顶层命中 case（非叶子）→ 下探子层命中 case/child
         model.push_group(&[0], false);
-        model.push_level(LevelDecision::Merge("role-case".into()));
-        model.push_level(LevelDecision::Merge("role-2".into()));
+        model.push_level("case");
+        model.push_level("child");
         let response = locate(&handle, &model, &role, &channel_key(), &[message("子 case 相关")]).await;
-        assert_eq!(case_names(&response), vec!["role-2"]);
+        assert_eq!(case_names(&response), vec!["case/child"]);
 
-        // 第四条消息：顶层命中 case（非叶子）→ 子层都未命中 → 在 case 下建出新的空 case
+        // 第 4 条消息：顶层命中 case（非叶子）→ 子层都未命中 → 在 case 下建出新的空 case
         model.push_group(&[0], false);
-        model.push_level(LevelDecision::Merge("role-case".into()));
-        model.push_level(LevelDecision::new_case("child", "子摘要"));
+        model.push_level("case");
+        model.push_level("new_child");
         let response = locate(&handle, &model, &role, &channel_key(), &[message("父 case 相关")]).await;
-        assert_eq!(case_names(&response), vec!["role-child"]);
+        assert_eq!(case_names(&response), vec!["case/new_child"]);
         let state = handle.state.lock().await;
-        let created = state.tree.get("role-child").unwrap();
-        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("role-case"), "建在命中的父 case 下");
+        let created = state.tree.get("case/new_child").unwrap();
+        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("case"), "建在命中的父 case 下");
         assert_eq!(created.record_count, 0, "新 case 记忆条数为 0");
+        assert_eq!(created.summary.as_str(), "", "定位阶段不生成摘要");
+    }
+
+    #[tokio::test]
+    async fn same_leaf_name_under_different_subtrees_are_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AgentRoleManager::new(temp.path());
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
+        let model = Arc::new(StubModel::new());
+        {
+            let mut state = handle.state.lock().await;
+            state.tree.ensure_path("a/x", "t");
+            state.tree.ensure_path("b/x", "t");
+        }
+
+        model.push_group(&[0], false);
+        model.push_level("a");
+        model.push_level("x");
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("甲")]).await;
+        assert_eq!(case_names(&response), vec!["a/x"]);
+
+        model.push_group(&[0], false);
+        model.push_level("b");
+        model.push_level("x");
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("乙")]).await;
+        assert_eq!(case_names(&response), vec!["b/x"], "不同子树同名是不同 case");
+    }
+
+    #[tokio::test]
+    async fn same_new_name_in_same_level_reuses_one_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AgentRoleManager::new(temp.path());
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
+        let model = Arc::new(StubModel::new());
+
+        // 两组都给出同一个新名称：同父同名 → 同一个 case，返回前合并
+        model.push_groups(vec![(vec![0], false), (vec![1], false)]);
+        model.push_level("same");
+        model.push_level("same");
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("一"), message("二")]).await;
+        assert_eq!(case_names(&response), vec!["same"]);
+        assert_eq!(response.groups[0].messages, ids(&["一", "二"]));
+        let state = handle.state.lock().await;
+        assert_eq!(state.tree.len(), 1, "同名兄弟只建一个节点");
     }
 
     #[tokio::test]
@@ -297,8 +342,8 @@ mod tests {
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
         let other = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self2"), ArcStr::from("g2"));
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")], "role-case").await;
-        archive(&handle, &model, &role, &other, &[channel_in(&other, "2099-01-01 11:00:00", 2, "通道二")], "role-case-2").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "通道一")], "case").await;
+        archive(&handle, &model, &role, &other, &[channel_in(&other, "2099-01-01 11:00:00", 2, "通道二")], "case2").await;
         let (current_first, current_other) = {
             let state = handle.state.lock().await;
             (
@@ -327,7 +372,7 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "case").await;
 
         // 两组都标记为当前 case 的延续，中间隔着一条别的话题 → 两组落点相同
         model.push_groups(vec![
@@ -335,7 +380,7 @@ mod tests {
             (vec![1], false),
             (vec![2], true),
         ]);
-        model.push_level(LevelDecision::new_case("other", "别的话题摘要"));
+        model.push_level("other");
         let response = locate(
             &handle,
             &model,
@@ -346,8 +391,8 @@ mod tests {
         .await;
 
         assert_eq!(response.groups.len(), 2, "同 case 的两组在返回前合并成一组");
-        assert_eq!(group_of(&response, "role-case").messages, ids(&["继续", "又继续"]), "合并后 msg_id 取并集");
-        assert_eq!(group_of(&response, "role-other").messages, ids(&["别的"]));
+        assert_eq!(group_of(&response, "case").messages, ids(&["继续", "又继续"]), "合并后 msg_id 取并集");
+        assert_eq!(group_of(&response, "other").messages, ids(&["别的"]));
     }
 
     #[tokio::test]
@@ -357,13 +402,13 @@ mod tests {
         let handle = open(&manager, &role_event("dev", None)).await;
         let role = role_event("dev", None);
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "role-case").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "聊天气")], "case").await;
         // 删掉原文副本目录：定位不读原文，仍应命中
         tokio::fs::remove_dir_all(handle.cases_dir()).await.unwrap();
 
         model.push_group(&[0], true);
         let response = locate(&handle, &model, &role, &channel_key(), &[message("今天下雨吗")]).await;
-        assert_eq!(case_names(&response), vec!["role-case"]);
+        assert_eq!(case_names(&response), vec!["case"]);
     }
 
     #[tokio::test]
@@ -373,21 +418,21 @@ mod tests {
         let handle = open(&manager, &role_event("dev", Some("e1"))).await;
         let role = role_event("dev", Some("e1"));
         let model = Arc::new(StubModel::new());
-        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")], "event-e1").await;
+        archive(&handle, &model, &role, &channel_key(), &[record_entry("2099-01-01 10:00:00", 1, "事件模式内容")], "[event]e1").await;
 
         let response = locate(&handle, &model, &role, &channel_key(), &[message("任意消息"), message("又一条")]).await;
-        assert_eq!(case_names(&response), vec!["event-e1"], "事件模式固定归入事件标识本身");
+        assert_eq!(case_names(&response), vec!["[event]e1"], "事件模式固定归入事件根");
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["任意消息", "又一条"]));
         assert!(model.prompts().is_empty(), "事件模式不触发定位判定");
         let state = handle.state.lock().await;
-        let node = state.tree.get("event-e1").unwrap();
-        assert!(node.parent_id.is_none(), "case 固定在顶层");
-        assert!(node.is_leaf(), "case 是顶层叶子");
-                assert!(!node.summary.is_empty(), "有记录的 event case 由摘要重算生成摘要");
+        let node = state.tree.get("[event]e1").unwrap();
+        assert!(node.parent_id.is_none(), "事件根固定在顶层");
+        assert!(node.is_leaf(), "事件根是顶层叶子");
+        assert!(!node.summary.is_empty(), "有记录的 event case 由摘要重算生成摘要");
     }
 
-    /// 事件模式 + 没有 case（也没有记录）：定位会建出角色 case（记忆条数 0），不调模型
+    /// 事件模式 + 没有 case（也没有记录）：定位会建出事件根（记忆条数 0），不调模型
     #[tokio::test]
     async fn event_mode_without_case_creates_leaf() {
         let temp = tempfile::tempdir().unwrap();
@@ -397,22 +442,36 @@ mod tests {
         let model = Arc::new(StubModel::new());
 
         let response = locate(&handle, &model, &role, &channel_key(), &[message("任意消息")]).await;
-        assert_eq!(case_names(&response), vec!["event-e1"]);
+        assert_eq!(case_names(&response), vec!["[event]e1"]);
         assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].case_name.as_str(), "event-e1");
+        assert_eq!(response.groups[0].case_name.as_str(), "[event]e1");
         assert!(model.prompts().is_empty(), "事件模式不调模型");
         {
             let state = handle.state.lock().await;
-            let node = state.tree.get("event-e1").unwrap();
+            let node = state.tree.get("[event]e1").unwrap();
             assert_eq!(node.record_count, 0, "case 记忆条数为 0");
-            assert!(!node.summary.is_empty(), "纯定位（只有消息）也当场生成摘要");
+            assert_eq!(node.summary.as_str(), "", "定位阶段不生成摘要");
         }
-        assert_eq!(model.summary_inputs().len(), 1, "纯定位由 summarize 生成摘要");
-        assert!(!handle.case_dir("event-e1").exists(), "没有记录就不落原文副本");
+        assert!(model.summary_inputs().is_empty(), "定位阶段不调用摘要生成");
+        assert!(!handle.case_dir("[event]e1").exists(), "没有记录就不落原文副本");
         // dev 与 dev-e1 是同一个角色：同一个句柄、同一棵 case 树
         let shared = open(&manager, &role_event("dev", None)).await;
         assert!(Arc::ptr_eq(&shared, &handle), "角色模式与事件模式共用同一个句柄");
         assert_eq!(shared.id, AgentRole::new(ArcStr::from("0"), ArcStr::from("dev")), "记忆后缀 dev-e1 的角色是 dev");
-        assert!(shared.state.lock().await.tree.contains("event-e1"), "case 在角色共享的 case 树上");
+        assert!(shared.state.lock().await.tree.contains("[event]e1"), "case 在角色共享的 case 树上");
+    }
+
+    #[tokio::test]
+    async fn new_case_name_allows_underscore() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = AgentRoleManager::new(temp.path());
+        let handle = open(&manager, &role_event("dev", None)).await;
+        let role = role_event("dev", None);
+        let model = Arc::new(StubModel::new());
+
+        model.push_group(&[0], false);
+        model.push_level("topic_weather_chat");
+        let response = locate(&handle, &model, &role, &channel_key(), &[message("天气")]).await;
+        assert_eq!(case_names(&response), vec!["topic_weather_chat"]);
     }
 }

@@ -50,37 +50,6 @@ pub struct MessageGroup {
     pub is_current: bool,
 }
 
-/// 分层归并判定结果
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LevelDecision {
-    /// 在本层新增叶子 case：模型同一次调用就给出 case 名称与摘要（不等到后续再调用模型）
-    New {
-        /// case 名称：只能由英文字母、数字与 `-` 组成
-        name: ArcStr,
-        /// case 摘要
-        summary: ArcStr,
-    },
-    /// 并入当层某 case（非叶子时继续下潜）
-    Merge(ArcStr),
-}
-
-impl LevelDecision {
-    /// 便捷构造：新建名为 `name`、摘要为 `summary` 的 case（测试与桩模型用）
-    pub fn new_case(name: &str, summary: &str) -> Self {
-        Self::New { name: ArcStr::from(name), summary: ArcStr::from(summary) }
-    }
-}
-
-/// case 名称是否合法：非空、长度不超过 [`MAX_CASE_NAME_LEN`]，且只含英文字母、数字与 `-`
-pub fn valid_case_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MAX_CASE_NAME_LEN
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
-/// case 名称长度上限（避免超长目录名）
-pub const MAX_CASE_NAME_LEN: usize = 64;
-
 /// 各判定环节的模型接口
 #[async_trait]
 pub trait DecisionModel: Send + Sync {
@@ -93,15 +62,15 @@ pub trait DecisionModel: Send + Sync {
         current: Option<&CaseBrief>,
     ) -> Result<Vec<MessageGroup>>;
 
-    /// 第 2 轮起逐层判定：并入当层某 case（非叶子继续下潜）/ 在本层新增叶子 case。
-    /// 判定为新增时同一次调用就给出 case 名称与摘要（只用于定位的组也一样，新 case 一建出来就有内容）。
+    /// 第 2 轮起逐层判定：返回当层某个已有 case 的名称，或一个新名称。
+    /// 只返回名称，不返回摘要；调用方按「已有则归入/下潜、没有则新建叶子」处理。
     async fn decide_level(
         &self,
         agent_role: &AgentRole,
         event_id: Option<ArcStr>,
         batch: &str,
         level: &[CaseBrief],
-    ) -> Result<LevelDecision>;
+    ) -> Result<ArcStr>;
 
     /// 摘要生成：case 直接记录 + 子 case 摘要 → case 摘要
     async fn summarize(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, content: &str) -> Result<ArcStr>;
@@ -112,15 +81,21 @@ pub trait DecisionModel: Send + Sync {
 const SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是记忆 case 归档与定位的判定器。输入是记忆记录（固定格式 JSON 或文本）与候选 case 摘要。\
 你只输出一个 JSON 对象，不输出解释、markdown 代码块或其他任何内容。");
 
+/// 提示词里的一条 case：只展示路径最后一段（模型只处理最后一段），摘要为空时只给名称。
+fn brief_line(brief: &CaseBrief) -> String {
+    let name = crate::case_name::leaf_name(&brief.case_name);
+    if brief.summary.is_empty() {
+        format!("- {}", name)
+    } else {
+        format!("- {}: {}", name, brief.summary)
+    }
+}
+
 fn render_level(level: &[CaseBrief]) -> String {
     if level.is_empty() {
         return "（当层没有 case）".to_string();
     }
-    level
-        .iter()
-        .map(|b| format!("- {}: {}", b.case_name, b.summary))
-        .collect::<Vec<_>>()
-        .join("\n")
+    level.iter().map(brief_line).collect::<Vec<_>>().join("\n")
 }
 
 /// 分组输入：固定格式的 JSON 数组，每项四个字段 `msg_id` / `time` / `user_id` / `content`
@@ -142,7 +117,7 @@ pub fn grouping_batch(items: &[GroupItem]) -> String {
 /// 第 1 轮（分组轮）提示词：写明输入格式、分组操作与输出格式，要求按 `msg_id` 给出每组的原文列表
 pub fn grouping_prompt(items: &[GroupItem], current: Option<&CaseBrief>) -> String {
     let current = match current {
-        Some(brief) => format!("- {}: {}", brief.case_name, brief.summary),
+        Some(brief) => brief_line(brief),
         None => "（该通道还没有当前 case）".to_string(),
     };
     let current_rule = if current.starts_with("（") {
@@ -171,16 +146,15 @@ messages：\n{messages}\n\n\
     )
 }
 
-/// 第 2 轮起逐层判定提示词：当层全部 case 作为候选（定位的组同样用它，`new` 即当层未命中）
+/// 第 2 轮起逐层判定提示词：当层全部 case 作为候选（只展示最后一段，新名即当层未命中）
 pub fn level_prompt(batch: &str, level: &[CaseBrief]) -> String {
     format!(
-        "当层 case（id + 摘要）：\n{level}\n\n\
+        "当层 case（名称 + 摘要）：\n{level}\n\n\
 待归并内容（每行一条消息，格式 `[时间] 说话人: 原文`；思考/工具内容已内嵌在原文里）：\n{batch}\n\n\
-请判断：\n\
-- 若应并入某个已有 case，输出 {{\"target\":\"<case_name>\"}}\n\
-- 若应在本层新增 case，输出 {{\"target\":\"new\",\"name\":\"<名称>\",\"summary\":\"<摘要>\"}}：\
-名称只能由英文字母、数字与 \"-\" 组成（如 topic-weather-chat），不能用中文、空格或其他字符，且要能概括内容；\
-摘要用简洁中文概括这个新 case（保留关键人物、话题、结论与时间线索）\n\
+请判断该组属于哪个 case：\n\
+- 若属于某个已有 case，返回该 case 的名称：{{\"case_name\":\"<名称>\"}}\n\
+- 否则给出一个新名称：{{\"case_name\":\"<新名称>\"}}；\
+名称只能由英文字母、数字与下划线组成（如 topic_weather_chat），不能用中文、空格、连字符或其他字符，且要能概括内容\n\
 只输出 JSON。",
         level = render_level(level),
         batch = batch
@@ -275,27 +249,21 @@ pub fn parse_groups(value: &Value, expected: &[ArcStr]) -> Result<Vec<MessageGro
     Ok(parsed)
 }
 
-/// 第 2 轮输出：当层某 case id，或带名称与摘要的新 case
-pub fn parse_level_decision(value: &Value) -> Result<LevelDecision> {
-    match value.get("target").and_then(|t| t.as_str()) {
-        Some("new") => {
-            let name = value
-                .get("name")
-                .and_then(|n| n.as_str())
-                .map(|n| n.trim())
-                .filter(|n| valid_case_name(n))
-                .ok_or_else(|| {
-                    Error::ModelApiError(format!(
-                        "新增 case 的 name 非法（只能含英文字母、数字与 '-'，且不超过 {} 字符）: {}",
-                        MAX_CASE_NAME_LEN, value
-                    ).into())
-                })?;
-            let summary = parse_summary(value)?;
-            Ok(LevelDecision::New { name: ArcStr::from(name), summary })
-        }
-        Some(id) if !id.is_empty() => Ok(LevelDecision::Merge(ArcStr::from(id))),
-        other => Err(Error::ModelApiError(format!("分层归并 target 非法: {:?}", other).into())),
-    }
+/// 第 2 轮输出：模型给出的 case 名（已有 case 的名称，或新名称；只有最后一段）
+pub fn parse_level_case_name(value: &Value) -> Result<ArcStr> {
+    let name = value
+        .get("case_name")
+        .and_then(|name| name.as_str())
+        .map(str::trim)
+        .filter(|name| crate::case_name::valid_case_name(name))
+        .ok_or_else(|| {
+            Error::ModelApiError(format!(
+                "case_name 非法（只能含英文字母、数字与下划线，且不超过 {} 字符）: {}",
+                crate::case_name::MAX_CASE_NAME_LEN,
+                value
+            ).into())
+        })?;
+    Ok(ArcStr::from(name))
 }
 
 pub fn parse_summary(value: &Value) -> Result<ArcStr> {
@@ -458,9 +426,9 @@ impl DecisionModel for LlmModel {
         event_id: Option<ArcStr>,
         batch: &str,
         level: &[CaseBrief],
-    ) -> Result<LevelDecision> {
+    ) -> Result<ArcStr> {
         let value = self.call(agent_role, event_id, &level_prompt(batch, level)).await?;
-        parse_level_decision(&value)
+        parse_level_case_name(&value)
     }
 
     async fn summarize(&self, agent_role: &AgentRole, event_id: Option<ArcStr>, content: &str) -> Result<ArcStr> {
@@ -522,38 +490,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_level_decision_variants() {
-        // target=new 必须同时给出合法的 name 与 summary
-        assert_eq!(
-            parse_level_decision(&json!({"target":"new","name":"weather-chat","summary":"聊天气"})).unwrap(),
-            LevelDecision::new_case("weather-chat", "聊天气")
-        );
-        // name 只要求字符集与长度合法：`role-x` 这类字符串也允许
-        assert_eq!(
-            parse_level_decision(&json!({"target":"new","name":"role-x","summary":"摘要"})).unwrap(),
-            LevelDecision::new_case("role-x", "摘要")
-        );
-        assert_eq!(parse_level_decision(&json!({"target":"e12"})).unwrap(), LevelDecision::Merge("e12".into()));
-        assert!(parse_level_decision(&json!({"target":""})).is_err());
-        assert!(parse_level_decision(&json!({})).is_err());
-
-        // name 非法：空 / 中文 / 空格 / 其他符号 / 超长
-        let too_long = "a".repeat(MAX_CASE_NAME_LEN + 1);
-        for name in ["", "天气", "weather chat", "weather_chat", "weather.dot", too_long.as_str()] {
-            let value = json!({"target":"new","name":name,"summary":"摘要"});
-            assert!(parse_level_decision(&value).is_err(), "name 非法应报错: {:?}", name);
+    fn parse_level_case_name_variants() {
+        assert_eq!(parse_level_case_name(&json!({"case_name":"weather_chat"})).unwrap(), "weather_chat");
+        assert_eq!(parse_level_case_name(&json!({"case_name":" role_x "})).unwrap(), "role_x");
+        assert!(parse_level_case_name(&json!({})).is_err());
+        assert!(parse_level_case_name(&json!({"case_name":""})).is_err());
+        let too_long = "a".repeat(crate::case_name::MAX_CASE_NAME_LEN + 1);
+        for name in ["天气", "weather chat", "weather-chat", "weather.dot", "[role]", too_long.as_str()] {
+            let value = json!({"case_name":name});
+            assert!(parse_level_case_name(&value).is_err(), "case_name 非法应报错: {:?}", name);
         }
-        // 缺 name / 缺 summary / summary 为空白
-        assert!(parse_level_decision(&json!({"target":"new","summary":"摘要"})).is_err());
-        assert!(parse_level_decision(&json!({"target":"new","name":"ok"})).is_err());
-        assert!(parse_level_decision(&json!({"target":"new","name":"ok","summary":"  "})).is_err());
-
-        // 边界：恰好达到长度上限（全为合法字符）可通过
-        let max = "a".repeat(MAX_CASE_NAME_LEN);
-        assert_eq!(
-            parse_level_decision(&json!({"target":"new","name":max,"summary":"摘要"})).unwrap(),
-            LevelDecision::new_case(&max, "摘要")
-        );
+        let max = "a".repeat(crate::case_name::MAX_CASE_NAME_LEN);
+        assert_eq!(parse_level_case_name(&json!({"case_name":max})).unwrap(), max.as_str());
     }
 
     #[test]
@@ -588,8 +536,24 @@ mod tests {
 
         let prompt = level_prompt("内容", &candidates);
         assert!(prompt.contains("当层 case"));
-        assert!(prompt.contains("\"target\":\"new\""));
+        assert!(prompt.contains("\"case_name\""));
+        assert!(!prompt.contains("summary"), "只要求返回 case_name，不要求摘要");
         assert_eq!(render_level(&[]), "（当层没有 case）");
+    }
+
+    #[test]
+    fn prompts_show_only_leaf_names() {
+        let candidates = vec![brief("a/x", "甲"), brief("[event]e1/topic", "")];
+        let level = level_prompt("内容", &candidates);
+        assert!(level.contains("- x: 甲"));
+        assert!(level.contains("- topic\n") || level.ends_with("- topic"), "摘要为空时只给名称");
+        assert!(!level.contains("a/x"), "提示词只展示最后一段");
+        assert!(!level.contains("[event]e1"), "事件根路径不进入候选展示");
+
+        let current = brief("a/x", "当前");
+        let grouping = grouping_prompt(&[item("m1", "2026-09-22 10:00:00", "u1", "你好")], Some(&current));
+        assert!(grouping.contains("- x: 当前"));
+        assert!(!grouping.contains("a/x"));
     }
 
     fn item(msg_id: &str, time: &str, user_id: &str, content: &str) -> GroupItem {

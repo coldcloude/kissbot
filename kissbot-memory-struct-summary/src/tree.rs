@@ -1,13 +1,11 @@
 //! Case 树：节点、层级、当前 case 指针的读写与持久化支撑。
 //!
-//! 树以**角色**（[`crate::agent_role::AgentRole`]，`agent + 角色名`）为归属组织，跨年份持续累积；
-//! 节点即 kissbot-api 的 [`CaseNode`]。节点**不带模式/事件字段**：角色模式的 case 由模型判定划分
-//! （名称 = `role-{模型给出的名称}`），事件模式的 case 是按 `event_id` 直接定位的根节点
-//! （名称 = `event-{事件标识}`）。**case 名称就是 case 的唯一标识**，没有单独分配的 id；两种名称
-//! 前缀不同，因此角色模式与事件模式天然不会重名。
+//! case 的唯一标识是**相对森林的完整路径**（见 [`crate::case_name`]）：角色 case 的路径由模型名
+//! 逐层拼接，事件根的路径固定为 `[event]{event_id}`。同一父节点下最后一段相同即同一个 case；
+//! 不同父节点下同名是不同 case。节点**不带模式/事件字段**，路径本身区分角色树与事件树。
 //!
-//! 一个 AgentRole 的 case 组织成**森林**：角色模式一棵树（固定根 `__role_root__`，其子节点是角色
-//! case），每个事件一棵树（根是 `event-{事件标识}`）。固定根只用于遍历，不是业务 case，对外查询
+//! 一个 AgentRole 的 case 组织成**森林**：角色模式一棵树（隐藏固定根 `[role]`，其子节点是角色
+//! case），每个事件一棵树（根是 `[event]{事件标识}`）。隐藏根只用于遍历，不是业务 case，对外查询
 //! 隐藏；事件根是业务 case，对外可见。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,36 +15,10 @@ use kissbot_api::{CaseBrief, CaseNode};
 
 use crate::records::RecordEntry;
 
-/// 角色模式 case 名前缀：角色 case 与事件 case **共用同一片森林**，两者靠名称前缀区分
-/// （角色 `role-`、事件 `event-`），节点本身不记录模式字段。
-pub const ROLE_CASE_PREFIX: ArcStr = arcstr::literal!("role-");
-
-/// 事件模式 case 名前缀（与 `role-` 天然不同名，因此同一片森林里两种 case 不会混淆）
-pub const EVENT_CASE_PREFIX: ArcStr = arcstr::literal!("event-");
-
-/// 事件模式的事件根名：`event-{事件标识}`（事件 case 即按它定位/查找；通常是叶子，非叶子时下潜）。
-pub fn event_case_name(event_id: &str) -> ArcStr {
-    ArcStr::from(format!("{}{}", EVENT_CASE_PREFIX, event_id))
-}
-
-/// 是否是角色模式的 case：名称带 `role-` 前缀。
-///
-/// 两种 case 共用一片森林，判定候选一律**按前缀正选**（取 `role-` 前缀），
-/// 而不是「排除 `event-` 前缀」的反选——避免任何非预期名称被当成角色 case 参与判定。
-pub fn is_role_case(case_name: &str) -> bool {
-    case_name.starts_with(ROLE_CASE_PREFIX.as_str())
-}
-
-/// 角色模式的固定根 case 名：只用于遍历，不是业务 case，对外查询隐藏；摘要恒为空。
-/// 名称不参与模型命名（`role-` / `event-` 前缀都不匹配），也不可能来自 meta（含 `_`）。
-pub const ROLE_ROOT_CASE_NAME_STR: &str = "__role_root__";
-
-pub const ROLE_ROOT_CASE_NAME: ArcStr = arcstr::literal!("__role_root__");
-
-/// 是否是角色模式的固定根（隐藏节点）
-pub fn is_role_root(case_name: &str) -> bool {
-    case_name == ROLE_ROOT_CASE_NAME_STR
-}
+pub use crate::case_name::{
+    event_root_name as event_case_name, is_event_root, is_role_case, is_role_root,
+    EVENT_ROOT_PREFIX, ROLE_ROOT_CASE_NAME, ROLE_ROOT_CASE_NAME_STR,
+};
 
 #[derive(Debug, Clone)]
 pub struct CaseTree {
@@ -68,8 +40,8 @@ impl CaseTree {
         Self { nodes }
     }
 
-    /// 从持久化节点恢复：补齐/规范化角色根，并把旧数据里的角色顶层节点挂到角色根下。
-    /// 事件根保持森林顶层（parent 为 None）。
+    /// 从持久化节点恢复：补齐/规范化角色根，按 `parent_id`（缺失时按路径）重建层级。
+    /// 事件根保持在森林顶层；隐藏角色根永远是复合 case。
     pub fn from_nodes(nodes: Vec<CaseNode>) -> Self {
         let mut map: BTreeMap<ArcStr, CaseNode> =
             nodes.into_iter().map(|n| (n.case_name.clone(), n)).collect();
@@ -83,24 +55,26 @@ impl CaseTree {
             root.record_count = 0;
         }
 
-        // 旧数据可能没有角色根，或父节点缺失：角色 case 统一挂到角色根下；
-        // 事件根（以及无法识别的节点）保持/回到森林顶层。
+        // 旧数据可能没有角色根、或父节点缺失：优先用路径推导父节点，推导不出时角色 case 挂到
+        // 角色根下、事件根保持森林顶层。事件根永远在顶层。
         let names: Vec<ArcStr> = map.keys().cloned().collect();
         for name in &names {
             if is_role_root(name) {
                 continue;
             }
-            let parent = map.get(name).and_then(|node| node.parent_id.clone());
-            let missing_parent = parent.as_ref().map(|parent| !map.contains_key(parent)).unwrap_or(true);
-            if missing_parent {
-                let fallback = if is_role_case(name) {
-                    Some(ROLE_ROOT_CASE_NAME.clone())
-                } else {
-                    None
-                };
-                if let Some(node) = map.get_mut(name) {
-                    node.parent_id = fallback;
-                }
+            let stored = map.get(name).and_then(|node| node.parent_id.clone());
+            let derived = name.rsplit_once('/').map(|(parent, _)| ArcStr::from(parent));
+            let parent = match stored {
+                Some(parent) if map.contains_key(&parent) => Some(parent),
+                _ => derived.filter(|parent| map.contains_key(parent)),
+            };
+            let parent = if is_event_root(name) {
+                None
+            } else {
+                parent.or_else(|| is_role_case(name).then(|| ROLE_ROOT_CASE_NAME.clone()))
+            };
+            if let Some(node) = map.get_mut(name) {
+                node.parent_id = parent;
             }
         }
 
@@ -176,18 +150,14 @@ impl CaseTree {
         self.nodes.contains_key(case_name)
     }
 
-    /// 事件模式固定的根 case（按 `event_id` 直接定位）
+    /// 事件模式固定的事件根（按 `event_id` 直接定位）
     pub fn event_case(&self, event_id: &str) -> Option<&CaseNode> {
         self.nodes.get(event_case_name(event_id).as_str())
     }
 
-    /// 全部角色模式 case id（重建时清空的角色部分；只取 `role-` 前缀，角色根、事件 case 不在内）
+    /// 全部角色模式 case（含嵌套；角色根、事件树不在内）
     pub fn role_case_ids(&self) -> BTreeSet<ArcStr> {
-        self.nodes
-            .iter()
-            .filter(|(case_name, _)| is_role_case(case_name))
-            .map(|(case_name, _)| case_name.clone())
-            .collect()
+        self.nodes.keys().filter(|case_name| is_role_case(case_name)).cloned().collect()
     }
 
     /// 森林顶层（角色根的子节点 + 事件根），对外查询用
@@ -207,12 +177,9 @@ impl CaseTree {
         self.forest_top_level_ids()
     }
 
-    /// 角色模式顶层 case id（角色根的直接子节点；事件根不参与）
+    /// 角色模式顶层 case id（角色根的直接子节点）
     pub fn role_top_level_ids(&self) -> Vec<ArcStr> {
         self.children_ids(ROLE_ROOT_CASE_NAME_STR)
-            .into_iter()
-            .filter(|id| is_role_case(id))
-            .collect()
     }
 
     /// 某节点的子 case id（按 created_at、case_name 升序）
@@ -229,12 +196,13 @@ impl CaseTree {
         ids
     }
 
-    /// 角色模式的子 case id（逐层判定的候选：只取 `role-` 前缀；事件 case 不参与）
-    pub fn role_children_ids(&self, case_name: &str) -> Vec<ArcStr> {
-        self.children_ids(case_name)
-            .into_iter()
-            .filter(|id| is_role_case(id))
-            .collect()
+    /// 按父路径 + 最后一段查找子 case（父为 None 表示角色顶层）
+    pub fn child_id(&self, parent: Option<&str>, name: &str) -> Option<ArcStr> {
+        let path = match parent {
+            Some(parent) => format!("{}/{}", parent, name),
+            None => name.to_string(),
+        };
+        self.nodes.contains_key(path.as_str()).then(|| ArcStr::from(path))
     }
 
     /// 叶子 case：没有子节点的业务 case；角色根永远是复合 case
@@ -265,28 +233,92 @@ impl CaseTree {
         chain
     }
 
-    /// 新建节点并挂到父节点下。
-    /// - `parent_id` 给定时挂到该父节点；
-    /// - `parent_id` 为 None：角色 case（`role-` 前缀）挂到角色根下，事件根（`event-` 前缀）
-    ///   及其他节点保持森林顶层。
-    pub fn create_node(&mut self, case_name: &str, parent_id: Option<&str>, now: &str) -> CaseNode {
+    /// 新建顶层 case：`[event]*` 建事件根，其余建角色顶层 case。
+    /// 已存在时直接返回已有路径（同父同名即同一个 case）。
+    pub fn create_top_level(&mut self, case_name: &str, now: &str) -> ArcStr {
         if is_role_root(case_name) {
-            return self.ensure_role_root(now);
+            return self.ensure_role_root(now).case_name;
         }
+        match case_name.strip_prefix(EVENT_ROOT_PREFIX) {
+            Some(event_id) => self.create_event_root(event_id, now),
+            None => self.create_role_case(None, case_name, now),
+        }
+    }
+
+    /// 新建角色 case（`parent` 为 None 表示角色顶层）；同父同名直接复用已有节点。
+    pub fn create_role_case(&mut self, parent: Option<&str>, name: &str, now: &str) -> ArcStr {
         self.ensure_role_root(now);
-        let default_parent = if is_role_case(case_name) {
-            Some(ROLE_ROOT_CASE_NAME.clone())
+        let parent_id = match parent {
+            Some(parent) if parent != ROLE_ROOT_CASE_NAME_STR && self.nodes.contains_key(parent) => {
+                ArcStr::from(parent)
+            }
+            _ => ROLE_ROOT_CASE_NAME.clone(),
+        };
+        let path = if parent_id == ROLE_ROOT_CASE_NAME {
+            ArcStr::from(name)
         } else {
-            None
+            ArcStr::from(format!("{}/{}", parent_id, name))
         };
-        let parent = match parent_id {
-            Some(parent) if self.nodes.contains_key(parent) => Some(ArcStr::from(parent)),
-            Some(_) => default_parent,
-            None => default_parent,
-        };
+        if self.nodes.contains_key(&path) {
+            return path;
+        }
+        self.insert_node(path.clone(), Some(parent_id), now);
+        path
+    }
+
+    /// 新建事件根 `[event]{event_id}`（顶层）；已存在时直接复用。
+    pub fn create_event_root(&mut self, event_id: &str, now: &str) -> ArcStr {
+        let path = event_case_name(event_id);
+        if self.nodes.contains_key(&path) {
+            return path;
+        }
+        self.insert_node(path.clone(), None, now);
+        path
+    }
+
+    /// 在已有父 case 下新建子 case；同父同名直接复用。
+    pub fn create_child(&mut self, parent: &str, name: &str, now: &str) -> ArcStr {
+        let path = ArcStr::from(format!("{}/{}", parent, name));
+        if self.nodes.contains_key(&path) {
+            return path;
+        }
+        debug_assert!(self.nodes.contains_key(parent), "create_child 的父 case 不存在: {}", parent);
+        self.insert_node(path.clone(), Some(ArcStr::from(parent)), now);
+        path
+    }
+
+    /// 确保一条完整路径存在（缺的祖先建成复合 case，最后一段建成叶子）。
+    /// 调用方负责校验路径；已存在的段直接复用。
+    pub fn ensure_path(&mut self, case_name: &str, now: &str) -> ArcStr {
+        let mut segments = case_name.split('/');
+        let first = segments.next().unwrap_or(case_name);
+        let mut current = self.create_top_level(first, now);
+        for segment in segments {
+            current = self.create_child(&current, segment, now);
+        }
+        current
+    }
+
+    /// 测试构造用：按完整路径直接插入节点（父节点缺失时按路径推导）。
+    #[cfg(test)]
+    pub fn create_node(&mut self, case_name: &str, parent_id: Option<&str>, now: &str) {
+        self.ensure_role_root(now);
+        if self.nodes.contains_key(case_name) {
+            return;
+        }
+        let derived = case_name.rsplit_once('/').map(|(parent, _)| ArcStr::from(parent));
+        let parent = parent_id
+            .map(ArcStr::from)
+            .filter(|parent| self.nodes.contains_key(parent))
+            .or_else(|| derived.filter(|parent| self.nodes.contains_key(parent)))
+            .or_else(|| is_role_case(case_name).then(|| ROLE_ROOT_CASE_NAME.clone()));
+        self.insert_node(ArcStr::from(case_name), parent, now);
+    }
+
+    fn insert_node(&mut self, case_name: ArcStr, parent_id: Option<ArcStr>, now: &str) {
         let node = CaseNode {
-            case_name: ArcStr::from(case_name),
-            parent_id: parent.clone(),
+            case_name: case_name.clone(),
+            parent_id: parent_id.clone(),
             children: Vec::new(),
             summary: ArcStr::new(),
             record_count: 0,
@@ -295,15 +327,13 @@ impl CaseTree {
             created_at: ArcStr::from(now),
             updated_at: ArcStr::from(now),
         };
-        if let Some(parent_node) = parent.and_then(|parent| self.nodes.get_mut(&parent)) {
-            parent_node.children.push(ArcStr::from(case_name));
+        if let Some(parent_node) = parent_id.and_then(|parent| self.nodes.get_mut(&parent)) {
+            parent_node.children.push(case_name.clone());
         }
-        self.nodes.insert(node.case_name.clone(), node.clone());
-        node
+        self.nodes.insert(case_name, node);
     }
 
     /// 删除若干 case 及其整棵子树（并从父节点的 children 摘除）；隐藏的角色根永远不会被删除。
-    /// 重建角色子树 / 事件子树时使用，保证事件 case 的非叶子子节点也被清掉。
     pub fn remove_nodes(&mut self, case_names: &BTreeSet<ArcStr>) {
         let mut remove: BTreeSet<ArcStr> = BTreeSet::new();
         for case_name in case_names {
@@ -315,6 +345,13 @@ impl CaseTree {
         for node in self.nodes.values_mut() {
             node.children.retain(|child| !remove.contains(child));
         }
+    }
+
+    /// 某 case（含自身）的整棵子树 id
+    pub fn subtree_ids(&self, case_name: &str) -> BTreeSet<ArcStr> {
+        let mut ids = BTreeSet::new();
+        self.collect_subtree(case_name, &mut ids);
+        ids
     }
 
     fn collect_subtree(&self, case_name: &str, remove: &mut BTreeSet<ArcStr>) {
@@ -362,32 +399,6 @@ impl CaseTree {
             node.updated_at = ArcStr::from(now);
         }
     }
-
-    /// 角色模式的新 case 名：`role-{模型给出的名称}`；同一角色树里重名时追加 `-2`、`-3`…
-    pub fn unique_role_case_name(&self, name: &str) -> ArcStr {
-        self.unique_case_name(ROLE_CASE_PREFIX.as_str(), name)
-    }
-
-    /// Event case 非叶子、下潜遍历时的新子 case 名：`event-{事件标识}-{模型给出的名称}`。
-    /// 与 `role-` 前缀天然不同名，角色模式的候选看不到它。
-    pub fn unique_event_child_case_name(&self, event_id: &str, name: &str) -> ArcStr {
-        let prefix = format!("{}-", event_case_name(event_id));
-        self.unique_case_name(&prefix, name)
-    }
-
-    fn unique_case_name(&self, prefix: &str, name: &str) -> ArcStr {
-        let base = format!("{}{}", prefix, name);
-        if !self.contains(&base) {
-            return ArcStr::from(base);
-        }
-        for suffix in 2u64.. {
-            let candidate = format!("{}-{}", base, suffix);
-            if !self.contains(&candidate) {
-                return ArcStr::from(candidate);
-            }
-        }
-        unreachable!("u64 后缀不可能被用尽")
-    }
 }
 
 #[cfg(test)]
@@ -419,109 +430,186 @@ mod tests {
     }
 
     #[test]
-    fn create_node_links_parent_and_lists_levels() {
+    fn create_role_case_links_parent_and_lists_levels() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("role-2", Some("role-1"), NOW.as_str());
-        tree.create_node("role-3", Some("role-1"), NOW.as_str());
+        let a = tree.create_role_case(None, "weather_chat", NOW.as_str());
+        let b = tree.create_role_case(Some(&a), "rain", NOW.as_str());
+        let c = tree.create_role_case(Some(&a), "snow", NOW.as_str());
 
-        assert_eq!(tree.top_level_ids(), vec![ArcStr::from("role-1")]);
-        assert_eq!(tree.children_ids("role-1"), vec![ArcStr::from("role-2"), ArcStr::from("role-3")]);
-        assert!(tree.is_leaf("role-2"));
-        assert!(!tree.is_leaf("role-1"));
-        assert_eq!(tree.ancestors("role-3"), vec![ArcStr::from("role-1")]);
-        assert!(tree.ancestors("role-1").is_empty());
-        assert_eq!(tree.get("role-2").unwrap().parent_id.as_ref().unwrap().as_str(), "role-1");
+        assert_eq!(a, "weather_chat");
+        assert_eq!(b, "weather_chat/rain");
+        assert_eq!(c, "weather_chat/snow");
+        assert_eq!(tree.top_level_ids(), vec![ArcStr::from("weather_chat")]);
+        assert_eq!(
+            tree.children_ids(&a),
+            vec![ArcStr::from("weather_chat/rain"), ArcStr::from("weather_chat/snow")]
+        );
+        assert!(tree.is_leaf(&b));
+        assert!(!tree.is_leaf(&a));
+        assert_eq!(tree.ancestors(&c), vec![ArcStr::from("weather_chat")]);
+        assert!(tree.ancestors(&a).is_empty());
+        assert_eq!(tree.get(&b).unwrap().parent_id.as_deref(), Some("weather_chat"));
     }
 
     #[test]
-    fn role_candidates_exclude_event_cases() {
+    fn same_name_under_different_parents_are_distinct() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("role-2", Some("role-1"), NOW.as_str());
-        tree.create_node("event-e12", None, NOW.as_str());
+        let a = tree.create_role_case(None, "a", NOW.as_str());
+        let b = tree.create_role_case(None, "b", NOW.as_str());
+        let ax = tree.create_role_case(Some(&a), "x", NOW.as_str());
+        let bx = tree.create_role_case(Some(&b), "x", NOW.as_str());
 
-        assert_eq!(tree.top_level_ids(), vec![ArcStr::from("event-e12"), ArcStr::from("role-1")], "查询可见全部顶层 case（按 created_at、case_name 升序）");
-        assert_eq!(tree.role_top_level_ids(), vec![ArcStr::from("role-1")], "角色模式判定只看角色 case（只取 role- 前缀）");
-        assert_eq!(tree.role_children_ids("role-1"), vec![ArcStr::from("role-2")]);
-        assert_eq!(tree.role_case_ids(), [ArcStr::from("role-1"), ArcStr::from("role-2")].into_iter().collect());
-        // 事件 case 按 event_id 直接定位（节点不带模式字段）
-        assert_eq!(tree.event_case("e12").map(|n| n.case_name.as_str()), Some("event-e12"));
-        assert!(tree.event_case("e13").is_none());
-    }
-
-    /// 前缀区分是**正选**：只有 `role-` 前缀的名称算角色 case，非两种前缀的名称不参与角色判定
-    #[test]
-    fn role_prefix_is_matched_positively() {
-        let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("event-e1", None, NOW.as_str());
-        tree.create_node("stray", None, NOW.as_str());
-
-        assert_eq!(tree.role_top_level_ids(), vec![ArcStr::from("role-1")], "非 role- 前缀不参与角色判定");
-        assert_eq!(tree.role_case_ids(), [ArcStr::from("role-1")].into_iter().collect());
-        assert!(is_role_case("role-x"));
-        assert!(!is_role_case("event-e1"));
-        assert!(!is_role_case("stray"));
+        assert_eq!(ax, "a/x");
+        assert_eq!(bx, "b/x");
+        assert_ne!(ax, bx);
+        assert_eq!(tree.len(), 4);
+        assert_eq!(tree.children_ids(&a), vec![ArcStr::from("a/x")]);
+        assert_eq!(tree.children_ids(&b), vec![ArcStr::from("b/x")]);
     }
 
     #[test]
-    fn remove_nodes_unlinks_parents() {
+    fn same_name_under_same_parent_reuses_node() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("role-2", Some("role-1"), NOW.as_str());
-        tree.create_node("event-e12", None, NOW.as_str());
+        let a = tree.create_role_case(None, "a", NOW.as_str());
+        let first = tree.create_role_case(Some(&a), "x", NOW.as_str());
+        let second = tree.create_role_case(Some(&a), "x", NOW.as_str());
 
-        tree.remove_nodes(&[ArcStr::from("event-e12")].into_iter().collect());
-        assert!(!tree.contains("event-e12"));
-        assert_eq!(tree.top_level_ids(), vec![ArcStr::from("role-1")]);
+        assert_eq!(first, second);
+        assert_eq!(tree.len(), 2, "同名兄弟只有一个节点");
+        assert_eq!(tree.children_ids(&a), vec![ArcStr::from("a/x")]);
+    }
+
+    #[test]
+    fn event_root_and_child_paths() {
+        let mut tree = CaseTree::new();
+        let root = tree.create_event_root("e1", NOW.as_str());
+        let child = tree.create_child(&root, "topic", NOW.as_str());
+
+        assert_eq!(root, "[event]e1");
+        assert_eq!(child, "[event]e1/topic");
+        assert!(!tree.is_leaf(&root), "创建 child 后 root 不再是叶子");
+        assert!(tree.is_leaf(&child));
+        assert_eq!(tree.event_case("e1").map(|n| n.case_name.as_str()), Some("[event]e1"));
+        assert!(tree.event_case("e2").is_none());
+        assert_eq!(tree.children_ids(&root), vec![ArcStr::from("[event]e1/topic")]);
+        assert_eq!(tree.get(&child).unwrap().parent_id.as_deref(), Some("[event]e1"));
+    }
+
+    #[test]
+    fn role_root_is_hidden_and_role_cases_are_its_children() {
+        let mut tree = CaseTree::new();
+        tree.create_role_case(None, "a", NOW.as_str());
+        tree.create_event_root("e1", NOW.as_str());
+
+        assert_eq!(tree.len(), 2, "业务 case 数不含角色根");
+        assert_eq!(tree.nodes().len(), 2, "对外节点不含角色根");
+        assert_eq!(tree.all_nodes().len(), 3, "持久化包含角色根");
+        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some());
+        assert_eq!(tree.get("a").unwrap().parent_id.as_deref(), Some(ROLE_ROOT_CASE_NAME_STR));
+        assert_eq!(tree.get("[event]e1").unwrap().parent_id, None, "事件根是森林顶层");
+        assert_eq!(
+            tree.forest_top_level_ids(),
+            vec![ArcStr::from("[event]e1"), ArcStr::from("a")],
+            "森林顶层 = 事件根 + 角色根下的角色 case"
+        );
+        assert_eq!(tree.role_top_level_ids(), vec![ArcStr::from("a")]);
+        assert!(tree.is_leaf("a"));
+        assert!(!tree.is_leaf(ROLE_ROOT_CASE_NAME_STR), "角色根固定是复合 case");
+    }
+
+    #[test]
+    fn from_nodes_restores_structure_from_paths() {
+        let restored = CaseTree::from_nodes(vec![
+            plain_node("a", None),
+            plain_node("a/b", None),
+            plain_node("[event]e1", None),
+            plain_node("[event]e1/topic", None),
+        ]);
+
+        assert_eq!(restored.len(), 4);
+        assert_eq!(restored.get("a").unwrap().parent_id.as_deref(), Some(ROLE_ROOT_CASE_NAME_STR));
+        assert_eq!(restored.get("a/b").unwrap().parent_id.as_deref(), Some("a"));
+        assert_eq!(restored.get("[event]e1").unwrap().parent_id, None);
+        assert_eq!(restored.get("[event]e1/topic").unwrap().parent_id.as_deref(), Some("[event]e1"));
+        assert_eq!(restored.children_ids("a"), vec![ArcStr::from("a/b")]);
+        assert_eq!(
+            restored.forest_top_level_ids(),
+            vec![ArcStr::from("[event]e1"), ArcStr::from("a")]
+        );
+    }
+
+    #[test]
+    fn remove_nodes_removes_subtree_and_keeps_role_root() {
+        let mut tree = CaseTree::new();
+        tree.create_role_case(None, "a", NOW.as_str());
+        tree.create_role_case(Some("a"), "b", NOW.as_str());
+        tree.create_event_root("e1", NOW.as_str());
 
         tree.remove_nodes(&tree.role_case_ids());
-        assert!(tree.is_empty(), "角色 case 整体删除（含子节点）");
+        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some(), "角色根不删除");
+        assert!(tree.children_ids(ROLE_ROOT_CASE_NAME_STR).is_empty(), "角色 subtree 整体删除");
+        assert_eq!(tree.len(), 1, "事件根保留");
+
+        tree.remove_nodes(&tree.subtree_ids("[event]e1"));
+        assert_eq!(tree.len(), 0);
+        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some(), "删除事件根也不影响角色根");
     }
 
     #[test]
     fn apply_records_tracks_count_and_time_bounds() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.apply_records("role-1", &[entry("2026-09-22 10:00:00", 1), entry("2026-09-22 10:05:00", 2)], NOW.as_str());
-        let node = tree.get("role-1").unwrap();
+        tree.create_role_case(None, "a", NOW.as_str());
+        tree.apply_records("a", &[entry("2026-09-22 10:00:00", 1), entry("2026-09-22 10:05:00", 2)], NOW.as_str());
+        let node = tree.get("a").unwrap();
         assert_eq!(node.record_count, 2);
         assert_eq!(node.start_time.as_str(), "2026-09-22 10:00:00");
         assert_eq!(node.end_time.as_str(), "2026-09-22 10:05:00");
 
-        // 追加更早与更晚的记录：边界随内容扩展
-        tree.apply_records("role-1", &[entry("2026-09-21 09:00:00", 3)], NOW.as_str());
-        tree.apply_records("role-1", &[entry("2026-09-23 09:00:00", 4)], NOW.as_str());
-        let node = tree.get("role-1").unwrap();
+        tree.apply_records("a", &[entry("2026-09-21 09:00:00", 3)], NOW.as_str());
+        tree.apply_records("a", &[entry("2026-09-23 09:00:00", 4)], NOW.as_str());
+        let node = tree.get("a").unwrap();
         assert_eq!(node.record_count, 4);
         assert_eq!(node.start_time.as_str(), "2026-09-21 09:00:00");
         assert_eq!(node.end_time.as_str(), "2026-09-23 09:00:00");
     }
 
     #[test]
-    fn unique_role_case_name_appends_suffix_on_conflict() {
+    fn apply_records_rejects_non_leaf() {
         let mut tree = CaseTree::new();
-        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat");
-
-        // 重名（含模型本批内给出同名）时追加 -2、-3…，名称仍然合法
-        tree.create_node("role-weather-chat", None, NOW.as_str());
-        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-2");
-        tree.create_node("role-weather-chat-2", None, NOW.as_str());
-        assert_eq!(tree.unique_role_case_name("weather-chat"), "role-weather-chat-3");
-        // 事件 case 名带 event- 前缀，与角色名天然不会重名
-        tree.create_node("event-e1", None, NOW.as_str());
-        assert_eq!(tree.unique_role_case_name("e1"), "role-e1");
+        let a = tree.create_role_case(None, "a", NOW.as_str());
+        tree.create_role_case(Some(&a), "b", NOW.as_str());
+        assert!(tree.apply_records(&a, &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_none(), "复合 case 不收记录");
+        assert!(tree.apply_records(ROLE_ROOT_CASE_NAME_STR, &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_none(), "角色根不收记录");
+        assert!(tree.apply_records("a/b", &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_some(), "叶子可以收记录");
     }
 
     #[test]
-    fn from_nodes_keeps_all() {
+    fn ensure_path_creates_ancestors_and_reuses_existing() {
         let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        let nodes = tree.nodes().into_iter().cloned().collect::<Vec<_>>();
-        let restored = CaseTree::from_nodes(nodes);
-        assert_eq!(restored.len(), 1);
-        assert_eq!(restored.top_level_ids(), vec![ArcStr::from("role-1")]);
+        assert_eq!(tree.ensure_path("a/b/c", NOW.as_str()), "a/b/c");
+        assert!(!tree.is_leaf("a"), "缺的祖先建成复合 case");
+        assert!(!tree.is_leaf("a/b"));
+        assert!(tree.is_leaf("a/b/c"));
+        assert_eq!(tree.ensure_path("a/b/c", NOW.as_str()), "a/b/c");
+        assert_eq!(tree.len(), 3, "重复确保不新增节点");
+
+        assert_eq!(tree.ensure_path("[event]e1/topic", NOW.as_str()), "[event]e1/topic");
+        assert!(tree.get("[event]e1").is_some());
+        assert!(tree.is_leaf("[event]e1/topic"));
+    }
+
+    #[test]
+    fn briefs_skip_missing_and_keep_order() {
+        let mut tree = CaseTree::new();
+        let a = tree.create_role_case(None, "a", NOW.as_str());
+        tree.set_summary(&a, "摘要一", NOW.as_str());
+        let b = tree.create_role_case(None, "b", NOW.as_str());
+        tree.set_summary(&b, "摘要二", NOW.as_str());
+        let briefs = tree.briefs(&[ArcStr::from("b"), ArcStr::from("missing"), ArcStr::from("a")]);
+        assert_eq!(briefs.len(), 2);
+        assert_eq!(briefs[0].case_name.as_str(), "b");
+        assert_eq!(briefs[0].summary.as_str(), "摘要二");
+        assert_eq!(briefs[1].case_name.as_str(), "a");
     }
 
     fn plain_node(name: &str, parent: Option<&str>) -> CaseNode {
@@ -536,90 +624,5 @@ mod tests {
             created_at: NOW.clone(),
             updated_at: NOW.clone(),
         }
-    }
-
-    #[test]
-    fn role_root_is_hidden_and_role_cases_are_its_children() {
-        let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("event-e1", None, NOW.as_str());
-
-        assert_eq!(tree.len(), 2, "业务 case 数不含角色根");
-        assert_eq!(tree.nodes().len(), 2, "对外节点不含角色根");
-        assert_eq!(tree.all_nodes().len(), 3, "持久化包含角色根");
-        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some());
-        assert_eq!(tree.children_ids(ROLE_ROOT_CASE_NAME_STR), vec![ArcStr::from("role-1")], "角色 case 挂在角色根下");
-        assert_eq!(tree.get("role-1").unwrap().parent_id.as_deref(), Some(ROLE_ROOT_CASE_NAME_STR));
-        assert_eq!(tree.get("event-e1").unwrap().parent_id, None, "事件根是森林顶层");
-        assert_eq!(
-            tree.forest_top_level_ids(),
-            vec![ArcStr::from("event-e1"), ArcStr::from("role-1")],
-            "森林顶层 = 事件根 + 角色根下的角色 case"
-        );
-        assert_eq!(tree.role_top_level_ids(), vec![ArcStr::from("role-1")]);
-        assert!(tree.is_leaf("role-1"));
-        assert!(!tree.is_leaf(ROLE_ROOT_CASE_NAME_STR), "角色根固定是复合 case");
-    }
-
-    #[test]
-    fn from_nodes_normalizes_old_data_and_keeps_event_roots() {
-        let restored = CaseTree::from_nodes(vec![plain_node("role-1", None), plain_node("event-e1", None)]);
-        assert_eq!(restored.len(), 2);
-        assert_eq!(restored.all_nodes().len(), 3);
-        assert_eq!(restored.get("role-1").unwrap().parent_id.as_deref(), Some(ROLE_ROOT_CASE_NAME_STR), "旧的角色顶层节点挂到角色根下");
-        assert_eq!(restored.get("event-e1").unwrap().parent_id, None, "事件根保持在森林顶层");
-        assert_eq!(
-            restored.forest_top_level_ids(),
-            vec![ArcStr::from("event-e1"), ArcStr::from("role-1")]
-        );
-    }
-
-    #[test]
-    fn remove_nodes_removes_subtree_and_keeps_role_root() {
-        let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("role-2", Some("role-1"), NOW.as_str());
-        tree.create_node("event-e1", None, NOW.as_str());
-
-        tree.remove_nodes(&tree.role_case_ids());
-        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some(), "角色根不删除");
-        assert!(tree.children_ids(ROLE_ROOT_CASE_NAME_STR).is_empty(), "角色 subtree 整体删除");
-        assert_eq!(tree.len(), 1, "事件根保留");
-        tree.remove_nodes(&[ArcStr::from("event-e1")].into_iter().collect());
-        assert_eq!(tree.len(), 0);
-        assert!(tree.get(ROLE_ROOT_CASE_NAME_STR).is_some(), "删除事件根也不影响角色根");
-    }
-
-    #[test]
-    fn apply_records_rejects_non_leaf() {
-        let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.create_node("role-2", Some("role-1"), NOW.as_str());
-        assert!(tree.apply_records("role-1", &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_none(), "复合 case 不收记录");
-        assert!(tree.apply_records(ROLE_ROOT_CASE_NAME_STR, &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_none(), "角色根不收记录");
-        assert!(tree.apply_records("role-2", &[entry("2026-09-22 10:00:00", 1)], NOW.as_str()).is_some(), "叶子可以收记录");
-    }
-
-    #[test]
-    fn unique_event_child_name_uses_event_prefix() {
-        let mut tree = CaseTree::new();
-        assert_eq!(tree.unique_event_child_case_name("e1", "topic"), "event-e1-topic");
-        tree.create_node("event-e1-topic", Some("event-e1"), NOW.as_str());
-        assert_eq!(tree.unique_event_child_case_name("e1", "topic"), "event-e1-topic-2");
-        assert_eq!(tree.unique_event_child_case_name("e1", "other"), "event-e1-other");
-    }
-
-    #[test]
-    fn briefs_skip_missing_and_keep_order() {
-        let mut tree = CaseTree::new();
-        tree.create_node("role-1", None, NOW.as_str());
-        tree.set_summary("role-1", "摘要一", NOW.as_str());
-        tree.create_node("role-2", None, NOW.as_str());
-        tree.set_summary("role-2", "摘要二", NOW.as_str());
-        let briefs = tree.briefs(&[ArcStr::from("role-2"), ArcStr::from("missing"), ArcStr::from("role-1")]);
-        assert_eq!(briefs.len(), 2);
-        assert_eq!(briefs[0].case_name.as_str(), "role-2");
-        assert_eq!(briefs[0].summary.as_str(), "摘要二");
-        assert_eq!(briefs[1].case_name.as_str(), "role-1");
     }
 }

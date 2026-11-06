@@ -21,6 +21,7 @@ use crate::{ChannelKey, ChannelRecord, Content, RecordPosition, RoleEvent};
 /// Case 节点（case 树文件的一行）：只描述 case 本身，不带模式/事件信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseNode {
+    /// case 的完整路径（唯一标识）：如 `weather_chat/rain`、`[event]e1/topic`
     pub case_name: ArcStr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<ArcStr>,
@@ -44,6 +45,7 @@ impl CaseNode {
 /// Case 摘要（分层归并/上下文装配用的最小 case 描述）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CaseBrief {
+    /// case 的完整路径；模型提示词只展示最后一段
     pub case_name: ArcStr,
     pub summary: ArcStr,
 }
@@ -88,7 +90,7 @@ pub struct LocateMessage {
 pub struct LocatedGroup {
     /// 组内消息的 `msg_id`：集合（合并同 case 组时取并、调用方按 `contains` 匹配），
     pub messages: HashSet<ArcStr>,
-    /// 该组所属 case：命中已有 case 即该 case；新话题会在本次定位中建出 case（记忆条数为 0）
+    /// 该组所属 case 的完整路径：命中已有 case 即该 case；新话题会在本次定位中建出 case
     pub case_name: ArcStr,
 }
 

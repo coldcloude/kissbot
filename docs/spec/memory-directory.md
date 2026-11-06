@@ -22,14 +22,16 @@
 ├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
 ├── {角色名}/                      # 角色目录：case 树与原文副本
 │   ├── tree.jsonl                # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
-│   └── cases/{case 名}/          # case 原文副本（单文件）
-│       └── channel-records.jsonl
+│   └── cases/                    # 与 case 树一一对应
+│       ├── role/{角色 case 路径}/ # 子 case 就是子目录，叶子目录下放原文副本
+│       │   └── channel-records.jsonl
+│       └── event-{事件标识}/{事件子路径}/
 └── {记忆后缀}/                    # 水位与当前 case 指针（后缀 = 角色名时就是上面的角色目录）
     ├── current.json              # 各通道的当前 case 指针（字段 case_name）
     └── watermark.json            # 各通道的已处理水位
 ```
 
-case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 名就是 case 的唯一标识**：角色模式为 `role-{模型给出的名称}`（名称只含英文字母、数字与 `-`，重名时追加 `-2`、`-3`…），事件模式为 `event-{事件标识}`（顶层叶子）；前缀不同，两种模式天然不会重名。详见 [memory-struct-summary.md](memory-struct-summary.md)。
+case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 的唯一标识是完整路径**（段之间 `/`）：角色模式顶层为模型名称、子 case 为 `<父路径>/<名称>`；事件模式根固定为 `[event]{事件标识}`，子 case 为 `<事件根>/<名称>`。同一父下同名即同一个 case；不同父下同名是不同 case。原文副本目录与路径对应：`[role]` → `role`、`[event]{事件标识}` → `event-{事件标识}`。详见 [memory-struct-summary.md](memory-struct-summary.md)。
 
 ## 记忆后缀（RoleEvent）
 

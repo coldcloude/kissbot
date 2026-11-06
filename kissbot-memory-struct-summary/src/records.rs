@@ -26,9 +26,25 @@ pub fn case_record_path(case_dir: &Path) -> PathBuf {
     case_dir.join(CASE_RECORD_FILE)
 }
 
-/// Case 目录：`{root}/{agent}/memory-struct-summary/{角色名}/cases/{case_name}`
+/// Case 目录：`{role_dir}/cases/{目录路径}`，目录与 case 树一一对应：
+/// 隐藏角色根 `[role]` → `role`，事件根 `[event]{event_id}` → `event-{event_id}`，
+/// 角色 case 的普通模型名段 → `role/{模型名}`；子 case 就是子目录。
 pub fn case_dir(role_dir: &Path, case_name: &str) -> PathBuf {
-    role_dir.join("cases").join(case_name)
+    let mut dir = role_dir.join("cases");
+    let mut segments = case_name.split('/');
+    let first = segments.next().unwrap_or("");
+    if first == crate::case_name::ROLE_ROOT_CASE_NAME_STR {
+        dir.push("role");
+    } else if let Some(event_id) = first.strip_prefix(crate::case_name::EVENT_ROOT_PREFIX) {
+        dir.push(format!("event-{}", event_id));
+    } else {
+        dir.push("role");
+        dir.push(first);
+    }
+    for segment in segments {
+        dir.push(segment);
+    }
+    dir
 }
 
 /// 枚举某记忆后缀在记忆存储中已存在的通道记录文件（按日期升序，只取 `date >= from_date`）。
@@ -506,8 +522,27 @@ mod tests {
 
     #[test]
     fn case_dir_layout() {
-        let dir = case_dir(Path::new("/root/0/memory-struct-summary/dev"), "event-e12");
-        assert_eq!(dir, PathBuf::from("/root/0/memory-struct-summary/dev/cases/event-e12"));
+        let role = Path::new("/root/0/memory-struct-summary/dev");
+        assert_eq!(
+            case_dir(role, "weather_chat"),
+            PathBuf::from("/root/0/memory-struct-summary/dev/cases/role/weather_chat")
+        );
+        assert_eq!(
+            case_dir(role, "weather_chat/rain"),
+            PathBuf::from("/root/0/memory-struct-summary/dev/cases/role/weather_chat/rain")
+        );
+        assert_eq!(
+            case_dir(role, "[event]e12"),
+            PathBuf::from("/root/0/memory-struct-summary/dev/cases/event-e12")
+        );
+        assert_eq!(
+            case_dir(role, "[event]e12/topic"),
+            PathBuf::from("/root/0/memory-struct-summary/dev/cases/event-e12/topic")
+        );
+        assert_eq!(
+            case_dir(role, "[role]"),
+            PathBuf::from("/root/0/memory-struct-summary/dev/cases/role")
+        );
     }
 
     #[tokio::test]

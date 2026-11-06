@@ -6,7 +6,7 @@
 //!   （事件模式的后缀为 `角色名-事件标识`）。后缀字符串只在构造文件/目录路径时由 kissbot-memory 的
 //!   `role_event_suffix` 拼出，本模块不做拆分。
 //! - `event_id`（`Option<ArcStr>`）是独立参数：`None` 为角色模式，`Some` 为事件模式（按它直接找
-//!   `event-{event_id}` 顶层叶子 case）。
+//!   `[event]{event_id}` 顶层叶子 case）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -521,10 +521,10 @@ mod tests {
 
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-1", None, "2026-09-22 10:05:00");
-            state.tree.apply_records("role-1", &[channel("2026-09-22 10:00:00", 1)], "2026-09-22 10:06:00");
-            state.tree.set_summary("role-1", "聊了天气", "2026-09-22 10:06:00");
-            state.current_cases.insert((role_event.clone(), key.clone()), "role-1".into());
+            state.tree.create_node("a", None, "2026-09-22 10:05:00");
+            state.tree.apply_records("a", &[channel("2026-09-22 10:00:00", 1)], "2026-09-22 10:06:00");
+            state.tree.set_summary("a", "聊了天气", "2026-09-22 10:06:00");
+            state.current_cases.insert((role_event.clone(), key.clone()), "a".into());
             let watermark = state.watermarks.entry((role_event.clone(), key.clone())).or_default();
             watermark.time = ArcStr::from("2026-09-22 10:00:00");
             watermark.sn = 1;
@@ -535,9 +535,9 @@ mod tests {
         let reloaded = AgentRoleManager::new(temp.path()).open(id).await.unwrap();
         let mut state = reloaded.state.lock().await;
         reloaded.ensure_role_event(&mut state, &role_event).await.unwrap();
-        assert_eq!(state.current_of(&role_event).get(&key).map(|id| id.as_str()), Some("role-1"));
+        assert_eq!(state.current_of(&role_event).get(&key).map(|id| id.as_str()), Some("a"));
         assert_eq!(state.watermark(&role_event, &key).sn, 1);
-        let node = state.tree.get("role-1").unwrap();
+        let node = state.tree.get("a").unwrap();
         assert_eq!(node.summary.as_str(), "聊了天气");
         assert_eq!(node.record_count, 1);
         assert_eq!(node.start_time.as_str(), "2026-09-22 10:00:00");
@@ -546,9 +546,9 @@ mod tests {
         let raw = tokio::fs::read_to_string(reloaded.tree_path()).await.unwrap();
         let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
         assert_eq!(lines.len(), 2, "角色根 + 角色 case 各一行");
-        let role_line = lines.iter().find(|line| line.contains("\"role-1\"")).expect("角色 case 行");
+        let role_line = lines.iter().find(|line| line.contains("\"a\"")).expect("角色 case 行");
         let node: Value = serde_json::from_str(role_line).unwrap();
-        assert_eq!(node["case_name"], "role-1");
+        assert_eq!(node["case_name"], "a");
         assert!(node.get("nodes").is_none(), "tree.jsonl 没有外层 nodes 键");
         assert!(node.get("mode").is_none(), "case 树节点不带模式/事件信息");
         assert_eq!(node["children"], serde_json::json!([]));
@@ -556,7 +556,7 @@ mod tests {
         // current.json / watermark.json 按通道分组，放在记忆后缀目录下
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.current_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["self_user_id"], "self1");
-        assert_eq!(raw["channels"][0]["case_name"], "role-1");
+        assert_eq!(raw["channels"][0]["case_name"], "a");
         let raw: Value = serde_json::from_slice(&tokio::fs::read(reloaded.watermark_path(&role_event)).await.unwrap()).unwrap();
         assert_eq!(raw["channels"][0]["channel"]["messenger_id"], "web");
         assert_eq!(raw["channels"][0]["watermark"]["sn"], 1);
@@ -570,11 +570,11 @@ mod tests {
         let handle = manager.open(id.clone()).await.unwrap();
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-1", None, "2026-09-22 10:00:00");
-            state.tree.set_summary("role-1", "顶层摘要", "2026-09-22 10:00:00");
-            state.tree.create_node("role-2", Some("role-1"), "2026-09-22 10:01:00");
-            state.tree.set_summary("role-2", "子摘要", "2026-09-22 10:01:00");
-            state.tree.create_node("event-e1", None, "2026-09-22 10:02:00");
+            state.tree.create_node("a", None, "2026-09-22 10:00:00");
+            state.tree.set_summary("a", "顶层摘要", "2026-09-22 10:00:00");
+            state.tree.create_node("a/b", Some("a"), "2026-09-22 10:01:00");
+            state.tree.set_summary("a/b", "子摘要", "2026-09-22 10:01:00");
+            state.tree.create_node("[event]e1", None, "2026-09-22 10:02:00");
             handle.save_tree(&state.tree).await.unwrap();
         }
 
@@ -588,9 +588,9 @@ mod tests {
         let reloaded = AgentRoleManager::new(temp.path()).open(id).await.unwrap();
         let state = reloaded.state.lock().await;
         assert_eq!(state.tree.len(), 3);
-        assert_eq!(state.tree.children_ids("role-1"), vec![ArcStr::from("role-2")]);
-        assert_eq!(state.tree.get("role-2").unwrap().parent_id.as_deref(), Some("role-1"));
-        assert_eq!(state.tree.get("role-2").unwrap().summary.as_str(), "子摘要");
+        assert_eq!(state.tree.children_ids("a"), vec![ArcStr::from("a/b")]);
+        assert_eq!(state.tree.get("a/b").unwrap().parent_id.as_deref(), Some("a"));
+        assert_eq!(state.tree.get("a/b").unwrap().summary.as_str(), "子摘要");
         assert!(state.tree.event_case("e1").is_some());
     }
 
@@ -604,15 +604,15 @@ mod tests {
         let role = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         {
             let mut state = role.state.lock().await;
-            state.tree.create_node("role-1", None, "t");
-            state.current_cases.insert((role_event("dev", None), key.clone()), "role-1".into());
+            state.tree.create_node("a", None, "t");
+            state.current_cases.insert((role_event("dev", None), key.clone()), "a".into());
             role.save_state(&role_event("dev", None), &state).await.unwrap();
         }
         // 事件后缀：同一棵树（能看到角色 case），状态文件独立
         let same = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let mut state = same.state.lock().await;
         same.ensure_role_event(&mut state, &event).await.unwrap();
-        assert!(state.tree.contains("role-1"), "角色与事件后缀共用一棵 case 树");
+        assert!(state.tree.contains("a"), "角色与事件后缀共用一棵 case 树");
         assert!(state.current_of(&event).is_empty(), "事件后缀有自己的当前指针");
         assert_eq!(same.role_event_dir(&event), temp.path().join("0").join(STRUCT_DIR_NAME.as_str()).join("dev-e1"));
         assert_eq!(same.role_event_dir(&role_event("dev", None)), same.dir, "角色模式下后缀目录即角色目录");
@@ -627,7 +627,7 @@ mod tests {
         let event = role_event("dev", Some("e1"));
         {
             let mut state = role.state.lock().await;
-            state.current_cases.insert((event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "event-e1".into());
+            state.current_cases.insert((event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "[event]e1".into());
             role.save_state(&event, &state).await.unwrap();
         }
 
@@ -645,8 +645,8 @@ mod tests {
         let role_event = role_event("dev", None);
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-1", None, "t");
-            state.current_cases.insert((role_event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "role-1".into());
+            state.tree.create_node("a", None, "t");
+            state.current_cases.insert((role_event.clone(), ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), "a".into());
             handle.save_state(&role_event, &state).await.unwrap();
         }
         assert!(handle.current_path(&role_event).exists());
@@ -663,7 +663,7 @@ mod tests {
         let handle = manager.open(AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"))).await.unwrap();
         let role_event = role_event("dev", None);
         let mut current = BTreeMap::new();
-        current.insert(Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), ArcStr::from("role-1"));
+        current.insert(Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self1"), ArcStr::from("g1"))), ArcStr::from("a"));
         handle.save_current(&role_event, &current).await.unwrap();
         assert!(handle.current_path(&role_event).exists());
         handle.save_current(&role_event, &BTreeMap::new()).await.unwrap();

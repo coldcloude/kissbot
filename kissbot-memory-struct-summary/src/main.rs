@@ -6,6 +6,7 @@
 
 mod api;
 mod archive;
+mod case_name;
 mod config;
 mod error;
 mod locate;

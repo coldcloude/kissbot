@@ -1,8 +1,8 @@
 //! 桩模型：`provider_type = "stub"` 时启用，用确定性判定替代模型调用。
 //!
 //! 供集成测试与手动验证使用（spec 验证：模型调用以桩实现替换）：分组轮把整批消息归为一组
-//! （有当前 case 时标记为当前 case 组，直接并入当前 case）、分层归并一律新开叶子 case（同时给出名称与摘要）、
-//! 摘要为固定前缀，定位命中第一个候选 case。
+//! （有当前 case 时标记为当前 case 组，直接并入当前 case）、逐层判定一律返回新名称 `case`；
+//! 摘要为固定前缀。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use kissbot_api::CaseBrief;
 
 use crate::error::Result;
-use crate::model::{DecisionModel, GroupItem, LevelDecision, MessageGroup};
+use crate::model::{DecisionModel, GroupItem, MessageGroup};
 use crate::agent_role::AgentRole;
 
 pub const STUB_SUMMARY_PREFIX: ArcStr = arcstr::literal!("桩摘要");
@@ -43,9 +43,9 @@ impl DecisionModel for StubModel {
         }])
     }
 
-    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, _level: &[CaseBrief]) -> Result<LevelDecision> {
-        // 桩：一律新建 case，名称固定 "case"（重名时组件追加 -2、-3…），摘要与 summarize 同前缀
-        Ok(LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str()))
+    async fn decide_level(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _batch: &str, _level: &[CaseBrief]) -> Result<ArcStr> {
+        // 桩：一律新建名为 "case" 的 case；同名兄弟由组件复用同一个节点
+        Ok(ArcStr::from("case"))
     }
 
     async fn summarize(&self, _agent_role: &AgentRole, _event_id: Option<ArcStr>, _content: &str) -> Result<ArcStr> {
@@ -73,7 +73,7 @@ mod tests {
         let model = StubModel::new();
         let agent_role = AgentRole::new(ArcStr::from("0"), ArcStr::from("dev"));
         let current = vec![CaseBrief {
-            case_name: ArcStr::from("role-1"),
+            case_name: ArcStr::from("case"),
             summary: ArcStr::from("当前 case"),
         }];
         let groups = model.group(&agent_role, None, &[item("m1"), item("m2")], current.first()).await.unwrap();
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(groups, vec![MessageGroup { msg_ids: vec![ArcStr::from("m1")], is_current: false }], "没有当前 case 时不标记");
         assert_eq!(
             model.decide_level(&agent_role, None, "seg", &[]).await.unwrap(),
-            LevelDecision::new_case("case", STUB_SUMMARY_PREFIX.as_str())
+            ArcStr::from("case")
         );
         assert_eq!(model.summarize(&agent_role, None, "content").await.unwrap(), "桩摘要1");
         assert_eq!(model.summarize(&agent_role, None, "content").await.unwrap(), "桩摘要2");

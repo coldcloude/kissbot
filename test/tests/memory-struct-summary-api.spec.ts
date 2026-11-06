@@ -270,7 +270,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const t0 = timeAt(0);
     const t1 = timeAt(1);
     const t2 = timeAt(2);
-    const meta = { memory_summary: { case_name: 'role-case' } };
+    const meta = { memory_summary: { case_name: 'case' } };
     await pushChannel(request, 'alice', 0, '第一个问题', t0, '', meta);
     await pushChannel(request, 'bot', 1, '第一个回答', t1, '', meta);
     await pushChannel(request, 'alice', 0, '下一个问题', t2, '', meta);
@@ -286,19 +286,19 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     // 手动触发才把该作用域各通道水位之后的记录一起处理
     const flushed = await flushRole(request, ROLE);
     expect(flushed.archived).toBe(3, '手动触发归档该通道待处理记录');
-    const records = await waitForCaseRecords(request, ROLE, 'role-case', 3);
+    const records = await waitForCaseRecords(request, ROLE, 'case', 3);
     expect(records.map((r: any) => r.is_self)).toEqual([0, 1, 0], '该通道待处理记录一起处理');
 
     const tree = await treeOf(request, ROLE);
     expect(tree.nodes).toHaveLength(1);
-    expect(tree.nodes[0].case_name).toBe('role-case');
+    expect(tree.nodes[0].case_name).toBe('case');
     expect(tree.nodes[0].parent_id).toBeUndefined();
-    expect(tree.nodes.some((n: any) => n.case_name === '__role_root__')).toBe(false, '隐藏的角色根不出现在 tree/get');
+    expect(tree.nodes.some((n: any) => n.case_name === '[role]')).toBe(false, '隐藏的角色根不出现在 tree/get');
     expect(tree.nodes[0].record_count).toBe(3);
     expect(tree.nodes[0].summary).toContain('桩摘要');
     // 当前 case 指针按通道保存：通道 = messenger + self_user_id + group
     expect(tree.current_cases).toHaveLength(1);
-    expect(tree.current_cases[0].case_name).toBe('role-case');
+    expect(tree.current_cases[0].case_name).toBe('case');
     expect(tree.current_cases[0].channel).toEqual({ messenger_id: MESSENGER, self_user_id: SELF_USER, group_id: GROUP });
 
     // 水位推进到该通道最后一条记录（状态文件，排障入口）
@@ -317,7 +317,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(data.cases).toBeUndefined();
     expect(data.groups).toHaveLength(1);
     expect([...data.groups[0].messages].sort()).toEqual(['q-1', 'q-2'], '同一话题的多条消息归为一组（按 msg_id 标识）');
-    expect(data.groups[0].case_name).toBe('role-case');
+    expect(data.groups[0].case_name).toBe('case');
     // 只定位：不带摘要、子 case 摘要与原文副本
     expect(data.case).toBeUndefined();
     expect(data.children).toBeUndefined();
@@ -327,16 +327,16 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
   // TC-04 case 查询：摘要 / 全部原文 / 指定之后 / 结尾若干条
   test('TC-04: 摘要与原文副本按需查询', async ({ request }) => {
     const summary = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/summary', {
-      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
+      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'case',
     });
     expect(summary.success).toBe(true);
-    expect(summary.data.case.case_name).toBe('role-case');
+    expect(summary.data.case.case_name).toBe('case');
     expect(summary.data.case.record_count).toBe(3);
     expect(summary.data.case.summary).toContain('桩摘要');
     expect(summary.data.records).toBeUndefined();
 
     const all = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', {
-      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
+      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'case',
     });
     expect(all.success).toBe(true);
     expect(all.data.records).toHaveLength(3);
@@ -345,7 +345,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     // 指定之后：把上一条记录的 time / sn 当游标回传
     const first = all.data.records[0];
     const after = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-after', {
-      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case',
+      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'case',
       after: { time: first.time, sn: first.sn },
     });
     expect(after.success).toBe(true);
@@ -354,14 +354,14 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
     // 结尾若干条（升序；0 条为空）
     const tail = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-tail', {
-      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case', count: 1,
+      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'case', count: 1,
     });
     expect(tail.success).toBe(true);
     expect(tail.data.records).toHaveLength(1);
     expect(tail.data.records[0].is_self).toBe(0);
     expect(tail.data.records[0].time).toBe(all.data.records[2].time, '取结尾一条');
     const none = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records-tail', {
-      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'role-case', count: 0,
+      agent_id: AGENT, role_event: roleEventOf(ROLE), case_name: 'case', count: 0,
     });
     expect(none.data.records).toHaveLength(0);
   });
@@ -383,10 +383,10 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(tree.nodes[0].record_count).toBe(3, '重建后全部历史记录一起处理进同一 case');
   });
 
-  // TC-06 事件模式：记忆后缀含 event 时整体固定归入顶层叶子 case `event-<事件标识>`，不参与角色模式的判定
+  // TC-06 事件模式：记忆后缀含 event 时整体固定归入顶层叶子 case `[event]<事件标识>`，不参与角色模式的判定
   test('TC-06: 事件模式固定归入顶层叶子 case 且与角色模式共用一棵树', async ({ request }) => {
     const eventRole = `${ROLE}-e1`;
-    const caseName = 'event-e1';
+    const caseName = '[event]e1';
     const pushes = [
       { user: 'alice', isSelf: 0, text: '事件模式提问', time: timeAt(10) },
       { user: 'bot', isSelf: 1, text: '事件模式回答', time: timeAt(11) },
@@ -414,7 +414,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(node, '事件模式建出固定 case').toBeTruthy();
     expect(node.parent_id, '事件 case 固定在顶层').toBeUndefined();
     expect(node.record_count).toBe(3, '事件模式整体归入一个 case');
-    expect(tree.nodes.some((n: any) => n.case_name === 'role-case'), '角色 case 与事件 case 共用一棵树').toBe(true);
+    expect(tree.nodes.some((n: any) => n.case_name === 'case'), '角色 case 与事件 case 共用一棵树').toBe(true);
     // 当前 case 指针按记忆后缀分开：事件后缀有自己的指针，角色后缀的指针不含它
     expect(tree.current_cases).toHaveLength(1);
     expect(tree.current_cases[0].case_name).toBe(caseName);
@@ -430,8 +430,8 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     // 时间一次算好（同一记录/断言必须用同一时间串）
     const tA = [timeAt(100), timeAt(101), timeAt(102)];
     const tB = [timeAt(3600), timeAt(3601)];
-    const metaA = { memory_summary: { case_name: 'role-case' } };
-    const metaB = { memory_summary: { case_name: 'role-case-2' } };
+    const metaA = { memory_summary: { case_name: 'case' } };
+    const metaB = { memory_summary: { case_name: 'case2' } };
     await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的问题', tA[0], '', metaA);
     await pushChannelIn(request, role, channelA, 'bot', 1, 'A 的回答', tA[1], '', metaA);
     await pushChannelIn(request, role, channelA, 'alice', 0, 'A 的追问', tA[2], '', metaA);
@@ -439,16 +439,16 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     await pushChannelIn(request, role, channelB, 'dave', 0, 'B 的另一条', tB[1], '', metaB);
 
     // 手动触发一次，把两个通道各算一次
-    const recordsA = await waitForCaseRecords(request, role, 'role-case', 3);
-    const recordsB = await waitForCaseRecords(request, role, 'role-case-2', 2);
+    const recordsA = await waitForCaseRecords(request, role, 'case', 3);
+    const recordsB = await waitForCaseRecords(request, role, 'case2', 2);
     expect(recordsA.every((r: any) => r.self_user_id === 'selfA'), 'A 的 case 只含 A 通道的记录');
     expect(recordsB.every((r: any) => r.self_user_id === 'selfB'), 'B 的 case 只含 B 通道的记录');
 
     const tree = await treeOf(request, role);
     expect(tree.nodes).toHaveLength(2);
     const pointer = (selfUser: string) => tree.current_cases.find((p: any) => p.channel.self_user_id === selfUser);
-    expect(pointer('selfA').case_name).toBe('role-case');
-    expect(pointer('selfB').case_name).toBe('role-case-2');
+    expect(pointer('selfA').case_name).toBe('case');
+    expect(pointer('selfB').case_name).toBe('case2');
     // 两个通道各有自己的水位，都推进到各通道最后一条记录
     const watermark = await waitForWatermark(role, 'selfA', tA[2]);
     expect(watermark.channels).toHaveLength(2);
@@ -458,10 +458,10 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
 
     // 一次定位只针对一个通道：两个通道各定位一次，各自命中自己的当前 case
     const fromA = await locateMessages(request, role, channelA, [{ msgId: 'a-1', text: '继续 A 的话题' }]);
-    expect(fromA.groups.map((g: any) => g.case_name)).toEqual(['role-case']);
+    expect(fromA.groups.map((g: any) => g.case_name)).toEqual(['case']);
     expect(fromA.groups[0].messages).toEqual(['a-1']);
     const fromB = await locateMessages(request, role, channelB, [{ msgId: 'b-1', text: '继续 B 的话题' }]);
-    expect(fromB.groups.map((g: any) => g.case_name)).toEqual(['role-case-2']);
+    expect(fromB.groups.map((g: any) => g.case_name)).toEqual(['case2']);
     expect(fromB.groups[0].messages).toEqual(['b-1']);
   });
 
@@ -487,12 +487,12 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
       await pushChannelIn(request, role, channel, 'alice', 0, '追问', t(2), '', meta);
     };
 
-    await pushConversation(channelA, 'A 的思考内容', 100, 'role-case');
-    await pushConversation(channelB, 'B 的思考内容', 200, 'role-case-2');
+    await pushConversation(channelA, 'A 的思考内容', 100, 'case');
+    await pushConversation(channelB, 'B 的思考内容', 200, 'case2');
 
     // 每个通道 3 条通道记录（提问、带思考的回复、追问），思考内容不再单独成记录
-    await waitForCaseRecords(request, role, 'role-case', 3);
-    await waitForCaseRecords(request, role, 'role-case-2', 3);
+    await waitForCaseRecords(request, role, 'case', 3);
+    await waitForCaseRecords(request, role, 'case2', 3);
 
     const thinkTexts = async (caseName: string): Promise<string[]> => {
       const resp = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
@@ -506,9 +506,9 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
       }
       return found;
     };
-    const [texts1, texts2] = [await thinkTexts('role-case'), await thinkTexts('role-case-2')];
-    expect(texts1).toEqual(['A 的思考内容'], 'role-case 只含 A 通道的思考内容');
-    expect(texts2).toEqual(['B 的思考内容'], 'role-case-2 只含 B 通道的思考内容');
+    const [texts1, texts2] = [await thinkTexts('case'), await thinkTexts('case2')];
+    expect(texts1).toEqual(['A 的思考内容'], 'case 只含 A 通道的思考内容');
+    expect(texts2).toEqual(['B 的思考内容'], 'case2 只含 B 通道的思考内容');
   });
 
   // TC-09 定位即处理：新消息与该通道的待归档记录合并后一并分析（新消息在 locate 时尚未写入记忆，无需去重）
@@ -519,7 +519,7 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const t1 = timeAt(1001);
     const t2 = timeAt(1002);
     const t3 = timeAt(1003);
-    const meta = { memory_summary: { case_name: 'role-case' } };
+    const meta = { memory_summary: { case_name: 'case' } };
     await pushChannelIn(request, role, channel, 'alice', 0, '定位前的提问', t0, 'msg-1', meta);
     await pushChannelIn(request, role, channel, 'bot', 1, '定位前的回答', t1, 'msg-2', meta);
     // 推送接口返回不代表记录已可读：先等记录真正落盘
@@ -537,12 +537,12 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
       ]);
       return data.groups.length > 0;
     });
-    expect(data.groups.map((g: any) => g.case_name)).toEqual(['role-case']);
+    expect(data.groups.map((g: any) => g.case_name)).toEqual(['case']);
     expect(data.groups.map((g: any) => [...g.messages].sort())).toEqual([['msg-1', 'msg-2', 'msg-3']], '整个合并批次一次分组（桩模型整批一组，按 msg_id 标识）');
-    expect(data.groups[0].case_name).toBe('role-case');
+    expect(data.groups[0].case_name).toBe('case');
 
     // 已存记录归档一次（内容与时间以记录为准）；定位时的新消息不落盘
-    const records = await waitForCaseRecords(request, role, 'role-case', 2);
+    const records = await waitForCaseRecords(request, role, 'case', 2);
     expect(records.map((r: any) => r.is_self)).toEqual([0, 1], '新消息不进原文副本');
     expect(records.map((r: any) => r.content.data)).toEqual(['定位前的提问', '定位前的回答'], '新消息只定位、不落盘');
     expect(records.map((r: any) => r.msg_id)).toEqual(['msg-1', 'msg-2']);
@@ -551,25 +551,24 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     expect(watermark.channels[0].watermark.sn).toBe(2);
   });
 
-  // TC-10 定位新话题：角色树里还没有 case 时也建出 case（记忆条数 0，但名称与摘要当场就有）
-  test('TC-10: 定位新话题建出带名称与摘要的空 case', async ({ request }) => {
+  // TC-10 定位新话题：角色树里还没有 case 时也建出 case（记忆条数 0，只返回 case 名）
+  test('TC-10: 定位新话题建出只带名称的空 case', async ({ request }) => {
     const role = 'dev5';
     const channel: TestChannel = { messenger: 'web', selfUser: 'self5', group: 'g5' };
 
     const data = await locateMessages(request, role, channel, [{ msgId: 'new-1', text: '一个全新话题' }]);
     const caseName = data.groups[0]?.case_name;
-    // 桩模型把新 case 命名为 "case"：组件拼成 case 名 role-case（唯一标识）
-    expect(caseName, '新话题返回 case 名（唯一标识）').toBe('role-case');
+    // 桩模型把新 case 命名为 "case"：组件直接使用该名称（唯一标识）
+    expect(caseName, '新话题返回 case 名（唯一标识）').toBe('case');
     expect(data.groups).toHaveLength(1);
     expect(data.groups[0].case_name).toBe(caseName);
     expect(data.groups[0].messages).toEqual(['new-1']);
 
-    // 查询只读：能看到这个 case，记忆条数为 0、原文为空，但摘要当场就有
+    // 查询只读：能看到这个 case，记忆条数为 0、原文为空；摘要等记录归档时再生成
     const tree = await treeOf(request, role);
     const node = tree.nodes.find((n: any) => n.case_name === caseName);
     expect(node.record_count).toBe(0);
-    // 新建 case 的名称与摘要当场就有（不等到后续归档再调模型）
-    expect(node.summary, '新建 case 立刻带摘要').toContain('桩摘要');
+    expect(node.summary, '定位阶段不生成摘要').toBe('');
     const records = await apiPost(request, MEMORY_STRUCT_SUMMARY_BASE, '/summary/case/records', { agent_id: AGENT, role_event: roleEventOf(role), case_name: caseName });
     expect(records.success).toBe(true);
     expect(records.data.records).toHaveLength(0);
@@ -581,24 +580,24 @@ test.describe.serial('memory-struct-summary 摘要记忆测试', () => {
     const t0 = timeAt(3000);
     const t1 = timeAt(3001);
     await pushChannelIn(request, role, channel, 'alice', 0, '初始话题', t0, 'meta-1', {
-      memory_summary: { case_name: 'role-case' },
+      memory_summary: { case_name: 'case' },
     });
     await waitForStoreFile(role, t0, '初始话题');
-    // 先归档出 role-case
-    const first = await waitForCaseRecords(request, role, 'role-case', 1);
+    // 先归档出 case
+    const first = await waitForCaseRecords(request, role, 'case', 1);
     expect(first.map((r: any) => r.content.data)).toEqual(['初始话题']);
 
-    // 第二条记录自带 case 名：直接追加到 role-case，不因内容不同而新建 case
+    // 第二条记录自带 case 名：直接追加到 case，不因内容不同而新建 case
     await pushChannelIn(request, role, channel, 'alice', 0, '完全不同的话题', t1, 'meta-2', {
-      memory_summary: { case_name: 'role-case' },
+      memory_summary: { case_name: 'case' },
     });
     await waitForStoreFile(role, t1, '完全不同的话题');
-    const records = await waitForCaseRecords(request, role, 'role-case', 2);
+    const records = await waitForCaseRecords(request, role, 'case', 2);
     expect(records.map((r: any) => r.content.data)).toEqual(['初始话题', '完全不同的话题']);
-    expect(records[1].meta, '原文副本保留 meta').toEqual({ memory_summary: { case_name: 'role-case' } });
+    expect(records[1].meta, '原文副本保留 meta').toEqual({ memory_summary: { case_name: 'case' } });
 
     const tree = await treeOf(request, role);
     expect(tree.nodes).toHaveLength(1, '带 meta 的记录不新建 case');
-    expect(tree.nodes[0].case_name).toBe('role-case');
+    expect(tree.nodes[0].case_name).toBe('case');
   });
 });

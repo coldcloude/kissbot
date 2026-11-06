@@ -20,7 +20,7 @@ use crate::records::{
     records_after, records_tail,
 };
 use crate::agent_role::{AgentRole, AgentRoleHandle, AgentRoleManager, AgentRoleState, role_event_of};
-use crate::tree::{ROLE_ROOT_CASE_NAME_STR, is_role_root};
+use crate::tree::{ROLE_ROOT_CASE_NAME, ROLE_ROOT_CASE_NAME_STR, event_case_name, is_role_root};
 
 /// 摘要记忆服务
 pub struct SummaryService {
@@ -193,23 +193,22 @@ impl SummaryService {
 
     /// 重建：只清空本次记忆后缀自己的 case 与该后缀的指针/水位，再按共享记忆文件重新构建。
     ///
-    /// 角色模式清该 AgentRole 里全部 `role-` 前缀的角色 case；事件模式清本后缀固定的
-    /// `event-{event_id}` 叶子——同一角色的其他事件后缀与角色 case 都不受影响。
+    /// 角色模式清该 AgentRole 的全部角色 case（含嵌套）与 `cases/role` 目录；事件模式清
+    /// `[event]{event_id}` 整棵子树与 `cases/event-{event_id}` 目录——同一角色的其他事件后缀
+    /// 与角色 case 都不受影响。
     pub async fn rebuild(&self, agent_role: &AgentRole, event_id: Option<ArcStr>) -> Result<RebuildResponse> {
         let handle = self.open(agent_role).await?;
         let mut state = handle.state.lock().await;
         let role_event = role_event_of(&handle.id, event_id.clone());
         handle.ensure_role_event(&mut state, &role_event).await?;
-        let cleared: BTreeSet<ArcStr> = match event_id.as_ref() {
-            Some(event_id) => match state.tree.event_case(event_id.as_str()) {
-                Some(node) => [node.case_name.clone()].into_iter().collect(),
-                None => BTreeSet::new(),
-            },
-            None => state.tree.role_case_ids(),
+        let (cleared, clear_dir): (BTreeSet<ArcStr>, ArcStr) = match event_id.as_ref() {
+            Some(event_id) => {
+                let root = event_case_name(event_id.as_str());
+                (state.tree.subtree_ids(&root), root)
+            }
+            None => (state.tree.role_case_ids(), ROLE_ROOT_CASE_NAME.clone()),
         };
-        for case_name in &cleared {
-            handle.reset_case_records(case_name).await?;
-        }
+        handle.reset_case_records(&clear_dir).await?;
         state.tree.remove_nodes(&cleared);
         state.clear_role_event(&role_event);
         handle.reset_role_event_state(&role_event).await?;
@@ -401,13 +400,13 @@ fn render_channel(channel: &ChannelKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::LevelDecision;
     use crate::agent_role::AgentRole;
     use crate::stub::StubModel;
     use kissbot_api::{
         ChannelCasePointer, ChannelRecord, Content, LocateMessage, RoleEvent, TreeGetResponse,
     };
-    use crate::tree::{EVENT_CASE_PREFIX, event_case_name, is_role_case};
+    use crate::case_name::is_event_case;
+    use crate::tree::{event_case_name, is_role_case};
     use std::collections::HashSet;
     use std::path::Path;
 
@@ -453,9 +452,9 @@ mod tests {
         file.flush().await.unwrap();
     }
 
-    /// 追加一条通道记录（默认带 meta case = `role-case`，多数用例只需要一个 case）
+    /// 追加一条通道记录（默认带 meta case = `case`，多数用例只需要一个 case）
     async fn append_store_channel(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, time: &str, sn: u64, is_self: usize, text: &str) {
-        append_store_channel_in(root, agent_id, suffix, channel, time, sn, is_self, text, "role-case").await;
+        append_store_channel_in(root, agent_id, suffix, channel, time, sn, is_self, text, "case").await;
     }
 
     /// 追加一条通道记录并指定 meta case（写入方已给出所属 case）
@@ -478,7 +477,7 @@ mod tests {
         append_store_channel_with_id_in(root, agent_id, suffix, channel, time, sn, is_self, text, "", "").await;
     }
 
-    /// 追加一条带 msg_id 的通道记录（默认 meta case = `role-case`）
+    /// 追加一条带 msg_id 的通道记录（默认 meta case = `case`）
     async fn append_store_channel_with_id(
         root: &Path,
         agent_id: &str,
@@ -490,7 +489,7 @@ mod tests {
         text: &str,
         msg_id: &str,
     ) {
-        append_store_channel_with_id_in(root, agent_id, suffix, channel, time, sn, is_self, text, msg_id, "role-case").await;
+        append_store_channel_with_id_in(root, agent_id, suffix, channel, time, sn, is_self, text, msg_id, "case").await;
     }
 
     /// 追加一条带 msg_id 与 meta case 的通道记录（`case_name` 为空表示不带 meta）
@@ -526,9 +525,9 @@ mod tests {
         append_store_line(root, agent_id, suffix, "channel", record, time).await;
     }
 
-    /// 追加一条带内嵌思考内容的通道记录（默认 meta case = `role-case`）
+    /// 追加一条带内嵌思考内容的通道记录（默认 meta case = `case`）
     async fn append_store_think(root: &Path, agent_id: &str, suffix: &str, channel: &ChannelKey, time: &str, sn: u64, text: &str) {
-        append_store_think_in(root, agent_id, suffix, channel, time, sn, text, "role-case").await;
+        append_store_think_in(root, agent_id, suffix, channel, time, sn, text, "case").await;
     }
 
     /// 追加一条带内嵌思考内容的通道记录并指定 meta case
@@ -710,7 +709,7 @@ mod tests {
         assert!(is_dirty(&f, &role_event("dev", None)).await, "查询不清除待处理标记");
         assert_eq!(f.model.prompts().len(), 0);
         assert!(f.service.case_list(&agent_role(role_event("dev", None)), None).await.unwrap().cases.is_empty());
-        assert!(f.service.case_summary(&agent_role(role_event("dev", None)), "role-case").await.is_err(), "case 还没归档出来");
+        assert!(f.service.case_summary(&agent_role(role_event("dev", None)), "case").await.is_err(), "case 还没归档出来");
 
         // 手动触发才统一计算
         let outcome = process(&f, &role_event("dev", None)).await;
@@ -719,7 +718,7 @@ mod tests {
         assert_eq!(tree.nodes.len(), 1, "手动触发归档出 case");
         assert_eq!(tree.nodes[0].record_count, 2, "该通道水位之后的全部记录一起处理");
         assert_eq!(tree.nodes[0].summary.as_str(), "摘要1", "带 meta 的记录落位后按记录生成摘要");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case");
         assert!(!is_dirty(&f, &role_event("dev", None)).await, "处理成功后标记清空");
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 2, "水位推进到该通道最后一条记录");
     }
@@ -738,7 +737,7 @@ mod tests {
         let restarted = SummaryService::new(Arc::new(AgentRoleManager::new(root)), Arc::new(StubModel::new()), 200);
         let tree = restarted.tree_get(&agent_role(role_event("dev", None)), None).await.unwrap();
         assert_eq!(tree.nodes.len(), 1, "case 树来自磁盘");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "当前 case 指针来自磁盘");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case", "当前 case 指针来自磁盘");
         assert_eq!(restarted.case_count(&agent_role(role_event("dev", None))).await.unwrap(), 1);
 
         // 同一角色的事件后缀：共用磁盘上的同一片森林，但有自己的（空的）指针状态
@@ -770,16 +769,16 @@ mod tests {
         let (a, b) = (channel_a(), channel_b());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 问").await;
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "A 答").await;
-        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "B 问", "role-case-2").await;
+        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "B 问", "case2").await;
         // 只登记 A：查询时按该后缀把全部通道各算一次
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
         assert_eq!(tree.nodes.len(), 2, "两个通道各自成批、各得一个 case");
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 2);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case-2").await.unwrap().record_count, 1);
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case");
-        assert_eq!(current_pointer(&tree, &b).unwrap().case_name.as_str(), "role-case-2");
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, &role_event("dev", None), "case2").await.unwrap().record_count, 1);
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case");
+        assert_eq!(current_pointer(&tree, &b).unwrap().case_name.as_str(), "case2");
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 2);
         assert_eq!(watermark_point(&f, &role_event("dev", None), &b).await.1, 3);
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
@@ -792,7 +791,7 @@ mod tests {
         let root = f.service.root();
         let (a, b) = (channel_a(), channel_b());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 的消息").await;
-        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息", "role-case-2").await;
+        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息", "case2").await;
         // 思考/工具通知无法确定通道 → 标记整个记忆后缀
         notify_role_event(&f, Arc::new(role_event("dev", None))).await;
 
@@ -808,22 +807,22 @@ mod tests {
         let root = f.service.root();
         let a = Arc::new(channel_a());
         let role = Arc::new(role_event("dev", None));
-        // 构造 role-case（复合，无记录）/ role-2（叶子）结构，当前 case 指向叶子 role-2
+        // 构造 case（复合，无记录）/ case/leaf（叶子）结构，当前 case 指向叶子 case/leaf
         {
             let handle = f.service.manager().open(agent_role(role.as_ref())).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("role-2", Some("role-case"), "t");
-            state.current_cases.insert((role.as_ref().clone(), a.as_ref().clone()), "role-2".into());
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("case/leaf", Some("case"), "t");
+            state.current_cases.insert((role.as_ref().clone(), a.as_ref().clone()), "case/leaf".into());
         }
 
-        // 第 1 轮分组：消息 0 属于当前 leaf case role-2；消息 1、2 属于新 case（分层归并到 role-case 下）
+        // 第 1 轮分组：消息 0 属于当前 leaf case；消息 1、2 属于新 case（分层归并到 case 下）
         f.model.push_groups(vec![
             (vec![0], true),
             (vec![1, 2], false),
         ]);
-        f.model.push_level(LevelDecision::Merge("role-case".into()));
-        f.model.push_level(LevelDecision::new_case("child", "子摘要"));
+        f.model.push_level("case");
+        f.model.push_level("new_child");
         let response = f
             .service
             .locate(&locate_request(a.clone(), role, vec![
@@ -833,24 +832,24 @@ mod tests {
             ]))
             .await
             .unwrap();
-        assert_eq!(group_of_case(&response, "role-2").messages, ids(&["m1"]), "当前 case 组直接命中当前叶子");
-        assert_eq!(group_of_case(&response, "role-child").messages, ids(&["m2", "m3"]), "其余组下潜后在复合 case 下新建叶子");
+        assert_eq!(group_of_case(&response, "case/leaf").messages, ids(&["m1"]), "当前 case 组直接命中当前叶子");
+        assert_eq!(group_of_case(&response, "case/new_child").messages, ids(&["m2", "m3"]), "其余组下潜后在复合 case 下新建叶子");
 
         // 模拟 pipeline 按定位结果写入带 meta 的记录：叶子各自累计原文副本，复合 case 不持有记录
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "当前话题的延续", "role-2").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:01:00", 3, 0, "新话题", "role-child").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:02:00", 4, 1, "新话题的回应", "role-child").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "当前话题的延续", "case/leaf").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:01:00", 3, 0, "新话题", "case/new_child").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:02:00", 4, 1, "新话题的回应", "case/new_child").await;
         process(&f, &role_event("dev", None)).await;
 
-        let parent = node(&f, &role_event("dev", None), "role-case").await.unwrap();
+        let parent = node(&f, &role_event("dev", None), "case").await.unwrap();
         assert_eq!(parent.record_count, 0, "复合 case 不直接持有原始记录");
-        assert!(parent.children.iter().any(|c| c.as_str() == "role-child"), "新 case 建在命中的父 case 下");
-        let current = node(&f, &role_event("dev", None), "role-2").await.unwrap();
+        assert!(parent.children.iter().any(|c| c.as_str() == "case/new_child"), "新 case 建在命中的父 case 下");
+        let current = node(&f, &role_event("dev", None), "case/leaf").await.unwrap();
         assert_eq!(current.record_count, 1, "当前叶子累计自己的记录");
-        let child = node(&f, &role_event("dev", None), "role-child").await.unwrap();
-        assert_eq!(child.parent_id.as_ref().map(|p| p.as_str()), Some("role-case"));
+        let child = node(&f, &role_event("dev", None), "case/new_child").await.unwrap();
+        assert_eq!(child.parent_id.as_ref().map(|p| p.as_str()), Some("case"));
         assert_eq!(child.record_count, 2);
-        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("role-child"), "指针指向最晚一条记录落入的叶子");
+        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("case/new_child"), "指针指向最晚一条记录落入的叶子");
     }
 
     #[tokio::test]
@@ -864,6 +863,8 @@ mod tests {
             (vec![0, 1], false),
             (vec![2], false),
         ]);
+        f.model.push_level("case");
+        f.model.push_level("case2");
         let response = f
             .service
             .locate(&locate_request(a.clone(), role.clone(), vec![
@@ -875,22 +876,22 @@ mod tests {
             .unwrap();
         let mut names = cases_of(&response);
         names.sort_unstable();
-        assert_eq!(names, vec!["role-case", "role-case-2"], "一批消息按分组落成两个 case");
+        assert_eq!(names, vec!["case", "case2"], "一批消息按分组落成两个 case");
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 2);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 0);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case-2").await.unwrap().record_count, 0);
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 0);
+        assert_eq!(node(&f, &role_event("dev", None), "case2").await.unwrap().record_count, 0);
 
         // 模拟 pipeline 按定位结果写入带 meta 的记录：归档时直接按 case 名落位
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "话题一", "role-case").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "话题一回应", "role-case").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:02:00", 3, 0, "话题二", "role-case-2").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "话题一", "case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 1, "话题一回应", "case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:02:00", 3, 0, "话题二", "case2").await;
         process(&f, &role_event("dev", None)).await;
 
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 2);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case-2").await.unwrap().record_count, 1);
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, &role_event("dev", None), "case2").await.unwrap().record_count, 1);
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 3, "水位覆盖整批");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
-        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("role-case-2"));
+        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("case2"));
     }
 
     /// 分组输出只给 msg_id 列表、组间不要求连续：交错的话题也能各自落 case，
@@ -906,8 +907,8 @@ mod tests {
             (vec![2, 0, 4], false),
             (vec![3, 1], false),
         ]);
-        f.model.push_level(LevelDecision::new_case("a", "话题 A"));
-        f.model.push_level(LevelDecision::new_case("b", "话题 B"));
+        f.model.push_level("a");
+        f.model.push_level("b");
         let response = f
             .service
             .locate(&locate_request(a.clone(), role, vec![
@@ -921,20 +922,20 @@ mod tests {
             .unwrap();
         let mut names = cases_of(&response);
         names.sort_unstable();
-        assert_eq!(names, vec!["role-a", "role-b"], "交错话题各自成 case");
+        assert_eq!(names, vec!["a", "b"], "交错话题各自成 case");
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 2);
 
         // 模拟写回带 meta 的记录：A 三条、B 两条，归档时直接落位
-        for (i, case_name) in [(1, "role-a"), (2, "role-b"), (3, "role-a"), (4, "role-b"), (5, "role-a")] {
+        for (i, case_name) in [(1, "a"), (2, "b"), (3, "a"), (4, "b"), (5, "a")] {
             append_store_channel_in(&root, "0", "dev", &a, &format!("2099-01-01 10:0{}:00", i - 1), i, 0, "内容", case_name).await;
         }
         process(&f, &role_event("dev", None)).await;
 
-        assert_eq!(node(&f, &role_event("dev", None), "role-a").await.unwrap().record_count, 3);
-        assert_eq!(node(&f, &role_event("dev", None), "role-b").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, &role_event("dev", None), "a").await.unwrap().record_count, 3);
+        assert_eq!(node(&f, &role_event("dev", None), "b").await.unwrap().record_count, 2);
         assert_eq!(
             current_case(&f, &role_event("dev", None), &a).await.as_deref(),
-            Some("role-a"),
+            Some("a"),
             "指针指向最晚一条记录（10:04）落入的 case"
         );
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
@@ -952,9 +953,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(cases_of(&response), vec!["role-case"], "退回逐层判定并建出新 case");
+        assert_eq!(cases_of(&response), vec!["case"], "退回逐层判定并建出新 case");
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 1);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 0);
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 0);
     }
 
     #[tokio::test]
@@ -979,7 +980,7 @@ mod tests {
             assert!(state.watermarks.get(&(role.as_ref().clone(), a.as_ref().clone())).is_none(), "失败不推进水位");
             assert!(state.current_cases.get(&(role.as_ref().clone(), a.as_ref().clone())).is_none());
         }
-        assert!(!handle.case_dir("role-case").exists(), "失败不落盘原文副本");
+        assert!(!handle.case_dir("case").exists(), "失败不落盘原文副本");
 
         // 重试（模型恢复）：新话题建出记忆条数为 0 的 case，不重复落盘
         let response = f
@@ -987,9 +988,9 @@ mod tests {
             .locate(&locate_request(a, role, vec![locate_message("内容")]))
             .await
             .unwrap();
-        assert_eq!(cases_of(&response), vec!["role-case"]);
+        assert_eq!(cases_of(&response), vec!["case"]);
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 1);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 0);
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 0);
     }
 
     /// 摘要调用失败（事件模式有记录 → 第 3 步按记录生成摘要）：状态回滚且可干净重试
@@ -998,7 +999,7 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "内容", "event-e1").await;
+        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "内容", "[event]e1").await;
         notify(&f, Arc::new(role_event("dev", Some("e1"))), &a).await;
 
         f.model.push_summarize_failure();
@@ -1010,7 +1011,7 @@ mod tests {
             assert!(state.tree.is_empty(), "失败不留下空 case");
             assert!(state.watermarks.get(&(role, a.clone())).is_none(), "失败不推进水位");
         }
-        assert!(!handle.case_dir("event-e1").exists(), "失败不落盘原文副本");
+        assert!(!handle.case_dir("[event]e1").exists(), "失败不落盘原文副本");
         assert!(is_dirty(&f, &role_event("dev", Some("e1"))).await, "失败保留待处理标记");
 
         let tree = query(&f, &role_event("dev", Some("e1"))).await;
@@ -1019,7 +1020,7 @@ mod tests {
         assert!(!tree.nodes[0].summary.is_empty(), "重试成功后有摘要");
     }
 
-    /// 事件模式的 case 名是 `event-{事件标识}`：标识含非法字符时按状态错误处理，不建 case、不落原文副本
+    /// 事件模式的 case 名是 `[event]{事件标识}`：标识含非法字符时按状态错误处理，不建 case、不落原文副本
     #[tokio::test]
     async fn invalid_event_id_is_rejected_without_creating_case() {
         // 非法事件标识只能显式构造 RoleEvent（后缀字符串仅用于磁盘路径），不再由后缀反推
@@ -1062,7 +1063,7 @@ mod tests {
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 1, "第一块新话题建出 case，后两块延续当前 case");
         assert_eq!(response.groups.len(), 1, "同一 case 的多组在返回前合并成一组");
         assert_eq!(response.groups[0].messages.len(), 5);
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 0, "新消息只定位、不落盘");
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 0, "新消息只定位、不落盘");
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 0, "没有待归档记录，水位不动");
         assert_eq!(pending_len(&f, &role_event("dev", None), &a).await, 0);
     }
@@ -1074,8 +1075,8 @@ mod tests {
         let (a, b) = (channel_a(), channel_b());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "问").await;
         append_store_think(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, "A 的思考").await;
-        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "另一个通道", "role-case-2").await;
-        append_store_think_in(&root, "0", "dev", &b, "2099-01-01 11:01:00", 4, "B 的思考", "role-case-2").await;
+        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 3, 0, "另一个通道", "case2").await;
+        append_store_think_in(&root, "0", "dev", &b, "2099-01-01 11:01:00", 4, "B 的思考", "case2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
 
         let tree = query(&f, &role_event("dev", None)).await;
@@ -1090,8 +1091,8 @@ mod tests {
                 .collect()
         };
         let mut all = vec![
-            think_texts(records_of(&f, &role_event("dev", None), "role-case").await),
-            think_texts(records_of(&f, &role_event("dev", None), "role-case-2").await),
+            think_texts(records_of(&f, &role_event("dev", None), "case").await),
+            think_texts(records_of(&f, &role_event("dev", None), "case2").await),
         ];
         all.sort();
         assert_eq!(all, vec![vec!["A 的思考".to_string()], vec!["B 的思考".to_string()]]);
@@ -1153,10 +1154,10 @@ mod tests {
         assert!(prompts[0].contains("与已存记录同 msg_id 的新消息") && prompts[0].contains("新问题"), "新消息都参与分析");
 
         // 记录归档一次；新消息只返回所属 case，不进原文副本
-        assert_eq!(cases_of(&response), vec!["role-case"]);
+        assert_eq!(cases_of(&response), vec!["case"]);
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["m1", "m3"]));
-        assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "只有已存记录落盘");
+        assert_eq!(records_of(&f, &role_event("dev", None), "case").await.len(), 2, "只有已存记录落盘");
         assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0, "懒处理完成");
         assert!(!is_dirty(&f, &role_event("dev", None)).await);
     }
@@ -1182,9 +1183,9 @@ mod tests {
 
         let prompts = group_prompts(&f);
         assert_eq!(prompts.len(), 1);
-        assert_eq!(cases_of(&response), vec!["role-case"]);
+        assert_eq!(cases_of(&response), vec!["case"]);
         assert_eq!(response.groups[0].messages, ids(&["m1", "m2"]));
-        assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 2, "记录不因定位重复落盘");
+        assert_eq!(records_of(&f, &role_event("dev", None), "case").await.len(), 2, "记录不因定位重复落盘");
     }
 
     /// 带摘要记忆 meta 的记录直接按 case 名归档：不调分组轮与逐层判定，只重算摘要
@@ -1200,16 +1201,16 @@ mod tests {
         let summaries_before = f.model.summary_inputs().len();
 
         // 新记录自带 case 名：直接归入该 case，不走定位流程
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "带 meta 的回复", "role-case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "带 meta 的回复", "case").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         process(&f, &role_event("dev", None)).await;
 
         assert_eq!(f.model.prompts().len(), prompts_before, "不再调用分组轮/逐层判定");
         assert_eq!(f.model.summary_inputs().len(), summaries_before + 1, "只重算落位 case 的摘要");
         assert!(f.model.summary_inputs().last().unwrap().contains("带 meta 的回复"));
-        let records = records_of(&f, &role_event("dev", None), "role-case").await;
+        let records = records_of(&f, &role_event("dev", None), "case").await;
         assert_eq!(records.len(), 2, "记录直接追加到 meta 指定的 case");
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 2);
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 2);
         assert_eq!(watermark_point(&f, &role_event("dev", None), &a).await.1, 2, "水位照常推进");
     }
 
@@ -1219,17 +1220,45 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "找不到 case 的记录", "role-missing").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "找不到 case 的记录", "missing").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let outcome = process(&f, &role_event("dev", None)).await;
 
         // 不再重新定位：按 meta 建出缺失的 case，摘要按记录生成
         assert_eq!(group_prompts(&f).len(), 0, "meta 指向的 case 不存在时也不重新分组");
         assert_eq!(outcome.archived, 1);
-        let created = node(&f, &role_event("dev", None), "role-missing").await.unwrap();
+        let created = node(&f, &role_event("dev", None), "missing").await.unwrap();
         assert_eq!(created.record_count, 1);
         assert_eq!(created.summary.as_str(), "摘要1");
-        assert!(node(&f, &role_event("dev", None), "role-case").await.is_none(), "不会改落到别的 case");
+        assert!(node(&f, &role_event("dev", None), "case").await.is_none(), "不会改落到别的 case");
+    }
+
+    /// meta 是完整路径时逐段建出缺失祖先，原文副本按树结构落到子目录
+    #[tokio::test]
+    async fn meta_case_path_creates_ancestors_and_nested_records() {
+        let f = fixture().await;
+        let root = f.service.root();
+        let a = channel_a();
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "嵌套话题", "weather_chat/rain").await;
+        notify(&f, Arc::new(role_event("dev", None)), &a).await;
+        let outcome = process(&f, &role_event("dev", None)).await;
+
+        assert_eq!(outcome.archived, 1);
+        let parent = node(&f, &role_event("dev", None), "weather_chat").await.unwrap();
+        assert!(!parent.children.is_empty(), "缺失的祖先建成复合 case");
+        assert_eq!(parent.record_count, 0, "祖先不持有记录");
+        let leaf = node(&f, &role_event("dev", None), "weather_chat/rain").await.unwrap();
+        assert_eq!(leaf.record_count, 1);
+        assert_eq!(leaf.parent_id.as_deref(), Some("weather_chat"));
+
+        let handle = f.service.manager().get(&agent_role(&role_event("dev", None))).unwrap();
+        assert!(handle.case_dir("weather_chat/rain").exists(), "原文副本落在子目录");
+        assert_eq!(
+            handle.case_dir("weather_chat/rain"),
+            handle.cases_dir().join("role").join("weather_chat").join("rain")
+        );
+        assert_eq!(handle.case_dir("[role]"), handle.cases_dir().join("role"));
+        assert!(!handle.case_dir("weather_chat").join("channel-records.jsonl").exists(), "复合 case 没有自己的原文副本文件");
     }
 
     /// 无 meta 的待归档记录不再定位、直接跳过；水位照常推进并落盘，避免下次重复读取
@@ -1263,12 +1292,12 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "role-case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "case").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         process(&f, &role_event("dev", None)).await;
         let before = f.model.summary_inputs().len();
 
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "新记录", "role-case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "新记录", "case").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         process(&f, &role_event("dev", None)).await;
 
@@ -1292,8 +1321,8 @@ mod tests {
             (vec![1], false),
             (vec![0], false),
         ]);
-        f.model.push_level(LevelDecision::new_case("first", "第一"));
-        f.model.push_level(LevelDecision::new_case("second", "第二"));
+        f.model.push_level("first");
+        f.model.push_level("second");
         let response = f
             .service
             .locate(&locate_request(a, role, vec![
@@ -1303,8 +1332,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(group_of_case(&response, "role-first").messages, ids(&["m0"]), "时间更早的组先处理并消费第一个判定");
-        assert_eq!(group_of_case(&response, "role-second").messages, ids(&["m1"]));
+        assert_eq!(group_of_case(&response, "first").messages, ids(&["m0"]), "时间更早的组先处理并消费第一个判定");
+        assert_eq!(group_of_case(&response, "second").messages, ids(&["m1"]));
     }
 
     /// 没有待处理标记时调 locate：仍按「pending 空 + 本批消息」处理（定位不依赖 dirty）
@@ -1328,14 +1357,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(cases_of(&response), vec!["role-case"], "新话题也建出 case（记忆条数 0）");
+        assert_eq!(cases_of(&response), vec!["case"], "新话题也建出 case（记忆条数 0）");
         assert_eq!(response.groups.len(), 1, "同通道整批一组");
         assert_eq!(response.groups[0].messages, ids(&["m1", "m2"]));
-        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
-        assert_eq!(f.model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称与摘要）");
-        let created = node(&f, &role_event("dev", None), "role-case").await.unwrap();
+        assert_eq!(response.groups[0].case_name.as_str(), "case");
+        assert_eq!(f.model.prompts().len(), 2, "分组轮 + 一次逐层判定（当层为空也要问名称）");
+        let created = node(&f, &role_event("dev", None), "case").await.unwrap();
         assert_eq!(created.record_count, 0);
-        assert_eq!(created.summary.as_str(), "新 case 摘要", "新 case 建立当次就有摘要");
+        assert_eq!(created.summary.as_str(), "", "定位阶段不生成摘要");
     }
 
     /// msg_id 是分组结果的标识：本批内必须非空且唯一
@@ -1353,27 +1382,35 @@ mod tests {
         assert!(f.model.prompts().is_empty(), "校验失败不调模型");
     }
 
-    /// 逐层判定给出的 case 必须在当层候选里：给出树里存在但不在当层的深层 case → 按模型失败处理
+    /// 逐层判定只按当层最后一段匹配：顶层返回 child 时新建顶层 child，不会并入 case/child
     #[tokio::test]
-    async fn level_merge_must_target_a_current_level_candidate() {
+    async fn level_name_matches_only_current_level() {
         let f = fixture().await;
         let root = f.service.root();
         let a = Arc::new(channel_a());
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "父内容").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
-        // 手工构造 case（顶层父）/ role-2（子）结构
+        // 手工构造 case（顶层父）/ case/child（子）结构
         {
             let handle = f.service.manager().get(&agent_role(&role_event("dev", None))).unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("role-case"), "t");
+            state.tree.create_node("case/child", Some("case"), "t");
         }
 
-        // 顶层判定直接给出深层 case role-2（不在顶层候选里）→ 失败
+        // 顶层只看到 case；返回 child 不在顶层候选里 → 新建顶层 child，而不是深层 case/child
         f.model.push_group(&[0], false);
-        f.model.push_level(LevelDecision::Merge("role-2".into()));
-        let result = f.service.locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![locate_message("延续深层话题")])).await;
-        assert!(result.is_err(), "合并到非当层 case 应按模型失败处理");
+        f.model.push_level("child");
+        let response = f
+            .service
+            .locate(&locate_request(a, Arc::new(role_event("dev", None)), vec![locate_message("延续深层话题")]))
+            .await
+            .unwrap();
+        assert_eq!(cases_of(&response), vec!["child"]);
+        let handle = f.service.manager().get(&agent_role(&role_event("dev", None))).unwrap();
+        let state = handle.state.lock().await;
+        assert!(state.tree.is_leaf("child"), "顶层新建叶子");
+        assert!(state.tree.is_leaf("case/child"), "原有深层 case 不受影响");
     }
 
     /// locate 对每个通道只调用一次 archive：同一次提取里不会重复处理某个通道
@@ -1390,7 +1427,7 @@ mod tests {
 
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         f.model.push_group(&[0, 1], false);
-        f.model.push_level(LevelDecision::new_case("two", "第二摘要"));
+        f.model.push_level("two");
         let response = f
             .service
             .locate(&locate_request(a.clone(), Arc::new(role_event("dev", None)), vec![
@@ -1408,7 +1445,7 @@ mod tests {
         );
         assert_eq!(response.groups.len(), 1);
         assert_eq!(response.groups[0].messages, ids(&["m2", "m3"]));
-        assert_eq!(response.groups[0].case_name.as_str(), "role-two", "新话题建出记忆条数为 0 的 case");
+        assert_eq!(response.groups[0].case_name.as_str(), "two", "新话题建出记忆条数为 0 的 case");
         assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0);
     }
 
@@ -1419,7 +1456,7 @@ mod tests {
         let (a, b) = (Arc::new(channel_a()), Arc::new(channel_b()));
         // 两个通道的记录用同一个 msg_id：定位与归档都按通道分开，互不影响
         append_store_channel_with_id(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 自己的记录", "m1").await;
-        append_store_channel_with_id_in(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1", "role-case-2").await;
+        append_store_channel_with_id_in(&root, "0", "dev", &b, "2099-01-01 10:00:00", 2, 0, "B 自己的记录", "m1", "case2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         notify(&f, Arc::new(role_event("dev", None)), &b).await;
 
@@ -1436,14 +1473,14 @@ mod tests {
         assert!(!b_prompt.contains("B 自己的记录"), "带 meta 的记录不再参与分组");
         assert!(b_prompt.contains("B 通道的问题"), "新消息参与分析（不与已存记录去重）");
         assert_eq!(tree_len(&f, &role_event("dev", None)).await, 1, "只处理 B 通道，A 还没有 case");
-        assert_eq!(records_of(&f, &role_event("dev", None), "role-case-2").await.len(), 1, "B 通道只有自己的记录落盘");
-        assert_eq!(cases_of(&response), vec!["role-case-2"], "消息命中 B 通道的 case");
+        assert_eq!(records_of(&f, &role_event("dev", None), "case2").await.len(), 1, "B 通道只有自己的记录落盘");
+        assert_eq!(cases_of(&response), vec!["case2"], "消息命中 B 通道的 case");
         assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 1, "A 通道的待归档记录保留");
         assert_eq!(pending_len(&f, &role_event("dev", None), b.as_ref()).await, 0);
 
         // 手动触发（或 A 通道的定位）再处理 A 通道
         process(&f, &role_event("dev", None)).await;
-        assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 1, "A 通道的待归档记录在后续处理中落盘");
+        assert_eq!(records_of(&f, &role_event("dev", None), "case").await.len(), 1, "A 通道的待归档记录在后续处理中落盘");
         assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0);
     }
 
@@ -1455,13 +1492,13 @@ mod tests {
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧话题").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
-        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("role-case"));
+        assert_eq!(current_case(&f, &role_event("dev", None), &a).await.as_deref(), Some("case"));
 
-        // 待归档记录带 meta 直接落到新 case role-two；只有新消息需要逐层判定
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题", "role-two").await;
+        // 待归档记录带 meta 直接落到新 case two；只有新消息需要逐层判定
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 0, "待归档的新话题", "two").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         f.model.push_group(&[0], false);
-        f.model.push_level(LevelDecision::Merge("role-case".into()));
+        f.model.push_level("case");
         let before = f.model.prompts().len();
         let response = f
             .service
@@ -1477,12 +1514,12 @@ mod tests {
             .filter(|prompt| prompt.contains("当层 case"))
             .count();
         assert_eq!(level_prompts, 1, "只对新消息做逐层判定");
-        assert_eq!(tree_len(&f, &role_event("dev", None)).await, 2, "meta 记录直接建出 role-two");
-        assert_eq!(node(&f, &role_event("dev", None), "role-two").await.unwrap().record_count, 1, "待归档记录落到 meta 指定的 case");
-        assert_eq!(node(&f, &role_event("dev", None), "role-case").await.unwrap().record_count, 1, "新消息不落盘");
-        assert_eq!(cases_of(&response), vec!["role-case"]);
+        assert_eq!(tree_len(&f, &role_event("dev", None)).await, 2, "meta 记录直接建出 two");
+        assert_eq!(node(&f, &role_event("dev", None), "two").await.unwrap().record_count, 1, "待归档记录落到 meta 指定的 case");
+        assert_eq!(node(&f, &role_event("dev", None), "case").await.unwrap().record_count, 1, "新消息不落盘");
+        assert_eq!(cases_of(&response), vec!["case"]);
         assert_eq!(response.groups[0].messages, ids(&["m1"]));
-        assert_eq!(response.groups[0].case_name.as_str(), "role-case");
+        assert_eq!(response.groups[0].case_name.as_str(), "case");
     }
 
     #[tokio::test]
@@ -1503,8 +1540,8 @@ mod tests {
         assert_eq!(group_prompts(&f).len(), 1, "待归档记录带 meta 直接落位，不参与分组");
         assert_eq!(pending_len(&f, &role_event("dev", None), a.as_ref()).await, 0);
         assert_eq!(watermark_point(&f, &role_event("dev", None), a.as_ref()).await.1, 3, "新消息不影响水位");
-        assert_eq!(records_of(&f, &role_event("dev", None), "role-case").await.len(), 3, "新消息不落盘");
-        assert_eq!(cases_of(&response), vec!["role-case"]);
+        assert_eq!(records_of(&f, &role_event("dev", None), "case").await.len(), 3, "新消息不落盘");
+        assert_eq!(cases_of(&response), vec!["case"]);
         assert_eq!(response.groups[0].messages, ids(&["m1"]));
     }
 
@@ -1514,7 +1551,7 @@ mod tests {
         let root = f.service.root();
         let (a, b) = (Arc::new(channel_a()), Arc::new(channel_b()));
         append_store_channel(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A 的消息").await;
-        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息", "role-case-2").await;
+        append_store_channel_in(&root, "0", "dev", &b, "2099-01-01 11:00:00", 2, 0, "B 的消息", "case2").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         let tree = query(&f, &role_event("dev", None)).await;
 
@@ -1544,7 +1581,7 @@ mod tests {
 
         // 同一个 case 用另一个通道的消息定位：命中 B 的 case，A 通道的当前 case 指针也跟随到它
         f.model.push_group(&[0], false);
-        f.model.push_level(LevelDecision::Merge(current_b.clone()));
+        f.model.push_level(current_b.as_str());
         let cross = locate(a.clone(), "从 A 通道问 B 的话题").await;
         assert_eq!(cases_of(&cross), vec![current_b.as_str()]);
         assert_eq!(current_case(&f, &role_event("dev", None), a.as_ref()).await.as_deref(), Some(current_b.as_str()));
@@ -1562,13 +1599,13 @@ mod tests {
         process(&f, &role_event("dev", None)).await;
 
         // 摘要：只有节点（摘要文本 + 记录数），不带原文；带 meta 的记录落位后按记录生成摘要
-        let summary = f.service.case_summary(&agent_role(role_event("dev", None)), "role-case").await.unwrap();
-        assert_eq!(summary.case.case_name.as_str(), "role-case");
+        let summary = f.service.case_summary(&agent_role(role_event("dev", None)), "case").await.unwrap();
+        assert_eq!(summary.case.case_name.as_str(), "case");
         assert_eq!(summary.case.record_count, 2);
         assert_eq!(summary.case.summary.as_str(), "摘要1");
 
         // 全部原文
-        let all = f.service.case_records(&agent_role(role_event("dev", None)), "role-case").await.unwrap();
+        let all = f.service.case_records(&agent_role(role_event("dev", None)), "case").await.unwrap();
         assert_eq!(all.records.len(), 2);
         assert_eq!(all.records[0].sn, 1);
         assert_eq!(all.records[1].sn, 2);
@@ -1576,24 +1613,24 @@ mod tests {
         // 指定之后：把上一条记录的 time/sn 当游标回传
         let after = f
             .service
-            .case_records_after(&agent_role(role_event("dev", None)), "role-case", &RecordPosition::of(&all.records[0]))
+            .case_records_after(&agent_role(role_event("dev", None)), "case", &RecordPosition::of(&all.records[0]))
             .await
             .unwrap();
         assert_eq!(after.records.len(), 1);
         assert_eq!(after.records[0].sn, 2);
 
         // 结尾若干条（升序返回；0 条为空）
-        let tail = f.service.case_records_tail(&agent_role(role_event("dev", None)), "role-case", 1).await.unwrap();
+        let tail = f.service.case_records_tail(&agent_role(role_event("dev", None)), "case", 1).await.unwrap();
         assert_eq!(tail.records.len(), 1);
         assert_eq!(tail.records[0].sn, 2);
-        assert!(f.service.case_records_tail(&agent_role(role_event("dev", None)), "role-case", 0).await.unwrap().records.is_empty());
+        assert!(f.service.case_records_tail(&agent_role(role_event("dev", None)), "case", 0).await.unwrap().records.is_empty());
 
         // case 不存在：摘要与原文查询都报错
-        assert!(f.service.case_summary(&agent_role(role_event("dev", None)), "role-9").await.is_err());
-        assert!(f.service.case_records(&agent_role(role_event("dev", None)), "role-9").await.is_err());
+        assert!(f.service.case_summary(&agent_role(role_event("dev", None)), "9").await.is_err());
+        assert!(f.service.case_records(&agent_role(role_event("dev", None)), "9").await.is_err());
         assert!(f
             .service
-            .case_records_after(&agent_role(role_event("dev", None)), "role-9", &RecordPosition::of(&all.records[0]))
+            .case_records_after(&agent_role(role_event("dev", None)), "9", &RecordPosition::of(&all.records[0]))
             .await
             .is_err());
     }
@@ -1610,7 +1647,7 @@ mod tests {
         // 手动触发：忽略待处理标记，把水位之后全部记录处理一次（桩模型：整批一组）
         let first = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(first.archived, 4, "手动触发处理全部待处理记录");
-        assert_eq!(first.case_names, vec![ArcStr::from("role-case")]);
+        assert_eq!(first.case_names, vec![ArcStr::from("case")]);
         let second = f.service.manual_trigger(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         assert_eq!(second.archived, 0, "水位已推进，无剩余记录");
 
@@ -1626,15 +1663,15 @@ mod tests {
         let f = fixture().await;
         let root = f.service.root();
         let a = channel_a();
-        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 1, "事件模式", "event-e1").await;
-        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:01:00", 2, 0, "继续", "event-e1").await;
+        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 1, "事件模式", "[event]e1").await;
+        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:01:00", 2, 0, "继续", "[event]e1").await;
         notify(&f, Arc::new(role_event("dev", Some("e1"))), &a).await;
         let tree = query(&f, &role_event("dev", Some("e1"))).await;
 
         assert_eq!(tree.nodes.len(), 1, "事件模式整体一个 case");
         assert_eq!(tree.nodes[0].record_count, 2);
         assert!(!tree.nodes[0].summary.is_empty(), "有记录的 event case 由第 3 步摘要重算生成摘要");
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "event-e1");
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "[event]e1");
         // 事件模式不参与分组与分层归并：模型只被要求生成摘要
         assert!(f.model.prompts().iter().all(|p| !p.contains("分组") && !p.contains("当层 case")));
     }
@@ -1647,9 +1684,9 @@ mod tests {
         let a = channel_a();
         // 后缀字符串只用于磁盘路径；内存侧一律显式构造 RoleEvent
         for (suffix, role_event, case_name) in [
-            ("dev", role_event("dev", None), "role-case"),
-            ("dev-e1", role_event("dev", Some("e1")), "event-e1"),
-            ("dev-e2", role_event("dev", Some("e2")), "event-e2"),
+            ("dev", role_event("dev", None), "case"),
+            ("dev-e1", role_event("dev", Some("e1")), "[event]e1"),
+            ("dev-e2", role_event("dev", Some("e2")), "[event]e2"),
         ] {
             append_store_channel_in(&root, "0", suffix, &a, "2099-01-01 10:00:00", 1, 0, "内容", case_name).await;
             notify(&f, Arc::new(role_event.clone()), &a).await;
@@ -1664,20 +1701,20 @@ mod tests {
         assert_eq!(response.archived, 1, "只重建本后缀的记录");
         let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
-        assert!(ids.contains(&"role-case"), "角色子树保留: {:?}", ids);
-        assert!(ids.contains(&"event-e1"), "本后缀的 case 重建出来: {:?}", ids);
-        assert!(ids.contains(&"event-e2"), "其他事件后缀的 case 不受影响: {:?}", ids);
-        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "role-case", "角色后缀的指针不动");
+        assert!(ids.contains(&"case"), "角色子树保留: {:?}", ids);
+        assert!(ids.contains(&"[event]e1"), "本后缀的 case 重建出来: {:?}", ids);
+        assert!(ids.contains(&"[event]e2"), "其他事件后缀的 case 不受影响: {:?}", ids);
+        assert_eq!(current_pointer(&tree, &a).unwrap().case_name.as_str(), "case", "角色后缀的指针不动");
 
         // 重建角色模式：清角色子树，事件 case 都保留
         f.service.rebuild(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         let tree = f.service.tree_get(&agent_role(role_event("dev", None)), role_event("dev", None).event_id.clone()).await.unwrap();
         let ids: Vec<&str> = tree.nodes.iter().map(|n| n.case_name.as_str()).collect();
         let role_count = tree.nodes.iter().filter(|n| is_role_case(&n.case_name)).count();
-        let event_count = tree.nodes.iter().filter(|n| n.case_name.starts_with(EVENT_CASE_PREFIX.as_str())).count();
+        let event_count = tree.nodes.iter().filter(|n| is_event_case(&n.case_name)).count();
         let mut sorted = ids.clone();
         sorted.sort();
-        assert_eq!(sorted, vec!["event-e1", "event-e2", "role-case"], "角色子树重建 + 事件 case 都保留: {:?}", ids);
+        assert_eq!(sorted, vec!["[event]e1", "[event]e2", "case"], "角色子树重建 + 事件 case 都保留: {:?}", ids);
         assert_eq!(role_count, 1, "角色子树重建: {:?}", ids);
         assert_eq!(event_count, 2, "事件 case 都保留: {:?}", ids);
     }
@@ -1691,20 +1728,20 @@ mod tests {
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
-        // 模拟后续「合并为大 case」程序的产物：case 成为父 case，子 case role-2 承载内容
+        // 模拟后续「合并为大 case」程序的产物：case 成为父 case，子 case case/child 承载内容
         {
             let handle = f.service.manager().get(&agent_role(&role_event("dev", None))).unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-2", Some("role-case"), "t");
-            state.current_cases.insert((role_event("dev", None), a.clone()), "role-2".into());
+            state.tree.create_node("case/child", Some("case"), "t");
+            state.current_cases.insert((role_event("dev", None), a.clone()), "case/child".into());
         }
 
-        // 下一批标记为当前 case 组 → 直接并入 role-2 → role-2 摘要重算后级联重算父 case case
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "子内容", "role-2").await;
+        // 下一批标记为当前 case 组 → 直接并入 case/child → 其摘要重算后级联重算父 case
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 11:00:00", 2, 1, "子内容", "case/child").await;
         notify(&f, Arc::new(role_event("dev", None)), &a).await;
         query(&f, &role_event("dev", None)).await;
 
-        assert_eq!(node(&f, &role_event("dev", None), "role-2").await.unwrap().record_count, 1, "本批只有一条记录");
+        assert_eq!(node(&f, &role_event("dev", None), "case/child").await.unwrap().record_count, 1, "本批只有一条记录");
         let inputs = f.model.summary_inputs();
         assert!(inputs.iter().any(|i| i.contains("子 case 摘要")), "父摘要涵盖子 case 内容");
         assert!(inputs.last().unwrap().contains("子 case 摘要"), "祖先最后重算");
@@ -1720,14 +1757,14 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(role.as_ref())).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("role-2", Some("role-case"), "t");
-            state.current_cases.insert((role.as_ref().clone(), a.as_ref().clone()), "role-2".into());
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("case/leaf", Some("case"), "t");
+            state.current_cases.insert((role.as_ref().clone(), a.as_ref().clone()), "case/leaf".into());
         }
 
         f.model.push_groups(vec![(vec![0], true), (vec![1], false)]);
-        f.model.push_level(LevelDecision::Merge("role-case".into()));
-        f.model.push_level(LevelDecision::new_case("child", "子摘要"));
+        f.model.push_level("case");
+        f.model.push_level("new_child");
         let response = f
             .service
             .locate(&locate_request(a.clone(), role.clone(), vec![
@@ -1738,11 +1775,11 @@ mod tests {
             .unwrap();
         let mut names = cases_of(&response);
         names.sort_unstable();
-        assert_eq!(names, vec!["role-2", "role-child"]);
+        assert_eq!(names, vec!["case/leaf", "case/new_child"]);
         assert!(f.model.summary_inputs().is_empty(), "定位阶段不生成摘要");
-        assert!(node(&f, role.as_ref(), "role-case").await.unwrap().summary.is_empty(), "父摘要未被提前重算");
+        assert!(node(&f, role.as_ref(), "case").await.unwrap().summary.is_empty(), "父摘要未被提前重算");
 
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 12:01:00", 1, 0, "新话题", "role-child").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 12:01:00", 1, 0, "新话题", "case/new_child").await;
         process(&f, role.as_ref()).await;
         let inputs = f.model.summary_inputs();
         assert!(inputs.last().unwrap().contains("子 case 摘要"), "归档时才重算父摘要: {:?}", inputs);
@@ -1758,12 +1795,12 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-parent", None, "t");
-            state.tree.create_node("role-a", Some("role-parent"), "t");
-            state.tree.create_node("role-b", Some("role-parent"), "t");
+            state.tree.create_node("parent", None, "t");
+            state.tree.create_node("parent/a", Some("parent"), "t");
+            state.tree.create_node("parent/b", Some("parent"), "t");
         }
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A", "role-a").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 0, "B", "role-b").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "A", "parent/a").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 0, "B", "parent/b").await;
 
         let outcome = process(&f, &role).await;
         assert_eq!(outcome.archived, 2);
@@ -1773,7 +1810,7 @@ mod tests {
         assert_eq!(inputs.iter().filter(|input| input.contains("子 case 摘要")).count(), 1, "父摘要只重算一次");
         let parent = inputs.last().unwrap();
         assert!(parent.contains("子 case 摘要"), "父最后重算: {}", parent);
-        assert!(parent.contains("role-a") && parent.contains("role-b"), "父涵盖全部子 case: {}", parent);
+        assert!(parent.contains("a") && parent.contains("b"), "父涵盖全部子 case: {}", parent);
     }
 
     /// 角色根只用于遍历，对外查询隐藏；森林顶层是角色 case + 事件根
@@ -1784,22 +1821,22 @@ mod tests {
         let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
         {
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("event-e1", None, "t");
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("[event]e1", None, "t");
         }
 
         let tree = f.service.tree_get(&agent_role(&role), None).await.unwrap();
         let names: Vec<&str> = tree.nodes.iter().map(|node| node.case_name.as_str()).collect();
         assert!(!names.contains(&crate::tree::ROLE_ROOT_CASE_NAME_STR), "角色根不出现在 tree/get: {:?}", names);
-        let role_case = tree.nodes.iter().find(|node| node.case_name.as_str() == "role-case").unwrap();
+        let role_case = tree.nodes.iter().find(|node| node.case_name.as_str() == "case").unwrap();
         assert_eq!(role_case.parent_id, None, "角色 case 在对外树里是森林顶层");
-        let event = tree.nodes.iter().find(|node| node.case_name.as_str() == "event-e1").unwrap();
+        let event = tree.nodes.iter().find(|node| node.case_name.as_str() == "[event]e1").unwrap();
         assert_eq!(event.parent_id, None, "事件根是森林顶层");
 
         let list = f.service.case_list(&agent_role(&role), None).await.unwrap().cases;
         let mut listed: Vec<&str> = list.iter().map(|node| node.case_name.as_str()).collect();
         listed.sort_unstable();
-        assert_eq!(listed, vec!["event-e1", "role-case"], "顶层列表 = 角色 case + 事件根");
+        assert_eq!(listed, vec!["[event]e1", "case"], "顶层列表 = 角色 case + 事件根");
         assert_eq!(f.service.case_count(&agent_role(&role)).await.unwrap(), 2, "case_count 不含角色根");
     }
 
@@ -1813,15 +1850,15 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("role-2", Some("role-case"), "t");
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("case/child", Some("case"), "t");
         }
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "非叶子记录", "role-case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "非叶子记录", "case").await;
         notify(&f, Arc::new(role.clone()), &a).await;
 
         let outcome = f.service.manual_trigger(&agent_role(&role), None).await.unwrap();
         assert_eq!(outcome.archived, 0, "非叶子 case 不归档记录");
-        assert_eq!(node(&f, &role, "role-case").await.unwrap().record_count, 0, "复合 case 不收记录");
+        assert_eq!(node(&f, &role, "case").await.unwrap().record_count, 0, "复合 case 不收记录");
         assert_eq!(watermark_point(&f, &role, &a).await.1, 1, "跳过后水位仍推进");
         assert_eq!(pending_len(&f, &role, &a).await, 0, "跳过的记录不反复重试");
         assert!(current_case(&f, &role, &a).await.is_none(), "跳过的 case 不更新当前指针");
@@ -1836,9 +1873,9 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("role-2", Some("role-case"), "t");
-            state.current_cases.insert((role.clone(), a.as_ref().clone()), "role-case".into());
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("case/child", Some("case"), "t");
+            state.current_cases.insert((role.clone(), a.as_ref().clone()), "case".into());
         }
         f.model.push_group(&[0], true);
         let response = f
@@ -1848,7 +1885,7 @@ mod tests {
             .unwrap();
         assert!(response.groups.is_empty(), "落到非叶子 case 的组被跳过");
         assert_eq!(tree_len(&f, &role).await, 2, "不新增 case");
-        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("role-case"), "指针保持原值");
+        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("case"), "指针保持原值");
     }
 
     /// locate 先归档 pending，再做新消息分组：分组时当前 case 已带 pending 产生的摘要
@@ -1858,7 +1895,7 @@ mod tests {
         let root = f.service.root();
         let a = Arc::new(channel_a());
         let role = role_event("dev", None);
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "role-case").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "旧记录", "case").await;
         notify(&f, Arc::new(role.clone()), &a).await;
 
         let response = f
@@ -1866,8 +1903,8 @@ mod tests {
             .locate(&locate_request(a.clone(), Arc::new(role.clone()), vec![locate_message("新消息")]))
             .await
             .unwrap();
-        assert_eq!(cases_of(&response), vec!["role-case"]);
-        let archived = node(&f, &role, "role-case").await.unwrap();
+        assert_eq!(cases_of(&response), vec!["case"]);
+        let archived = node(&f, &role, "case").await.unwrap();
         assert_eq!(archived.record_count, 1, "pending 已先归档");
         assert!(!archived.summary.is_empty(), "pending 摘要已生成");
         let summary_inputs = f.model.summary_inputs();
@@ -1888,10 +1925,10 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("event-e1", None, "t");
-            state.tree.create_node("event-e1-sub", Some("event-e1"), "t");
+            state.tree.create_node("[event]e1", None, "t");
+            state.tree.create_node("[event]e1/sub", Some("[event]e1"), "t");
         }
-        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "非叶子记录", "event-e1").await;
+        append_store_channel_in(&root, "0", "dev-e1", &a, "2099-01-01 10:00:00", 1, 0, "非叶子记录", "[event]e1").await;
         notify(&f, Arc::new(role.clone()), &a).await;
 
         let response = f
@@ -1899,12 +1936,12 @@ mod tests {
             .locate(&locate_request(Arc::new(a.clone()), Arc::new(role.clone()), vec![locate_message("事件消息")]))
             .await
             .unwrap();
-        assert_eq!(cases_of(&response), vec!["event-e1-case"], "新消息继续定位并在事件根下新建子 case");
-        assert_eq!(node(&f, &role, "event-e1").await.unwrap().record_count, 0, "非叶子事件根不落记录");
-        assert_eq!(node(&f, &role, "event-e1-sub").await.unwrap().record_count, 0);
-        assert_eq!(node(&f, &role, "event-e1-case").await.unwrap().record_count, 0);
+        assert_eq!(cases_of(&response), vec!["[event]e1/case"], "新消息继续定位并在事件根下新建子 case");
+        assert_eq!(node(&f, &role, "[event]e1").await.unwrap().record_count, 0, "非叶子事件根不落记录");
+        assert_eq!(node(&f, &role, "[event]e1/sub").await.unwrap().record_count, 0);
+        assert_eq!(node(&f, &role, "[event]e1/case").await.unwrap().record_count, 0);
         assert_eq!(watermark_point(&f, &role, &a).await.1, 1, "跳过的 pending 仍推进水位");
-        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("event-e1-case"), "指针指向新消息命中的 case");
+        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("[event]e1/case"), "指针指向新消息命中的 case");
     }
 
     /// 同一批中成功的 case 与跳过的非叶子 case 混合：只归档成功的，指针停在成功的 case
@@ -1917,20 +1954,20 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-ok", None, "t");
-            state.tree.create_node("role-parent", None, "t");
-            state.tree.create_node("role-parent-child", Some("role-parent"), "t");
+            state.tree.create_node("ok", None, "t");
+            state.tree.create_node("parent", None, "t");
+            state.tree.create_node("parent/child", Some("parent"), "t");
         }
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "成功记录", "role-ok").await;
-        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 0, "非叶子记录", "role-parent").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:00:00", 1, 0, "成功记录", "ok").await;
+        append_store_channel_in(&root, "0", "dev", &a, "2099-01-01 10:01:00", 2, 0, "非叶子记录", "parent").await;
         notify(&f, Arc::new(role.clone()), &a).await;
 
         let outcome = f.service.manual_trigger(&agent_role(&role), None).await.unwrap();
         assert_eq!(outcome.archived, 1, "只归档成功的 case");
-        assert_eq!(node(&f, &role, "role-ok").await.unwrap().record_count, 1);
-        assert_eq!(node(&f, &role, "role-parent").await.unwrap().record_count, 0, "非叶子 case 不落记录");
+        assert_eq!(node(&f, &role, "ok").await.unwrap().record_count, 1);
+        assert_eq!(node(&f, &role, "parent").await.unwrap().record_count, 0, "非叶子 case 不落记录");
         assert_eq!(watermark_point(&f, &role, &a).await.1, 2, "全部处理完后水位推进到批末");
-        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("role-ok"), "指针停在最后成功的 case");
+        assert_eq!(current_case(&f, &role, &a).await.as_deref(), Some("ok"), "指针停在最后成功的 case");
         assert_eq!(pending_len(&f, &role, &a).await, 0);
     }
 
@@ -1943,19 +1980,19 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("event-e1", None, "t");
-            state.tree.create_node("event-e1-sub", Some("event-e1"), "t");
+            state.tree.create_node("[event]e1", None, "t");
+            state.tree.create_node("[event]e1/sub", Some("[event]e1"), "t");
         }
-        f.model.push_level(LevelDecision::Merge("event-e1-sub".into()));
+        f.model.push_level("sub");
         let response = f
             .service
             .locate(&locate_request(a, Arc::new(role), vec![locate_message("事件消息")]))
             .await
             .unwrap();
-        assert_eq!(cases_of(&response), vec!["event-e1-sub"], "非叶子事件根下潜到已有叶子");
+        assert_eq!(cases_of(&response), vec!["[event]e1/sub"], "非叶子事件根下潜到已有叶子");
     }
 
-    /// Event 根非叶子时下潜遍历：未命中则在事件根下新建 `event-{事件标识}-{名称}` 叶子
+    /// Event 根非叶子时下潜遍历：未命中则在事件根下新建 `<事件根>/<名称>` 叶子
     #[tokio::test]
     async fn event_non_leaf_creates_event_prefixed_child() {
         let f = fixture().await;
@@ -1964,21 +2001,21 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("event-e1", None, "t");
-            state.tree.create_node("event-e1-sub", Some("event-e1"), "t");
+            state.tree.create_node("[event]e1", None, "t");
+            state.tree.create_node("[event]e1/sub", Some("[event]e1"), "t");
         }
-        f.model.push_level(LevelDecision::new_case("topic", "新事件子摘要"));
+        f.model.push_level("topic");
         let response = f
             .service
             .locate(&locate_request(a, Arc::new(role), vec![locate_message("新事件消息")]))
             .await
             .unwrap();
-        assert_eq!(cases_of(&response), vec!["event-e1-topic"]);
-        let created = node(&f, &role_event("dev", Some("e1")), "event-e1-topic").await.unwrap();
-        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("event-e1"), "新子 case 挂在事件根下");
+        assert_eq!(cases_of(&response), vec!["[event]e1/topic"]);
+        let created = node(&f, &role_event("dev", Some("e1")), "[event]e1/topic").await.unwrap();
+        assert_eq!(created.parent_id.as_ref().map(|p| p.as_str()), Some("[event]e1"), "新子 case 挂在事件根下");
         assert_eq!(created.record_count, 0);
-        assert_eq!(created.summary.as_str(), "新事件子摘要");
-        assert!(is_role_case("event-e1-topic") == false, "事件子 case 不参与角色判定");
+        assert_eq!(created.summary.as_str(), "", "定位阶段不生成摘要");
+        assert!(!is_role_case("[event]e1/topic"), "事件子 case 不参与角色判定");
     }
 
     /// Event 重建清理整棵事件子树（含非叶子的子 case），角色根与角色 case 不受影响
@@ -1989,17 +2026,17 @@ mod tests {
         {
             let handle = f.service.manager().open(agent_role(&role)).await.unwrap();
             let mut state = handle.state.lock().await;
-            state.tree.create_node("role-case", None, "t");
-            state.tree.create_node("event-e1", None, "t");
-            state.tree.create_node("event-e1-sub", Some("event-e1"), "t");
+            state.tree.create_node("case", None, "t");
+            state.tree.create_node("[event]e1", None, "t");
+            state.tree.create_node("[event]e1/sub", Some("[event]e1"), "t");
         }
         f.service.rebuild(&agent_role(&role), Some(ArcStr::from("e1"))).await.unwrap();
         assert_eq!(tree_len(&f, &role).await, 1, "事件子树整体清掉，角色 case 保留");
         let handle = f.service.manager().get(&agent_role(&role)).unwrap();
         let state = handle.state.lock().await;
-        assert!(state.tree.get("event-e1").is_none());
-        assert!(state.tree.get("event-e1-sub").is_none());
-        assert!(state.tree.get("role-case").is_some());
+        assert!(state.tree.get("[event]e1").is_none());
+        assert!(state.tree.get("[event]e1/sub").is_none());
+        assert!(state.tree.get("case").is_some());
         assert!(state.tree.get(crate::tree::ROLE_ROOT_CASE_NAME_STR).is_some(), "角色根保留");
     }
 

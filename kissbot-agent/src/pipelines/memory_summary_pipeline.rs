@@ -54,6 +54,14 @@ pub struct MemorySummaryPipeline {
     case_tx: mpsc::UnboundedSender<ArcStr>,
 }
 
+/// case 会话 id：把 case 路径的 `/` 编码为 `.`，保证文件名安全且不同路径不碰撞。
+fn case_session_id_of(base: &str, case_name: Option<&ArcStr>) -> ArcStr {
+    let case = case_name
+        .map(|name| name.as_str().replace('/', "."))
+        .unwrap_or_else(|| "none".to_string());
+    ArcStr::from(format!("memory-summary-{}-{}", base, case))
+}
+
 impl MemorySummaryPipeline {
     pub fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
@@ -74,13 +82,11 @@ impl MemorySummaryPipeline {
     }
 
     /// case 的 session id：memory-summary-{pipeline 基准 id}-{case_name}；None 用 -none。
+    /// case_name 可能是完整路径（如 `[event]e1/topic`），把路径分隔符 `/` 编码为 `.`，
+    /// 得到文件名安全的 session id（case 路径段本身不会出现 `.`）。
     /// `-none` 是 pipeline 入口配置使用的基准 session。
     fn case_session_id(&self, case_name: Option<&ArcStr>) -> ArcStr {
-        ArcStr::from(format!(
-            "memory-summary-{}-{}",
-            self.memory_key.encode(),
-            case_name.map(|name| name.as_str()).unwrap_or("none"),
-        ))
+        case_session_id_of(self.memory_key.encode().as_str(), case_name)
     }
 
     /// 取（必要时创建）case 对应的 session；session_id 由 case_name 推导，不额外保存
@@ -505,6 +511,16 @@ mod tests {
     use kissbot_api::message::Content;
     use kissbot_api::{ChannelRecord, RoleEvent};
 
+    #[test]
+    fn case_session_id_encodes_path_separator() {
+        assert_eq!(
+            case_session_id_of("0-dev", Some(&ArcStr::from("[event]e1/topic"))).as_str(),
+            "memory-summary-0-dev-[event]e1.topic"
+        );
+        assert!(!case_session_id_of("0-dev", Some(&ArcStr::from("a/b/c"))).contains('/'));
+        assert_eq!(case_session_id_of("0-dev", None).as_str(), "memory-summary-0-dev-none");
+    }
+
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）
     fn ev_in(messenger: &str, self_user: &str, group: &str, name: &str, text: &str, time: &str) -> Arc<IncomingMessageEvent> {
         ev_with_id(messenger, self_user, group, name, text, time, "m")
@@ -570,8 +586,8 @@ mod tests {
     #[tokio::test]
     async fn case_session_ids_are_prefixed_and_case_scoped() {
         let p = pipeline();
-        assert_eq!(p.case_session_id(Some(&ArcStr::from("role-weather"))).as_str(),
-            "memory-summary-a1-r1-role-weather");
+        assert_eq!(p.case_session_id(Some(&ArcStr::from("weather"))).as_str(),
+            "memory-summary-a1-r1-weather");
         assert_eq!(p.case_session_id(None).as_str(), "memory-summary-a1-r1-none");
     }
 
@@ -596,18 +612,18 @@ mod tests {
     async fn enqueue_case_merges_waiting_case_into_one_run() {
         // 用例内不 await：spawn 出来的 case worker 不会被执行（只要不影响待执行任务表的断言）
         let pipeline = pipeline();
-        pipeline.enqueue_case(ArcStr::from("role-a"), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
-        pipeline.enqueue_case(ArcStr::from("role-a"), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
-        pipeline.enqueue_case(ArcStr::from("role-b"), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
+        pipeline.enqueue_case(ArcStr::from("a"), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
+        pipeline.enqueue_case(ArcStr::from("a"), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
+        pipeline.enqueue_case(ArcStr::from("b"), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
         assert_eq!(pipeline.pending.len(), 2, "同 case 只有一个待执行任务，不同 case 分开");
-        let a = pipeline.pending.get(&ArcStr::from("role-a")).unwrap();
+        let a = pipeline.pending.get(&ArcStr::from("a")).unwrap();
         assert_eq!(a.len(), 2, "排队中的同 case 消息合并为一次 run");
         drop(a);
         // worker 取 case 时只取走被取到的 case 的消息，其他 case 的任务表条目不动、继续等待合并
-        let (_, b) = pipeline.pending.remove(&ArcStr::from("role-b")).unwrap();
+        let (_, b) = pipeline.pending.remove(&ArcStr::from("b")).unwrap();
         assert_eq!(b.len(), 1);
         assert_eq!(pipeline.pending.len(), 1);
-        assert!(pipeline.pending.contains_key(&ArcStr::from("role-a")), "其他 case 继续等待合并");
+        assert!(pipeline.pending.contains_key(&ArcStr::from("a")), "其他 case 继续等待合并");
     }
 
     #[test]
