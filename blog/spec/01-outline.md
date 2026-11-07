@@ -20,6 +20,11 @@
   1. 存储：将全部记忆原样保存，不做任何处理。 —— memory store
   2. 索引：设计一个通用接口，可以高效读取记忆，并按照自定义的结构重新存储，提供自定义的查询。 —— memory-struct
 
+- **记忆模式**
+  - Role 模式：一个 agent role 只对应一个记忆
+  - Event 模式：一个 agent role 可以建立多个 Event，每个 Event 对应一个记忆
+  - Role 模式与 Event 模式共用同一套存储与索引机制，只在生成文件名时不同
+
 - 详见 [memory-store](./memory-store.md)
 
 #### 自我认知（memory-ego）
@@ -101,6 +106,8 @@
 - 【HTTP】 Nexus 从 memory-store 和 memory-struct-* 查询记忆
 - 【HTTP】 Station 向子 Station 发送工具查询和工具调用
 - 【WS】   memory-store 通知 memory-struct-* 有新记忆
+- 【SSE】  Web Messenger 后台推送消息至前台
+- 【文件】 memory-store 和 memorry-struct-* 共享记忆文件
 
 ## 路线图
 
