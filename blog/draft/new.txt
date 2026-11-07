@@ -1,0 +1,1 @@
+SessionContext的存历史，改为存版本，每次手动指定版本后缀，后缀只能含下划线字母和数字。当前缓存直接放{data_dir}下，不加context目录层级，（data_dir自身可以改为原{data_dir}/context目录），要保存的版本改为存到{data_dir}/versions下，文件名为{session-id}-{后缀}.jsonl。当前用到archive hstory的，可以继续使用日期作为后缀，但考虑到原有history的日期含“-”，不用兼容，这次改成不加分隔符。另外，增加将某个版本和当前缓存互换的功能（不要复制文件，仅移动，然后重新读取）
