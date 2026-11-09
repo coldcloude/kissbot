@@ -15,7 +15,7 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 > 注：上下文超长时的记忆回溯由 Nexus 的消息发送器完成，不经由 station 执行；LLM 主动发起的记忆搜索工具（memory-struct）待实现组件落地后接入。
 
 ### 2. LLM 基础库（kissbot-llm）
-把「与模型服务商通信」和「会话上下文管理」从 agent 中抽出的基础库，供需要 LLM 的模块复用（当前使用方为 Agent；摘要记忆、笔记工具等模块后续接入）。组件按调用方给出的 provider 配置完成模型调用（OpenAI 兼容 / Anthropic 两种协议、失败重试、模型列表查询），并按调用方给出的会话标识管理 LLM 上下文（内存消息 + 本地缓存 + 历史归档）。
+把「与模型服务商通信」和「会话上下文管理」从 agent 中抽出的基础库，供需要 LLM 的模块复用（当前使用方为 Agent；摘要记忆、笔记工具等模块后续接入）。组件按调用方给出的 provider 配置完成模型调用（OpenAI 兼容 / Anthropic 两种协议、失败重试、模型列表查询），并按调用方给出的会话标识管理 LLM 上下文（内存消息 + 本地缓存 + 版本）。
 
 组件不持有配置、不做配置落盘与继承链合成、不管会话集合，也不依赖 MCP 与任何业务身份概念；provider 实例复用（工厂去重）、provider 分派与有效配置解析由调用方的 provider 管理器完成（agent 中为 ProviderManager）。详见 [kissbot-llm 组件设计](components-design/kissbot-llm.md)。
 

@@ -127,8 +127,8 @@ node inject-key.mjs
 
 1. **合批**：通过 web 通道连续发送多条消息 → agent 日志显示等待合批间隔（默认 3s）后打包为一条 user 消息进入 pipeline；内容为 `user_name: 消息` 逐行
 2. **多轮工具调用**：发送需要读文件的请求（如「读取 test.txt 的内容」，`test.txt` 需位于 agent 启动目录 `../workspace/` 或其子目录内）→ 日志显示 LLM 返回 tool_call（模型需支持工具调用）→ 本地执行 `read` → 工具结果作为 tool 消息继续调用 LLM → 第二轮返回最终回复
-3. **上下文缓存**：`../workspace/agent-data/context/` 下生成按 session_id 命名的 `.jsonl`，随对话逐条追加（含 user/assistant/tool 消息，System 行在最前）
-4. **上下文超长处理**：当上一次模型响应的 `usage.total_tokens` 超过 `max_tokens_usage × compress_threshold`（默认 0.8）时，下次请求前由消息发送器处理——`memory_recover_message_sender` 从 memory-store 回溯打包重建、`compress_message_sender` 用 LLM 总结压缩；旧上下文归档到 `../workspace/agent-data/context-history/<key编码>-<时间戳>.jsonl`
+3. **上下文缓存**：`../workspace/agent-data/context/` 下按 session_id 生成 `.sys.jsonl`（当前系统提示词）与 `.msgs.jsonl`（随对话逐条追加 user/assistant/tool 消息）两个文件
+4. **上下文超长处理**：当上一次模型响应的 `usage.total_tokens` 超过 `max_tokens_usage × compress_threshold`（默认 0.8）时，下次请求前由消息发送器处理——`memory_recover_message_sender` 从 memory-store 回溯打包重建、`compress_message_sender` 用 LLM 总结压缩；旧上下文归档到 `../workspace/agent-data/context/versions/`，同一版本的 `<key编码>-<日期后缀>.sys.jsonl` 与 `.msgs.jsonl` 两个文件成对保存
 5. **记忆打包（memory_recover）**：触发回溯时，重建上下文的首条为记忆打包的 user 消息——内容为最近 N 条（默认 50）与时间窗（默认 1h）并集、时间正序的 `user_name: 消息` 逐行（同时间组不拆散；不足 N 条返回全部）
 6. **工具内容内嵌**：多轮工具调用后，agent 回复的通道记录 `content`（`Multi`）中直接内嵌 ToolCall / ToolResult 记录；不再有独立的工具记录文件与 key 关联
 7. **路径安全**：让模型尝试读取 cwd（`../workspace/`）之外的路径（如 `../test/out-of-cwd/sample.txt`，该目录由 `test/global-setup.ts` 生成），`read` 工具返回路径越界错误，不实际读取
@@ -230,4 +230,4 @@ curl -s -H "X-Api-Key: user-key-456" -H "Content-Type: application/json" \
 3. **定位**：对一批消息调用 `/summary/locate` → 返回消息涉及的全部 case 与分组；每个组都有 `case_name`，新话题会建出记忆条数为 0 的 case——名称与摘要当场由模型给出（原文副本等这些消息写入记忆并归档后补上）。摘要与原文再用 `case/summary`、`case/records*` 取
 4. **定位与懒处理合并**：定位永远按「pending + 消息」一次处理（两者都可为空）——该通道还有待归档记录时日志出现 `process … archived N records … (+M new messages)`；只有消息时出现 `archived 0 records into [] (+M new messages)`。同一通道批次内按 `msg_id` 去重后一并分析：重复的新消息不重复送模型、新消息不落盘（case 的原文副本条数只增加已存记录）；`msg_id` 为空的记录不参与去重、原样保留
 5. **事件模式**：`role` 含 `-`（按第一个 `-` 拆分，前半为角色名、后半为事件标识，如 `dev-e1`）时，整个后缀固定归入该角色树里的顶层叶子 case `e1`，不分组、不做定位判定，也不参与角色模式的判定
-6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-summary/llm/context/{session_id}.jsonl` 累积该记忆后缀的判定上下文（session_id 为后缀的净化形式）
+6. **模型会话上下文**：`../workspace/memory-data/{agent}/memory-struct-summary/llm/{session_id}.sys.jsonl` 与 `.msgs.jsonl` 保存该记忆后缀的系统提示词与判定上下文（session_id 为后缀的净化形式）

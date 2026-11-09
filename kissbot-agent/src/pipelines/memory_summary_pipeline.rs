@@ -54,14 +54,6 @@ pub struct MemorySummaryPipeline {
     case_tx: mpsc::UnboundedSender<ArcStr>,
 }
 
-/// case 会话 id：把 case 路径的 `/` 编码为 `.`，保证文件名安全且不同路径不碰撞。
-fn case_session_id_of(base: &str, case_name: Option<&ArcStr>) -> ArcStr {
-    let case = case_name
-        .map(|name| name.as_str().replace('/', "."))
-        .unwrap_or_else(|| "none".to_string());
-    ArcStr::from(format!("memory-summary-{}-{}", base, case))
-}
-
 impl MemorySummaryPipeline {
     pub fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
@@ -81,12 +73,23 @@ impl MemorySummaryPipeline {
         pipeline
     }
 
-    /// case 的 session id：memory-summary-{pipeline 基准 id}-{case_name}；None 用 -none。
-    /// case_name 可能是完整路径（如 `[event]e1/topic`），把路径分隔符 `/` 编码为 `.`，
-    /// 得到文件名安全的 session id（case 路径段本身不会出现 `.`）。
+    /// case 的 session id：memory-summary-{agent_id}-{role_name}-{case_name}；None 用 -none。
+    /// 事件模式不需要额外拼 event（event 已在 case_name 的 `[event]...` 段里）。
+    /// case_name 可能是完整路径（如 `[event]e1/topic`）：路径分隔符 `/` 编码为 `.`，
+    /// `[`/`]` 替换为 `_`，得到文件名安全的 session id。
     /// `-none` 是 pipeline 入口配置使用的基准 session。
     fn case_session_id(&self, case_name: Option<&ArcStr>) -> ArcStr {
-        case_session_id_of(self.memory_key.encode().as_str(), case_name)
+        let case = case_name
+            .map(|name| name.as_str().chars().map(|c| match c {
+                '/' => '.',
+                '[' | ']' => '_',
+                _ => c,
+            }).collect::<String>())
+            .unwrap_or_else(|| "none".to_string());
+        ArcStr::from(format!(
+            "memory-summary-{}-{}-{}",
+            self.memory_key.agent_id, self.memory_key.role_event.role_name, case
+        ))
     }
 
     /// 取（必要时创建）case 对应的 session；session_id 由 case_name 推导，不额外保存
@@ -511,14 +514,28 @@ mod tests {
     use kissbot_api::message::Content;
     use kissbot_api::{ChannelRecord, RoleEvent};
 
-    #[test]
-    fn case_session_id_encodes_path_separator() {
+    #[tokio::test]
+    async fn case_session_id_encodes_path_separator() {
+        let p = pipeline();
         assert_eq!(
-            case_session_id_of("0-dev", Some(&ArcStr::from("[event]e1/topic"))).as_str(),
-            "memory-summary-0-dev-[event]e1.topic"
+            p.case_session_id(Some(&ArcStr::from("[event]e1/topic"))).as_str(),
+            "memory-summary-a1-r1-_event_e1.topic"
         );
-        assert!(!case_session_id_of("0-dev", Some(&ArcStr::from("a/b/c"))).contains('/'));
-        assert_eq!(case_session_id_of("0-dev", None).as_str(), "memory-summary-0-dev-none");
+        assert!(!p.case_session_id(Some(&ArcStr::from("a/b/c"))).contains('/'));
+        assert_eq!(p.case_session_id(None).as_str(), "memory-summary-a1-r1-none");
+    }
+
+    #[tokio::test]
+    async fn case_session_id_base_excludes_event() {
+        // 事件已包含在 case_name 的 `[event]...` 段里，base 只拼 agent + role
+        let pipeline = MemorySummaryPipeline::new(Arc::new(MemoryKey {
+            agent_id: ArcStr::from("a1"),
+            role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))),
+        }));
+        assert_eq!(
+            pipeline.case_session_id(Some(&ArcStr::from("[event]e1/topic"))).as_str(),
+            "memory-summary-a1-r1-_event_e1.topic"
+        );
     }
 
     /// 构造测试用上行消息事件（通道由 messenger / self_user / group 指定）

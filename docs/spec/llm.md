@@ -44,11 +44,15 @@ pub async fn call_with_retry<P: Provider>(
 pub struct SessionContext { /* 私有 */ }
 impl SessionContext {
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
+    /// 只保存待定值（不写文件、不会失败）
     pub fn set_system_message(&mut self, content: ArcStr);
+    /// 构建完整上下文时应用待定值：需要变更则重写 sys 文件（不归档、不动消息）
     pub async fn apply_pending_system(&mut self) -> Result<()>;
     pub async fn append(&mut self, messages: Vec<Message>) -> Result<()>;
     pub async fn recover_from_cache(&mut self) -> Result<()>;
-    pub async fn archive_and_clear_cache_and_reset_messages(&mut self, messages: Option<Vec<Message>>) -> Result<()>;
+    /// 归档当前缓存为版本并清空缓存/内存（append 由 Session 封装）
+    pub async fn archive_and_clear(&mut self) -> Result<()>;
+    pub async fn swap_version_with_cache(&mut self, version_suffix: &str) -> Result<()>;
     pub fn build(&self) -> Vec<Message>;
 }
 
@@ -56,14 +60,18 @@ pub struct Session { pub context: RwLock<SessionContext> }  // tokio::sync::RwLo
 impl Session {
     pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
     pub async fn recover_from_cache(&self) -> Result<()>;
-    /// 只读构建：当前系统消息 + 内存消息；不应用待定系统消息、不写缓存
+    /// 只读构建：当前系统消息 + 内存消息（不应用待定、不写文件）
     pub async fn build_context(&self) -> Vec<Message>;
-    /// 发送前入口：应用待定系统消息后再构建
+    /// 发送前入口：应用待定系统消息后构建（待定变更时重写 sys 文件）
     pub async fn build_context_full(&self) -> Vec<Message>;
-    pub async fn context_append(&self, messages: Vec<Message>);
+    pub async fn context_append(&self, messages: Vec<Message>) -> Result<()>;
     /// 只读访问内存消息（不含系统消息）：闭包内只读，上下文不变
-    pub async fn context_read<R>(&self, f: impl FnOnce(&LinkedList<Message>) -> R) -> R;
-    pub async fn context_archive_and_clear_cache_and_reset_messages(&self, new_messages: Vec<Message>);
+    pub async fn context_read<R>(&self, f: impl FnOnce(&Vec<Message>) -> R) -> R;
+    pub async fn context_archive_and_clear_cache_and_reset_messages(
+        &self, new_messages: Vec<Message>,
+    ) -> Result<()>;
+    pub async fn context_swap_version_with_cache(&self, version_suffix: &str) -> Result<()>;
+    /// 只保存待定值（不写文件、不会失败）
     pub async fn set_system_message(&self, content: ArcStr);
 }
 ```
@@ -71,13 +79,16 @@ impl Session {
 约定：
 
 - `Session.context` 用 tokio 的异步读写锁：`build_context` / `context_read` 取读锁（可并发），其余上下文方法取写锁。
-- `build_context` 只读、不应用待定系统消息；`build_context_full` 是应用待定系统消息的发送前入口。
-- `archive_and_clear_cache_and_reset_messages` 在归档旧上下文后应用待定系统消息（新上下文直接使用新系统消息，不产生二次重建）。
+- `build_context` 只读、不应用待定系统消息；`build_context_full` 是发送前入口，对比待定值与当前值，不一致时重写 sys 文件。
+- `set_system_message` 只写待定值（同步、不会失败）；多次 set 保留最近一次。
+- `apply_pending_system` / `build_context_full` 应用待定值时不归档、不改动消息文件。
+- `archive_and_clear` 把旧缓存文件移动到版本并清空缓存/内存；`append` 仍由 SessionContext 提供，调用位置在 Session 的归档重建方法中。
+- `Session::context_archive_and_clear_cache_and_reset_messages` 先调用 `archive_and_clear`，再把 `new_messages` 追加成当前上下文。
 - `call_with_retry` 的失败重试为指数退避（第 n 次失败后等待 `2^n` 秒），`retry_count = 0` 表示不重试。
 - 未知 `provider_type` 由调用方分派时判定；组件内不会出现该分支。
 - `create_*_provider` 每次返回新实例（含独立 HTTP 客户端），组件不缓存、不共享客户端；按名复用（工厂去重）由调用方完成（agent 中为 ProviderManager 的 `AsyncCacheFactory`）。
 - `session_id` 由调用方编码，须为文件名安全字符串；组件不解释其含义。
-- `context_read` 只读暴露内存消息（不含系统消息）：不应用待定系统消息、不写缓存、不改变上下文。
+- `context_read` 只读暴露内存消息（不含系统消息）：不写缓存、不改变上下文。
 
 ## 配置结构
 
@@ -155,17 +166,26 @@ impl Session {
 
 调用失败按 `retry_count` 指数退避重试；未知 `provider_type` 由调用方在分派处返回错误（不重试）。
 
-## 会话上下文缓存与归档
+## 会话上下文缓存与版本
+
+`SessionContext::new(data_dir, session_id)` 的 `data_dir` 就是缓存所在目录（不再额外拼 `context`）：
 
 | 项 | 约定 |
 |----|------|
-| 缓存文件 | `<data_dir>/context/<session_id>.jsonl`，每行一条 Message（JSON），追加写、不截断 |
-| 行序 | 首行为当前系统消息（如有），其后为消息行 |
-| 恢复 | 正序全量回读；崩溃一致性清理——丢弃末尾悬挂的 assistant tool_calls 行与开头的孤立 Tool 行；文件不存在视为空上下文 |
-| 归档 | `<data_dir>/context-history/<session_id>-<时间戳>.jsonl`（时间戳 `%Y-%m-%d-%H%M%S`），格式与缓存一致 |
+| 系统提示词文件 | `<data_dir>/<session_id>.sys.jsonl`，单行 System Message JSON；没有系统提示词时不创建该文件 |
+| 消息文件 | `<data_dir>/<session_id>.msgs.jsonl`，每行一条 Message（JSON），追加写、不截断 |
+| 恢复 | sys 与 msgs 分别回读；msgs 正序全量读取；崩溃一致性清理——丢弃末尾悬挂的 assistant tool_calls 行与开头的孤立 Tool 行；文件不存在视为对应内容为空 |
+| 版本 | `<data_dir>/versions/<session_id>-<后缀>.sys.jsonl` 与 `<session_id>-<后缀>.msgs.jsonl`：当前缓存的两个文件直接移动成版本（不重新写入，sys 使用原先的系统提示词、不应用待定值；原 sys 不存在时版本也不写 sys） |
+| 后缀 | 归档自动生成：本地时间 `%Y%m%d%H%M%S`；重名时等一秒后重试（时间戳前进），不使用 `_N` 后缀；互换仍按调用方给的后缀定位版本 |
+| 互换 | `swap_version_with_cache` 只做 rename：先校验后缀（不合法按版本不存在处理，不报错）；当前缓存 msgs 非空 → 先把当前缓存移动成一个新版本（自动后缀），再把目标版本移入当前缓存；msgs 为空 → 丢弃当前缓存文件（含只有 sys 的情况），直接移入目标版本；目标版本不存在 → 当前缓存非空时仍先存成新版本，然后得到空上下文 |
 
-- 系统消息的 set 只写入待定值（多次 set 保留最近一次）；发送前对比应用：与当前一致仅清空待定，不一致则先归档并清空缓存再以新系统消息重建。
-- 归档与清空缓存文件配对执行；内存为空时不产生归档文件。
+- `set_system_message` 只保存待定值；`build_context_full` 发现待定值与当前不一致时重写 sys 文件：不保存当前版本、不清空消息、不改动 msgs 文件。
+- 归档在移动完版本后，用 `new_messages` 新建当前上下文；归档与清空缓存文件配对执行；内存为空时不产生版本文件（仅有系统消息不归档）。
+- 没有系统提示词文件时不写入空 sys 文件、不报错；版本/互换允许 sys 文件缺失。
+- 归档后缀自动生成；互换时由调用方指定要恢复的版本后缀。生成版本时即使有待定系统提示词，版本也使用磁盘上原先的 sys 文件。
+- 版本是只读快照：复用旧 session 时用互换把版本换回当前缓存，后续内容变更只发生在当前缓存。
+- 旧的 `context-history` 与单文件缓存不兼容。
+- 互换后目标版本内容成为当前内存与当前系统消息；当前缓存原有的非空内容会存成一个新版本（目标版本移入后即被消耗），待定系统消息清空。
 - agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 pipeline 的 session 持有方式见 [kissbot-agent-nexus 技术规格](agent-nexus.md)。
 
 ## 数据结构定义

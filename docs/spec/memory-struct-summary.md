@@ -325,8 +325,9 @@
 ```
 {根目录}/{agent-id}/memory-struct-summary/
 ├── llm/                                  # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
-│   ├── context/{session-id}.jsonl
-│   └── context-history/{session-id}-{时间戳}.jsonl
+│   ├── {session-id}.sys.jsonl            # 当前系统提示词（有才存在）
+│   ├── {session-id}.msgs.jsonl           # 当前消息
+│   └── versions/{session-id}-{后缀}.sys.jsonl / .msgs.jsonl  # 上下文版本（sys 无系统提示词时可缺）
 ├── {角色名}/                              # 角色目录：case 森林与原文副本
 │   ├── tree.jsonl                        # 一个 AgentRole 的 case 森林，每行一个 case 节点
 │   └── cases/                            # 与 case 树一一对应的目录
@@ -347,6 +348,7 @@
 - **定位阶段只要求模型返回 case 名**：名称非法（含中文、空格、连字符或其他字符，或超过 64 字符）按模型失败处理（保留状态、下次重试）；新建 case 的摘要为空，等记录归档时再生成。
 - 原文副本单文件、按时间顺序追加，行内容与记忆存储的通道记录格式一致（思考/工具内容内嵌在 `content` 里）；不按日期分文件（日期切分只用于 memory-store 的原始记录文件，case 副本按时间顺序单文件累积）。
 - 记忆存储侧的原始记录仍是 `{根目录}/{agent-id}/memory-store/{year}-{记忆后缀}/…`。
+- 模型会话的当前缓存直接放在 `llm/` 下（不再有 `llm/context/` 层级），系统提示词与消息分 `.sys.jsonl` / `.msgs.jsonl` 两个文件；裁剪归档时用日期后缀（`%Y%m%d%H%M%S`）在 `llm/versions/` 同时保存 sys / msgs 两个版本文件（sys 直接使用原先文件，不应用待定值）；旧 `llm/context/` 下的缓存与旧 `context-history` 不再读取。
 
 ### tree.jsonl
 

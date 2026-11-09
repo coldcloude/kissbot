@@ -23,6 +23,7 @@ pub struct ConfigManager {
     station_repo: Arc<RwLock<StationRepo>>,
     nexus_path: ArcStr,
     station_path: ArcStr,
+    context_dir: ArcStr,
 }
 
 impl ConfigManager {
@@ -43,6 +44,7 @@ impl ConfigManager {
         }
         let nexus_path = ArcStr::from(format!("{}/nexus.json", data_dir));
         let station_path = ArcStr::from(format!("{}/station.json", data_dir));
+        let context_dir = ArcStr::from(format!("{}/context", data_dir));
 
         let nexus_repo = Self::load_or_create_nexus(&nexus_path).await?;
         let station_repo = Self::load_or_create_station(&station_path).await?;
@@ -53,6 +55,7 @@ impl ConfigManager {
             station_repo: Arc::new(RwLock::new(station_repo)),
             nexus_path,
             station_path,
+            context_dir,
         };
         // 注册全局单例（此后 get() 可用；重复调用幂等，第二次 set 被忽略，与 Nexus 一致）
         let _ = INSTANCE.set(manager);
@@ -135,6 +138,12 @@ impl ConfigManager {
 
     pub fn data_dir(&self) -> &str {
         self.agent_config.data_dir.as_str()
+    }
+
+    /// 会话上下文目录（<data_dir>/context）：SessionContext 的 data_dir 直接用它，
+    /// 当前缓存放其下、版本放其 versions/ 子目录（保持原有缓存路径不变）
+    pub fn context_dir(&self) -> &str {
+        self.context_dir.as_str()
     }
 
     // ========== NexusRepo CRUD ==========
@@ -418,6 +427,7 @@ mod tests {
             station_repo: Arc::new(RwLock::new(StationRepo::default())),
             nexus_path: ArcStr::from(dir.path().join("nexus.json").to_str().unwrap()),
             station_path: ArcStr::from(dir.path().join("station.json").to_str().unwrap()),
+            context_dir: ArcStr::from(dir.path().join("context").to_str().unwrap()),
         }
     }
 

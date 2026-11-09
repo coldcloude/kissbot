@@ -15,16 +15,3 @@ pub struct MemoryKey {
     /// 角色 + 事件模式（event None = 角色模式；Some(id) = 事件模式）
     pub role_event: Arc<RoleEvent>,
 }
-
-impl MemoryKey {
-    /// pipeline 的基准会话标识：{agent_id}-{role}（角色模式）
-    /// 或 {agent_id}-{role}-{event}（事件模式）；default / default_memory pipeline
-    /// 用它作为 session_id，摘要记忆 pipeline 在其后追加 case 名。
-    /// 磁盘布局 <data_dir>/context/<session_id>.jsonl 由该编码决定。
-    pub fn encode(&self) -> ArcStr {
-        match self.role_event.event_id.as_ref() {
-            Some(event_id) => ArcStr::from(format!("{}-{}-{}", self.agent_id, self.role_event.role_name, event_id)),
-            None => ArcStr::from(format!("{}-{}", self.agent_id, self.role_event.role_name)),
-        }
-    }
-}

@@ -106,7 +106,7 @@ mod tests {
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
     use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
-    use crate::pipelines::{outgoing_channel, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
+    use crate::pipelines::{outgoing_channel, pipeline_session_id, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
@@ -142,7 +142,7 @@ mod tests {
         let agent_id = "a1";
         let channel_id = "nexus-chain-test";
         let key = MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) };
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
 
         // 1. agent 级（role 空串）pipeline：显式指定 pipeline 名 default，
         //    必须在 pipeline 首次装配前写入。default 不依赖 agent/role，配置直接写 session
@@ -202,7 +202,7 @@ mod tests {
         // 4. 等合批 flush + pipeline 运行：session 上下文应含系统消息（首条，由系统提示词初始化设置）
         //    与本条用户消息
         // 只读回读本地缓存检查 pipeline 写入的上下文（session 由 pipeline 持有，测试不共享其实例）
-        let session = Session::new(ConfigManager::get().data_dir(), key.encode());
+        let session = Session::new(ConfigManager::get().context_dir(), pipeline_session_id(&key));
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let _ = session.recover_from_cache().await;
@@ -315,7 +315,7 @@ mod tests {
             .expect("应识别 /load-memory").unwrap();
         assert!(reply.contains("load_memory"), "回复文案: {}", reply);
         let cfg = ConfigManager::get()
-            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(key.encode()).await;
+            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(pipeline_session_id(&key)).await;
         assert!(!cfg.load_memory, "/load-memory off 应写入 session 配置");
 
         let memory_summary = MemorySummaryPipeline::new(key);
@@ -347,7 +347,7 @@ mod tests {
             role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
         });
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key.clone()).await;
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
 
         // 身份未绑定 → 拒绝
         let err = pipeline.execute_command(channel_id.clone(), ArcStr::from("/bind-outgoing web nobody g1")).await
@@ -636,7 +636,7 @@ mod tests {
             agent_id: ArcStr::from("a-topic-switch"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-switch"))),
         });
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
             model: Some(ArcStr::from(model)),
@@ -648,7 +648,7 @@ mod tests {
         ).await.unwrap();
 
         // 预置上一件事的上下文
-        let old = Session::new(cm.data_dir(), session_id.clone());
+        let old = Session::new(cm.context_dir(), session_id.clone());
         old.context_append(vec![
             Message::User { content: ArcStr::from("旧问题") },
             Message::Assistant {
@@ -663,7 +663,7 @@ mod tests {
         pipeline.incoming_message_batch(vec![incoming_event("topic-m1", "新问题")]).await;
 
         // 当前上下文只剩新消息与本次回复
-        let current = Session::new(cm.data_dir(), session_id.clone());
+        let current = Session::new(cm.context_dir(), session_id.clone());
         current.recover_from_cache().await.unwrap();
         let ctx = current.build_context_full().await;
         assert!(
@@ -676,13 +676,13 @@ mod tests {
             ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复"))),
             "本次回复应写入: {:?}", ctx);
 
-        // 旧上下文进入历史归档
-        let history_dir = std::path::Path::new(cm.data_dir()).join("context-history");
-        let archived = std::fs::read_dir(&history_dir).unwrap()
+        // 旧上下文进入版本目录
+        let versions_dir = std::path::Path::new(cm.context_dir()).join("versions");
+        let archived = std::fs::read_dir(&versions_dir).unwrap()
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(session_id.as_str()))
             .any(|entry| std::fs::read_to_string(entry.path()).map(|text| text.contains("旧问题")).unwrap_or(false));
-        assert!(archived, "旧上下文应归档到 context-history");
+        assert!(archived, "旧上下文应归档到 context/versions");
         assert_eq!(calls.load(Ordering::Relaxed), 2, "一次话题判定 + 一次正式运行");
     }
 
@@ -708,7 +708,7 @@ mod tests {
             agent_id: ArcStr::from("a-topic-ambiguous"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-ambiguous"))),
         });
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
             model: Some(ArcStr::from(model)),
@@ -718,7 +718,7 @@ mod tests {
             session_id.clone(),
             &MemoryPipelineConfig { load_memory: Some(false) },
         ).await.unwrap();
-        let old = Session::new(cm.data_dir(), session_id.clone());
+        let old = Session::new(cm.context_dir(), session_id.clone());
         old.context_append(vec![
             Message::User { content: ArcStr::from("旧问题") },
             Message::Assistant {
@@ -733,7 +733,7 @@ mod tests {
 
         // 两次判定回答都不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 写死重试一次 + 正式运行");
-        let current = Session::new(cm.data_dir(), session_id);
+        let current = Session::new(cm.context_dir(), session_id);
         current.recover_from_cache().await.unwrap();
         let ctx = current.build_context_full().await;
         assert!(
@@ -763,7 +763,7 @@ mod tests {
             agent_id: ArcStr::from("a-topic-retry-once"),
             role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-retry-once"))),
         });
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
             model: Some(ArcStr::from(model)),
@@ -773,7 +773,7 @@ mod tests {
             session_id.clone(),
             &MemoryPipelineConfig { load_memory: Some(false) },
         ).await.unwrap();
-        let old = Session::new(cm.data_dir(), session_id.clone());
+        let old = Session::new(cm.context_dir(), session_id.clone());
         old.context_append(vec![
             Message::User { content: ArcStr::from("旧问题") },
             Message::Assistant {
@@ -788,7 +788,7 @@ mod tests {
 
         // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 正式运行
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 重试一次 + 正式运行");
-        let current = Session::new(cm.data_dir(), session_id);
+        let current = Session::new(cm.context_dir(), session_id);
         current.recover_from_cache().await.unwrap();
         let ctx = current.build_context_full().await;
         assert!(
@@ -819,7 +819,7 @@ mod tests {
             agent_id: ArcStr::from("a-event-no-read"),
             role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r-event"), ArcStr::from("e1"))),
         });
-        let session_id = key.encode();
+        let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
             model: Some(ArcStr::from(model)),

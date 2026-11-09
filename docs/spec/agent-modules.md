@@ -18,7 +18,7 @@
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
 | memory_summary_client | MemorySummaryClient | 摘要记忆（memory-struct-summary）REST 客户端：case 定位、case 摘要、case 原文副本尾部查询 | Nexus 成员；MemorySummaryPipeline 经 Nexus 单例调用 |
 | provider | ProviderManager | provider 工厂与分派（agent 运行时组件）：按 provider 名缓存实现实例（同名去重），解析有效模型配置并按 provider_type 分派调用 / 模型列表查询 | 被 nexus 调用（`call_provider_model` / `verify_model`）；实现与重试来自 kissbot-llm |
-| kissbot-llm（库依赖） | Provider / Session / SessionContext / Message / ToolConfig / ProviderModelConfig… | provider 实现构造（`create_*_provider`）与带重试调用（`call_with_retry`）、模型列表；单会话上下文（内存 + 本地缓存 + 历史归档一体）；LLM 配置与消息类型 | 被 provider（构造实现 / 带重试调用）、nexus 与 pipelines（会话上下文）使用 |
+| kissbot-llm（库依赖） | Provider / Session / SessionContext / Message / ToolConfig / ProviderModelConfig… | provider 实现构造（`create_*_provider`）与带重试调用（`call_with_retry`）、模型列表；单会话上下文（内存 + 本地缓存 + 版本一体）；LLM 配置与消息类型 | 被 provider（构造实现 / 带重试调用）、nexus 与 pipelines（会话上下文）使用 |
 | station | Station / NativeTool / Group / ToolImplement / SubStation / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
 | station_http | StationHttpServer / McpServer | station 对外 MCP 服务端（kissbot-mcp 的 McpServer + 单端点 `POST /mcp`，方法 server/discover / tools/list / tools/call），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus（system_prompt_for_agent）调用 |
@@ -119,7 +119,7 @@ sequenceDiagram
     loop 每个 channel 绑定
         CO->>PLS: ensure_pipeline(Arc<MemoryKey>)（按 agent/role 的 pipeline_name 装配）
         PLS->>PLS: pipeline 创建自己的 session（新建时从缓存恢复）
-        Note over PLS: 建立 session 前从 agent/role 导入 session 配置（default 除外）；设置系统提示词（存为待定）
+        Note over PLS: 建立 session 前从 agent/role 导入 session 配置（default 除外）；设置系统提示词（只存待定）
     end
     loop 每个 enabled channel
         CO->>CHM: connect_channel(channel_id)（创建 ChannelClient + spawn 重连循环）
@@ -173,7 +173,7 @@ sequenceDiagram
     participant PL as AgentPipeline（run / run_once）
     participant MSN as 发送与 reducer（send_messages_with_limit）
     participant CO as Nexus
-    participant CTX as SessionContext（kissbot-llm：内存 + 缓存 + 历史一体）
+    participant CTX as SessionContext（kissbot-llm：内存 + 缓存 + 版本一体）
     participant PRV as ProviderManager（工厂 + 分派）
     participant OUT as AgentOutputProcessor（channel）
     participant ST as Station
@@ -186,9 +186,9 @@ sequenceDiagram
         alt send_messages_with_limit（compress / memory_recover）
             MSN->>MSN: max_tokens_usage > 0 且上次 usage.total_tokens > max_tokens_usage × compress_threshold（默认 0.8）
             MSN->>MSN: 超阈值 → reducer 处理，返回仍需追加的消息
-            Note over MSN: 压缩：只读 build_context 出上下文（不应用待定系统消息、不触发重建）并只从中弹出最后一条 assistant（含）及之后的消息 → 剩余部分 + 压缩指令 → LLM 总结<br/>→ 一次重置为「压缩指令 + 总结 + 弹出的消息 + 新消息」（返回空；重置时应用待定系统消息）<br/>记忆回溯：只读取最后一条 assistant（含）及之后的会话消息 → 拼接 memory-store 打包结果 → 一次重置
+            Note over MSN: 压缩：只读 build_context 出上下文（不应用待定系统消息、不触发系统提示词变更）并只从中弹出最后一条 assistant（含）及之后的消息 → 剩余部分 + 压缩指令 → LLM 总结<br/>→ 一次重置为「压缩指令 + 总结 + 弹出的消息 + 新消息」（返回空）<br/>记忆回溯：只读取最后一条 assistant（含）及之后的会话消息 → 拼接 memory-store 打包结果 → 一次重置
         end
-        MSN->>CTX: context_append(仍需追加的消息) → build_context_full()（应用待定系统消息）
+        MSN->>CTX: context_append(仍需追加的消息) → build_context_full()
         MSN->>CO: call_provider_model(llm_cfg, messages, tools)
         CO->>PRV: call（取有效模型配置 + provider_type 分派 + 实现实例工厂去重）
         PRV->>PRV: kissbot-llm call_with_retry（超时/重试来自有效模型配置）
@@ -220,7 +220,7 @@ sequenceDiagram
     participant CO as Nexus
     participant PLS as PipelineManager
     participant PL as AgentPipeline
-    participant SC as SessionContext（kissbot-llm：内存 + 缓存 + 历史一体）
+    participant SC as SessionContext（kissbot-llm：内存 + 缓存 + 版本一体）
     participant SP as AgentPipeline::reset_system_prompt
     participant MEC as MemoryEgoClient
 
@@ -228,7 +228,7 @@ sequenceDiagram
     alt pipeline 未装配
         PLS->>PLS: 按 agent/role 的 pipeline_name 创建 pipeline
         alt default / default_memory
-            PL->>PL: 创建 session(MemoryKey::encode()) 并 recover_from_cache
+            PL->>PL: 创建 session（pipelines::pipeline_session_id()）并 recover_from_cache
         else memory_summary
             Note over PL: 构造时不建 session；基准（-none）session 在入口/命令处理时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
@@ -243,7 +243,7 @@ sequenceDiagram
     else 已装配
         Note over CO: 直接复用（不重复恢复/装配）
     end
-    Note over CO: 系统消息存待定；下次 build_context_full 时 apply_pending_system 对比应用，重建/压缩时由 context_archive_and_clear_cache_and_reset_messages 一并应用<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）；事件模式恒用压缩，角色模式 load_memory=false 时同话题判断为不同会先归档清空再以新消息运行
+    Note over CO: 系统提示词在 build_context_full 时对比应用（需要变更才重写 sys 文件，不产生版本）；归档/重建只处理消息，版本同时保存 sys / msgs 两个文件，sys 使用原先文件<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）；事件模式恒用压缩，角色模式 load_memory=false 时同话题判断为不同会先归档清空再以新消息运行
 ```
 
 ## 七、对外交互边界

@@ -31,6 +31,16 @@ use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfi
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
 
+/// pipeline 的基准 session_id：{agent_id}-{role}[-{event}]
+pub fn pipeline_session_id(memory_key: &MemoryKey) -> ArcStr {
+    match memory_key.role_event.event_id.as_ref() {
+        Some(event_id) => ArcStr::from(format!(
+            "{}-{}-{}", memory_key.agent_id, memory_key.role_event.role_name, event_id)),
+        None => ArcStr::from(format!(
+            "{}-{}", memory_key.agent_id, memory_key.role_event.role_name)),
+    }
+}
+
 /// 根据 agent_id 获取系统提示词（新建 pipeline 的 session 时由系统提示词重置调用）：
 /// 保留 agent（agent_id="0"）返回 None，由 prompter 回退默认提示词；其余走 ego REST（agent 元数据 + 个体识别 + 角色设定，
 /// 失败静默跳过，全部失败回退默认提示词"你是 kissbot 智能助手"）；
@@ -646,7 +656,7 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
 
 impl DefaultAgenticLoopPipelineWithMemory {
     pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
-        let session_id = memory_key.encode();
+        let session_id = pipeline_session_id(&memory_key);
         // 从 agent role 配置导入；记忆读取开关与读/压缩两种降到阈值的配置都导入，
         // 运行期切换 load_memory 后立即生效
         import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
@@ -798,7 +808,7 @@ where
 /// default 只用 session 配置
 pub async fn create_session(session_id: ArcStr) -> Arc<Session> {
     let cfg = ConfigManager::get();
-    let session = Arc::new(Session::new(cfg.data_dir(), session_id));
+    let session = Arc::new(Session::new(cfg.context_dir(), session_id));
     let _ = session.recover_from_cache().await;
     session
 }
@@ -899,7 +909,7 @@ pub async fn outgoing_channel(session_id: &ArcStr) -> Option<Arc<OutChannel>> {
 
 pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(memory_key.encode()).await),
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(pipeline_session_id(&memory_key)).await),
         PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key).await),
         PIPELINE_MEMORY_SUMMARY_STR => Ok(MemorySummaryPipeline::new(memory_key)),
         _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))

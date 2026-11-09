@@ -52,11 +52,4 @@ mod tests {
         assert!(set.contains(&b), "等值 Arc<MemoryKey> 应命中 HashSet");
         assert!(!set.contains(&c), "不同事件不应命中");
     }
-
-    #[test]
-    fn memory_key_encode_matches_context_file_layout() {
-        // session_id 编码决定 <data_dir>/context/<session_id>.jsonl 的文件名段
-        assert_eq!(key("a1", "r1", None).encode(), "a1-r1", "角色模式不带事件段");
-        assert_eq!(key("a1", "r1", Some("e1")).encode(), "a1-r1-e1", "事件模式拼事件 id");
-    }
 }
