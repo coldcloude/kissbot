@@ -6,3 +6,14 @@ system prompt的处理，在set时仅pending，build时判断是否一致，如�
 互换时version不存在不报错，按照新建空上下文处理
 version名称自动生成，如果重名应该等一秒后重试解决
 swap_version_with_cache改成当前cache如果非空（msgs非空，不看sys），则生成一个新版本，而不是复用交换回来的版本后缀。swap_version_with_cache还是要做version后缀校验，只是校验不通过按照version不存在处理，而非报错
+
+agent中，event不再和channel绑定，而是由pipeline维护
+用哪个pipeline仅由agent+role决定，切换event的指令也由公共指令改为pipeline指令
+channel只有agent和role切换，查找或新建pipeline，没有event切换
+default和deault_memory pipeline，不再是单一session，而是每个event使用一个session_id，切换event时读取或新建session
+memory_summary pipeline，切换event相当于切换locate时的参数，session还是继续和case绑定
+所有pipeline新建时都使用role模式，因此当前event仅在内存中保存，不用写文件
+
+default和deault_memory中，内存中应只维持一个session，切换event时，每次都从硬盘读取。
+这两个pipeline中，执行指令（包括但不限于切换event）和处理batch消息，放到同一个mpsc队列中排队执行，避免多个变更session竞争，或者变更session和处理session竞争。
+memory summary pipeline 中应维持channel（messenger+user+group）和event的映射关系，而不是单一event。当收到channel变更event的指令时，应修改这个映射。
