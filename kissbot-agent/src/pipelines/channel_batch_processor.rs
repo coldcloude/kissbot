@@ -61,10 +61,6 @@ pub struct BatchConsumer {
 /// 触发 flush（BatchConsumer 成员函数）：deadline 置 0 → drain（&mut self.rx 零锁）→
 /// 交 processor.incoming_message_batch 进 agentic loop
 impl BatchConsumer {
-    /// 处理队列中已到达的消息（到期触发、退出前共用）
-    async fn flush(&mut self) {
-    }
-
     /// 触发任务主循环（consumer 成员函数；构造方经 tokio::spawn 启动）
     /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问）。
     /// 退出：producer 被丢弃 → trigger channel 关闭 → `recv()` 返回 None；未到期的待处理消息一并丢弃。

@@ -10,7 +10,7 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{ChannelKey, ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents, RoleKey};
+use kissbot_api::{ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents, RoleKey};
 use tokio::spawn;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
@@ -25,7 +25,7 @@ use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session
 use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, EffectiveMemoryPipelineConfig, GroupSetConfig, MemoryPipelineConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
-use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor, TokenReducer};
+use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, TokenReducer};
 use crate::station::tool_config_from_mcp;
 use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfig, MemoryRecoverConfig}, message::{MessageContent, pack_memory_messages}, nexus::Nexus, station::Station, types::{Error, MemoryKey, Result, build_think_record, build_tool_call_record, build_tool_result_record, channel_request_from_incoming, channel_request_from_outgoing}};
 
@@ -491,35 +491,28 @@ pub async fn run(session_id: ArcStr, session: &Session, message: Message, tools:
 
 /// default / default_memory 的串行任务：命令与批次共用一条队列，
 /// 避免切换 session 与使用 session（批次处理）竞争
-enum PipelineTask {
-    Command { channel_id: ArcStr, content: ArcStr, done: oneshot::Sender<Option<Result<ArcStr>>> },
+enum PipelineTask<C> {
+    Command { command: C, done: oneshot::Sender<Result<ArcStr>> },
     Single(Arc<IncomingMessageEvent>),
     Batch(Vec<Arc<IncomingMessageEvent>>),
 }
 
-pub struct PipelineTaskSender {
-    task_tx: mpsc::UnboundedSender<PipelineTask>,
+pub struct PipelineTaskSender<C> {
+    task_tx: mpsc::UnboundedSender<PipelineTask<C>>,
 }
 
-pub struct PipelineTaskReceiver {
-    task_rx: mpsc::UnboundedReceiver<PipelineTask>,
+pub struct PipelineTaskReceiver<C> {
+    task_rx: mpsc::UnboundedReceiver<PipelineTask<C>>,
 }
 
-pub fn pipeline_task_processor() -> (PipelineTaskSender, PipelineTaskReceiver) {
+pub fn pipeline_task_processor<C>() -> (PipelineTaskSender<C>, PipelineTaskReceiver<C>) {
     let (task_tx, task_rx) = mpsc::unbounded_channel();
     (PipelineTaskSender { task_tx }, PipelineTaskReceiver { task_rx })
 }
 
-impl PipelineTaskSender {
-    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        let (done, done_rx) = oneshot::channel();
-        if let Err(e) = self.task_tx.send(PipelineTask::Command { channel_id, content, done }) {
-            return Some(Err(Error::InternalError(ArcStr::from(e.to_string()))));
-        }
-        match done_rx.await {
-            Ok(result) => result,
-            Err(e) => Some(Err(Error::InternalError(ArcStr::from(e.to_string())))),
-        }
+impl<C> PipelineTaskSender<C> {
+    async fn execute_command(&self, command: C, done: oneshot::Sender<Result<ArcStr>>) {
+        let _ = self.task_tx.send(PipelineTask::Command { command, done });
     }
 
     async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
@@ -531,18 +524,18 @@ impl PipelineTaskSender {
     }
 }
 
-pub trait PipelineTaskExecutor {
-    async fn execute_command(&mut self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>>;
+pub trait PipelineTaskExecutor<C> {
+    async fn execute_command(&mut self, command: C) -> Result<ArcStr>;
     async fn incoming_message(&self, event: Arc<IncomingMessageEvent>);
     async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>);
 }
 
-impl PipelineTaskReceiver {
-    async fn run<E: PipelineTaskExecutor>(mut self, mut executor: E) {
+impl<C> PipelineTaskReceiver<C> {
+    async fn run<E: PipelineTaskExecutor<C>>(mut self, mut executor: E) {
         while let Some(task) = self.task_rx.recv().await {
             match task {
-                PipelineTask::Command { channel_id, content, done } => {
-                    let result = executor.execute_command(channel_id, content).await;
+                PipelineTask::Command { command, done } => {
+                    let result = executor.execute_command(command).await;
                     let _ = done.send(result);
                 },
                 PipelineTask::Single(event) => {
@@ -556,6 +549,28 @@ impl PipelineTaskReceiver {
     }
 }
 
+enum DefaultPipelineCommand {
+    Model(Vec<ArcStr>),
+    Mode(Vec<ArcStr>),
+}
+
+fn parse_command(content: &str) -> Option<DefaultPipelineCommand> {
+    if content.starts_with("/") {
+        let parts = command_parts(content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => {
+                Some(DefaultPipelineCommand::Model(parts))
+            },
+            Some("/mode") => {
+                Some(DefaultPipelineCommand::Mode(parts))
+            },
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 /// 一个 event 对应的运行态：当前 event 的 session、记忆范围与 token 占用
 pub struct DefaultAgenticLoopExecutor {
     pub role_key: Arc<RoleKey>,
@@ -566,16 +581,14 @@ pub struct DefaultAgenticLoopExecutor {
     pub last_total_tokens: AtomicU64,
 }
 
-impl PipelineTaskExecutor for DefaultAgenticLoopExecutor {
-    async fn execute_command(&mut self, _channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        let parts = command_parts(&content);
-        match parts.first().map(|p| p.as_str()) {
-            Some("/model") => {
-                let result = handle_model_command(&parts, self.session_id.clone()).await;
-                Some(result)
-            }
-            Some("/mode") => {
-                let result = match parse_mode_command(&parts) {
+impl PipelineTaskExecutor<DefaultPipelineCommand> for DefaultAgenticLoopExecutor {
+    async fn execute_command(&mut self, command: DefaultPipelineCommand) -> Result<ArcStr> {
+        match command {
+            DefaultPipelineCommand::Model(parts) => {
+                handle_model_command(&parts, self.session_id.clone()).await
+            },
+            DefaultPipelineCommand::Mode(parts) => {
+                match parse_mode_command(&parts) {
                     Ok(event) => {
                         let reply = match &event {
                             Some(event_id) => ArcStr::from(format!("✅ 新事件 ID: {}", event_id)),
@@ -590,10 +603,8 @@ impl PipelineTaskExecutor for DefaultAgenticLoopExecutor {
                         Ok(reply)
                     },
                     Err(e) => Err(e)
-                };
-                Some(result)
+                }
             },
-            _ => None,
         }
     }
 
@@ -631,20 +642,27 @@ impl DefaultAgenticLoopExecutor {
 
 pub struct DefaultAgenticLoopPipeline {
     /// 命令与批次共用的串行任务队列
-    sender: PipelineTaskSender,
+    sender: PipelineTaskSender<DefaultPipelineCommand>,
 }
 
 #[async_trait]
 impl AgentPipeline for DefaultAgenticLoopPipeline {
-    async fn execute_command(&self, channel_id: ArcStr, _channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
-        self.sender.execute_command(channel_id, content).await
-    }
-}
-
-#[async_trait]
-impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
-    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        self.sender.incoming_message(event).await
+    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>, _channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>>{
+        if is_admin {
+            if let Content::Text(content) = &event.incoming_message.content {
+                if let Some(command) = parse_command(content.as_str()) {
+                    let (done, done_rx) = oneshot::channel();
+                    self.sender.execute_command(command, done).await;
+                    let result = match done_rx.await {
+                        Ok(result) => result,
+                        Err(e) => Err(Error::InternalError(ArcStr::from(e.to_string()))),
+                    };
+                    return Some(result);
+                }
+            }
+        }
+        self.sender.incoming_message(event).await;
+        None
     }
 }
 
@@ -671,6 +689,40 @@ impl DefaultAgenticLoopPipeline {
     }
 }
 
+enum DefaultPipelineWithMemoryCommand {
+    Model(Vec<ArcStr>),
+    BindOutgoing { channel_id: ArcStr, parts: Vec<ArcStr> },
+    UnbindOutgoing(Vec<ArcStr>),
+    LoadMemory(Vec<ArcStr>),
+    Mode(Vec<ArcStr>),
+}
+
+fn parse_command_with_memory(channel_id: ArcStr, content: &str) -> Option<DefaultPipelineWithMemoryCommand> {
+    if content.starts_with("/") {
+        let parts = command_parts(content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => {
+                Some(DefaultPipelineWithMemoryCommand::Model(parts))
+            }
+            Some("/bind-outgoing") => {
+                Some(DefaultPipelineWithMemoryCommand::BindOutgoing { channel_id, parts })
+            }
+            Some("/unbind-outgoing") => {
+                Some(DefaultPipelineWithMemoryCommand::UnbindOutgoing(parts))
+            }
+            Some("/load-memory") => {
+                Some(DefaultPipelineWithMemoryCommand::LoadMemory(parts))
+            },
+            Some("/mode") => {
+                Some(DefaultPipelineWithMemoryCommand::Mode(parts))
+            },
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 /// 一个 event 对应的运行态：当前 event 的 session、记忆范围与 token 占用
 pub struct DefaultAgenticLoopWithMemoryExecutor {
     pub role_key: Arc<RoleKey>,
@@ -681,38 +733,34 @@ pub struct DefaultAgenticLoopWithMemoryExecutor {
     pub last_total_tokens: AtomicU64,
 }
 
-impl PipelineTaskExecutor for DefaultAgenticLoopWithMemoryExecutor {
-    async fn execute_command(&mut self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        let parts = command_parts(&content);
-        match parts.first().map(|p| p.as_str()) {
-            Some("/model") => {
-                let result = handle_model_command(&parts, self.session_id.clone()).await;
-                Some(result)
+impl PipelineTaskExecutor<DefaultPipelineWithMemoryCommand> for DefaultAgenticLoopWithMemoryExecutor {
+    async fn execute_command(&mut self, command: DefaultPipelineWithMemoryCommand) -> Result<ArcStr> {
+        match command {
+            DefaultPipelineWithMemoryCommand::Model(parts) => {
+                handle_model_command(&parts, self.session_id.clone()).await
             }
-            Some("/bind-outgoing") => {
-                let result = bind_outgoing(self.session_id.clone(), channel_id, &parts).await;
-                Some(result)
+            DefaultPipelineWithMemoryCommand::BindOutgoing { channel_id, parts } => {
+                bind_outgoing(self.session_id.clone(), channel_id, &parts).await
             }
-            Some("/unbind-outgoing") => {
-                let result = unbind_outgoing(self.session_id.clone(), &parts).await;
-                Some(result)
+            DefaultPipelineWithMemoryCommand::UnbindOutgoing(parts) => {
+                unbind_outgoing(self.session_id.clone(), &parts).await
             }
-            Some("/load-memory") => {
+            DefaultPipelineWithMemoryCommand::LoadMemory(parts) => {
                 match parse_load_memory_command(&parts) {
                     Ok(load_memory) => {
                         let config = MemoryPipelineConfig { load_memory: Some(load_memory) };
                         match ConfigManager::get().set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone(), &config).await {
                             Ok(_) => {
-                                Some(Ok(ArcStr::from(format!("✅ 已设置 load_memory: {}", if load_memory { "on" } else { "off" }))))
+                                Ok(ArcStr::from(format!("✅ 已设置 load_memory: {}", if load_memory { "on" } else { "off" })))
                             },
-                            Err(e) => Some(Err(e))
+                            Err(e) => Err(e)
                         }
                     },
-                    Err(e) => Some(Err(e)),
+                    Err(e) => Err(e),
                 }
             },
-            Some("/mode") => {
-                let result = match parse_mode_command(&parts) {
+            DefaultPipelineWithMemoryCommand::Mode(parts) => {
+                match parse_mode_command(&parts) {
                     Ok(event) => {
                         let reply = match &event {
                             Some(event_id) => ArcStr::from(format!("✅ 新事件 ID: {}", event_id)),
@@ -727,10 +775,8 @@ impl PipelineTaskExecutor for DefaultAgenticLoopWithMemoryExecutor {
                         Ok(reply)
                     },
                     Err(e) => Err(e)
-                };
-                Some(result)
+                }
             },
-            _ => None,
         }
     }
 
@@ -920,20 +966,27 @@ impl DefaultAgenticLoopWithMemoryExecutor {
 }
 
 pub struct DefaultAgenticLoopPipelineWithMemory {
-    sender: PipelineTaskSender,
+    sender: PipelineTaskSender<DefaultPipelineWithMemoryCommand>,
 }
 
 #[async_trait]
 impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
-    async fn execute_command(&self, channel_id: ArcStr, _channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
-        self.sender.execute_command(channel_id, content).await
-    }
-}
-
-#[async_trait]
-impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
-    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        self.sender.incoming_message(event).await
+    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>, channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>>{
+        if is_admin {
+            if let Content::Text(content) = &event.incoming_message.content {
+                if let Some(command) = parse_command_with_memory(channel_id, content.as_str()) {
+                    let (done, done_rx) = oneshot::channel();
+                    self.sender.execute_command(command, done).await;
+                    let result = match done_rx.await {
+                        Ok(result) => result,
+                        Err(e) => Err(Error::InternalError(ArcStr::from(e.to_string()))),
+                    };
+                    return Some(result);
+                }
+            }
+        }
+        self.sender.incoming_message(event).await;
+        None
     }
 }
 
@@ -1206,10 +1259,12 @@ impl PipelineManager {
         self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 
-    pub async fn incoming_message(&self, role_key: Arc<RoleKey>, event: Arc<IncomingMessageEvent>) -> Result<()> {
-        let pipeline = self.ensure_pipeline(role_key).await?;
-        pipeline.incoming_message(event).await;
-        Ok(())
+    pub async fn incoming_message(&self, role_key: Arc<RoleKey>, event: Arc<IncomingMessageEvent>, channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>> {
+        if let Ok(pipeline) = self.ensure_pipeline(role_key).await {
+            pipeline.incoming_message(event, channel_id, is_admin).await
+        } else {
+            None
+        }
     }
 
     /// channel 不再绑定该 pipeline：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态

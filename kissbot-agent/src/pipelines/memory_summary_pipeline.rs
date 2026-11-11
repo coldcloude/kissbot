@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::{
-    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
+    config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor}, pipelines::{
         BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_mode_command, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
     }, types::{
         Error, MemoryKey, Result, build_think_record, channel_request_from_incoming,
@@ -203,18 +203,6 @@ impl MemorySummaryPipeline {
 }
 
 #[async_trait]
-impl IncomingMessageProcessor for MemorySummaryPipeline {
-    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
-        let base_id = self.case_session_id(None);
-        let _ = self.ensure_session(&None).await;
-        let interval = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(base_id).await
-            .channel_batch_interval_secs;
-        self.enqueue(event, interval);
-    }
-}
-
-#[async_trait]
 impl IncomingMessageBatchProcessor for MemorySummaryPipeline {
     async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
         if events.is_empty() {
@@ -372,19 +360,50 @@ async fn handle_summary_mode_command(
 
 #[async_trait]
 impl AgentPipeline for MemorySummaryPipeline {
-    async fn execute_command(&self, channel_id: ArcStr, channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
-        let parts = command_parts(&content);
-        match parts.first().map(|p| p.as_str()) {
-            Some("/model") => Some(match parse_model_command(&parts) {
-                Ok((provider, model)) => self.apply_model_command(provider, model).await,
-                Err(e) => Err(e),
-            }),
-            // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
-            Some("/bind-outgoing") => Some(bind_outgoing(self.case_session_id(None), channel_id, &parts).await),
-            Some("/unbind-outgoing") => Some(unbind_outgoing(self.case_session_id(None), &parts).await),
-            Some("/mode") => Some(handle_summary_mode_command(&self.events, channel, &parts).await),
-            _ => None,
+    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>, channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>>{
+        if is_admin {
+            if let Content::Text(content) = &event.incoming_message.content {
+                let parts = command_parts(&content);
+                let result = match parts.first().map(|p| p.as_str()) {
+                    Some("/model") => {
+                        let result = match parse_model_command(&parts) {
+                            Ok((provider, model)) => self.apply_model_command(provider, model).await,
+                            Err(e) => Err(e),
+                        };
+                        Some(result)
+                    },
+                    // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
+                    Some("/bind-outgoing") => {
+                        let result = bind_outgoing(self.case_session_id(None), channel_id, &parts).await;
+                        Some(result)
+                    },
+                    Some("/unbind-outgoing") => {
+                        let result = unbind_outgoing(self.case_session_id(None), &parts).await;
+                        Some(result)
+                    },
+                    Some("/mode") => {
+                        let channel = Arc::new(ChannelKey::new(
+                            event.incoming_message.messenger_id.clone(),
+                            event.recipient_user_id.clone(),
+                            event.incoming_message.group_id.clone(),
+                        ));
+                        let result = handle_summary_mode_command(&self.events, channel, &parts).await;
+                        Some(result)
+                    },
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    return Some(result);
+                }
+            }
         }
+        // 合批间隔与普通合批共用配置；入口阶段还没有 case，用基准（无 case）session 读取
+        let base_id = self.case_session_id(None);
+        let _ = self.ensure_session(&None).await;
+        let interval = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(base_id).await
+        .channel_batch_interval_secs;
+        self.enqueue(event, interval);
+        None
     }
 
     /// channel 不再绑定本 pipeline：丢弃该 channel（messenger + 绑定用户）的全部分组生产者，待处理消息一并丢弃

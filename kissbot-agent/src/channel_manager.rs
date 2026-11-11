@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use dashmap::DashMap;
-use kissbot_api::{ChannelKey, RESERVED_AGENT_ID, RESERVED_ROLE_NAME, RoleKey};
+use kissbot_api::{RESERVED_AGENT_ID, RESERVED_ROLE_NAME, RoleKey};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -508,21 +508,6 @@ impl ChannelManager {
         }
     }
 
-    /// pipeline 级命令：默认命令检测未命中后，交给来源 channel 所属 pipeline 识别执行。
-    /// pipeline 不认识该命令 → InvalidCommand("未知命令: {命令}")（与默认层同文案）；
-    /// pipeline 尚未装配时按 agent/role 配置创建（/model、/mode 等命令可能先于普通消息到达）
-    async fn execute_pipeline_command(&self, channel_id: ArcStr, channel: Arc<ChannelKey>, content: ArcStr) -> Result<ArcStr> {
-        let Some(key) = self.pipeline_key(channel_id.as_str()).await else {
-            return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
-        };
-        let unknown = ArcStr::from(content.split_whitespace().next().unwrap_or_default());
-        let pipeline = Nexus::get().pipeline_manager.ensure_pipeline(key).await?;
-        match pipeline.execute_command(channel_id, channel, content).await {
-            Some(result) => result,
-            None => Err(Error::InvalidCommand(format!("未知命令: {}", unknown).into())),
-        }
-    }
-
     /// 系统命令回复：始终发回来源 channel（不走 out_channel）
     /// 命令与命令回复不入记忆（管理命令不产生 session 上下文）：不定位 pipeline、不推 ChannelRecord
     /// 身份：messenger_id = incoming.messenger_id；user_id/self_user_id = event.recipient_user_id（接收方即发声身份，且是群成员）
@@ -563,42 +548,29 @@ impl Terminal for ChannelManager {
         // 2. 先取 channel 配置（命令分支 admin 判断与普通分支 pipeline 定位复用，避免重复查询）
         let Some(ch) = ConfigManager::get().channel(channel_id.as_str()).await else { return; };
 
-        // 3. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
+        // 3. 判断是否管理员（admins HashSet O(1) contains，ch 已保存）；非管理员忽略不回复
+        let is_admin = ch.admins.contains(&ChannelUser {
+            messenger_id: event.incoming_message.messenger_id.clone(),
+            user_id: event.incoming_message.user_id.clone(),
+        });
+
+        // 4. 管理命令：仅 Content::Text 且以 "/" 开头才判断（不 trim——前置空格可跳过命令检查）；
         //    命令与命令回复不定位 pipeline、不入记忆（管理命令独立处理）
         if let Content::Text(text) = &event.incoming_message.content {
-            if text.starts_with('/') {
-                // 4. 判断是否管理员（admins HashSet O(1) contains，ch 已保存）；非管理员忽略不回复
-                let is_admin = ch.admins.contains(&ChannelUser {
-                    messenger_id: event.incoming_message.messenger_id.clone(),
-                    user_id: event.incoming_message.user_id.clone(),
-                });
-                if is_admin {
-                    // 5. 先做默认命令检测，未命中再交给来源 channel 的 pipeline 识别执行；
-                    //    回复始终发回来源 channel（不走 out_channel）
-                    let result = match self.execute_default_command(text.as_str(), channel_id.clone()).await {
-                        Ok(Some(reply)) => Ok(reply),
-                        Ok(None) => {
-                            let channel = Arc::new(ChannelKey::new(
-                                event.incoming_message.messenger_id.clone(),
-                                event.recipient_user_id.clone(),
-                                event.incoming_message.group_id.clone(),
-                            ));
-                            self.execute_pipeline_command(channel_id.clone(), channel, text.clone()).await
-                        }
-                        Err(e) => Err(e),
-                    };
-                    match result {
-                        Ok(reply) => self.send_admin_reply(channel_id.as_str(), event, reply).await,
-                        Err(Error::InvalidCommand(msg)) => {
-                            self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("⚠️ {}", msg))).await;
-                        }
-                        Err(e) => {
-                            self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("❌ 命令执行失败: {}", e))).await;
-                        }
+            if is_admin && text.starts_with('/') {
+                // 5. 先做默认命令检测，未命中再交给来源 channel 的 pipeline 识别执行；
+                //    回复始终发回来源 channel（不走 out_channel）
+                match self.execute_default_command(text.as_str(), channel_id.clone()).await {
+                    Ok(None) => {},
+                    Ok(Some(reply)) => {
+                        self.send_admin_reply(channel_id.as_str(), event, reply).await;
+                        return;
+                    },
+                    Err(e) => {
+                        self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("❌ 命令执行失败: {}", e))).await;
+                        return;
                     }
                 }
-                // 非管理员发送的管理命令忽略，不回复也不进入 agentic loop
-                return;
             }
         }
 
@@ -614,7 +586,16 @@ impl Terminal for ChannelManager {
         }
 
         // 8. 普通消息：运行 pipeline（记忆写入由各 pipeline 自行完成；pipeline 内部按需创建 session）
-        let _ = Nexus::get().pipeline_manager.incoming_message(key, event).await;
+        if let Some(result) = Nexus::get().pipeline_manager.incoming_message(key, event.clone(), channel_id.clone(), is_admin).await {
+            match result {
+                Ok(reply) => {
+                    self.send_admin_reply(channel_id.as_str(), event, reply).await
+                },
+                Err(e) => {
+                    self.send_admin_reply(channel_id.as_str(), event, ArcStr::from(format!("❌ 命令执行失败: {}", e))).await
+                }
+            }
+        }
     }
 
     async fn join_group(&self, _id: ArcStr, _notification: Arc<GroupChangeNotification>) {

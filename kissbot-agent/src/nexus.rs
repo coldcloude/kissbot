@@ -105,7 +105,7 @@ mod tests {
     use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
-    use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
+    use crate::pipeline::IncomingMessageBatchProcessor;
     use crate::pipelines::{outgoing_channel, pipeline_session_id, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
