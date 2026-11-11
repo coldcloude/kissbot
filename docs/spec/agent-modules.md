@@ -10,9 +10,9 @@
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
 | config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / (agent, role) 配置 / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储（含 memory_pipeline.load_memory）；`default_memory` / `memory_summary` 建立 session 前从 agent/role 导入配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 选择按 (agent, role) 合成 | 被几乎所有模块调用 |
 | nexus | Nexus | **装配与启动中心**：pipeline 定位与装配（run 时）、通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager / pipelines 回调 Nexus 单例 |
-| channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 业务消息处理：默认管理命令 / pipeline 命令 / 普通消息路由）；每 channel 运行态（pending msg_id 回显判定、event、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体，pipeline 重定位内联在 apply_channel_key） | 被 nexus 调用；被 channel-client 回调（Terminal）；变更执行体经 Nexus 单例读写 pipeline/config |
-| pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（pipeline 自行识别并执行 /model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
-| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / MemorySummaryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<MemoryKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `memory_summary`）、保留/清理；`default_memory` 按事件/角色模式与 `memory_pipeline.load_memory` 决定是否回溯，角色模式关闭读取时每批 run 前用 LLM 判断是否同一件事、不同则归档清空并只保留新消息；摘要记忆 pipeline 为每个 channel 维护独立批次生产者，触发时先 locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
+| channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + 业务消息处理：默认管理命令 / pipeline 命令 / 普通消息路由）；每 channel 运行态（pending msg_id 回显判定、client、断线通知）；连接 / 重连 / 发送封装；channel 变更串行队列（含执行体，pipeline 重定位内联在 apply_channel_key）。channel 只绑定 agent / role，当前 event 由 pipeline 维护 | 被 nexus 调用；被 channel-client 回调（Terminal）；变更执行体经 Nexus 单例读写 pipeline/config |
+| pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `reset_system_prompt`、`execute_command`（带来源 channel 三元组，pipeline 自行识别并执行 /mode、/model、outgoing 等管理命令）与 `channel_unbound`；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
+| pipelines | PipelineManager / DefaultAgenticLoopPipeline / DefaultAgenticLoopPipelineWithMemory / MemorySummaryPipeline / BatchProducer / CompressTokenReducer / MemoryRecoverTokenReducer | pipeline 体系实现与注册表：按 `Arc<RoleKey>` 装配（pipeline 自行创建/持有 session）、工厂（`default` / `default_memory` / `memory_summary`）、保留/清理；pipeline 在内存中维护当前 event，`/mode` 由 pipeline 命令处理；`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从缓存重新读取），命令与批次进入同一条 mpsc 队列串行执行，`default_memory` 按事件/角色模式与 `memory_pipeline.load_memory` 决定是否回溯，角色模式关闭读取时每批 run 前用 LLM 判断是否同一件事、不同则归档清空并只保留新消息；摘要记忆 pipeline 为每个 channel 维护独立批次生产者与 channel → event 映射，触发时按该 channel 的 event locate 并按 case 拆成任务入队，case 串行执行、每个 case 使用独立 session 并用该 case 的摘要与结尾原文重建上下文，event 只影响 locate 与记忆范围，其 agentic loop 复用本模块的发送/工具/提示词函数 | 被 nexus 调用；实现体回调 Nexus 单例（Provider、记忆、Station、回复发送） |
 | message | MessageContent / pack_memory_messages / pack_batch | 消息内容组装：extract_content（record/event → 文本段）、记忆交替序列打包、batch → 单条 User 打包 | 被 memory_store_client / nexus（记忆回溯打包）/ pipelines（合批 flush、摘要记忆上下文）调用 |
 | memory_store_client | MemoryStoreClient | memory-store 读写：推通道记录（思考/工具内容内嵌在记录里，写入经 appender 批量投递并等待落盘）+ 读记忆（最近 N + 时间段两次查询并集打包） | 被 nexus 调用 |
 | memory_ego_client | MemoryEgoClient | ego REST 客户端（agent / individual / role 查询）；system_prompt_for_agent / verify_agent_exists 经它发请求 | 被 nexus 调用 |
@@ -23,7 +23,7 @@
 | station_http | StationHttpServer / McpServer | station 对外 MCP 服务端（kissbot-mcp 的 McpServer + 单端点 `POST /mcp`，方法 server/discover / tools/list / tools/call），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus（system_prompt_for_agent）调用 |
 | http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
-| types | MemoryKey / ChannelCommand / RoleEvent 用法 | agent 侧共享数据类型（错误、pipeline 标识、通道命令与 MCP→LLM 工具定义转换）；LLM 消息与配置类型见 kissbot-llm | 被几乎所有模块引用 |
+| types | RoleKey / MemoryKey / ChannelCommand / RoleEvent 用法 | agent 侧共享数据类型（错误、pipeline 身份（RoleKey）、记忆范围（MemoryKey）、通道命令与 MCP→LLM 工具定义转换）；LLM 消息与配置类型见 kissbot-llm | 被几乎所有模块引用 |
 
 ## 二、组件调用关系总览
 
@@ -117,9 +117,9 @@ sequenceDiagram
     main->>main: StationHttpServer::start()（后台 station MCP 服务端，spawn）
     main->>CO: run()
     loop 每个 channel 绑定
-        CO->>PLS: ensure_pipeline(Arc<MemoryKey>)（按 agent/role 的 pipeline_name 装配）
-        PLS->>PLS: pipeline 创建自己的 session（新建时从缓存恢复）
-        Note over PLS: 建立 session 前从 agent/role 导入 session 配置（default 除外）；设置系统提示词（只存待定）
+        CO->>PLS: ensure_pipeline(Arc<RoleKey>)（按 agent/role 的 pipeline_name 装配）
+        PLS->>PLS: pipeline 创建角色模式 session（新建时从缓存恢复）
+        Note over PLS: 建立当前 session 前从 agent/role 导入 session 配置（default 除外）；设置系统提示词（只存待定）；当前 event 从角色模式开始
     end
     loop 每个 enabled channel
         CO->>CHM: connect_channel(channel_id)（创建 ChannelClient + spawn 重连循环）
@@ -149,16 +149,16 @@ sequenceDiagram
         else 系统事件（群组变更 / 用户移除）
             Note over CHM: 直接返回，不进 pipeline
         else 普通消息
-            CHM->>CHM: memory_key(channel_id)
-            CHM->>PLS: incoming_message(Arc<MemoryKey>, event)（不存在则先装配 pipeline）
+            CHM->>CHM: pipeline_key(channel_id)（agent + role）
+            CHM->>PLS: incoming_message(Arc<RoleKey>, event)（不存在则先装配 pipeline）
             PLS->>IP: incoming_message(event)（该 pipeline 的实例）
             alt default_memory
                 IP->>MSC: push_channel_record(is_self=0, meta=None)
                 Note over IP: 合批（mpsc + deadline）→ pack_batch → agentic loop
             else memory_summary
                 Note over IP: 按 channel 独立攒批（BatchProducer DashMap）
-                IP->>IP: locate → 写上行记录(meta=case) → 按 case 拆任务入队
-                Note over IP: 每个 case 一个 session（懒创建）；case 队列串行 run（同一 case 排队中合并）：该 case 摘要+tail 重建自己的 session → pack_batch → agentic loop（回复记录 meta=case）
+                IP->>IP: 按该 channel 的 event 映射 locate → 写上行记录(meta=case) → 按 case 拆任务入队
+                Note over IP: 每个 case 一个 session（懒创建，不随 event 改变）；case 队列串行 run（同一 case 排队中合并）：该 case 摘要+tail 重建自己的 session → pack_batch → agentic loop（回复记录 meta=case）
             else default
                 Note over IP: 合批 → pack_batch → agentic loop（不写记忆）
             end
@@ -224,11 +224,11 @@ sequenceDiagram
     participant SP as AgentPipeline::reset_system_prompt
     participant MEC as MemoryEgoClient
 
-    CO->>PLS: ensure_pipeline(Arc<MemoryKey>)
+    CO->>PLS: ensure_pipeline(Arc<RoleKey>)
     alt pipeline 未装配
         PLS->>PLS: 按 agent/role 的 pipeline_name 创建 pipeline
         alt default / default_memory
-            PL->>PL: 创建 session（pipelines::pipeline_session_id()）并 recover_from_cache
+            PL->>PL: 创建当前 event（新建时为角色模式）的 session（pipelines::pipeline_session_id()）并 recover_from_cache（每次切换 event 重新读取）
         else memory_summary
             Note over PL: 构造时不建 session；基准（-none）session 在入口/命令处理时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
@@ -243,7 +243,7 @@ sequenceDiagram
     else 已装配
         Note over CO: 直接复用（不重复恢复/装配）
     end
-    Note over CO: 系统提示词在 build_context_full 时对比应用（需要变更才重写 sys 文件，不产生版本）；归档/重建只处理消息，版本同时保存 sys / msgs 两个文件，sys 使用原先文件<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）；事件模式恒用压缩，角色模式 load_memory=false 时同话题判断为不同会先归档清空再以新消息运行
+    Note over CO: 系统提示词在 build_context_full 时对比应用（需要变更才重写 sys 文件，不产生版本）；归档/重建只处理消息，版本同时保存 sys / msgs 两个文件，sys 使用原先文件<br/>记忆回溯在 send_messages_with_limit 内按阈值触发（memory_recover reducer 只读取最后一条 assistant 及之后的会话消息，拼接 build_context_from_memory_store 的打包结果后一次重置）；当前 event 为事件模式时恒用压缩，角色模式 load_memory=false 时同话题判断为不同会先归档清空再以新消息运行；default / default_memory 切换 event 时释放旧 session 并重新读取目标 event 的 session；命令与批次在同一队列串行
 ```
 
 ## 七、对外交互边界
@@ -263,5 +263,5 @@ sequenceDiagram
 - **memory-struct**：`NexusRepo.memory_structs` 与 `MemoryStructConfig` 仅建结构，无消费方；摘要记忆的上下文由 `MemorySummaryPipeline` 经 memory-struct-summary 提供，其余会话的上下文回溯走 memory-store 的两查询并集。
 - **Terminal（ChannelManager）的 join_group / leave_group / user_removed / download_chunk**：回调为 no-op / 未使用，业务逻辑预留。
 - **`ModelResponse.finish_reason`**：已解析但无消费方（截断等停止原因不触发额外处理）。
-- **http_server ↔ nexus**：管理命令（/bind、/mode 等）目前由 channel 上行消息触发，HttpServer 未直接调用 nexus。
+- **http_server ↔ nexus**：管理命令（/bind、/agent、/role 等）目前由 channel 上行消息触发；/mode 由 pipeline 命令处理，HttpServer 未直接调用 nexus。
 - **配置热更新监听**：ConfigManager 未提供变更监听，接入 Station/Nexus 为遗留事项。

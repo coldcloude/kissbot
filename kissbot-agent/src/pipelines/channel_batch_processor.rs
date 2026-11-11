@@ -48,7 +48,7 @@ impl BatchProducer {
 /// 消费侧：trigger 任务独占（随 spawn move 进任务，任务内 mut 访问，零锁）
 /// 持 anchor/deadline（与 producer 共享同一份：enqueue 侧 send 写 deadline，任务侧 run 读/清）；
 /// 退出靠 producer 被丢弃后 trigger channel 关闭（tx/trigger_tx 均只在 producer 里）。
-pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
+pub struct BatchConsumer {
     rx: mpsc::UnboundedReceiver<Arc<IncomingMessageEvent>>,
     trigger_rx: mpsc::UnboundedReceiver<Instant>,
     delay: DelayQueue<Instant>,
@@ -56,38 +56,19 @@ pub struct BatchConsumer<P: IncomingMessageBatchProcessor> {
     anchor: Instant,
     /// 截止时间（与 producer 共享同一 Arc<AtomicU64>；0 = 无待 flush 哨兵）
     deadline: Arc<AtomicU64>,
-    /// 下游处理体。**弱引用**（`Weak::new()` 表示未绑定）：消费者任务不能强持有 pipeline，
-    /// 否则「pipeline → producer → 消费者任务 → pipeline」形成引用环，pipeline 永远不会 Drop、
-    /// producer 永远不会关闭。
-    pub processor: Weak<P>,
 }
 
 /// 触发 flush（BatchConsumer 成员函数）：deadline 置 0 → drain（&mut self.rx 零锁）→
 /// 交 processor.incoming_message_batch 进 agentic loop
-impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
+impl BatchConsumer {
     /// 处理队列中已到达的消息（到期触发、退出前共用）
     async fn flush(&mut self) {
-        // 先清 deadline 再 drain（内联 clear_deadline：store 0 = 无待 flush 哨兵）：
-        // 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
-        self.deadline.store(0, Ordering::Relaxed);
-        let mut items = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(item) => items.push(item),
-                Err(_) => break,   // Empty / Disconnected
-            }
-        }
-        if !items.is_empty() {
-            if let Some(processor) = self.processor.upgrade() {
-                processor.incoming_message_batch(items).await;
-            }
-        }
     }
 
     /// 触发任务主循环（consumer 成员函数；构造方经 tokio::spawn 启动）
     /// 唯一消费者（独占 &mut self 零锁）；不持 producer（anchor/deadline 经 self 内共享 Arc 访问）。
     /// 退出：producer 被丢弃 → trigger channel 关闭 → `recv()` 返回 None；未到期的待处理消息一并丢弃。
-    pub async fn run(mut self) {
+    pub async fn run<P: IncomingMessageBatchProcessor>(mut self, processor: Weak<P>) {
         loop {
             tokio::select! {
                 t = self.trigger_rx.recv() => {
@@ -114,7 +95,21 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
                             if deadline == 0 || now_millis < deadline {
                                 continue;   // 未设deadline或未超 deadline：空转（等下一个到期触发）
                             }
-                            self.flush().await;
+                            // 先清 deadline 再 drain： 并发 enqueue 若在 drain 期间设新截止，不会被后续的 clear 清掉
+                            self.deadline.store(0, Ordering::Relaxed);
+                            // 处理队列中已到达的消息
+                            let mut items = Vec::new();
+                            loop {
+                                match self.rx.try_recv() {
+                                    Ok(item) => items.push(item),
+                                    Err(_) => break,   // Empty / Disconnected
+                                }
+                            }
+                            if !items.is_empty() {
+                                if let Some(processor) = processor.upgrade() {
+                                    processor.incoming_message_batch(items).await;
+                                }
+                            }
                         },
                         None => break, // 仅防御（队列非空时 poll_next 不返回 None）
                     }
@@ -124,7 +119,7 @@ impl<P: IncomingMessageBatchProcessor> BatchConsumer<P> {
     }
 }
 
-pub fn channel_batch_processor<P: IncomingMessageBatchProcessor>() -> (BatchProducer, BatchConsumer<P>) {
+pub fn channel_batch_processor() -> (BatchProducer, BatchConsumer) {
     // 1. anchor + deadline + 2 mpsc（无依赖；各 Arc 单独建立，复制给 producer/consumer）
     let anchor = Instant::now();
     let deadline = Arc::new(AtomicU64::new(0));
@@ -144,7 +139,6 @@ pub fn channel_batch_processor<P: IncomingMessageBatchProcessor>() -> (BatchProd
         delay: DelayQueue::new(),
         anchor,
         deadline,
-        processor: Weak::new(),
     };
     (producer, consumer)
 }
@@ -190,11 +184,11 @@ mod tests {
 
     #[tokio::test]
     async fn due_batch_flushes_and_producer_drop_exits_consumer() {
-        let (producer, mut consumer) = channel_batch_processor::<Recorder>();
+        let (producer, consumer) = channel_batch_processor();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
-        consumer.processor = Arc::downgrade(&recorder);
-        let handle = tokio::spawn(consumer.run());
+        let processor = Arc::downgrade(&recorder);
+        let handle = tokio::spawn(consumer.run(processor));
 
         // 间隔 0：立即到期，消费者 flush 到 processor
         producer.send(event("a"), 0);
@@ -214,11 +208,11 @@ mod tests {
 
     #[tokio::test]
     async fn producer_drop_exits_consumer_and_discards_pending() {
-        let (producer, mut consumer) = channel_batch_processor::<Recorder>();
+        let (producer, consumer) = channel_batch_processor();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let recorder = Arc::new(Recorder { tx });
-        consumer.processor = Arc::downgrade(&recorder);
-        let handle = tokio::spawn(consumer.run());
+        let processor = Arc::downgrade(&recorder);
+        let handle = tokio::spawn(consumer.run(processor));
 
         // 消息还没到期就被解绑：丢弃待处理消息并退出（不写入已不属于它的会话）
         producer.send(event("a"), 3600);

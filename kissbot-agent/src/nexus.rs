@@ -64,9 +64,9 @@ impl Nexus {
     /// 启动主循环（保持进程运行）：初始化 pipeline + 连接全部 channel
     pub async fn run(&self) {
         info!("Nexus 启动，等待外部输入...");
-        // 按 channel 绑定的 agent/role/运行态事件装配 pipeline（agent_id 取 config，保留 agent = "0"）
+        // 按 channel 绑定的 agent/role 装配 pipeline（当前 event 由 pipeline 自己维护，新建时从角色模式开始）
         for (_, ch) in ConfigManager::get().channels().await {
-            if let Some(key) = self.channel_manager.memory_key(ch.channel_id.as_str()).await {
+            if let Some(key) = self.channel_manager.pipeline_key(ch.channel_id.as_str()).await {
                 if let Err(e) = self.pipeline_manager.ensure_pipeline(key).await {
                     warn!("pipeline 装配失败: {:?}", e);
                 }
@@ -98,7 +98,7 @@ mod tests {
     use axum::{Json, Router, extract::State, routing::post};
 
     use arcstr::ArcStr;
-    use kissbot_api::RoleEvent;
+    use kissbot_api::{ChannelKey, RoleKey};
     use kissbot_api::channel::{ChannelUser, IncomingMessage, IncomingMessageEvent};
     use kissbot_api::message::Content;
     use kissbot_channel_client::Terminal;
@@ -108,6 +108,26 @@ mod tests {
     use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
     use crate::pipelines::{outgoing_channel, pipeline_session_id, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
+
+    /// 测试用角色键（pipeline 身份）
+    fn role_key(agent_id: &str, role_name: &str) -> Arc<RoleKey> {
+        Arc::new(RoleKey { agent_id: ArcStr::from(agent_id), role_name: ArcStr::from(role_name) })
+    }
+
+    /// 测试用记忆范围键（角色模式）
+    fn memory_key(agent_id: &str, role_name: &str) -> Arc<MemoryKey> {
+        MemoryKey::from_role_key(&role_key(agent_id, role_name), None)
+    }
+
+    /// 测试用记忆范围键（事件模式）
+    fn event_memory_key(agent_id: &str, role_name: &str, event_id: &str) -> Arc<MemoryKey> {
+        MemoryKey::from_role_key(&role_key(agent_id, role_name), Some(ArcStr::from(event_id)))
+    }
+
+    /// 测试用来源通道三元组（命令的 channel 参数）
+    fn command_channel() -> Arc<ChannelKey> {
+        Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")))
+    }
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
     // 覆盖一整条链：pipeline 装配（由 pipeline 创建 session 与系统提示词初始化）/
@@ -141,7 +161,7 @@ mod tests {
         let cm = ConfigManager::get();
         let agent_id = "a1";
         let channel_id = "nexus-chain-test";
-        let key = MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) };
+        let key = memory_key(agent_id, "");
         let session_id = pipeline_session_id(&key);
 
         // 1. agent 级（role 空串）pipeline：显式指定 pipeline 名 default，
@@ -182,7 +202,7 @@ mod tests {
 
         // 3. 消息入口（非命令消息，直接进 pipeline）：首次处理消息时装配 pipeline、
         //    由 pipeline 创建 session 并初始化系统提示词，随后消息分发到合批输入处理器
-        //    pipeline 定位与运行态事件都取自 ChannelManager 的 channel 运行态条目，先登记该 channel
+        //    pipeline 按 channel 的 agent/role 定位，先登记该 channel 的运行态条目
         Nexus::get().channel_manager.get_or_create(channel_id);
         Nexus::get().channel_manager.incoming_message(ArcStr::from(channel_id), Arc::new(IncomingMessageEvent {
             recipient_user_id: ArcStr::from("self"),
@@ -202,7 +222,7 @@ mod tests {
         // 4. 等合批 flush + pipeline 运行：session 上下文应含系统消息（首条，由系统提示词初始化设置）
         //    与本条用户消息
         // 只读回读本地缓存检查 pipeline 写入的上下文（session 由 pipeline 持有，测试不共享其实例）
-        let session = Session::new(ConfigManager::get().context_dir(), pipeline_session_id(&key));
+        let session = Session::new(ConfigManager::get().context_dir(), session_id);
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let _ = session.recover_from_cache().await;
@@ -260,8 +280,9 @@ mod tests {
         // 用本地 PipelineManager 验证 retain 语义，避免动到全局单例
         ensure_test_globals().await;
         let agent_id = "prune-agent";
-        let k1 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
-        let k2 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent_id), role_event: Arc::new(RoleEvent::with_event(ArcStr::from(""), ArcStr::from("e1"))) });
+        // pipeline 身份只看 agent + role，不同 role 各自一条 pipeline
+        let k1 = role_key(agent_id, "");
+        let k2 = role_key(agent_id, "r2");
         // agent 级未配置 pipeline_name → 默认 default_memory
 
         let pm = PipelineManager::new();
@@ -286,45 +307,118 @@ mod tests {
         let channel_id = ArcStr::from("cmd-detect-channel");
         let cmd = |content: &str| ArcStr::from(content);
 
-        // default：只接 /model，不接 outgoing
-        let default = DefaultAgenticLoopPipeline::new(ArcStr::from("cmd-detect-default")).await;
-        assert!(default.execute_command(channel_id.clone(), cmd("/bind-outgoing web u1 g1")).await.is_none(),
+        // default：接 /model 与 /mode，不接 outgoing
+        let default = DefaultAgenticLoopPipeline::new(role_key("cmd-detect-default", "")).await;
+        assert!(default.execute_command(channel_id.clone(), command_channel(), cmd("/bind-outgoing web u1 g1")).await.is_none(),
             "default 不接 outgoing 命令");
-        match default.execute_command(channel_id.clone(), cmd("/model deepseek deepseek-chat maybe")).await {
+        match default.execute_command(channel_id.clone(), command_channel(), cmd("/model deepseek deepseek-chat maybe")).await {
             Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("/model <provider> <model>"), "参数错误文案: {}", msg),
             other => panic!("default 应识别 /model 并返回参数错误: {:?}", other),
         }
+        let reply = default.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-detect")).await
+            .expect("default 应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 新事件 ID: e-detect");
 
-        // default_memory / memory_summary：接 /model 与 outgoing；不是自己的命令返回 None
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("cmd-detect-agent"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-        });
-        let memory = DefaultAgenticLoopPipelineWithMemory::new(key.clone()).await;
-        assert!(memory.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
+        // default_memory / memory_summary：接 /model、/mode 与 outgoing；不是自己的命令返回 None
+        let key = memory_key("cmd-detect-agent", "");
+        let memory = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-detect-agent", "")).await;
+        assert!(memory.execute_command(channel_id.clone(), command_channel(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
-        match memory.execute_command(channel_id.clone(), cmd("/bind-outgoing web u1")).await {
+        match memory.execute_command(channel_id.clone(), command_channel(), cmd("/bind-outgoing web u1")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
         }
-        match memory.execute_command(channel_id.clone(), cmd("/load-memory maybe")).await {
+        match memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory maybe")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /load-memory 并返回参数错误: {:?}", other),
         }
-        let reply = memory.execute_command(channel_id.clone(), cmd("/load-memory off")).await
+        let reply = memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory off")).await
             .expect("应识别 /load-memory").unwrap();
         assert!(reply.contains("load_memory"), "回复文案: {}", reply);
         let cfg = ConfigManager::get()
             .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(pipeline_session_id(&key)).await;
         assert!(!cfg.load_memory, "/load-memory off 应写入 session 配置");
 
-        let memory_summary = MemorySummaryPipeline::new(key);
-        assert!(memory_summary.execute_command(channel_id.clone(), cmd("/send-channel on")).await.is_none(),
+        // 切到事件模式后再设 load_memory：只写当前 event 的 session，角色模式 session 保持原值
+        memory.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-load")).await
+            .expect("default_memory 应识别 /mode").unwrap();
+        memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory on")).await
+            .expect("应识别 /load-memory").unwrap();
+        let event_id = pipeline_session_id(&event_memory_key("cmd-detect-agent", "", "e-load"));
+        let event_cfg = ConfigManager::get()
+            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(event_id).await;
+        assert!(event_cfg.load_memory, "/load-memory 应写入当前 event session");
+        let role_cfg = ConfigManager::get()
+            .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(pipeline_session_id(&key)).await;
+        assert!(!role_cfg.load_memory, "角色模式 session 不应被当前 event 的命令改动");
+
+        let reply = memory.execute_command(channel_id.clone(), command_channel(), cmd("/mode role")).await
+            .expect("default_memory 应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 已切换为角色模式");
+
+        let memory_summary = MemorySummaryPipeline::new(role_key("cmd-detect-agent", ""));
+        assert!(memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/send-channel on")).await.is_none(),
             "未知命令应返回 None");
-        match memory_summary.execute_command(channel_id.clone(), cmd("/unbind-outgoing extra")).await {
+        match memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/unbind-outgoing extra")).await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("memory_summary 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
         }
+        let reply = memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-summary")).await
+            .expect("memory_summary 应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 新事件 ID: e-summary");
+        match memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/mode maybe")).await {
+            Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("未知模式"), "参数错误文案: {}", msg),
+            other => panic!("memory_summary 的 /mode 参数错误应返回 InvalidCommand: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn mode_switch_uses_per_event_session_and_restores_role_session() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+        let agent = "mode-session-agent";
+        let role = "mode-session-role";
+        let channel_id = ArcStr::from("mode-session-channel");
+        // 显式 default（无记忆）：pipeline 只由 agent + role 定位，当前 event 由 /mode 切换
+        cm.set_agent_role_config::<PipelineConfig>(
+            ArcStr::from(agent), ArcStr::from(""),
+            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default")) })).await.unwrap();
+        let pipeline = DefaultAgenticLoopPipeline::new(role_key(agent, role)).await;
+
+        // 角色模式 session（pipeline 新建时创建）：先写入一条消息，模拟已存在的上下文
+        let role_session_id = pipeline_session_id(&memory_key(agent, role));
+        let role_session = Session::new(cm.context_dir(), role_session_id.clone());
+        role_session.context_append(vec![Message::User { content: ArcStr::from("角色会话") }]).await.unwrap();
+
+        // 切到 e1：新建 e1 的 session，与角色模式上下文隔离
+        let reply = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/mode event e1")).await
+            .expect("应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 新事件 ID: e1");
+        let e1_session_id = pipeline_session_id(&event_memory_key(agent, role, "e1"));
+        assert_ne!(e1_session_id, role_session_id);
+        let e1 = Session::new(cm.context_dir(), e1_session_id.clone());
+        e1.recover_from_cache().await.unwrap();
+        assert!(e1.build_context().await.is_empty(), "新事件 session 不应带角色模式上下文");
+        e1.context_append(vec![Message::User { content: ArcStr::from("事件会话") }]).await.unwrap();
+
+        // 切到 e2：又一个新 session
+        pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/mode event e2")).await
+            .expect("应识别 /mode").unwrap();
+        let e2_id = pipeline_session_id(&event_memory_key(agent, role, "e2"));
+        let e2 = Session::new(cm.context_dir(), e2_id);
+        e2.recover_from_cache().await.unwrap();
+        assert!(e2.build_context().await.is_empty(), "另一个新事件 session 也应隔离");
+
+        // 回到角色模式：重新从本地缓存恢复角色模式 session
+        let reply = pipeline.execute_command(channel_id, command_channel(), ArcStr::from("/mode role")).await
+            .expect("应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 已切换为角色模式");
+        // 角色 session 由 pipeline 重新创建后从缓存恢复；这里直接读缓存确认消息仍在
+        let restored = Session::new(cm.context_dir(), role_session_id);
+        restored.recover_from_cache().await.unwrap();
+        assert!(
+            restored.build_context().await.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "角色会话")),
+            "切回角色模式应恢复角色 session 的缓存");
     }
 
     #[tokio::test]
@@ -342,20 +436,17 @@ mod tests {
             role_name: ArcStr::from(""),
             enabled: true,
         }).await;
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("cmd-outgoing-agent"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from(""))),
-        });
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key.clone()).await;
+        let key = memory_key("cmd-outgoing-agent", "");
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-outgoing-agent", "")).await;
         let session_id = pipeline_session_id(&key);
 
         // 身份未绑定 → 拒绝
-        let err = pipeline.execute_command(channel_id.clone(), ArcStr::from("/bind-outgoing web nobody g1")).await
+        let err = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/bind-outgoing web nobody g1")).await
             .expect("应识别 /bind-outgoing").unwrap_err();
         assert!(matches!(err, Error::InvalidCommand(_)), "未绑定身份应拒绝: {:?}", err);
 
         // 绑定成功 → 写入当前 pipeline 的 session 配置
-        let reply = pipeline.execute_command(channel_id.clone(), ArcStr::from("/bind-outgoing web u-out g1")).await
+        let reply = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/bind-outgoing web u-out g1")).await
             .expect("应识别 /bind-outgoing").unwrap();
         assert!(reply.contains("已设发送通道"), "回复文案: {}", reply);
         let out = outgoing_channel(&session_id).await.expect("out_channel 应已写入 session");
@@ -364,7 +455,7 @@ mod tests {
         assert_eq!(out.group_id.as_str(), "g1");
 
         // 解除 → 清空
-        pipeline.execute_command(channel_id.clone(), ArcStr::from("/unbind-outgoing")).await
+        pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/unbind-outgoing")).await
             .expect("应识别 /unbind-outgoing").unwrap();
         assert!(outgoing_channel(&session_id).await.is_none(), "解除后为空");
     }
@@ -381,8 +472,7 @@ mod tests {
         ConfigManager::get().set_agent_role_config::<PipelineConfig>(
             ArcStr::from(agent_default), ArcStr::from(""),
             Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default")) })).await.unwrap();
-        let key_default = Arc::new(MemoryKey {
-            agent_id: ArcStr::from(agent_default), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
+        let key_default = role_key(agent_default, "");
         pm.ensure_pipeline(key_default.clone()).await.unwrap_or_else(|e| panic!("显式 default 应能装配 pipeline: {:?}", e));
         assert!(pm.contains(key_default.as_ref()), "显式 default 应已注册");
 
@@ -391,15 +481,13 @@ mod tests {
         ConfigManager::get().set_agent_role_config::<PipelineConfig>(
             ArcStr::from(agent_memory), ArcStr::from(""),
             Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default_memory")) })).await.unwrap();
-        let key_memory = Arc::new(MemoryKey {
-            agent_id: ArcStr::from(agent_memory), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
+        let key_memory = role_key(agent_memory, "");
         pm.ensure_pipeline(key_memory.clone()).await.unwrap_or_else(|e| panic!("显式 default_memory 应能装配 pipeline: {:?}", e));
         assert!(pm.contains(key_memory.as_ref()), "显式 default_memory 应已注册");
 
         // 3. 未配置名称 → 默认 default_memory
         let agent_fallback = "pipeline-fallback-agent";
-        let key_fallback = Arc::new(MemoryKey {
-            agent_id: ArcStr::from(agent_fallback), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
+        let key_fallback = role_key(agent_fallback, "");
         pm.ensure_pipeline(key_fallback.clone()).await.unwrap_or_else(|e| panic!("未配置名称应回退默认 pipeline: {:?}", e));
         assert!(pm.contains(key_fallback.as_ref()), "默认 pipeline 应已注册");
 
@@ -408,8 +496,7 @@ mod tests {
         ConfigManager::get().set_agent_role_config::<PipelineConfig>(
             ArcStr::from(agent_unknown), ArcStr::from(""),
             Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("no-such-pipeline")) })).await.unwrap();
-        let key_unknown = Arc::new(MemoryKey {
-            agent_id: ArcStr::from(agent_unknown), role_event: Arc::new(RoleEvent::new(ArcStr::from(""))) });
+        let key_unknown = role_key(agent_unknown, "");
         let err = match pm.ensure_pipeline(key_unknown).await {
             Ok(_) => panic!("未知 pipeline 名应返回 Err"),
             Err(e) => e,
@@ -495,18 +582,19 @@ mod tests {
             Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("default")) })).await.unwrap();
 
         let pm = PipelineManager::new();
-        let k1 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))) });
-        let k1e = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))) });
-        let k2 = Arc::new(MemoryKey { agent_id: ArcStr::from(agent), role_event: Arc::new(RoleEvent::new(ArcStr::from("r2"))) });
-        for key in [&k1, &k1e, &k2] {
+        // pipeline 身份只看 agent + role：r1、r2、r3 各一条
+        let k1 = role_key(agent, "r1");
+        let k2 = role_key(agent, "r2");
+        let k3 = role_key(agent, "r3");
+        for key in [&k1, &k2, &k3] {
             pm.ensure_pipeline(key.clone()).await.unwrap_or_else(|e| panic!("应能装配 pipeline: {:?}", e));
         }
-        assert!(pm.contains(k1.as_ref()) && pm.contains(k1e.as_ref()) && pm.contains(k2.as_ref()));
+        assert!(pm.contains(k1.as_ref()) && pm.contains(k2.as_ref()) && pm.contains(k3.as_ref()));
 
-        // 改 agent 级为 default：r1 合并值变化（default_memory → default）失效；r2 的 role 覆盖不变，保留
+        // 改 agent 级为 default：r1、r3 合并值变化（default_memory → default）失效；r2 的 role 覆盖不变，保留
         pm.set_pipeline_config(ArcStr::from(agent), ArcStr::new(), ArcStr::from("default")).await.unwrap();
         assert!(!pm.contains(k1.as_ref()), "r1 合并配置变化，pipeline 应失效");
-        assert!(!pm.contains(k1e.as_ref()), "r1 的事件 pipeline 同样失效");
+        assert!(!pm.contains(k3.as_ref()), "r3 合并配置变化，pipeline 应失效");
         assert!(pm.contains(k2.as_ref()), "r2 合并配置未变，pipeline 保留");
 
         // 改 r2 的 role 级为 memory_summary：合并值变化，r2 pipeline 失效
@@ -632,10 +720,7 @@ mod tests {
             default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a-topic-switch"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-switch"))),
-        });
+        let key = memory_key("a-topic-switch", "r-topic-switch");
         let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
@@ -659,7 +744,7 @@ mod tests {
         ]).await.unwrap();
 
         // 触发新一批消息：判定为不同 → 归档旧上下文，只保留新消息后运行
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-switch", "r-topic-switch")).await;
         pipeline.incoming_message_batch(vec![incoming_event("topic-m1", "新问题")]).await;
 
         // 当前上下文只剩新消息与本次回复
@@ -704,10 +789,7 @@ mod tests {
             default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a-topic-ambiguous"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-ambiguous"))),
-        });
+        let key = memory_key("a-topic-ambiguous", "r-topic-ambiguous");
         let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
@@ -728,7 +810,7 @@ mod tests {
             },
         ]).await.unwrap();
 
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-ambiguous", "r-topic-ambiguous")).await;
         pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
         // 两次判定回答都不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
@@ -759,10 +841,7 @@ mod tests {
             default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a-topic-retry-once"),
-            role_event: Arc::new(RoleEvent::new(ArcStr::from("r-topic-retry-once"))),
-        });
+        let key = memory_key("a-topic-retry-once", "r-topic-retry-once");
         let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
@@ -783,7 +862,7 @@ mod tests {
             },
         ]).await.unwrap();
 
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-retry-once", "r-topic-retry-once")).await;
         pipeline.incoming_message_batch(vec![incoming_event("retry-once-m1", "新问题")]).await;
 
         // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 正式运行
@@ -815,10 +894,7 @@ mod tests {
             default_model_config: ModelConfig { max_tokens_usage: 1, timeout_secs: None, retry_count: None },
             model_configs: Arc::new(HashMap::new()),
         }).await.unwrap();
-        let key = Arc::new(MemoryKey {
-            agent_id: ArcStr::from("a-event-no-read"),
-            role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r-event"), ArcStr::from("e1"))),
-        });
+        let key = event_memory_key("a-event-no-read", "r-event", "e1");
         let session_id = pipeline_session_id(&key);
         cm.set_session_config::<LLMConfig, EffectiveLLMConfig>(session_id.clone(), &LLMConfig {
             provider: Some(ArcStr::from(provider)),
@@ -831,7 +907,10 @@ mod tests {
             &MemoryPipelineConfig { load_memory: Some(true) },
         ).await.unwrap();
 
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(key).await;
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-event-no-read", "r-event")).await;
+        // pipeline 新建时为角色模式，先切到事件模式：event session 使用本用例预置的配置
+        pipeline.execute_command(ArcStr::from("event-no-read-channel"), command_channel(), ArcStr::from("/mode event e1")).await
+            .expect("应识别 /mode").unwrap();
         pipeline.clone().incoming_message_batch(vec![incoming_event("event-m1", "第一件事")]).await;
         pipeline.clone().incoming_message_batch(vec![incoming_event("event-m2", "第二件事")]).await;
 

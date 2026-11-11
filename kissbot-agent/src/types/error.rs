@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use arcstr::ArcStr;
-
-use crate::types::MemoryKey;
+use kissbot_api::RoleKey;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -54,7 +53,7 @@ pub enum Error {
     InternalError(ArcStr),
 
     #[error("Pipeline {0} not found for {1:?}")]
-    PipelineNotFound(ArcStr, Arc<MemoryKey>),
+    PipelineNotFound(ArcStr, Arc<RoleKey>),
 
     #[error("Errors:\n{}", format_errors(.0))]
     MultiError(Vec<Error>),

@@ -10,8 +10,9 @@ pub use token_reducer::*;
 
 use async_trait::async_trait;
 use futures_util::future;
-use kissbot_api::{ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents};
+use kissbot_api::{ChannelKey, ChannelUser, Content, ContentBlock, IncomingMessageEvent, MemoryMeta, MergeEffectiveConfig, MergeSelf, OptionArcField, OutgoingMessage, RESERVED_AGENT_ID, ResourceContents, RoleKey};
 use tokio::spawn;
+use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -31,7 +32,7 @@ use crate::{config_manager::ConfigManager, configs::{EffectiveMemoryRecoverConfi
 /// 默认系统提示词
 pub const DEFAULT_SYSTEM_PROMPT: ArcStr = arcstr::literal!("你是一个通用智能体。使用工具完成用户任务");
 
-/// pipeline 的基准 session_id：{agent_id}-{role}[-{event}]
+/// 记忆范围的 session_id：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}`
 pub fn pipeline_session_id(memory_key: &MemoryKey) -> ArcStr {
     match memory_key.role_event.event_id.as_ref() {
         Some(event_id) => ArcStr::from(format!(
@@ -80,6 +81,31 @@ pub async fn get_ego_system_prompt(agent_id: ArcStr, role_name: ArcStr) -> Optio
 pub async fn get_ego_system_prompt_or_default(memory_key: &MemoryKey) -> ArcStr {
     get_ego_system_prompt(memory_key.agent_id.clone(), memory_key.role_event.role_name.clone()).await
     .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.clone())
+}
+
+pub async fn new_session(role_key: &RoleKey, event_id: Option<ArcStr>) -> (Arc<MemoryKey>, ArcStr, Arc<Session>) {
+    let memory_key = MemoryKey::from_role_key(role_key, event_id);
+    let session_id = pipeline_session_id(memory_key.as_ref());
+    let session = create_session(session_id.clone()).await;
+    session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await;
+    (memory_key, session_id, session)
+}
+
+/// 创建指定 event 的 session：从 agent/role 导入配置并使用 ego 系统提示词
+pub async fn new_session_with_memory(role_key: &RoleKey, event_id: Option<ArcStr>) -> (Arc<MemoryKey>, ArcStr, Arc<Session>) {
+    let memory_key = MemoryKey::from_role_key(role_key, event_id);
+    let session_id = pipeline_session_id(&memory_key);
+    import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
+    import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
+    let session = create_session(session_id.clone()).await;
+    let prompt = get_ego_system_prompt_or_default(&memory_key).await;
+    session.set_system_message(prompt).await;
+    (memory_key, session_id, session)
 }
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
@@ -463,109 +489,259 @@ pub async fn run(session_id: ArcStr, session: &Session, message: Message, tools:
     Ok(total_tokens)
 }
 
-pub struct DefaultAgenticLoopPipeline {
-    session_id: ArcStr,
-    session: Arc<Session>,
-    last_total_tokens: AtomicU64,
-    producer: BatchProducer,
+/// default / default_memory 的串行任务：命令与批次共用一条队列，
+/// 避免切换 session 与使用 session（批次处理）竞争
+enum PipelineTask {
+    Command { channel_id: ArcStr, content: ArcStr, done: oneshot::Sender<Option<Result<ArcStr>>> },
+    Single(Arc<IncomingMessageEvent>),
+    Batch(Vec<Arc<IncomingMessageEvent>>),
 }
 
-#[async_trait]
-impl AgentPipeline for DefaultAgenticLoopPipeline {
-    async fn reset_system_prompt(&self) {
-        self.session.set_system_message(DEFAULT_SYSTEM_PROMPT.clone()).await
+pub struct PipelineTaskSender {
+    task_tx: mpsc::UnboundedSender<PipelineTask>,
+}
+
+pub struct PipelineTaskReceiver {
+    task_rx: mpsc::UnboundedReceiver<PipelineTask>,
+}
+
+pub fn pipeline_task_processor() -> (PipelineTaskSender, PipelineTaskReceiver) {
+    let (task_tx, task_rx) = mpsc::unbounded_channel();
+    (PipelineTaskSender { task_tx }, PipelineTaskReceiver { task_rx })
+}
+
+impl PipelineTaskSender {
+    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+        let (done, done_rx) = oneshot::channel();
+        if let Err(e) = self.task_tx.send(PipelineTask::Command { channel_id, content, done }) {
+            return Some(Err(Error::InternalError(ArcStr::from(e.to_string()))));
+        }
+        match done_rx.await {
+            Ok(result) => result,
+            Err(e) => Some(Err(Error::InternalError(ArcStr::from(e.to_string())))),
+        }
     }
 
-    async fn execute_command(&self, _channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        let parts = command_parts(&content);
-        match parts.first().map(|p| p.as_str()) {
-            Some("/model") => Some(handle_model_command(&parts, self.session_id.clone()).await),
-            _ => None,
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
+        let _ = self.task_tx.send(PipelineTask::Single(event));
+    }
+
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+        let _ = self.task_tx.send(PipelineTask::Batch(events));
+    }
+}
+
+pub trait PipelineTaskExecutor {
+    async fn execute_command(&mut self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>>;
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>);
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>);
+}
+
+impl PipelineTaskReceiver {
+    async fn run<E: PipelineTaskExecutor>(mut self, mut executor: E) {
+        while let Some(task) = self.task_rx.recv().await {
+            match task {
+                PipelineTask::Command { channel_id, content, done } => {
+                    let result = executor.execute_command(channel_id, content).await;
+                    let _ = done.send(result);
+                },
+                PipelineTask::Single(event) => {
+                    executor.incoming_message(event).await
+                },
+                PipelineTask::Batch(events) => {
+                    executor.incoming_message_batch(events).await
+                }
+            }
         }
     }
 }
 
-#[async_trait]
-impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
-    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
+/// 一个 event 对应的运行态：当前 event 的 session、记忆范围与 token 占用
+pub struct DefaultAgenticLoopExecutor {
+    pub role_key: Arc<RoleKey>,
+    pub producer: BatchProducer,
+    pub memory_key: Arc<MemoryKey>,
+    pub session_id: ArcStr,
+    pub session: Arc<Session>,
+    pub last_total_tokens: AtomicU64,
+}
+
+impl PipelineTaskExecutor for DefaultAgenticLoopExecutor {
+    async fn execute_command(&mut self, _channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+        let parts = command_parts(&content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => {
+                let result = handle_model_command(&parts, self.session_id.clone()).await;
+                Some(result)
+            }
+            Some("/mode") => {
+                let result = match parse_mode_command(&parts) {
+                    Ok(event) => {
+                        let reply = match &event {
+                            Some(event_id) => ArcStr::from(format!("✅ 新事件 ID: {}", event_id)),
+                            None => ArcStr::from("✅ 已切换为角色模式")
+                        };
+                        // 切换当前 event：同 event 直接复用；否则释放旧 session，
+                        // 按 pipeline_session_id() 新建并每次从本地缓存重新读取
+                        if self.memory_key.role_event.event_id != event {
+                            (self.memory_key, self.session_id, self.session) = new_session(self.role_key.as_ref(), event).await;
+                            self.last_total_tokens.store(0, Ordering::Relaxed);
+                        }
+                        Ok(reply)
+                    },
+                    Err(e) => Err(e)
+                };
+                Some(result)
+            },
+            _ => None,
+        }
+    }
+
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
         let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_id.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
-}
 
-#[async_trait]
-impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
-    async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
         // 找到工具
         let tools = tools_for_session(self.session_id.clone()).await;
         // 发送消息启动 agent 循环
         let token_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        if let Ok(total_tokens) = run(self.session_id.clone(), &self.session, content, &tools, Some(token_usage)).await {
+        if let Ok(total_tokens) = run(self.session_id.clone(), self.session.as_ref(), content, &tools, Some(token_usage)).await {
             self.last_total_tokens.store(total_tokens, Ordering::Relaxed);
         }
     }
 }
 
-impl DefaultAgenticLoopPipeline {
-    pub async fn new(session_id: ArcStr) -> Arc<Self> {
-        let session = create_session(session_id.clone()).await;
-        let (producer, mut consumer) = channel_batch_processor();
-        let result = Arc::new(DefaultAgenticLoopPipeline {
+impl DefaultAgenticLoopExecutor {
+    async fn new(role_key: Arc<RoleKey>, producer: BatchProducer) -> Self {
+        let (memory_key, session_id, session) = new_session(role_key.as_ref(), None).await;
+        Self {
+            role_key,
+            producer,
+            memory_key,
             session_id,
             session,
             last_total_tokens: AtomicU64::new(0),
-            producer
-        });
-        consumer.processor = Arc::downgrade(&result);
-        spawn(consumer.run());
-        result
-    }
-}
-
-pub struct DefaultAgenticLoopPipelineWithMemory {
-    memory_key: Arc<MemoryKey>,
-    session_id: ArcStr,
-    session: Arc<Session>,
-    reducer: MemoryRecoverTokenReducer,
-    last_total_tokens: AtomicU64,
-    producer: BatchProducer,
-}
-
-#[async_trait]
-impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
-    async fn reset_system_prompt(&self) {
-        let prompt = get_ego_system_prompt_or_default(self.memory_key.as_ref()).await;
-        self.session.set_system_message(prompt).await
-    }
-
-    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
-        let parts = command_parts(&content);
-        match parts.first().map(|p| p.as_str()) {
-            Some("/model") => Some(handle_model_command(&parts, self.session_id.clone()).await),
-            Some("/bind-outgoing") => Some(bind_outgoing(self.session_id.clone(), &channel_id, &parts).await),
-            Some("/unbind-outgoing") => Some(unbind_outgoing(self.session_id.clone(), &parts).await),
-            Some("/load-memory") => Some(self.handle_load_memory_command(&parts).await),
-            _ => None,
         }
     }
 }
 
+pub struct DefaultAgenticLoopPipeline {
+    /// 命令与批次共用的串行任务队列
+    sender: PipelineTaskSender,
+}
+
 #[async_trait]
-impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
+impl AgentPipeline for DefaultAgenticLoopPipeline {
+    async fn execute_command(&self, channel_id: ArcStr, _channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
+        self.sender.execute_command(channel_id, content).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageProcessor for DefaultAgenticLoopPipeline {
     async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
-        // 记忆 pipeline 自己负责写入上行记录（Nexus 不再统一写入）
+        self.sender.incoming_message(event).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipeline {
+    async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
+        self.sender.incoming_message_batch(events).await
+    }
+}
+
+impl DefaultAgenticLoopPipeline {
+    pub async fn new(role_key: Arc<RoleKey>) -> Arc<Self> {
+        // default 不导入 agent/role 配置，event session 只用 session 级配置
+        let (producer, consumer) = channel_batch_processor();
+        let (sender, receiver) = pipeline_task_processor();
+        let result = Arc::new(DefaultAgenticLoopPipeline { sender });
+        spawn(async move {
+            let executor = DefaultAgenticLoopExecutor::new(role_key, producer).await;
+            receiver.run(executor).await;
+        });
+        let processor = Arc::downgrade(&result);
+        spawn(consumer.run(processor));
+        result
+    }
+}
+
+/// 一个 event 对应的运行态：当前 event 的 session、记忆范围与 token 占用
+pub struct DefaultAgenticLoopWithMemoryExecutor {
+    pub role_key: Arc<RoleKey>,
+    pub producer: BatchProducer,
+    pub memory_key: Arc<MemoryKey>,
+    pub session_id: ArcStr,
+    pub session: Arc<Session>,
+    pub last_total_tokens: AtomicU64,
+}
+
+impl PipelineTaskExecutor for DefaultAgenticLoopWithMemoryExecutor {
+    async fn execute_command(&mut self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+        let parts = command_parts(&content);
+        match parts.first().map(|p| p.as_str()) {
+            Some("/model") => {
+                let result = handle_model_command(&parts, self.session_id.clone()).await;
+                Some(result)
+            }
+            Some("/bind-outgoing") => {
+                let result = bind_outgoing(self.session_id.clone(), channel_id, &parts).await;
+                Some(result)
+            }
+            Some("/unbind-outgoing") => {
+                let result = unbind_outgoing(self.session_id.clone(), &parts).await;
+                Some(result)
+            }
+            Some("/load-memory") => {
+                match parse_load_memory_command(&parts) {
+                    Ok(load_memory) => {
+                        let config = MemoryPipelineConfig { load_memory: Some(load_memory) };
+                        match ConfigManager::get().set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone(), &config).await {
+                            Ok(_) => {
+                                Some(Ok(ArcStr::from(format!("✅ 已设置 load_memory: {}", if load_memory { "on" } else { "off" }))))
+                            },
+                            Err(e) => Some(Err(e))
+                        }
+                    },
+                    Err(e) => Some(Err(e)),
+                }
+            },
+            Some("/mode") => {
+                let result = match parse_mode_command(&parts) {
+                    Ok(event) => {
+                        let reply = match &event {
+                            Some(event_id) => ArcStr::from(format!("✅ 新事件 ID: {}", event_id)),
+                            None => ArcStr::from("✅ 已切换为角色模式")
+                        };
+                        // 切换当前 event：同 event 直接复用；否则释放旧 session，
+                        // 按 pipeline_session_id() 新建并每次从本地缓存重新读取
+                        if self.memory_key.role_event.event_id != event {
+                            (self.memory_key, self.session_id, self.session) = new_session_with_memory(self.role_key.as_ref(), event).await;
+                            self.last_total_tokens.store(0, Ordering::Relaxed);
+                        }
+                        Ok(reply)
+                    },
+                    Err(e) => Err(e)
+                };
+                Some(result)
+            },
+            _ => None,
+        }
+    }
+
+    async fn incoming_message(&self, event: Arc<IncomingMessageEvent>) {
         let request = channel_request_from_incoming(self.memory_key.as_ref(), event.as_ref(), None);
         Nexus::get().memory_store_client.push_channel_record(request).await;
         let cfg = ConfigManager::get().session_config::<ChannelBatchConfig, ChannelBatchConfig>(self.session_id.clone()).await;
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
-}
 
-#[async_trait]
-impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
-    async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
+    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
         // 找到工具
@@ -654,76 +830,30 @@ impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
     }
 }
 
-impl DefaultAgenticLoopPipelineWithMemory {
-    pub async fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
-        let session_id = pipeline_session_id(&memory_key);
-        // 从 agent role 配置导入；记忆读取开关与读/压缩两种降到阈值的配置都导入，
-        // 运行期切换 load_memory 后立即生效
-        import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
-        import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
-        // 建立 session
-        let session = create_session(session_id.clone()).await;
-        let (producer, mut consumer) = channel_batch_processor();
-        let reducer = MemoryRecoverTokenReducer::new(memory_key.clone());
-        let result = Arc::new(DefaultAgenticLoopPipelineWithMemory {
+impl DefaultAgenticLoopWithMemoryExecutor {
+    async fn new(role_key: Arc<RoleKey>, producer: BatchProducer) -> Self {
+        let (memory_key, session_id, session) = new_session_with_memory(role_key.as_ref(), None).await;
+        Self {
+            role_key,
+            producer,
             memory_key,
             session_id,
             session,
-            reducer,
             last_total_tokens: AtomicU64::new(0),
-            producer
-        });
-        consumer.processor = Arc::downgrade(&result);
-        spawn(consumer.run());
-        result
+        }
     }
 
-    /// `/load-memory`：写当前 session 的记忆读取开关（事件模式下写入但不生效）
-    async fn handle_load_memory_command(&self, parts: &[ArcStr]) -> Result<ArcStr> {
-        let load_memory = parse_load_memory_command(parts)?;
-        ConfigManager::get()
-            .set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
-                self.session_id.clone(),
-                &MemoryPipelineConfig { load_memory: Some(load_memory) },
-            )
-            .await?;
-        let mode_note = if self.memory_key.role_event.event_id.is_some() {
-            "（事件模式固定不读取记忆，该配置不生效）"
-        } else {
-            ""
-        };
-        Ok(ArcStr::from(format!(
-            "✅ 已设置 load_memory: {}{}",
-            if load_memory { "on" } else { "off" },
-            mode_note
-        )))
-    }
-
-    async fn run_once(
+    async fn run_once<R: TokenReducer>(
         &self,
         round: usize,
         messages: Vec<Message>,
         tools: &Vec<Arc<ToolConfig>>,
         pending_contents: &mut Vec<Content>,
-        load_memory: bool,
+        reducer: &R,
     ) -> Result<bool> {
         // send message to llm
         let tokens_usage = self.last_total_tokens.load(Ordering::Relaxed);
-        let mut res = if load_memory {
-            send_messages_with_limit(
-                self.session_id.clone(), self.session.as_ref(),
-                messages, tools, &self.reducer, tokens_usage).await?
-        } else {
-            let reducer = CompressTokenReducer::new();
-            send_messages_with_limit(
-                self.session_id.clone(), self.session.as_ref(),
-                messages, tools, &reducer, tokens_usage).await?
-        };
+        let mut res = send_messages_with_limit(self.session_id.clone(), self.session.as_ref(), messages, tools, reducer, tokens_usage).await?;
         self.last_total_tokens.store(res.total_tokens, Ordering::Relaxed);
         // 思考内容累积到本次 run（reasoning_content + thinking 双字段）；任一有值才累积，都 None 跳过。
         // 它随最终回复的通道记录一起落盘，不单独写入记忆。
@@ -766,14 +896,67 @@ impl DefaultAgenticLoopPipelineWithMemory {
     /// 用给定消息启动一次 run；messages 为空表示上下文已由调用方准备好（如归档后只保留新消息）。
     /// load_memory 由批次入口按事件/角色模式与 session 配置判定后传入，run 内部不再重复判断。
     pub async fn run(&self, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>, load_memory: bool) -> Result<()> {
+        // 预先准备 reducer
+        let memory_reducer = MemoryRecoverTokenReducer::new(self.memory_key.clone());
+        let compress_reducer = CompressTokenReducer::new();
+        // 执行循环
         let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
-        let mut next = self.run_once(round, messages, tools, &mut pending_contents, load_memory).await?;
+        let mut next = if load_memory {
+            self.run_once(round, messages, tools, &mut pending_contents, &memory_reducer).await?
+        } else {
+            self.run_once(round, messages, tools, &mut pending_contents, &compress_reducer).await?
+        };
         while next {
             round = round + 1;
-            next = self.run_once(round, vec![], tools, &mut pending_contents, load_memory).await?;
+            next = if load_memory {
+                self.run_once(round, vec![], tools, &mut pending_contents, &memory_reducer).await?
+            } else {
+                self.run_once(round, vec![], tools, &mut pending_contents, &compress_reducer).await?
+            };
         }
         Ok(())
+    }
+}
+
+pub struct DefaultAgenticLoopPipelineWithMemory {
+    sender: PipelineTaskSender,
+}
+
+#[async_trait]
+impl AgentPipeline for DefaultAgenticLoopPipelineWithMemory {
+    async fn execute_command(&self, channel_id: ArcStr, _channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
+        self.sender.execute_command(channel_id, content).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageProcessor for DefaultAgenticLoopPipelineWithMemory {
+    async fn incoming_message(self: Arc<Self>, event: Arc<IncomingMessageEvent>) {
+        self.sender.incoming_message(event).await
+    }
+}
+
+#[async_trait]
+impl IncomingMessageBatchProcessor for DefaultAgenticLoopPipelineWithMemory {
+    async fn incoming_message_batch(self: Arc<Self>, events: Vec<Arc<IncomingMessageEvent>>) {
+        self.sender.incoming_message_batch(events).await
+    }
+}
+
+impl DefaultAgenticLoopPipelineWithMemory {
+    pub async fn new(role_key: Arc<RoleKey>) -> Arc<Self> {
+        // default 不导入 agent/role 配置，event session 只用 session 级配置
+        let (producer, consumer) = channel_batch_processor();
+        let (sender, receiver) = pipeline_task_processor();
+        let result = Arc::new(DefaultAgenticLoopPipelineWithMemory { sender });
+        spawn(async move {
+            let executor = DefaultAgenticLoopWithMemoryExecutor::new(role_key, producer).await;
+            receiver.run(executor).await;
+        });
+        let processor = Arc::downgrade(&result);
+        spawn(consumer.run(processor));
+        result
     }
 }
 
@@ -828,6 +1011,31 @@ pub fn command_parts(content: &str) -> Vec<ArcStr> {
     content.split_whitespace().map(ArcStr::from).collect()
 }
 
+/// `/mode` 参数解析（调用方已按命令名匹配）：进入事件模式（缺省生成新 id）或回到角色模式
+fn parse_mode_command(parts: &[ArcStr]) -> Result<Option<ArcStr>> {
+    if parts.len() < 2 {
+        return Err(Error::InvalidCommand("格式: /mode event [event-id] 或 /mode role".into()));
+    }
+    match parts[1].as_str() {
+        "event" => {
+            if parts.len() > 3 {
+                return Err(Error::InvalidCommand("格式: /mode event [event-id]".into()));
+            }
+            // 缺省 event-id 生成新事件 ID
+            let event_id = parts.get(2).cloned()
+                .unwrap_or_else(|| ArcStr::from(uuid::Uuid::new_v4().to_string()));
+            Ok(Some(event_id))
+        }
+        "role" => {
+            if parts.len() > 2 {
+                return Err(Error::InvalidCommand("格式: /mode role（无参数）".into()));
+            }
+            Ok(None)
+        }
+        other => Err(Error::InvalidCommand(format!("未知模式: {}", other).into())),
+    }
+}
+
 /// `/model` 参数解析（调用方已按命令名匹配）：参数个数不符返回 InvalidCommand
 pub fn parse_model_command(parts: &[ArcStr]) -> Result<(ArcStr, ArcStr)> {
     if parts.len() != 3 {
@@ -864,7 +1072,7 @@ pub async fn handle_model_command(parts: &[ArcStr], session_id: ArcStr) -> Resul
 
 /// `/bind-outgoing <messenger_id> <user_id> <group_id>`：设 pipeline 的回复通道
 /// （先校验来源 channel 存在、该身份已绑定来源 channel）
-pub async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
+pub async fn bind_outgoing(session_id: ArcStr, channel_id: ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
     if parts.len() < 4 {
         return Err(Error::InvalidCommand(
             "格式: /bind-outgoing <messenger_id> <user_id> <group_id>".into()
@@ -882,7 +1090,7 @@ pub async fn bind_outgoing(session_id: ArcStr, channel_id: &ArcStr, parts: &[Arc
     // 存到 pipeline 的 session（channel_id = 来源 channel）
     cfg_mngr.set_session_config::<OutChannelConfig, OutChannelConfig>(session_id, &OutChannelConfig {
         out_channel: Some(Arc::new(OutChannel {
-            channel_id: channel_id.clone(),
+            channel_id: channel_id,
             user: Arc::new(user),
             group_id: parts[3].clone(),
         })),
@@ -907,18 +1115,18 @@ pub async fn outgoing_channel(session_id: &ArcStr) -> Option<Arc<OutChannel>> {
         .out_channel.clone()
 }
 
-pub async fn create_pipeline(pipeline_name: ArcStr, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
+pub async fn create_pipeline(pipeline_name: ArcStr, role_key: Arc<RoleKey>) -> Result<Arc<dyn AgentPipeline>> {
     match pipeline_name.as_str() {
-        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(pipeline_session_id(&memory_key)).await),
-        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(memory_key).await),
-        PIPELINE_MEMORY_SUMMARY_STR => Ok(MemorySummaryPipeline::new(memory_key)),
-        _ => Err(Error::PipelineNotFound(pipeline_name, memory_key))
+        PIPELINE_DEFAULT_STR => Ok(DefaultAgenticLoopPipeline::new(role_key).await),
+        PIPELINE_DEFAULT_MEMORY_STR => Ok(DefaultAgenticLoopPipelineWithMemory::new(role_key).await),
+        PIPELINE_MEMORY_SUMMARY_STR => Ok(MemorySummaryPipeline::new(role_key)),
+        _ => Err(Error::PipelineNotFound(pipeline_name, role_key))
     }
 }
 
-/// pipeline 注册表：key 为 pipeline 身份（agent_id + role_event）
+/// pipeline 注册表：key 为角色键（agent + role），当前 event 属于 pipeline 运行态
 pub struct PipelineManager {
-    pipeline_map: DashMap<Arc<MemoryKey>, Arc<dyn AgentPipeline>>,
+    pipeline_map: DashMap<Arc<RoleKey>, Arc<dyn AgentPipeline>>,
 }
 
 impl PipelineManager {
@@ -928,20 +1136,19 @@ impl PipelineManager {
         }
     }
 
-    /// 定位 pipeline，不存在则按 agent/role 配置的 pipeline_name 装配（默认 default_memory）
-    /// 并初始化系统提示词；pipeline 需要哪些 session 由它自己的构造过程决定
-    pub async fn ensure_pipeline(&self, memory_key: Arc<MemoryKey>) -> Result<Arc<dyn AgentPipeline>> {
-        if let Some(pipeline) = self.pipeline_map.get(&memory_key) {
+    /// 按角色键定位 pipeline，不存在则按 agent/role 配置的 pipeline_name 装配（默认 default_memory）
+    /// 并初始化系统提示词；pipeline 需要哪些 session、当前 event 是什么由它自己的构造过程决定
+    pub async fn ensure_pipeline(&self, role_key: Arc<RoleKey>) -> Result<Arc<dyn AgentPipeline>> {
+        if let Some(pipeline) = self.pipeline_map.get(&role_key) {
             return Ok(pipeline.clone());
         }
         let cfg = ConfigManager::get()
-            .agent_role_config::<PipelineConfig>(memory_key.agent_id.as_str(), memory_key.role_event.role_name.as_str())
+            .agent_role_config::<PipelineConfig>(role_key.agent_id.as_str(), role_key.role_name.as_str())
             .await;
         let pipeline_name = cfg.and_then(|cfg| cfg.pipeline_name)
             .unwrap_or_else(|| PIPELINE_DEFAULT_MEMORY.clone());
-        let pipeline = create_pipeline(pipeline_name, memory_key.clone()).await?;
-        pipeline.reset_system_prompt().await;
-        match self.pipeline_map.entry(memory_key) {
+        let pipeline = create_pipeline(pipeline_name, role_key.clone()).await?;
+        match self.pipeline_map.entry(role_key) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
                 entry.insert(pipeline.clone());
@@ -951,21 +1158,21 @@ impl PipelineManager {
     }
 
     /// 修改 agent（role 空）或 agent+role 的 pipeline 配置：
-    /// 先保存受影响 pipeline 当前 merge 后的配置，写新配置后重新 merge；
+    /// 先保存受影响角色键当前 merge 后的配置，写新配置后重新 merge；
     /// pipeline 名称变化的已装配 pipeline 从注册表移除（下次按新配置重建，session 随 Arc 释放回收）
     pub async fn set_pipeline_config(&self, agent_id: ArcStr, role_name: ArcStr, pipeline_name: ArcStr) -> Result<()> {
         let cfg = ConfigManager::get();
         // 受影响的已装配 pipeline：agent 级（role 空）= 该 agent 全部 role；role 级 = 该 (agent, role)
-        let affected: Vec<Arc<MemoryKey>> = self.pipeline_map.iter()
+        let affected: Vec<Arc<RoleKey>> = self.pipeline_map.iter()
             .filter(|entry| {
                 let key = entry.key();
                 key.agent_id == agent_id
-                    && (role_name.is_empty() || key.role_event.role_name == role_name)
+                    && (role_name.is_empty() || key.role_name == role_name)
             })
             .map(|entry| entry.key().clone())
             .collect();
-        // 提前保存受影响 role 的当前 merge 配置（同 role 的多个 event pipeline 共用一份配置）
-        let mut roles: Vec<ArcStr> = affected.iter().map(|key| key.role_event.role_name.clone()).collect();
+        // 提前保存受影响 role 的当前 merge 配置
+        let mut roles: Vec<ArcStr> = affected.iter().map(|key| key.role_name.clone()).collect();
         roles.sort();
         roles.dedup();
         let mut old_names = HashMap::new();
@@ -984,7 +1191,7 @@ impl PipelineManager {
                 .and_then(|config| config.pipeline_name);
             if old_names.get(&role) != Some(&new_name) {
                 for key in &affected {
-                    if key.role_event.role_name == role {
+                    if key.role_name == role {
                         self.pipeline_map.remove(key);
                     }
                 }
@@ -995,19 +1202,19 @@ impl PipelineManager {
 
     /// 只保留仍在绑定集合中的 pipeline（pipeline 丢弃会触发输入处理器 Drop → 合批任务退出；
     /// 其持有的 session 随 pipeline 的 Arc 释放自然回收）
-    pub fn retain(&self, keys: &HashSet<Arc<MemoryKey>>) {
+    pub fn retain(&self, keys: &HashSet<Arc<RoleKey>>) {
         self.pipeline_map.retain(|k, _| keys.contains(k));
     }
 
-    pub async fn incoming_message(&self, memory_key: Arc<MemoryKey>, event: Arc<IncomingMessageEvent>) -> Result<()> {
-        let pipeline = self.ensure_pipeline(memory_key).await?;
+    pub async fn incoming_message(&self, role_key: Arc<RoleKey>, event: Arc<IncomingMessageEvent>) -> Result<()> {
+        let pipeline = self.ensure_pipeline(role_key).await?;
         pipeline.incoming_message(event).await;
         Ok(())
     }
 
     /// channel 不再绑定该 pipeline：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态
-    pub async fn channel_unbound(&self, memory_key: &Arc<MemoryKey>, messenger_id: &str, self_user_id: &str) {
-        let pipeline = self.pipeline_map.get(memory_key).map(|entry| entry.clone());
+    pub async fn channel_unbound(&self, role_key: &Arc<RoleKey>, messenger_id: &str, self_user_id: &str) {
+        let pipeline = self.pipeline_map.get(role_key).map(|entry| entry.clone());
         if let Some(pipeline) = pipeline {
             pipeline.channel_unbound(ArcStr::from(messenger_id), ArcStr::from(self_user_id)).await;
         }
@@ -1015,8 +1222,8 @@ impl PipelineManager {
 
     /// 单测用：pipeline 是否已装配（生产代码不依赖该查询）
     #[cfg(test)]
-    pub fn contains(&self, memory_key: &MemoryKey) -> bool {
-        self.pipeline_map.contains_key(memory_key)
+    pub fn contains(&self, role_key: &RoleKey) -> bool {
+        self.pipeline_map.contains_key(role_key)
     }
 }
 

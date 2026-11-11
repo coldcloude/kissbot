@@ -103,7 +103,7 @@ nexus 与记忆系统的交互区分两种模式：
   - agentic loop 内：预留——由 LLM 通过记忆搜索 tool 从记忆结构组件查询记忆（不记入记忆）
 
 ### 会话与绑定
-一个 nexus 可同时管理多个会话。nexus 按每个绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）、role_name 与运行期 event 合成 `RoleEvent` 后去重，每个 agent_id+role_event 组合为一个会话；各会话拥有独立的 LLM 上下文、记忆读写范围、pipeline 配置与模式状态，消息按来源 channel 对应的绑定配置路由到对应会话；记忆读写直接用 agent_id 定位（配置即 agent_id）。会话的回复目标由 (agent, role) 级回复通道配置（/bind-outgoing、/unbind-outgoing）决定，未配置则只存不回复。
+一个 nexus 可同时管理多个会话。pipeline 身份只由绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）与 role_name 决定，每个 (agent, role) 组合一条 pipeline；当前 event 由 pipeline 在内存中维护，默认从角色模式开始，切换 event 由 pipeline 命令完成，不改变 channel 绑定。各 pipeline 拥有独立的 LLM 上下文、记忆读写范围与当前 event，消息按来源 channel 对应的绑定配置路由到对应 pipeline；记忆读写直接用 agent_id 定位（配置即 agent_id）。pipeline 的回复目标由回复通道配置（/bind-outgoing、/unbind-outgoing）决定，未配置则只存不回复。
 
 ### Agent 的自我认知机制
 每个 agent 具有双重自我认知设定：

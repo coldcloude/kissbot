@@ -21,7 +21,7 @@ use arcstr::ArcStr;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use kissbot_api::{
-    ChannelKey, ChannelRecord, Content, IncomingMessageEvent, LocateMessage, MemoryMeta,
+    ChannelKey, ChannelRecord, Content, IncomingMessageEvent, LocateMessage, MemoryMeta, RoleKey,
 };
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, Session, ToolConfig};
 use tokio::sync::mpsc;
@@ -29,16 +29,19 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor, IncomingMessageProcessor}, pipelines::{
-        BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
+        BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_mode_command, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
     }, types::{
         Error, MemoryKey, Result, build_think_record, channel_request_from_incoming,
     },
 };
 
 /// 摘要记忆 pipeline：每个 channel 一个批次生产者（DashMap 持有），channel 之间互不干扰；
-/// 每个 case 维护独立 session（懒创建）。
+/// 每个 case 维护独立 session（懒创建）。pipeline 由 agent + role 定位，
+/// 当前 event 只在内存中维护，切换 event 只影响后续 locate 与记忆范围，不改变 case session。
 pub struct MemorySummaryPipeline {
-    memory_key: Arc<MemoryKey>,
+    role_key: RoleKey,
+    /// channel（messenger + 接收方用户 + 群组）→ 当前事件（None = 角色模式）：由 /mode 按来源 channel 切换，不落盘
+    events: DashMap<Arc<ChannelKey>, Option<ArcStr>>,
     /// case（None = pipeline 基准 session，承担入口配置）→ session；session_id 由 case_name 推导
     sessions: DashMap<Option<ArcStr>, Arc<Session>>,
     /// /model 设置的模型覆盖（新建 case session 时应用）
@@ -47,19 +50,27 @@ pub struct MemorySummaryPipeline {
     producers: DashMap<Arc<ChannelKey>, BatchProducer>,
     /// 批次队列：各 channel 消费者把批次投递到这里，由唯一 worker 串行 locate 并写入上行记录
     batch_tx: mpsc::UnboundedSender<Vec<Arc<IncomingMessageEvent>>>,
-    /// 待执行任务表：case 名 → 尚未开始 run 的消息。
+    /// 待执行任务表：case 名 → 尚未开始 run 的消息与批次捕获的记忆范围。
     /// 同一 case 的消息在这里合并，run 开始时整条取走；执行期间到达的消息形成下一轮
-    pending: DashMap<ArcStr, Vec<Arc<IncomingMessageEvent>>>,
+    pending: DashMap<ArcStr, PendingCase>,
     /// case 队列：只投递 case 名（同一 case 至多一个），worker 按到达顺序取 case 执行
     case_tx: mpsc::UnboundedSender<ArcStr>,
 }
 
+/// 一个 case 的待执行任务：批次进入时捕获的记忆范围随任务保留，
+/// 避免 case run 期间切换 event 改变摘要查询与下行记录的写入范围
+struct PendingCase {
+    memory_key: Arc<MemoryKey>,
+    events: Vec<Arc<IncomingMessageEvent>>,
+}
+
 impl MemorySummaryPipeline {
-    pub fn new(memory_key: Arc<MemoryKey>) -> Arc<Self> {
+    pub fn new(role_key: Arc<RoleKey>) -> Arc<Self> {
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
         let (case_tx, case_rx) = mpsc::unbounded_channel();
         let pipeline = Arc::new(Self {
-            memory_key,
+            role_key: role_key.as_ref().clone(),
+            events: DashMap::new(),
             sessions: DashMap::new(),
             model_override: ArcSwapOption::new(None),
             producers: DashMap::new(),
@@ -73,8 +84,13 @@ impl MemorySummaryPipeline {
         pipeline
     }
 
+    /// 指定 channel 当前 event 对应的记忆范围（批次处理与 locate 使用）；未设置按角色模式
+    fn memory_key(&self, channel: &ChannelKey) -> Arc<MemoryKey> {
+        let event_id = self.events.get(channel).map(|entry| entry.clone()).unwrap_or(None);
+        MemoryKey::from_role_key(&self.role_key, event_id)
+    }
+
     /// case 的 session id：memory-summary-{agent_id}-{role_name}-{case_name}；None 用 -none。
-    /// 事件模式不需要额外拼 event（event 已在 case_name 的 `[event]...` 段里）。
     /// case_name 可能是完整路径（如 `[event]e1/topic`）：路径分隔符 `/` 编码为 `.`，
     /// `[`/`]` 替换为 `_`，得到文件名安全的 session id。
     /// `-none` 是 pipeline 入口配置使用的基准 session。
@@ -88,7 +104,7 @@ impl MemorySummaryPipeline {
             .unwrap_or_else(|| "none".to_string());
         ArcStr::from(format!(
             "memory-summary-{}-{}-{}",
-            self.memory_key.agent_id, self.memory_key.role_event.role_name, case
+            self.role_key.agent_id, self.role_key.role_name, case
         ))
     }
 
@@ -135,12 +151,13 @@ impl MemorySummaryPipeline {
     /// 创建并登记一个 case session（新建时应用当前系统提示词）
     async fn create_case_session(&self, case_name: Option<ArcStr>) -> Arc<Session> {
         let session_id = self.case_session_id(case_name.as_ref());
-        // 从 agent role 配置导入
-        import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&self.memory_key, &session_id).await;
-        import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&self.memory_key, &session_id).await;
-        import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&self.memory_key, &session_id).await;
-        import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&self.memory_key, &session_id).await;
-        import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&self.memory_key, &session_id).await;
+        // 从 agent role 配置导入（配置继承只看 agent + role，与 channel 当前 event 无关）
+        let memory_key = MemoryKey::from_role_key(&self.role_key, None);
+        import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
+        import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
         // 建立 session
         let session = create_session(session_id.clone()).await;
         // 先登记再应用提示词：/model 并发写入时能看到这个 session
@@ -148,7 +165,7 @@ impl MemorySummaryPipeline {
             .or_insert(session)
             .value()
             .clone();
-        let prompt = get_ego_system_prompt_or_default(self.memory_key.as_ref()).await;
+        let prompt = get_ego_system_prompt_or_default(&memory_key).await;
         session.set_system_message(prompt).await;
         session
     }
@@ -161,9 +178,9 @@ impl MemorySummaryPipeline {
         match self.producers.entry(channel) {
             dashmap::Entry::Occupied(entry) => entry.get().send(event, interval),
             dashmap::Entry::Vacant(entry) => {
-                let (producer, mut consumer) = crate::pipelines::channel_batch_processor::<MemorySummaryPipeline>();
-                consumer.processor = Arc::downgrade(&self);
-                tokio::spawn(consumer.run());
+                let (producer, consumer) = crate::pipelines::channel_batch_processor();
+                let processor = Arc::downgrade(&self);
+                tokio::spawn(consumer.run(processor));
                 producer.send(event, interval);
                 entry.insert(producer);
             }
@@ -171,14 +188,14 @@ impl MemorySummaryPipeline {
     }
 
     /// 把一个 batch 的消息并入所属 case 的待执行任务：该 case 还没有待执行任务时同时投递 case 名，
-    /// 已有（还没开始 run）时只合并消息，不再重复投递
-    fn enqueue_case(&self, case_name: ArcStr, events: impl IntoIterator<Item = Arc<IncomingMessageEvent>>) {
+    /// 已有（还没开始 run）时只合并消息，不再重复投递。任务保留首个批次的记忆范围。
+    fn enqueue_case(&self, case_name: ArcStr, memory_key: Arc<MemoryKey>, events: impl IntoIterator<Item = Arc<IncomingMessageEvent>>) {
         match self.pending.entry(case_name.clone()) {
             dashmap::Entry::Occupied(mut entry) => {
-                entry.get_mut().extend(events);
+                entry.get_mut().events.extend(events);
             }
             dashmap::Entry::Vacant(entry) => {
-                entry.insert(events.into_iter().collect());
+                entry.insert(PendingCase { memory_key, events: events.into_iter().collect() });
                 let _ = self.case_tx.send(case_name);
             }
         };
@@ -228,8 +245,8 @@ async fn run_batch_queue(
 async fn run_case_queue(pipeline: Weak<MemorySummaryPipeline>, mut rx: mpsc::UnboundedReceiver<ArcStr>) {
     while let Some(case_name) = rx.recv().await {
         let Some(pipeline) = pipeline.upgrade() else { break };
-        let Some((_, events)) = pipeline.pending.remove(&case_name) else { continue };
-        pipeline.run_case(case_name, events).await;
+        let Some((_, pending)) = pipeline.pending.remove(&case_name) else { continue };
+        pipeline.run_case(case_name, pending.memory_key, pending.events).await;
     }
 }
 
@@ -242,11 +259,12 @@ impl MemorySummaryPipeline {
         let nexus = Nexus::get();
         let client = nexus.memory_summary_client.clone();
         let channel = Arc::new(event_channel(&events[0]));
-        let memory_key = self.memory_key.as_ref();
+        // 批次进入时捕获该 channel 当前 event 的记忆范围：locate、上行写入与本批 case run 都用这份快照
+        let memory_key = self.memory_key(&channel);
         let messages: Vec<LocateMessage> = events.iter().map(|event| locate_message(event.as_ref())).collect();
 
         // 1. 定位本批消息涉及的 case：失败直接返回，不写记忆、不入队
-        let located = match client.locate(memory_key, channel, messages).await {
+        let located = match client.locate(memory_key.as_ref(), channel, messages).await {
             Ok(located) => located,
             Err(e) => {
                 warn!("摘要记忆定位失败，丢弃本批消息: {:?}", e);
@@ -278,7 +296,7 @@ impl MemorySummaryPipeline {
                 .cloned()
                 .expect("定位结果已校验覆盖本批全部消息");
             let meta = Arc::new(MemoryMeta::with_case_name(case_name.clone()));
-            let request = channel_request_from_incoming(memory_key, event.as_ref(), Some(meta));
+            let request = channel_request_from_incoming(memory_key.as_ref(), event.as_ref(), Some(meta));
             nexus.memory_store_client.push_channel_record(request).await;
             // 加入 case 分析
             match case_msgs.entry(case_name) {
@@ -297,22 +315,23 @@ impl MemorySummaryPipeline {
         // 3. 按消息所属 case 入队：同 case 的消息合并为一个任务、一次 run，不同 case 各自 run
         for case_name in case_order.into_iter() {
             if let Some(msgs) = case_msgs.remove(&case_name) {
-                self.enqueue_case(case_name, msgs);
+                self.enqueue_case(case_name, memory_key.clone(), msgs);
             }
         }
     }
 
     /// 执行一个 case 任务：run 开头用该 case 的摘要与结尾原文副本重建该 case 的 session 上下文，
-    /// 再运行 agentic loop；本次运行的出站记录带该 case 的 meta
-    async fn run_case(&self, case_name: ArcStr, events: Vec<Arc<IncomingMessageEvent>>) {
+    /// 再运行 agentic loop；本次运行的出站记录带该 case 的 meta。
+    /// `memory_key` 为批次进入时捕获的记忆范围，不随当前 event 切换而改变。
+    async fn run_case(&self, case_name: ArcStr, memory_key: Arc<MemoryKey>, events: Vec<Arc<IncomingMessageEvent>>) {
         let client = Nexus::get().memory_summary_client.clone();
         let session_id = self.case_session_id(Some(&case_name));
         let session = self.ensure_session(&Some(case_name.clone())).await;
         // 上下文 = 该 case 的摘要 + 结尾 `memory_recover.memory_count` 条原文副本
         let rebuilt = async {
             let cfg = ConfigManager::get().session_config::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(session_id.clone()).await;
-            let node = client.case_summary(self.memory_key.as_ref(), case_name.clone()).await?;
-            let tail = client.case_records_tail(self.memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
+            let node = client.case_summary(memory_key.as_ref(), case_name.clone()).await?;
+            let tail = client.case_records_tail(memory_key.as_ref(), case_name.clone(), cfg.memory_count as u64).await?;
             Ok::<_, Error>(compose_context(node.summary.as_str(), &record_contents(&tail.records)))
         }.await;
         match rebuilt {
@@ -328,24 +347,32 @@ impl MemorySummaryPipeline {
         let outgoing_meta = Some(Arc::new(MemoryMeta::with_case_name(case_name)));
         let content = pack_batch(&events);
         let tools = tools_for_session(session_id.clone()).await;
-        let _ = self.run(session_id, &session, content, &tools, outgoing_meta).await;
+        let _ = self.run(session_id, &session, content, &tools, outgoing_meta, memory_key).await;
+    }
+}
+
+/// `/mode` 执行：切换 memory_summary 中来源 channel 的当前 event
+/// （只影响该 channel 后续 locate，不切换 case session）
+async fn handle_summary_mode_command(
+    events: &DashMap<Arc<ChannelKey>, Option<ArcStr>>,
+    channel: Arc<ChannelKey>,
+    parts: &[ArcStr],
+) -> Result<ArcStr> {
+    match parse_mode_command(parts)? {
+        Some(event_id) => {
+            events.insert(channel, Some(event_id.clone()));
+            Ok(ArcStr::from(format!("✅ 新事件 ID: {}", event_id)))
+        }
+        None => {
+            events.insert(channel, None);
+            Ok(ArcStr::from("✅ 已切换为角色模式"))
+        }
     }
 }
 
 #[async_trait]
 impl AgentPipeline for MemorySummaryPipeline {
-    async fn reset_system_prompt(&self) {
-        let sessions: Vec<Arc<Session>> = self.sessions.iter().map(|entry| entry.value().clone()).collect();
-        if sessions.is_empty() {
-            return;
-        }
-        let prompt = get_ego_system_prompt_or_default(self.memory_key.as_ref()).await;
-        for session in sessions {
-            session.set_system_message(prompt.clone()).await;
-        }
-    }
-
-    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>> {
+    async fn execute_command(&self, channel_id: ArcStr, channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>> {
         let parts = command_parts(&content);
         match parts.first().map(|p| p.as_str()) {
             Some("/model") => Some(match parse_model_command(&parts) {
@@ -353,8 +380,9 @@ impl AgentPipeline for MemorySummaryPipeline {
                 Err(e) => Err(e),
             }),
             // 摘要记忆的 pipeline 级配置（含 outgoing）存基准（无 case）session
-            Some("/bind-outgoing") => Some(bind_outgoing(self.case_session_id(None), &channel_id, &parts).await),
+            Some("/bind-outgoing") => Some(bind_outgoing(self.case_session_id(None), channel_id, &parts).await),
             Some("/unbind-outgoing") => Some(unbind_outgoing(self.case_session_id(None), &parts).await),
+            Some("/mode") => Some(handle_summary_mode_command(&self.events, channel, &parts).await),
             _ => None,
         }
     }
@@ -373,6 +401,17 @@ impl AgentPipeline for MemorySummaryPipeline {
         for key in keys {
             // 移除即销毁 producer：trigger channel 关闭，消费者退出；未到期的待处理消息随之丢弃
             self.producers.remove(&key);
+        }
+        // 同时清理该 channel 的 event 映射，避免解绑后残留
+        let event_keys: Vec<Arc<ChannelKey>> = self.events.iter()
+            .filter(|entry| {
+                entry.key().messenger_id.as_str() == messenger_id.as_str()
+                    && entry.key().self_user_id.as_str() == self_user_id.as_str()
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in event_keys {
+            self.events.remove(&key);
         }
     }
 }
@@ -399,6 +438,7 @@ impl MemorySummaryPipeline {
         tools: &Vec<Arc<ToolConfig>>,
         pending_contents: &mut Vec<Content>,
         outgoing_meta: Option<Arc<MemoryMeta>>,
+        memory_key: Arc<MemoryKey>,
     ) -> Result<bool> {
         // 摘要记忆的上下文已由 case 重建，不做超阈值判断
         let mut res = send_messages(
@@ -433,7 +473,7 @@ impl MemorySummaryPipeline {
         let base_id = self.case_session_id(None);
         if let Some(out_channel) = outgoing_channel(&base_id).await {
             if let Some(content) = outgoing_content(pending_contents, res.content.take()) {
-                send_outgoing(self.memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
+                send_outgoing(memory_key.as_ref(), out_channel.as_ref(), content, outgoing_meta.clone()).await;
             }
         }
         if !errors.is_empty() {
@@ -446,13 +486,13 @@ impl MemorySummaryPipeline {
         Ok(next)
     }
 
-    async fn run(&self, session_id: ArcStr, session: &Session, message: Message, tools: &Vec<Arc<ToolConfig>>, outgoing_meta: Option<Arc<MemoryMeta>>) -> Result<()> {
+    async fn run(&self, session_id: ArcStr, session: &Session, message: Message, tools: &Vec<Arc<ToolConfig>>, outgoing_meta: Option<Arc<MemoryMeta>>, memory_key: Arc<MemoryKey>) -> Result<()> {
         let mut pending_contents = Vec::new();
         let mut round = 1 as usize;
-        let mut next = self.run_once(session_id.clone(), session, round, vec![message], tools, &mut pending_contents, outgoing_meta.clone()).await?;
+        let mut next = self.run_once(session_id.clone(), session, round, vec![message], tools, &mut pending_contents, outgoing_meta.clone(), memory_key.clone()).await?;
         while next {
             round = round + 1;
-            next = self.run_once(session_id.clone(), session, round, vec![], tools, &mut pending_contents, outgoing_meta.clone()).await?;
+            next = self.run_once(session_id.clone(), session, round, vec![], tools, &mut pending_contents, outgoing_meta.clone(), memory_key.clone()).await?;
         }
         Ok(())
     }
@@ -512,7 +552,7 @@ mod tests {
 
     use kissbot_api::channel::IncomingMessage;
     use kissbot_api::message::Content;
-    use kissbot_api::{ChannelRecord, RoleEvent};
+    use kissbot_api::ChannelRecord;
 
     #[tokio::test]
     async fn case_session_id_encodes_path_separator() {
@@ -527,10 +567,10 @@ mod tests {
 
     #[tokio::test]
     async fn case_session_id_base_excludes_event() {
-        // 事件已包含在 case_name 的 `[event]...` 段里，base 只拼 agent + role
-        let pipeline = MemorySummaryPipeline::new(Arc::new(MemoryKey {
+        // pipeline 身份与 session_id 只由 agent + role 决定，当前 event 不参与
+        let pipeline = MemorySummaryPipeline::new(Arc::new(RoleKey {
             agent_id: ArcStr::from("a1"),
-            role_event: Arc::new(RoleEvent::with_event(ArcStr::from("r1"), ArcStr::from("e1"))),
+            role_name: ArcStr::from("r1"),
         }));
         assert_eq!(
             pipeline.case_session_id(Some(&ArcStr::from("[event]e1/topic"))).as_str(),
@@ -592,12 +632,39 @@ mod tests {
     }
 
     fn pipeline() -> Arc<MemorySummaryPipeline> {
-        MemorySummaryPipeline::new(
-            Arc::new(MemoryKey {
-                agent_id: ArcStr::from("a1"),
-                role_event: Arc::new(RoleEvent::new(ArcStr::from("r1"))),
-            }),
-        )
+        MemorySummaryPipeline::new(Arc::new(RoleKey {
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from("r1"),
+        }))
+    }
+
+    /// 测试用记忆范围键（角色模式）
+    fn memory_key() -> Arc<MemoryKey> {
+        MemoryKey::from_role_key(&RoleKey {
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from("r1"),
+        }, None)
+    }
+
+    #[tokio::test]
+    async fn mode_switch_updates_only_source_channel_event_mapping() {
+        let p = pipeline();
+        let case_id = p.case_session_id(Some(&ArcStr::from("weather")));
+        let channel_a = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self_a"), ArcStr::from("g1"));
+        let channel_b = ChannelKey::new(ArcStr::from("web"), ArcStr::from("self_b"), ArcStr::from("g1"));
+        assert!(p.memory_key(&channel_a).role_event.event_id.is_none(), "新建 pipeline 为角色模式");
+
+        let reply = p.execute_command(ArcStr::from("summary-mode-channel"), Arc::new(channel_a.clone()), ArcStr::from("/mode event e1")).await
+            .expect("应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 新事件 ID: e1");
+        assert_eq!(p.memory_key(&channel_a).role_event.event_id.as_deref(), Some("e1"), "来源 channel 使用新 event");
+        assert!(p.memory_key(&channel_b).role_event.event_id.is_none(), "其他 channel 保持角色模式");
+        assert_eq!(p.case_session_id(Some(&ArcStr::from("weather"))), case_id, "case session 不随 event 改变");
+
+        let reply = p.execute_command(ArcStr::from("summary-mode-channel"), Arc::new(channel_a), ArcStr::from("/mode role")).await
+            .expect("应识别 /mode").unwrap();
+        assert_eq!(reply.as_str(), "✅ 已切换为角色模式");
+        assert!(p.memory_key(&channel_b).role_event.event_id.is_none());
     }
 
     #[tokio::test]
@@ -629,16 +696,16 @@ mod tests {
     async fn enqueue_case_merges_waiting_case_into_one_run() {
         // 用例内不 await：spawn 出来的 case worker 不会被执行（只要不影响待执行任务表的断言）
         let pipeline = pipeline();
-        pipeline.enqueue_case(ArcStr::from("a"), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
-        pipeline.enqueue_case(ArcStr::from("a"), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
-        pipeline.enqueue_case(ArcStr::from("b"), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
+        pipeline.enqueue_case(ArcStr::from("a"), memory_key(), vec![ev("u1", "a1", "2026-09-23 10:00:00")]);
+        pipeline.enqueue_case(ArcStr::from("a"), memory_key(), vec![ev("u1", "a2", "2026-09-23 10:00:01")]);
+        pipeline.enqueue_case(ArcStr::from("b"), memory_key(), vec![ev("u1", "b1", "2026-09-23 10:00:02")]);
         assert_eq!(pipeline.pending.len(), 2, "同 case 只有一个待执行任务，不同 case 分开");
         let a = pipeline.pending.get(&ArcStr::from("a")).unwrap();
-        assert_eq!(a.len(), 2, "排队中的同 case 消息合并为一次 run");
+        assert_eq!(a.events.len(), 2, "排队中的同 case 消息合并为一次 run");
         drop(a);
         // worker 取 case 时只取走被取到的 case 的消息，其他 case 的任务表条目不动、继续等待合并
         let (_, b) = pipeline.pending.remove(&ArcStr::from("b")).unwrap();
-        assert_eq!(b.len(), 1);
+        assert_eq!(b.events.len(), 1);
         assert_eq!(pipeline.pending.len(), 1);
         assert!(pipeline.pending.contains_key(&ArcStr::from("a")), "其他 case 继续等待合并");
     }

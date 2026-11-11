@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use arcstr::ArcStr;
-use kissbot_api::IncomingMessageEvent;
+use kissbot_api::{ChannelKey, IncomingMessageEvent};
 
 use kissbot_llm::{Message, Session};
 use crate::types::Result;
@@ -22,12 +22,11 @@ pub trait IncomingMessageBatchProcessor: Send + Sync {
 
 #[async_trait]
 pub trait AgentPipeline: IncomingMessageProcessor + Send + Sync {
-    /// 重置系统提示词（存为待定，下次发送前应用）；pipeline 决定应用到哪些 session
-    async fn reset_system_prompt(&self);
-
     /// 识别并执行本 pipeline 支持的管理命令；不是本 pipeline 的命令返回 None。
-    /// `channel_id` 为来源 channel（outgoing 等命令据此校验来源身份），`content` 为原始命令文本
-    async fn execute_command(&self, channel_id: ArcStr, content: ArcStr) -> Option<Result<ArcStr>>;
+    /// `channel_id` 为来源 channel（outgoing 等命令据此校验来源身份）；
+    /// `channel` 为来源消息的通道三元组（messenger + 接收方用户 + 群组，按 channel 维护状态的 pipeline 使用）；
+    /// `content` 为原始命令文本
+    async fn execute_command(&self, channel_id: ArcStr, channel: Arc<ChannelKey>, content: ArcStr) -> Option<Result<ArcStr>>;
 
     /// channel 不再绑定本 pipeline：清理该 channel（messenger + 绑定用户）在本 pipeline 中的资源。
     ///
