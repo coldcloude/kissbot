@@ -17,3 +17,6 @@ memory_summary pipeline，切换event相当于切换locate时的参数，session
 default和deault_memory中，内存中应只维持一个session，切换event时，每次都从硬盘读取。
 这两个pipeline中，执行指令（包括但不限于切换event）和处理batch消息，放到同一个mpsc队列中排队执行，避免多个变更session竞争，或者变更session和处理session竞争。
 memory summary pipeline 中应维持channel（messenger+user+group）和event的映射关系，而不是单一event。当收到channel变更event的指令时，应修改这个映射。
+
+default memory pipeline 中检查是否持续上一话题的检查，不再看load_memory，只要是role模式都检查。如果判断切换了事件，则换一个新的session_id（不再使用固定的，而是自动生成一个不重复的），换一个新的session使用这个新id（注意不是保存版本）。
+由于切换事件在两次run间触发，而load_memory只作用于一次run的压缩过程中，因此其实两件事互不干扰
