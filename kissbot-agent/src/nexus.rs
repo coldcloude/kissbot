@@ -105,7 +105,7 @@ mod tests {
     use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
     use crate::configs::{ChannelBatchConfig, ChannelConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
-    use crate::pipeline::IncomingMessageBatchProcessor;
+    use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
     use crate::pipelines::{outgoing_channel, pipeline_session_id, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
 
@@ -127,6 +127,60 @@ mod tests {
     /// 测试用来源通道三元组（命令的 channel 参数）
     fn command_channel() -> Arc<ChannelKey> {
         Arc::new(ChannelKey::new(ArcStr::from("web"), ArcStr::from("self"), ArcStr::from("g1")))
+    }
+
+    /// 构造一条管理员命令事件：通道三元组与 command_channel 保持一致
+    fn command_event(content: &str) -> Arc<IncomingMessageEvent> {
+        let channel = command_channel();
+        Arc::new(IncomingMessageEvent {
+            recipient_user_id: channel.self_user_id.clone(),
+            incoming_message: Arc::new(IncomingMessage {
+                msg_id: ArcStr::from("cmd"),
+                messenger_id: channel.messenger_id.clone(),
+                user_id: ArcStr::from("admin"),
+                group_id: channel.group_id.clone(),
+                messenger_name: ArcStr::new(),
+                user_name: ArcStr::from("admin"),
+                group_name: ArcStr::new(),
+                content: Content::Text(ArcStr::from(content)),
+                time: ArcStr::from("2026-11-11 10:00:00"),
+            }),
+        })
+    }
+
+    /// 以管理员身份向 pipeline 投递一条命令，返回命令回复（普通消息与未知命令返回 None）
+    async fn command<P: AgentPipeline + 'static>(
+        pipeline: Arc<P>, channel_id: ArcStr, content: &str,
+    ) -> Option<Result<ArcStr>> {
+        pipeline.incoming_message(command_event(content), channel_id, true).await
+    }
+
+    /// 等待 pipeline 后台任务把 session 缓存写成期望状态（任务队列是异步消费的）
+    async fn wait_for_context<F>(session_id: ArcStr, mut predicate: F, message: &str)
+    where
+        F: FnMut(&[Message]) -> bool,
+    {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let session = Session::new(ConfigManager::get().context_dir(), session_id.clone());
+            let _ = session.recover_from_cache().await;
+            let ctx = session.build_context_full().await;
+            if predicate(&ctx) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{}: {:?}", message, ctx);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 等待 pipeline 后台任务完成指定次数的模型调用
+    async fn wait_for_calls(calls: Arc<AtomicUsize>, expected: usize, message: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while calls.load(Ordering::Relaxed) < expected {
+            assert!(Instant::now() < deadline, "{}: 实际 {}", message, calls.load(Ordering::Relaxed));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), expected, "{}", message);
     }
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
@@ -302,37 +356,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_execute_command_parses_own_commands() {
+    async fn pipeline_incoming_message_parses_own_commands() {
         ensure_test_globals().await;
         let channel_id = ArcStr::from("cmd-detect-channel");
-        let cmd = |content: &str| ArcStr::from(content);
 
         // default：接 /model 与 /mode，不接 outgoing
         let default = DefaultAgenticLoopPipeline::new(role_key("cmd-detect-default", "")).await;
-        assert!(default.execute_command(channel_id.clone(), command_channel(), cmd("/bind-outgoing web u1 g1")).await.is_none(),
+        assert!(command(default.clone(), channel_id.clone(), "/bind-outgoing web u1 g1").await.is_none(),
             "default 不接 outgoing 命令");
-        match default.execute_command(channel_id.clone(), command_channel(), cmd("/model deepseek deepseek-chat maybe")).await {
+        match command(default.clone(), channel_id.clone(), "/model deepseek deepseek-chat maybe").await {
             Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("/model <provider> <model>"), "参数错误文案: {}", msg),
             other => panic!("default 应识别 /model 并返回参数错误: {:?}", other),
         }
-        let reply = default.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-detect")).await
+        let reply = command(default.clone(), channel_id.clone(), "/mode event e-detect").await
             .expect("default 应识别 /mode").unwrap();
         assert_eq!(reply.as_str(), "✅ 新事件 ID: e-detect");
 
         // default_memory / memory_summary：接 /model、/mode 与 outgoing；不是自己的命令返回 None
         let key = memory_key("cmd-detect-agent", "");
         let memory = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-detect-agent", "")).await;
-        assert!(memory.execute_command(channel_id.clone(), command_channel(), cmd("/send-channel on")).await.is_none(),
+        assert!(command(memory.clone(), channel_id.clone(), "/send-channel on").await.is_none(),
             "未知命令应返回 None");
-        match memory.execute_command(channel_id.clone(), command_channel(), cmd("/bind-outgoing web u1")).await {
+        match command(memory.clone(), channel_id.clone(), "/bind-outgoing web u1").await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /bind-outgoing 并返回参数错误: {:?}", other),
         }
-        match memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory maybe")).await {
+        match command(memory.clone(), channel_id.clone(), "/load-memory maybe").await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("default_memory 应识别 /load-memory 并返回参数错误: {:?}", other),
         }
-        let reply = memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory off")).await
+        let reply = command(memory.clone(), channel_id.clone(), "/load-memory off").await
             .expect("应识别 /load-memory").unwrap();
         assert!(reply.contains("load_memory"), "回复文案: {}", reply);
         let cfg = ConfigManager::get()
@@ -340,9 +393,9 @@ mod tests {
         assert!(!cfg.load_memory, "/load-memory off 应写入 session 配置");
 
         // 切到事件模式后再设 load_memory：只写当前 event 的 session，角色模式 session 保持原值
-        memory.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-load")).await
+        command(memory.clone(), channel_id.clone(), "/mode event e-load").await
             .expect("default_memory 应识别 /mode").unwrap();
-        memory.execute_command(channel_id.clone(), command_channel(), cmd("/load-memory on")).await
+        command(memory.clone(), channel_id.clone(), "/load-memory on").await
             .expect("应识别 /load-memory").unwrap();
         let event_id = pipeline_session_id(&event_memory_key("cmd-detect-agent", "", "e-load"));
         let event_cfg = ConfigManager::get()
@@ -352,21 +405,21 @@ mod tests {
             .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(pipeline_session_id(&key)).await;
         assert!(!role_cfg.load_memory, "角色模式 session 不应被当前 event 的命令改动");
 
-        let reply = memory.execute_command(channel_id.clone(), command_channel(), cmd("/mode role")).await
+        let reply = command(memory.clone(), channel_id.clone(), "/mode role").await
             .expect("default_memory 应识别 /mode").unwrap();
         assert_eq!(reply.as_str(), "✅ 已切换为角色模式");
 
         let memory_summary = MemorySummaryPipeline::new(role_key("cmd-detect-agent", ""));
-        assert!(memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/send-channel on")).await.is_none(),
+        assert!(command(memory_summary.clone(), channel_id.clone(), "/send-channel on").await.is_none(),
             "未知命令应返回 None");
-        match memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/unbind-outgoing extra")).await {
+        match command(memory_summary.clone(), channel_id.clone(), "/unbind-outgoing extra").await {
             Some(Err(Error::InvalidCommand(_))) => {}
             other => panic!("memory_summary 应识别 /unbind-outgoing 并返回参数错误: {:?}", other),
         }
-        let reply = memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/mode event e-summary")).await
+        let reply = command(memory_summary.clone(), channel_id.clone(), "/mode event e-summary").await
             .expect("memory_summary 应识别 /mode").unwrap();
         assert_eq!(reply.as_str(), "✅ 新事件 ID: e-summary");
-        match memory_summary.execute_command(channel_id.clone(), command_channel(), cmd("/mode maybe")).await {
+        match command(memory_summary.clone(), channel_id.clone(), "/mode maybe").await {
             Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("未知模式"), "参数错误文案: {}", msg),
             other => panic!("memory_summary 的 /mode 参数错误应返回 InvalidCommand: {:?}", other),
         }
@@ -391,7 +444,7 @@ mod tests {
         role_session.context_append(vec![Message::User { content: ArcStr::from("角色会话") }]).await.unwrap();
 
         // 切到 e1：新建 e1 的 session，与角色模式上下文隔离
-        let reply = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/mode event e1")).await
+        let reply = command(pipeline.clone(), channel_id.clone(), "/mode event e1").await
             .expect("应识别 /mode").unwrap();
         assert_eq!(reply.as_str(), "✅ 新事件 ID: e1");
         let e1_session_id = pipeline_session_id(&event_memory_key(agent, role, "e1"));
@@ -402,7 +455,7 @@ mod tests {
         e1.context_append(vec![Message::User { content: ArcStr::from("事件会话") }]).await.unwrap();
 
         // 切到 e2：又一个新 session
-        pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/mode event e2")).await
+        command(pipeline.clone(), channel_id.clone(), "/mode event e2").await
             .expect("应识别 /mode").unwrap();
         let e2_id = pipeline_session_id(&event_memory_key(agent, role, "e2"));
         let e2 = Session::new(cm.context_dir(), e2_id);
@@ -410,7 +463,7 @@ mod tests {
         assert!(e2.build_context().await.is_empty(), "另一个新事件 session 也应隔离");
 
         // 回到角色模式：重新从本地缓存恢复角色模式 session
-        let reply = pipeline.execute_command(channel_id, command_channel(), ArcStr::from("/mode role")).await
+        let reply = command(pipeline.clone(), channel_id, "/mode role").await
             .expect("应识别 /mode").unwrap();
         assert_eq!(reply.as_str(), "✅ 已切换为角色模式");
         // 角色 session 由 pipeline 重新创建后从缓存恢复；这里直接读缓存确认消息仍在
@@ -441,12 +494,12 @@ mod tests {
         let session_id = pipeline_session_id(&key);
 
         // 身份未绑定 → 拒绝
-        let err = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/bind-outgoing web nobody g1")).await
+        let err = command(pipeline.clone(), channel_id.clone(), "/bind-outgoing web nobody g1").await
             .expect("应识别 /bind-outgoing").unwrap_err();
         assert!(matches!(err, Error::InvalidCommand(_)), "未绑定身份应拒绝: {:?}", err);
 
         // 绑定成功 → 写入当前 pipeline 的 session 配置
-        let reply = pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/bind-outgoing web u-out g1")).await
+        let reply = command(pipeline.clone(), channel_id.clone(), "/bind-outgoing web u-out g1").await
             .expect("应识别 /bind-outgoing").unwrap();
         assert!(reply.contains("已设发送通道"), "回复文案: {}", reply);
         let out = outgoing_channel(&session_id).await.expect("out_channel 应已写入 session");
@@ -455,7 +508,7 @@ mod tests {
         assert_eq!(out.group_id.as_str(), "g1");
 
         // 解除 → 清空
-        pipeline.execute_command(channel_id.clone(), command_channel(), ArcStr::from("/unbind-outgoing")).await
+        command(pipeline.clone(), channel_id.clone(), "/unbind-outgoing").await
             .expect("应识别 /unbind-outgoing").unwrap();
         assert!(outgoing_channel(&session_id).await.is_none(), "解除后为空");
     }
@@ -747,19 +800,12 @@ mod tests {
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-switch", "r-topic-switch")).await;
         pipeline.incoming_message_batch(vec![incoming_event("topic-m1", "新问题")]).await;
 
-        // 当前上下文只剩新消息与本次回复
-        let current = Session::new(cm.context_dir(), session_id.clone());
-        current.recover_from_cache().await.unwrap();
-        let ctx = current.build_context_full().await;
-        assert!(
-            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
-            "旧上下文应被归档清空: {:?}", ctx);
-        assert!(
-            ctx.iter().any(|m| matches!(m, Message::User { content } if content.contains("新问题"))),
-            "新消息应保留: {:?}", ctx);
-        assert!(
-            ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复"))),
-            "本次回复应写入: {:?}", ctx);
+        // 当前上下文只剩新消息与本次回复（批次任务异步消费，轮询等待写入完成）
+        wait_for_context(session_id.clone(), |ctx| {
+            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题"))
+                && ctx.iter().any(|m| matches!(m, Message::User { content } if content.contains("新问题")))
+                && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
+        }, "旧上下文应被归档清空且新对话写入").await;
 
         // 旧上下文进入版本目录
         let versions_dir = std::path::Path::new(cm.context_dir()).join("versions");
@@ -814,13 +860,11 @@ mod tests {
         pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
         // 两次判定回答都不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
+        wait_for_context(session_id, |ctx| {
+            ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题"))
+                && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
+        }, "无法判定时按同一件事处理，旧上下文应保留且本次回复应写入").await;
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 写死重试一次 + 正式运行");
-        let current = Session::new(cm.context_dir(), session_id);
-        current.recover_from_cache().await.unwrap();
-        let ctx = current.build_context_full().await;
-        assert!(
-            ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题")),
-            "无法判定时按同一件事处理，旧上下文应保留: {:?}", ctx);
     }
 
     #[tokio::test]
@@ -866,13 +910,11 @@ mod tests {
         pipeline.incoming_message_batch(vec![incoming_event("retry-once-m1", "新问题")]).await;
 
         // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 正式运行
+        wait_for_context(session_id, |ctx| {
+            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题"))
+                && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
+        }, "重试确认不同后应归档清空旧上下文").await;
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 重试一次 + 正式运行");
-        let current = Session::new(cm.context_dir(), session_id);
-        current.recover_from_cache().await.unwrap();
-        let ctx = current.build_context_full().await;
-        assert!(
-            ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题")),
-            "重试确认不同后应归档清空旧上下文: {:?}", ctx);
     }
 
     #[tokio::test]
@@ -909,13 +951,12 @@ mod tests {
 
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-event-no-read", "r-event")).await;
         // pipeline 新建时为角色模式，先切到事件模式：event session 使用本用例预置的配置
-        pipeline.execute_command(ArcStr::from("event-no-read-channel"), command_channel(), ArcStr::from("/mode event e1")).await
+        command(pipeline.clone(), ArcStr::from("event-no-read-channel"), "/mode event e1").await
             .expect("应识别 /mode").unwrap();
         pipeline.clone().incoming_message_batch(vec![incoming_event("event-m1", "第一件事")]).await;
         pipeline.clone().incoming_message_batch(vec![incoming_event("event-m2", "第二件事")]).await;
 
         // 第一次：1 次正式调用；第二次超阈值：压缩 1 次 + 正式调用 1 次
-        assert_eq!(calls.load(Ordering::Relaxed), 3,
-            "事件模式应使用压缩（多一次压缩调用）而不是读取记忆");
+        wait_for_calls(calls.clone(), 3, "事件模式应使用压缩（多一次压缩调用）而不是读取记忆").await;
     }
 }
