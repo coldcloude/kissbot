@@ -1,5 +1,9 @@
 # default_memory 角色模式同话题切换新 session 设计
 
+> 后续调整：session 命名增加 pipeline 前缀，topic / event session 加标记；重启/重建与
+> `/mode role` 会加载最新的角色模式 session。见
+> [2026-11-12 session 命名与重启恢复设计](2026-11-12-session-naming-restart-resume-design.md)。
+
 ## 背景
 
 `default_memory`（`DefaultAgenticLoopPipelineWithMemory`）原先只在角色模式且
@@ -28,8 +32,8 @@ session 的上下文。本次调整：
 
 ## 判定为不同
 
-1. 生成新 `session_id`：`pipeline_session_id()` 的角色前缀 + `-` + UUID v4，
-   保证不重复。
+1. 生成新 `session_id`：`{prefix}-{agent_id}-{role}-topic-{uuid}`（prefix 为
+   `default-memory`），保证不重复。
 2. `ConfigManager::copy_session_config` 把切换前 session 的整份 session 级配置
    复制给新 id 并落盘。因此 `/model`、`/bind-outgoing`、`/load-memory` 等命令写入的
    当前配置以及 agent/role 导入值全部保留。
@@ -50,12 +54,11 @@ session 的上下文。本次调整：
 
 - 角色模式的 `load_memory` 仍在 run 前从当前 session 读取，只决定超阈值时用
   `MemoryRecoverTokenReducer` 还是 `CompressTokenReducer`。
-- `/mode event` / `/mode role` 行为不变：切换 event 时释放当前 session，
-  按 event 的固定 session_id 新建或从缓存读取；切回角色模式时使用固定的
-  `{agent_id}-{role}` session。
-- pipeline 重启或重建后从固定的角色 session 开始；话题切换产生的随机 id session
-  不跨重启保存。若固定角色 session 仍有旧上下文，首批消息会重新判定并在需要时
-  再次换新 session。
+- `/mode event` / `/mode role`：切换 event 时释放当前 session，按 event 的固定
+  session_id 新建或从缓存读取；切回角色模式时加载该 agent/role 修改时间最新的
+  角色模式 session（基础或 topic）。
+- pipeline 重启或重建后加载该 agent/role 修改时间最新的角色模式 session；
+  没有可加载的 session 时使用固定基础 id `{prefix}-{agent_id}-{role}`。
 - 旧 session 的 session 配置条目与缓存文件都保留在磁盘，不做清理。
 - `default`、`memory_summary` 与事件模式不受影响。
 

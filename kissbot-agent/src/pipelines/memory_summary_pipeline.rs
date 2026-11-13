@@ -29,7 +29,7 @@ use tracing::warn;
 
 use crate::{
     config_manager::ConfigManager, configs::{ChannelBatchConfig, EffectiveMemoryRecoverConfig, GroupSetConfig, MemoryRecoverConfig, OutChannelConfig}, message::{MessageContent, extract_content, pack_batch, pack_memory_messages}, nexus::Nexus, pipeline::{AgentPipeline, IncomingMessageBatchProcessor}, pipelines::{
-        BatchProducer, MAX_TOOL_ROUNDS, bind_outgoing, call_tools_with_memory, channel_batch_processor, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_mode_command, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
+        BatchProducer, MAX_TOOL_ROUNDS, SESSION_PREFIX_MEMORY_SUMMARY, bind_outgoing, call_tools_with_memory, channel_batch_processor, command_parts, create_session, get_ego_system_prompt_or_default, import_session_config_from_agent_role, outgoing_channel, outgoing_content, parse_mode_command, parse_model_command, retrieve_assistant_message, retrieve_tool_messages, send_messages, send_outgoing, set_session_model_config, switch_model, tools_for_session, unbind_outgoing,
     }, types::{
         Error, MemoryKey, Result, build_think_record, channel_request_from_incoming,
     },
@@ -103,7 +103,7 @@ impl MemorySummaryPipeline {
         pipeline
     }
 
-    /// case 的 session id：memory-summary-{agent_id}-{role_name}-{case_name}；None 用 -none。
+    /// case 的 session id：{pipeline 前缀}-{agent_id}-{role_name}-{case_name}；None 用 -none。
     /// case_name 可能是完整路径（如 `[event]e1/topic`）：路径分隔符 `/` 编码为 `.`，
     /// `[`/`]` 替换为 `_`，得到文件名安全的 session id。
     /// `-none` 是 pipeline 入口配置使用的基准 session。
@@ -116,8 +116,8 @@ impl MemorySummaryPipeline {
             }).collect::<String>())
             .unwrap_or_else(|| "none".to_string());
         ArcStr::from(format!(
-            "memory-summary-{}-{}-{}",
-            self.role_key.agent_id, self.role_key.role_name, case
+            "{}-{}-{}-{}",
+            SESSION_PREFIX_MEMORY_SUMMARY, self.role_key.agent_id, self.role_key.role_name, case
         ))
     }
 

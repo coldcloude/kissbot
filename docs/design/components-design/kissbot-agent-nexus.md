@@ -186,10 +186,10 @@ kissbot-agent 启动
 ```
 pipeline 新建 → 当前 event = 角色模式
 管理员在 channel 发送 /mode event [event-id] → 默认命令未命中，交给来源 channel 的 (agent, role) pipeline
-  → default / default_memory：释放当前 session，按目标 event 的 session_id 从本地缓存重新读取（空则仅系统提示词），记忆读写按「role-event」编码隔离
+  → default / default_memory：释放当前 session，按目标 event 的 session_id（`{pipeline 前缀}-{agent}-{role}-event-{event}`）从本地缓存重新读取（空则仅系统提示词），记忆读写按「role-event」编码隔离
   → memory_summary：只修改命令来源 channel（messenger + 接收方用户 + 群组）的 event 映射；case session 不变
 重新进入指定事件（/mode event <event-id>）→ 再次从该 event 的本地缓存读取 session / 使用该 channel 的映射
-回到角色模式（/mode role）→ 切回角色模式 session / 修改来源 channel 的映射为角色模式
+回到角色模式（/mode role）→ default_memory 加载该 agent/role 修改时间最新的角色模式 session；memory_summary 修改来源 channel 的映射为角色模式
 换 agent 或 role → 新 pipeline 从角色模式开始
 ```
 
@@ -199,8 +199,18 @@ pipeline 新建 → 当前 event = 角色模式
 角色模式下每批消息进入 run 前：
   → 用当前完整会话 + 本批新消息询问 LLM 是否延续同一件事（与 load_memory 无关）
   ├─ 同一件事 / 无法判定：沿用当前 session，本批消息正常追加
-  └─ 不同：自动生成新的 session_id，整体继承当前 session 的配置与系统提示词，以空上下文承载本批消息
+  └─ 不同：自动生成新的 session_id（`…-topic-{uuid}`），整体继承当前 session 的配置与系统提示词，以空上下文承载本批消息
           旧会话不归档、不保存版本，内容保留在旧缓存文件中但不再参与后续对话
+```
+
+### pipeline 重建/重启加载
+
+```
+default_memory pipeline 构造（进程重启、pipeline 重建、绑定变化）或 /mode role：
+  → 扫描该 agent/role 的角色模式 session（基础 `{prefix}-{agent}-{role}` 与话题 `…-topic-{uuid}`）
+  → 取消息缓存修改时间最新的一个加载；event session 不参与
+  ├─ 找到：沿用该 session 的上下文与已有配置，继续对话
+  └─ 未找到：回退到基础 session id `{prefix}-{agent}-{role}`
 ```
 
 ## 关键设计
@@ -211,13 +221,13 @@ pipeline 新建 → 当前 event = 角色模式
 - 当前 event 属于 pipeline：`default` / `default_memory` 切换 event 即切换 session；`memory_summary` 切换 event 即切换 locate 的记忆范围，case session 继续和 case 绑定
 - 记忆读写用 agent_id 直接定位（配置即 agent_id，无需二次解析），role 编码 = 角色名（角色模式）或「角色名-事件 ID」（事件模式）
 - 角色模式：记忆读写覆盖该角色下所有记录；事件模式：只覆盖当前事件的记录
-- session 是 pipeline 内部的执行资源：`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从本地缓存重新读取），摘要记忆 pipeline 每个 case 一个 session；session 上下文按各自缓存恢复与重建
-- 绑定信息变化产生新 pipeline 时，新 pipeline 从角色模式开始，并重新恢复/构建其 session 上下文
+- session 是 pipeline 内部的执行资源：`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从本地缓存重新读取）；session id 以 pipeline 前缀区分（`default-` / `default-memory-` / `memory-summary-`），`default_memory` 的角色模式 topic session 带 `-topic-` 标记、event session 带 `-event-` 标记；摘要记忆 pipeline 每个 case 一个 session；session 上下文按各自缓存恢复与重建
+- 绑定信息变化产生新 pipeline 时，新 pipeline 从角色模式开始；`default_memory` 会加载该 agent/role 修改时间最新的角色模式 session，`default` / `memory_summary` 按各自的固定规则恢复/构建
 
 ### 回复通道
 
 - 回复目标由 pipeline 的 out_channel 配置决定，经 `/bind-outgoing` 设置、`/unbind-outgoing` 清除；未配置 = 只存不回复
-- out_channel 存放在 pipeline 自己的 session 配置（`default_memory` 用当前 event session；摘要记忆 pipeline 用基准 session）；agent/role 级配置只作为建立 session 时的初始值
+- out_channel 存放在 pipeline 自己的 session 配置（`default_memory` 用当前 session；摘要记忆 pipeline 用基准 session）；agent/role 级配置只作为建立 session 时的初始值
 - 发送前校验该身份仍在目标 channel 的绑定集合中；已解绑（配置悬空）则清理配置并跳过发送
 
 ### 管理命令说明
