@@ -339,6 +339,17 @@ impl ConfigManager {
         }).await
     }
 
+    /// 把 from 的整份 session 配置复制到 to 并落盘（to 已有配置时整体覆盖）。
+    /// from 不存在时写入空配置，后续按需用 `C::default()` 建项
+    pub async fn copy_session_config(&self, from: ArcStr, to: ArcStr) -> Result<()> {
+        self.write_nexus_config(|repo| {
+            let sessions = Arc::make_mut(&mut repo.sessions);
+            let config_map = sessions.get(&from).cloned().unwrap_or_default();
+            sessions.insert(to, config_map);
+            Ok(())
+        }).await
+    }
+
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
     /// 添加 provider（重名报 ConfigNotFound），落盘
     pub async fn add_provider(&self, name: &str, cfg: ProviderModelConfig) -> Result<()> {
@@ -1169,6 +1180,33 @@ mod tests {
             other.clone(), Arc::new(effective_llm("openai", "gpt-4o"))).await.unwrap();
         let got = manager.session_config::<LLMConfig, EffectiveLLMConfig>(other).await;
         assert_eq!(got.model.as_str(), "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn copy_session_config_copies_all_items_and_keeps_both_sides_independent() {
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let from = ArcStr::from("a1-r1");
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            from.clone(), &llm_config("deepseek", "deepseek-chat")).await.unwrap();
+        manager.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
+            from.clone(), &MemoryPipelineConfig { load_memory: Some(false) }).await.unwrap();
+
+        let to = ArcStr::from("a1-r1-new");
+        manager.copy_session_config(from.clone(), to.clone()).await.unwrap();
+
+        let llm = manager.session_config::<LLMConfig, EffectiveLLMConfig>(to.clone()).await;
+        assert_eq!(llm.model.as_str(), "deepseek-chat", "LLM 配置整体复制");
+        let memory = manager.session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(to.clone()).await;
+        assert!(!memory.load_memory, "其它配置项同样复制");
+        let saved = read_nexus_json(&dir);
+        assert_eq!(saved["sessions"]["a1-r1-new"]["llm"]["model"], "deepseek-chat", "复制结果落盘");
+
+        // 复制后两边独立：改新 session 不影响原 session
+        manager.set_session_config::<LLMConfig, EffectiveLLMConfig>(
+            to.clone(), &llm_config("openai", "gpt-4o")).await.unwrap();
+        let origin = manager.session_config::<LLMConfig, EffectiveLLMConfig>(from).await;
+        assert_eq!(origin.model.as_str(), "deepseek-chat", "原 session 不受影响");
     }
 
     #[tokio::test]

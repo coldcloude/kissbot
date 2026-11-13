@@ -1,5 +1,9 @@
 # default_memory 记忆读取策略设计
 
+> 后续调整：同话题判断改为角色模式始终执行，判定为不同后换用新的 session_id 与
+> session（继承当前配置），不再归档清空。见
+> [2026-11-12 设计](2026-11-12-topic-switch-new-session-design.md)。
+
 ## 背景
 
 `default_memory`（`DefaultAgenticLoopPipelineWithMemory`）原先由构造参数 `load_memory` 决定

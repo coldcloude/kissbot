@@ -102,10 +102,29 @@ pub async fn new_session_with_memory(role_key: &RoleKey, event_id: Option<ArcStr
     import_session_config_from_agent_role::<ChannelBatchConfig, ChannelBatchConfig>(&memory_key, &session_id).await;
     import_session_config_from_agent_role::<OutChannelConfig, OutChannelConfig>(&memory_key, &session_id).await;
     import_session_config_from_agent_role::<GroupSetConfig, GroupSetConfig>(&memory_key, &session_id).await;
-    let session = create_session(session_id.clone()).await;
-    let prompt = get_ego_system_prompt_or_default(&memory_key).await;
-    session.set_system_message(prompt).await;
+    let session = create_session_with_prompt(&memory_key, session_id.clone()).await;
     (memory_key, session_id, session)
+}
+
+/// 角色模式下话题切换后的新 session_id：角色前缀 + UUID，保证不重复
+pub fn topic_session_id(memory_key: &MemoryKey) -> ArcStr {
+    ArcStr::from(format!("{}-{}", pipeline_session_id(memory_key), uuid::Uuid::new_v4()))
+}
+
+/// 话题切换：生成新 session_id，继承当前 session 的整份 session 级配置，建立空 session
+async fn new_topic_session(memory_key: &MemoryKey, current_session_id: ArcStr) -> Result<(ArcStr, Arc<Session>)> {
+    let session_id = topic_session_id(memory_key);
+    ConfigManager::get().copy_session_config(current_session_id, session_id.clone()).await?;
+    let session = create_session_with_prompt(memory_key, session_id.clone()).await;
+    Ok((session_id, session))
+}
+
+/// 建立 session 并应用 ego 系统提示词（新建/重建 session 的公共后半段）
+async fn create_session_with_prompt(memory_key: &MemoryKey, session_id: ArcStr) -> Arc<Session> {
+    let session = create_session(session_id).await;
+    let prompt = get_ego_system_prompt_or_default(memory_key).await;
+    session.set_system_message(prompt).await;
+    session
 }
 
 /// 解析 query 响应分组 → 写入 BTreeMap：(time, sn) 为唯一键（sn 为同文件内唯一序号），
@@ -527,7 +546,7 @@ impl<C> PipelineTaskSender<C> {
 pub trait PipelineTaskExecutor<C> {
     async fn execute_command(&mut self, command: C) -> Result<ArcStr>;
     async fn incoming_message(&self, event: Arc<IncomingMessageEvent>);
-    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>);
+    async fn incoming_message_batch(&mut self, events: Vec<Arc<IncomingMessageEvent>>);
 }
 
 impl<C> PipelineTaskReceiver<C> {
@@ -613,7 +632,7 @@ impl PipelineTaskExecutor<DefaultPipelineCommand> for DefaultAgenticLoopExecutor
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 
-    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+    async fn incoming_message_batch(&mut self, events: Vec<Arc<IncomingMessageEvent>>) {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
         // 找到工具
@@ -787,13 +806,22 @@ impl PipelineTaskExecutor<DefaultPipelineWithMemoryCommand> for DefaultAgenticLo
         self.producer.send(event, cfg.channel_batch_interval_secs)
     }
 
-    async fn incoming_message_batch(&self, events: Vec<Arc<IncomingMessageEvent>>) {
+    async fn incoming_message_batch(&mut self, events: Vec<Arc<IncomingMessageEvent>>) {
         // 打包为一条 user 消息的 content（复用 message::pack_batch：extract_content + user_line + 空 content 跳过）
         let content = pack_batch(&events);
-        // 找到工具
-        let tools = tools_for_session(self.session_id.clone()).await;
-        // 事件模式恒不读取记忆；角色模式读一次 session 配置，判定结果直接传给 run，避免重复判断
+        // 角色模式：每批 run 前判定是否延续上一话题（与 load_memory 无关）；判定为不同则换新 session
         let role_mode = self.memory_key.role_event.event_id.is_none();
+        if role_mode && self.topic_changed(&content).await {
+            match new_topic_session(self.memory_key.as_ref(), self.session_id.clone()).await {
+                Ok((session_id, session)) => {
+                    self.session_id = session_id;
+                    self.session = session;
+                    self.last_total_tokens.store(0, Ordering::Relaxed);
+                }
+                Err(e) => warn!("话题判定为不同，但新建 session 失败，继续使用原 session: {:?}", e),
+            }
+        }
+        // 事件模式恒不读取记忆；角色模式按当前 session 配置选择 run 内的降级策略（记忆回溯/压缩）
         let load_memory = if role_mode {
             ConfigManager::get()
                 .session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(self.session_id.clone())
@@ -802,76 +830,9 @@ impl PipelineTaskExecutor<DefaultPipelineWithMemoryCommand> for DefaultAgenticLo
         } else {
             false
         };
-        // 角色模式且不读取记忆：run 前用完整 session + 新消息问一次 LLM；未精确回答则用重试提示词再问一次
-        if role_mode && !load_memory {
-            let mut messages = self.session.build_context().await;
-            if messages.iter().any(|message| !matches!(message, Message::System { .. })) {
-                let llm_cfg = ConfigManager::get()
-                    .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
-                    .await;
-                let new_text = match &content {
-                    Message::User { content } => content.as_str(),
-                    _ => "",
-                };
-                // 第一次判定
-                let final_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT);
-                messages.push(Message::User { content: ArcStr::from(final_text) });
-                let first = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
-                    Ok(res) => {
-                        let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
-                        match answer.as_str() {
-                            "YES" => Some(false),
-                            "NO" => Some(true),
-                            _ => None,
-                        }
-                    }
-                    Err(e) => {
-                        warn!("同话题判断首次调用失败，用重试提示词再问一次: {:?}", e);
-                        None
-                    }
-                };
-                let changed = match first {
-                    Some(changed) => changed,
-                    None => {
-                        // 用 RETRY_PROMPT 重试一次
-                        warn!("同话题判断未得到精确 YES/NO，用重试提示词再问一次");
-                        messages.pop();
-                        let retry_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT_RETRY);
-                        messages.push(Message::User { content: ArcStr::from(retry_text) });
-                        match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
-                            Ok(res) => {
-                                let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
-                                match answer.as_str() {
-                                    "YES" => false,
-                                    "NO" => true,
-                                    _ => {
-                                        warn!("同话题判断重试后仍未精确回答 YES/NO，按同一件事处理");
-                                        false
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("同话题判断重试调用失败，按同一件事处理: {:?}", e);
-                                false
-                            }
-                        }
-                    }
-                };
-                if changed {
-                    if self.session
-                        .context_archive_and_clear_cache_and_reset_messages(Vec::new())
-                        .await
-                        .is_ok()
-                    {
-                        // 上下文已清空，token 占用随之清零；本批新消息在末尾统一 run 时追加
-                        self.last_total_tokens.store(0, Ordering::Relaxed);
-                    } else {
-                        warn!("同话题判断为不同事，但归档/清空上下文失败，继续使用原上下文运行");
-                    }
-                }
-            }
-        }
-        // 统一在末尾运行：清空后的上下文只会在这一处追加本批新消息
+        // 找到工具
+        let tools = tools_for_session(self.session_id.clone()).await;
+        // 统一在末尾运行：切换 session 后只在这里追加本批新消息
         let _ = self.run(vec![content], &tools, load_memory).await;
     }
 }
@@ -886,6 +847,67 @@ impl DefaultAgenticLoopWithMemoryExecutor {
             session_id,
             session,
             last_total_tokens: AtomicU64::new(0),
+        }
+    }
+
+    /// 角色模式下的同话题判定：用完整 session + 本批新消息问当前 session 的 LLM。
+    /// 返回 true = 判定为不同一件事；两次都失败或都不是精确 YES/NO 时按同一件事处理
+    async fn topic_changed(&self, content: &Message) -> bool {
+        let mut messages = self.session.build_context().await;
+        // 只有 System 时没有可比较的上下文，直接按同一件事处理
+        if !messages.iter().any(|message| !matches!(message, Message::System { .. })) {
+            return false;
+        }
+        let llm_cfg = ConfigManager::get()
+            .session_config::<LLMConfig, EffectiveLLMConfig>(self.session_id.clone())
+            .await;
+        let new_text = match content {
+            Message::User { content } => content.as_str(),
+            _ => "",
+        };
+        // 第一次判定
+        let final_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT);
+        messages.push(Message::User { content: ArcStr::from(final_text) });
+        let first = match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
+            Ok(res) => {
+                let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
+                match answer.as_str() {
+                    "YES" => Some(false),
+                    "NO" => Some(true),
+                    _ => None,
+                }
+            }
+            Err(e) => {
+                warn!("同话题判断首次调用失败，用重试提示词再问一次: {:?}", e);
+                None
+            }
+        };
+        match first {
+            Some(changed) => changed,
+            None => {
+                // 用 RETRY_PROMPT 重试一次
+                warn!("同话题判断未得到精确 YES/NO，用重试提示词再问一次");
+                messages.pop();
+                let retry_text = format!("【新消息】\n{}\n\n{}", new_text, TOPIC_CHECK_PROMPT_RETRY);
+                messages.push(Message::User { content: ArcStr::from(retry_text) });
+                match Nexus::get().provider_manager.call(llm_cfg.as_ref(), &messages, &Vec::new()).await {
+                    Ok(res) => {
+                        let answer = res.content.as_deref().unwrap_or("").trim().to_ascii_uppercase();
+                        match answer.as_str() {
+                            "YES" => false,
+                            "NO" => true,
+                            _ => {
+                                warn!("同话题判断重试后仍未精确回答 YES/NO，按同一件事处理");
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("同话题判断重试调用失败，按同一件事处理: {:?}", e);
+                        false
+                    }
+                }
+            }
         }
     }
 
@@ -1333,6 +1355,18 @@ mod tests {
         assert!(matches!(
             parse_load_memory_command(&[ArcStr::from("/load-memory")]),
             Err(Error::InvalidCommand(_))));
+    }
+
+    #[test]
+    fn topic_session_id_is_unique_and_role_prefixed() {
+        let key = MemoryKey::from_role_key(&RoleKey {
+            agent_id: ArcStr::from("a1"),
+            role_name: ArcStr::from("r1"),
+        }, None);
+        let first = topic_session_id(&key);
+        let second = topic_session_id(&key);
+        assert_ne!(first, second, "每次话题切换生成不重复的 session_id");
+        assert!(first.starts_with("a1-r1-"), "保持角色前缀: {}", first);
     }
 
     #[test]

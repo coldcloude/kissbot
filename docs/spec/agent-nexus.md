@@ -124,18 +124,21 @@ kissbot-agent 使用三份配置：
 - `session_config::<C, E>(session_id) -> Arc<E>`：按 session_id 读；缺失时用 `C::default()` 的有效配置建项并缓存（不落盘）。
 - `set_session_config::<C, E>(session_id, config)`：把 `C` 覆盖合并进 session 有效配置并落盘；缺失时以 `C::default()` 为基底。
 - `set_session_config_if_not_exists::<E>(session_id, config)`：session 配置项已存在则保留，否则写入并落盘。
+- `copy_session_config(from, to)`：把 `from` 的整份 session 配置复制给 `to` 并落盘，用于角色模式话题切换后新 session 继承当前配置。
 
-`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress、memory_recover、memory_pipeline、channel_batch、out_channel、group_set）；`default_memory` 同时导入 memory_recover 与 compress 两套降阈值配置，运行期切换 `load_memory` 后立即生效；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。`default_memory` 每次切换 event 读取/新建 session 时导入一次配置（已有 session 配置不覆盖）；`/model`、`/bind-outgoing`、`/load-memory` 只写当前 event 的 session，切换 event 后新 session 使用 agent/role 初始配置。另有 `ConfigManager::provider_model_config(provider, model)`。
+`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress、memory_recover、memory_pipeline、channel_batch、out_channel、group_set）；`default_memory` 同时导入 memory_recover 与 compress 两套降阈值配置，运行期切换 `load_memory` 后立即生效；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。`default_memory` 每次切换 event 读取/新建 session 时导入一次配置（已有 session 配置不覆盖）；`/model`、`/bind-outgoing`、`/load-memory` 只写当前 event 的 session，切换 event 后新 session 使用 agent/role 初始配置。角色模式话题切换产生的新 session 不走 agent/role 导入，而是用 `copy_session_config` 整体继承切换前 session 的配置。另有 `ConfigManager::provider_model_config(provider, model)`。
 
 `out_channel` 由 pipeline 命令写入 pipeline 自己的 session 配置（`default_memory` 写当前 event 的 session，`memory_summary` 写基准 session `memory-summary-{agent_id}-{role_name}-none`），运行期从同一 session 读取；agent/role 级 `out_channel` 只作为建立 session 时的初始值导入，之后以 session 级值为准。
 
-#### `default_memory` 的记忆读取策略
+#### `default_memory` 的记忆读取与同话题切换
 
-- `memory_pipeline.load_memory` 是 session 级开关，agent/role 级值只作为建立 session 时的初始值，之后以 session 级值为准；默认 `true`。
-- **事件模式**（当前 `RoleEvent.event_id` 有值）：忽略 `load_memory`，永远不读取记忆（不调用 memory-store 查询），只写上行/下行记忆；上下文超阈值时用压缩。
-- **角色模式**（当前 `RoleEvent.event_id` 缺省）+ `load_memory=true`：保持记忆回溯（`MemoryRecoverTokenReducer`）。
-- **角色模式 + `load_memory=false`**：上下文超阈值时用压缩；每批 run 前用当前完整 session + 本批新消息直接调用 LLM（不执行工具、不读取 memory-store、不经过 `run_once`）：首次用普通提示词，回答先 `trim` 再转大写并精确匹配 `YES`/`NO`；首次失败或非精确回答时写死用更强的重试提示词再调用一次（不循环），重试仍精确匹配。两次都失败或都不是精确 `YES`/`NO` 按同一件事处理。判断为不同时归档旧上下文、清空 session（空上下文），随后统一在批次末尾由 run 追加本批新消息；判断为相同时保持上下文正常追加。
-- `/load-memory <on|off>` 修改当前 event session 的开关；事件模式下写入但不生效。
+- `memory_pipeline.load_memory` 是 session 级开关，agent/role 级值只作为建立 session 时的初始值，之后以 session 级值为准；默认 `true`。它只决定 run 内上下文超阈值时用记忆回溯还是压缩。
+- **事件模式**（当前 `RoleEvent.event_id` 有值）：忽略 `load_memory`，永远不读取记忆（不调用 memory-store 查询），只写上行/下行记忆；上下文超阈值时用压缩；每批 run 前不做同话题判定。
+- **角色模式**（当前 `RoleEvent.event_id` 缺省）：无论 `load_memory` 取何值，每批 run 前都用当前完整 session + 本批新消息直接调用 LLM 判断是否为同一件事（不执行工具、不读取 memory-store、不经过 `run_once`）。首次用普通提示词，回答先 `trim` 再转大写并精确匹配 `YES`/`NO`；首次失败或非精确回答时写死用更强的重试提示词再调用一次（不循环），重试仍精确匹配。两次都失败或都不是精确 `YES`/`NO` 按同一件事处理。上下文只有 System 时跳过判定。
+- **判定为不同**：换用自动生成的新 session_id（`{agent_id}-{role}-{uuid}`，不重复），用 `copy_session_config` 继承当前 session 的整份 session 级配置，建立空上下文的新 session；替换 pipeline 当前 session 与 token 占用记录，不归档、不生成版本，旧 session 直接释放（旧缓存文件留在磁盘但不再使用）。批次末尾统一由 run 把本批新消息追加到新 session。
+- **判定为相同 / 无法判定**：保持当前 session，上下文正常追加。
+- **角色模式超阈值**：`load_memory=true` 用记忆回溯（`MemoryRecoverTokenReducer`），`false` 用压缩（`CompressTokenReducer`）。
+- `/load-memory <on|off>` 修改当前 session 的开关；事件模式下写入但不生效。
 - 切换 event 由 `/mode` 完成：`default` / `default_memory` 释放当前 session 并读取目标 event 的 session，`memory_summary` 只修改命令来源 channel 的 event 映射。
 - `default` / `default_memory` 的 pipeline 命令与批次消息进入同一条 mpsc 任务队列串行执行，命令切换 session 与批次使用 session 不会并发。
 
@@ -143,14 +146,14 @@ kissbot-agent 使用三份配置：
 
 | 项 | 约定 |
 |----|------|
-| session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 内存中只保留当前 event 的一个 `Arc<Session>`，切换 event 时释放旧 session 并从本地缓存重新读取，`memory_summary` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
-| session 配置 | `default_memory` / `memory_summary` 建立 session 前从 agent/role 导入；`default` 只用 session 配置；运行期都只按 session_id 读 |
-| 默认 pipeline 的 session_id | `pipelines::pipeline_session_id()`：角色模式 `{agent_id}-{role}`，事件模式 `{agent_id}-{role}-{event}` |
+| session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 内存中只保留当前 event 的一个 `Arc<Session>`，切换 event 时释放旧 session 并从本地缓存重新读取；`default_memory` 角色模式话题切换时同样释放旧 session，改用新 id 的空会话，`memory_summary` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
+| session 配置 | `default_memory` / `memory_summary` 建立 session 前从 agent/role 导入；角色模式话题切换的新 session 用 `copy_session_config` 继承当前 session 配置；`default` 只用 session 配置；运行期都只按 session_id 读 |
+| 默认 pipeline 的 session_id | `pipelines::pipeline_session_id()`：角色模式初始 `{agent_id}-{role}`，话题切换后 `{agent_id}-{role}-{uuid}`；事件模式 `{agent_id}-{role}-{event}` |
 | 摘要记忆 case 的 session_id | 摘要记忆 pipeline 自己拼：`memory-summary-{agent_id}-{role_name}-{case_name}`（case_name 的 `/` 编码为 `.`、`[`/`]` 替换为 `_`），pipeline 只保存 case → session；基准（无 case）session 为 `memory-summary-{agent_id}-{role_name}-none`，同时承担 pipeline 入口配置与入口阶段配置读取 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 版本一体） |
 | 恢复 | 建立 session 时分别回读 `<data_dir>/context/<session_id>.sys.jsonl`（系统提示词，可为缺省）与 `<data_dir>/context/<session_id>.msgs.jsonl`（消息，正序全量）；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
 | 版本 | 归档由 SessionContext 自动生成日期后缀（`%Y%m%d%H%M%S`，重名等一秒后重试），调用方无需传入；版本同时保存 `<data_dir>/context/versions/<session_id>-<后缀>.sys.jsonl`（直接移动原 sys 文件，不使用待定值；原 sys 不存在时不写 sys）与 `.msgs.jsonl`；需要复用旧 session 时经 `Session::context_swap_version_with_cache` 把版本换回当前缓存，后续变更只发生在当前缓存 |
-| 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 (agent, role)；session 不单独清理，随 pipeline 的 Arc 释放自然回收。`default` / `default_memory` 切换 event 时旧 session 随 Arc 释放（命令与批次串行，无在途 run），再次切回该 event 时从本地缓存重新读取 |
+| 清理 | PipelineManager 只保留仍在 channel 绑定集合中的 (agent, role)；session 不单独清理，随 pipeline 的 Arc 释放自然回收。`default` / `default_memory` 切换 event 时旧 session 随 Arc 释放（命令与批次串行，无在途 run），再次切回该 event 时从本地缓存重新读取；`default_memory` 角色模式话题切换时旧 session 同样随 Arc 释放，其缓存文件保留在磁盘且不再被使用 |
 
 缓存文件、版本文件命名与系统提示词的待定/应用语义见 [kissbot-llm 技术规格](llm.md)。
 
@@ -181,7 +184,7 @@ pipeline 身份（`RoleKey` = agent_id + role_name）是 channel 定位与配置
 | agent-pipeline | `/agent-pipeline <pipeline_name>` | 默认层 | 设置来源 channel 的 agent 级 pipeline（默认 agent "0" 不可设置）；pipeline 名称变化的已装配 pipeline 失效 |
 | bind-outgoing | `/bind-outgoing <messenger_id> <user_id> <group_id>` | default_memory / memory_summary | 设 pipeline 的回复通道（要求该身份已绑定来源 channel）；`default_memory` 写当前 event session |
 | unbind-outgoing | `/unbind-outgoing` | default_memory / memory_summary | 清除 pipeline 的回复通道（回到只存不回复） |
-| load-memory | `/load-memory <on\|off>` | default_memory | 设置当前 event session 是否读取记忆（事件模式固定不读取，配置写入但不生效） |
+| load-memory | `/load-memory <on\|off>` | default_memory | 设置当前 session 超阈值时是否读取记忆（事件模式固定不读取，配置写入但不生效；角色模式的同话题判定不受该开关影响） |
 | model | `/model <provider> <model>` | default / default_memory / memory_summary | 切换当前 pipeline 的模型（先拉模型列表校验，失败保持原模型）；`default` / `default_memory` 写当前 event session，`memory_summary` 写基准与已有 case session |
 
 命令分两层检测：默认层（`ChannelManager::execute_default_command`）处理上表的默认命令（含 `/pipeline`、`/agent-pipeline`，先于 pipeline 命令检测）；默认层未命中时，ChannelManager 按来源 channel 的 agent + role 定位 pipeline，并把来源通道三元组（messenger + 接收方用户 + 群组）连同命令交给 `AgentPipeline::execute_command` 识别执行，pipeline 不认识则回复 `⚠️ 未知命令: {命令}`。agent/role 变更与 bind/unbind 都经 channel 变更队列串行执行（写-写无竞态）；`/model`、`/mode`、outgoing 与 `/load-memory` 命令由 pipeline 处理，共享实现（解析、模型校验、事件切换、session 配置写入）在 `pipelines.rs`。命令回复文案形如：`✅ 已设置 agent: {agent_id} / role: {role}`、`✅ 已切换模型为: {provider}/{model}`、`✅ 新事件 ID: {event_id}`。
@@ -294,12 +297,13 @@ struct MemoryKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 
 // 当前 event 由 pipeline 在内存中维护（None = 角色模式），新建 pipeline 时为 None，不写配置
 
-// session id（缓存/版本文件名段）由 pipelines::pipeline_session_id() 统一生成：
-//   default / default_memory: {agent_id}-{role}[-{event}]
+// session id（缓存/版本文件名段）由 pipelines::pipeline_session_id() / topic_session_id() 生成：
+//   default / default_memory: {agent_id}-{role}[-{event}]；角色模式话题切换后为 {agent_id}-{role}-{uuid}
 //   memory_summary: memory-summary-{agent_id}-{role_name}-{case_name|none}
 
 // session 由 pipeline 创建并持有（Arc<Session>），id 由 pipeline 生成；
 // default / default_memory 内存中只保留当前 event 的一个 session，切换 event 时释放旧 session 并从缓存重新读取；
+// default_memory 角色模式话题切换时释放旧 session，新建 {agent_id}-{role}-{uuid} 的空 session 并整体继承其配置；
 // 建立时从 <data_dir>/context/<session_id>.sys.jsonl 与 .msgs.jsonl 恢复，并按 agent/role 固化 session 配置；
 // 归档同时写 <data_dir>/context/versions/<session_id>-<后缀>.sys.jsonl 与 .msgs.jsonl，可与当前缓存互换
 
@@ -310,6 +314,7 @@ impl ConfigManager {
     async fn session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>;
     async fn set_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>;
     async fn set_session_config_if_not_exists<E>(&self, session_id: ArcStr, config: Arc<E>) -> Result<()>;
+    async fn copy_session_config(&self, from: ArcStr, to: ArcStr) -> Result<()>;
 }
 ```
 

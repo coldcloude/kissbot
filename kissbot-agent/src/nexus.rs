@@ -104,7 +104,7 @@ mod tests {
     use kissbot_channel_client::Terminal;
     use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelConfig, ProviderConfig, ProviderModelConfig, Session};
 
-    use crate::configs::{ChannelBatchConfig, ChannelConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
+    use crate::configs::{ChannelBatchConfig, ChannelConfig, CompressConfig, EffectiveCompressConfig, EffectiveMemoryPipelineConfig, MemoryPipelineConfig, PipelineConfig};
     use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor};
     use crate::pipelines::{outgoing_channel, pipeline_session_id, MemorySummaryPipeline, DefaultAgenticLoopPipeline, DefaultAgenticLoopPipelineWithMemory};
     use crate::types::{ChannelCommand, Error, MemoryKey};
@@ -181,6 +181,32 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(calls.load(Ordering::Relaxed), expected, "{}", message);
+    }
+
+    /// 在 context 目录中查找前缀匹配且不是 exclude 的消息缓存文件，返回其 session_id
+    /// （话题切换后的新 session_id 自动生成，测试通过缓存文件名反查）
+    fn find_new_session_id(prefix: &str, exclude: &str) -> Option<ArcStr> {
+        let dir = std::path::Path::new(ConfigManager::get().context_dir());
+        std::fs::read_dir(dir).ok()?
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let id = name.strip_suffix(".msgs.jsonl")?;
+                (id != exclude && id.starts_with(prefix)).then(|| ArcStr::from(id))
+            })
+            .next()
+    }
+
+    /// 等待话题切换后新 session 的缓存出现，返回新 session_id
+    async fn wait_for_new_session_id(prefix: &str, exclude: &str) -> ArcStr {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(id) = find_new_session_id(prefix, exclude) {
+                return id;
+            }
+            assert!(Instant::now() < deadline, "未等到新 session 的缓存文件: {}", prefix);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     // ===== 消息入口链路（incoming_message → 合批 → pipeline → session 上下文） =====
@@ -753,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn role_mode_without_load_memory_archives_context_when_topic_changes() {
+    async fn role_mode_topic_change_switches_to_new_session_and_inherits_config() {
         ensure_test_globals().await;
         let cm = ConfigManager::get();
 
@@ -780,9 +806,14 @@ mod tests {
             model: Some(ArcStr::from(model)),
             ..Default::default()
         }).await.unwrap();
+        // 开启 load_memory：话题判定不再依赖该开关
         cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
             session_id.clone(),
-            &MemoryPipelineConfig { load_memory: Some(false) },
+            &MemoryPipelineConfig { load_memory: Some(true) },
+        ).await.unwrap();
+        cm.set_session_config::<CompressConfig, EffectiveCompressConfig>(
+            session_id.clone(),
+            &CompressConfig { compress_prompt: None, compress_threshold: Some(0.5) },
         ).await.unwrap();
 
         // 预置上一件事的上下文
@@ -796,24 +827,43 @@ mod tests {
             },
         ]).await.unwrap();
 
-        // 触发新一批消息：判定为不同 → 归档旧上下文，只保留新消息后运行
+        // 触发新一批消息：判定为不同 → 换用新 session_id 与空上下文运行
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-switch", "r-topic-switch")).await;
         pipeline.incoming_message_batch(vec![incoming_event("topic-m1", "新问题")]).await;
 
-        // 当前上下文只剩新消息与本次回复（批次任务异步消费，轮询等待写入完成）
-        wait_for_context(session_id.clone(), |ctx| {
+        let new_session_id = wait_for_new_session_id(session_id.as_str(), session_id.as_str()).await;
+        assert_ne!(new_session_id, session_id, "话题切换应换新的 session_id");
+
+        // 新 session 只包含本批新消息与本次回复
+        wait_for_context(new_session_id.clone(), |ctx| {
             ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题"))
                 && ctx.iter().any(|m| matches!(m, Message::User { content } if content.contains("新问题")))
                 && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
-        }, "旧上下文应被归档清空且新对话写入").await;
+        }, "新 session 应从空上下文开始且写入新对话").await;
 
-        // 旧上下文进入版本目录
+        // 旧 session 不归档、不清空：缓存原样保留
+        let old_reloaded = Session::new(cm.context_dir(), session_id.clone());
+        old_reloaded.recover_from_cache().await.unwrap();
+        assert!(old_reloaded.build_context_full().await.iter()
+            .any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "旧上下文应保留在原 session 缓存中");
         let versions_dir = std::path::Path::new(cm.context_dir()).join("versions");
-        let archived = std::fs::read_dir(&versions_dir).unwrap()
+        let archived = std::fs::read_dir(&versions_dir).map(|entries| entries
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(session_id.as_str()))
-            .any(|entry| std::fs::read_to_string(entry.path()).map(|text| text.contains("旧问题")).unwrap_or(false));
-        assert!(archived, "旧上下文应归档到 context/versions");
+            .any(|entry| std::fs::read_to_string(entry.path()).map(|text| text.contains("旧问题")).unwrap_or(false)))
+            .unwrap_or(false);
+        assert!(!archived, "话题切换不保存版本");
+
+        // 新 session 继承旧 session 的整份 session 级配置
+        let llm = cm.session_config::<LLMConfig, EffectiveLLMConfig>(new_session_id.clone()).await;
+        assert_eq!(llm.provider.as_str(), provider);
+        assert_eq!(llm.model.as_str(), model);
+        let memory = cm.session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(new_session_id.clone()).await;
+        assert!(memory.load_memory, "load_memory 随 session 配置继承");
+        let compress = cm.session_config::<CompressConfig, EffectiveCompressConfig>(new_session_id).await;
+        assert_eq!(compress.compress_threshold, 0.5, "其它 session 配置同样继承");
+
         assert_eq!(calls.load(Ordering::Relaxed), 2, "一次话题判定 + 一次正式运行");
     }
 
@@ -844,7 +894,7 @@ mod tests {
         }).await.unwrap();
         cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
             session_id.clone(),
-            &MemoryPipelineConfig { load_memory: Some(false) },
+            &MemoryPipelineConfig { load_memory: Some(true) },
         ).await.unwrap();
         let old = Session::new(cm.context_dir(), session_id.clone());
         old.context_append(vec![
@@ -860,10 +910,12 @@ mod tests {
         pipeline.incoming_message_batch(vec![incoming_event("ambiguous-m1", "新问题")]).await;
 
         // 两次判定回答都不是精确的 YES/NO → 按同一件事处理，随后正式运行一次
-        wait_for_context(session_id, |ctx| {
+        wait_for_context(session_id.clone(), |ctx| {
             ctx.iter().any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题"))
                 && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
         }, "无法判定时按同一件事处理，旧上下文应保留且本次回复应写入").await;
+        assert!(find_new_session_id(session_id.as_str(), session_id.as_str()).is_none(),
+            "按同一件事处理时不应创建新 session");
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 写死重试一次 + 正式运行");
     }
 
@@ -894,7 +946,7 @@ mod tests {
         }).await.unwrap();
         cm.set_session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(
             session_id.clone(),
-            &MemoryPipelineConfig { load_memory: Some(false) },
+            &MemoryPipelineConfig { load_memory: Some(true) },
         ).await.unwrap();
         let old = Session::new(cm.context_dir(), session_id.clone());
         old.context_append(vec![
@@ -909,11 +961,18 @@ mod tests {
         let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("a-topic-retry-once", "r-topic-retry-once")).await;
         pipeline.incoming_message_batch(vec![incoming_event("retry-once-m1", "新问题")]).await;
 
-        // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 正式运行
-        wait_for_context(session_id, |ctx| {
+        // 首次 MAYBE（非精确）→ 写死用 RETRY_PROMPT 重试一次 → NO（不同）→ 换新 session 运行
+        let new_session_id = wait_for_new_session_id(session_id.as_str(), session_id.as_str()).await;
+        wait_for_context(new_session_id, |ctx| {
             ctx.iter().all(|m| !matches!(m, Message::User { content } if content.as_str() == "旧问题"))
                 && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
-        }, "重试确认不同后应归档清空旧上下文").await;
+        }, "重试确认不同后应换新 session").await;
+        // 旧上下文仍在原 session 缓存中
+        let old_reloaded = Session::new(cm.context_dir(), session_id);
+        old_reloaded.recover_from_cache().await.unwrap();
+        assert!(old_reloaded.build_context_full().await.iter()
+            .any(|m| matches!(m, Message::User { content } if content.as_str() == "旧问题")),
+            "旧上下文应保留在原 session 缓存中");
         assert_eq!(calls.load(Ordering::Relaxed), 3, "首次判定 + 重试一次 + 正式运行");
     }
 
