@@ -6,7 +6,7 @@ use kissbot_api::{ChannelUser, write_key_value};
 use tokio::sync::RwLock;
 
 use kissbot_api::{MergeEffectiveConfig, MergeSelf};
-use kissbot_llm::{EffectiveModelConfig, LLMConfig, ProviderConfig, ProviderModelConfig};
+use kissbot_llm::{EffectiveModelConfig, ProviderConfig, ProviderModelConfig};
 
 use crate::configs::*;
 use crate::types::*;
@@ -340,33 +340,11 @@ impl ConfigManager {
     }
 
     /// 把 from 的整份 session 配置复制到 to 并落盘（to 已有配置时整体覆盖）。
-    /// from 没有 session 配置时，用 agent → role 合成的有效配置作为来源
-    pub async fn copy_session_config(&self, agent_id: &str, role_name: &str, from: ArcStr, to: ArcStr) -> Result<()> {
-        let source = self.nexus_repo.read().await.sessions.get(&from).cloned();
-        let config_map = match source {
-            Some(config_map) => config_map,
-            None => {
-                // from 没有配置：按 agent → role 合成各配置项有效值（与建立 session 时导入的值一致）
-                let mut config_map = SessionConfigMap::default();
-                let llm: LLMConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(llm.get_effective_config()));
-                let memory_recover: MemoryRecoverConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(memory_recover.get_effective_config()));
-                let compress: CompressConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(compress.get_effective_config()));
-                let memory_pipeline: MemoryPipelineConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(memory_pipeline.get_effective_config()));
-                let channel_batch: ChannelBatchConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(channel_batch.get_effective_config()));
-                let out_channel: OutChannelConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(out_channel.get_effective_config()));
-                let group_set: GroupSetConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-                config_map.insert(Arc::new(group_set.get_effective_config()));
-                Arc::new(config_map)
-            }
-        };
+    /// from 不存在时写入空配置，后续按需用 `C::default()` 建项
+    pub async fn copy_session_config(&self, from: ArcStr, to: ArcStr) -> Result<()> {
         self.write_nexus_config(|repo| {
             let sessions = Arc::make_mut(&mut repo.sessions);
+            let config_map = sessions.get(&from).cloned().unwrap_or_default();
             sessions.insert(to, config_map);
             Ok(())
         }).await
@@ -1215,7 +1193,7 @@ mod tests {
             from.clone(), &MemoryPipelineConfig { load_memory: Some(false) }).await.unwrap();
 
         let to = ArcStr::from("a1-r1-new");
-        manager.copy_session_config("a1", "r1", from.clone(), to.clone()).await.unwrap();
+        manager.copy_session_config(from.clone(), to.clone()).await.unwrap();
 
         let llm = manager.session_config::<LLMConfig, EffectiveLLMConfig>(to.clone()).await;
         assert_eq!(llm.model.as_str(), "deepseek-chat", "LLM 配置整体复制");
@@ -1229,28 +1207,6 @@ mod tests {
             to.clone(), &llm_config("openai", "gpt-4o")).await.unwrap();
         let origin = manager.session_config::<LLMConfig, EffectiveLLMConfig>(from).await;
         assert_eq!(origin.model.as_str(), "deepseek-chat", "原 session 不受影响");
-    }
-
-    #[tokio::test]
-    async fn copy_session_config_falls_back_to_agent_role_when_source_missing() {
-        let dir = tempdir().unwrap();
-        let manager = test_manager(&dir);
-        manager.set_agent_role_config::<LLMConfig>(
-            ArcStr::from("a1"), ArcStr::from("r1"),
-            Arc::new(llm_config("deepseek", "deepseek-chat"))).await.unwrap();
-        manager.set_agent_role_config::<MemoryPipelineConfig>(
-            ArcStr::from("a1"), ArcStr::from("r1"),
-            Arc::new(MemoryPipelineConfig { load_memory: Some(false) })).await.unwrap();
-
-        let to = ArcStr::from("a1-r1-new");
-        manager.copy_session_config("a1", "r1", ArcStr::from("no-such-session"), to.clone()).await.unwrap();
-
-        let llm = manager.session_config::<LLMConfig, EffectiveLLMConfig>(to.clone()).await;
-        assert_eq!(llm.model.as_str(), "deepseek-chat", "from 不存在时从 agent/role 解析");
-        let memory = manager.session_config::<MemoryPipelineConfig, EffectiveMemoryPipelineConfig>(to.clone()).await;
-        assert!(!memory.load_memory, "其它配置项同样从 agent/role 解析");
-        let saved = read_nexus_json(&dir);
-        assert_eq!(saved["sessions"]["a1-r1-new"]["llm"]["model"], "deepseek-chat", "回退结果落盘");
     }
 
     #[tokio::test]

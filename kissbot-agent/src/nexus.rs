@@ -415,6 +415,10 @@ mod tests {
 
         // default_memory / memory_summary：接 /model、/mode 与 outgoing；不是自己的命令返回 None
         let key = memory_key("cmd-detect-agent", "");
+        // 预置角色模式 session：pipeline 构造时加载最新角色模式 session，命令写入该 session
+        let role_session = Session::new(
+            ConfigManager::get().context_dir(), pipeline_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &key));
+        role_session.context_append(vec![Message::User { content: ArcStr::from("已有上下文") }]).await.unwrap();
         let memory = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-detect-agent", "")).await;
         assert!(command(memory.clone(), channel_id.clone(), "/send-channel on").await.is_none(),
             "未知命令应返回 None");
@@ -464,6 +468,54 @@ mod tests {
             Some(Err(Error::InvalidCommand(msg))) => assert!(msg.contains("未知模式"), "参数错误文案: {}", msg),
             other => panic!("memory_summary 的 /mode 参数错误应返回 InvalidCommand: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn role_mode_without_saved_session_starts_new_topic_session() {
+        ensure_test_globals().await;
+        let cm = ConfigManager::get();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let base_url = start_mock_same_topic_chat(calls.clone()).await;
+        let provider = "first-topic-provider";
+        let model = "first-topic-model";
+        cm.add_provider(provider, ProviderModelConfig {
+            provider_config: Arc::new(ProviderConfig {
+                provider_type: ArcStr::from("openai"),
+                base_url: ArcStr::from(base_url),
+                api_key: ArcStr::from("k"),
+            }),
+            default_model_config: ModelConfig { max_tokens_usage: 0, timeout_secs: None, retry_count: None },
+            model_configs: Arc::new(HashMap::new()),
+        }).await.unwrap();
+        let agent = "a-first-topic";
+        let role = "r-first-topic";
+        // 没有历史 session：新话题 session 的配置由 agent/role 导入
+        cm.set_agent_role_config::<LLMConfig>(
+            ArcStr::from(agent), ArcStr::from(""), Arc::new(LLMConfig {
+                provider: Some(ArcStr::from(provider)),
+                model: Some(ArcStr::from(model)),
+                ..Default::default()
+            })).await.unwrap();
+
+        let key = memory_key(agent, role);
+        let base_id = pipeline_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &key);
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key(agent, role)).await;
+        pipeline.incoming_message_batch(vec![incoming_event("first-topic-m1", "第一句话")]).await;
+
+        let topic_id = wait_for_new_session_id(base_id.as_str(), base_id.as_str()).await;
+        assert!(topic_id.starts_with(&format!("{}-topic-", base_id)),
+            "无可加载 session 时应新建话题 session: {}", topic_id);
+        wait_for_context(topic_id.clone(), |ctx| {
+            ctx.iter().any(|m| matches!(m, Message::User { content } if content.contains("第一句话")))
+                && ctx.iter().any(|m| matches!(m, Message::Assistant { content, .. } if content.as_str() == Some("新回复")))
+        }, "新话题 session 应写入首轮对话").await;
+        assert!(!std::path::Path::new(cm.context_dir())
+            .join(format!("{}.msgs.jsonl", base_id)).exists(),
+            "不应再使用无话题的 role 模式 session_id");
+        let llm = cm.session_config::<LLMConfig, EffectiveLLMConfig>(topic_id).await;
+        assert_eq!(llm.provider.as_str(), provider, "新话题 session 应从 agent/role 导入配置");
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "无历史上下文时跳过同话题判定，只有一次正式运行");
     }
 
     #[tokio::test]
@@ -531,8 +583,11 @@ mod tests {
             enabled: true,
         }).await;
         let key = memory_key("cmd-outgoing-agent", "");
-        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-outgoing-agent", "")).await;
         let session_id = pipeline_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &key);
+        // 预置角色模式 session：pipeline 构造时加载最新角色模式 session，命令写入该 session
+        let role_session = Session::new(cm.context_dir(), session_id.clone());
+        role_session.context_append(vec![Message::User { content: ArcStr::from("已有上下文") }]).await.unwrap();
+        let pipeline = DefaultAgenticLoopPipelineWithMemory::new(role_key("cmd-outgoing-agent", "")).await;
 
         // 身份未绑定 → 拒绝
         let err = command(pipeline.clone(), channel_id.clone(), "/bind-outgoing web nobody g1").await

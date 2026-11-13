@@ -97,20 +97,15 @@ pub async fn new_session(role_key: &RoleKey, event_id: Option<ArcStr>) -> (Arc<M
 }
 
 /// 创建指定 event 的 session：从 agent/role 导入配置并使用 ego 系统提示词。
-/// 角色模式优先加载该 agent/role 修改时间最新的角色模式 session；没有则用固定基础 id
+/// 角色模式优先加载该 agent/role 修改时间最新的角色模式 session；没有则新建话题 session
 pub async fn new_session_with_memory(role_key: &RoleKey, event_id: Option<ArcStr>) -> (Arc<MemoryKey>, ArcStr, Arc<Session>) {
     let memory_key = MemoryKey::from_role_key(role_key, event_id);
     let session_id = if memory_key.role_event.event_id.is_none() {
         latest_role_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &memory_key).await
-            .unwrap_or_else(|| pipeline_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &memory_key))
+            .unwrap_or_else(|| topic_session_id(&memory_key))
     } else {
         pipeline_session_id(SESSION_PREFIX_DEFAULT_MEMORY, &memory_key)
     };
-    new_session_with_memory_id(memory_key, session_id).await
-}
-
-/// 用指定 session_id 建立 default_memory 的 session：从 agent/role 导入配置（已有不覆盖）并使用 ego 系统提示词
-async fn new_session_with_memory_id(memory_key: Arc<MemoryKey>, session_id: ArcStr) -> (Arc<MemoryKey>, ArcStr, Arc<Session>) {
     import_session_config_from_agent_role::<LLMConfig, EffectiveLLMConfig>(&memory_key, &session_id).await;
     import_session_config_from_agent_role::<MemoryRecoverConfig, EffectiveMemoryRecoverConfig>(&memory_key, &session_id).await;
     import_session_config_from_agent_role::<CompressConfig, EffectiveCompressConfig>(&memory_key, &session_id).await;
@@ -123,8 +118,8 @@ async fn new_session_with_memory_id(memory_key: Arc<MemoryKey>, session_id: ArcS
 }
 
 /// 在本地缓存目录中查找该 agent/role 下属于指定 pipeline 的角色模式 session，返回修改时间最新的一个：
-/// 接受基础 session `{prefix}-{agent}-{role}` 与话题 session `{prefix}-{agent}-{role}-topic-{uuid}`；
-/// event session（`-event-`）不参与，因为 pipeline 重启固定以角色模式开始
+/// 接受话题 session `{prefix}-{agent}-{role}-topic-{uuid}` 与历史版本的基础 session
+/// `{prefix}-{agent}-{role}`；event session（`-event-`）不参与，因为 pipeline 重启固定以角色模式开始
 async fn latest_role_session_id(prefix: &str, memory_key: &MemoryKey) -> Option<ArcStr> {
     let base = pipeline_session_id(prefix, memory_key);
     let mut entries = tokio::fs::read_dir(ConfigManager::get().context_dir()).await.ok()?;
@@ -158,12 +153,7 @@ pub fn topic_session_id(memory_key: &MemoryKey) -> ArcStr {
 /// 话题切换：生成新 session_id，继承当前 session 的整份 session 级配置，建立空 session
 async fn new_topic_session(memory_key: &MemoryKey, current_session_id: ArcStr) -> Result<(ArcStr, Arc<Session>)> {
     let session_id = topic_session_id(memory_key);
-    ConfigManager::get().copy_session_config(
-        memory_key.agent_id.as_str(),
-        memory_key.role_event.role_name.as_str(),
-        current_session_id,
-        session_id.clone(),
-    ).await?;
+    ConfigManager::get().copy_session_config(current_session_id, session_id.clone()).await?;
     let session = create_session_with_prompt(memory_key, session_id.clone()).await;
     Ok((session_id, session))
 }

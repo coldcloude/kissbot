@@ -207,10 +207,10 @@ pipeline 新建 → 当前 event = 角色模式
 
 ```
 default_memory pipeline 构造（进程重启、pipeline 重建、绑定变化）或 /mode role：
-  → 扫描该 agent/role 的角色模式 session（基础 `{prefix}-{agent}-{role}` 与话题 `…-topic-{uuid}`）
+  → 扫描该 agent/role 的角色模式 session（话题 `…-topic-{uuid}` 与历史基础 `{prefix}-{agent}-{role}`）
   → 取消息缓存修改时间最新的一个加载；event session 不参与
   ├─ 找到：沿用该 session 的上下文与已有配置，继续对话
-  └─ 未找到：回退到基础 session id `{prefix}-{agent}-{role}`
+  └─ 未找到：新建话题 session `…-topic-{uuid}`（不再创建无话题的角色模式 session）
 ```
 
 ## 关键设计
@@ -221,8 +221,8 @@ default_memory pipeline 构造（进程重启、pipeline 重建、绑定变化�
 - 当前 event 属于 pipeline：`default` / `default_memory` 切换 event 即切换 session；`memory_summary` 切换 event 即切换 locate 的记忆范围，case session 继续和 case 绑定
 - 记忆读写用 agent_id 直接定位（配置即 agent_id，无需二次解析），role 编码 = 角色名（角色模式）或「角色名-事件 ID」（事件模式）
 - 角色模式：记忆读写覆盖该角色下所有记录；事件模式：只覆盖当前事件的记录
-- session 是 pipeline 内部的执行资源：`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从本地缓存重新读取）；session id 以 pipeline 前缀区分（`default-` / `default-memory-` / `memory-summary-`），`default_memory` 的角色模式 topic session 带 `-topic-` 标记、event session 带 `-event-` 标记；摘要记忆 pipeline 每个 case 一个 session；session 上下文按各自缓存恢复与重建
-- 绑定信息变化产生新 pipeline 时，新 pipeline 从角色模式开始；`default_memory` 会加载该 agent/role 修改时间最新的角色模式 session，`default` / `memory_summary` 按各自的固定规则恢复/构建
+- session 是 pipeline 内部的执行资源：`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从本地缓存重新读取）；session id 以 pipeline 前缀区分（`default-` / `default-memory-` / `memory-summary-`），`default_memory` 的角色模式 session（首个 session 与话题切换）都带 `-topic-` 标记、event session 带 `-event-` 标记；摘要记忆 pipeline 每个 case 一个 session；session 上下文按各自缓存恢复与重建
+- 绑定信息变化产生新 pipeline 时，新 pipeline 从角色模式开始；`default_memory` 会加载该 agent/role 修改时间最新的角色模式 session，找不到时新建话题 session；`default` / `memory_summary` 按各自的固定规则恢复/构建
 
 ### 回复通道
 
