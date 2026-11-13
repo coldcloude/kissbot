@@ -345,33 +345,31 @@ impl ConfigManager {
         let source = self.nexus_repo.read().await.sessions.get(&from).cloned();
         let config_map = match source {
             Some(config_map) => config_map,
-            None => Arc::new(self.session_config_from_agent_role(agent_id, role_name).await),
+            None => {
+                // from 没有配置：按 agent → role 合成各配置项有效值（与建立 session 时导入的值一致）
+                let mut config_map = SessionConfigMap::default();
+                let llm: LLMConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(llm.get_effective_config()));
+                let memory_recover: MemoryRecoverConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(memory_recover.get_effective_config()));
+                let compress: CompressConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(compress.get_effective_config()));
+                let memory_pipeline: MemoryPipelineConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(memory_pipeline.get_effective_config()));
+                let channel_batch: ChannelBatchConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(channel_batch.get_effective_config()));
+                let out_channel: OutChannelConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(out_channel.get_effective_config()));
+                let group_set: GroupSetConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
+                config_map.insert(Arc::new(group_set.get_effective_config()));
+                Arc::new(config_map)
+            }
         };
         self.write_nexus_config(|repo| {
             let sessions = Arc::make_mut(&mut repo.sessions);
             sessions.insert(to, config_map);
             Ok(())
         }).await
-    }
-
-    /// 按 agent → role 合成 session 配置各有效项（与建立 session 时从 agent/role 导入的值一致）
-    async fn session_config_from_agent_role(&self, agent_id: &str, role_name: &str) -> SessionConfigMap {
-        let mut config_map = SessionConfigMap::default();
-        let llm: LLMConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(llm.get_effective_config()));
-        let memory_recover: MemoryRecoverConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(memory_recover.get_effective_config()));
-        let compress: CompressConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(compress.get_effective_config()));
-        let memory_pipeline: MemoryPipelineConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(memory_pipeline.get_effective_config()));
-        let channel_batch: ChannelBatchConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(channel_batch.get_effective_config()));
-        let out_channel: OutChannelConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(out_channel.get_effective_config()));
-        let group_set: GroupSetConfig = self.agent_role_config(agent_id, role_name).await.unwrap_or_default();
-        config_map.insert(Arc::new(group_set.get_effective_config()));
-        config_map
     }
 
     // ---------- providers CRUD（管理 API 使用，落盘） ----------
