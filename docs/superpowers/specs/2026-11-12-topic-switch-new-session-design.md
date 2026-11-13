@@ -34,9 +34,10 @@ session 的上下文。本次调整：
 
 1. 生成新 `session_id`：`{prefix}-{agent_id}-{role}-topic-{uuid}`（prefix 为
    `default-memory`），保证不重复。
-2. `ConfigManager::copy_session_config` 把切换前 session 的整份 session 级配置
-   复制给新 id 并落盘。因此 `/model`、`/bind-outgoing`、`/load-memory` 等命令写入的
-   当前配置以及 agent/role 导入值全部保留。
+2. `ConfigManager::copy_session_config(agent_id, role_name, from, to)` 把切换前 session 的
+   整份 session 级配置复制给新 id 并落盘。因此 `/model`、`/bind-outgoing`、`/load-memory`
+   等命令写入的当前配置以及 agent/role 导入值全部保留；切换前 session 没有配置时，
+   按该 agent → role 合成的有效配置作为来源。
 3. 用新 id 建立空 session（新 id 没有本地缓存），系统提示词按 ego 重新生成。
 4. 替换 pipeline 当前 session 与 token 占用记录（`last_total_tokens` 归零）；
    `memory_key`（记忆范围）不变。

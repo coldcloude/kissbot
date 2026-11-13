@@ -158,7 +158,12 @@ pub fn topic_session_id(memory_key: &MemoryKey) -> ArcStr {
 /// 话题切换：生成新 session_id，继承当前 session 的整份 session 级配置，建立空 session
 async fn new_topic_session(memory_key: &MemoryKey, current_session_id: ArcStr) -> Result<(ArcStr, Arc<Session>)> {
     let session_id = topic_session_id(memory_key);
-    ConfigManager::get().copy_session_config(current_session_id, session_id.clone()).await?;
+    ConfigManager::get().copy_session_config(
+        memory_key.agent_id.as_str(),
+        memory_key.role_event.role_name.as_str(),
+        current_session_id,
+        session_id.clone(),
+    ).await?;
     let session = create_session_with_prompt(memory_key, session_id.clone()).await;
     Ok((session_id, session))
 }

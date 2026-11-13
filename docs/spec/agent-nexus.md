@@ -124,9 +124,9 @@ kissbot-agent 使用三份配置：
 - `session_config::<C, E>(session_id) -> Arc<E>`：按 session_id 读；缺失时用 `C::default()` 的有效配置建项并缓存（不落盘）。
 - `set_session_config::<C, E>(session_id, config)`：把 `C` 覆盖合并进 session 有效配置并落盘；缺失时以 `C::default()` 为基底。
 - `set_session_config_if_not_exists::<E>(session_id, config)`：session 配置项已存在则保留，否则写入并落盘。
-- `copy_session_config(from, to)`：把 `from` 的整份 session 配置复制给 `to` 并落盘，用于角色模式话题切换后新 session 继承当前配置。
+- `copy_session_config(agent_id, role_name, from, to)`：把 `from` 的整份 session 配置复制给 `to` 并落盘；`from` 没有 session 配置时，用该 agent → role 合成的有效配置作为来源。用于角色模式话题切换后新 session 继承当前配置。
 
-`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress、memory_recover、memory_pipeline、channel_batch、out_channel、group_set）；`default_memory` 同时导入 memory_recover 与 compress 两套降阈值配置，运行期切换 `load_memory` 后立即生效；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。`default_memory` 每次切换 event 读取/新建 session 时导入一次配置（已有 session 配置不覆盖）；`/model`、`/bind-outgoing`、`/load-memory` 只写当前 event 的 session，切换 event 后新 session 使用 agent/role 初始配置。角色模式话题切换产生的新 session 不走 agent/role 导入，而是用 `copy_session_config` 整体继承切换前 session 的配置。另有 `ConfigManager::provider_model_config(provider, model)`。
+`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent/role 导入配置（llm、compress、memory_recover、memory_pipeline、channel_batch、out_channel、group_set）；`default_memory` 同时导入 memory_recover 与 compress 两套降阈值配置，运行期切换 `load_memory` 后立即生效；`default` 不依赖 agent/role，只读 session 配置，send 遇到 `ModelProviderNotFound` 时记录 error 并结束本次 run。运行期只按 session_id 读 session 配置，不再做 agent/role 合成。`/model` 读取当前 session 有效配置、合并 provider/model 后写回并落盘；因此建立 session 后修改 agent/role 配置不会影响该 session，重建 session 或重启后才重新导入。`default_memory` 每次切换 event 读取/新建 session 时导入一次配置（已有 session 配置不覆盖）；`/model`、`/bind-outgoing`、`/load-memory` 只写当前 event 的 session，切换 event 后新 session 使用 agent/role 初始配置。角色模式话题切换产生的新 session 不走 agent/role 导入，而是用 `copy_session_config` 整体继承切换前 session 的配置（切换前 session 没有配置时按 agent/role 合成）。另有 `ConfigManager::provider_model_config(provider, model)`。
 
 `out_channel` 由 pipeline 命令写入 pipeline 自己的 session 配置（`default_memory` 写当前 session，`memory_summary` 写基准 session `memory-summary-{agent_id}-{role_name}-none`），运行期从同一 session 读取；agent/role 级 `out_channel` 只作为建立 session 时的初始值导入，之后以 session 级值为准。
 
@@ -319,7 +319,7 @@ impl ConfigManager {
     async fn session_config<C, E>(&self, session_id: ArcStr) -> Arc<E>;
     async fn set_session_config<C, E>(&self, session_id: ArcStr, config: &C) -> Result<()>;
     async fn set_session_config_if_not_exists<E>(&self, session_id: ArcStr, config: Arc<E>) -> Result<()>;
-    async fn copy_session_config(&self, from: ArcStr, to: ArcStr) -> Result<()>;
+    async fn copy_session_config(&self, agent_id: &str, role_name: &str, from: ArcStr, to: ArcStr) -> Result<()>;
 }
 ```
 
