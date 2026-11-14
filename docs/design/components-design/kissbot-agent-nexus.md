@@ -207,7 +207,7 @@ pipeline 新建 → 当前 event = 角色模式
 
 ```
 default_memory pipeline 构造（进程重启、pipeline 重建、绑定变化）或 /mode role：
-  → 扫描该 agent/role 的角色模式 session（话题 `…-topic-{uuid}` 与历史基础 `{prefix}-{agent}-{role}`）
+  → 扫描该 agent/role 的话题 session（`…-topic-*`）
   → 取消息缓存修改时间最新的一个加载；event session 不参与
   ├─ 找到：沿用该 session 的上下文与已有配置，继续对话
   └─ 未找到：新建话题 session `…-topic-{uuid}`（不再创建无话题的角色模式 session）

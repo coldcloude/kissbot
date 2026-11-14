@@ -44,7 +44,7 @@ session 的上下文。本次调整：
    但不再使用。
 6. 批次末尾统一调用一次 `run`，把本批新消息追加到新 session。
 
-`copy_session_config` 失败时记 warn 并沿用原 session 运行（不切换）。
+`copy_session_config` 失败时忽略错误，仍按新 session 处理。
 
 ## 判定为相同或无法判定
 
@@ -66,9 +66,9 @@ session 的上下文。本次调整：
 
 - `kissbot-agent/src/pipelines.rs`：
   - `topic_session_id`：生成不重复的新 session_id；
-  - `create_session_with_prompt`：建立 session 并应用 ego 提示词（`new_session_with_memory`
-    与话题切换共用）；
-  - `new_topic_session`：复制配置 + 建立空 session；
+  - `create_session_with_prompt`：建立 session 并应用 ego 提示词；
+  - `new_session_with_memory_id`：按指定 id 建立 session 并补齐 agent/role 配置；
+  - 话题切换的配置复制与空 session 建立内联在 `incoming_message_batch`；
   - `DefaultAgenticLoopWithMemoryExecutor::topic_changed`：同话题判断；
   - `incoming_message_batch` 改为 `&mut self`，判定为不同时替换 session；
   - `PipelineTaskExecutor` 的批次入口同步改为 `&mut self`。

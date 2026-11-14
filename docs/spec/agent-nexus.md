@@ -149,8 +149,8 @@ kissbot-agent 使用三份配置：
 |----|------|
 | session 持有 | session 由 pipeline 创建并持有：`default` / `default_memory` 内存中只保留当前 event 的一个 `Arc<Session>`，切换 event 时释放旧 session 并从本地缓存重新读取；`default_memory` 角色模式话题切换时同样释放旧 session，改用新 id 的空会话；pipeline 重建或从事件模式切回角色模式时，扫描该 agent/role 下修改时间最新的角色模式 session 并加载，找不到时新建话题 session；`memory_summary` 按 case 持有；pipeline 丢弃时 session 随 Arc 释放 |
 | session 配置 | `default_memory` / `memory_summary` 建立 session 前从 agent/role 导入；角色模式话题切换的新 session 用 `copy_session_config` 继承当前 session 配置；`default` 只用 session 配置；运行期都只按 session_id 读 |
-| 默认 pipeline 的 session_id | `pipelines::pipeline_session_id(prefix, memory_key)`：`default` 用前缀 `default`，`default_memory` 用前缀 `default-memory`；`default` 角色模式 `{prefix}-{agent_id}-{role}`；`default_memory` 角色模式新建 `{prefix}-{agent_id}-{role}-topic-{uuid}`（历史基础 session `{prefix}-{agent_id}-{role}` 只作为加载候选），事件模式 `{prefix}-{agent_id}-{role}-event-{event}` |
-| 角色模式 session 的加载 | `default_memory` 构造 pipeline 或 `/mode role` 时，在 `<data_dir>/context/` 中匹配历史基础 session `{prefix}-{agent}-{role}` 与话题 session `{prefix}-{agent}-{role}-topic-{uuid}` 的 `.msgs.jsonl`，取修改时间最新的一个；event session 不参与；没有匹配时新建话题 session `{prefix}-{agent}-{role}-topic-{uuid}`。旧的无前缀缓存不参与扫描 |
+| 默认 pipeline 的 session_id | `pipelines::pipeline_session_id(prefix, memory_key)`：`default` 用前缀 `default`，`default_memory` 用前缀 `default-memory`；`default` 角色模式 `{prefix}-{agent_id}-{role}`；`default_memory` 角色模式 `{prefix}-{agent_id}-{role}-topic-{uuid}`，事件模式 `{prefix}-{agent_id}-{role}-event-{event}` |
+| 角色模式 session 的加载 | `default_memory` 构造 pipeline 或 `/mode role` 时，在 `<data_dir>/context/` 中匹配话题 session `{prefix}-{agent}-{role}-topic-*` 的 `.msgs.jsonl`，取修改时间最新的一个；event session 不参与；没有匹配时新建话题 session `{prefix}-{agent}-{role}-topic-{uuid}`。旧的无前缀缓存与无话题的基础 session 不参与扫描 |
 | 摘要记忆 case 的 session_id | 摘要记忆 pipeline 自己拼：`memory-summary-{agent_id}-{role_name}-{case_name}`（前缀由 `SESSION_PREFIX_MEMORY_SUMMARY` 提供；case_name 的 `/` 编码为 `.`、`[`/`]` 替换为 `_`），pipeline 只保存 case → session；基准（无 case）session 为 `memory-summary-{agent_id}-{role_name}-none`，同时承担 pipeline 入口配置与入口阶段配置读取 |
 | 上下文本体 | 交给 kissbot-llm 的 Session/SessionContext（内存消息 + 本地缓存 + 版本一体） |
 | 恢复 | 建立 session 时分别回读 `<data_dir>/context/<session_id>.sys.jsonl`（系统提示词，可为缺省）与 `<data_dir>/context/<session_id>.msgs.jsonl`（消息，正序全量）；崩溃一致性清理（丢弃悬挂 tool_calls 尾部与开头孤立 Tool 行）在 kissbot-llm 内完成 |
@@ -299,17 +299,16 @@ struct MemoryKey { agent_id: ArcStr, role_event: Arc<RoleEvent> }
 
 // 当前 event 由 pipeline 在内存中维护（None = 角色模式），新建 pipeline 时为 None，不写配置
 
-// session id（缓存/版本文件名段）由 pipelines::pipeline_session_id(prefix, memory_key) / topic_session_id 生成：
+// session id（缓存/版本文件名段）由 pipelines::pipeline_session_id(prefix, memory_key) / topic_session_id(prefix, memory_key) 生成：
 //   default: default-{agent_id}-{role}[-event-{event}]
 //   default_memory: 角色模式为 default-memory-{agent_id}-{role}-topic-{uuid}；事件模式为 ...-event-{event}
-//                   （历史基础 session default-memory-{agent_id}-{role} 仅作为加载候选）
 //   memory_summary: memory-summary-{agent_id}-{role_name}-{case_name|none}
 
 // session 由 pipeline 创建并持有（Arc<Session>），id 由 pipeline 生成；
 // default / default_memory 内存中只保留当前 event 的一个 session，切换 event 时释放旧 session 并从缓存重新读取；
 // default_memory 角色模式首个 session 与话题切换都新建 ...-topic-{uuid}；话题切换继承当前 session 配置；
-// default_memory 构造 pipeline 或 /mode role 时扫描该 agent/role 修改时间最新的角色模式 session
-// （话题或历史基础 session，不含 event），没有匹配时新建话题 session；
+// default_memory 构造 pipeline 或 /mode role 时扫描该 agent/role 修改时间最新的话题 session（不含 event），
+// 没有匹配时新建话题 session；
 // 建立时从 <data_dir>/context/<session_id>.sys.jsonl 与 .msgs.jsonl 恢复，并按 agent/role 固化 session 配置；
 // 归档同时写 <data_dir>/context/versions/<session_id>-<后缀>.sys.jsonl 与 .msgs.jsonl，可与当前缓存互换
 

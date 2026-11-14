@@ -20,12 +20,12 @@ session 前缀是 pipeline 名中的 `_` 写作 `-`，由常量统一提供：
 | pipeline | 角色模式 | 话题切换 | 事件模式 |
 |---|---|---|---|
 | `default` | `default-{agent}-{role}` | — | `default-{agent}-{role}-event-{event}` |
-| `default_memory` | 新建 `default-memory-{agent}-{role}-topic-{uuid}`（历史基础 `…-{agent}-{role}` 仅作为加载候选） | `default-memory-{agent}-{role}-topic-{uuid}` | `default-memory-{agent}-{role}-event-{event}` |
+| `default_memory` | `default-memory-{agent}-{role}-topic-{uuid}` | `default-memory-{agent}-{role}-topic-{uuid}` | `default-memory-{agent}-{role}-event-{event}` |
 | `memory_summary` | `memory-summary-{agent}-{role}-{case}` | — | — |
 
 - `default_memory` 的角色模式首个 session 与后续话题切换都使用 `topic` 形式，不再新建无话题的
-  `{prefix}-{agent}-{role}`；该历史形式只作为加载候选。
-- 话题 session 的 `topic` 段后固定是 UUID；扫描时按 UUID 解析识别话题 session。
+  `{prefix}-{agent}-{role}`；该历史形式也不参与扫描。
+- 话题 session 由 `topic_session_id` 生成，`topic` 段后是 UUID；扫描时只按 `-topic-` 前缀识别，不校验后缀格式。
 - 旧的无前缀缓存不迁移，也不参与扫描；`memory_summary` 的命名值不变，只是前缀
   改用统一常量。
 - event session 带 `-event-` 标记，与角色模式 / 话题 session 区分。
@@ -38,8 +38,8 @@ session 前缀是 pipeline 名中的 `_` 写作 `-`，由常量统一提供：
 规则：
 
 1. 在 `<data_dir>/context/` 中查找 `.msgs.jsonl` 缓存文件；
-2. 接受 session_id 等于历史基础 id `{prefix}-{agent}-{role}`，或等于
-   `{prefix}-{agent}-{role}-topic-{uuid}`（UUID 可解析）；event session 不参与；
+2. 只接受 `{prefix}-{agent}-{role}-topic-*`（按 `-topic-` 前缀识别）；
+   event session 与无话题的基础 session 都不参与；
 3. 取文件修改时间最新的一个；
 4. 找到则用该 id 建立 session：session 配置已存在则保留，缺失时按 agent/role 导入；
    上下文从该 id 的本地缓存恢复；
@@ -63,10 +63,10 @@ session 前缀是 pipeline 名中的 `_` 写作 `-`，由常量统一提供：
   - `SESSION_PREFIX_DEFAULT` / `SESSION_PREFIX_DEFAULT_MEMORY` /
     `SESSION_PREFIX_MEMORY_SUMMARY`；
   - `pipeline_session_id(prefix, memory_key)`：按前缀与模式拼 session id；
-  - `topic_session_id`：`…-topic-{uuid}`；
-  - `latest_role_session_id`：按修改时间扫描角色模式 session；
+  - `topic_session_id(prefix, memory_key)`：`…-topic-{uuid}`；
+  - `get_or_create_latest_topic_session_id`：按修改时间取最新话题 session id，没有则生成新话题 session id；
   - `new_session_with_memory_id`：按指定 id 建立 session 并补齐缺失配置；
-  - `new_session_with_memory`：角色模式先扫描最新 session，找不到则新建话题 session。
+  - pipeline 构造与 `/mode` 的 session 解析（加载最新或新建话题）内联在调用位置。
 - `kissbot-agent/src/pipelines/memory_summary_pipeline.rs`：case session id 使用
   统一前缀常量。
 
@@ -74,8 +74,8 @@ session 前缀是 pipeline 名中的 `_` 写作 `-`，由常量统一提供：
 
 - 单元测试：各 pipeline / 模式的 session id 格式；话题 id 唯一且带 `topic` 标记。
 - 集成测试：
-  - 构造前写入基础（较旧）、话题（较新）、event（最新）三个 session，重建
-    pipeline 后加载话题 session，且不写基础与 event session；
-  - `/mode event` 后 `/mode role` 加载最新角色模式 session；
+  - 构造前写入较旧话题、最新话题、event（最新但不参与）三个 session，重建
+    pipeline 后加载最新话题 session，且不写较旧话题与 event session；
+  - `/mode event` 后 `/mode role` 加载最新话题 session；
   - 原有话题切换、事件模式与命令测试随命名调整更新。
 - 验证命令：`cd kissbot-agent && cargo test`、`cargo build`。

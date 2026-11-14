@@ -228,7 +228,7 @@ sequenceDiagram
     alt pipeline 未装配
         PLS->>PLS: 按 agent/role 的 pipeline_name 创建 pipeline
         alt default / default_memory
-            PL->>PL: 创建当前 event（新建时为角色模式）的 session（pipelines::pipeline_session_id(prefix, memory_key)，prefix 区分 pipeline）；default_memory 角色模式优先加载修改时间最新的角色模式 session（历史基础或 topic，不含 event），找不到则新建话题 session；recover_from_cache（每次切换 event 重新读取）
+            PL->>PL: 创建当前 event（新建时为角色模式）的 session（pipelines::pipeline_session_id(prefix, memory_key)，prefix 区分 pipeline）；default_memory 角色模式加载修改时间最新的话题 session（不含 event），找不到则新建话题 session；recover_from_cache（每次切换 event 重新读取）
         else memory_summary
             Note over PL: 构造时不建 session；基准（-none）session 在入口/命令处理时创建，case session 在首次 run 时创建；每个新 session 创建时现场组装系统提示词
         end
