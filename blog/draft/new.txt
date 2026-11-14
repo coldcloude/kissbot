@@ -20,3 +20,5 @@ memory summary pipeline 中应维持channel（messenger+user+group）和event的
 
 default memory pipeline 中检查是否持续上一话题的检查，不再看load_memory，只要是role模式都检查。如果判断切换了事件，则换一个新的session_id（不再使用固定的，而是自动生成一个不重复的），换一个新的session使用这个新id（注意不是保存版本）。
 由于切换事件在两次run间触发，而load_memory只作用于一次run的压缩过程中，因此其实两件事互不干扰
+
+default memory pipeline 切换到role模式或者新建进入role模式，查找最近的session，如果查找不到，新建一个话题session
