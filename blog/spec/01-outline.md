@@ -72,7 +72,8 @@
 - 一个 Agent 实例可以只启动 Station 不启动 Nexus，也可以只启动不包含工具的 Station
 - 一个 agent 可以包含多个 Agent 实例，Nexus 也支持多个，但共用一个记忆
 - ConfigManager 作为 agent 的统一配置来源，包括 Nexus 和 Station 的配置
-- Nexus、Station、ConfigManager 作为全局单例，方便各组件调用
+
+- 详见 [agent](./agent.md)
 
 #### Station
 
@@ -85,10 +86,10 @@
 
 - 基本流程
   1. ChannelManager 实现 Terminal trait，从各 Channel 实例中接收消息
-  2. Channel 绑定 agent_id + role_name，并可以选择使用 Role 模式，或 Event 模式
-    - Role 模式只有一套运行环境
-    - Event 模式中，每个 Event 有一套运行环境
-  3. 根据 Channel 绑定的 agent_id 和 role 找到对应的 Pipeline 实例，Pipeline管理整个消息处理流程
+  2. Channel 绑定 agent_id + role_name，并对应一个 Pipeline 实例，Pipeline 实例管理整个消息处理流程
+  3. Pipeline 实例决定记忆的使用方式
+  4. Pipeline 新建时使用 Role 模式，当前事件仅在 Pipeline 中保存
+  5. Pipeline 可以从 Channel 消息中解析指令，决定 Role 模式或 Event 模式
 
 - 详见 [agent-nexus](./agent-nexus.md)
 
