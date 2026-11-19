@@ -136,10 +136,6 @@ impl ConfigManager {
         self.agent_config.station_port
     }
 
-    pub fn data_dir(&self) -> &str {
-        self.agent_config.data_dir.as_str()
-    }
-
     /// 会话上下文目录（<data_dir>/context）：SessionContext 的 data_dir 直接用它，
     /// 当前缓存放其下、版本放其 versions/ 子目录（保持原有缓存路径不变）
     pub fn context_dir(&self) -> &str {
@@ -425,13 +421,6 @@ impl ConfigManager {
         self.nexus_repo.read().await.clone()
     }
 
-    // ---------- memory_structs ----------
-    // memory-struct 功能未实现，待后续接入时使用
-    pub async fn memory_structs(&self) -> Vec<MemoryStructConfig> {
-        let repo = self.nexus_repo.read().await;
-        repo.memory_structs.iter().map(|(_, v)| v.as_ref().clone()).collect()
-    }
-
     // ===== admins =====
     /// 添加管理权限（回写 NexusRepo；channel 不存在则报错）
     pub async fn add_admin(&self, channel_id: &str, admin: Arc<ChannelUser>) -> Result<()> {
@@ -502,7 +491,6 @@ mod tests {
         // 首次创建为空默认（provider / (agent, role) 配置 / session 配置由模板或管理 API 填写）
         assert!(repo.channels.is_empty());
         assert!(repo.providers.is_empty());
-        assert!(repo.memory_structs.is_empty());
         assert!(repo.agent_roles.is_empty());
         assert!(repo.pipelines.is_empty());
         assert!(repo.sessions.is_empty());
@@ -609,7 +597,7 @@ mod tests {
 
     #[test]
     fn nexus_repo_serde_roundtrip() {
-        // NexusRepo 的形状：channels/providers/memory_structs/agent_roles/sessions
+        // NexusRepo 的形状：channels/providers/agent_roles/pipelines/sessions
         // （模型由 provider 配置 + (agent, role) llm 配置表达）
         let mut repo = NexusRepo::default();
         {
@@ -644,7 +632,6 @@ mod tests {
         let repo = NexusRepo::default();
         assert!(repo.channels.is_empty());
         assert!(repo.providers.is_empty());
-        assert!(repo.memory_structs.is_empty());
         assert!(repo.agent_roles.is_empty(), "agent_roles 初始为空 map");
         assert!(repo.pipelines.is_empty(), "pipelines 初始为空 map");
         assert!(repo.sessions.is_empty(), "sessions 初始为空 map");
@@ -656,7 +643,6 @@ mod tests {
         let json = r#"{
             "channels": {},
             "providers": {},
-            "memory_structs": {},
             "agent_roles": {},
             "memory_sessions": [],
             "raw_sessions": {}

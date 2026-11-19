@@ -22,7 +22,6 @@
       "model_configs": {}
     }
   },
-  "memory_structs": {},
   "pipelines": {
     "0": {
       "": { "pipeline_name": "default_memory" }

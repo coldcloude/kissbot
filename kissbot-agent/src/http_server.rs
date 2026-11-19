@@ -472,6 +472,12 @@ mod tests {
         }).await;
     }
 
+    /// 读回落盘的 nexus.json（ConfigManager 的 data_dir = <tempdir>/data）
+    fn saved_nexus_json() -> serde_json::Value {
+        let path = TEST_DIR.get().expect("test_manager 应先初始化").path().join("data").join("nexus.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     async fn send(app: axum::Router, method: &str, uri: &str, key: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
         let mut builder = Request::builder().method(method).uri(uri);
         if !key.is_empty() {
@@ -541,7 +547,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["success"], true);
         // 落盘验证（ConfigManager data_dir = <tempdir>/data）
-        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::path::Path::new(ConfigManager::get().data_dir()).join("nexus.json")).unwrap()).unwrap();
+        let saved = saved_nexus_json();
         assert!(saved["providers"].is_object());
         assert_eq!(saved["channels"]["web-main"]["admins"][0]["user_id"], "u2", "add_admin 应落盘");
     }
@@ -584,8 +590,7 @@ mod tests {
             Some(input.clone())).await;
         assert_eq!(body["success"], false, "重复 input channel 应失败");
         // 落盘验证
-        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-            std::path::Path::new(ConfigManager::get().data_dir()).join("nexus.json")).unwrap()).unwrap();
+        let saved = saved_nexus_json();
         assert_eq!(saved["pipelines"][agent][""]["pipeline_name"], "default");
         assert_eq!(saved["agent_roles"][agent]["config_map"]["input_channels"]["input_channels"][0]["user_id"], "u1");
 

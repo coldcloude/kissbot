@@ -10,7 +10,7 @@ kissbot-agent 使用三份配置：
 | 文件 | 内容 | 管理者 |
 |------|------|--------|
 | 公共配置（`KISSBOT_CONFIG`，默认 `./config.json`） | 各组件共享：`security` / `api` / `agent` / `memory` / 通道等段 | kissbot-config（只读，进程级单例） |
-| `<data_dir>/nexus.json` | agent 可改配置：channels / providers / memory_structs / pipelines / agent_roles / sessions | ConfigManager（读写，落盘） |
+| `<data_dir>/nexus.json` | agent 可改配置：channels / providers / pipelines / agent_roles / sessions | ConfigManager（读写，落盘） |
 | `<data_dir>/station.json` | station 可改配置：station_id / groups / sub_stations | ConfigManager（读写，落盘） |
 
 `data_dir` 来自公共配置 `agent` 段。
@@ -64,7 +64,6 @@ kissbot-agent 使用三份配置：
       }
     }
   },
-  "memory_structs": {},
   "pipelines": {
     "0": {                       // key = agent_id（"0" = 保留 agent）
       "": { "pipeline_name": "default_memory" },
@@ -401,7 +400,7 @@ enum Error {
 
 | 方法 | 路径 | 请求体 | 说明 |
 |------|------|--------|------|
-| GET | `/config` | — | 返回 NexusRepo 快照（channels / providers / memory_structs / pipelines / agent_roles / sessions） |
+| GET | `/config` | — | 返回 NexusRepo 快照（channels / providers / pipelines / agent_roles / sessions） |
 | POST | `/config/providers` | `{ "name": "...", "config": ProviderModelConfig }` | 新增 provider（重名失败） |
 | POST | `/config/providers/remove` | `{ "name": "..." }` | 删除 provider |
 | POST | `/config/channels` | `ChannelConfig`（channel_id / ws_url / admins / enabled） | 新增/覆盖 channel：写配置并同步运行态（enabled=true 时建立连接，false 时移除运行态） |

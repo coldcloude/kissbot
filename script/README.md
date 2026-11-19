@@ -46,7 +46,6 @@
       }
     }
   },
-  "memory_structs": {},
   "agent_roles": {
     "0": {
       "config_map": {
@@ -95,7 +94,6 @@
   - `group_set`：pipeline 启用的 group 白名单（工具聚合只考虑这些 group；空/缺省 = 无工具）
   - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `memory_summary`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
 - **sessions**：pipeline 建立 session 时按 agent/role 固化到 session 级的值，以及 `/model` 等覆盖（普通 JSON 对象，一般无需手改）
-- **memory_structs**：记忆结构组件配置（占位，本轮未实现）
 - **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）
 
 **与旧版的差异（旧配置需迁移，否则相关字段被忽略/解析失败）**：
@@ -104,7 +102,7 @@
 - `agent_contexts` → `agent_roles`；`agent_contexts.<id>.default_context_config` → `agent_roles.<id>.config_map`，其 `out_channel` 字段值外包一层 `{ "out_channel": … }`；`toolkits` → `group_set.group_set`；`memory_time_secs` / `memory_count` → `memory_recover.<字段>`；`compress_prompt` / `compress_threshold` → `compress.<字段>`
 - `providers.<name>` 旧的扁平 `provider_type` / `base_url` / `api_key` → 收进 `provider_config`；`default_model_config` 只保留 `max_tokens_usage` / `timeout_secs` / `retry_count`（`max_tokens` / `temperature` / `thinking` / `reasoning_effort` 移到 `agent_roles.<id>.config_map.llm`）；`models` → `model_configs`
 - 顶层 `default_model` → `agent_roles.<由该默认适用的 agent>.config_map.llm`（`provider` + `model`）；顶层 `default_system_prompt` → 不再可配（系统提示词由 `system_prompter` 决定：固定默认提示词，或从 memory-ego 读取自我认知信息）
-- 顶层 `context` → `agent_roles`；`providers` 与 `agent_roles` 必填，`sessions`（`{}`）/ `memory_structs`（`{}`）必填但可为空
+- 顶层 `context` → `agent_roles`；`providers` 与 `agent_roles` 必填，`sessions`（`{}`）必填但可为空
 
 ### 2. 启动与验证步骤
 

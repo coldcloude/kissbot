@@ -8,7 +8,7 @@
 | 模块 | 关键类型 | 职责 | 主要调用方 / 依赖 |
 |------|----------|------|-------------------|
 | main | — | 启动入口：加载配置、构建全局单例（ConfigManager → Station → Nexus）、spawn 管理 API 与 station MCP 服务端、进入主循环 | 调 ConfigManager / Station / Nexus / HttpServer / StationHttpServer |
-| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / memory_structs / 顶层 pipelines / agent_roles / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储（含 memory_pipeline.load_memory）；`default_memory` / `memory_summary` 建立 session 前从 agent/role 导入配置，角色模式话题切换的新 session 用 `copy_session_config` 整体继承当前 session 配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 实现按顶层 pipelines 选择，input_channels 走 agent→role 合并（role 列表整体替换 agent 列表，未配置时沿用 agent 级） | 被几乎所有模块调用 |
+| config_manager | ConfigManager | 配置加载与读写（channels / providers+models / 顶层 pipelines / agent_roles / session 配置 / station / admin）；(agent, role) 可继承配置与 session 级值分开存储（含 memory_pipeline.load_memory）；`default_memory` / `memory_summary` 建立 session 前从 agent/role 导入配置，角色模式话题切换的新 session 用 `copy_session_config` 整体继承当前 session 配置，`default` 只用 session 配置，运行期都只按 session_id 读写；pipeline 实现按顶层 pipelines 选择，input_channels 走 agent→role 合并（role 列表整体替换 agent 列表，未配置时沿用 agent 级） | 被几乎所有模块调用 |
 | nexus | Nexus | **装配与启动中心**：run 时按顶层 pipelines 全量装配、输入身份路由与通道连接调度、全局单例装配 | 持有全部运行时组件；被 channel_manager / pipelines 回调 Nexus 单例 |
 | channel_manager | ChannelManager / Channel | **Terminal 实现**（通道适配层：回显过滤 + channel 级管理命令 + 按输入身份定位 pipeline 的命令与普通消息）；每 channel 运行态（pending msg_id 回显判定、client、断线通知）；输入身份 → pipeline 路由表与 bind（一个身份只能绑定一条 pipeline，先绑定者生效，冲突记 error 跳过；另保留运行期解绑入口，当前无自动触发路径）；channel 运行态首次创建时直接建立连接并进入重连循环（配置中找不到 channel 或 `enabled=false` 时创建失败、不连接）；发送封装。channel 只描述连接与管理员，不持有 agent / role | 被 nexus / PipelineManager 调用；被 channel-client 回调（Terminal）；业务处理经 Nexus 单例取 pipeline/config |
 | pipeline | AgentPipeline / IncomingMessageProcessor / IncomingMessageBatchProcessor / TokenReducer | 定义 pipeline 的执行体抽象：消息接入（单条 / 整批）、token 压缩；`AgentPipeline` 提供 `incoming_message`（带来源 channel 三元组，pipeline 自行识别并执行 /mode、/model、outgoing 等管理命令；不认识的 `/` 文本按普通消息处理）与 `channel_unbound`（运行期删除 pipeline/输入身份时清理 channel 资源；启动装配不使用）；工具调用直接用 pipelines 的 call_tool / call_tool_with_memory（并发 join） | 被 pipelines 实现/组合 |
@@ -268,7 +268,6 @@ sequenceDiagram
 ## 八、未接线 / 预留
 
 - **无手动触发的 trigger**：当前没有独立 trigger 集合；pipeline 自己维护批次生产者，pipeline 销毁时退出消费者任务。
-- **memory-struct**：`NexusRepo.memory_structs` 与 `MemoryStructConfig` 仅建结构，无消费方；摘要记忆的上下文由 `MemorySummaryPipeline` 经 memory-struct-summary 提供，其余会话的上下文回溯走 memory-store 的两查询并集。
 - **Terminal（ChannelManager）的 join_group / leave_group / user_removed / download_chunk**：回调为 no-op / 未使用，业务逻辑预留。
 - **`ModelResponse.finish_reason`**：已解析但无消费方（截断等停止原因不触发额外处理）。
 - **http_server ↔ nexus**：channel 级命令（/admin、/unadmin）由 channel_manager 执行，pipeline 级命令（/mode、/model、outgoing、/load-memory）由 pipeline 处理；HttpServer 未直接调用 nexus。

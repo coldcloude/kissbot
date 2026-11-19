@@ -1,11 +1,9 @@
 pub mod channel_config;
 pub mod session_config;
-pub mod memory_struct_config;
 pub mod pipeline_config;
 
 pub use channel_config::*;
 pub use session_config::*;
-pub use memory_struct_config::*;
 pub use pipeline_config::*;
 
 use std::{collections::HashMap, sync::Arc};
@@ -21,7 +19,6 @@ use serde::{Deserialize, Serialize};
 pub struct NexusRepo {
     pub channels: Arc<HashMap<ArcStr, Arc<ChannelConfig>>>,
     pub providers: Arc<HashMap<ArcStr, Arc<ProviderModelConfig>>>, // key = provider 名
-    pub memory_structs: Arc<HashMap<ArcStr, Arc<MemoryStructConfig>>>,
     pub agent_roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
     /// pipeline 集合：agent_id → role_name → pipeline 实现配置；只装配这里列出的 RoleKey
     #[serde(default)]
@@ -37,7 +34,6 @@ impl Default for NexusRepo {
         Self {
             channels: Arc::new(HashMap::new()),
             providers: Arc::new(HashMap::new()),
-            memory_structs: Arc::new(HashMap::new()),
             agent_roles: Arc::new(HashMap::new()),
             pipelines: Arc::new(HashMap::new()),
             sessions: Arc::new(HashMap::new()),

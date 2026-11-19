@@ -59,7 +59,7 @@ graph TB
 ### 配置管理器
 配置按三分结构管理：
 - **公共配置（静态）**：各组件共享的 `config.json`（kissbot-config 只读单例）。agent 相关段为 `agent`（`data_dir`、`mgmt_host`、`mgmt_port`、`station_host`、`station_port`、`ws_reconnect_interval_secs`）与 `api`（memory-store / memory-ego 地址）；密钥在 `security` 段
-- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化。NexusRepo 存 channels / providers+models / memory_structs / 顶层 pipelines / agent_roles 配置 / session 配置（见 [kissbot-agent-nexus 技术规格](../spec/agent-nexus.md)），StationRepo 存 groups / sub_stations（见 [kissbot-agent-station 技术规格](../spec/agent-station.md)）
+- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化。NexusRepo 存 channels / providers+models / 顶层 pipelines / agent_roles 配置 / session 配置（见 [kissbot-agent-nexus 技术规格](../spec/agent-nexus.md)），StationRepo 存 groups / sub_stations（见 [kissbot-agent-station 技术规格](../spec/agent-station.md)）
 - **运行态（不落盘）**：session 上下文、pipeline 装配、channel 运行态（client / 未回显 msg_id / 输入身份路由）等，由 Nexus 与其组件在内存中持有
 
 ## 组合模式
