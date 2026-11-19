@@ -1,0 +1,19 @@
+Nexus 的运行 不再由 Channel 主导，而改由 Pipeline 主导
+Nexus Repo 中配置所有的 agent role
+Nexus启动时，遍历所有 agent role，建立全部 pipeline
+pipeline 配置对接 input channel，指定 channel_id、messenger_id、user_id
+新建 pipeline、pipeline 增加 input channel 时，根据配置的 channel_id get_or_create 对接的 input channel ，执行 bind，设置转发到pipeline的规则
+删除 pipeline 、pipeline 删除 input channel 时，根据配置 channel_id get 对接的 input channel，若存在，则执行 unbind，并取消转发到pipeline
+以上4项变更使用repo配置，目前只能手动改配置文件，不设命令变更，去掉 /bind、/unbind、/agent、/role 4个命令
+
+pipeline 与 input_channels 在 nexus.json 里怎么放？
+顶层增加 pipelines 段，配置 RoleKey 和 pipeline_name，input_channels 和现有 OutputChannel 配置同级新增一个段
+
+同一个 (channel_id, messenger_id, user_id) 被多条 pipeline 引用时怎么处理？
+【作废】由于 channel 本身只要求做 connect_id 和 messenger_id + user_id 的绑定，不涉及 RoleKey，因此可以同时将一个channel（channel_id, messenger_id, user_id）绑定给多个 RoleKey，不冲突
+只有第一个pipeline可以正确绑定，剩下的均跳过，可以加个错误日志
+
+input_channels 是否参与 agent→role 继承？
+不继承，但实现上还是用 MergeSelf，只是在merge时，只使用 other 的 input_channels 配置，other 没有时 设为空集合
+
+未知命令当作一般消息处理
