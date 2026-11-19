@@ -16,6 +16,7 @@ use crate::config_manager::ConfigManager;
 use crate::configs::{ChannelConfig, InputChannel, InputChannelsConfig, PipelineConfig};
 use crate::nexus::Nexus;
 use crate::pipelines::is_supported_pipeline_name;
+use crate::station::Station;
 use kissbot_api::{ChannelUser, RoleKey};
 use kissbot_llm::ProviderModelConfig;
 use crate::types::{Error, Result};
@@ -79,6 +80,16 @@ struct InputChannelRequest {
     user_id: ArcStr,
 }
 
+#[derive(Deserialize)]
+struct StationGroupRequest {
+    group: ArcStr,
+}
+
+#[derive(Deserialize)]
+struct SubStationRequest {
+    station_id: ArcStr,
+}
+
 impl PipelineRequest {
     fn role_key(&self) -> Arc<RoleKey> {
         role_key(&self.agent_id, &self.role_name)
@@ -140,6 +151,10 @@ impl HttpServer {
             .route("/config/pipelines/change", post(change_pipeline))
             .route("/config/pipelines/input-channels", post(add_input_channel))
             .route("/config/pipelines/input-channels/remove", post(remove_input_channel))
+            .route("/config/station/groups", post(add_station_group))
+            .route("/config/station/groups/remove", post(remove_station_group))
+            .route("/config/station/sub-stations/enable", post(enable_sub_station))
+            .route("/config/station/sub-stations/disable", post(disable_sub_station))
             .with_state(AppState { config })
             .layer(AuthLayer::new(Arc::new(SimpleApiKeyValidator::new(admin_api_key))))
     }
@@ -260,6 +275,52 @@ async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdmin
     };
     match state.config.remove_admin(req.channel_id.as_str(), &admin).await {
         Ok(()) => ok(json!({})),
+        Err(e) => fail(e),
+    }
+}
+
+// ========== station 配置管理（group 增删 + 子站启停，写配置后同步 Station 运行态） ==========
+
+async fn add_station_group(State(state): State<AppState>, Json(req): Json<StationGroupRequest>) -> impl IntoResponse {
+    match state.config.add_station_group(req.group).await {
+        Ok(repo) => {
+            // 同步运行态：按新 group 集合重建本级工具索引
+            Station::get().apply_repo(&repo);
+            ok(json!({}))
+        }
+        Err(e) => fail(e),
+    }
+}
+
+async fn remove_station_group(State(state): State<AppState>, Json(req): Json<StationGroupRequest>) -> impl IntoResponse {
+    match state.config.remove_station_group(req.group.as_str()).await {
+        Ok(repo) => {
+            // 同步运行态：该 group 的工具随索引重建失效
+            Station::get().apply_repo(&repo);
+            ok(json!({}))
+        }
+        Err(e) => fail(e),
+    }
+}
+
+async fn enable_sub_station(State(state): State<AppState>, Json(req): Json<SubStationRequest>) -> impl IntoResponse {
+    match state.config.set_sub_station_enabled(req.station_id.as_str(), true).await {
+        Ok(repo) => {
+            // 同步运行态：按当前配置建立 MCP 客户端，其工具重新参与列表与路由
+            Station::get().apply_repo(&repo);
+            ok(json!({}))
+        }
+        Err(e) => fail(e),
+    }
+}
+
+async fn disable_sub_station(State(state): State<AppState>, Json(req): Json<SubStationRequest>) -> impl IntoResponse {
+    match state.config.set_sub_station_enabled(req.station_id.as_str(), false).await {
+        Ok(repo) => {
+            // 同步运行态：拆除 MCP 客户端，其工具不再参与列表与路由
+            Station::get().apply_repo(&repo);
+            ok(json!({}))
+        }
         Err(e) => fail(e),
     }
 }
@@ -458,6 +519,12 @@ mod tests {
         TEST_INIT.get_or_init(|| async {
             let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
             let data_dir = dir.path().join("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            // 预置 station.json（含一个停用的子站）：station 子站启停接口只能在已有配置上启停
+            let station_json = format!(
+                r#"{{"station_id":"station-self","groups":[],"sub_stations":{{"station-a":{{"station_id":"station-a","base_url":"http://127.0.0.1:9001","timeout_secs":5,"enabled":false}}}}}}"#
+            );
+            std::fs::write(data_dir.join("station.json"), station_json).unwrap();
             let cfg_path = dir.path().join("config.json");
             let cfg_json = format!(
                 r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5}}}}"#,
@@ -467,14 +534,21 @@ mod tests {
             // 2024 edition：设置环境变量需要 unsafe
             unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
             ConfigManager::new().await.unwrap();
-            // 管理 API 的运行态变更依赖 Nexus 单例（pipeline / channel 运行时）；重复注册为幂等
+            // 管理 API 的运行态变更依赖 Nexus / Station 单例；重复注册为幂等
             let _ = Nexus::new().await;
+            Station::new().await;
         }).await;
     }
 
     /// 读回落盘的 nexus.json（ConfigManager 的 data_dir = <tempdir>/data）
     fn saved_nexus_json() -> serde_json::Value {
         let path = TEST_DIR.get().expect("test_manager 应先初始化").path().join("data").join("nexus.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// 读回落盘的 station.json
+    fn saved_station_json() -> serde_json::Value {
+        let path = TEST_DIR.get().expect("test_manager 应先初始化").path().join("data").join("station.json");
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
@@ -648,6 +722,47 @@ mod tests {
         // 不存在的 channel → 失败
         let (_, body) = send(app.clone(), "POST", "/config/channels/disable", "admin-key-123",
             Some(serde_json::json!({ "channel_id": "no-such-channel" }))).await;
+        assert_eq!(body["success"], false);
+    }
+
+    #[tokio::test]
+    async fn station_endpoints_groups_and_sub_station_lifecycle() {
+        test_manager().await;
+        let app = HttpServer::new().build_router();
+
+        // 新增 group（幂等）→ 落盘 + 运行态工具索引重建
+        for _ in 0..2 {
+            let (status, body) = send(app.clone(), "POST", "/config/station/groups", "admin-key-123",
+                Some(serde_json::json!({ "group": "filesystem" }))).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["success"], true);
+        }
+        assert_eq!(saved_station_json()["groups"], serde_json::json!(["filesystem"]));
+        assert!(!Station::get().list_tools_local(None).await.unwrap().is_empty(), "运行态应已有 read 工具");
+
+        // 移除 group（幂等）→ 该 group 的工具失效
+        for _ in 0..2 {
+            let (_, body) = send(app.clone(), "POST", "/config/station/groups/remove", "admin-key-123",
+                Some(serde_json::json!({ "group": "filesystem" }))).await;
+            assert_eq!(body["success"], true);
+        }
+        assert_eq!(saved_station_json()["groups"], serde_json::json!([]));
+        assert!(Station::get().list_tools_local(None).await.unwrap().is_empty(), "移除 group 后工具应失效");
+
+        // 子站启停：预置的 station-a 初始停用
+        let (_, body) = send(app.clone(), "POST", "/config/station/sub-stations/enable", "admin-key-123",
+            Some(serde_json::json!({ "station_id": "station-a" }))).await;
+        assert_eq!(body["success"], true);
+        assert_eq!(saved_station_json()["sub_stations"]["station-a"]["enabled"], true, "启用落盘");
+
+        let (_, body) = send(app.clone(), "POST", "/config/station/sub-stations/disable", "admin-key-123",
+            Some(serde_json::json!({ "station_id": "station-a" }))).await;
+        assert_eq!(body["success"], true);
+        assert_eq!(saved_station_json()["sub_stations"]["station-a"]["enabled"], false, "停用落盘");
+
+        // 不存在的子站 → 失败
+        let (_, body) = send(app.clone(), "POST", "/config/station/sub-stations/enable", "admin-key-123",
+            Some(serde_json::json!({ "station_id": "no-such-station" }))).await;
         assert_eq!(body["success"], false);
     }
 }

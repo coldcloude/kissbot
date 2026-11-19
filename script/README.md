@@ -94,7 +94,7 @@
   - `group_set`：pipeline 启用的 group 白名单（工具聚合只考虑这些 group；空/缺省 = 无工具）
   - `pipeline`：pipeline 实现选择，`pipeline_name` 取 `default` / `default_memory` / `memory_summary`（写错会在装配 pipeline 时报 `PipelineNotFound`）；未配置时默认 `default_memory`
 - **sessions**：pipeline 建立 session 时按 agent/role 固化到 session 级的值，以及 `/model` 等覆盖（普通 JSON 对象，一般无需手改）
-- **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）
+- **station.json**（`groups.filesystem`）：由内置注册表填充 `read` 工具元数据与实现，工具调用在进程内执行；`sub_stations` 为空时无子 Station（配置了子 Station 时经 MCP 调用）；`sub_stations.<id>.enabled`（缺省 `true`）为 false 时不建运行态。运行期可经管理 API 增删 group（`/config/station/groups`、`/groups/remove`）与启停子站（`/config/station/sub-stations/enable`、`/disable`），无需重启；子站新增/改地址仍需改本文件后重启
 
 **与旧版的差异（旧配置需迁移，否则相关字段被忽略/解析失败）**：
 

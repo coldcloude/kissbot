@@ -142,13 +142,45 @@ impl ConfigManager {
         self.context_dir.as_str()
     }
 
-    // ========== NexusRepo CRUD ==========
+    // ========== StationRepo CRUD ==========
 
-    // ---------- channels ----------
-    /// 返回 StationRepo 快照（Station 单例构建使用）
+    /// 返回 StationRepo 快照（Station 单例构建与运行态按 id 现读子站配置使用；
+    /// groups / sub_stations 均为 Arc，快照克隆只是几次 Arc 克隆）
     pub async fn station_repo_snapshot(&self) -> StationRepo {
         self.station_repo.read().await.clone()
     }
+
+    /// 新增 group（已存在时为空操作），落盘；返回变更后的站配置供运行态同步
+    pub async fn add_station_group(&self, group: ArcStr) -> Result<StationRepo> {
+        self.write_station_config(|repo| {
+            Arc::make_mut(&mut repo.groups).insert(group);
+            Ok(repo.clone())
+        }).await
+    }
+
+    /// 移除 group（不存在时为空操作），落盘；返回变更后的站配置供运行态同步
+    pub async fn remove_station_group(&self, group: &str) -> Result<StationRepo> {
+        self.write_station_config(|repo| {
+            Arc::make_mut(&mut repo.groups).remove(group);
+            Ok(repo.clone())
+        }).await
+    }
+
+    /// 启停子 Station（只改配置；运行态由管理 API 按返回值同步），落盘；
+    /// 子 Station 不存在时报 ConfigNotFound；返回变更后的站配置供运行态同步
+    pub async fn set_sub_station_enabled(&self, station_id: &str, enabled: bool) -> Result<StationRepo> {
+        self.write_station_config(|repo| {
+            let sub_stations = Arc::make_mut(&mut repo.sub_stations);
+            let config = sub_stations.get_mut(station_id)
+                .ok_or_else(|| Error::ConfigNotFound(format!("子 station 不存在: {}", station_id).into()))?;
+            Arc::make_mut(config).enabled = enabled;
+            Ok(repo.clone())
+        }).await
+    }
+
+    // ========== NexusRepo CRUD ==========
+
+    // ---------- channels ----------
     /// 按 channel_id 直接查找单个 channel 配置（map O(1) get，不克隆整个 map 再遍历）
     pub async fn channel(&self, channel_id: &str) -> Option<Arc<ChannelConfig>> {
         let repo = self.nexus_repo.read().await;
@@ -447,7 +479,7 @@ impl ConfigManager {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeSet, HashMap, HashSet};
 
     use super::*;
     use kissbot_api::MergeEffectiveConfig;
@@ -877,10 +909,10 @@ mod tests {
 
     #[test]
     fn station_repo_new_shape_serde_roundtrip() {
-        // StationRepo 形状：station_id + groups（key = group 名，value = 工具元数据）+ sub_stations
+        // StationRepo 形状：station_id + groups（有序集合）+ sub_stations
         let mut repo = StationRepo::default();
         repo.station_id = ArcStr::from("station-self");
-        repo.groups = vec![ArcStr::from("filesystem")];
+        repo.groups = Arc::new(BTreeSet::from([ArcStr::from("filesystem"), ArcStr::from("web")]));
         {
             let map = Arc::make_mut(&mut repo.sub_stations);
             map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
@@ -888,25 +920,92 @@ mod tests {
                 base_url: ArcStr::from("http://127.0.0.1:9001"),
                 timeout_secs: 30,
                 prefix: Some(ArcStr::from("a/")),
+                enabled: true,
             }));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"station_id\"") && json.contains("\"groups\"") && json.contains("\"sub_stations\""), "形状字段");
         let back: StationRepo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.station_id.as_str(), "station-self");
-        assert_eq!(back.groups, vec![ArcStr::from("filesystem")], "group 列表回读");
+        assert_eq!(back.groups.iter().map(|g| g.to_string()).collect::<Vec<_>>(), vec!["filesystem", "web"], "group 集合回读（有序）");
         let sub = back.sub_stations.get("station-a").unwrap().clone();
         assert_eq!(sub.base_url.as_str(), "http://127.0.0.1:9001");
         assert_eq!(sub.prefix.as_deref(), Some("a/"), "前缀回读");
-        // 前缀可缺省
+        assert!(sub.enabled, "enabled 回读");
+        // 前缀与 enabled 均可缺省：旧配置缺 enabled 按启用处理
         let minimal: SubStationConfig = serde_json::from_str(
             r#"{"station_id":"s1","base_url":"http://127.0.0.1:9002","timeout_secs":5}"#,
         )
         .unwrap();
         assert!(minimal.prefix.is_none());
+        assert!(minimal.enabled, "缺省 enabled 视为启用（兼容旧配置）");
+        // 显式停用可持久化
+        let disabled: SubStationConfig = serde_json::from_str(
+            r#"{"station_id":"s1","base_url":"http://127.0.0.1:9002","timeout_secs":5,"enabled":false}"#,
+        )
+        .unwrap();
+        assert!(!disabled.enabled);
 
         // station_id 为必填：空对象 {} 应解析失败
         assert!(serde_json::from_str::<StationRepo>("{}").is_err(), "station_id 必填");
+    }
+
+    #[tokio::test]
+    async fn station_groups_add_remove_persists() {
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        // 新增两个 group：幂等，返回变更后的站配置
+        let repo = manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
+        assert!(repo.groups.contains("filesystem"));
+        let repo = manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
+        assert_eq!(repo.groups.len(), 1, "重复新增幂等");
+        let repo = manager.add_station_group(ArcStr::from("web")).await.unwrap();
+        assert_eq!(repo.groups.len(), 2);
+        // 落盘可见（有序集合）
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
+        assert_eq!(saved["groups"], serde_json::json!(["filesystem", "web"]));
+        // 移除：存在则删、不存在为空操作
+        let repo = manager.remove_station_group("filesystem").await.unwrap();
+        assert!(!repo.groups.contains("filesystem"));
+        let repo = manager.remove_station_group("nope").await.unwrap();
+        assert_eq!(repo.groups.len(), 1, "移除不存在的 group 幂等");
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
+        assert_eq!(saved["groups"], serde_json::json!(["web"]));
+    }
+
+    #[tokio::test]
+    async fn set_sub_station_enabled_persists_and_errors_when_missing() {
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        // 子站不存在 → ConfigNotFound
+        let err = manager.set_sub_station_enabled("nope", false).await.unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound(_)));
+        // 预置一个启用的子站（走同一写配置入口，落盘）
+        manager.write_station_config(|repo| {
+            let map = Arc::make_mut(&mut repo.sub_stations);
+            map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
+                station_id: ArcStr::from("station-a"),
+                base_url: ArcStr::from("http://127.0.0.1:9001"),
+                timeout_secs: 5,
+                prefix: None,
+                enabled: true,
+            }));
+            Ok(())
+        }).await.unwrap();
+
+        let repo = manager.set_sub_station_enabled("station-a", false).await.unwrap();
+        let cfg = repo.sub_stations.get("station-a").expect("子站应存在").clone();
+        assert!(!cfg.enabled);
+        let saved: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
+        assert_eq!(saved["sub_stations"]["station-a"]["enabled"], false, "停用落盘");
+        let repo = manager.set_sub_station_enabled("station-a", true).await.unwrap();
+        let cfg = repo.sub_stations.get("station-a").expect("子站应存在").clone();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.base_url.as_str(), "http://127.0.0.1:9001", "启停不影响其余字段");
+        assert_eq!(cfg.timeout_secs, 5);
     }
 
     // ---- (agent, role) 配置继承与 session 配置 ----

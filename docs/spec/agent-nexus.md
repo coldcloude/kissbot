@@ -415,5 +415,11 @@ enum Error {
 | POST | `/config/pipelines/change` | `{ "agent_id", "role_name", "pipeline_name" }` | 更换 pipeline（名称变更）：写新名称后按新名称重新加载 |
 | POST | `/config/pipelines/input-channels` | `{ "agent_id", "role_name", "channel_id", "messenger_id", "user_id" }` | 添加 pipeline 的 input channel：写配置并绑定（channel 不存在/未启用只记警告） |
 | POST | `/config/pipelines/input-channels/remove` | 同上 | 移除 pipeline 的 input channel：写配置并解绑（未登记时幂等成功） |
+| POST | `/config/station/groups` | `{ "group": "..." }` | 新增 station group（已存在幂等）：写 station.json 并重建本级工具索引 |
+| POST | `/config/station/groups/remove` | `{ "group": "..." }` | 移除 station group（不存在幂等）：写配置并让该 group 的工具失效 |
+| POST | `/config/station/sub-stations/enable` | `{ "station_id": "..." }` | 启用子 Station：写配置并建立 MCP 客户端（不存在报错） |
+| POST | `/config/station/sub-stations/disable` | `{ "station_id": "..." }` | 停用子 Station：写配置并拆除 MCP 客户端（不存在报错） |
 
 响应统一为 `{ "success": bool, "data": …, "error": … }`。
+
+station 运行态同步语义见 [kissbot-agent-station 技术规格](agent-station.md) 的「运行期变更（管理 API）」；`GET /config` 仍只返回 NexusRepo，station 配置目前无读接口。

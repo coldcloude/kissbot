@@ -16,13 +16,15 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
     "station-a": {
       "station_id": "station-a",
       "base_url": "http://127.0.0.1:9001",
-      "timeout_secs": 30
+      "timeout_secs": 30,
+      "enabled": true
     },
     "plain-mcp": {
       "station_id": "plain-mcp",
       "base_url": "http://127.0.0.1:9002",
       "timeout_secs": 30,
-      "prefix": "plain/"
+      "prefix": "plain/",
+      "enabled": false
     }
   }
 }
@@ -31,7 +33,7 @@ Station 配置由 ConfigManager 管理，持久化到 `<data_dir>/station.json`�
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | station_id | string | 本站点唯一标识（必填；被其他 station 作为 sub 调用时用于祖先链防环） |
-| groups | string[] | 本级加载哪些 group；只声明 group 名，工具元数据与实现由内置注册表按 group 名填充 |
+| groups | string[]（语义为集合） | 本级加载哪些 group；只声明 group 名，工具元数据与实现由内置注册表按 group 名填充。落盘按字典序（有序集合），运行期可增删 |
 | sub_stations | map<station_id, SubStationConfig> | 直接子 Station 集合；key = station_id |
 
 `station_id` 为必填；`groups` 与 `sub_stations` 带 `#[serde(default)]`，旧配置缺省时反序列化为空集合。
@@ -48,9 +50,28 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 | base_url | string | 子 Station 基地址（MCP 端点为 `base_url` + `/mcp`） |
 | timeout_secs | u64 | 请求超时（秒），用于 MCP 客户端构造 |
 | prefix | string? | 远端工具名在本级的前缀（缺省不加前缀）；本级转发调用时去掉该前缀 |
+| enabled | bool | 是否建立运行态；缺省 `true`（兼容旧配置）。false 时不建 MCP 客户端，其工具不参与 `tools/list` 与路由，运行期可经管理 API 启停 |
 
 只存直接子连接信息；子 Station 内部结构（groups / 孙子）由子进程自己管理，父通过 MCP 查询。
 子 Station 可以是 kissbot Station，也可以是任意第三方 MCP 服务端；本级不要求对端声明 kissbot 能力（见「第三方 MCP 服务端」）。
+
+### 运行期变更（管理 API）
+
+`station.json` 归 ConfigManager 所有；管理 API 写配置后立即用变更后的站配置调用 `Station::apply_repo(&repo)` 同步运行态，不需要重启：
+
+| 方法与路径 | 请求体 | 说明 |
+|------------|--------|------|
+| `POST /config/station/groups` | `{ "group": "filesystem" }` | 新增 group（已存在为空操作）：写配置 + 重建本级工具索引 |
+| `POST /config/station/groups/remove` | `{ "group": "filesystem" }` | 移除 group（不存在为空操作）：写配置 + 该 group 的工具随索引重建失效 |
+| `POST /config/station/sub-stations/enable` | `{ "station_id": "station-a" }` | 启用子 Station：写配置 + 按配置建立 MCP 客户端 |
+| `POST /config/station/sub-stations/disable` | `{ "station_id": "station-a" }` | 停用子 Station：写配置 + 拆除 MCP 客户端（工具不再参与列表与路由） |
+
+- 端点鉴权与管理 API 其余端点一致（`security.admin_api_key`，见 [kissbot-agent-nexus 技术规格](agent-nexus.md) 的管理 API 表）
+- `apply_repo` 是启动装配与运行期变更的**同一入口**：group 集合变化 → 重建本级工具索引；子站集合变化 → 对齐子站运行态；未变化的部分不重建
+- 运行态不缓存子站连接参数：`Station.sub_stations` 只存 `Arc<McpClient>`，`base_url` / `timeout_secs` / `prefix` / `enabled` 按 id 从配置快照现读；任何配置变更都会清空 `tool_routes`，由下一次 `tools/list` 重建
+- 生效时机：变更对下一次 `tools/list`（即下一次 LLM 请求的 `tools_for_session`）与随后的 `tools/call` 生效；进行中的请求不受影响
+- 子 Station 的增删与 `base_url` / `prefix` 调整仍只能改 `station.json` 后重启（当前只提供启停与 group 增删接口）
+- `station_id` 不支持运行期修改（祖先链防环与父站声明的 sub key 都依赖它）
 
 ## group 命名空间
 
@@ -86,7 +107,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 
 - **group 内唯一**：同一 group 内工具名不得重复；并入本级索引时保留先注册者，后到者静默丢弃（不报错）
 - **重名收敛**：不同 group、以及本级与子 Station 之间允许出现同名工具；对外仍必须给出唯一名字（MCP `tools/call` 只带工具名），因此保留先到者、后到者剔除：
-  - 本级构建：跨 group（或同 group 重复）重名保留先声明的 group 的工具，后者静默忽略
+  - 本级构建：跨 group（或同 group 重复）重名时按 group 名排序保留先到者，后到者告警（warn）后丢弃
   - 级联合并：本级与子 Station、子与子重名在 `list_tools` 合并时保留先到者，后到者剔除（不进路由表、不进返回列表）并 warn
   - 子 Station 可配置 `prefix`，从源头用命名前缀避免与其它节点重名
 
