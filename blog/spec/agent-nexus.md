@@ -1,5 +1,11 @@
 # Nexus
 
+## Channel 消息接收细节
+
+- 未知指令当作一般消息处理
+- 只有第一个pipeline可以正确绑定，剩下的均跳过，可以加个错误日志
+- input_channels 不继承，role 不配置 input_channels 时按空集合处理
+
 ## Pipeline
 
 ### 默认 Pipeline 和 默认记忆 Pipeline 共通设计细节
@@ -7,7 +13,6 @@
 - Pipeline 执行指令（包括但不限于切换模式/事件）和处理消息，放到同一个mpsc队列中排队执行，避免多个变更session间竞争，或者变更session和处理session间竞争
 - 但同一时间仅能处于一种模式或一个事件，因此内存中仅有一个当前 session，而磁盘中有多个 session 的缓存文件
 - 切换模式/事件时，从缓存文件中读取 session
-
 
 ### 默认 Pipeline
 - 默认 Pipeline 实现标准的 agentic loop 工作流：将输入发送至 LLM，LLM 返回文本回复，或者 Tool Call。收到 Tool Call 时，执行后将结果发回 LLM，等待回复；否则不再循环，回复文本回复

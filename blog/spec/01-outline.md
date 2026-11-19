@@ -85,8 +85,8 @@
 #### Nexus
 
 - 基本流程
-  1. ChannelManager 实现 Terminal trait，从各 Channel 实例中接收消息
-  2. Channel 绑定 agent_id + role_name，并对应一个 Pipeline 实例，Pipeline 实例管理整个消息处理流程
+  1. 加载所有 Pipeline 实例，每个 agent + role 可以指定一个 Pipeline 名称，加载对应的 Pipeline 实例
+  2. ChannelManager 根据 Pipeline 实例绑定的 input_channels 加载 Channel 实例，绑定 Pipeline 实例对应的 agent_id + role_name，接收消息，发送到 Pipeline 实例
   3. Pipeline 实例决定记忆的使用方式
   4. Pipeline 新建时使用 Role 模式，当前事件仅在 Pipeline 中保存
   5. Pipeline 可以从 Channel 消息中解析指令，决定 Role 模式或 Event 模式
