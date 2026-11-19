@@ -15,7 +15,7 @@ use tokio::spawn;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::mem::swap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arcstr::ArcStr;
 use kissbot_llm::{EffectiveLLMConfig, LLMConfig, Message, ModelResponse, Session, ToolCall, ToolConfig};
 
-use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, EffectiveMemoryPipelineConfig, GroupSetConfig, MemoryPipelineConfig, OutChannel, OutChannelConfig, PipelineConfig, SessionConfigMap, SessionConfigMergeMap};
+use crate::configs::{ChannelBatchConfig, CompressConfig, EffectiveCompressConfig, EffectiveMemoryPipelineConfig, GroupSetConfig, InputChannel, MemoryPipelineConfig, OutChannel, OutChannelConfig, SessionConfigMap, SessionConfigMergeMap};
 use crate::memory_store_client::QueryChannelData;
 use crate::message::{extract_content, pack_batch};
 use crate::pipeline::{AgentPipeline, IncomingMessageBatchProcessor, TokenReducer};
@@ -135,7 +135,7 @@ async fn get_or_create_latest_topic_session_id(prefix: &str, memory_key: &Memory
             let name = entry.file_name().to_string_lossy().to_string();
             let Some(id) = name.strip_suffix(".msgs.jsonl") else { continue };
             let Some(rest) = id.strip_prefix(base.as_str()) else { continue };
-            if rest.starts_with("-topic-") { continue };
+            if !rest.starts_with("-topic-") { continue };
             let Ok(metadata) = entry.metadata().await else { continue };
             let Ok(modified) = metadata.modified() else { continue };
             if latest.as_ref().map(|(time, _)| modified > *time).unwrap_or(true) {
@@ -307,7 +307,7 @@ pub async fn tools_for_session(session_id: ArcStr) -> Vec<Arc<ToolConfig>> {
 /// Agentic Loop 产出回复：发到 pipeline 的 out_channel（role_event 记忆编码），
 /// 成功后把下行消息写入记忆（is_self=1）；`meta` 由调用方给出（摘要记忆 pipeline 写入当前 case）。
 ///
-/// 发送前校验 out_channel 身份在目标 channel 仍绑定；未绑定 → 跳过发送。
+/// 发送前校验 out_channel 身份已绑定到目标 channel（channel 级绑定，多 pipeline 共享）；否则跳过发送。
 pub async fn send_outgoing(
     memory_key: &MemoryKey,
     out_channel: &OutChannel,
@@ -315,11 +315,12 @@ pub async fn send_outgoing(
     meta: Option<Arc<MemoryMeta>>,
 ) {
     let nexus = Nexus::get();
-    // 1. 校验 out_channel 身份在目标 channel 仍绑定
-    let bound = ConfigManager::get().channel(out_channel.channel_id.as_str()).await
-        .map(|c| c.bind_users.contains(&out_channel.user))
-        .unwrap_or(false);
-    if !bound {
+    // 1. 校验 out_channel 身份已绑定到目标 channel（绑定是 channel 级，与 pipeline 归属无关）
+    if nexus.channel_manager.input_pipeline(
+        out_channel.channel_id.clone(),
+        out_channel.user.messenger_id.clone(),
+        out_channel.user.user_id.clone(),
+    ).is_none() {
         return;
     }
     // 2. 发送
@@ -1078,7 +1079,6 @@ impl DefaultAgenticLoopPipelineWithMemory {
 const PIPELINE_DEFAULT_STR: &str = "default";
 const PIPELINE_DEFAULT_MEMORY_STR: &str = "default_memory";
 const PIPELINE_MEMORY_SUMMARY_STR: &str = "memory_summary";
-const PIPELINE_DEFAULT_MEMORY: ArcStr = arcstr::literal!(PIPELINE_DEFAULT_MEMORY_STR);
 
 /// pipeline 名称是否受支持（与 create_pipeline 的注册表一致）
 pub fn is_supported_pipeline_name(name: &str) -> bool {
@@ -1177,7 +1177,7 @@ pub async fn handle_model_command(parts: &[ArcStr], session_id: ArcStr) -> Resul
 }
 
 /// `/bind-outgoing <messenger_id> <user_id> <group_id>`：设 pipeline 的回复通道
-/// （先校验来源 channel 存在、该身份已绑定来源 channel）
+/// （先校验 channel 存在、该身份已被某条 pipeline 绑定）
 pub async fn bind_outgoing(session_id: ArcStr, channel_id: ArcStr, parts: &[ArcStr]) -> Result<ArcStr> {
     if parts.len() < 4 {
         return Err(Error::InvalidCommand(
@@ -1185,11 +1185,15 @@ pub async fn bind_outgoing(session_id: ArcStr, channel_id: ArcStr, parts: &[ArcS
         ));
     }
     let cfg_mngr = ConfigManager::get();
-    let Some(ch) = cfg_mngr.channel(channel_id.as_str()).await else {
+    if cfg_mngr.channel(channel_id.as_str()).await.is_none() {
         return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
-    };
+    }
     let user = ChannelUser { messenger_id: parts[1].clone(), user_id: parts[2].clone() };
-    if !ch.bind_users.contains(&user) {
+    if Nexus::get().channel_manager.input_pipeline(
+        channel_id.clone(),
+        user.messenger_id.clone(),
+        user.user_id.clone(),
+    ).is_none() {
         return Err(Error::InvalidCommand(format!(
             "ChannelUser 未绑定: {} / {}", parts[1], parts[2]).into()));
     }
@@ -1230,7 +1234,8 @@ pub async fn create_pipeline(pipeline_name: ArcStr, role_key: Arc<RoleKey>) -> R
     }
 }
 
-/// pipeline 注册表：key 为角色键（agent + role），当前 event 属于 pipeline 运行态
+/// pipeline 注册表：key 为角色键（agent + role），当前 event 属于 pipeline 运行态。
+/// 装配集合完全由顶层 pipelines 配置决定；输入身份到 pipeline 的绑定由 ChannelManager 维护。
 pub struct PipelineManager {
     pipeline_map: DashMap<Arc<RoleKey>, Arc<dyn AgentPipeline>>,
 }
@@ -1242,17 +1247,11 @@ impl PipelineManager {
         }
     }
 
-    /// 按角色键定位 pipeline，不存在则按 agent/role 配置的 pipeline_name 装配（默认 default_memory）
-    /// 并初始化系统提示词；pipeline 需要哪些 session、当前 event 是什么由它自己的构造过程决定
-    pub async fn ensure_pipeline(&self, role_key: Arc<RoleKey>) -> Result<Arc<dyn AgentPipeline>> {
+    /// 按给定名称装配 pipeline（Nexus 启动时调用一次；已存在则复用）
+    pub async fn ensure_pipeline(&self, role_key: Arc<RoleKey>, pipeline_name: ArcStr) -> Result<Arc<dyn AgentPipeline>> {
         if let Some(pipeline) = self.pipeline_map.get(&role_key) {
             return Ok(pipeline.clone());
         }
-        let cfg = ConfigManager::get()
-            .agent_role_config::<PipelineConfig>(role_key.agent_id.as_str(), role_key.role_name.as_str())
-            .await;
-        let pipeline_name = cfg.and_then(|cfg| cfg.pipeline_name)
-            .unwrap_or_else(|| PIPELINE_DEFAULT_MEMORY.clone());
         let pipeline = create_pipeline(pipeline_name, role_key.clone()).await?;
         match self.pipeline_map.entry(role_key) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
@@ -1263,69 +1262,51 @@ impl PipelineManager {
         }
     }
 
-    /// 修改 agent（role 空）或 agent+role 的 pipeline 配置：
-    /// 先保存受影响角色键当前 merge 后的配置，写新配置后重新 merge；
-    /// pipeline 名称变化的已装配 pipeline 从注册表移除（下次按新配置重建，session 随 Arc 释放回收）
-    pub async fn set_pipeline_config(&self, agent_id: ArcStr, role_name: ArcStr, pipeline_name: ArcStr) -> Result<()> {
-        let cfg = ConfigManager::get();
-        // 受影响的已装配 pipeline：agent 级（role 空）= 该 agent 全部 role；role 级 = 该 (agent, role)
-        let affected: Vec<Arc<RoleKey>> = self.pipeline_map.iter()
-            .filter(|entry| {
-                let key = entry.key();
-                key.agent_id == agent_id
-                    && (role_name.is_empty() || key.role_name == role_name)
-            })
-            .map(|entry| entry.key().clone())
-            .collect();
-        // 提前保存受影响 role 的当前 merge 配置
-        let mut roles: Vec<ArcStr> = affected.iter().map(|key| key.role_name.clone()).collect();
-        roles.sort();
-        roles.dedup();
-        let mut old_names = HashMap::new();
-        for role in &roles {
-            let old_name = cfg.agent_role_config::<PipelineConfig>(agent_id.as_str(), role.as_str()).await
-                .and_then(|config| config.pipeline_name);
-            old_names.insert(role.clone(), old_name);
+    /// 运行期替换某 pipeline 的输入身份：解绑不再需要的旧身份并通知 pipeline，绑定新增身份。
+    /// 启动装配不使用（Nexus::run 只创建 pipeline 并 bind）；保留供运行期配置变更使用。
+    pub async fn set_input_channels(&self, role_key: &Arc<RoleKey>, inputs: &[Arc<InputChannel>]) {
+        if !self.pipeline_map.contains_key(role_key) {
+            return;
         }
-        // 写新配置（role 空 = agent 级）
-        cfg.set_agent_role_config::<PipelineConfig>(
-            agent_id.clone(), role_name, Arc::new(PipelineConfig { pipeline_name: Some(pipeline_name) }),
-        ).await?;
-        // 重新生成 merge 后的配置；名称变化的 role 下已装配 pipeline 失效
-        for role in roles {
-            let new_name = cfg.agent_role_config::<PipelineConfig>(agent_id.as_str(), role.as_str()).await
-                .and_then(|config| config.pipeline_name);
-            if old_names.get(&role) != Some(&new_name) {
-                for key in &affected {
-                    if key.role_name == role {
-                        self.pipeline_map.remove(key);
-                    }
+        let channel_manager = &Nexus::get().channel_manager;
+        let pipeline = self.pipeline_map.get(role_key).map(|entry| entry.clone());
+        for old in channel_manager.inputs_of(role_key.as_ref()) {
+            if !inputs.iter().any(|new_input| new_input.as_ref() == &old) {
+                channel_manager.unbind_input(&old, role_key.as_ref()).await;
+                if let Some(pipeline) = pipeline.as_ref() {
+                    pipeline.channel_unbound(old.messenger_id.clone(), old.user_id.clone()).await;
                 }
             }
         }
-        Ok(())
-    }
-
-    /// 只保留仍在绑定集合中的 pipeline（pipeline 丢弃会触发输入处理器 Drop → 合批任务退出；
-    /// 其持有的 session 随 pipeline 的 Arc 释放自然回收）
-    pub fn retain(&self, keys: &HashSet<Arc<RoleKey>>) {
-        self.pipeline_map.retain(|k, _| keys.contains(k));
-    }
-
-    pub async fn incoming_message(&self, role_key: Arc<RoleKey>, event: Arc<IncomingMessageEvent>, channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>> {
-        if let Ok(pipeline) = self.ensure_pipeline(role_key).await {
-            pipeline.incoming_message(event, channel_id, is_admin).await
-        } else {
-            None
+        for input in inputs.iter() {
+            let owner = channel_manager.input_pipeline(
+                input.channel_id.clone(), input.messenger_id.clone(), input.user_id.clone());
+            if owner.as_deref() != Some(role_key.as_ref()) {
+                channel_manager.bind_input(input.clone(), role_key.clone()).await;
+            }
         }
     }
 
-    /// channel 不再绑定该 pipeline：通知旧 pipeline 清理该 channel（messenger + 绑定用户）的批次状态
-    pub async fn channel_unbound(&self, role_key: &Arc<RoleKey>, messenger_id: &str, self_user_id: &str) {
-        let pipeline = self.pipeline_map.get(role_key).map(|entry| entry.clone());
+    /// 运行期删除单条 pipeline：解除其输入身份绑定并通知 pipeline 清理 channel 运行态，再丢弃 pipeline。
+    /// 启动装配不使用；保留供运行期配置变更使用。
+    pub async fn remove_pipeline(&self, role_key: &Arc<RoleKey>) {
+        let pipeline = self.pipeline_map.remove(role_key).map(|(_, pipeline)| pipeline);
+        let channel_manager = &Nexus::get().channel_manager;
+        let inputs = channel_manager.inputs_of(role_key.as_ref());
+        for input in inputs.iter() {
+            channel_manager.unbind_input(input, role_key.as_ref()).await;
+        }
         if let Some(pipeline) = pipeline {
-            pipeline.channel_unbound(ArcStr::from(messenger_id), ArcStr::from(self_user_id)).await;
+            for input in inputs.iter() {
+                pipeline.channel_unbound(input.messenger_id.clone(), input.user_id.clone()).await;
+            }
         }
+    }
+
+    /// 按角色键取已装配 pipeline；不存在返回 None（不做懒装配）
+    pub async fn incoming_message(&self, role_key: Arc<RoleKey>, event: Arc<IncomingMessageEvent>, channel_id: ArcStr, is_admin: bool) -> Option<Result<ArcStr>> {
+        let pipeline = self.pipeline_map.get(&role_key).map(|entry| entry.clone())?;
+        pipeline.incoming_message(event, channel_id, is_admin).await
     }
 
     /// 单测用：pipeline 是否已装配（生产代码不依赖该查询）

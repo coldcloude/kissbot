@@ -4,9 +4,6 @@
       "channel_id": "web-main",
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "u2" }],
-      "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
-      "agent_id": "0",
-      "role_name": "",
       "enabled": true
     }
   },
@@ -26,6 +23,11 @@
     }
   },
   "memory_structs": {},
+  "pipelines": {
+    "0": {
+      "": { "pipeline_name": "default_memory" }
+    }
+  },
   "agent_roles": {
     "0": {
       "config_map": {
@@ -48,50 +50,11 @@
           }
         },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": { "pipeline_name": "default_memory" }
-      },
-      "roles": {}
-    },
-    "a1": {
-      "config_map": {
-        "llm": {
-          "provider": "deepseek",
-          "model": "deepseek-flash",
-          "max_tokens": 4096,
-          "has_max_tokens": true,
-          "thinking": "enabled",
-          "has_thinking": true,
-          "reasoning_effort": "low",
-          "has_reasoning_effort": true
-        },
-        "channel_batch": { "channel_batch_interval_secs": 3 },
-        "out_channel": {
-          "out_channel": {
-            "channel_id": "web-main",
-            "user": { "messenger_id": "web", "user_id": "u1" },
-            "group_id": "g1"
-          }
-        },
-        "group_set": { "group_set": ["filesystem"] },
-        "pipeline": { "pipeline_name": "default_memory" }
-      },
-      "roles": {}
-    },
-    "b1": {
-      "config_map": {
-        "llm": {
-          "provider": "deepseek",
-          "model": "deepseek-flash",
-          "max_tokens": 4096,
-          "has_max_tokens": true,
-          "thinking": "enabled",
-          "has_thinking": true,
-          "reasoning_effort": "low",
-          "has_reasoning_effort": true
-        },
-        "channel_batch": { "channel_batch_interval_secs": 3 },
-        "group_set": { "group_set": ["filesystem"] },
-        "pipeline": { "pipeline_name": "default_memory" }
+        "input_channels": {
+          "input_channels": [
+            { "channel_id": "web-main", "messenger_id": "web", "user_id": "u1" }
+          ]
+        }
       },
       "roles": {}
     }

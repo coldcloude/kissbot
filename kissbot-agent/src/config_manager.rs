@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use arcstr::ArcStr;
 use kissbot_api::{MergeBy, OptionArcField};
-use kissbot_api::{ChannelUser, write_key_value};
+use kissbot_api::{ChannelUser, RoleKey, write_key_value};
 use tokio::sync::RwLock;
 
 use kissbot_api::{MergeEffectiveConfig, MergeSelf};
@@ -149,11 +149,6 @@ impl ConfigManager {
     // ========== NexusRepo CRUD ==========
 
     // ---------- channels ----------
-    /// 返回所有 channel 配置快照（channel_id -> Arc<ChannelConfig>）
-    pub async fn channels(&self) -> Vec<(ArcStr, Arc<ChannelConfig>)> {
-        let repo = self.nexus_repo.read().await;
-        repo.channels.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-    }
     /// 返回 StationRepo 快照（Station 单例构建使用）
     pub async fn station_repo_snapshot(&self) -> StationRepo {
         self.station_repo.read().await.clone()
@@ -175,21 +170,6 @@ impl ConfigManager {
             let map = Arc::make_mut(&mut repo.channels);
             map.remove(channel_id);
             Ok(())
-        }).await
-    }
-
-    /// 修改 channel 配置并落盘（绑定/agent/role 等运行时回写统一入口）
-    /// channel 不存在返回 ConfigNotFound
-    pub async fn update_channel<F>(&self, channel_id: &str, f: F) -> Result<Arc<ChannelConfig>>
-    where
-        F: FnOnce(&mut ChannelConfig) + Send,
-    {
-        self.write_nexus_config(|repo| {
-            let channels = Arc::make_mut(&mut repo.channels);
-            let Some(result) = write_key_value(channels, channel_id, |_, ch| f(ch)) else {
-                return Err(Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()));
-            };
-            Ok(result)
         }).await
     }
 
@@ -249,6 +229,52 @@ impl ConfigManager {
             return Some(agent_role_config.build::<C>(role_name))
         }
         None
+    }
+
+    // ---------- pipelines ----------
+
+    /// 全部已配置的 pipeline（身份 + 配置）；按 (agent_id, role_name) 排序保证启动装配顺序稳定
+    pub async fn pipelines(&self) -> Vec<(Arc<RoleKey>, Arc<PipelineConfig>)> {
+        let repo = self.nexus_repo.read().await;
+        let mut result: Vec<(Arc<RoleKey>, Arc<PipelineConfig>)> = repo.pipelines.iter()
+            .flat_map(|(agent_id, roles)| {
+                roles.iter().map(move |(role_name, config)| {
+                    let key = Arc::new(RoleKey {
+                        agent_id: agent_id.clone(),
+                        role_name: role_name.clone(),
+                    });
+                    (key, config.clone())
+                })
+            })
+            .collect();
+        result.sort_by(|a, b| {
+            (a.0.agent_id.as_str(), a.0.role_name.as_str())
+                .cmp(&(b.0.agent_id.as_str(), b.0.role_name.as_str()))
+        });
+        result
+    }
+
+    /// 单测用：写入/覆盖一条 pipeline 定义（生产环境由配置文件提供）
+    #[cfg(test)]
+    pub async fn set_pipeline_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<PipelineConfig>) -> Result<()> {
+        self.write_nexus_config(|repo| {
+            let pipelines = Arc::make_mut(&mut repo.pipelines);
+            let roles = Arc::make_mut(pipelines.entry(agent_id).or_default());
+            roles.insert(role_name, config);
+            Ok(())
+        }).await
+    }
+
+    /// 单测用：删除一条 pipeline 定义
+    #[cfg(test)]
+    pub async fn remove_pipeline_config(&self, agent_id: &str, role_name: &str) -> Result<()> {
+        self.write_nexus_config(|repo| {
+            let pipelines = Arc::make_mut(&mut repo.pipelines);
+            if let Some(roles) = pipelines.get_mut(agent_id) {
+                Arc::make_mut(roles).remove(role_name);
+            }
+            Ok(())
+        }).await
     }
 
     /// 按 session_id 取 session 配置项；缺失时用 `C::default()` 的有效配置建项并缓存（不落盘）
@@ -457,6 +483,7 @@ mod tests {
         assert!(repo.providers.is_empty());
         assert!(repo.memory_structs.is_empty());
         assert!(repo.agent_roles.is_empty());
+        assert!(repo.pipelines.is_empty());
         assert!(repo.sessions.is_empty());
         assert!(path.exists(), "首次创建应写文件");
     }
@@ -497,26 +524,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_config_op_error_skips_persist() {
-        // write_nexus_config 模式语义：op 返回 Err 时不应序列化写盘（文件保持不变）
-        let dir = tempdir().unwrap();
-        let manager = test_manager(&dir);
-        manager.add_channel(sample_channel("web-main")).await.unwrap();
-        let before = std::fs::read_to_string(dir.path().join("nexus.json")).unwrap();
-
-        // update_channel 的 op 前校验失败（channel 不存在）→ 返回 Err 且不落盘
-        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
-        assert!(matches!(err, Error::ConfigNotFound(_)));
-        let after = std::fs::read_to_string(dir.path().join("nexus.json")).unwrap();
-        assert_eq!(before, after, "op 失败不应写入文件");
-
-        // 成功路径：落盘可见
-        manager.update_channel("web-main", |c| c.agent_id = ArcStr::from("a1")).await.unwrap();
-        let saved = read_nexus_json(&dir);
-        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
-    }
-
-    #[tokio::test]
     async fn add_remove_admin_missing_channel_errors() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
@@ -533,108 +540,41 @@ mod tests {
             channel_id: ArcStr::from(id),
             ws_url: ArcStr::from("ws://127.0.0.1:8201"),
             admins: Arc::new(HashSet::new()),
-            bind_users: Arc::new(HashSet::from([Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") })])),
-            agent_id: ArcStr::from("0"),
-            role_name: ArcStr::from(""),
             enabled: true,
         }
     }
 
     #[test]
-    fn channel_config_bind_users_roundtrip() {
-        let ch = ChannelConfig {
-            channel_id: ArcStr::from("c1"),
-            ws_url: ArcStr::from("ws://127.0.0.1:8201"),
-            admins: Arc::new(HashSet::new()),
-            bind_users: Arc::new(HashSet::from([
-                Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }),
-                Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") }),
-            ])),
-            agent_id: ArcStr::from("a1"),
-            role_name: ArcStr::from("r1"),
-            enabled: true,
-        };
-        let json = serde_json::to_value(&ch).unwrap();
-        // bind_users 为 HashSet，序列化数组顺序不定——按内容断言而非下标
-        let json_bind_users = json["bind_users"].as_array().unwrap();
-        assert!(json_bind_users.iter().any(|u| u["user_id"] == "u1"), "bind_users 应序列化 u1");
-        assert!(json_bind_users.iter().any(|u| u["user_id"] == "u2"), "bind_users 应序列化 u2");
-        assert!(json.get("is_send_channel").is_none(), "ChannelConfig 无 is_send_channel 字段");
-        let back: ChannelConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(back.bind_users.len(), 2);
-    }
-
-    #[test]
-    fn channel_config_new_shape_serde_roundtrip() {
+    fn channel_config_serde_roundtrip() {
         let ch = sample_channel("web-main");
         let json = serde_json::to_string(&ch).unwrap();
-        assert!(json.contains("\"bind_users\""), "应序列化 bind_users");
-        assert!(json.contains("\"agent_id\""));
-        assert!(json.contains("\"role_name\""));
-        assert!(!json.contains("\"is_send_channel\""), "ChannelConfig 无 is_send_channel 字段");
+        assert!(json.contains("\"channel_id\""));
+        assert!(json.contains("\"ws_url\""));
+        assert!(json.contains("\"admins\""));
         assert!(json.contains("\"enabled\""));
+        assert!(!json.contains("\"bind_users\""), "绑定身份由 pipeline input_channels 承载");
+        assert!(!json.contains("\"agent_id\""), "channel 不再绑定 agent");
+        assert!(!json.contains("\"role_name\""), "channel 不再绑定 role");
         let back: ChannelConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.channel_id, "web-main");
-        assert!(back.bind_users.contains(&ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u1") }), "bind_users 应包含 web/u1");
+        assert!(back.enabled);
     }
 
     #[test]
-    fn channel_config_old_shape_no_longer_parses() {
-        // 旧格式（default_bind_user / enabled_by_default / is_send_channel）不兼容：
-        // bind_users 为必填数组，无 serde alias（不兼容单值字段，需直接编辑配置文件）
-        let old = r#"{
-            "channel_id": "web-main",
+    fn channel_config_ignores_legacy_binding_fields() {
+        // 旧配置残留的绑定字段不参与解析（绑定改由 pipeline 的 input_channels 决定）
+        let json = r#"{
+            "channel_id": "c1",
             "ws_url": "ws://127.0.0.1:8201",
             "admins": [],
-            "default_bind_user": { "messenger_id": "web", "user_id": "u1" },
-            "enabled_by_default": true
+            "enabled": true,
+            "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
+            "agent_id": "a1",
+            "role_name": "r1"
         }"#;
-        assert!(serde_json::from_str::<ChannelConfig>(old).is_err(), "旧格式应解析失败（不兼容）");
-    }
-
-    #[test]
-    fn channel_config_agent_id_empty_normalizes_to_reserved() {
-        // 显式空串 → 归一化为 "0"
-        let json = r#"{"channel_id":"c1","ws_url":"ws://127.0.0.1:8201","admins":[],"bind_users":[],"agent_id":"","role_name":"","enabled":true}"#;
         let ch: ChannelConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(ch.agent_id.as_str(), "0", "空串应归一化为保留 id");
-    }
-
-    #[test]
-    fn channel_config_agent_id_missing_defaults_to_reserved() {
-        // 字段缺省 → "0"
-        let json = r#"{"channel_id":"c1","ws_url":"ws://127.0.0.1:8201","admins":[],"bind_users":[],"role_name":"","enabled":true}"#;
-        let ch: ChannelConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(ch.agent_id.as_str(), "0", "缺省应回退保留 id");
-    }
-
-    #[tokio::test]
-    async fn update_channel_mutates_and_persists() {
-        let dir = tempdir().unwrap();
-        let manager = test_manager(&dir);
-        manager.add_channel(sample_channel("web-main")).await.unwrap();
-
-        // 修改 agent_id/role_name/bind_users（绑定为数组追加）
-        manager.update_channel("web-main", |c| {
-            c.agent_id = ArcStr::from("a1");
-            c.role_name = ArcStr::from("r1");
-            // HashSet 追加（Arc::make_mut 写时复制）
-            Arc::make_mut(&mut c.bind_users).insert(Arc::new(ChannelUser { messenger_id: ArcStr::from("web"), user_id: ArcStr::from("u2") }));
-        }).await.unwrap();
-
-        // 内存可见
-        let ch = manager.channels().await.into_iter()
-            .find(|(id, _)| id == "web-main").map(|(_, c)| c).unwrap();
-        assert_eq!(ch.agent_id, "a1");
-        assert_eq!(ch.bind_users.len(), 2, "bind_users 追加应可见");
-
-        // 落盘可见（重新读文件）
-        let saved = read_nexus_json(&dir);
-        assert_eq!(saved["channels"]["web-main"]["agent_id"], "a1");
-
-        // channel 不存在报错
-        let err = manager.update_channel("nope", |_| {}).await.unwrap_err();
-        assert!(matches!(err, Error::ConfigNotFound(_)));
+        assert_eq!(ch.channel_id, "c1");
+        assert!(ch.admins.is_empty());
     }
 
     #[test]
@@ -654,9 +594,16 @@ mod tests {
         {
             let map = Arc::make_mut(&mut repo.providers);
             map.insert(ArcStr::from("deepseek"), Arc::new(sample_provider()));
+            let pipelines = Arc::make_mut(&mut repo.pipelines);
+            pipelines.insert(ArcStr::from("a1"), Arc::new(HashMap::from([
+                (ArcStr::from(""), Arc::new(PipelineConfig {
+                    pipeline_name: ArcStr::from("default_memory"),
+                })),
+            ])));
         }
         let json = serde_json::to_string(&repo).unwrap();
         assert!(json.contains("\"providers\""), "应序列化 providers");
+        assert!(json.contains("\"pipelines\""), "应序列化 pipelines");
         assert!(json.contains("\"sessions\""), "应序列化 sessions");
         assert!(!json.contains("\"memory_sessions\""), "NexusRepo 无 memory_sessions 字段");
         assert!(!json.contains("\"raw_sessions\""), "NexusRepo 无 raw_sessions 字段");
@@ -666,6 +613,9 @@ mod tests {
         let provider = back.providers.get("deepseek").expect("provider 应回读").clone();
         assert_eq!(provider.provider_config.provider_type.as_str(), "openai");
         assert_eq!(provider.default_model_config.max_tokens_usage, 128000);
+        let pipeline = back.pipelines.get("a1").and_then(|roles| roles.get(""))
+            .expect("pipeline 应回读");
+        assert_eq!(pipeline.pipeline_name.as_str(), "default_memory");
     }
 
     #[test]
@@ -675,12 +625,13 @@ mod tests {
         assert!(repo.providers.is_empty());
         assert!(repo.memory_structs.is_empty());
         assert!(repo.agent_roles.is_empty(), "agent_roles 初始为空 map");
+        assert!(repo.pipelines.is_empty(), "pipelines 初始为空 map");
         assert!(repo.sessions.is_empty(), "sessions 初始为空 map");
     }
 
     #[test]
     fn nexus_repo_missing_sessions_defaults_empty() {
-        // 旧配置没有 sessions 字段（且仍带 memory_sessions / raw_sessions）时应能加载，session 配置重新按 agent/role 合成
+        // 旧配置没有 sessions / pipelines 字段时应能加载（pipeline 集合为空，不装配任何 pipeline）
         let json = r#"{
             "channels": {},
             "providers": {},
@@ -691,6 +642,7 @@ mod tests {
         }"#;
         let repo: NexusRepo = serde_json::from_str(json).unwrap();
         assert!(repo.sessions.is_empty());
+        assert!(repo.pipelines.is_empty());
     }
 
     // ---------- Provider 配置 ----------
@@ -1226,15 +1178,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_config_is_agent_role_only() {
+    async fn pipelines_are_listed_sorted_and_removed_by_role_key() {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
-        manager.set_agent_role_config::<PipelineConfig>(
-            ArcStr::from("a1"), ArcStr::from("r1"),
-            Arc::new(PipelineConfig { pipeline_name: Some(ArcStr::from("memory_summary")) })).await.unwrap();
+        manager.set_pipeline_config(ArcStr::from("a2"), ArcStr::from(""), Arc::new(PipelineConfig {
+            pipeline_name: ArcStr::from("default"),
+        })).await.unwrap();
+        manager.set_pipeline_config(ArcStr::from("a1"), ArcStr::from("r2"), Arc::new(PipelineConfig {
+            pipeline_name: ArcStr::from("memory_summary"),
+        })).await.unwrap();
+        manager.set_pipeline_config(ArcStr::from("a1"), ArcStr::from(""), Arc::new(PipelineConfig {
+            pipeline_name: ArcStr::from("default_memory"),
+        })).await.unwrap();
 
-        let cfg = manager.agent_role_config::<PipelineConfig>("a1", "r1").await.expect("agent/role 应能读到 pipeline");
-        assert_eq!(cfg.pipeline_name.as_deref(), Some("memory_summary"));
+        let list = manager.pipelines().await;
+        let keys: Vec<(String, String)> = list.iter()
+            .map(|(key, _)| (key.agent_id.to_string(), key.role_name.to_string()))
+            .collect();
+        assert_eq!(keys, vec![
+            ("a1".to_string(), "".to_string()),
+            ("a1".to_string(), "r2".to_string()),
+            ("a2".to_string(), "".to_string()),
+        ], "按 agent_id / role_name 排序，保证装配顺序稳定");
+        assert_eq!(list[1].1.pipeline_name.as_str(), "memory_summary");
+
+        // 落盘可见
+        let saved = read_nexus_json(&dir);
+        assert_eq!(saved["pipelines"]["a1"]["r2"]["pipeline_name"], "memory_summary");
+
+        manager.remove_pipeline_config("a1", "r2").await.unwrap();
+        assert_eq!(manager.pipelines().await.len(), 2, "删除后不再出现在装配集合中");
+    }
+
+    #[tokio::test]
+    async fn input_channels_role_replaces_agent_and_falls_back_when_unconfigured() {
+        /// 生产代码读取 input_channels 的方式：直接走 agent_role_config 的合并结果
+        async fn input_channels_of(manager: &ConfigManager, agent_id: &str, role_name: &str) -> Arc<Vec<Arc<InputChannel>>> {
+            manager.agent_role_config::<InputChannelsConfig>(agent_id, role_name).await
+                .map(|config| config.input_channels)
+                .unwrap_or_default()
+        }
+
+        let dir = tempdir().unwrap();
+        let manager = test_manager(&dir);
+        let agent = ArcStr::from("a1");
+        manager.set_agent_role_config::<InputChannelsConfig>(
+            agent.clone(), ArcStr::from(""),
+            Arc::new(InputChannelsConfig {
+                input_channels: Arc::new(vec![Arc::new(InputChannel {
+                    channel_id: ArcStr::from("web1"),
+                    messenger_id: ArcStr::from("web"),
+                    user_id: ArcStr::from("u1"),
+                })]),
+            })).await.unwrap();
+
+        // role "" 读 agent 级
+        let empty_role = input_channels_of(&manager, agent.as_str(), "").await;
+        assert_eq!(empty_role.len(), 1);
+        assert_eq!(empty_role[0].user_id.as_str(), "u1");
+
+        // role 配置整体替换 agent 级（不是叠加）
+        manager.set_agent_role_config::<InputChannelsConfig>(
+            agent.clone(), ArcStr::from("r1"),
+            Arc::new(InputChannelsConfig {
+                input_channels: Arc::new(vec![Arc::new(InputChannel {
+                    channel_id: ArcStr::from("web1"),
+                    messenger_id: ArcStr::from("web"),
+                    user_id: ArcStr::from("u2"),
+                })]),
+            })).await.unwrap();
+        let r1 = input_channels_of(&manager, agent.as_str(), "r1").await;
+        assert_eq!(r1.len(), 1);
+        assert_eq!(r1[0].user_id.as_str(), "u2", "role 列表替换 agent 列表");
+
+        // role 未配置 input_channels：沿用 agent 级
+        let r2 = input_channels_of(&manager, agent.as_str(), "r2").await;
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].user_id.as_str(), "u1", "未配置的 role 沿用 agent 级");
+
+        // role 显式配置空列表：替换为空
+        manager.set_agent_role_config::<InputChannelsConfig>(
+            agent.clone(), ArcStr::from("r3"),
+            Arc::new(InputChannelsConfig { input_channels: Arc::new(vec![]) })).await.unwrap();
+        assert!(input_channels_of(&manager, agent.as_str(), "r3").await.is_empty());
+        // agent 不存在
+        assert!(input_channels_of(&manager, "no-such-agent", "").await.is_empty());
     }
 
     #[tokio::test]

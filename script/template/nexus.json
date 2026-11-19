@@ -4,9 +4,6 @@
       "channel_id": "web1",
       "ws_url": "ws://127.0.0.1:8201",
       "admins": [{ "messenger_id": "web", "user_id": "admin" }],
-      "bind_users": [{ "messenger_id": "web", "user_id": "u1" }],
-      "agent_id": "0",
-      "role_name": "",
       "enabled": true
     }
   },
@@ -26,6 +23,11 @@
     }
   },
   "memory_structs": {},
+  "pipelines": {
+    "0": {
+      "": { "pipeline_name": "default_memory" }
+    }
+  },
   "agent_roles": {
     "0": {
       "config_map": {
@@ -48,7 +50,11 @@
           }
         },
         "group_set": { "group_set": ["filesystem"] },
-        "pipeline": { "pipeline_name": "default_memory" }
+        "input_channels": {
+          "input_channels": [
+            { "channel_id": "web1", "messenger_id": "web", "user_id": "u1" }
+          ]
+        }
       },
       "roles": {}
     }

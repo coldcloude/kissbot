@@ -35,11 +35,6 @@ test.describe.serial('nexus-chat：真实 LLM 文本通信（deepseek）', () =>
     stopBackend(backend);
   });
 
-  test('TC-1: 无参 /agent 把 channel 挂到保留 agent（agent_id=0）', async () => {
-    cli.stdin('/send /agent');
-    await cli.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
-  });
-
   test('TC-2: /model 切换到 deepseek-flash（真实 API 列表校验）', async () => {
     cli.stdin('/send /model deepseek deepseek-flash');
     await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-flash/, 20000);
@@ -51,7 +46,7 @@ test.describe.serial('nexus-chat：真实 LLM 文本通信（deepseek）', () =>
   });
 
   test('TC-3: 普通文本消息得到真实 LLM 非空回复', async () => {
-    // 基线：TC-1/TC-2 的管理命令回复（同样以 bind_user u1 身份下发）已在缓冲区，
+    // 基线：前面的管理命令回复（同样以 input identity u1 身份下发）已在缓冲区，
     // 而 waitForOutput 匹配的是全量缓冲区、会立即命中旧内容，
     // 因此这里用"基线之后的新输出"轮询等待 agent 的 LLM 回复特征：
     // agent 以 channel bind_user（u1）身份回复，CLI 打印形如 << [u1:g1] {"msg_type":"Text","data":"..."}

@@ -23,6 +23,9 @@ pub struct NexusRepo {
     pub providers: Arc<HashMap<ArcStr, Arc<ProviderModelConfig>>>, // key = provider 名
     pub memory_structs: Arc<HashMap<ArcStr, Arc<MemoryStructConfig>>>,
     pub agent_roles: Arc<HashMap<ArcStr, Arc<AgentRoleConfig>>>,
+    /// pipeline 集合：agent_id → role_name → pipeline 实现配置；只装配这里列出的 RoleKey
+    #[serde(default)]
+    pub pipelines: Arc<HashMap<ArcStr, Arc<HashMap<ArcStr, Arc<PipelineConfig>>>>>,
     /// session 运行配置（key = session_id）：只存 session 级值（pipeline 固化的有效配置或 /model 等覆盖）；
     /// 缺失的配置项由 pipeline 按 agent/role 配置合成，不在本表隐式继承。缺省为空，兼容旧配置。
     #[serde(default)]
@@ -36,6 +39,7 @@ impl Default for NexusRepo {
             providers: Arc::new(HashMap::new()),
             memory_structs: Arc::new(HashMap::new()),
             agent_roles: Arc::new(HashMap::new()),
+            pipelines: Arc::new(HashMap::new()),
             sessions: Arc::new(HashMap::new()),
         }
     }

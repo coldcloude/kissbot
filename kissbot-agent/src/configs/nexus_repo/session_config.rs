@@ -27,8 +27,8 @@ pub struct SessionConfigMergeMap {
     memory_pipeline: Option<Arc<MemoryPipelineConfig>>,
     channel_batch: Option<Arc<ChannelBatchConfig>>,
     out_channel: Option<Arc<OutChannelConfig>>,
+    input_channels: Option<Arc<InputChannelsConfig>>,
     group_set: Option<Arc<GroupSetConfig>>,
-    pipeline: Option<Arc<PipelineConfig>>,
 }
 
 impl_option_arc_field!(LLMConfig => llm, SessionConfigMergeMap);
@@ -37,8 +37,8 @@ impl_option_arc_field!(MemoryRecoverConfig => memory_recover, SessionConfigMerge
 impl_option_arc_field!(MemoryPipelineConfig => memory_pipeline, SessionConfigMergeMap);
 impl_option_arc_field!(ChannelBatchConfig => channel_batch, SessionConfigMergeMap);
 impl_option_arc_field!(OutChannelConfig => out_channel, SessionConfigMergeMap);
+impl_option_arc_field!(InputChannelsConfig => input_channels, SessionConfigMergeMap);
 impl_option_arc_field!(GroupSetConfig => group_set, SessionConfigMergeMap);
-impl_option_arc_field!(PipelineConfig => pipeline, SessionConfigMergeMap);
 
 impl_option_arc_field_map!(SessionConfigMergeMap);
 

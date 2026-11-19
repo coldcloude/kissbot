@@ -21,8 +21,8 @@
 
 ## 绑定模型
 
-- agent 按 (messenger_id, user_id) 绑定，绑定记录携带 connect_id、agent_id、role_name
-- agent_id / role_name 用于消息写入记忆库时的归属
+- agent 按 (messenger_id, user_id) 绑定，绑定记录只携带 connect_id
+- channel 不感知 agent_id / role_name；消息写入记忆库时的归属由 agent 侧按输入身份决定
 - 同一 user 只能绑定一个连接；绑定、解绑、发消息、下载附件都校验绑定归属本连接
 
 ## 消息路由

@@ -66,14 +66,14 @@ Agent 除了根据外界信息给出回应外，还可以主动获取信息并�
 
 | 发送方 | 接收方 | 通信内容（方向） | 通信时机 |
 |--------|--------|-------------------|----------|
-| nexus | 消息通道 | 绑定请求（→）、下行消息/回复/思考（→）、附件下载请求（→）、心跳（↔） | nexus 启动时绑定；有消息回复时；需要附件时 |
+| nexus | 消息通道 | 绑定请求（→）、下行消息/回复/思考（→）、附件下载请求（→）、心跳（↔） | pipeline 输入身份建立连接后绑定；有消息回复时；需要附件时 |
 | 消息通道 | nexus | 上行消息/用户消息（→）、群组变化通知（→）、附件数据（→）、心跳（↔） | 外部消息到达时；群组变化时；nexus 请求附件时 |
 | nexus | station | tool call 请求（→）、tool result 响应（←） | agentic loop 内需要时 |
 | station | 子 station | MCP 请求-响应：工具列表查询、工具调用（↔） | 级联查询工具与远程工具调用时 |
 | nexus | 模型提供方 API（经 kissbot-llm） | 模型调用请求（→）、模型响应（←） | agentic loop 每轮；/model 校验模型列表时 |
 | nexus | memory-store | 推送记忆记录（→） | 每条消息产生时（含收发的通道消息） |
 | nexus | memory-struct-* | case 定位请求（→）、上下文（←）；记忆查询请求（→）、查询结果（←） | 预留：新消息定位与 LLM 记忆搜索工具均未接入（实现模块为 kissbot-memory-struct-summary） |
-| nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | 新建会话设置系统提示词时；/agent、/role 校验时 |
+| nexus | memory-ego | 读取自我认知设定（→）、返回设定（←） | 新建会话设置系统提示词时 |
 | memory-store | memory-struct-* | 新数据通知（→） | 新数据到达时 |
 | memory-store / memory-struct-* | 文件系统 | 共享读写记忆文件（↔） | 持续 |
 | 通道前端（浏览器） | 通道后端 | 消息收发、群组管理、附件操作（↔） | 用户操作时 |
@@ -102,8 +102,8 @@ nexus 与记忆系统的交互区分两种模式：
   - agentic loop 外：直接调用 API 读取自我认知设定、推送记忆到存储组件、上下文超长时从存储组件回溯打包
   - agentic loop 内：预留——由 LLM 通过记忆搜索 tool 从记忆结构组件查询记忆（不记入记忆）
 
-### 会话与绑定
-一个 nexus 可同时管理多个会话。pipeline 身份只由绑定 channel 的 agent_id（空/缺省 = 保留 agent "0"）与 role_name 决定，每个 (agent, role) 组合一条 pipeline；当前 event 由 pipeline 在内存中维护，默认从角色模式开始，切换 event 由 pipeline 命令完成，不改变 channel 绑定。各 pipeline 拥有独立的 LLM 上下文、记忆读写范围与当前 event，消息按来源 channel 对应的绑定配置路由到对应 pipeline；记忆读写直接用 agent_id 定位（配置即 agent_id）。pipeline 的回复目标由回复通道配置（/bind-outgoing、/unbind-outgoing）决定，未配置则只存不回复。
+### 会话与 pipeline 路由
+一个 nexus 可同时管理多个会话。pipeline 集合由配置中的 pipeline 定义决定，pipeline 身份为 agent_id（空/缺省 = 保留 agent "0"）与 role_name，每个 (agent, role) 组合一条 pipeline；每条 pipeline 声明自己订阅的输入身份，通道适配层按 (channel_id、messenger_id、接收方 user_id) 把上行消息交给绑定的唯一 pipeline（一个身份只能绑定一条 pipeline，先绑定者生效，其他 pipeline 跳过并记错误日志）。当前 event 由 pipeline 在内存中维护，默认从角色模式开始，切换 event 由 pipeline 命令完成，不改变输入身份。各 pipeline 拥有独立的 LLM 上下文、记忆读写范围与当前 event；记忆读写直接用 agent_id 定位（配置即 agent_id）。pipeline 的回复目标由回复通道配置（/bind-outgoing、/unbind-outgoing）决定，未配置则只存不回复；发送前按 channel 级绑定校验目标身份。
 
 ### Agent 的自我认知机制
 每个 agent 具有双重自我认知设定：

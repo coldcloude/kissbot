@@ -1,43 +1,29 @@
 import { test, expect } from '@playwright/test';
-import { resetWorkspace, startBackend, stopBackend, startAgent, stopAgent, waitForPort, startMemoryEgo, stopMemoryEgo } from './helpers/server';
+import { resetWorkspace, startBackend, stopBackend, startAgent, stopAgent, waitForPort } from './helpers/server';
 import { spawnCli, type SpawnedCli } from './helpers/cli';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { ChildProcess } from 'child_process';
-import { readFileSync, writeFileSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WORKSPACE = join(__dirname, '..', 'workspace');
-const CONFIG_PATH = join(WORKSPACE, 'config.json');
-const EGO_BASE = 'http://127.0.0.1:3001';
-const EGO_API_KEY = 'user-key-456'; // security.api_key
 
-let ego: ChildProcess;
 let backend: ChildProcess;
 let agent: ChildProcess;
 let cliAdmin: SpawnedCli;   // u2：初始管理员
 let cliUser: SpawnedCli;    // u3：admin/unadmin 测试对象
 
-// 等待 cli 输出（返回 Promise，用于"不应出现"的断言配合超时）
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
-
-test.describe.serial('agent 管理命令测试（多会话路由，cli 经 channel-web 发送）', () => {
+test.describe.serial('agent 管理命令测试（channel 级 admin + pipeline 命令，cli 经 channel-web 发送）', () => {
 
   test.beforeAll(async () => {
     resetWorkspace();
-    // 注入 ego 地址：/agent 切换前会经 ego 校验 agent 是否存在（模板默认 memory_ego_url 为空）
-    const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
-    cfg.api.memory_ego_url = EGO_BASE;
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-    ego = startMemoryEgo(WORKSPACE);
-    await waitForPort(3001, '127.0.0.1', 30000);
     backend = startBackend(WORKSPACE);
     await waitForPort(8301, '127.0.0.1', 30000);
     agent = startAgent(WORKSPACE);
     await waitForPort(9090, '127.0.0.1', 30000);
-    // 等待 agent 完成 channel 连接与绑定
-    await sleep(2000);
+    // 等待 agent 装配 pipeline、连接 channel 并绑定 input identity
+    await new Promise((r) => setTimeout(r, 2000));
     cliAdmin = spawnCli(['web', 'u2', 'g1', './downloads'], WORKSPACE);
     await cliAdmin.waitForOutput(/bound\./);
     cliUser = spawnCli(['web', 'u3', 'g1', './downloads'], WORKSPACE);
@@ -49,86 +35,33 @@ test.describe.serial('agent 管理命令测试（多会话路由，cli 经 chann
     if (cliUser) cliUser.proc.kill();
     stopAgent(agent);
     stopBackend(backend);
-    stopMemoryEgo(ego);
   });
 
-  test('TC-02: 管理员（u2）发送 /agent a1 r1 设置 channel 的 agent 与 role', async ({ request }) => {
-    // 预建 ego agent a1：/agent 切换前先解析（按 agent_id 解析），不可解析则保持原 agent 并报错
-    const createResp = await (await request.post(`${EGO_BASE}/agent/create`, {
-      headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
-      data: { agent_id: 'a1', description: '测试 agent' },
-    })).json();
-    expect(createResp.success).toBe(true);
-    // 预建 role r1/r2：66f0b32 起 /agent、/role 切换前经 ego 校验 role 存在
-    const roleResp = await (await request.post(`${EGO_BASE}/role/create`, {
-      headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
-      data: { agent_id: 'a1', role_name: 'r1', description: '测试角色' },
-    })).json();
-    expect(roleResp.success).toBe(true);
-    const role2Resp = await (await request.post(`${EGO_BASE}/role/create`, {
-      headers: { 'X-Api-Key': EGO_API_KEY, 'Content-Type': 'application/json' },
-      data: { agent_id: 'a1', role_name: 'r2', description: '测试角色2' },
-    })).json();
-    expect(role2Resp.success).toBe(true);
-    cliAdmin.stdin('/send /agent a1 r1');
-    await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
-  });
-
-  test('TC-03: 管理员（u2）发送 /admin web u3 添加管理权限', async () => {
+  test('TC-01: 管理员（u2）发送 /admin web u3 添加管理权限', async () => {
     cliAdmin.stdin('/send /admin web u3');
     await cliAdmin.waitForOutput(/✅ 已添加管理权限: web \/ u3/, 10000);
   });
 
-  test('TC-05: 管理员（u2）发送 /role r2 修改 channel 角色（回写并重定位会话）', async () => {
-    cliAdmin.stdin('/send /role r2');
-    await cliAdmin.waitForOutput(/✅ 已设置 role: r2/, 10000);
-  });
-
-  test('TC-06: 管理员（u2）发送 /mode event 进入事件模式（自动生成事件 ID）', async () => {
-    cliAdmin.stdin('/send /mode event');
-    await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
-  });
-
-  test('TC-07: /send-channel 不受理（out_channel 由 /bind-outgoing 设置）', async () => {
-    // /send-channel 不是已注册命令：返回未知命令错误，不回写配置
-    cliAdmin.stdin('/send /send-channel on');
-    await cliAdmin.waitForOutput(/⚠️ 未知命令: \/send-channel/, 10000);
-  });
-
-  test('TC-08: /unbind 缺 user_id 报格式错误；带 user_id 正常移除（unbind 不动 out_channel）', async () => {
-    // 缺 user_id：格式错误（/unbind 必须带 <user_id>）
-    cliAdmin.stdin('/send /unbind messenger web');
-    await cliAdmin.waitForOutput(/⚠️ 格式: \/unbind messenger <messenger_id> <user_id>/, 10000);
-    // 带 user_id：正常移除（web/u1 是模板绑定用户；out_channel 在 (agent, role) context，unbind 不改动）
-    cliAdmin.stdin('/send /unbind messenger web u1');
-    await cliAdmin.waitForOutput(/✅ 已移除 channel 用户: web \/ u1/, 10000);
-  });
-
-  test('TC-09: 无参 /agent 挂载保留 agent（agent_id=0；无模型态下普通消息静默忽略，管理命令照常回复）', async () => {
-    cliAdmin.stdin('/send /agent');
-    await cliAdmin.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
-    // 注意：无参 /agent 挂载保留 agent（agent_id="0"），测试环境无 api_key → 无模型态
-    // 无模型态下普通消息被静默忽略：不进入 agentic loop，也不产生任何 agent 回复
-    // 注意：channel 会把发送消息回显给群组成员（<< [u2:g1] ...hello），因此不能断言发送文本本身
-    // 语义是 agent 未进入 agentic loop：无"模型调用失败"回复（若进入 loop，api_key 为空必然报错）
-    const baseline = cliAdmin.getOutput();
-    cliAdmin.stdin('/send hello');
-    await sleep(3000);
-    const tail = cliAdmin.getOutput().slice(baseline.length);
-    expect(tail).not.toMatch(/模型调用失败/);
-    // 挂载态下管理命令仍可执行
-    cliAdmin.stdin('/send /agent a1 r1');
-    await cliAdmin.waitForOutput(/✅ 已设置 agent: a1 \/ role: r1/, 10000);
-  });
-
-  test('TC-10: 管理员（u2）发送 /unadmin web u3 移除权限', async () => {
+  test('TC-02: 管理员（u2）发送 /unadmin web u3 移除权限', async () => {
     cliAdmin.stdin('/send /unadmin web u3');
     await cliAdmin.waitForOutput(/✅ 已移除管理权限: web \/ u3/, 10000);
   });
 
-  // TC-11: /model 参数个数不符报格式错误（纯本地解析，不触发 API 调用）
-  test('TC-11: /model 参数个数不符报格式错误', async () => {
+  test('TC-03: 管理员发送 /mode event 进入事件模式（pipeline 命令，自动生成事件 ID）', async () => {
+    cliAdmin.stdin('/send /mode event');
+    await cliAdmin.waitForOutput(/✅ 新事件 ID: [0-9a-f-]{36}/, 10000);
+  });
+
+  test('TC-04: /model 参数个数不符报格式错误（pipeline 命令）', async () => {
     cliAdmin.stdin('/send /model deepseek deepseek-flash maybe');
     await cliAdmin.waitForOutput(/⚠️ 格式: \/model <provider> <model>/, 10000);
+  });
+
+  test('TC-05: 已移除的管理命令不再产生命令回复', async () => {
+    // /agent、/role、/bind、/unbind 等命令已删除：pipeline 不认识，按普通消息处理
+    const baseline = cliAdmin.getOutput();
+    cliAdmin.stdin('/send /agent a1 r1');
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(cliAdmin.getOutput().slice(baseline.length)).not.toMatch(/✅ 已设置 agent/);
   });
 });

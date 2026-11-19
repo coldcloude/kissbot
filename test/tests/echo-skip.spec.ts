@@ -66,9 +66,9 @@ test.describe.serial('回显跳过：LLM 回复经通道回显不被重复处理
     stopMemoryStore(store);
   });
 
-  test('TC-1: 无参 /agent 挂到保留 agent（agent_id="0"），/model 启用 deepseek', async () => {
-    cli.stdin('/send /agent');
-    await cli.waitForOutput(/✅ 已设置 agent: 0 \/ role: /, 10000);
+  test('TC-1: 模板已配置保留 agent pipeline（agent_id="0"），/model 启用 deepseek', async () => {
+    // 模板 nexus.json 顶层 pipelines 已声明 (agent "0", role "") 的 default_memory pipeline，
+    // 并把 u1@g1 配为 input channel，无需运行期 /agent
     cli.stdin('/send /model deepseek deepseek-flash');
     await cli.waitForOutput(/✅ 已切换模型为: deepseek\/deepseek-flash/, 20000);
   });

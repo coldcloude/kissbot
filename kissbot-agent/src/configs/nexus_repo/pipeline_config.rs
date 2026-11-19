@@ -4,6 +4,16 @@ use arcstr::ArcStr;
 use kissbot_api::{ChannelUser, MergeBy, MergeEffectiveConfig, MergeSelf};
 use serde::{Deserialize, Serialize};
 
+// ============ pipeline =================
+
+/// pipeline 实现配置（顶层 pipelines 段的值，key 为 RoleKey）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineConfig {
+    pub pipeline_name: ArcStr,
+}
+
+// ============ 压缩设置 ===================
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompressConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +205,32 @@ impl MergeEffectiveConfig<OutChannelConfig> for OutChannelConfig {
     }
 }
 
+// ============ input channel =================
+
+/// pipeline 的输入身份：某 channel 上以 messenger_id + user_id 接收消息，路由到引用它的 pipeline
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InputChannel {
+    pub channel_id: ArcStr,
+    pub messenger_id: ArcStr,
+    pub user_id: ArcStr,
+}
+
+/// input channel 段（与 out_channel 同级）；一个输入身份只能绑定一条 pipeline，重复绑定由运行时记 error 跳过
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct InputChannelsConfig {
+    #[serde(default)]
+    pub input_channels: Arc<Vec<Arc<InputChannel>>>,
+}
+
+impl MergeBy<InputChannelsConfig> for InputChannelsConfig {
+    fn merge(&mut self, other: &Self) {
+        // 整体替换而非叠加：始终取 other 的列表；other 未配置时为空集合
+        self.input_channels = other.input_channels.clone();
+    }
+}
+
+impl MergeSelf for InputChannelsConfig {}
+
 // ============= group ====================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -216,30 +252,6 @@ impl MergeSelf for GroupSetConfig {}
 
 impl MergeEffectiveConfig<GroupSetConfig> for GroupSetConfig {
     fn get_effective_config(&self) -> GroupSetConfig {
-        self.clone()
-    }
-}
-
-// ============ pipeline =================
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PipelineConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_name: Option<ArcStr>,
-}
-
-impl MergeBy<PipelineConfig> for PipelineConfig {
-    fn merge(&mut self, other: &Self) {
-        if let Some(name) = other.pipeline_name.as_ref() {
-            self.pipeline_name = Some(name.clone());
-        }
-    }
-}
-
-impl MergeSelf for PipelineConfig {}
-
-impl MergeEffectiveConfig<PipelineConfig> for PipelineConfig {
-    fn get_effective_config(&self) -> PipelineConfig {
         self.clone()
     }
 }
@@ -327,5 +339,35 @@ mod tests {
         assert_eq!(serde_json::to_string(&MemoryPipelineConfig::default()).unwrap(), "{}");
         let config: MemoryPipelineConfig = serde_json::from_str(r#"{"load_memory":false}"#).unwrap();
         assert_eq!(config.load_memory, Some(false));
+    }
+
+    #[test]
+    fn input_channels_merge_replaces_with_other_or_empty() {
+        let u1 = Arc::new(InputChannel {
+            channel_id: ArcStr::from("web1"),
+            messenger_id: ArcStr::from("web"),
+            user_id: ArcStr::from("u1"),
+        });
+        let mut config = InputChannelsConfig { input_channels: Arc::new(vec![u1]) };
+        // 合并默认配置 → 置空（整体替换语义）
+        config.merge(&InputChannelsConfig::default());
+        assert!(config.input_channels.is_empty(), "other 为默认空配置时结果为空");
+
+        // other 有配置 → 整体替换
+        let u2 = Arc::new(InputChannel {
+            channel_id: ArcStr::from("web1"),
+            messenger_id: ArcStr::from("web"),
+            user_id: ArcStr::from("u2"),
+        });
+        config.merge(&InputChannelsConfig { input_channels: Arc::new(vec![u2]) });
+        assert_eq!(config.input_channels.len(), 1);
+        assert_eq!(config.input_channels[0].user_id.as_str(), "u2");
+    }
+
+    #[test]
+    fn pipeline_config_requires_pipeline_name() {
+        assert!(serde_json::from_str::<PipelineConfig>("{}").is_err(), "pipeline_name 必填");
+        let config: PipelineConfig = serde_json::from_str(r#"{"pipeline_name":"default"}"#).unwrap();
+        assert_eq!(config.pipeline_name.as_str(), "default");
     }
 }

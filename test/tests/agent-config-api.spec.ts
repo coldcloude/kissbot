@@ -44,9 +44,10 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
     const resp = await apiGet(request, '/config');
     expect(resp.success).toBe(true);
     expect(resp.data.providers.deepseek.provider_config.provider_type).toBe('openai');
-    expect(resp.data.agents['0'].config_map.llm).toEqual(
+    expect(resp.data.agent_roles['0'].config_map.llm).toEqual(
       expect.objectContaining({ provider: 'deepseek', model: 'deepseek-flash' }));
-    expect(resp.data.channels['web-main'].agent_id).toBe('0');
+    expect(resp.data.channels['web-main'].enabled).toBe(true);
+    expect(resp.data.pipelines['0'][''].pipeline_name).toBe('default_memory');
   });
 
   test('TC-02: POST /config/providers 添加并落盘', async ({ request }) => {
@@ -78,7 +79,7 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
   test('TC-03: POST /config/channels/remove 删除并落盘', async ({ request }) => {
     const add = await apiPost(request, '/config/channels', {
       channel_id: 'web-3', ws_url: 'ws://127.0.0.1:8201',
-      admins: [], bind_users: [], agent_id: '0', role_name: '', enabled: false,
+      admins: [], enabled: false,
     });
     expect(add.success).toBe(true);
     const del = await apiPost(request, '/config/channels/remove', { channel_id: 'web-3' });
@@ -92,8 +93,7 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
   test('TC-04: POST /config/channels 与 /config/admins', async ({ request }) => {
     const ch = await apiPost(request, '/config/channels', {
       channel_id: 'web-2', ws_url: 'ws://127.0.0.1:8201',
-      admins: [], bind_users: [{ messenger_id: 'web', user_id: 'u1' }],
-      agent_id: '0', role_name: '', enabled: false,
+      admins: [], enabled: false,
     });
     expect(ch.success).toBe(true);
     const adm = await apiPost(request, '/config/admins', {
