@@ -150,31 +150,31 @@ impl ConfigManager {
         self.station_repo.read().await.clone()
     }
 
-    /// 新增 group（已存在时为空操作），落盘；返回变更后的站配置供运行态同步
-    pub async fn add_station_group(&self, group: ArcStr) -> Result<StationRepo> {
+    /// 新增 group（已存在时为空操作），落盘；运行态由调用方按 group 名注册工具
+    pub async fn add_station_group(&self, group: ArcStr) -> Result<()> {
         self.write_station_config(|repo| {
             Arc::make_mut(&mut repo.groups).insert(group);
-            Ok(repo.clone())
+            Ok(())
         }).await
     }
 
-    /// 移除 group（不存在时为空操作），落盘；返回变更后的站配置供运行态同步
-    pub async fn remove_station_group(&self, group: &str) -> Result<StationRepo> {
+    /// 移除 group（不存在时为空操作），落盘；运行态由调用方按 group 名注销工具
+    pub async fn remove_station_group(&self, group: &str) -> Result<()> {
         self.write_station_config(|repo| {
             Arc::make_mut(&mut repo.groups).remove(group);
-            Ok(repo.clone())
+            Ok(())
         }).await
     }
 
-    /// 启停子 Station（只改配置；运行态由管理 API 按返回值同步），落盘；
-    /// 子 Station 不存在时报 ConfigNotFound；返回变更后的站配置供运行态同步
-    pub async fn set_sub_station_enabled(&self, station_id: &str, enabled: bool) -> Result<StationRepo> {
+    /// 启停子 Station（只改配置；运行态由调用方按返回值增减），落盘；
+    /// 子 Station 不存在时报 ConfigNotFound；返回变更后的子站配置
+    pub async fn set_sub_station_enabled(&self, station_id: &str, enabled: bool) -> Result<Arc<SubStationConfig>> {
         self.write_station_config(|repo| {
             let sub_stations = Arc::make_mut(&mut repo.sub_stations);
             let config = sub_stations.get_mut(station_id)
                 .ok_or_else(|| Error::ConfigNotFound(format!("子 station 不存在: {}", station_id).into()))?;
             Arc::make_mut(config).enabled = enabled;
-            Ok(repo.clone())
+            Ok(config.clone())
         }).await
     }
 
@@ -955,21 +955,21 @@ mod tests {
         let dir = tempdir().unwrap();
         let manager = test_manager(&dir);
         // 新增两个 group：幂等，返回变更后的站配置
-        let repo = manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
-        assert!(repo.groups.contains("filesystem"));
-        let repo = manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
-        assert_eq!(repo.groups.len(), 1, "重复新增幂等");
-        let repo = manager.add_station_group(ArcStr::from("web")).await.unwrap();
-        assert_eq!(repo.groups.len(), 2);
+        manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
+        assert!(manager.station_repo_snapshot().await.groups.contains("filesystem"));
+        manager.add_station_group(ArcStr::from("filesystem")).await.unwrap();
+        assert_eq!(manager.station_repo_snapshot().await.groups.len(), 1, "重复新增幂等");
+        manager.add_station_group(ArcStr::from("web")).await.unwrap();
+        assert_eq!(manager.station_repo_snapshot().await.groups.len(), 2);
         // 落盘可见（有序集合）
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
         assert_eq!(saved["groups"], serde_json::json!(["filesystem", "web"]));
         // 移除：存在则删、不存在为空操作
-        let repo = manager.remove_station_group("filesystem").await.unwrap();
-        assert!(!repo.groups.contains("filesystem"));
-        let repo = manager.remove_station_group("nope").await.unwrap();
-        assert_eq!(repo.groups.len(), 1, "移除不存在的 group 幂等");
+        manager.remove_station_group("filesystem").await.unwrap();
+        assert!(!manager.station_repo_snapshot().await.groups.contains("filesystem"));
+        manager.remove_station_group("nope").await.unwrap();
+        assert_eq!(manager.station_repo_snapshot().await.groups.len(), 1, "移除不存在的 group 幂等");
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
         assert_eq!(saved["groups"], serde_json::json!(["web"]));
@@ -995,14 +995,12 @@ mod tests {
             Ok(())
         }).await.unwrap();
 
-        let repo = manager.set_sub_station_enabled("station-a", false).await.unwrap();
-        let cfg = repo.sub_stations.get("station-a").expect("子站应存在").clone();
+        let cfg = manager.set_sub_station_enabled("station-a", false).await.unwrap();
         assert!(!cfg.enabled);
         let saved: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("station.json")).unwrap()).unwrap();
         assert_eq!(saved["sub_stations"]["station-a"]["enabled"], false, "停用落盘");
-        let repo = manager.set_sub_station_enabled("station-a", true).await.unwrap();
-        let cfg = repo.sub_stations.get("station-a").expect("子站应存在").clone();
+        let cfg = manager.set_sub_station_enabled("station-a", true).await.unwrap();
         assert!(cfg.enabled);
         assert_eq!(cfg.base_url.as_str(), "http://127.0.0.1:9001", "启停不影响其余字段");
         assert_eq!(cfg.timeout_secs, 5);

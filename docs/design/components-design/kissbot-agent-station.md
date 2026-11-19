@@ -69,7 +69,7 @@ Station 可以运行在多种形态的设备上：
 - **ToolImplement**：本级原生工具实现接口，统一入参（JSON 参数）与出参（MCP 工具结果）
 - **NativeTool**：原生工具条目（工具元数据 + 实现），本级工具索引的条目形态
 - **Group**：一组原生工具，`add_tool` 注册时写入所属 group；内置注册表按 group 名产出它
-- **Station**：全局单例，持有 station_id、本级工具索引、直接子 Station 运行态（只存 MCP 客户端，连接参数按 id 从配置快照现读）与工具路由信息；配置变更经 `apply_repo` 同步运行态；实现 MCP 服务端处理器
+- **Station**：全局单例，持有 station_id、本级工具索引、直接子 Station 运行态（只存 MCP 客户端，连接参数按 id 从 ConfigManager 现读）与工具路由信息；运行态按项增删（group 的工具、子站的客户端），实现 MCP 服务端处理器
 - **内置注册表**：内置 group 的工具元数据与原生实现（当前为 filesystem 的 read）
 - **station_http**：把全局 Station 接入 MCP 服务端并监听对外端点；认证由安全组件以中间件叠加
 

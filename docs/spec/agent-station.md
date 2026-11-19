@@ -57,7 +57,7 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 
 ### 运行期变更（管理 API）
 
-`station.json` 归 ConfigManager 所有；管理 API 写配置后立即用变更后的站配置调用 `Station::apply_repo(&repo)` 同步运行态，不需要重启：
+`station.json` 归 ConfigManager 所有；管理 API 写配置成功后按变更项调用对应的运行态入口（group 增删 → 增删该 group 的工具；子站启停 → 建/拆该子站的 MCP 客户端），不需要重启：
 
 | 方法与路径 | 请求体 | 说明 |
 |------------|--------|------|
@@ -67,8 +67,10 @@ Station 对外返回的工具定义即 MCP `Tool`，并用 `_meta["kissbot/group
 | `POST /config/station/sub-stations/disable` | `{ "station_id": "station-a" }` | 停用子 Station：写配置 + 拆除 MCP 客户端（工具不再参与列表与路由） |
 
 - 端点鉴权与管理 API 其余端点一致（`security.admin_api_key`，见 [kissbot-agent-nexus 技术规格](agent-nexus.md) 的管理 API 表）
-- `apply_repo` 是启动装配与运行期变更的**同一入口**：group 集合变化 → 重建本级工具索引；子站集合变化 → 对齐子站运行态；未变化的部分不重建
-- 运行态不缓存子站连接参数：`Station.sub_stations` 只存 `Arc<McpClient>`，`base_url` / `timeout_secs` / `prefix` / `enabled` 按 id 从配置快照现读；任何配置变更都会清空 `tool_routes`，由下一次 `tools/list` 重建
+- 运行态按项增删，不做整份重载：启动装配也是逐项注册（`Station::from_repo` 遍历配置调用同一批入口）：
+  - `add_group(name)` / `remove_group(name)`：只注册 / 注销该 group 自己的工具（`remove_group` 按工具携带的 group 精确移除）；未内置的 group 只有名字、没有工具
+  - `add_sub_station(id, cfg)` / `remove_sub_station(id)`：只建 / 拆该子站的 MCP 客户端；是否装配由调用方判断（启动装配只装配 `enabled=true` 的子站，管理 API 只在启用时调用 `add_sub_station`），`add_sub_station` 自身不判断 `enabled`；子站名单变化后整张路由表清空，由下一次 `tools/list` 重建
+- 运行态不保存配置：`Station.sub_stations` 只存 `Arc<McpClient>`；`base_url` / `timeout_secs` / `prefix` / `enabled` 以及本级 group 集合都按需从 ConfigManager 现读（`station_repo_snapshot()`），`Station` 里没有配置副本
 - 生效时机：变更对下一次 `tools/list`（即下一次 LLM 请求的 `tools_for_session`）与随后的 `tools/call` 生效；进行中的请求不受影响
 - 子 Station 的增删与 `base_url` / `prefix` 调整仍只能改 `station.json` 后重启（当前只提供启停与 group 增删接口）
 - `station_id` 不支持运行期修改（祖先链防环与父站声明的 sub key 都依赖它）

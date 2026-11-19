@@ -233,26 +233,9 @@ mod tests {
     // 覆盖一整条链：pipeline 装配（由 pipeline 创建 session 与系统提示词初始化）/
     // pipeline 分发 / 合批 flush / context_append
 
-    /// 进程级装配（幂等）：ConfigManager/Station/Nexus 单例各注册一次。
-    /// data_dir 目录经 OnceLock 保活，避免 tempdir drop 后单例路径失效
-    static TEST_GLOBAL_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    static TEST_INIT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// 进程级装配（幂等）：ConfigManager/Station/Nexus 单例各注册一次（与其它测试模块共用同一套装配）
     async fn ensure_test_globals() {
-        if !TEST_INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
-            let dir = TEST_GLOBAL_DIR.get_or_init(|| tempfile::tempdir().unwrap());
-            let cfg_path = dir.path().join("config.json");
-            let cfg_json = format!(
-                r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9092,"ws_reconnect_interval_secs":5}}}}"#,
-                dir.path().join("data").to_str().unwrap()
-            );
-            std::fs::write(&cfg_path, cfg_json).unwrap();
-            // 2024 edition：设置环境变量需要 unsafe
-            unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-            // 幂等：每个单例只注册一次（重复 new 的实例被丢弃，set 失败被忽略）
-            let _ = ConfigManager::new().await;
-            let _ = Nexus::new().await;
-            TEST_INIT_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        crate::test_support::init().await;
     }
 
     #[tokio::test]

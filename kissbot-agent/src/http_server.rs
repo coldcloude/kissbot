@@ -282,47 +282,40 @@ async fn remove_admin(State(state): State<AppState>, Json(req): Json<RemoveAdmin
 // ========== station 配置管理（group 增删 + 子站启停，写配置后同步 Station 运行态） ==========
 
 async fn add_station_group(State(state): State<AppState>, Json(req): Json<StationGroupRequest>) -> impl IntoResponse {
-    match state.config.add_station_group(req.group).await {
-        Ok(repo) => {
-            // 同步运行态：按新 group 集合重建本级工具索引
-            Station::get().apply_repo(&repo);
-            ok(json!({}))
-        }
-        Err(e) => fail(e),
+    if let Err(e) = state.config.add_station_group(req.group.clone()).await {
+        return fail(e);
     }
+    // 同步运行态：只注册该 group 的工具
+    Station::get().add_group(req.group.as_str());
+    ok(json!({}))
 }
 
 async fn remove_station_group(State(state): State<AppState>, Json(req): Json<StationGroupRequest>) -> impl IntoResponse {
-    match state.config.remove_station_group(req.group.as_str()).await {
-        Ok(repo) => {
-            // 同步运行态：该 group 的工具随索引重建失效
-            Station::get().apply_repo(&repo);
-            ok(json!({}))
-        }
-        Err(e) => fail(e),
+    if let Err(e) = state.config.remove_station_group(req.group.as_str()).await {
+        return fail(e);
     }
+    // 同步运行态：只注销该 group 的工具
+    Station::get().remove_group(req.group.as_str());
+    ok(json!({}))
 }
 
 async fn enable_sub_station(State(state): State<AppState>, Json(req): Json<SubStationRequest>) -> impl IntoResponse {
-    match state.config.set_sub_station_enabled(req.station_id.as_str(), true).await {
-        Ok(repo) => {
-            // 同步运行态：按当前配置建立 MCP 客户端，其工具重新参与列表与路由
-            Station::get().apply_repo(&repo);
-            ok(json!({}))
-        }
-        Err(e) => fail(e),
-    }
+    let config = match state.config.set_sub_station_enabled(req.station_id.as_str(), true).await {
+        Ok(config) => config,
+        Err(e) => return fail(e),
+    };
+    // 同步运行态：只建立该子站的 MCP 客户端
+    Station::get().add_sub_station(&req.station_id, &config);
+    ok(json!({}))
 }
 
 async fn disable_sub_station(State(state): State<AppState>, Json(req): Json<SubStationRequest>) -> impl IntoResponse {
-    match state.config.set_sub_station_enabled(req.station_id.as_str(), false).await {
-        Ok(repo) => {
-            // 同步运行态：拆除 MCP 客户端，其工具不再参与列表与路由
-            Station::get().apply_repo(&repo);
-            ok(json!({}))
-        }
-        Err(e) => fail(e),
+    if let Err(e) = state.config.set_sub_station_enabled(req.station_id.as_str(), false).await {
+        return fail(e);
     }
+    // 同步运行态：只拆除该子站的 MCP 客户端与其路由条目
+    Station::get().remove_sub_station(&req.station_id);
+    ok(json!({}))
 }
 
 // ========== pipeline 管理 ==========
@@ -507,49 +500,26 @@ mod tests {
         }
     }
 
-    // ConfigManager 字段私有，无法在模块外直接构造；
-    // 通过 ConfigManager::new() 加载临时 KISSBOT_CONFIG 构造（data_dir 指向 tempdir，完成即注册单例）。
-    // 注意：kissbot-config 是进程级 OnceLock 单例，本测试会触发它；ConfigManager 单例在测试进程内注册一次，
-    // 之后 get() 取同一实例。目录用进程级 OnceLock 保活：单例可能先被其他测试注册，目录不能在测试结束时被删除。
-    static TEST_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
-    // 多个用例并行时避免重复写同一 config.json（写与读交错会读到空文件）
-    static TEST_INIT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    static FIXTURE: OnceLock<&'static crate::test_support::Fixture> = OnceLock::new();
 
+    /// 进程级装配（ConfigManager / Nexus / Station 单例 + 预置 station.json），各测试模块共用
     async fn test_manager() {
-        TEST_INIT.get_or_init(|| async {
-            let dir = TEST_DIR.get_or_init(|| tempfile::tempdir().unwrap());
-            let data_dir = dir.path().join("data");
-            std::fs::create_dir_all(&data_dir).unwrap();
-            // 预置 station.json（含一个停用的子站）：station 子站启停接口只能在已有配置上启停
-            let station_json = format!(
-                r#"{{"station_id":"station-self","groups":[],"sub_stations":{{"station-a":{{"station_id":"station-a","base_url":"http://127.0.0.1:9001","timeout_secs":5,"enabled":false}}}}}}"#
-            );
-            std::fs::write(data_dir.join("station.json"), station_json).unwrap();
-            let cfg_path = dir.path().join("config.json");
-            let cfg_json = format!(
-                r#"{{"api":{{"memory_store_url":"","memory_ego_url":""}},"security":{{"api_key":"user-key-456","admin_api_key":"admin-key-123"}},"agent":{{"data_dir":"{}","mgmt_host":"127.0.0.1","mgmt_port":9090,"ws_reconnect_interval_secs":5}}}}"#,
-                data_dir.to_str().unwrap()
-            );
-            std::fs::write(&cfg_path, cfg_json).unwrap();
-            // 2024 edition：设置环境变量需要 unsafe
-            unsafe { std::env::set_var("KISSBOT_CONFIG", cfg_path.to_str().unwrap()) };
-            ConfigManager::new().await.unwrap();
-            // 管理 API 的运行态变更依赖 Nexus / Station 单例；重复注册为幂等
-            let _ = Nexus::new().await;
-            Station::new().await;
-        }).await;
+        let fixture = crate::test_support::init().await;
+        let _ = FIXTURE.set(fixture);
     }
 
-    /// 读回落盘的 nexus.json（ConfigManager 的 data_dir = <tempdir>/data）
+    fn fixture() -> &'static crate::test_support::Fixture {
+        FIXTURE.get().expect("test_manager 应先初始化")
+    }
+
+    /// 读回落盘的 nexus.json
     fn saved_nexus_json() -> serde_json::Value {
-        let path = TEST_DIR.get().expect("test_manager 应先初始化").path().join("data").join("nexus.json");
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        fixture().saved_nexus_json()
     }
 
     /// 读回落盘的 station.json
     fn saved_station_json() -> serde_json::Value {
-        let path = TEST_DIR.get().expect("test_manager 应先初始化").path().join("data").join("station.json");
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        fixture().saved_station_json()
     }
 
     async fn send(app: axum::Router, method: &str, uri: &str, key: &str, body: Option<serde_json::Value>) -> (StatusCode, serde_json::Value) {
@@ -738,7 +708,8 @@ mod tests {
             assert_eq!(body["success"], true);
         }
         assert_eq!(saved_station_json()["groups"], serde_json::json!(["filesystem"]));
-        assert!(!Station::get().list_tools_local(None).await.unwrap().is_empty(), "运行态应已有 read 工具");
+        let filesystem: std::collections::HashSet<ArcStr> = [ArcStr::from("filesystem")].into_iter().collect();
+        assert!(!Station::get().list_tools_local(Some(&filesystem)).await.unwrap().is_empty(), "运行态应已有 read 工具");
 
         // 移除 group（幂等）→ 该 group 的工具失效
         for _ in 0..2 {
@@ -747,7 +718,7 @@ mod tests {
             assert_eq!(body["success"], true);
         }
         assert_eq!(saved_station_json()["groups"], serde_json::json!([]));
-        assert!(Station::get().list_tools_local(None).await.unwrap().is_empty(), "移除 group 后工具应失效");
+        assert!(Station::get().list_tools_local(Some(&filesystem)).await.unwrap().is_empty(), "移除 group 后工具应失效");
 
         // 子站启停：预置的 station-a 初始停用
         let (_, body) = send(app.clone(), "POST", "/config/station/sub-stations/enable", "admin-key-123",

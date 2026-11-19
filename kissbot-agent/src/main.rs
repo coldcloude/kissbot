@@ -16,6 +16,8 @@ mod station_http;
 mod types;
 mod pipeline;
 mod pipelines;
+#[cfg(test)]
+mod test_support;
 
 #[tokio::main]
 async fn main() {

@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
@@ -14,7 +14,7 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::config_manager::ConfigManager;
-use crate::configs::StationRepo;
+use crate::configs::{StationRepo, SubStationConfig};
 use crate::station::native::NativeTool;
 use crate::types::{Error, Result};
 
@@ -45,16 +45,14 @@ pub struct Station {
     /// 保留先到者并告警（MCP tools/call 只带工具名，服务端对外必须给出唯一名字）
     tools: DashMap<ArcStr, Arc<NativeTool>>,
     /// 子 Station 运行态：key = station.json 的 sub_stations key，value 只有 MCP 客户端。
-    /// 连接参数（base_url / timeout / prefix / enabled）不在此缓存，按 key 从 `repo` 现读；
-    /// enabled=false 的子站不建运行态（没有条目）
+    /// 连接参数（base_url / timeout / prefix）不在此缓存，每次用到时按 id 从 ConfigManager 现读；
+    /// 是否装配由调用方判断（from_repo 只装配启用的子站、管理 API 只在启用时调用），
+    /// 增删由 add_sub_station / remove_sub_station 逐项维护
     sub_stations: DashMap<ArcStr, Arc<McpClient>>,
     /// 远程工具路由表：工具名 → 直接子 station_id（仅 call_tool 路由用，不用于元数据查询）
-    /// list_tools 拉取子 Station 成功时更新；任何配置变更都会清空，由下一次 list_tools 重建；
+    /// list_tools 拉取子 Station 成功时整体重建；子站增删时整表清空（由下一次 list_tools 刷新）；
     /// 与本级/先到子重名时保留先到者（后到者剔除 + warn）
     tool_routes: ArcSwap<HashMap<ArcStr, ArcStr>>,
-    /// 配置快照：运行期按 id 现读子站连接参数用。配置的权威来源是 ConfigManager（文件 + 内存），
-    /// 本字段是 apply_repo 整体替换的派生视图（所有配置变更都会带着新快照调 apply_repo）
-    repo: ArcSwap<StationRepo>,
     /// 构造子 Station 运行态用的 api key（子站 MCP 端点认证）
     api_key: ArcStr,
     server_info: Arc<Implementation>,
@@ -83,68 +81,66 @@ impl Station {
     }
 
     /// 按配置构建 Station（纯构造，不注册单例；单测直接消费）：
-    /// 配置只声明加载哪些 group，工具元数据与原生实现由内置注册表按 group 名成对给出
+    /// 逐项注册配置声明的 group 与子 Station（与运行期增删同一套入口，不做整份装配）；
+    /// 是否装配子站由这里按配置的 enabled 判断
     pub fn from_repo(repo: &StationRepo, api_key: &str) -> Self {
         let result = Self {
             station_id: repo.station_id.clone(),
             tools: DashMap::new(),
             sub_stations: DashMap::new(),
             tool_routes: ArcSwap::from_pointee(HashMap::new()),
-            repo: ArcSwap::from_pointee(StationRepo::default()),
             api_key: ArcStr::from(api_key),
             server_info: Arc::new(Implementation::new(SERVER_INFO_NAME, SERVER_INFO_VERSION)),
         };
-        result.apply_repo(repo);
+        for group in repo.groups.iter() {
+            result.add_group(group.as_str());
+        }
+        for (station_id, config) in repo.sub_stations.iter() {
+            // 停用的子站不装配运行态（add_sub_station 自身不判断 enabled）
+            if !config.enabled {
+                continue;
+            }
+            result.add_sub_station(station_id, config);
+        }
         result
     }
 
-    /// 应用一份配置（启动装配与运行期变更共用）：
-    /// group 集合变化 → 重建本级工具索引；子站集合变化 → 对齐子站运行态
-    /// （停用/删除的拆除 MCP 客户端，启用的按当前配置新建/重建）；最后更新配置快照。
-    /// 配置未变化的部分不重建，避免无谓的连接与索引抖动
-    pub fn apply_repo(&self, repo: &StationRepo) {
-        let old = self.repo.load_full();
-        if old.groups != repo.groups {
-            self.sync_groups(&repo.groups);
-        }
-        if old.sub_stations != repo.sub_stations {
-            for (id, config) in repo.sub_stations.iter() {
-                if config.enabled {
-                    let endpoint = format!("{}/mcp", config.base_url.trim_end_matches('/'));
-                    let client = McpClient::new(&endpoint, config.timeout_secs, Some(self.api_key.as_str()));
-                    self.sub_stations.insert(id.clone(), Arc::new(client));
-                } else {
-                    self.sub_stations.remove(id);
-                }
-            }
-            // 配置里已删除的子站：运行态一并拆除
-            for id in old.sub_stations.keys() {
-                if !repo.sub_stations.contains_key(id) {
-                    self.sub_stations.remove(id);
-                }
-            }
-            // 子站名单可能变化，远程路由交由下一次 list_tools 重建
-            self.tool_routes.store(Arc::new(HashMap::new()));
-        }
-        self.repo.store(Arc::new(repo.clone()));
-    }
-
-    /// 按 group 集合重建本级工具索引（移除 group 的工具随之失效；跨 group 重名时
-    /// 按 group 名排序保留先到者并告警），同时清空远程路由（远端工具是否可用可能随 group 变化）
-    fn sync_groups(&self, groups: &BTreeSet<ArcStr>) {
-        self.tools.clear();
-        for group_name in groups.iter() {
-            // 未内置的 group 只有名字、没有工具，注册为空
-            let Some(group) = native_group(group_name.as_str()) else { continue };
-            for tool in group.tools {
+    /// 增加一个本级 group：只注册该 group 自己声明的工具（已存在的同名工具保留先到者并告警）。
+    /// 未内置的 group 只有名字、没有工具，注册为空；重复增加为空操作
+    pub fn add_group(&self, group: &str) {
+        if let Some(native) = native_group(group) {
+            for tool in native.tools {
                 let tool_name = ArcStr::from(tool.config.name.as_str());
                 if self.tools.contains_key(&tool_name) {
-                    warn!("工具名跨 group 重名，保留先到者: {}（group: {}）", tool_name.as_str(), group_name.as_str());
+                    warn!("工具名重名，保留先到者: {}（group: {}）", tool_name.as_str(), group);
                     continue;
                 }
                 self.tools.insert(tool_name, Arc::new(tool));
             }
         }
+    }
+
+    /// 删除一个本级 group：只移除该 group 注册进来的工具，其它 group 的工具不受影响。
+    /// 远端工具名单不受本级 group 影响，路由表无需变动（本级工具在 call_tool 中优先）
+    pub fn remove_group(&self, group: &str) {
+        self.tools.retain(|_, tool| tool.config.group() != Some(group));
+    }
+
+    /// 建立（或按当前配置重建）一个子 Station 运行态：只动该子站的客户端与路由。
+    /// 是否该装配由调用方决定（本方法不判断 enabled）；连接参数不保存，列表/调用时按 id 从 ConfigManager 现读
+    pub fn add_sub_station(&self, station_id: &ArcStr, config: &SubStationConfig) {
+        let endpoint = format!("{}/mcp", config.base_url.trim_end_matches('/'));
+        let client = McpClient::new(&endpoint, config.timeout_secs, Some(self.api_key.as_str()));
+        self.sub_stations.insert(station_id.clone(), Arc::new(client));
+        // 子站名单变化后整张路由表失效，由下一次 list_tools 重建
+        self.tool_routes.store(Arc::new(HashMap::new()));
+    }
+
+    /// 删除一个子 Station 运行态：只移除该子站的客户端，
+    /// 其工具不再参与列表与路由（路由命中但运行态已无该子站时按工具不存在处理）
+    pub fn remove_sub_station(&self, station_id: &ArcStr) {
+        self.sub_stations.remove(station_id);
+        // 子站名单变化后整张路由表失效，由下一次 list_tools 重建
         self.tool_routes.store(Arc::new(HashMap::new()));
     }
 
@@ -200,9 +196,8 @@ impl Station {
             let child_ancestors = Arc::make_mut(&mut ancestors);
             child_ancestors.push(self.station_id.clone());
         }
-        // 子站连接参数按 id 现读配置快照（运行态只存 MCP 客户端）：配置里已删除或已停用的
-        // 子站直接跳过，不参与本次列表
-        let repo = self.repo.load_full();
+        // 子站连接参数按 id 现读配置（运行态只存 MCP 客户端）；配置里没有该子站则跳过
+        let repo = ConfigManager::get().station_repo_snapshot().await;
         // 先整树克隆出 Arc 再 await（不跨 await 持 DashMap 读锁）
         let subs: Vec<(ArcStr, Arc<McpClient>)> = self.sub_stations.iter()
             .map(|e| (e.key().clone(), e.value().clone()))
@@ -210,9 +205,6 @@ impl Station {
         let mut tool_routes = HashMap::new();
         for (station_id, client) in subs {
             let Some(config) = repo.sub_stations.get(&station_id).cloned() else { continue };
-            if !config.enabled {
-                continue;
-            }
             match client.list_tools(ancestors.clone()).await {
                 Ok(result) => {
                     let default_group = config.default_group();
@@ -274,9 +266,9 @@ impl Station {
         }
         let routed = self.tool_routes.load().get(&name).map(|r| r.clone());
         if let Some(station_id) = routed {
-            // 连接参数按 id 现读配置快照；运行态命中但配置已删除/停用 → 视为工具不存在
-            let repo = self.repo.load_full();
-            let config = repo.sub_stations.get(&station_id).cloned().filter(|c| c.enabled);
+            // 连接参数按 id 现读配置；运行态或配置已无该子站 → 视为工具不存在
+            let repo = ConfigManager::get().station_repo_snapshot().await;
+            let config = repo.sub_stations.get(&station_id).cloned();
             if let (Some(client), Some(config)) = (self.sub_stations.get(&station_id).map(|s| s.value().clone()), config) {
                 let nn = config.local_name(name);
                 let (arguments_recover, result) = client.call_tool(nn, arguments, ancestors).await;
@@ -329,30 +321,19 @@ impl McpHandler for Station {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::configs::SubStationConfig;
+    use crate::test_support as ts;
     use kissbot_api::ContentBlock;
     use kissbot_mcp::{RequestMeta, ToolsCallParams};
     use serde_json::json;
 
+    /// 只声明 filesystem group 的仓库（无子站）
     fn repo_with_filesystem() -> StationRepo {
         let mut repo = StationRepo::default();
-        repo.station_id = ArcStr::from("station-self");
+        repo.station_id = ArcStr::from(ts::STATION_ID);
         repo.groups = Arc::new(BTreeSet::from([ArcStr::from("filesystem")]));
-        repo
-    }
-
-    fn repo_with_sub() -> StationRepo {
-        let mut repo = StationRepo::default();
-        repo.station_id = ArcStr::from("station-self");
-        let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
-            station_id: ArcStr::from("station-a"),
-            base_url: ArcStr::from("http://127.0.0.1:9001"),
-            timeout_secs: 5,
-            prefix: None,
-            enabled: true,
-        }));
         repo
     }
 
@@ -379,6 +360,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_returns_all_local() {
         // 内置 filesystem group 声明后，read 工具元数据由内置注册表填充
+        ts::init().await;
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.len(), 1, "内置注册表应填充 read");
@@ -389,6 +371,7 @@ mod tests {
     #[tokio::test]
     async fn list_tools_local_filters_by_group() {
         // 本地直连 nexus 的入口：按会话启用的 group 白名单过滤（None = 全部）
+        ts::init().await;
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let hit: HashSet<ArcStr> = [ArcStr::from("filesystem")].into_iter().collect();
         let miss: HashSet<ArcStr> = [ArcStr::from("other")].into_iter().collect();
@@ -400,7 +383,8 @@ mod tests {
     #[tokio::test]
     async fn list_tools_with_unreachable_sub_returns_empty() {
         // 子 Station 不可达：告警跳过，路由表留空，结果只有本地（此处本地为空）
-        let station = Station::from_repo(&repo_with_sub(), "test-key");
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_UNREACHABLE]), "test-key");
         let listing = station.list_tools(ancestors(&[])).await.unwrap();
         assert!(listing.is_empty(), "无本地工具，子连接错误被跳过");
         assert!(station.tool_routes.load().is_empty(), "无子工具时路由表恒空");
@@ -408,6 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn call_tool_local_native_tool_executes() {
+        ts::init().await;
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         // 内置 read 实现绑定进程 cwd；用 Cargo.toml 验证真实执行路径
         let result = station.call_tool_local(ArcStr::from("read"), json!({ "path": "Cargo.toml" })).await.1.unwrap();
@@ -417,6 +402,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_handler_list_and_call_roundtrip() {
+        ts::init().await;
         let station = Station::from_repo(&repo_with_filesystem(), "test-key");
         let meta = RequestMeta::new(Implementation::new(ArcStr::from("t"), ArcStr::from("1")));
         // 显式走 McpHandler 实现（Station 另有同名固有方法）
@@ -441,109 +427,24 @@ mod tests {
 
     // ========== 对接第三方 MCP 服务端（非 Station） ==========
 
-    /// tools/list 观测记录：服务端收到的祖先链
-    type ListObservation = Arc<tokio::sync::Mutex<Option<Vec<ArcStr>>>>;
-
-    /// 测试用 Mock MCP 服务端：可切换工具名与是否在工具定义里携带 group
-    struct MockMcpHandler {
-        tool_name: ArcStr,
-        echo_group: bool,
-        observed: ListObservation,
-    }
-
-    #[async_trait]
-    impl McpHandler for MockMcpHandler {
-        fn server_info(&self) -> Arc<Implementation> {
-            Arc::new(Implementation::new(ArcStr::from("mock-mcp"), ArcStr::from("1.0.0")))
-        }
-
-        async fn discover(&self) -> DiscoverResult {
-            DiscoverResult::new(None)
-        }
-
-        async fn list_tools(&self, params: ToolsListParams) -> std::result::Result<ToolsListResult, McpError> {
-            *self.observed.lock().await = params.meta.ancestors.as_ref().map(|a| a.as_ref().clone());
-            let mut tool = Tool::new(self.tool_name.clone(), ArcStr::from("第三方工具"), json!({ "type": "object" }));
-            if self.echo_group {
-                tool.set_group(ArcStr::from("mock-group"));
-            }
-            Ok(ToolsListResult::new(vec![Arc::new(tool)]))
-        }
-
-        async fn call_tool(&self, params: ToolsCallParams) -> std::result::Result<CallToolResult, McpError> {
-            // 按工具名模拟三类返回：kissbot 循环错误、非 kissbot 错误、正常结果
-            match params.name.as_str() {
-                "foreign-tool" => Ok(CallToolResult {
-                    content: vec![ContentBlock::text(ArcStr::from("boom"))],
-                    structured_content: json!({ "error": "boom" }),
-                    is_error: true,
-                    ..Default::default()
-                }),
-                _ => {
-                    let value = json!({ "mock": params.name.to_string() });
-                    Ok(CallToolResult {
-                        content: vec![ContentBlock::text(ArcStr::from(value.to_string()))],
-                        structured_content: value,
-                        ..Default::default()
-                    })
-                }
-            }
-        }
-    }
-
-    /// 起一个 Mock MCP 服务端，返回（基地址, 观测记录器）
-    async fn spawn_mock_mcp_named(tool_name: &str, echo_group: bool) -> (String, ListObservation) {
-        let observed: ListObservation = Arc::new(tokio::sync::Mutex::new(None));
-        let handler = Arc::new(MockMcpHandler {
-            tool_name: ArcStr::from(tool_name),
-            echo_group,
-            observed: observed.clone(),
-        });
-        let server = kissbot_mcp::McpServer::new(handler);
-        let app = kissbot_mcp::router(server, kissbot_mcp::McpHttpConfig::default());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { let _ = axum::serve(listener, app).await; });
-        (format!("http://{}", addr), observed)
-    }
-
-    async fn spawn_mock_mcp(echo_group: bool) -> (String, ListObservation) {
-        spawn_mock_mcp_named("mock-tool", echo_group).await
-    }
-
-    /// 构造只挂一个远程子 Station 的仓库（可选名字前缀）
-    fn repo_with_remote_sub(base_url: &str, prefix: Option<&str>) -> StationRepo {
-        let mut repo = StationRepo::default();
-        repo.station_id = ArcStr::from("station-self");
-        let map = Arc::make_mut(&mut repo.sub_stations);
-        map.insert(ArcStr::from("remote"), Arc::new(SubStationConfig {
-            station_id: ArcStr::from("remote"),
-            base_url: ArcStr::from(base_url),
-            timeout_secs: 5,
-            prefix: prefix.map(ArcStr::from),
-            enabled: true,
-        }));
-        repo
-    }
-
     #[tokio::test]
     async fn remote_tool_without_group_falls_back_to_station_default_group() {
         // 对端工具未携带 group（如通用 MCP 服务端）→ 归入子站默认 group
-        let (base, observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_PLAIN]), "test-key");
 
         let all = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(all.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
-        assert_eq!(all[0].group(), Some("[remote]"), "对端不带 group → 归入子站默认 group");
+        assert_eq!(all[0].group(), Some("[plain]"), "对端不带 group → 归入子站默认 group");
         // 祖先链始终附带（纯提示），值为本级 station_id
-        assert_eq!(observed.lock().await.clone(), Some(vec![ArcStr::from("station-self")]));
+        assert_eq!(*fx.plain_observed().lock().await, Some(vec![ArcStr::from(ts::STATION_ID)]));
     }
 
     #[tokio::test]
     async fn remote_tool_carried_group_is_trusted() {
         // 对端工具携带 group → 以对端携带的 group 为准
-        let (base, _observed) = spawn_mock_mcp(true).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_GROUPED]), "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools.len(), 1);
@@ -553,8 +454,8 @@ mod tests {
     #[tokio::test]
     async fn remote_tool_name_gets_prefix_and_call_strips_it() {
         // 前缀让远端工具名在本级唯一；调用时去掉前缀再转发给子站
-        let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, Some("a/")), "test-key");
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_PREFIXED]), "test-key");
 
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
         assert_eq!(tools[0].name.as_str(), "a/mock-tool");
@@ -568,8 +469,8 @@ mod tests {
     #[tokio::test]
     async fn local_tool_takes_precedence_over_remote_same_name() {
         // 远端工具与本级同名 → 本级优先，远端被剔除且不进路由表
-        let (base, _observed) = spawn_mock_mcp_named("read", false).await;
-        let mut repo = repo_with_remote_sub(&base, None);
+        let fx = ts::init().await;
+        let mut repo = fx.repo_with(&[ts::SUB_READ]);
         repo.groups = Arc::new(BTreeSet::from([ArcStr::from("filesystem")]));
         let station = Station::from_repo(&repo, "test-key");
 
@@ -582,9 +483,9 @@ mod tests {
     #[tokio::test]
     async fn sub_station_foreign_error_passes_through_unchanged() {
         // 非 kissbot 来源的错误体：本级不解释、不改写，原样回传
-        let (base, _observed) = spawn_mock_mcp(false).await;
-        let station = Station::from_repo(&repo_with_remote_sub(&base, None), "test-key");
-        set_routes(&station, &[("foreign-tool", "remote")]);
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_PLAIN]), "test-key");
+        set_routes(&station, &[("foreign-tool", ts::SUB_PLAIN)]);
         let result = station.call_tool(ArcStr::from("foreign-tool"), json!({}), ancestors(&[])).await.1.unwrap();
         assert!(result.is_error);
         assert_eq!(result.structured_content, json!({ "error": "boom" }), "第三方错误体原样透传");
@@ -597,73 +498,85 @@ mod tests {
         assert!(result.supports_ancestors() && result.supports_kissbot());
     }
 
-    // ========== 运行期变更（配置变更 → apply_repo 同步运行态） ==========
+    // ========== 运行期变更（逐项增删工具 / 子站） ==========
 
     #[tokio::test]
-    async fn apply_repo_adds_and_removes_group_tools() {
-        // 运行期增删 group：本级工具索引随配置重建
-        let empty = StationRepo { station_id: ArcStr::from("station-self"), ..StationRepo::default() };
-        let station = Station::from_repo(&empty, "test-key");
+    async fn add_and_remove_group_only_touches_that_group() {
+        // 运行期增删 group：只增删该 group 的工具，其它 group 与子站运行态不受影响
+        ts::init().await;
+        let station = Station::from_repo(&StationRepo::default(), "test-key");
         assert!(station.list_tools(ancestors(&[])).await.unwrap().is_empty(), "无 group 时无本级工具");
 
-        station.apply_repo(&repo_with_filesystem());
+        // 新增：注册该 group 的工具；重复新增幂等
+        station.add_group("filesystem");
+        station.add_group("filesystem");
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name.as_str(), "read", "新增 group 后工具可用");
+        assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["read"], "新增 group 后工具可用");
 
-        station.apply_repo(&empty);
-        assert!(station.list_tools(ancestors(&[])).await.unwrap().is_empty(), "移除 group 后工具失效");
+        // 新增一个没有内置实现的 group：只有名字、没有工具，不影响已有工具
+        let before = station.tools.get("read").unwrap().value().config.clone();
+        station.add_group("unknown-group");
+        let after = station.tools.get("read").unwrap().value().config.clone();
+        assert!(Arc::ptr_eq(&before, &after), "新增其它 group 不影响已有工具");
+
+        // 删除未内置的 group：不动 filesystem 的工具
+        station.remove_group("unknown-group");
+        assert!(station.tools.contains_key("read"), "删除其它 group 不影响已有工具");
+
+        // 删除 filesystem：只移除该 group 的工具
+        station.remove_group("filesystem");
+        assert!(station.list_tools(ancestors(&[])).await.unwrap().is_empty(), "删除 group 后其工具失效");
     }
 
     #[tokio::test]
-    async fn apply_repo_syncs_sub_station_runtime() {
-        let (base, _observed) = spawn_mock_mcp(false).await;
-        let enabled = repo_with_remote_sub(&base, None);
-        let mut disabled = enabled.clone();
-        {
-            let sub_stations = Arc::make_mut(&mut disabled.sub_stations);
-            Arc::make_mut(sub_stations.get_mut("remote").unwrap()).enabled = false;
-        }
+    async fn add_and_remove_sub_station_only_touches_that_station() {
+        let fx = ts::init().await;
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
+        let read_before = station.tools.get("read").unwrap().value().config.clone();
+        let config = fx.sub_config(ts::SUB_TOGGLE);
 
-        // 启动时子站停用：不建运行态，工具不参与列表
-        let station = Station::from_repo(&disabled, "test-key");
-        assert!(station.list_tools(ancestors(&[])).await.unwrap().is_empty(), "停用子站不建运行态");
-
-        // 启用：按配置建客户端，远端工具可见、可路由
-        station.apply_repo(&enabled);
+        // 新增子站：远端工具可见、可路由；本级工具不受影响
+        station.add_sub_station(&ArcStr::from(ts::SUB_TOGGLE), &config);
         let tools = station.list_tools(ancestors(&[])).await.unwrap();
-        assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool"]);
+        assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["mock-tool", "read"]);
         let called = station.call_tool(ArcStr::from("mock-tool"), json!({}), ancestors(&[])).await.1.unwrap();
         assert_eq!(called.structured_content["mock"], "mock-tool");
+        let read_after = station.tools.get("read").expect("本级工具应保留").value().config.clone();
+        assert!(Arc::ptr_eq(&read_before, &read_after), "子站变更不重建本级工具");
 
-        // 停用：运行态拆除；即使路由表残留旧值也不再转发
-        station.apply_repo(&disabled);
-        set_routes(&station, &[("mock-tool", "remote")]);
-        assert!(station.list_tools(ancestors(&[])).await.unwrap().is_empty(), "停用后不参与列表");
+        // 删除子站：只拆该子站运行态与路由（即使路由表残留旧值也不转发）
+        station.remove_sub_station(&ArcStr::from(ts::SUB_TOGGLE));
+        set_routes(&station, &[("mock-tool", ts::SUB_TOGGLE)]);
+        let tools = station.list_tools(ancestors(&[])).await.unwrap();
+        assert_eq!(tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["read"], "删除子站后其工具消失");
         let (_, err) = station.call_tool(ArcStr::from("mock-tool"), json!({}), ancestors(&[])).await;
-        assert!(err.is_err(), "停用后不路由（视为工具不存在）");
+        assert!(err.is_err(), "删除子站后不路由（视为工具不存在）");
     }
 
     #[tokio::test]
-    async fn apply_repo_keeps_unchanged_parts_intact() {
-        // 配置未变化的部分不重建：仅子站变化不影响本级工具索引，反之亦然
-        let repo = repo_with_filesystem();
-        let station = Station::from_repo(&repo, "test-key");
-        let before = station.tools.get("read").unwrap().value().config.clone();
+    async fn sub_station_change_clears_tool_routes() {
+        // 子站增删后整张路由表失效（由下一次 list_tools 重建），避免残留指向旧名单的条目
+        let station = Station::from_repo(&repo_with_filesystem(), "test-key");
+        set_routes(&station, &[("a-tool", "sub-a"), ("b-tool", "sub-b")]);
+        station.remove_sub_station(&ArcStr::from("sub-a"));
+        assert!(station.tool_routes.load().is_empty(), "子站删除后路由表清空");
 
-        let mut sub_only = repo.clone();
-        {
-            let map = Arc::make_mut(&mut sub_only.sub_stations);
-            map.insert(ArcStr::from("station-a"), Arc::new(SubStationConfig {
-                station_id: ArcStr::from("station-a"),
-                base_url: ArcStr::from("http://127.0.0.1:9"),
-                timeout_secs: 1,
-                prefix: None,
-                enabled: true,
-            }));
-        }
-        station.apply_repo(&sub_only);
-        let after = station.tools.get("read").expect("本级工具应保留").value().config.clone();
-        assert!(Arc::ptr_eq(&before, &after), "子站变更不重建本级工具");
+        set_routes(&station, &[("a-tool", "sub-a"), ("b-tool", "sub-b")]);
+        let fx = ts::init().await;
+        station.add_sub_station(&ArcStr::from(ts::SUB_TOGGLE), &fx.sub_config(ts::SUB_TOGGLE));
+        assert!(station.tool_routes.load().is_empty(), "子站新增后路由表清空");
+    }
+
+    #[tokio::test]
+    async fn from_repo_skips_disabled_sub_station() {
+        // 是否装配由调用方判断：from_repo 只装配配置里启用的子站（add_sub_station 自身不判断 enabled）
+        let fx = ts::init().await;
+        let station = Station::from_repo(&fx.repo_with(&[ts::SUB_DISABLED]), "test-key");
+        assert!(station.sub_stations.is_empty(), "停用子站不装配运行态");
+
+        // 调用方显式装配时（管理 API 启用路径）直接生效，与配置里的 enabled 无关
+        let repo = fx.repo_with(&[ts::SUB_TOGGLE]);
+        let station = Station::from_repo(&repo, "test-key");
+        assert!(station.sub_stations.contains_key(ts::SUB_TOGGLE), "启用子站正常装配");
     }
 }
