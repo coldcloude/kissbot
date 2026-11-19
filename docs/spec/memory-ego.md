@@ -1,32 +1,60 @@
-# 自我认知模块
+# 自我认知存储与检索机制
 
-> 对应设计文档：`docs/design/components-design/kissbot-memory-ego.md`
+> 说明自我认知服务的数据读写、缓存、检索索引与标识约束。数据模型见 `docs/design/components-design/kissbot-memory-ego.md`。
 
-## 读写方式
+## 一、存储
 
-- 使用缓存降低 IO 开销
-- 使用锁防止数据竞争
+| 文件 | 内容 | 写入方式 |
+|------|------|----------|
+| `{agent}/metadata.json` | agent 标识与描述 | 美化 JSON 整份覆盖写 |
+| `{agent}/memory-ego/individual-recognition-.json` | 该 agent 的整份个体识别 | 美化 JSON 整份覆盖写 |
+| `{agent}/memory-ego/role-play-{角色名}.json` | 一个角色的设定与其他角色关系 | 美化 JSON 整份覆盖写 |
 
-## 搜索索引
+- 写入不是临时文件加原子替换；崩溃窗口内可能出现半份文件。
+- 读取个体识别时若文件不存在会自动创建空文件（读操作带副作用）；读取角色不创建。
+- 创建 agent 时同时写入记忆目录的存在标记，使该 agent 能被列举。
 
-- 使用倒排索引实现全文搜索
-- 脏标记机制延迟更新搜索索引
-- 启动时自动加载所有 agent 到搜索索引
+## 二、缓存
 
-### Agent 搜索
+- agent 级与角色级分层缓存：读取先取读锁命中缓存，未命中时取写锁、再次检查、读盘、写入缓存。
+- 写入持写锁读入现有数据（或复用缓存），在副本上修改（写时复制），整份写回并更新缓存。
+- 缓存常驻、没有上限与淘汰，也不与其他进程或磁盘上的手工修改保持一致。
 
-- **name_completion**：agent_id 前缀补全（保留）
-- **name_descr_index**：`[agent_id, description]` 子串搜索
+## 三、检索索引
 
-### Role 搜索
+两类索引，均在进程内、不持久化：
 
-- **role_name_completion**：role_name 前缀补全（不变）
-- **role_name_descr_index**：`[role_name, full_name, description]` 子串搜索（full_name 为 Role 的展示文本字段）；按 role_name 搜索统一走该全文索引
+- **全文子串索引**：文档内容按字符类分词（字母串、数字串、其他字符分段；大写字母开启新词），建立支持子串匹配的键索引（深度上限 32）。agent 的文档为「标识 + 描述」，角色的文档为「代号 + 展示名 + 描述」。查询返回命中的键集合，角色查询可按 agent 过滤。
+- **前缀补全索引**：按名称逐字符前缀建表，查询返回补全文本与键。agent 用标识，角色用代号。
 
-## 字段与代号
+索引维护：
 
-- **Role**：`role_name`（代号）、`full_name`（展示文本，可填）、`description`（文本）
-- **RoleRelation**：`relation`（关系类型，自由文本）、`full_name`（展示文本，可填）、`description`（文本）
-- **AgentMetadata / OtherRole / IndividualRecognition**：不加 full_name（客观信息）
-- **代号限制**：`agent_id`、`role_name` 仅允许字母、数字、下划线（`^[A-Za-z0-9_]+$`），在写入入口强制校验（非空）；agent_id 在 create 时手工指定且创建后不可变，重复创建返回 AgentAlreadyExists
+- 读接口在检索前先把脏集合中的条目同步进索引；写接口只登记脏标记。
+- 同步做增量处理：内容未变不重建，名称变化重建补全项，删除时两类索引都摘除。同步过程边处理边移除脏标记直到集合为空。
+- 进程内首次取检索管理器时全量扫描：遍历带存在标记的 agent 目录并加载各 agent 的元数据与全部角色文件，建立索引。此后不感知磁盘变化。
 
+## 四、标识约束
+
+- 代号（agent 标识、角色代号、个体名称、其他角色代号）必须非空且只含 ASCII 字母、数字与下划线。
+- 校验点：agent 创建、角色创建与复制、个体批量替换中的插入名、个体改名、其他角色插入与改名、其他角色指向的个体代号、角色关系的键。
+- 读取路径与通道身份集合不做代号校验。
+- 注意与摘要记忆的差异：摘要记忆的事件标识允许连字符，而自我认知的代号不允许，因此带连字符的事件后缀不能用作自我认知的标识。
+
+## 五、错误映射
+
+- 条目不存在映射为「未找到」；已存在映射为「冲突」；代号非法当前映射为内部错误；其余为内部错误。
+- 所有响应使用统一外壳，认证使用通用密钥。
+
+## 六、并发
+
+- 全文索引用读写锁保护（同步时独占）；前缀索引与元数据表是并发映射，脏集合是并发集合。
+- 读缓存每 agent 一把读写锁，角色级再分层。
+- 无跨进程一致性保证。
+
+## 七、相关代码
+
+- agent 元数据：`kissbot-memory-ego/src/agent.rs`
+- 个体识别：`kissbot-memory-ego/src/individual_recognition.rs`
+- 角色设定：`kissbot-memory-ego/src/role_play.rs`
+- 检索：`kissbot-memory-ego/src/search.rs`
+- 接口与错误：`kissbot-memory-ego/src/api.rs`、`kissbot-memory-ego/src/error.rs`

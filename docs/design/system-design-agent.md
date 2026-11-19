@@ -1,93 +1,116 @@
-# system-design-agent 组件设计
+# Agent 组件设计
 
 ## 概述
-Agent 是智能体组件，内部由两个模块组成——Nexus（LLM 通信枢纽）和 Station（Tool 执行主机）。Nexus 负责"思考"——与 LLM 通信处理输入输出，对接记忆系统；Station 负责"行动"——执行具体工具操作。nexus 通过内部调用与同进程 station 通信；Station 之间通过 MCP（Streamable HTTP 单端点）通信。
 
-Agent 程序当前启动时同时装配 Nexus 与 Station（Station 单例 + station MCP 服务端，可被远程 station 作为 sub 调用）；仅 nexus / 仅 station 的裁剪形态为后续能力。
+Agent 是智能体的核心运行组件，负责把外部输入变成模型可用的上下文、驱动模型回复与工具调用、并把对话写入记忆。它由两个内部模块构成：
 
-Nexus 的模型调用与 session 上下文本体来自 **LLM 基础库（kissbot-llm）**：provider 实现与带重试调用、上下文的内存/缓存/归档由该库承担；Nexus 的 ProviderManager 负责 provider 实例复用（工厂去重）、分派与有效配置解析，session 由 pipeline 创建并持有。
+- **Nexus**：智能体的「思考」部分，装配 pipeline、连接消息通道、调用模型、读写记忆。
+- **Station**：智能体的「行动」部分，持有工具、执行工具调用，并可级联其他 Station。
 
+两者在同一进程内装配，通过内部调用协作；Station 之间通过 MCP 通信，因此 Station 可以部署在其他设备上为任意 agent 提供工具能力。
 
-```mermaid
-graph TB
-    Memory[记忆系统] -. HTTPS .-> Nexus
-    Llm[kissbot-llm<br/>provider 调用 + 会话上下文]
-    subgraph Agent[Agent 组件]
-        Nexus[Nexus<br/>LLM 枢纽] -- 内部调用 --- StationLocal[Station<br/>本级工具 + MCP 服务端]
-    end
-    Nexus -- WSS --- Channel[Channel<br/>通道/外部]
-    Llm --- Nexus
-    StationLocal -. MCP .-> StationRemote[下级 Station<br/>MCP 服务端]
-```
+## 模块构成
 
-## 核心功能
+| 模块 | 职责 |
+|------|------|
+| Nexus | 运行时组件的装配与启动中心：持有配置、pipeline 管理、通道适配、模型访问、记忆访问等运行时组件，启动时装配全部 pipeline 并连接通道 |
+| pipeline 体系 | 执行流程的载体：接入消息、合批、驱动 agentic loop、管理会话与记忆读写；有三种实现，分别面向无记忆对话、带记忆对话与摘要记忆 |
+| 通道适配层 | 作为通道客户端接入消息通道，维护各通道的连接与运行态，过滤自身消息回显，执行通道级管理命令，并把消息按输入身份交给绑定的 pipeline |
+| 配置管理 | 加载公共配置、引导并持久化 agent 自身的配置；区分「agent/角色可继承配置」与「会话级配置」，并在建立会话时把前者固化到会话 |
+| 模型访问 | 按 provider 名复用模型访问实例，解析有效模型参数，按协议类型分派调用，并对外提供模型列表查询 |
+| 记忆访问 | 记忆存储、自我认知、摘要记忆三套服务的客户端 |
+| 工具访问 | 全局 Station 单例：本级工具集合 + 直接子 Station 的连接与工具路由；对外提供工具列表与工具调用，并实现 MCP 服务端处理器 |
+| 系统提示词 | 把自我认知数据（agent 元数据、个体识别、角色设定）拼装为系统提示词；无可用数据时使用默认提示词 |
+| 管理 API | 面向管理界面的配置读写与运行期管理接口 |
+| station MCP 端点 | 把全局 Station 作为 MCP 服务端对外暴露，供其他 Station 作为子节点调用 |
 
-1. **LLM 驱动的智能对话**：从记忆系统读取上下文，调用 LLM 生成回复，将 tool call 分派到 station 执行
-2. **工具执行**：通过 station 执行具体的工具操作（文件操作、命令执行、网络搜索等）
-3. **分布式运行**：支持 nexus 和 station 各自独立部署运行，station 之间通过 MCP 通信
+## 运行方式
 
-## 内部模块
+Agent 以一个进程运行，启动顺序为：加载配置并注册配置管理单例 → 构建全局 Station 单例 → 装配 Nexus 运行时组件并注册单例 → 后台启动管理 API 服务与 station MCP 服务 → 装配全部 pipeline 并按输入身份连接通道 → 保持进程，由通道回调驱动。
 
-### Nexus（LLM 通信枢纽）
-- 每个 nexus 实例连接多个 provider（按 provider 配置分派 OpenAI 兼容 / Anthropic 实现）
-- 负责 pipeline 装配与编排，串接 pipeline 体系（输入处理 / 消息发送 / 工具调用 / 输出处理 / 系统提示词）；session 上下文由 pipeline 创建与读写
-- 处理 LLM 输出，将 tool call 分派到 station
-- 支持两种记忆模式（角色记忆/事件记忆）
+- 每个进程只有一个配置管理单例、一个 Station 单例、一个 Nexus 单例，其他模块一律从单例取用。
+- pipeline 只在启动时装配一次，运行期不自动增减；修改 pipeline 定义、输入身份等配置后需要重启进程（管理 API 另有运行期增删入口，供管理员显式操作）。
+- 通道连接在输入身份被绑定时建立；通道不存在或未启用时只登记路由、不建立连接。
 
-详见 [kissbot-agent-nexus 内部设计](components-design/kissbot-agent-nexus.md)
+## pipeline 体系
 
-### Station（Tool 执行主机）
-- 每 agent 一个**全局单例**，启动时从配置构建
-- 同时是 **MCP 服务端**（对外提供工具发现与工具调用）与 **MCP 客户端**（经 MCP 调用直接子 Station）
-- **嵌套结构**：本级 **group 集合**（每组含工具元数据与可选的本地实现）+ 直接**子 Station 集合**（仅连接信息，MCP 通信）；子 Station 只存直接子，孙子由子进程递归
-- 工具元数据**递归平铺**（本级 group 白名单过滤 + 直接子经 MCP 实时拉取并更新工具路由），工具名 group 内唯一，跨 group/跨子站重名合并时保留先到者
-- 内置 filesystem group（read 工具，配置显式声明 group 名才注册）
-- 接收来自 nexus 的 tool call 并执行
-- 不直接与 LLM 通信
-- 不直接对接记忆系统（tool 结果由 nexus 统一推送记忆）
-- 可运行在通用服务器、网络设备、智能家电、机器人等多种形态上
+每条 pipeline 由「agent + 角色」唯一标识，装配哪条由配置决定，实现有三种：
 
-详见 [kissbot-agent-station 内部设计](components-design/kissbot-agent-station.md) 与 [技术规格](../spec/agent-station.md)
+| pipeline | 记忆 | 会话策略 | 适用场景 |
+|----------|------|----------|----------|
+| 无记忆对话 | 不使用记忆 | 只保留当前事件的一个会话；切换事件即切换会话 | 纯模型对话，上下文只来自本地保存的会话 |
+| 带记忆对话 | 读写记忆 | 同上；角色模式下又按话题切换会话 | 需要长期记忆与工具能力的对话 |
+| 摘要记忆对话 | 读写记忆，并用摘要记忆组织上下文 | 每个 case 一个会话，按 channel 分别维护当前事件 | 记忆量大、需要按话题组织上下文的场景 |
 
-### 记忆系统
-- 由 nexus 对接记忆系统
-- 两种组织模式：角色记忆由角色标识，事件记忆由角色和事件共同标识
-- nexus 按标识粒度和记忆系统通信
+三条 pipeline 共同的行为：
 
-详见 [kissbot-memory 组件设计](components-design/kissbot-memory.md)
+- 收到上行消息先合批，再作为一次输入进入执行循环；合批间隔可按会话配置，摘要记忆按 channel 分别合批。
+- 收到管理命令时先识别执行，命令与命令回复不写入记忆、不进入上下文；不认识的命令按普通消息处理。
+- 无记忆对话只维护本地上下文：既不写入记忆，也不发送回复。
+- 执行循环按轮次调用模型：模型返回工具调用则执行工具并把结果回填，继续下一轮；模型返回正文则作为回复发到回复通道，并结束本轮；轮次有上限，防止死循环。
+- 上下文的超长处理只发生在会话级：带记忆对话在事件模式下固定使用压缩，角色模式按记忆读取开关选择压缩或记忆回溯；摘要记忆的上下文由 case 摘要与原文重建，不做超长压缩。
+- 切换事件由 pipeline 命令完成，只影响该 pipeline 的当前会话与记忆范围，不改变输入身份。
 
-### 配置管理器
-配置按三分结构管理：
-- **公共配置（静态）**：各组件共享的 `config.json`（kissbot-config 只读单例）。agent 相关段为 `agent`（`data_dir`、`mgmt_host`、`mgmt_port`、`station_host`、`station_port`、`ws_reconnect_interval_secs`）与 `api`（memory-store / memory-ego 地址）；密钥在 `security` 段
-- **NexusRepo / StationRepo（可改、落盘）**：可修改并持久化。NexusRepo 存 channels / providers+models / 顶层 pipelines / agent_roles 配置 / session 配置（见 [kissbot-agent-nexus 技术规格](../spec/agent-nexus.md)），StationRepo 存 groups / sub_stations（见 [kissbot-agent-station 技术规格](../spec/agent-station.md)）
-- **运行态（不落盘）**：session 上下文、pipeline 装配、channel 运行态（client / 未回显 msg_id / 输入身份路由）等，由 Nexus 与其组件在内存中持有
+## 会话与上下文
 
-## 组合模式
+会话是 pipeline 的执行资源，由 pipeline 创建并持有，会话标识由 pipeline 按「pipeline 类型 + agent + 角色 + 事件或 case」生成，同一 pipeline 的不同事件、不同 case 互不共享会话。
 
-Agent 启用不同的内部模块和记忆模式，形成多种工作方式：
+- 会话建立时从本地保存的上下文恢复，并设置系统提示词；带记忆对话与摘要记忆在建立会话前把 agent/角色级配置固化为会话级配置（已有会话级值不覆盖）。
+- 无记忆对话与带记忆对话只保留当前事件的一个会话；切换事件时释放旧会话，再从目标事件本地保存的上下文恢复。
+- 带记忆对话在角色模式下以「话题会话」工作：新建 pipeline 或切回角色模式时，加载该 agent/角色下最近使用的话题会话，没有则新建；每批消息进入执行循环前先用模型判断是否延续同一件事，判断为不同则换用新的话题会话，并整体继承当前会话的配置。
+- 摘要记忆的会话在该 case 首次需要时创建；每次 case 执行前用该 case 的摘要与结尾若干条原文副本重建会话上下文，再追加本批新增消息。
 
-| 启动模式 | 记忆模式 | 典型场景 |
-|----------|----------|----------|
-| 仅 nexus | 事件记忆 | 纯 LLM 问答，无需工具执行，每次对话为一个独立事件 |
-| nexus + station | 事件记忆 | LLM 对话配合工程工具（文件操作、命令执行），每个工程任务为一个独立事件 |
-| 多 nexus + 多 station | 角色记忆 + 事件记忆 | 有统一记忆的分布式 agent，持续收集信息、与人交互，并可独立完成专项 |
+## 记忆读写
 
-## 内部模块关系
+- 带记忆的两条 pipeline 把上行消息与下行回复写入记忆存储；思考内容、工具调用与工具结果作为回复记录的组成部分一并写入。写入失败只记录日志，不阻塞消息处理。
+- 带记忆对话在收到上行消息时立即写入（不带 case 信息）；摘要记忆对话在定位之后写入，并携带消息所属 case，使摘要记忆归档时可以直接落位。
+- 摘要记忆对话定位失败或定位结果未覆盖本批消息时丢弃本批消息，既不写记忆也不进入执行。
+- 记忆回溯是把记忆存储中「最近若干条」与「时间窗内全部记录」取并集、打包成对话消息后整体重置会话上下文；复盘的时间窗与条数按会话配置。
+- Agent 只读取自我认知信息用于系统提示词，不修改它；自我认知由自我认知服务管理。
 
-Agent 组件内部包含两大模块：
+## 工具调用
 
-**Nexus 模块**：负责 LLM 通信、pipeline 编排和记忆对接
-- LLM 调用：ProviderManager 按 provider 名缓存实现实例（工厂去重）、按 provider_type 分派 OpenAI 兼容 / Anthropic 实现，解析有效模型配置（超时/重试/token 上限）后经 kissbot-llm 的 call_with_retry 调用（请求构造、重试与响应归一化由该库完成）
-- pipeline 体系：按配置中的顶层 pipeline 定义装配 pipeline（每个 (agent, role) 一条，按角色键持有；`default` / `default_memory` / `memory_summary`），pipeline 自建 session、维护当前 event、负责消息接入与合批，并驱动 agentic loop；session 上下文由 pipeline 直接读写
-- session 与上下文：session 的数量与 id 由 pipeline 决定（session id 以 pipeline 前缀区分），pipeline 负责创建/恢复/持有；`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时从本地缓存重新读取；`default_memory` 角色模式首个 session 即为话题 session，话题切换改用新话题 session 并继承当前配置，进程重启后重新创建 pipeline 或切回角色模式时加载该 agent/role 修改时间最新的角色模式 session，找不到时新建话题 session），`memory_summary` 每个 case 一个 session；单个 session 的上下文（内存 + 本地缓存 + 版本）由 kissbot-llm 的 Session 承担
-- Tool 调用分派：把外置工具分派到 Station（工具分组白名单平铺查询 + 工具调用）
-- 记忆读写：上行消息 / 回复 / 思考 / tool call & result 写入记忆；上下文超长时按配置压缩或从记忆回溯。`default_memory` 在当前 event 为事件模式时只写不读；角色模式每批 run 前都用 LLM 判断是否同一件事（与 `load_memory` 无关），不同则换用新 session（继承当前配置）并只保留新消息
-- 消息接入：每条 pipeline 声明输入身份，通道适配层按输入身份把上行消息交给绑定的唯一 pipeline（一个身份只能绑定一条 pipeline，先绑定者生效）；channel 级管理命令在通道层执行
+- 模型返回工具调用后，按工具名交给全局 Station；Station 先查本级工具，未命中再按路由交给提供该工具的直接子 Station。
+- 会话可用工具由该会话的工具有限分组白名单决定；白名单为空时不携带工具，模型按纯对话运行。
+- 工具结果按工具调用顺序回填到上下文；工具执行失败也作为工具结果返回给模型，不中断执行循环。
+- 工具调用与结果同时作为回复记录的组成部分写入记忆，按出现顺序配对。
 
-**Station 模块**：负责工具执行
-- 全局 Station 单例：本级工具索引 + 直接子 Station 集合（工具名 group 内唯一，跨 group 重名收敛）
-- ToolImplement / NativeTool：本级原生工具实现接口与其工具条目（元数据 + 实现）；Group 为一组原生工具
-- 子 Station：仅连接信息 + MCP 客户端；Station 自身也作为 MCP 服务端被其他 station 调用
-- 内置注册表：filesystem → read 工具
-- 工具执行器：接收并执行工具调用（本级原生实现 → 工具路由 → 对应子 Station 的 MCP 调用）
-Nexus 通过内部调用与全局 Station 单例通信（工具分组白名单查询 tools_for_session / 工具调用 Station::call_tool_local），Station 之间通过 MCP 通信。Agent 启动时装配 Nexus 与 Station。
+## 管理命令
+
+管理命令按两层处理：
+
+- **通道级命令**：由通道适配层执行，管理通道的管理员名单，执行结果直接回复来源通道。
+- **pipeline 命令**：由绑定该输入身份的 pipeline 执行，包括切换事件、设置或清除回复通道、切换当前会话使用的模型、设置是否读取记忆。命令回复发送到来源通道。
+
+发送者必须位于该通道的管理员名单中，否则文本不按命令处理。命令与命令回复不写入记忆，也不进入会话上下文。
+
+## 组合形态
+
+Agent 的两种模块与服务可以按需组合：
+
+- 只运行 Nexus：纯模型对话，无工具能力。
+- 同时运行 Nexus 与 Station：模型对话配合本机或远程工具。
+- 多个 Nexus 共用一个记忆系统：不同角色共享同一份记忆数据，但各自的记忆范围、会话与当前事件相互独立。
+- 多个 Station 级联：把不同设备上的工具组织成一棵树，由根节点统一提供给 agent。
+
+## 关键设计
+
+### pipeline 与输入身份分离
+
+pipeline 决定「用哪份上下文与记忆」，输入身份决定「消息从哪来」。一个输入身份只能绑定一条 pipeline，先绑定者生效；通道本身不携带 agent 与角色信息，因此同一条通道可以被多条 pipeline 以不同身份接入。
+
+### 记忆范围与上下文分离
+
+pipeline 身份、记忆范围、会话三者相互独立：pipeline 由 agent + 角色标识；记忆范围由角色与可选事件标识；会话由 pipeline 自己生成并持有。会话切换不影响记忆范围，记忆范围切换也不重建 pipeline。
+
+### 回复通道由 pipeline 决定
+
+非命令消息是否回复、回复到哪个通道，由 pipeline 的回复通道配置决定，与消息来源无关。这样可以支持「只记录不回复」「统一由某个通道输出」等用法。
+
+### 事件由 pipeline 维护
+
+当前事件是 pipeline 的运行态，不写入配置、不绑定在通道上；重启进程后 pipeline 从角色模式开始。切换事件只改变该 pipeline 的会话与记忆范围，因此同一时刻一个 pipeline 只处于一种模式或一个事件。
+
+### 自身消息回显的识别
+
+Agent 发出的消息经通道回显时携带相同的消息标识；发送成功后把该标识记入待回显集合，收到同标识消息时丢弃（发送时已写入记忆）。这样无需比较发送者身份即可区分自身回显与真实上行消息。

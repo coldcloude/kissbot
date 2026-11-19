@@ -1,81 +1,90 @@
-# 记忆存储文件结构
+# 记忆目录与文件布局
 
-## 目录组织
+> 说明记忆根目录的组织、记忆范围的后缀规则、记录文件路径与各类数据的存放位置。
 
-记忆系统根目录下，按 agent ID 划分各子目录：
+## 一、根目录与 agent 目录
+
+记忆根目录由公共配置的记忆段给出（模板中为相对路径）。根目录下按 agent 标识划分：
 
 ```
 {根目录}/
-├── {agent-id}/
-│   ├── agent-{agent-id}          # agent 存在标识文件
-│   ├── memory-ego/               # 自我认知数据
-│   ├── memory-store/
-│   │   └── {year}-{suffix}/
-│   │       └── channel-records-{date}.jsonl
-│   └── memory-struct-*/          # 各记忆结构实现的数据
+└── {agent_id}/
+    ├── agent-{agent_id}             # 存在标记（空文件）
+    ├── metadata.json                # agent 元数据（自我认知）
+    ├── memory-ego/                  # 个体识别与角色设定
+    │   ├── individual-recognition-.json
+    │   └── role-play-{角色名}.json
+    ├── memory-store/                # 原始通道记录（记忆存储写入）
+    └── memory-struct-summary/       # 摘要记忆数据（摘要记忆写入）
 ```
 
-`memory-struct-*` 下由各实现模块自行组织数据。摘要记忆实现模块（kissbot-memory-struct-summary）的目录布局：
+- 目录管理器是进程级单例，负责创建与校验目录；创建目录后还会再校验一次存在性。
+- 存在标记由创建 agent 的服务写入，列举 agent 时只把带标记的目录当作 agent。单独的记录写入不会创建标记，因此不会让某个标识出现在 agent 列表中。
+- 各组件只写自己的子目录：记忆存储写 `memory-store/`，自我认知写元数据与 `memory-ego/`，摘要记忆写 `memory-struct-summary/`。
+
+## 二、记忆范围与后缀
+
+记忆范围由「角色 + 可选事件」表达，后缀只在构造文件与目录名时拼接：
+
+- 角色模式：后缀为角色名。
+- 事件模式：后缀为「角色名-事件标识」。
+
+同一 agent 下两种模式的后缀是并列目录，角色模式不是事件模式的父目录。事件标识允许包含连字符（例如 UUID），因此后缀不用于反向解析角色与事件；调用方始终以「角色 + 可选事件」传入。
+
+## 三、原始记录文件
 
 ```
-{根目录}/{agent-id}/memory-struct-summary/
-├── llm/                          # 模型会话（会话标识按记忆后缀，session_id 即后缀的净化形式）
-├── {角色名}/                      # 角色目录：case 树与原文副本
-│   ├── tree.jsonl                # 一棵 case 树（角色模式与事件模式共用），每行一个 case 节点
-│   └── cases/                    # 与 case 树一一对应
-│       ├── role/{角色 case 路径}/ # 子 case 就是子目录，叶子目录下放原文副本
-│       │   └── channel-records.jsonl
-│       └── event-{事件标识}/{事件子路径}/
-└── {记忆后缀}/                    # 水位与当前 case 指针（后缀 = 角色名时就是上面的角色目录）
-    ├── current.json              # 各通道的当前 case 指针（字段 case_name）
-    └── watermark.json            # 各通道的已处理水位
+{根目录}/{agent_id}/memory-store/{年份}-{后缀}/channel-records-{日期}.jsonl
 ```
 
-case 树按**角色**共用；原始记录、水位、当前 case 指针、模型会话按**记忆后缀**分开。**case 的唯一标识是完整路径**（段之间 `/`）：角色模式顶层为模型名称、子 case 为 `<父路径>/<名称>`；事件模式根固定为 `[event]{事件标识}`，子 case 为 `<事件根>/<名称>`。同一父下同名即同一个 case；不同父下同名是不同 case。原文副本目录与路径对应：`[role]` → `role`、`[event]{事件标识}` → `event-{事件标识}`。详见 [memory-struct-summary.md](memory-struct-summary.md)。
+- 年份取记录时间的年份，目录名为「年份 + 连字符 + 后缀」（后缀为空时目录名以连字符结尾）。
+- 文件名为「channel-records- + 日期」；同一天、同一记忆范围的所有通道共用一个文件，文件内混合多个通道，记录自身携带通道身份。
+- 文件为 JSON Lines：每行一条记录，包含消息标识、发送者、接收方绑定用户、是否本人发送、通道标识、群组标识、内容、时间、文件内序号，以及可选的记录元信息（摘要记忆的 case 归属）。
+- 时间统一为「年-月-日 时:分:秒」，日期、年份与分钟都是前缀切片。
 
-## 记忆后缀（RoleEvent）
+## 四、自我认知文件
 
-记忆后缀是 memory 内部的文件/目录名段，由项目级基础类型 `RoleEvent { role_name, event_id }` 拼成。**拼接由 memory（kissbot-memory 的 `role_event_suffix`，只在构造文件名时拼接）负责**，对外通信一律传 `RoleEvent`，调用方不再自己拼接字符串（`suffix` 只出现在 memory 内部的路径构造）：
-
-- 角色记忆：`{role_name}`（`event_id` 缺省），在 memory-store 里形如 `{year}-{role_name}`（角色名为空时形如 `2026-`）
-- 事件记忆：`{role_name}-{event_id}`，在 memory-store 里形如 `{year}-{role_name}-{event_id}`（角色名为空时形如 `2026--{event_id}`）
-
-磁盘上的历史目录名按**第一个** `-` 识别角色名与可选事件标识：角色名不允许含 `-`，事件标识可以含 `-`（如 UUID）。例：`dev-3f2a-c3d4` 的角色是 `dev`、事件标识是 `3f2a-c3d4`。
-
-## 文件格式
-
-记录使用 JSON Lines 格式，便于追加和流式读取。
-
-| 文件 | 内容 |
+| 路径 | 内容 |
 |------|------|
-| channel-records-{date}.jsonl | 通道记录（同 agent、角色、日期下全部通道消息；记录内携带 msg_id、messenger/group/self 身份与可选的 meta）。思考/工具内容内嵌在 `content` 里，不单独成记录 |
+| `{agent_id}/metadata.json` | agent 元数据（标识、描述） |
+| `{agent_id}/memory-ego/individual-recognition-.json` | 该 agent 的整份个体识别信息 |
+| `{agent_id}/memory-ego/role-play-{角色名}.json` | 每个角色一份角色设定 |
 
-## ChannelRecord 身份字段与语义
+- 元数据与自我认知目录分开：元数据放在 agent 目录根部，个体与角色数据放在 `memory-ego/` 下。
+- 读取个体识别时若文件不存在会自动创建空文件；读取角色时不创建。
 
-channel 记录包含完整身份字段：
+## 五、摘要记忆文件
 
-| 字段 | 含义 |
-|------|------|
-| msg_id | 消息标识：上行取自 `incoming_message.msg_id`、下行取自 `outgoing_message_response.msg_id` |
-| user_id | 消息发送者身份 |
-| self_user_id | agent 在 channel 绑定的用户（接收方身份 / agent 视角的 self） |
-| messenger_id | 消息来源通道标识 |
-| group_id | 群组标识（单聊可为空） |
-| is_self | 是否 agent 实际发送（1 / 0） |
-| meta | 可选的记录元信息；摘要记忆使用 `meta.memory_summary.case_name` 记录所属 case，缺省不序列化 |
+```
+{根目录}/{agent_id}/memory-struct-summary/
+├── llm/                              # 判定与摘要使用的模型会话
+│   ├── {会话标识}.sys.jsonl
+│   ├── {会话标识}.msgs.jsonl
+│   └── versions/
+├── {角色名}/                          # 角色目录
+│   ├── tree.jsonl                    # case 森林（每行一个节点）
+│   ├── current.json                  # 该记忆范围各通道的当前 case 指针
+│   ├── watermark.json                # 该记忆范围各通道的处理水位
+│   └── cases/                        # 原文副本目录
+│       ├── role/{路径段...}/channel-records.jsonl
+│       └── event-{事件标识}/{路径段...}/channel-records.jsonl
+└── {角色名}-{事件标识}/                # 事件范围：只放 current.json / watermark.json
+```
 
-> **msg_id 与定位**：摘要记忆的调用方在 locate 之后才写入本批消息，因此 locate 不按 `msg_id` 与已存记录去重；`msg_id` 保留用于记录关联与排查。带 `meta.memory_summary.case_name` 的记录由摘要记忆组件直接按 case 名归档，见 [memory-struct-summary.md](memory-struct-summary.md)。
->
-> **内嵌的思考/工具内容**：`Content` 的 `Think` / `ToolCall` / `ToolResult` 分支直接保存对应的 `ThinkRecord` / `ToolCallRecord` / `ToolResultRecord`（不含 `key` / `time` / `sn`）。agent 在一次 run 内把思考与工具内容累积到回复通道记录的 `Multi` 中，随该通道记录一起写入并等待落盘；没有文本的轮次不写通道记录，累积的思考/工具内容随之丢弃。工具调用与结果按它们在 `Multi` 中的先后顺序配对。
->
-> **is_self 与 self_user_id 不同**：is_self 只在 agent 实际发送消息时为 1（agent 经 msg_id 回显匹配识别并过滤自身回声后确定），不由 `user_id == self_user_id` 推导。其他人使用 agent 绑定的用户发送消息时，`user_id == self_user_id`，但 `is_self == 0`。
+- `tree.jsonl` 的存在同时是「该目录是角色目录」的判定依据。
+- 角色模式下记忆范围后缀即角色名，因此指针与水位文件与树文件同目录；事件模式下事件范围目录是角色目录的兄弟目录。
+- 原文副本按 case 路径分目录，一个 case 一个文件；角色根映射为 `role`，事件根映射为 `event-{事件标识}`；复合 case 目录下没有原文文件。
+- 状态文件先写临时文件再原子替换；指针为空时删除指针文件。
 
-## 自我认知文件
+## 六、时间与编码约定
 
-`{agent-id}/memory-ego/` 目录下存储 agent 的自我认知数据：
+- 所有时间字符串为「年-月-日 时:分:秒」，无时区标记。
+- 模型会话标识由记忆范围清洗得到：非字母、数字与 `-`、`_`、`.` 的字符映射为下划线，空范围使用固定占位。
+- 记录文件、case 树、状态文件都是 UTF-8、以换行分隔的文本文件。
 
-| 文件 | 内容 |
-|------|------|
-| metadata.json | agent 元数据 |
-| individual-recognition-.json | 用户识别信息 |
-| role-play-{role-name}.json | 角色设定（每个角色一个文件） |
+## 七、相关代码
+
+- 目录与路径：`kissbot-memory/src/directory.rs`
+- 记录与键：`kissbot-memory/src/data.rs`、`kissbot-memory/src/index.rs`
+- 自我认知布局：`kissbot-memory-ego/src/`
+- 摘要记忆布局：`kissbot-memory-struct-summary/src/`

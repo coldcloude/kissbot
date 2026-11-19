@@ -1,282 +1,191 @@
 # kissbot-agent-nexus 模块设计
 
 ## 概述
-Nexus — Agent 组件的编排中心。智能体的"思考"部分：负责将外部输入与记忆加工为 LLM 可用的上下文、驱动回复生成与工具调用，并统一调度同进程内的 Station、channel 适配层与记忆系统。Nexus 本身不实现 agentic loop 的执行步骤，而是由 pipeline 体系（输入处理 / 消息发送 / 工具调用 / 输出处理 / 系统提示词）组合出每条 pipeline 的执行流程，Nexus 向它们提供记忆、Provider、Station 与回复发送能力；session 的创建与使用由 pipeline 自己决定。
 
-Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消息收发，与 memory-store、memory-ego 和 station 通过请求-响应方式通信。一个系统内可运行多个 agent 实例，每个实例独立的 Nexus 与 Station 单例。
+Nexus 是 Agent 组件中的「思考」模块，负责把外部输入变成模型可用的上下文、驱动模型回复与工具调用、读写记忆，并装配运行所需的全部 pipeline。Nexus 本身不实现固定的执行流程：每条 pipeline 自行决定会话的创建与使用、记忆的读写方式、命令的响应方式，Nexus 向它们提供配置、模型访问、工具访问、记忆访问与回复发送能力。
 
-一个 nexus 可同时管理多条 pipeline。pipeline 集合由配置中的 pipeline 定义决定，pipeline 身份为 agent_id（空/缺省 = 保留 agent "0"）与 role_name，每个 (agent, role) 组合一条 pipeline；每条 pipeline 声明自己订阅的输入身份，通道适配层按输入身份把上行消息交给绑定的唯一 pipeline（一个输入身份只能绑定一条 pipeline，先绑定者生效，其他 pipeline 跳过并记错误日志）。pipeline 按自身需要创建 session（`default` / `default_memory` 内存中只保留当前 event 的一个 session，摘要记忆 pipeline 每个 case 一个 session）。当前 event 由 pipeline 在内存中维护，新建 pipeline 一律从角色模式开始；切换 event 是 pipeline 命令，不改变输入身份，也不重建 pipeline。各 pipeline 拥有独立的记忆读写范围、配置与当前 event；session 拥有独立的 LLM 上下文。回复目标由 pipeline 的 out_channel 配置决定（未配置 = 只存不回复），与消息从哪个 channel 到达无关。
+Nexus 与 Agent 的另一个模块 Station 同进程装配，通过内部调用使用其工具能力；Nexus 通过消息通道的客户端库连接通道服务端，通过 HTTP 访问记忆存储、摘要记忆与自我认知服务，通过 HTTP 访问模型服务商。
 
 ## 核心功能
 
-### Epic 1：外部输入处理
-- **目标**：接收来自消息通道的输入，按消息的输入身份交给绑定的唯一 pipeline，区分并路由管理命令与普通消息到对应处理流程
-- **依赖**：Epic 5（消息通道通信）
-- **用户故事**：
-  - 作为一个用户，我要向智能体发送消息，以丢弃智能体自身发出后又回显的消息
-  - 作为一个管理员，我要向智能体发送管理命令，以让智能体执行相应管理操作（无权限用户发送的文本不按命令执行）
-  - 作为一个用户，我要向智能体发送普通消息，以触发智能体生成 LLM 回复
+### Epic 1：消息接入与命令处理
 
-### Epic 2：LLM 交互
-- **目标**：封装 LLM API 调用，支持多种 LLM 提供商和模型，构建完整的 LLM 上下文并调用
-- **依赖**：Epic 3（上下文管理）、memory-ego（自我认知信息）
+- **目标**：接收通道上行消息，识别并丢弃自身消息回显，按输入身份交给唯一一条 pipeline，并区分管理命令与普通消息
+- **依赖**：kissbot-channel-client（通道连接与回调）、kissbot-config / kissbot-security（通道连接参数与认证信息）
 - **用户故事**：
-  - 作为一个管理员，我要按 provider + model 配置 LLM 地址、密钥与参数，以控制 LLM 的行为
-  - 作为一个管理员，我要为不同 (agent, role) 配置不同的 provider/model 与参数，并在运行期为单条 pipeline 切换模型
-  - 作为一个管理员，我要配置 LLM 调用失败时的重试策略，以提高请求成功率
-  - 作为一个用户，我要向智能体发送消息，以获取智能体调用 LLM 生成的回复，并让智能体将回复发送到消息通道
+  - 作为一个管理员，我要把 agent 的身份绑定到通道上的用户，以让该身份的消息进入指定 pipeline
+  - 作为一个用户，我要向智能体发送消息，以触发一次模型回复
+  - 作为一个管理员，我要在通道上发送管理命令，以切换事件、设置回复通道、切换模型或调整记忆读取
+  - 作为一个用户，我要连续发送多条消息，以让智能体把它们作为一次输入统一回复
 
-### Epic 3：上下文管理
-- **目标**：按 session 管理 LLM 上下文，支持恢复、增量追加与超长自动压缩/回溯
-- **依赖**：Epic 4（记忆读写）、memory-ego（自我认知信息）
+### Epic 2：模型对话与工具调用
+
+- **目标**：按会话配置调用模型，解析回复中的工具调用并交给 Station 执行，把结果回填后继续对话，直到得到正文回复
+- **依赖**：kissbot-llm（模型调用与会话上下文）、Station（工具列表与工具执行）
 - **用户故事**：
-  - 作为一个管理员，我要启动智能体程序，以让智能体按 session 恢复上一次的本地上下文
-  - 作为一个用户，我要向智能体发送消息，以让智能体保持对话连续性
-  - 作为一个管理员，我要设置上下文 token 占用上限与压缩阈值，以防止上下文无限增长
+  - 作为一个管理员，我要为不同角色、不同会话配置模型与生成参数，以控制对话行为
+  - 作为一个用户，我要让智能体使用工具完成任务，以得到工具执行后的结果
+  - 作为一个管理员，我要限制某个会话可用的工具分组，以控制该会话能执行的操作
+  - 作为一个用户，我要让思考过程与工具调用记录随回复一起被记录，以了解智能体做了什么
+
+### Epic 3：会话与上下文管理
+
+- **目标**：按事件、话题与 case 维护会话上下文，从本地保存的上下文恢复，并在上下文超长时压缩或从记忆回溯
+- **依赖**：kissbot-llm（会话上下文的保存与版本）
+- **用户故事**：
+  - 作为一个管理员，我要让智能体在进程重启后继续使用最近的上下文，以保持对话连续性
+  - 作为一个管理员，我要切换当前事件，以让智能体在同一角色下按不同事件独立对话
+  - 作为一个用户，我要开启新话题，以让智能体跳出旧话题、用新的上下文重新开始
+  - 作为一个管理员，我要设置上下文长度阈值与压缩方式，以避免上下文无限增长
 
 ### Epic 4：记忆读写
-- **目标**：在 pipeline 创建其 session 时恢复本地上下文；在上下文超长时按配置压缩或从 memory-store 回溯打包；在 agentic loop 中把思考、tool call、tool result 与收发消息写入记忆系统；各 pipeline 按自身模式（角色/事件）隔离记忆范围
-- **依赖**：memory-store（记忆读写）、memory-ego（自我认知信息）
+
+- **目标**：把上行消息与下行回复写入记忆，按会话模式读取记忆，并为摘要记忆 pipeline 提供定位与上下文重建所需的访问能力
+- **依赖**：kissbot-memory-store（写入与查询）、kissbot-memory-struct-summary（case 定位与上下文）、kissbot-memory-ego（自我认知）
 - **用户故事**：
-  - 作为一个用户，我要询问智能体过往的对话内容，以让智能体回顾对话脉络
-  - 作为一个管理员，我要调整配置中的 agent/role 与 pipeline 定义，或切换 pipeline 的当前 event，以让智能体按记忆范围隔离上下文
-  - 作为一个用户，我要向智能体发送消息，以持久化智能体的思考过程和工具调用记录
-  - 作为一个用户，我要向智能体发送消息，以持久化完整的对话收发记录
+  - 作为一个用户，我要向智能体发送消息，以让对话与智能体的行动被完整记录
+  - 作为一个管理员，我要让智能体在上下文超长时从记忆恢复，以延续更早的对话
+  - 作为一个管理员，我要让智能体按话题组织记忆，以让每个话题拥有独立的上下文
+  - 作为一个用户，我要智能体知道自己是谁、面对谁、扮演什么角色，以得到符合设定的回复
 
-### Epic 5：消息通道通信
-- **目标**：作为客户端连接消息通道的服务端，支持多通道同时连接、心跳检测和断线重连
-- **依赖**：kissbot-channel（消息通道服务端与绑定协议）
+### Epic 5：配置管理与运行期变更
+
+- **目标**：加载公共配置、维护 agent 自身配置与每会话配置，并提供管理 API 供管理员查看与修改配置、启停通道、增删 pipeline 与输入身份
+- **依赖**：kissbot-config（公共配置）、kissbot-security（管理 API 认证）
 - **用户故事**：
-  - 作为一个管理员，我要配置 channel 与各 pipeline 的输入身份（当前 event 由 pipeline 的 `/mode` 命令设置），以让智能体启动时按 pipeline 的输入身份连接通道并绑定用户
-  - 作为一个外部系统（消息通道），我要与智能体保持长连接，以保持通信的稳定性
-  - 作为一个外部系统（消息通道），我要向智能体推送上行消息并接收其下行消息
+  - 作为一个管理员，我要在管理界面上查看与修改通道、模型、pipeline 与角色配置，以调整智能体的行为
+  - 作为一个管理员，我要在运行期新增或移除 pipeline 与输入身份，以调整接入的身份而无需重启
+  - 作为一个管理员，我要启停某个通道，以在不修改输入身份的情况下暂停该通道的消息收发
 
-### Epic 6：工具调用分派
-- **目标**：解析 LLM 返回中的 tool call，按工具名路由到全局 Station 执行（本级原生工具进程内执行 / 直接子 Station 经 MCP 递归）
-- **依赖**：Epic 2（LLM 交互）、Station 组件
-- **用户故事**：
-  - 作为一个用户，我要向智能体提出需要执行工具的任务，以触发智能体执行工具调用
-  - 作为一个外部系统（工具执行站），我要接收智能体发送的工具调用请求，以执行外置工具并返回工具执行结果
-  - 作为一个用户，我要向智能体提出复杂的多步任务，以完成复杂的工具链调用
+## 模块划分
 
-## 内部模块
-
-### 1. 协调器（Nexus）
-- 核心调度层：管理 nexus 的启动流程、pipeline 集合与全局单例装配
-- 启动时按配置装配全部 pipeline；上行消息按输入身份交给绑定的唯一 pipeline，channel 级管理命令在通道层执行
-- 装配 pipeline 时不注入 session；pipeline 自己按需要创建并持有 session，运行期直接读写自己的 session 上下文
-- 提供能力接口供 pipeline 回调：Provider 调用、Station 工具分组白名单与调用、记忆写入（思考 / tool call / tool result）、记忆回溯打包、回复发送、ego 系统提示词查询
-- pipeline 集合与输入身份由配置决定，配置修改后重启生效；当前 event 由 pipeline 自己串行切换
-
-### 2. 配置管理器
-- 从公共配置加载静态配置（数据目录、监听地址、外部服务地址），引导并持久化 nexus.json / station.json
-- 管理 provider+model 参数（配置结构由 kissbot-llm 定义）、顶层 pipeline 定义（哪些 (agent, role) 装配 pipeline 及其实现）、(agent, role) 级配置（LLM 参数、压缩、记忆回溯、记忆读取开关、合批、回复通道、工具分组白名单、输入身份）与 session 级值
-- 分开存储 agent/role 可继承配置与 session 级值：`default_memory` / `memory_summary` 建立 session 前用 `set_session_config_if_not_exists` 从 agent → role 导入配置；`default` 不依赖 agent/role；运行期只按 session_id 读；pipeline 实现由顶层 pipeline 定义选择，输入身份按 agent → role 合并（role 列表整体替换 agent 列表，未配置时沿用 agent 级）
-- 支持管理命令与管理 API 回写
-
-### 3. LLM 客户端（provider 体系）
-- provider 实现（OpenAI 兼容 / Anthropic 的请求构造、调用、重试与响应归一化）由 **kissbot-llm** 提供；Nexus 的 ProviderManager 负责按 provider 名缓存实现实例（工厂去重）、解析当前 session 的有效模型配置（超时 / 重试 / token 上限）并按 provider_type 分派
-- 归一化结果包含正文、思考内容（API 字段与 `<think>` 标签各自独立）、工具调用与 token 占用，供上下文与阈值判定使用
-- 支持模型列表查询（用于模型校验与管理命令）
-
-### 4. 会话与上下文（pipeline 内部）
-- session 的数量与 id 由 pipeline 决定，pipeline 自己创建、恢复并持有 session
-- 单个会话的上下文本体（内存消息序列 + 当前/待定 system 消息 + 本地缓存 + 版本）由 **kissbot-llm** 的 Session/SessionContext 承担
-- 建立 session 时正序全量回读本地缓存，并做崩溃一致性清理（丢弃悬挂的 tool_calls 尾部与开头的孤立工具响应）
-- session 不单独注册到全局表；pipeline 丢弃时其 session 随 Arc 释放自然回收
-
-### 5. pipeline 体系（执行流程）
-- **AgentPipeline**：执行流程本体，自己创建并持有需要的 session；每条 pipeline 的输入身份决定它接收哪些 channel 身份的消息。当前三实现：`default`（无记忆的 agentic loop，内存中只保留当前 event 的 session）、`default_memory`（带记忆读写的 agentic loop，内存中只保留当前 event 的 session；事件模式只写不读，角色模式按 session 开关决定是否读取）、`memory_summary`（摘要记忆 pipeline，按 channel 攒批 + 每个 case 一个 session，按 channel 维护当前 event）。
-- **命令与批次串行**：`default` / `default_memory` 的命令和批次消息进入同一条 mpsc 队列串行执行；修改当前 session（如 `/mode`）与使用当前 session（批次 run）不会并发。
-- **消息接入与合批**：pipeline 自己维护批次生产者与消费者。`default` / `default_memory` 一个 pipeline 一个合批队列；`memory_summary` 为每个 channel（messenger + 接收方用户 + 群组）维护独立的批次生产者，各 channel 互不干扰。消费者在最后一条消息超过合批间隔后把整批交给 pipeline。
-- **case 拆分与执行**：`memory_summary` 的批次先做一次定位并写入本批上行记录，然后按消息所属 case 并入该 case 的待执行任务，批次处理随即结束，下一批可以接着处理。待执行任务由另一个队列串行执行：worker 一次只取一个 case，每个 case 一次 run；每个 case 维护独立 session，run 开头用该 case 的摘要与结尾原文副本重置该 session 的上下文，再把本次新增消息打包为一条 user 消息进入 agentic loop。还没开始执行的 case 继续等待，期间到达的同 case 消息并入同一次 run；正在执行的 case 的新消息形成下一轮 run。
-- **agentic loop**：`default_memory` 与 `memory_summary` 各自实现自己的循环；两者都按轮次发送 LLM 请求、执行工具调用、把回复发到 out_channel 并写记忆，超过 token 阈值时按配置压缩或记忆回溯。`default_memory` 在角色模式下每批 run 前先用 LLM 判断新消息与完整会话是否同一件事（与 `load_memory` 无关）；不同则换用自动生成的新 session_id、整体继承当前 session 配置，并从空上下文只保留新消息后运行。摘要记忆 pipeline 复用发送/工具/提示词能力，但批次接入、定位与 case 上下文重建在自己的实现里。
-- **记忆写入位置**：上下行通道记录的构造是纯函数，写入与回复发送都在 pipeline 内完成。`default_memory` 在收到上行消息时立即写入，回复经回复发送流程发送并写入（meta 为 None）；`memory_summary` 在定位之后写入上行记录（带消息所属 case 的 meta），回复同样带本次 run 所属 case 的 meta；定位失败时直接丢弃本批消息（不写记忆、也不进入待执行任务）。
-- **PipelineManager**：Nexus::run 启动时按配置中的 pipeline 定义创建一次，按角色键（agent + role）持有 pipeline，并维护输入身份到 pipeline 的路由；装配哪些 session、当前 event 是什么由 pipeline 自己决定；启动装配不使用运行期单条 pipeline 新增/删除与输入身份替换入口，当前无自动触发路径，pipeline 丢弃时 session 随 Arc 释放。pipeline 实现由该 (agent, role) 在顶层 pipeline 定义中配置的 `pipeline_name` 选择（必填），未知名称跳过。
-
-### 6. 记忆读写
-- 上下行消息、思考内容、tool call / tool result 统一经 memory-store 客户端写入（由 pipeline 在消息接入/回复发送时触发）；写入失败仅记录日志、不重试
-- 上下文超长时的处理：当前 event 为事件模式时恒用压缩；角色模式按 `memory_pipeline.load_memory` 选择压缩或回溯。回溯由 memory_recover 消息发送器触发：按 (agent_id, role_event) 两次查询并集（最近 N 条 ∪ 时间段）打包为交替的对话消息，归档旧上下文后重建
-- 角色模式每批 run 前都用当前完整 session + 新消息直接调用 LLM 判断是否同一件事（只回答 YES/NO，不经过 run_once、不读取 memory-store，与 `load_memory` 无关）：首次失败或非精确回答时写死用更强的重试提示词再调用一次（不循环）；回答 trim 后转大写精确匹配 YES/NO，两次都失败或都不是精确回答按同一件事处理。判定为不同时换用自动生成的新 session_id，整体继承当前 session 配置并从空上下文开始，随后统一在批次末尾由 run 追加本批新消息；旧会话不归档、不保存版本。
-- 记忆回溯配置（时间窗、条数）、记忆读取开关与 LLM 参数独立，在建立 session 时一并固化到 session 配置
-
-### 7. 管理命令处理
-- 识别以 `/` 开头的外部消息（且发送者在来源 channel 的 admins 中）
-- 先做 channel 级默认命令检测与执行：管理权限增删
-- 默认层未命中的命令按输入身份交给绑定的 pipeline，由 pipeline 自行识别执行：切换 event、设置/清除回复通道、切换 pipeline 模型、记忆读取开关；pipeline 不认识的 `/` 文本按普通消息处理
-- 命令与命令回复不入记忆、不进上下文
-
-### 8. channel 运行态与输入路由
-- 维护各 channel 的运行态资源（client、未回显 msg_id、断线通知）与输入身份路由；不保存 event
-- 一个输入身份只能绑定一条 pipeline：启动装配时先绑定者生效，其他 pipeline 冲突时跳过并记错误日志；另保留运行期解绑入口，当前无自动触发路径
-- pipeline 与输入身份只在启动时装配一次，运行期不重配；配置修改后重启生效
-- 当前 event 属于 pipeline：切换 event 只切换该 pipeline 的当前 session / locate 参数，不改变输入身份
-
-### 9. Station 运行态
-- 全局 Station 单例（每 agent 一个）从配置构建：本级 group 集合（工具元数据 + 原生实现，由内置注册表按 group 名填充）+ 直接子 Station 集合（仅连接信息，MCP 客户端）
-- 内置示例工具 Read：读取文本文件，路径经绝对路径规范化后校验位于当前工作目录内（防穿透），返回内容限长；配置显式声明 filesystem group 名才注册
-- 工具名 group 内唯一；本级构建时的重名静默保留先到者，级联合并时的跨子站重名保留先到者并记 warn 日志（对外仍给出唯一名字）
-
-### 10. Station 工具执行
-- 工具定义由 nexus 按当前 session 的工具分组白名单聚合（平铺递归），并在边界处转换为 LLM 侧工具定义，随 LLM 请求发送
-- 本级工具：按工具名在本级工具索引中查找并执行（注册的工具必带原生实现）；子 Station 工具：本级未命中时按工具名路由到归属的直接子 Station，经 MCP 调用（不遍历全部子）
-
-### 11. 边界组件（非 Nexus 内部模块）
-- **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 业务消息处理：channel 级管理命令 / 按输入身份定位 pipeline 的命令与普通消息）、每 channel 运行态（client、未回显 msg_id、断线通知）、输入身份绑定、连接/重连/发送
-- **管理 API（http_server）**：管理界面用的配置 CRUD 与运行期管理（channel 增删/启停、pipeline 增删/重载/改名、input channel 增删），配置写入 nexus.json 并同步运行时
-- **station MCP 服务端（station_http）**：把全局 Station 作为 MCP 处理器对外提供 server/discover、tools/list、tools/call，供其他 station 作为 sub 使用
+- **协调器**：装配运行时组件并注册为进程级单例，启动时遍历配置装配 pipeline、按输入身份建立通道连接与路由
+- **pipeline 体系**：三种执行的实现（无记忆对话、带记忆对话、摘要记忆对话）与统一的注册表；负责消息接入、合批、命令处理、会话持有、执行循环、记忆读写
+- **通道适配层**：作为通道客户端的回调实现，维护各通道的连接与运行态，处理回显过滤、通道级命令、输入身份路由与下行发送
+- **配置管理**：公共配置读取、agent 自身配置的引导与持久化、可继承配置与会话级配置的分层、配置查询与写入入口
+- **模型访问**：按 provider 名复用访问实例，解析有效模型参数，按协议类型分派调用，提供模型列表查询
+- **记忆访问**：记忆存储客户端、摘要记忆客户端、自我认知客户端
+- **系统提示词**：把自我认知数据拼装为系统提示词，无可用数据时回退默认提示词
+- **管理 API**：配置读写、通道启停、pipeline 生命周期与输入身份增删、Station 分组与子站启停
+- **station MCP 端点**：把全局 Station 作为 MCP 服务端对外暴露
 
 ## 功能流程
-
-### Epic 1 外部输入处理流程
-
-```
-通道适配层收到消息
-  → 按 msg_id 查所属 channel 的未回显 outgoing 集合
-    ├─ 命中 → 识别为自身发出的消息回显，丢弃（发送时已写入记忆）
-    └─ 未命中 → 通道适配层直接处理业务：
-        → 取 channel 配置并校验发送者是否在 admins 中
-        → channel 级默认命令（/admin、/unadmin，且在 admins 中）→ 默认层执行一次 → 回复发回来源通道；未命中继续
-        → 系统事件（群组变更 / 用户移除）→ 不进 pipeline
-        → 按 (channel_id、messenger_id、接收方 user_id) 查输入路由
-            ├─ 无路由 → 忽略
-            └─ 有路由 → 交给绑定的唯一 pipeline
-                → pipeline 命令检测执行 → 回复发回来源通道
-                → 普通消息 → 该 pipeline（记忆写入也在 pipeline 内）
-```
-
-### pipeline 执行流程（agentic loop）
-
-```
-普通消息 → pipeline 接入（合批：连续消息等待合批间隔后打包为一条 user 消息；摘要记忆：按 channel 独立攒批，先按当前 event locate 并按 case 拆分，各 case 以自身摘要与结尾原文重建自己的 session 后分别运行）
-  → AgentPipeline：自己持有当前 event 的 session（发送器 / 工具调用器 / 输出处理器，运行期直接读写该 session 上下文）
-  → 循环（上限防死循环）：
-      1. 发送器：上下文超阈值时先压缩或记忆回溯（reducer 一次重置会话）→ 拼接新消息 → 调用 LLM
-      2. 输出处理器：
-           ├─ 有 tool_calls → 逐个执行（全局 Station 经适配层）→ 结果作为工具消息追加 → 继续下一轮
-           └─ 有正文 → 追加助手消息 → 经回复通道发送（并写入记忆）
-  → 轮次结束：把本轮新增消息追加进会话上下文
-```
 
 ### 启动流程
 
 ```
-kissbot-agent 启动
-  → 配置管理器：加载公共配置的 agent 段，引导 nexus.json / station.json
-  → Station：读 station.json 构建全局单例（内置注册表 + 配置声明 + 唯一性校验 + 子 Station 连接信息）
-  → Nexus：装配运行时组件并注册单例
-  → 后台启动管理 API 服务与 station MCP 服务端
-  → Nexus 启动：遍历配置中的 pipeline 定义，每个 (agent, role) 装配一条 pipeline（pipeline 自行创建角色模式 session、设置系统提示词），并登记其输入身份
-  → 按输入身份取 channel 运行态：channel 首次创建时直接建立连接并进入重连循环（channel 配置不存在或未启用则创建失败，保留路由但不连接）；连接成功后绑定该 channel 上的全部输入身份
-  → 保持进程，等待通道回调驱动
+加载公共配置并注册配置管理单例
+  → 构建全局 Station 单例
+  → 装配 Nexus 运行时组件并注册单例
+  → 后台启动管理 API 与 station MCP 端点
+  → 遍历 pipeline 定义：装配 pipeline（未知实现跳过并告警）
+      → pipeline 建立初始会话（带记忆对话加载最近的话题会话，没有则新建）
+      → 按该 pipeline 的输入身份登记路由，按需建立通道连接
+  → 保持进程，等待通道回调
+```
+
+### 上行消息处理流程
+
+```
+通道回调收到消息
+  → 命中待回显集合：丢弃（自身发出的消息，发送时已写入记忆）
+  → 按通道配置确认来源可用
+      → 通道级命令（管理权限增删）：在通道层执行，回复来源通道
+      → 群组变更与用户移除：不进 pipeline
+      → 按输入身份查路由
+          ├─ 无路由：忽略
+          └─ 有路由：交给唯一一条 pipeline
+              → 命令：pipeline 识别执行，回复来源通道
+              → 普通消息：写入记忆（按 pipeline 类型决定时机与是否带 case）→ 合批 → 执行循环
+```
+
+### 执行循环流程
+
+```
+合批得到一批消息
+  → 【带记忆对话 角色模式】判断是否延续同一件事（不同则换用新话题会话）
+  → 取当前会话可用的工具定义
+  → 循环（轮次上限）：
+      1. 上下文超阈值时先处理（压缩 / 记忆回溯，均整体重置一次上下文）
+      2. 把本轮输入并入会话上下文，构建完整上下文，调用模型
+      3. 记录本次的 token 占用
+      4. 有工具调用：同时执行 → 结果作为工具消息回填 → 继续下一轮
+         无工具调用：本轮有正文时——带记忆的两条 pipeline 合并本次累积的思考与工具内容后发送到回复通道并写入记忆；无记忆对话不发送（只保留在本地上下文）→ 结束
+  → 无下一轮时，把本轮新增消息并入会话上下文
+```
+
+### 摘要记忆的批次与 case 执行流程
+
+```
+通道消息 → 按通道各自合批
+  → 批次按顺序逐个处理：
+      取该通道当前的记忆范围快照
+      → 调用摘要记忆定位本批消息所属 case（失败则丢弃本批）
+      → 按定位结果写入上行记录（携带所属 case）
+      → 按 case 分组并入待执行任务，投递 case 名，立即返回
+  → case 按顺序逐个执行（每个 case 一次执行）：
+      用该 case 的摘要 + 结尾若干条原文副本重建该 case 的会话上下文
+      → 把本次新增消息作为一条输入执行循环
+      → 回复携带该 case 写入记忆
+同一 case 在排队期间到达的消息并入同一次执行；执行期间到达的消息形成下一轮
 ```
 
 ### 上下文超长处理流程
 
 ```
-触发条件：本次请求前，上一次模型响应的 usage.total_tokens 超过
-          当前 session 模型 max_tokens_usage × 压缩阈值（max_tokens_usage = 0 表示不启用）
-  → 该 session 的消息发送器按配置执行一种处理（均只重置一次会话）：
-    ├─ 压缩：只读读取上下文（不应用待定系统消息、不触发系统提示词变更）并只从中弹出最后一条 assistant（含）及之后的消息
-    │        → 剩余部分 + 压缩指令 → LLM 总结 → 归档并重建为「压缩指令 + 总结 + 弹出的消息 + 新消息」
-    └─ 记忆回溯：从 memory-store 两次查询并集打包，拼接当前会话中最后一条 assistant（含）及之后的消息
-             → 归档清空 → 重建（新消息随后追加）
-  → 记录本次请求的 token 占用，供下次判定
+触发条件：上次模型响应的 token 占用超过「当前会话模型上限 × 压缩阈值」
+  → 压缩：取出最后一条助手回复之前的上下文 → 附压缩指令交给模型总结
+           → 用「压缩指令 + 总结 + 保留的尾部消息 + 本轮新消息」整体重置上下文
+  → 记忆回溯：按「最近若干条」与「时间窗内全部」取并集打包为对话消息
+           → 与当前会话中最后一条助手回复之后的尾部消息拼接后整体重置上下文
 ```
 
-### 事件模式流程
+### 事件与话题切换流程
 
 ```
-pipeline 新建 → 当前 event = 角色模式
-管理员在 channel 发送 /mode event [event-id] → channel 级命令未命中，按输入身份交给绑定的唯一 pipeline
-  → default / default_memory：释放当前 session，按目标 event 的 session_id（`{pipeline 前缀}-{agent}-{role}-event-{event}`）从本地缓存重新读取（空则仅系统提示词），记忆读写按「role-event」编码隔离
-  → memory_summary：只修改命令来源 channel（messenger + 接收方用户 + 群组）的 event 映射；case session 不变
-重新进入指定事件（/mode event <event-id>）→ 再次从该 event 的本地缓存读取 session / 使用该 channel 的映射
-回到角色模式（/mode role）→ default_memory 加载该 agent/role 修改时间最新的角色模式 session；memory_summary 修改来源 channel 的映射为角色模式
-进程重启后重新装配的 pipeline → 从角色模式开始
+pipeline 新建 → 当前事件为角色模式
+管理员发送切换事件命令
+  → 无记忆对话 / 带记忆对话：释放当前会话，按目标事件从本地保存的上下文恢复会话；切回角色模式时加载最近的话题会话（没有则新建）
+  → 摘要记忆对话：只修改命令来源 channel 的当前事件映射，case 会话不变
+带记忆对话在角色模式下判定为新话题
+  → 生成新的话题会话，整体继承当前会话配置，旧会话的上下文文件保留在磁盘上但不参与后续对话
 ```
 
-### 角色模式话题切换流程
+### 运行期管理流程
 
 ```
-角色模式下每批消息进入 run 前：
-  → 用当前完整会话 + 本批新消息询问 LLM 是否延续同一件事（与 load_memory 无关）
-  ├─ 同一件事 / 无法判定：沿用当前 session，本批消息正常追加
-  └─ 不同：自动生成新的 session_id（`…-topic-{uuid}`），整体继承当前 session 的配置与系统提示词，以空上下文承载本批消息
-          旧会话不归档、不保存版本，内容保留在旧缓存文件中但不参与后续对话
-```
-
-### pipeline 重建/重启加载
-
-```
-default_memory pipeline 构造（进程重启后重新装配）或 /mode role：
-  → 扫描该 agent/role 的话题 session（`…-topic-*`）
-  → 取消息缓存修改时间最新的一个加载；event session 不参与
-  ├─ 找到：沿用该 session 的上下文与已有配置，继续对话
-  └─ 未找到：新建话题 session `…-topic-{uuid}`（无话题的角色模式 session 不创建）
+管理员调用管理 API
+  → 写入 agent 配置
+  → 同步运行态：启停通道连接、装配或卸载 pipeline、绑定或解绑输入身份、增删 Station 分组与子站
+  → 变更对后续消息与后续模型请求生效，进行中的请求不受影响
 ```
 
 ## 关键设计
 
-### pipeline 与 session 的划分
+### 命令与批次串行
 
-- pipeline 由（agent_id、role_name）唯一标识，集合由配置中的 pipeline 定义决定，每个 (agent, role) 一条 pipeline；pipeline 的输入身份只决定消息来源，一个输入身份只能绑定一条 pipeline（先绑定者生效，其他跳过并记错误日志）；channel 不携带 agent/role
-- 当前 event 属于 pipeline：`default` / `default_memory` 切换 event 即切换 session；`memory_summary` 切换 event 即切换 locate 的记忆范围，case session 继续和 case 绑定
-- 记忆读写用 agent_id 直接定位（配置即 agent_id，无需二次解析），role 编码 = 角色名（角色模式）或「角色名-事件 ID」（事件模式）
-- 角色模式：记忆读写覆盖该角色下所有记录；事件模式：只覆盖当前事件的记录
-- session 是 pipeline 内部的执行资源：`default` / `default_memory` 内存中只保留当前 event 的一个 session（切换 event 时释放旧 session 并从本地缓存重新读取）；session id 以 pipeline 前缀区分（`default-` / `default-memory-` / `memory-summary-`），`default_memory` 的角色模式 session（首个 session 与话题切换）都带 `-topic-` 标记、event session 带 `-event-` 标记；摘要记忆 pipeline 每个 case 一个 session；session 上下文按各自缓存恢复与重建
-- 配置变更后装配新 pipeline 时，新 pipeline 从角色模式开始；`default_memory` 会加载该 agent/role 修改时间最新的角色模式 session，找不到时新建话题 session；`default` / `memory_summary` 按各自的固定规则恢复/构建
+无记忆对话与带记忆对话把命令与批次消息按到达顺序逐个处理，因此「切换会话」与「使用会话」不会并发。摘要记忆对话把批次处理与 case 执行分成两个阶段顺序进行：批次处理只做定位与登记待执行，case 执行按到达顺序逐个进行，同一 case 至多一个待执行任务。
 
-### 回复通道
+### 会话归属
 
-- 回复目标由 pipeline 的 out_channel 配置决定，经 `/bind-outgoing` 设置、`/unbind-outgoing` 清除；未配置 = 只存不回复
-- out_channel 存放在 pipeline 自己的 session 配置（`default_memory` 用当前 session；摘要记忆 pipeline 用基准 session）；agent/role 级配置只作为建立 session 时的初始值
-- 发送前校验目标 (channel_id、messenger_id、user_id) 仍被任意 pipeline 绑定在目标 channel 上；已无绑定（配置悬空）则清理配置并跳过发送
+会话由 pipeline 创建并持有，不单独注册到全局表，也不跨 pipeline 共享；pipeline 被丢弃时其会话随之释放。会话的上下文本体交给 LLM 基础库维护，pipeline 只决定会话的数量、标识与生命周期。
 
-### 管理命令说明
+### 记忆写入位置
 
-| 命令类别 | 归属 | 用途 |
-|---------|------|------|
-| 管理权限管理 | 默认层（channel 级，执行一次） | 添加或移除用户的管理权限 |
-| 模式切换 | 三条 pipeline | `/mode event [event-id]` / `/mode role` 修改 pipeline 的当前 event（`default` / `default_memory` 切换当前 session；`memory_summary` 只修改来源 channel 的 event 映射；不影响输入身份） |
-| 回复通道 | default_memory / memory_summary | 设置或清除 pipeline 的回复通道 |
-| 记忆读取开关 | default_memory | `/load-memory <on\|off>` 设置是否读取记忆（事件模式固定不读取） |
-| 模型切换 | 三条 pipeline | 切换当前 pipeline 使用的 provider/model（校验后生效；`default` / `default_memory` 写当前 event session） |
+上下行记录的构造与写入都在 pipeline 内完成：无记忆对话不写记忆；带记忆对话在收到消息时立即写入；摘要记忆对话在定位之后写入并携带 case，回复也携带 case。回复只在发送成功后才写入记忆，发送失败不产生下行记录。
 
-### 自身发送消息识别
+### 回复通道校验
 
-- agent 自己发出的消息（下行）经通道回显时，其 msg_id 与发送时响应返回的 msg_id 一致
-- 发送成功后把返回的 msg_id 记入对应 channel 的未回显集合（TTL 懒清理）
-- 收到消息时按 msg_id 查该集合：命中则移除并丢弃（发送时已写入记忆）；未命中则视为普通上行消息写入记忆（is_self=0）
+发送回复前先确认目标身份仍被某条 pipeline 绑定在该通道上；校验不通过时跳过发送，不写入记忆。
 
-### 自动上下文处理
+### 记忆读取的两种方式
 
-最近一次模型响应的 token 占用超过「当前 session 模型上限 × 压缩阈值」时，下次请求前由消息发送器触发处理：压缩（LLM 总结后重建上下文）或记忆回溯（从 memory-store 打包重建），随后更新占用记录，防止上下文无限增长。`default` / `default_memory` 的占用记录属于当前 session，切换 event 或角色模式话题切换后从 0 开始；当前 event 为事件模式时只用压缩；角色模式按 `load_memory` 选择压缩或回溯，并在每批 run 前判断是否同一件事，不同则换用新 session（继承当前配置、空上下文）开始。阈值为 0（或上限为 0）时不启用该机制。
+压缩与记忆回溯互斥，由当前事件模式与会话配置共同决定：事件模式下只压缩、不读记忆；角色模式下按会话的记忆读取开关选择。摘要记忆不使用这两种方式，其上下文完全由 case 摘要与原文重建。
 
-### 初始上下文构建
+### 配置分层
 
-- session 创建时从本地缓存全量恢复（缓存生命周期 = 当前上下文，超长即压缩，天然有界），不读取记忆
-- 系统提示词由 pipeline 重置（固定提示词 / memory-ego 自我认知 markdown），先存为待定；发送前 `build_context_full` 对比应用，需要变更才重写 `.sys.jsonl`（不产生版本）。生成版本时直接移动原 sys 文件，不使用待定值；恢复时从 sys 文件回到当前系统提示词
-- 运行时每次收到合批后的用户消息和 LLM 回复（含工具调用与结果）后增量追加到该 session 的上下文并同步写入缓存
+公共配置只读、由所有组件共享；agent 自身配置可修改并持久化，分为「agent/角色可继承配置」与「会话级配置」两层。建立会话时把可继承配置固化为会话级配置，运行期只读会话级配置，因此修改 agent/角色配置不会影响已有会话，新会话才使用新值。
 
-### 记忆写入
+### 管理边界的取舍
 
-- 上行消息（is_self=0）、下行回复（is_self=1，内容取发送响应）写入 memory-store；思考内容（reasoning_content / thinking 任一有值）与 tool call / tool result 作为下行通道记录的内嵌内容一起写入
-- 写入失败仅记录日志、不重试，避免阻塞后续操作
-
-### 通道连接管理
-
-- 启动时按 pipeline 的输入身份建立/复用连接：channel 存在且 enabled 时创建客户端并启动重连循环，连接成功后绑定该 channel 上的全部输入身份；每个连接独立运行，支持心跳与断线自动重连（重连后重新绑定身份）
-- 上行消息按 (channel_id、messenger_id、接收方 user_id) 交给绑定的唯一 pipeline；下行消息经 pipeline 的回复通道发送，并记录未回显 msg_id
-
-### 工具调用分派
-
-- LLM 返回 tool call 时解析工具名与参数
-- 工具定义按当前 session 的工具分组白名单聚合（平铺递归），转换为 LLM 侧工具定义后随每次 LLM 请求发送
-- 工具调用按工具名路由：本级原生实现在进程内执行，未命中查工具路由（工具名 → 直接子 station_id）经 MCP 调对应子；路由未命中返回错误结果
-- 工具结果作为工具消息追加回上下文，支持多轮嵌套（上限防死循环）
-- tool call 与 tool result 按在通道记录 `Multi` 中的先后顺序配对，经通道时间线可见工具调用锚点
-
-### LLM 调用重试
-
-- LLM 调用失败时按 provider/model 配置的重试次数与超时自动重试（指数退避），提高请求成功率
+管理 API 直接操作配置与运行态（通道启停、pipeline 增删、输入身份变更），而面向用户的日常操作（切换事件、设置回复通道、切换模型）走通道上的管理命令。这样管理界面不承担对话过程中的状态变更，命令也无需额外的界面支持。

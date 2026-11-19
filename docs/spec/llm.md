@@ -1,243 +1,62 @@
-# kissbot-llm 技术规格
+# LLM 基础库机制
 
-> 说明 kissbot-llm 的公共 API、配置结构、与模型服务商的接口约定与会话上下文持久化格式。
-> 组件设计与职责边界见 [kissbot-llm 组件设计](../design/components-design/kissbot-llm.md)。
+> 说明 provider 适配、调用重试与会话上下文的实现细节。设计意图见 `docs/design/components-design/kissbot-llm.md`。
 
-## 位置与依赖
+## 一、provider 与调用
 
-代码位置：`kissbot-llm/`。
+- 协议实现通过统一的 trait 暴露四个能力：按配置构造请求、发送请求、解析响应、查询模型列表。请求是可按引用复用的载体，重试时不会重建请求体。
+- 两个实现分别对应 OpenAI 兼容协议与 Anthropic 协议；构造入口由调用方按 provider 类型选择，组件本身不做分派。
+- 调用入口封装重试：总尝试次数 = 重试次数 + 1；两次尝试之间按 `2^n` 秒退避（1、2、4…）；未知 provider 类型这类永久性错误不重试；用尽后返回最后一次错误。
+- 超时是单次 HTTP 请求级，不包含重试与退避的总时间。调用方按 provider 默认值 ← 单模型覆盖合成有效参数（模型上下文上限、超时、重试次数）。
+- 模型列表查询使用独立端点与固定 30 秒超时，不重试；解析失败或缺字段时返回空列表。
+- 每个协议实现自带 HTTP 客户端；实例复用由调用方按 provider 名缓存（同名共享客户端）。
 
-| 依赖 | 用途 |
-|------|------|
-| kissbot-api | 配置继承 merge 约定（`MergeBy` / `MergeSelf` / `MergeEffectiveConfig`） |
-| kai-file | 会话缓存回读（`LineReader`） |
-| tokio / serde / serde_json / reqwest / chrono / thiserror / async-trait | 异步运行时、序列化、HTTP、时间戳、错误、异步 trait |
+## 二、两种协议的差异
 
-不依赖 kissbot-mcp / kissbot-agent / kissbot-channel / kissbot-memory。
+| 维度 | OpenAI 兼容 | Anthropic |
+|------|-------------|-----------|
+| 认证 | Bearer 形式的 API key | API key + 版本头 |
+| 请求构造 | 强类型请求结构 | 直接拼装 JSON |
+| 系统消息 | 作为消息序列中的一条 | 提取为顶层字段 |
+| 工具消息 | 作为消息序列的一部分 | 不发送（工具消息被丢弃） |
+| 工具定义与工具调用 | 支持 | 不支持：不发送工具定义，也不解析工具调用 |
+| 生成参数 | 思考开关仅识别开启/关闭两种取值；努力程度原样透传 | 思考开关原样透传；努力程度映射为输出配置 |
+| 输出上限 | 未配置时不发送 | 未配置时使用内部固定值 |
+| 正文 | 取首条候选的正文 | 取第一个文本块 |
+| 思考内容 | 取响应中的思考字段 | 取第一个思考块 |
+| token 占用 | 取用量字段，缺失按 0 | 固定 0，因此不会触发上下文压缩 |
+| 结束原因 | 取结束原因字段 | 取停止原因字段 |
 
-## 公共 API
+## 三、响应归一化
 
-```rust
-// ===== provider =====
-pub trait Provider: Send + Sync {
-    type Request;
-    fn build_request(&self, llm_cfg: &EffectiveLLMConfig, messages: Vec<Message>, tools: &Vec<Arc<ToolConfig>>) -> Self::Request;
-    async fn send_request(&self, request: &Self::Request, timeout: u64) -> Result<Value>;
-    fn parse_response(&self, data: Value) -> ModelResponse;
-    async fn list_models(&self) -> Result<Vec<ArcStr>>;
-}
+响应同时保留 API 原始值与解析后的语义字段：
 
-/// 按 provider 配置构造实现（调用方按 provider_type 分派）
-pub fn create_openai_provider(provider_config: &ProviderConfig) -> OpenAiProvider;
-pub fn create_anthropic_provider(provider_config: &ProviderConfig) -> AnthropicProvider;
+- 正文保留原始值，并解析出剥离开头 `<think>` 标签后的正文。标签规则：只识别正文开头（允许前导空白）、必须闭合；未闭合或不在开头时正文原样返回，思考内容为空；空标签得到空串。
+- 思考内容有两条独立来源：API 的思考字段与正文开头的 `<think>` 标签。两者互不覆盖，可以同时存在。
+- 工具调用保留原始数组供回填上下文，同时解析出结构化的调用（标识、名称、参数）；参数在执行工具后被回填，结果与错误由工具执行侧填写。
+- 回填上下文时使用原始值（正文、思考、工具调用），保证再次请求时与 API 的报文形状一致。
 
-/// 带重试调用：retry_count / timeout_secs 取自有效模型配置；永久性错误不重试
-pub async fn call_with_retry<P: Provider>(
-    provider: &P,
-    llm_cfg: &EffectiveLLMConfig,
-    pm_cfg: &EffectiveModelConfig,
-    messages: Vec<Message>,
-    tools: &Vec<Arc<ToolConfig>>,
-) -> Result<ModelResponse>;
+## 四、会话上下文
 
-// ===== session =====
-pub struct SessionContext { /* 私有 */ }
-impl SessionContext {
-    pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
-    /// 只保存待定值（不写文件、不会失败）
-    pub fn set_system_message(&mut self, content: ArcStr);
-    /// 构建完整上下文时应用待定值：需要变更则重写 sys 文件（不归档、不动消息）
-    pub async fn apply_pending_system(&mut self) -> Result<()>;
-    pub async fn append(&mut self, messages: Vec<Message>) -> Result<()>;
-    pub async fn recover_from_cache(&mut self) -> Result<()>;
-    /// 归档当前缓存为版本并清空缓存/内存（append 由 Session 封装）
-    pub async fn archive_and_clear(&mut self) -> Result<()>;
-    pub async fn swap_version_with_cache(&mut self, version_suffix: &str) -> Result<()>;
-    pub fn build(&self) -> Vec<Message>;
-}
+- 会话是「内存消息 + 本地缓存 + 版本」的组合，外部通过会话标识访问；标识必须是文件名安全的字符串，组件不解释其含义。
+- 缓存目录下每个会话两个文件：系统提示词文件（单行系统消息，没有系统提示词时不存在）与消息文件（每行一条消息，只追加、从不截断）；版本在 `versions` 子目录下，命名由会话标识、时间戳后缀与文件类型组成。
+- 恢复：分别回读两个文件，消息正序全量读取；单个文件缺失视为该部分为空；无法解析的行跳过，不整体失败。
+- 系统提示词延迟应用：设置只记录待定值（不写文件、不会失败，多次设置保留最后一次）；构建完整上下文时与当前值比对，不一致才重写系统提示词文件，不产生版本、不改动消息文件。只读构建上下文不应用待定值。
+- 归档与清空成对执行：内存无消息时幂等返回、不产生版本；版本后缀为本地时间戳，重名时等待一秒重试；当前缓存文件直接移动为版本文件（不重新写入，版本使用磁盘上原有的系统提示词，不应用待定值；原文件不存在则跳过）；随后删除残留缓存并清空内存（保留系统提示词）。
+- 版本互换：先校验后缀（非空且只含字母、数字与下划线，否则按「版本不存在」处理而不报错）；再把当前缓存存成新版本；然后把目标版本的两个文件移动进当前缓存（目标版本被消耗）；最后清空待定值并重新读取内存。目标版本不存在时，当前缓存已存成新版本，会话变为空上下文。
+- 锁：每个会话一把异步读写锁，读路径可并发、写路径互斥；互换版本需要独占引用。组件没有跨进程文件锁，同一会话标识在同一时刻只应由一个进程使用。
+- 一致性边界：写入后不显式刷盘，掉电可能丢失尾部；归档是两个文件各自移动，非原子；版本只增不减，没有清理机制。
 
-pub struct Session { pub context: RwLock<SessionContext> }  // tokio::sync::RwLock（异步读写锁）
-impl Session {
-    pub fn new(data_dir: &str, session_id: ArcStr) -> Self;
-    pub async fn recover_from_cache(&self) -> Result<()>;
-    /// 只读构建：当前系统消息 + 内存消息（不应用待定、不写文件）
-    pub async fn build_context(&self) -> Vec<Message>;
-    /// 发送前入口：应用待定系统消息后构建（待定变更时重写 sys 文件）
-    pub async fn build_context_full(&self) -> Vec<Message>;
-    pub async fn context_append(&self, messages: Vec<Message>) -> Result<()>;
-    /// 只读访问内存消息（不含系统消息）：闭包内只读，上下文不变
-    pub async fn context_read<R>(&self, f: impl FnOnce(&Vec<Message>) -> R) -> R;
-    pub async fn context_archive_and_clear_cache_and_reset_messages(
-        &self, new_messages: Vec<Message>,
-    ) -> Result<()>;
-    pub async fn context_swap_version_with_cache(&self, version_suffix: &str) -> Result<()>;
-    /// 只保存待定值（不写文件、不会失败）
-    pub async fn set_system_message(&self, content: ArcStr);
-}
-```
+## 五、配置合成
 
-约定：
+- 模型参数：内置默认值 ← provider 默认值 ← 单模型覆盖。上下文上限是必填项且不参与回退（后写覆盖前写）；超时与重试次数只在显式配置时覆盖。
+- 请求参数：默认可继承形态，每个可置空字段带「是否显式配置」标志，用于区分「未配置（继续继承）」与「显式置空（覆盖为空值）」。合并只覆盖显式配置的字段。
+- 有效形态是运行期合成结果，不持久化；配置的存储与分级由调用方负责。
 
-- `Session.context` 用 tokio 的异步读写锁：`build_context` / `context_read` 取读锁（可并发），其余上下文方法取写锁。
-- `build_context` 只读、不应用待定系统消息；`build_context_full` 是发送前入口，对比待定值与当前值，不一致时重写 sys 文件。
-- `set_system_message` 只写待定值（同步、不会失败）；多次 set 保留最近一次。
-- `apply_pending_system` / `build_context_full` 应用待定值时不归档、不改动消息文件。
-- `archive_and_clear` 把旧缓存文件移动到版本并清空缓存/内存；`append` 仍由 SessionContext 提供，调用位置在 Session 的归档重建方法中。
-- `Session::context_archive_and_clear_cache_and_reset_messages` 先调用 `archive_and_clear`，再把 `new_messages` 追加成当前上下文。
-- `call_with_retry` 的失败重试为指数退避（第 n 次失败后等待 `2^n` 秒），`retry_count = 0` 表示不重试。
-- 未知 `provider_type` 由调用方分派时判定；组件内不会出现该分支。
-- `create_*_provider` 每次返回新实例（含独立 HTTP 客户端），组件不缓存、不共享客户端；按名复用（工厂去重）由调用方完成（agent 中为 ProviderManager 的 `AsyncCacheFactory`）。
-- `session_id` 由调用方编码，须为文件名安全字符串；组件不解释其含义。
-- `context_read` 只读暴露内存消息（不含系统消息）：不写缓存、不改变上下文。
+## 六、相关代码
 
-## 配置结构
-
-```jsonc
-// provider 配置：连接信息 + 默认模型参数 + 单模型覆盖
-{
-  "provider_config": {
-    "provider_type": "openai",              // "openai" | "anthropic"
-    "base_url": "https://api.deepseek.com",
-    "api_key": "sk-..."
-  },
-  "default_model_config": { "max_tokens_usage": 128000, "timeout_secs": 60, "retry_count": 3 },
-  "model_configs": {
-    "deepseek-flash": { "max_tokens_usage": 131072, "timeout_secs": 30 }
-  }
-}
-
-// LLM 配置（可继承形态）：provider + model + 生成参数
-{
-  "provider": "deepseek",
-  "model": "deepseek-flash",
-  "max_tokens": 4096, "has_max_tokens": true,
-  "temperature": 0.7, "has_temperature": true,
-  "thinking": "enabled", "has_thinking": true,
-  "reasoning_effort": "low", "has_reasoning_effort": true
-}
-```
-
-| 合成 | 继承链 | 结果 |
-|------|--------|------|
-| 模型参数 | 全局常量（timeout 60s / retry 3）← provider 默认 ← model 覆盖 | `EffectiveModelConfig`（provider_config / max_tokens_usage / timeout_secs / retry_count） |
-| LLM 参数 | 默认 ← 各级覆盖（调用方决定层数）← session 覆盖 | `EffectiveLLMConfig`（provider / model / max_tokens / temperature / thinking / reasoning_effort） |
-
-- `has_*` 标志区分「未配置」与「显式置空」：`set_*` 置 `has_* = true`（取值可为 null），`unset_*` 置回 false；合并时只覆盖 `has_*` 为 true 的字段。
-- 模型未在 `model_configs` 配置时用 provider 默认值合成。
-- 配置的存储、落盘与 agent → role → session 的配置组合由调用方实现（agent 中 ConfigManager 负责两级存储，pipeline 在建立 session 时固化，见 [kissbot-agent-nexus 技术规格](agent-nexus.md)）。
-
-## LLM API 适配
-
-### 支持的提供商
-
-| provider_type | 兼容 API | 请求路径 | 模型列表 |
-|---------------|----------|----------|----------|
-| "openai" | OpenAI Chat Completions | `POST {base_url}/chat/completions` | `GET {base_url}/models` |
-| "anthropic" | Anthropic Messages | `POST {base_url}/v1/messages` | `GET {base_url}/v1/models` |
-
-### 请求参数（EffectiveLLMConfig）
-
-```jsonc
-{
-  "model": "deepseek-flash",
-  "messages": [ { "role": "system", "content": "…" }, { "role": "user", "content": "…" } ],
-  "max_tokens": 4096,          // 未配置时 anthropic 回退 65535
-  "temperature": 0.7,
-  "thinking": { "type": "enabled" },   // openai：映射为协议枚举；anthropic：原样 { "type": … }
-  "reasoning_effort": "low",           // openai：原样字段；anthropic：output_config.effort
-  "stream": false                      // 固定非流式
-}
-```
-
-- messages 直接使用会话上下文的 `Message` 序列（OpenAI 兼容格式）；anthropic 分支把 system 提取为顶层 `system` 字段、丢弃 Tool 消息（本轮不支持工具消息）
-- tools 非空时按 provider 协议包装（openai：`{type:"function", function:{name,description,parameters}}`）；为空则不携带该字段
-- openai 的 `thinking` 仅识别 `enabled` / `disabled`，其它取值不发送该字段
-
-### 响应归一化（ModelResponse）
-
-| 字段 | 说明 |
-|------|------|
-| raw_content / content | API 原始 content 与剥离 `<think>…</think>` 后的正文 |
-| raw_reasoning_content / reasoning_content | API 思考字段原值 / 解析值（openai `reasoning_content`；anthropic thinking block） |
-| thinking | 正文中 `<think>` 标签内容（与 reasoning_content 相互独立） |
-| raw_tool_calls / tool_calls | API 原始 tool_calls（原样回传上下文）/ 解析出的 `ToolCall` 列表 |
-| finish_reason | 停止原因（当前无消费方） |
-| total_tokens | openai：`usage.total_tokens`（缺省 0）；anthropic：固定 0 |
-
-调用失败按 `retry_count` 指数退避重试；未知 `provider_type` 由调用方在分派处返回错误（不重试）。
-
-## 会话上下文缓存与版本
-
-`SessionContext::new(data_dir, session_id)` 的 `data_dir` 就是缓存所在目录（不再额外拼 `context`）：
-
-| 项 | 约定 |
-|----|------|
-| 系统提示词文件 | `<data_dir>/<session_id>.sys.jsonl`，单行 System Message JSON；没有系统提示词时不创建该文件 |
-| 消息文件 | `<data_dir>/<session_id>.msgs.jsonl`，每行一条 Message（JSON），追加写、不截断 |
-| 恢复 | sys 与 msgs 分别回读；msgs 正序全量读取；崩溃一致性清理——丢弃末尾悬挂的 assistant tool_calls 行与开头的孤立 Tool 行；文件不存在视为对应内容为空 |
-| 版本 | `<data_dir>/versions/<session_id>-<后缀>.sys.jsonl` 与 `<session_id>-<后缀>.msgs.jsonl`：当前缓存的两个文件直接移动成版本（不重新写入，sys 使用原先的系统提示词、不应用待定值；原 sys 不存在时版本也不写 sys） |
-| 后缀 | 归档自动生成：本地时间 `%Y%m%d%H%M%S`；重名时等一秒后重试（时间戳前进），不使用 `_N` 后缀；互换仍按调用方给的后缀定位版本 |
-| 互换 | `swap_version_with_cache` 只做 rename：先校验后缀（不合法按版本不存在处理，不报错）；当前缓存 msgs 非空 → 先把当前缓存移动成一个新版本（自动后缀），再把目标版本移入当前缓存；msgs 为空 → 丢弃当前缓存文件（含只有 sys 的情况），直接移入目标版本；目标版本不存在 → 当前缓存非空时仍先存成新版本，然后得到空上下文 |
-
-- `set_system_message` 只保存待定值；`build_context_full` 发现待定值与当前不一致时重写 sys 文件：不保存当前版本、不清空消息、不改动 msgs 文件。
-- 归档在移动完版本后，用 `new_messages` 新建当前上下文；归档与清空缓存文件配对执行；内存为空时不产生版本文件（仅有系统消息不归档）。
-- 没有系统提示词文件时不写入空 sys 文件、不报错；版本/互换允许 sys 文件缺失。
-- 归档后缀自动生成；互换时由调用方指定要恢复的版本后缀。生成版本时即使有待定系统提示词，版本也使用磁盘上原先的 sys 文件。
-- 版本是只读快照：复用旧 session 时用互换把版本换回当前缓存，后续内容变更只发生在当前缓存。
-- 旧的 `context-history` 与单文件缓存不兼容。
-- 互换后目标版本内容成为当前内存与当前系统消息；当前缓存原有的非空内容会存成一个新版本（目标版本移入后即被消耗），待定系统消息清空。
-- agent 的 session_id 编码（`<agent_id>-<role_name>[-<event>]`）与 pipeline 的 session 持有方式见 [kissbot-agent-nexus 技术规格](agent-nexus.md)。
-
-## 数据结构定义
-
-```rust
-// 上下文消息（OpenAI 兼容，序列化时 role 为平级标签）
-enum Message {
-    System { content: ArcStr },
-    User { content: ArcStr },
-    Assistant { content: Value, reasoning_content: Value, tool_calls: Value },  // 后三者原样透传 API 值
-    Tool { tool_call_id: ArcStr, content: ArcStr },                    // 无 name 字段
-}
-
-// 工具调用：调用方交互层结构（LLM 侧 tool call 与工具结果回填）；
-// 工具宿主内部使用自己的工具类型，由调用方在边界转换
-// arguments 执行前、result / error 执行后（三者均为 JSON）；
-// 只承载 MCP content 字段转成的 Value（内容块数组）：成功进 result、失败进 error（result 留空）；
-// structuredContent 仅用于工具宿主内部处理，不进入本结构
-struct ToolData { arguments: Value, result: Value, error: Value }
-struct ToolCall { id: ArcStr, name: ArcStr, data: ToolData }
-
-// LLM 请求中的工具定义（OpenAI tools[].function 形状）；与 MCP 工具的互转在调用方
-struct ToolConfig { name: ArcStr, description: ArcStr, parameters: Arc<Value> }
-
-// 模型响应（归一化）
-struct ModelResponse {
-    raw_content: Value, content: Option<ArcStr>, thinking: Option<ArcStr>,
-    raw_reasoning_content: Value, reasoning_content: Option<ArcStr>,
-    raw_tool_calls: Value, tool_calls: Option<Vec<ToolCall>>,
-    finish_reason: Option<ArcStr>, total_tokens: u64,
-}
-```
-
-## 错误类型
-
-```rust
-enum Error {
-    ModelApiError(ArcStr),                              // 服务商返回非成功状态或调用失败
-    ModelProviderNotFound(ArcStr, ArcStr),              // (provider 名, model 名)
-    ModelProviderNotSupported(ArcStr),                  // 未知 provider_type
-    IoError(std::io::Error),
-    ReqwestError(reqwest::Error),
-    JsonError(serde_json::Error),
-    FileError(kai_file::Error),
-    InternalError(ArcStr),
-}
-pub type Result<T> = std::result::Result<T, Error>;
-```
-
-调用方在自己的错误类型上做逐变体映射（不共享同一枚举），以保持各自错误表面稳定。
-
-## 验证
-
-- 单元测试：`cd kissbot-llm && cargo test`（消息/工具结构序列化、两种协议的请求构造与响应归一化、重试与永久性错误、provider/metric 参数合成、上下文缓存与归档）。
-- 使用方 kissbot-agent：`cd kissbot-agent && cargo test`（ProviderManager 的工厂去重与 provider_type 分派、有效配置解析、按 session_id 的会话去重与清理，配置模板 schema 校验）。
+- 协议实现：`kissbot-llm/src/provider.rs`
+- 会话与版本：`kissbot-llm/src/session.rs`
+- 配置结构：`kissbot-llm/src/config.rs`
+- 消息与响应结构：`kissbot-llm/src/types.rs`
+- 合并约定：`kissbot-api/src/common.rs`

@@ -873,17 +873,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kissbot-memory-struct"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "kissbot-api",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "kissbot-memory-struct-summary"
 version = "0.1.0"
 dependencies = [
@@ -901,7 +890,6 @@ dependencies = [
  "kissbot-config",
  "kissbot-llm",
  "kissbot-memory",
- "kissbot-memory-struct",
  "kissbot-security",
  "serde",
  "serde_json",

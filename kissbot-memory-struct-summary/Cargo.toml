@@ -22,7 +22,6 @@ kai-file = { path = "../kai-rs/kai-file" }
 kai-ws = { path = "../kai-rs/kai-ws" }
 kissbot-api = { path = "../kissbot-api" }
 kissbot-memory = { path = "../kissbot-memory" }
-kissbot-memory-struct = { path = "../kissbot-memory-struct" }
 kissbot-llm = { path = "../kissbot-llm" }
 kissbot-security = { path = "../kissbot-security" }
 

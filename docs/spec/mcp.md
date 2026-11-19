@@ -1,312 +1,78 @@
-# kissbot-mcp 技术规格
+# MCP 基础库机制
 
-> 说明 kissbot-mcp 的实现范围、消息结构、方法字段、kissbot 扩展、HTTP 传输与客户端/服务端 API 约定。
-> 协议依据 MCP 2026-07-28；组件设计见 [kissbot-mcp 组件设计](../design/components-design/kissbot-mcp.md)。
+> 说明 kissbot-mcp 的协议约束、扩展与传输实现。设计意图见 `docs/design/components-design/kissbot-mcp.md`。
 
-## 实现范围
+## 一、实现范围
 
-- 协议版本：`PROTOCOL_VERSION = "2026-07-28"`
-- JSON-RPC 版本：`JSONRPC_VERSION = "2.0"`（请求与响应构造、请求校验都用该常量）
-- 实现的方法：
+- 协议版本：MCP `2026-07-28`，JSON-RPC 2.0；不依赖官方 SDK。
+- 方法：服务发现、工具列表、工具调用。其余方法一律按「方法不存在」处理。
+- 传输：Streamable HTTP 的最小实现——单端点、每请求一个 POST、响应为单个 JSON 对象；不支持流式响应、GET 端点与协议级会话。
 
-| 方法 | 常量 | 说明 |
-|------|------|------|
-| `server/discover` | `METHOD_DISCOVER` | 查询服务端支持的协议版本、能力与身份 |
-| `tools/list` | `METHOD_TOOLS_LIST` | 查询工具定义（工具定义可携带 kissbot 分组） |
-| `tools/call` | `METHOD_TOOLS_CALL` | 调用工具 |
+## 二、协议约束
 
-`SUPPORTED_METHODS` 为上述三个方法名的数组（供文档与断言使用）。
+- 请求标识不得为空；响应中的请求标识可省略（请求体无法解析时）。
+- 结果响应必须携带完成状态：`complete` 或 `input_required`；本实现只产出 `complete`，缺省视为完成，未知取值由客户端按非法处理。
+- 错误对象包含错误码、文案与可选数据；错误响应与结果响应互斥。
+- 错误码使用 JSON-RPC 标准码（解析失败、请求非法、方法不存在、参数非法、内部错误）与 MCP 保留码（头体不一致、缺少客户端能力、协议版本不受支持，后者在数据中携带支持列表）。
 
-## JSON-RPC 消息
+## 三、元信息与扩展键
 
-消息遵循 JSON-RPC 2.0，并按 MCP 规范作两点约束：请求 id 不得为 null；结果响应必须携带 `resultType`。
+- 请求参数中的元信息必填：协议版本与客户端能力缺一不可；响应与工具定义中的元信息可选。
+- 规范保留键使用 `io.modelcontextprotocol/` 前缀（协议版本、客户端身份、客户端能力、服务端身份）；kissbot 扩展使用 `kissbot/` 前缀。
+- 服务端在结果中统一填充完成状态与自身身份；服务发现结果还会用服务端支持列表覆盖版本列表，且仅当服务端显式配置了使用说明时才覆盖处理器给出的说明。
+- 第三方服务端声明的其它能力（资源、提示、日志等）解析时不报错，但被丢弃、不保留。
 
-```jsonc
-// 请求
-{ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": { } }
+## 四、三个方法的语义
 
-// 结果响应
-{ "jsonrpc": "2.0", "id": 1, "result": { "resultType": "complete" } }
+- **服务发现**：返回支持的协议版本列表、能力、可选使用说明与自身身份。能力只建模工具能力（不发送列表变更通知）与 kissbot 扩展能力（是否支持级联祖先链）。`kissbot` 段缺失表示对端未声明该扩展，解析仍正常。
+- **工具列表**：返回工具定义列表与可选分页游标（本实现不产出游标）；每个工具定义包含名称、描述、入参 schema 与可选元信息，kissbot 分组写在工具元信息中。
+- **工具调用**：入参包含工具名、参数与元信息；结果包含内容块数组、可选结构化内容、失败标志与元信息。内容块由工具实现决定，服务端原样回传，不解释、不合成、不改写。
 
-// 错误响应
-{ "jsonrpc": "2.0", "id": 1, "error": { "code": -32602, "message": "…", "data": { } } }
-```
+## 五、分组扩展
 
-| 项 | 约定 |
-|----|------|
-| `id` | 字符串或整数，不得为 null；无法从请求体读取时错误响应省略该字段 |
-| `resultType` | `complete`（请求已完成）或 `input_required`（需要补充输入）；本实现只产出 `complete`，缺省视为 `complete`，未知值由客户端按非法处理 |
-| `error.data` | 可选；协议版本协商失败时携带 `supportedVersions` |
-| 响应身份 | 结果响应中省略 `error`，错误响应中省略 `result` |
+- 分组是工具的固有属性，随工具定义的元信息携带（使用 kissbot 前缀的分组键），重复设置会覆盖。
+- 归因不需要能力声明：携带即归因于该分组，未携带则由调用方约定默认分组。
+- 服务端不在工具列表上做分组过滤。
 
-## `_meta`
+## 六、级联与防环
 
-`_meta` 的必填性随位置不同：**请求 `params._meta` 必填**（规范 `RequestParams._meta` 无 `?`），缺省即 `-32602`；**结果 `result._meta` 可选**；**工具 `Tool._meta` 可选**。对应到实现：请求参数结构的 `meta` 字段既不是 `Option` 也不带 `#[serde(default)]`，缺 `_meta` 直接反序列化失败；结果与工具侧用 `Option` / `#[serde(default)]`。
+- 请求元信息中的祖先链表示「根到当前父节点」的站点标识列表，空链不序列化。
+- 客户端向子站发起工具列表或调用前，把自身站点标识追加到链尾。
+- 任一层发现自身标识已在链中，即返回协议级错误，错误码为 kissbot 私有码 `-50001`（位于 MCP 保留区间之外），消息中带站点标识。
+- 祖先链是纯提示信息：不理解该扩展的对端会把它当作未知元信息键忽略。
 
-### 请求 `_meta`（`params._meta`）
+## 七、HTTP 传输
 
-下表「必填」列指该键在 `_meta` 内部的必填性；`protocolVersion` 与 `clientCapabilities` 必填，缺任一同样 `-32602`。
+- 端点路径可配置，默认使用约定的固定路径。路由不含认证，认证由调用方以中间件叠加。
+- 校验顺序固定，前一步失败即返回：
+  1. 来源校验：配置了白名单时命中放行；未配置时只放行无来源头或本机回环来源；其余返回拒绝。
+  2. 解析请求体，失败返回解析错误（不回带请求标识）。
+  3. 取出请求标识（取到则后续错误响应回带）。
+  4. 校验收到的必需请求头；随后校验请求体中的方法。
+  5. 校验方法头与请求体一致；协议版本头与请求体一致，且版本在支持列表内。
+  6. 调用时校验工具名头与请求体一致。
+  7. 反序列化为协议请求后分发。
+- 状态码映射：方法不存在映射为未找到；解析、头与元信息、版本问题映射为请求错误；来源被拒映射为拒绝；其余（含工具执行失败与级联成环）都返回成功状态码，响应体为协议响应。
+- 客户端每次请求自动填充元信息（协议版本、客户端身份、空能力、祖先链）与必需的请求头，请求标识从 1 自增；一个客户端一个 HTTP 客户端（构造时设定总超时），不重试。
+- 客户端固定使用本实现的协议版本（请求头与请求元信息一致），不查询对端能力、不做版本协商；请求声明可接受事件流，但实现只按单个 JSON 对象解析响应，不处理事件流响应与会话标识。
+- 客户端要求对端的工具定义包含名称与入参 schema；工具结果的内容块类型限于本库支持的类型，未知类型会使整次响应解析失败。
 
-| 键 | 必填 | 类型 | 说明 |
-|----|------|------|------|
-| `io.modelcontextprotocol/protocolVersion` | 是 | string | 本请求使用的协议版本 |
-| `io.modelcontextprotocol/clientInfo` | 否 | object | 客户端身份（`name` / `version`） |
-| `io.modelcontextprotocol/clientCapabilities` | 是 | object | 客户端能力（可为空对象） |
-| `kissbot/ancestors` | 否 | string[] | station 级联祖先链（根 → 当前父节点的 station_id 列表；未设置时省略该键） |
+## 八、客户端错误分类
 
-### 响应 `_meta`
-
-响应 `_meta` 可选，且没有必填键（`serverInfo` 亦为可选，由 `McpServer` 统一填充）。
-
-| 键 | 类型 | 说明 |
-|----|------|------|
-| `io.modelcontextprotocol/serverInfo` | object | 服务端身份（`name` / `version`），由 `McpServer` 统一填充 |
-
-`io.modelcontextprotocol/*` 为 MCP 规范保留键；`kissbot/` 为 kissbot 扩展前缀（非规范保留前缀，键名符合规范的 `_meta` 命名规则）。kissbot 分组不放在响应 `_meta`，而是随各工具定义携带（见 `tools/list` 的 `Tool._meta`）。
-
-## server/discover
-
-请求参数：仅 `_meta`。
-
-响应 `result`：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `resultType` | string | 固定 `complete` |
-| `supportedVersions` | string[] | 服务端支持的协议版本列表 |
-| `capabilities` | object | 能力集合：`tools`（`listChanged` 固定为 `false`）与 `kissbot`（kissbot 扩展能力，见下）；未建模的其他能力项（如 `resources` / `prompts`）解析时忽略、不保留 |
-| `instructions` | string? | 自然语言使用说明（服务端未显式配置时由业务处理器给出） |
-| `_meta` | object | 含 `serverInfo` |
-
-`capabilities.kissbot`（kissbot 扩展能力声明，第三方通用 MCP 服务端没有该段）：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `ancestors` | bool | 支持请求 `_meta["kissbot/ancestors"]` 级联祖先链与自环检测 |
-
-`DiscoverResult` 提供 `supports_ancestors()` / `supports_kissbot()` 读取该声明；
-`DiscoverResult::new(server_info, instructions)` 构造的结果默认声明该扩展（`capabilities.kissbot = KissbotCapability::full()`）；读取侧 `capabilities.kissbot` 为 `Option`，对端不含该段时解析为「未声明」（第三方通用 MCP 服务端即如此）。
-声明只描述对端是否理解级联扩展键；分组归因不需要声明（工具定义带 `kissbot/group` 即归因于该组，未携带则回落调用方给的默认分组），第三方服务端因此无需声明也能接入。
-
-```jsonc
-{
-  "jsonrpc": "2.0", "id": "discover-1",
-  "result": {
-    "resultType": "complete",
-    "supportedVersions": ["2026-07-28"],
-    "capabilities": {
-      "tools": { "listChanged": false },
-      "kissbot": { "ancestors": true }
-    },
-    "instructions": "…",
-    "_meta": { "io.modelcontextprotocol/serverInfo": { "name": "…", "version": "…" } }
-  }
-}
-```
-
-## tools/list
-
-请求参数：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `cursor` | string? | 分页游标（本实现不产出 `nextCursor`） |
-| `_meta` | object | 请求元数据（见「请求 `_meta`」） |
-
-`params` 顶层保持规范形状（仅 `cursor` 与 `_meta`），kissbot 扩展一律走 `_meta`。
-
-响应 `result`：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `resultType` | string | 固定 `complete` |
-| `tools` | Tool[] | 工具定义列表 |
-| `nextCursor` | string? | 本实现不产出 |
-| `_meta` | object | 含 `serverInfo`；分组随各工具定义的 `_meta` 携带 |
-
-`Tool`：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string | 工具名（同一服务端内唯一） |
-| `title` | string? | 展示名（可选，缺省不序列化） |
-| `description` | string | 工具描述 |
-| `inputSchema` | object | 参数 JSON Schema |
-| `outputSchema` | object? | 输出 JSON Schema（可选，缺省不序列化） |
-| `annotations` | object? | 工具行为注解（可选，缺省不序列化） |
-| `_meta` | object? | 工具元数据（可选，缺省不序列化）；kissbot 分组写在 `_meta["kissbot/group"]` |
-
-分组是工具的固有属性，随工具定义携带，服务端不在 `tools/list` 上做分组过滤。读取辅助：`Tool::group()`；写入辅助：`Tool::set_group()`（就地设置/覆盖 `_meta["kissbot/group"]`）。
-
-```jsonc
-{
-  "jsonrpc": "2.0", "id": 1,
-  "params": { "_meta": {
-    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-    "io.modelcontextprotocol/clientCapabilities": {}
-  } },
-  "result": {
-    "resultType": "complete",
-    "tools": [
-      { "name": "read", "description": "…",
-        "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] },
-        "_meta": { "kissbot/group": "filesystem" } }
-    ],
-    "_meta": {
-      "io.modelcontextprotocol/serverInfo": { "name": "kissbot-station", "version": "0.1.0" }
-    }
-  }
-}
-```
-
-## tools/call
-
-请求参数：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string | 工具名 |
-| `arguments` | object | 调用参数 |
-| `_meta` | object | 请求元数据 |
-
-响应 `result`：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `resultType` | string | 固定 `complete` |
-| `content` | Content[] | 内容块数组（规范必填，可含多个块） |
-| `structuredContent` | any? | 结构化结果（规范可选；为 null 时不序列化） |
-| `isError` | bool | 工具执行是否失败（缺省 `false`） |
-| `_meta` | object | 含 `serverInfo` |
-
-`Content` 是按 `type` 区分的联合类型（`type` 即枚举变体，内部标签序列化），覆盖规范全部 ContentBlock 变体：
-
-| 变体 | 字段 |
+| 变体 | 含义 |
 |------|------|
-| `text` | `text`；可选 `annotations` / `_meta` |
-| `image` | `data`（base64）、`mimeType`；可选 `annotations` / `_meta` |
-| `audio` | `data`（base64）、`mimeType`；可选 `annotations` / `_meta` |
-| `resource_link` | `uri`、`name`；可选 `title` / `description` / `mimeType` / `icons` / `annotations` / `_meta` |
-| `resource` | `resource`（嵌入资源内容：文本 `text` 或二进制 `blob`，均带 `uri`、可选 `mimeType` / `_meta`）；可选 `annotations` / `_meta` |
+| 传输错误 | 连接、超时等请求未完成 |
+| HTTP 错误 | 状态码非成功且响应体不是可解析的协议错误 |
+| 远端错误 | 成功状态但响应体是协议错误 |
+| 解码错误 | 响应体无法解析为目标类型 |
 
-辅助类型：`Annotations`（`audience` / `priority` / `lastModified`）、`Role`、`Icon`（`src` / `mimeType` / `sizes` / `theme`）、`ResourceContents`（`Text` / `Blob`，按有无 `text` / `blob` 区分）。
-读取辅助：`Content::as_text()`、`Content::type_name()`。
-各变体类型全覆盖；不在规范内的 `type` 值会使反序列化失败。
+## 九、服务端处理器接口
 
-`content` 由结果生产方（工具实现）决定，MCP 服务只原样回传：不解释块类型、不把结构化数据合成文本、不改写数组。规范中「返回结构化内容时应同时给出序列化 JSON 的文本块」是**对工具**的兼容性建议（针对 `structuredContent`），由工具决定是否在 `content` 里附带这个镜像块，与服务端无关。
+使用方实现处理器即可对外提供 MCP 服务，需要给出：服务端身份、服务发现结果、工具列表处理、工具调用处理。协议外壳（版本校验、完成状态与身份填充、方法分发）由框架统一负责。
 
-结果构造约定（`CallToolResult`）：
+## 十、相关代码
 
-| 构造 | `content` | `structuredContent` | `isError` |
-|------|-----------|---------------------|-----------|
-| `text(s)` | 单个文本块 `s`（原样） | 省略（null） | false |
-| `error(code, message)` | 文本块 `message` | 固定错误结构 `{ code, message, source }` | true |
-
-其他形态由生产方按 `CallToolResult::default()` 显式拼装（内容块数组与 `structuredContent` 都由工具给出）。
-
-### 固定错误结构与来源
-
-`isError=true` 时 `structuredContent` 为固定结构：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `code` | u32 | 错误码（kissbot 工具错误码由具体层定义） |
-| `message` | string | 错误文案 |
-| `source` | string | 错误来源标识；kissbot 实现固定为 `kissbot`（常量 `ERROR_SOURCE_KISSBOT`） |
-
-消费方对 `isError` 结果的判定规则：
-
-- 解析失败、结构不符、或 `source` 非 kissbot → 原样透传，不按错误码解释；
-- `source` 为 kissbot → 可按 `code` 处理已知语义（如级联自环），未识别的错误码同样透传。
-
-读取辅助：`kissbot_error()` 解析固定错误结构、且仅在来源为 kissbot 时给出；`error_message()` 优先取错误结构文案，无则回退首个文本块。
-
-```jsonc
-// 文本结果（由 text() 构造）
-{ "result": { "resultType": "complete", "content": [{ "type": "text", "text": "文件内容" }],
-              "isError": false, "_meta": { } } }
-// 结构化结果（镜像块由工具自己放进 content）
-{ "result": { "resultType": "complete",
-              "content": [{ "type": "text", "text": "{\"temp\":25}" },
-                          { "type": "image", "data": "eHl6", "mimeType": "image/png" }],
-              "structuredContent": { "temp": 25 }, "isError": false, "_meta": { } } }
-// 失败（HTTP 200）
-{ "result": { "resultType": "complete", "content": [{ "type": "text", "text": "工具不存在: x" }],
-              "structuredContent": { "code": 1, "message": "工具不存在: x", "source": "kissbot" },
-              "isError": true, "_meta": { } } }
-```
-
-## 错误码
-
-| 码 | 常量 | 名称 | 触发场景 |
-|----|------|------|----------|
-| -32700 | `PARSE_ERROR` | ParseError | 请求体不是合法 JSON |
-| -32600 | `INVALID_REQUEST` | InvalidRequest | 请求结构非法（jsonrpc 版本不支持、缺少 method、访问来源被拒） |
-| -32601 | `METHOD_NOT_FOUND` | MethodNotFound | 方法不存在 |
-| -32602 | `INVALID_PARAMS` | InvalidParams | 参数非法（缺少必填 `_meta`、缺少或不匹配请求头、`tools/call` 缺少调用目标、参数反序列化失败） |
-| -32603 | `INTERNAL_ERROR` | InternalError | 服务端内部错误（结果序列化失败等） |
-| -32020 | `HEADER_MISMATCH` | HeaderMismatch | 请求头与请求体不一致 |
-| -32021 | `MISSING_REQUIRED_CLIENT_CAPABILITY` | MissingRequiredClientCapability | 缺少服务端要求的客户端能力（保留） |
-| -32022 | `UNSUPPORTED_PROTOCOL_VERSION` | UnsupportedProtocolVersion | 协议版本不在服务端支持列表内；`data.supportedVersions` 携带支持列表 |
-| 1001 | `STATION_CYCLE` | — | station 级联自环（kissbot 应用自定义码，位于 JSON-RPC 保留区间之外） |
-
-## HTTP 传输（Streamable HTTP 最小实现）
-
-- 单一 POST 端点承载全部请求，路径默认 `/mcp`，可由 `McpHttpConfig.endpoint_path` 覆盖
-- 每个请求一个 POST，响应为单个 JSON 对象（`application/json`）
-- 不实现 SSE 流式响应、GET 端点与协议级会话
-
-请求头：
-
-| 头 | 必填 | 说明 |
-|----|------|------|
-| `Content-Type` | 是 | `application/json` |
-| `Accept` | 客户端携带 | `application/json, text/event-stream` |
-| `MCP-Protocol-Version` | 是 | 必须与请求体 `_meta` 的协议版本一致 |
-| `Mcp-Method` | 是 | 必须与请求 `method` 一致 |
-| `Mcp-Name` | `tools/call` 必填 | 必须与 `params.name` 一致 |
-| `Origin` | 否 | 请求方来源；命中 `allowed_origins` 白名单或本机回环来源时放行，否则 403 |
-| `X-Api-Key` | 视调用方 | kissbot-mcp 不自带认证；station 端点由其上的认证中间件使用 |
-
-状态码映射：
-
-| 情况 | 状态码 | 响应体 |
-|------|--------|--------|
-| 请求体非法 JSON | 400 | 错误响应 `-32700`（省略 id） |
-| 缺少 `MCP-Protocol-Version` 头、缺少 `_meta` 必填项、`tools/call` 缺少 `params.name` 或 `Mcp-Name` 头 | 400 | 错误响应 `-32602` |
-| 协议版本头与请求体不一致、`Mcp-Method` 或 `Mcp-Name` 与请求体不一致 | 400 | 错误响应 `-32020` |
-| 协议版本不受支持 | 400 | 错误响应 `-32022`（含 `data.supportedVersions`） |
-| 访问来源不被允许 | 403 | 错误响应 `-32600` |
-| 方法不存在 | 404 | 错误响应 `-32601` |
-| 其余（含工具级失败、级联自环等业务错误） | 200 | 正常结果或错误响应 |
-
-## 服务端 API
-
-- `McpHandler`（trait，由使用方实现）：
-  - `discover() -> DiscoverResult`：服务端能力与使用说明（协议版本与服务端身份由 `McpServer` 统一填充）
-  - `list_tools(params: ToolsListParams) -> Result<ToolsListResult, McpError>`
-  - `call_tool(params: ToolsCallParams) -> Result<CallToolResult, McpError>`
-- `McpServer::new(handler: Arc<H>, server_info: Implementation)`：持有业务处理器与身份
-  - `with_instructions(...)`：设置 `server/discover` 的使用说明
-  - `supported_versions()`：支持列表（本实现为 `["2026-07-28"]`）
-  - `handle(request: JsonRpcRequest) -> JsonRpcResponse`：校验 JSON-RPC 版本 → 按 `method` 分发 → 解析参数 → 校验协议版本在支持列表内 → 调用处理器 → 统一填充 `resultType = complete` 与响应 `serverInfo`；未知方法返回 `-32601`
-- `router(server, config) -> Router`：构建单端点 Router，不含认证（认证由调用方以 Layer 叠加）
-  - `McpHttpConfig { endpoint_path: ArcStr, allowed_origins: Vec<ArcStr> }`，默认 `endpoint_path = "/mcp"`、`allowed_origins` 为空
-  - `allowed_origins` 为空时只放行无 `Origin` 或本机回环来源（127.0.0.1 / localhost / [::1] 的 http/https）
-
-## 客户端 API
-
-- `McpClient::new(endpoint: &str, timeout_secs: u64, api_key: Option<&str>)`：`endpoint` 为 MCP 端点完整 URL；`api_key` 非空时以 `X-Api-Key` 头发送
-- `with_client_info(implementation)`：覆盖自报身份（默认 `name = "kissbot-mcp-client"`，`version` 取包版本）
-- `discover() -> DiscoverResult`：返回的支持版本、能力与身份；`DiscoverResult::supports_ancestors()` / `supports_kissbot()` 用于判定对端声明的 kissbot 级联扩展能力
-- `list_tools(ancestors: Arc<Vec<ArcStr>>) -> ToolsListResult`：祖先链写入请求 `_meta["kissbot/ancestors"]`
-- `call_tool(name: &str, arguments: Value, ancestors: Arc<Vec<ArcStr>>) -> CallToolResult`
-- 每个请求自动填充 `_meta`（协议版本、`clientInfo`、空 `clientCapabilities`、`kissbot/ancestors`）与请求头（`Accept`、`MCP-Protocol-Version`、`Mcp-Method`、`tools/call` 时的 `Mcp-Name`）；请求 id 自增
-- 错误类型 `McpClientError`：
-
-| 变体 | 说明 |
-|------|------|
-| `Transport(reqwest::Error)` | 传输失败（连接、超时等） |
-| `Http { status, message }` | 响应不是可解析的 JSON-RPC 错误体时的兜底（携带状态码与响应文本） |
-| `Remote { code, message }` | 远端返回 JSON-RPC 错误 |
-| `Decode(serde_json::Error)` | 结果反序列化为目标类型失败 |
+- 协议类型与错误码：`kissbot-mcp/src/protocol/`
+- 服务端分发：`kissbot-mcp/src/server.rs`
+- 单端点传输：`kissbot-mcp/src/http.rs`
+- 客户端：`kissbot-mcp/src/client.rs`
