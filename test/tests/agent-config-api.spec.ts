@@ -118,4 +118,68 @@ test.describe.serial('agent 配置管理 API 测试（HTTP 修改配置）', () 
     expect(resp.success).toBe(false);
     expect(resp.error).toBeTruthy();
   });
+
+  test('TC-07: pipeline 新增/改名/重载/移除与 input channel 管理', async ({ request }) => {
+    const agent = 'p-agent';
+    // 未知名称 → 失败
+    expect((await apiPost(request, '/config/pipelines', {
+      agent_id: agent, role_name: '', pipeline_name: 'no-such-pipeline',
+    })).success).toBe(false);
+    // 新增 default pipeline
+    expect((await apiPost(request, '/config/pipelines', {
+      agent_id: agent, role_name: '', pipeline_name: 'default',
+    })).success).toBe(true);
+    // 重复新增 → 失败
+    expect((await apiPost(request, '/config/pipelines', {
+      agent_id: agent, role_name: '', pipeline_name: 'default',
+    })).success).toBe(false);
+    // 添加 input channel（web-main 已启用，会真实绑定到 channel）
+    const input = {
+      agent_id: agent, role_name: '',
+      channel_id: 'web-main', messenger_id: 'web', user_id: 'u-pipe',
+    };
+    expect((await apiPost(request, '/config/pipelines/input-channels', input)).success).toBe(true);
+    // 重复添加同一身份 → 失败
+    expect((await apiPost(request, '/config/pipelines/input-channels', input)).success).toBe(false);
+    // 落盘验证
+    const saved = JSON.parse(readFileSync(NEXUS_FILE, 'utf8'));
+    expect(saved.pipelines[agent][''].pipeline_name).toBe('default');
+    expect(saved.agent_roles[agent].config_map.input_channels.input_channels[0].user_id).toBe('u-pipe');
+    // 改名（按新名称重新加载）
+    expect((await apiPost(request, '/config/pipelines/change', {
+      agent_id: agent, role_name: '', pipeline_name: 'default_memory',
+    })).success).toBe(true);
+    const info = await apiGet(request, '/config');
+    expect(info.data.pipelines[agent][''].pipeline_name).toBe('default_memory');
+    // 重新加载
+    expect((await apiPost(request, '/config/pipelines/reload', {
+      agent_id: agent, role_name: '',
+    })).success).toBe(true);
+    // 移除 input channel（再次移除幂等成功）
+    expect((await apiPost(request, '/config/pipelines/input-channels/remove', input)).success).toBe(true);
+    expect((await apiPost(request, '/config/pipelines/input-channels/remove', input)).success).toBe(true);
+    // 移除 pipeline
+    expect((await apiPost(request, '/config/pipelines/remove', {
+      agent_id: agent, role_name: '',
+    })).success).toBe(true);
+    const after = await apiGet(request, '/config');
+    expect(after.data.pipelines[agent]).toBeUndefined();
+  });
+
+  test('TC-08: channel enable / disable 同步运行态', async ({ request }) => {
+    expect((await apiPost(request, '/config/channels', {
+      channel_id: 'toggle-ch', ws_url: 'ws://127.0.0.1:1',
+      admins: [], enabled: false,
+    })).success).toBe(true);
+    // enable → 配置置 true（连接目标不可达时按间隔重试，不影响接口返回）
+    expect((await apiPost(request, '/config/channels/enable', { channel_id: 'toggle-ch' })).success).toBe(true);
+    let info = await apiGet(request, '/config');
+    expect(info.data.channels['toggle-ch'].enabled).toBe(true);
+    // disable → 配置置 false 并移除运行态
+    expect((await apiPost(request, '/config/channels/disable', { channel_id: 'toggle-ch' })).success).toBe(true);
+    info = await apiGet(request, '/config');
+    expect(info.data.channels['toggle-ch'].enabled).toBe(false);
+    // 不存在的 channel → 失败
+    expect((await apiPost(request, '/config/channels/disable', { channel_id: 'no-such-channel' })).success).toBe(false);
+  });
 });

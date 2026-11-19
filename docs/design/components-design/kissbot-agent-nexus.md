@@ -123,7 +123,7 @@ Nexus 是 Agent 组件的一部分，与消息通道建立实时连接进行消�
 
 ### 11. 边界组件（非 Nexus 内部模块）
 - **通道适配层（channel_manager）**：实现 Terminal（回显过滤 + 业务消息处理：channel 级管理命令 / 按输入身份定位 pipeline 的命令与普通消息）、每 channel 运行态（client、未回显 msg_id、断线通知）、输入身份绑定、连接/重连/发送
-- **管理 API（http_server）**：管理界面用的配置 CRUD，直接操作配置管理器
+- **管理 API（http_server）**：管理界面用的配置 CRUD 与运行期管理（channel 增删/启停、pipeline 增删/重载/改名、input channel 增删），配置写入 nexus.json 并同步运行时
 - **station MCP 服务端（station_http）**：把全局 Station 作为 MCP 处理器对外提供 server/discover、tools/list、tools/call，供其他 station 作为 sub 使用
 
 ## 功能流程

@@ -404,9 +404,17 @@ enum Error {
 | GET | `/config` | — | 返回 NexusRepo 快照（channels / providers / memory_structs / pipelines / agent_roles / sessions） |
 | POST | `/config/providers` | `{ "name": "...", "config": ProviderModelConfig }` | 新增 provider（重名失败） |
 | POST | `/config/providers/remove` | `{ "name": "..." }` | 删除 provider |
-| POST | `/config/channels` | `ChannelConfig`（channel_id / ws_url / admins / enabled） | 新增 channel（只改配置，不创建 pipeline 与输入绑定） |
-| POST | `/config/channels/remove` | `{ "channel_id": "..." }` | 删除 channel（只改配置，不删除 pipeline 与输入绑定） |
+| POST | `/config/channels` | `ChannelConfig`（channel_id / ws_url / admins / enabled） | 新增/覆盖 channel：写配置并同步运行态（enabled=true 时建立连接，false 时移除运行态） |
+| POST | `/config/channels/remove` | `{ "channel_id": "..." }` | 删除 channel：写配置并移除运行态（通知绑定该 channel 的 pipeline，不改 input_channels 配置） |
+| POST | `/config/channels/enable` | `{ "channel_id": "..." }` | 启用 channel：配置置 enabled=true，按 input 路由创建运行态并建立连接 |
+| POST | `/config/channels/disable` | `{ "channel_id": "..." }` | 停用 channel：配置置 enabled=false，移除运行态并通知绑定该 channel 的 pipeline（input 路由保留） |
 | POST | `/config/admins` | `{ "channel_id", "messenger_id", "user_id" }` | 添加管理权限 |
 | POST | `/config/admins/remove` | `{ "channel_id", "messenger_id", "user_id" }` | 移除管理权限 |
+| POST | `/config/pipelines` | `{ "agent_id", "role_name", "pipeline_name" }` | 新增 pipeline：写配置并装配运行态（已存在/未知名称失败） |
+| POST | `/config/pipelines/remove` | `{ "agent_id", "role_name" }` | 删除 pipeline：删配置、卸载运行态并解绑输入身份（input_channels 配置保留） |
+| POST | `/config/pipelines/reload` | `{ "agent_id", "role_name" }` | 重新加载 pipeline：按配置中的名称卸载旧运行态后重新装配，并重新绑定输入身份 |
+| POST | `/config/pipelines/change` | `{ "agent_id", "role_name", "pipeline_name" }` | 更换 pipeline（名称变更）：写新名称后按新名称重新加载 |
+| POST | `/config/pipelines/input-channels` | `{ "agent_id", "role_name", "channel_id", "messenger_id", "user_id" }` | 添加 pipeline 的 input channel：写配置并绑定（channel 不存在/未启用只记警告） |
+| POST | `/config/pipelines/input-channels/remove` | 同上 | 移除 pipeline 的 input channel：写配置并解绑（未登记时幂等成功） |
 
 响应统一为 `{ "success": bool, "data": …, "error": … }`。

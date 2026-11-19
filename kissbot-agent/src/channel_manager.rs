@@ -40,6 +40,8 @@ pub struct Channel {
     disconnect_notify: Arc<tokio::sync::Notify>,
     /// 当前连接是否已建立（连接成功后置 true，断线/连接失败置 false）
     connected: AtomicBool,
+    /// 是否已停止（disable/删除 channel 时置 true，连接循环据此退出）
+    stopped: AtomicBool,
     /// 所属 ChannelManager（弱引用：Channel 由 manager 持有，避免环；连接循环用它取输入路由）
     manager: Weak<ChannelManager>,
 }
@@ -55,6 +57,7 @@ impl Channel {
             client: ChannelClient::new(channel_id, manager.clone()),
             disconnect_notify: Arc::new(tokio::sync::Notify::new()),
             connected: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             manager,
         });
         let client = channel.client.clone();
@@ -64,29 +67,46 @@ impl Channel {
             let reconnect_secs = ConfigManager::get().ws_reconnect_interval_secs();
             let api_key = kissbot_security::SecurityConfig::get().api_key.clone();
             loop {
-                match client.clone().connect(&ws_url, &api_key).await {
+                // 已停止（disable/删除 channel）则不再连接
+                if task_channel.is_stopped() {
+                    break;
+                }
+                // 停止通知与断线通知共用 disconnect_notify：等待连接时被停止唤醒则退出
+                let connect_result = tokio::select! {
+                    result = client.clone().connect(&ws_url, &api_key) => result,
+                    _ = notify.notified() => break,
+                };
+                match connect_result {
                     Ok(()) => {
+                        if task_channel.is_stopped() {
+                            break;
+                        }
                         info!("已连接 channel: {}", client.id);
                         task_channel.set_connected(true);
                         // manager 已释放时没有路由可绑定，结束循环
-                        let Some(manager) = task_channel.manager.upgrade() else { return; };
+                        let Some(manager) = task_channel.manager.upgrade() else { break; };
                         // 连接成功后按路由表绑定该 channel 的全部输入身份（重连后重新绑定）
                         for input in manager.channel_inputs(client.id.as_str()) {
                             if let Err(e) = task_channel.bind(&input).await {
                                 warn!("bind 失败 {} / {}: {:?}", input.channel_id, input.user_id, e);
                             }
                         }
-                        // 等待断线通知（closed() 回调中 notify_one）
+                        // 等待断线通知（closed() 回调中 notify_one；停止时同样经此唤醒）
                         notify.notified().await;
                         task_channel.set_connected(false);
                     }
                     Err(e) => {
                         task_channel.set_connected(false);
                         warn!("连接 channel {} 失败: {:?}，{}秒后重连", client.id, e, reconnect_secs);
-                        tokio::time::sleep(Duration::from_secs(reconnect_secs)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(reconnect_secs)) => {}
+                            _ = notify.notified() => {}
+                        }
                     }
                 }
             }
+            // 退出前断开连接：停止信号可能在连接刚建立时到达，stop_channel 里的 disconnect 会落空
+            let _ = client.disconnect().await;
         });
         channel
     }
@@ -97,6 +117,16 @@ impl Channel {
 
     fn set_connected(&self, connected: bool) {
         self.connected.store(connected, Ordering::Release);
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    /// 停止运行态：标记停止并唤醒连接循环（连接由调用方断开，循环退出时兜底断开一次）
+    fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.disconnect_notify.notify_one();
     }
 
     /// 发送消息（通道适配层：发送 + 记录 pending msg_id 供回显判定）
@@ -182,6 +212,31 @@ impl ChannelManager {
             .or_insert_with(|| Channel::new(ch.channel_id.clone(), ch.ws_url.clone(), self.clone()))
             .clone();
         Some(channel)
+    }
+
+    /// 启用 channel 运行态（/config/channels/enable 使用）：配置必须已存在且启用；
+    /// 运行态不存在时创建并进入连接/重连循环，连接成功后按路由表绑定该 channel 的全部输入身份。
+    pub async fn start_channel(self: &Arc<Self>, channel_id: &str) {
+        let _ = self.get_or_create(channel_id).await;
+    }
+
+    /// 停用 channel 运行态（/config/channels/disable 与删除 channel 使用）：
+    /// 结束连接循环、断开连接、移除运行态，并通知绑定该 channel 的 pipeline 清理该 channel 的运行态。
+    /// 输入身份路由保留（不改 input_channels 配置），重新启用后连接成功会自动重新 bind。
+    pub async fn stop_channel(&self, channel_id: &str) {
+        if let Some((_, channel)) = self.channels.remove(channel_id) {
+            channel.shutdown();
+            // 主动断开 ws（未连接时忽略错误；断开后连接循环已因 stopped 退出，不会重连）
+            let _ = channel.client.disconnect().await;
+        }
+        let pipeline_manager = &Nexus::get().pipeline_manager;
+        for input in self.channel_inputs(channel_id) {
+            if let Some(role_key) = self.input_pipeline(
+                input.channel_id.clone(), input.messenger_id.clone(), input.user_id.clone()) {
+                pipeline_manager.channel_unbound(
+                    role_key.as_ref(), input.messenger_id.clone(), input.user_id.clone()).await;
+            }
+        }
     }
 
     // ========== pipeline 输入路由与 bind/unbind ==========
@@ -449,6 +504,7 @@ mod tests {
             client: ChannelClient::new(ArcStr::from("test-channel"), manager.clone()),
             disconnect_notify: Arc::new(tokio::sync::Notify::new()),
             connected: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             manager,
         })
     }

@@ -1309,8 +1309,15 @@ impl PipelineManager {
         pipeline.incoming_message(event, channel_id, is_admin).await
     }
 
-    /// 单测用：pipeline 是否已装配（生产代码不依赖该查询）
-    #[cfg(test)]
+    /// 通知某 pipeline 的某个 channel 已下线（清理该 channel 的运行态缓存）；pipeline 不存在则忽略
+    pub async fn channel_unbound(&self, role_key: &RoleKey, messenger_id: ArcStr, user_id: ArcStr) {
+        let pipeline = self.pipeline_map.get(role_key).map(|entry| entry.clone());
+        if let Some(pipeline) = pipeline {
+            pipeline.channel_unbound(messenger_id, user_id).await;
+        }
+    }
+
+    /// pipeline 是否已装配（管理 API 在操作输入身份前校验）
     pub fn contains(&self, role_key: &RoleKey) -> bool {
         self.pipeline_map.contains_key(role_key)
     }

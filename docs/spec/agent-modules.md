@@ -22,7 +22,7 @@
 | station | Station / NativeTool / Group / ToolImplement / SubStation / McpClient | 全局 Station 单例：本级工具索引（工具元数据 + 原生实现，由内置注册表按 group 名给出）+ 直接子 Station（仅连接信息，持 McpClient）；实现 McpHandler（server/discover / tools/list / tools/call），list_tools(ancestors) 平铺查询 / list_tools_local(groups) 按会话白名单本地过滤 / call_tool_local | 被 nexus（工具分组白名单）与 pipelines（工具调用适配层）调用；被 station_http 挂载为 MCP 处理器 |
 | station_http | StationHttpServer / McpServer | station 对外 MCP 服务端（kissbot-mcp 的 McpServer + 单端点 `POST /mcp`，方法 server/discover / tools/list / tools/call），认证走 security.api_key | 被 main 调用；供其他 station 作为 sub 调用 |
 | ego_md | build_ego_identity_md / build_ego_individual_recognition_md / build_role_play_md | ego 结构 → 系统提示词 markdown | 被 nexus（system_prompt_for_agent）调用 |
-| http_server | HttpServer | 管理 API（config CRUD），认证走 kissbot-security | 被 main 调用；仅操作 ConfigManager |
+| http_server | HttpServer | 管理 API（config CRUD + 运行期管理：channel 增删/启停、pipeline 增删/重载/改名、input channel 增删），认证走 kissbot-security；配置写 ConfigManager，运行态经 Nexus 调整 | 被 main 调用；操作 ConfigManager 与 Nexus |
 | types | RoleKey / MemoryKey / RoleEvent 用法 | agent 侧共享数据类型（错误、pipeline 身份（RoleKey）、记忆范围（MemoryKey）、MCP→LLM 工具定义转换）；输入身份结构 InputChannel 定义在配置模块；LLM 消息与配置类型见 kissbot-llm | 被几乎所有模块引用 |
 
 ## 二、组件调用关系总览

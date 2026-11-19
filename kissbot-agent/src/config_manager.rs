@@ -172,6 +172,16 @@ impl ConfigManager {
             Ok(())
         }).await
     }
+    /// 设置 channel 的启用开关（只改配置；运行态由管理 API 按 enabled 调整）
+    pub async fn set_channel_enabled(&self, channel_id: &str, enabled: bool) -> Result<()> {
+        self.write_nexus_config(|repo| {
+            let channels = Arc::make_mut(&mut repo.channels);
+            let channel = channels.get_mut(channel_id)
+                .ok_or_else(|| Error::ConfigNotFound(format!("channel 不存在: {}", channel_id).into()))?;
+            Arc::make_mut(channel).enabled = enabled;
+            Ok(())
+        }).await
+    }
 
     // ---------- providers ----------
     /// 合成 provider 默认 + model 覆盖的有效参数（每次调用现场合成，配置永远最新）
@@ -254,8 +264,13 @@ impl ConfigManager {
         result
     }
 
-    /// 单测用：写入/覆盖一条 pipeline 定义（生产环境由配置文件提供）
-    #[cfg(test)]
+    /// 按 (agent_id, role_name) 取 pipeline 定义；未配置返回 None
+    pub async fn pipeline_config(&self, agent_id: &str, role_name: &str) -> Option<Arc<PipelineConfig>> {
+        let repo = self.nexus_repo.read().await;
+        repo.pipelines.get(agent_id).and_then(|roles| roles.get(role_name)).cloned()
+    }
+
+    /// 写入/覆盖一条 pipeline 定义
     pub async fn set_pipeline_config(&self, agent_id: ArcStr, role_name: ArcStr, config: Arc<PipelineConfig>) -> Result<()> {
         self.write_nexus_config(|repo| {
             let pipelines = Arc::make_mut(&mut repo.pipelines);
@@ -265,13 +280,19 @@ impl ConfigManager {
         }).await
     }
 
-    /// 单测用：删除一条 pipeline 定义
-    #[cfg(test)]
+    /// 删除一条 pipeline 定义（不存在时为空操作；agent 下无 pipeline 时移除该 agent 条目）
     pub async fn remove_pipeline_config(&self, agent_id: &str, role_name: &str) -> Result<()> {
         self.write_nexus_config(|repo| {
             let pipelines = Arc::make_mut(&mut repo.pipelines);
-            if let Some(roles) = pipelines.get_mut(agent_id) {
-                Arc::make_mut(roles).remove(role_name);
+            let empty = if let Some(roles) = pipelines.get_mut(agent_id) {
+                let roles = Arc::make_mut(roles);
+                roles.remove(role_name);
+                roles.is_empty()
+            } else {
+                false
+            };
+            if empty {
+                pipelines.remove(agent_id);
             }
             Ok(())
         }).await
